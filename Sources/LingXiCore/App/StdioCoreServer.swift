@@ -16,59 +16,71 @@ public struct StdioCoreServer: Sendable {
     }
 
     public func run() async throws {
-        let write = makeWriter()
+        let writer = WireWriter(output: output)
+        let events = await endpoint.events()
+        let eventTask = Task {
+            for await event in events {
+                await writer.write(.event(event))
+            }
+        }
+        defer { eventTask.cancel() }
+
         for try await line in input.bytes.lines {
             guard let data = line.data(using: .utf8),
                   let message = try? JSONDecoder().decode(WireMessage.self, from: data)
             else { continue }
-            handleMessage(message, write: write)
+            handleMessage(message, writer: writer)
         }
     }
 
-    private func handleMessage(_ message: WireMessage, write: @escaping @Sendable (WireMessage) -> Void) {
+    private func handleMessage(_ message: WireMessage, writer: WireWriter) {
         guard case let .request(id, command) = message else { return }
         let endpoint = self.endpoint
         Task {
             if command.isDataPlane {
+                // 数据面：打开通道后 chunk 由独立任务直接写出，不经过控制面。
                 do {
-                    let opened = try await endpoint.openTestStream()
-                    write(.response(id: id, response: .streamOpened(opened.id)))
-                    // 数据面 pump：独立于控制面，chunk 直接流出。
+                    let opened = try await endpoint.openDataStream(command)
+                    await writer.write(.response(id: id, response: .streamOpened(opened.id)))
                     do {
                         for try await chunk in opened.chunks {
-                            write(.chunk(chunk))
+                            await writer.write(.chunk(chunk))
                         }
                     } catch let error as CoreError {
-                        write(.response(id: id, response: .error(error)))
+                        await writer.write(.response(id: id, response: .error(error)))
                     } catch {
-                        write(.response(id: id, response: .error(CoreError(code: .transport, message: String(describing: error)))))
+                        await writer.write(.response(id: id, response: .error(CoreError(code: .modelStream, message: String(describing: error)))))
                     }
-                    write(.streamEnd(opened.id))
+                    await writer.write(.streamEnd(opened.id))
                 } catch let error as CoreError {
-                    write(.response(id: id, response: .error(error)))
+                    await writer.write(.response(id: id, response: .error(error)))
                 } catch {
-                    write(.response(id: id, response: .error(CoreError(code: .transport, message: String(describing: error)))))
+                    await writer.write(.response(id: id, response: .error(CoreError(code: .provider, message: String(describing: error)))))
                 }
             } else {
                 do {
                     let response = try await endpoint.handle(command)
-                    write(.response(id: id, response: response))
+                    await writer.write(.response(id: id, response: response))
                 } catch let error as CoreError {
-                    write(.response(id: id, response: .error(error)))
+                    await writer.write(.response(id: id, response: .error(error)))
                 } catch {
-                    write(.response(id: id, response: .error(CoreError(code: .transport, message: String(describing: error)))))
+                    await writer.write(.response(id: id, response: .error(CoreError(code: .transport, message: String(describing: error)))))
                 }
             }
         }
     }
+}
 
-    private func makeWriter() -> @Sendable (WireMessage) -> Void {
-        let output = self.output
-        let newline = Data("\n".utf8)
-        return { message in
-            guard let data = try? JSONEncoder().encode(message) else { return }
-            output.write(data)
-            output.write(newline)
-        }
+/// 多个请求、Stream 和控制面事件共用 stdout；actor 保证每条 JSON-line 原子有序写出。
+private actor WireWriter {
+    let output: FileHandle
+
+    init(output: FileHandle) {
+        self.output = output
+    }
+
+    func write(_ message: WireMessage) {
+        guard let data = try? JSONEncoder().encode(message) else { return }
+        output.write(data + Data("\n".utf8))
     }
 }

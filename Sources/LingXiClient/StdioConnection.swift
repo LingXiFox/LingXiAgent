@@ -50,7 +50,7 @@ public actor StdioConnection: LingXiConnection {
         guard !command.isDataPlane else {
             return .error(CoreError(
                 code: .unsupportedCommand,
-                message: "openTestStream 属于数据面，请使用 openTestStream()"
+                message: "数据面命令请使用 openTestStream() / sendMessage()"
             ))
         }
         return try await dispatch(command)
@@ -59,14 +59,22 @@ public actor StdioConnection: LingXiConnection {
     // MARK: - LingXiConnection（数据面）
 
     public func openTestStream() async throws -> AsyncThrowingStream<StreamChunk, Error> {
+        try await openDataStream(.openTestStream)
+    }
+
+    public func sendMessage(sessionID: SessionID, content: String) async throws -> AsyncThrowingStream<StreamChunk, Error> {
+        try await openDataStream(.sendMessage(sessionID: sessionID, content: content))
+    }
+
+    /// 先注册 chunk 归属再发请求，保证 streamOpened 到达前 chunk 不丢失。
+    private func openDataStream(_ command: ClientCommand) async throws -> AsyncThrowingStream<StreamChunk, Error> {
         var continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation!
         let stream = AsyncThrowingStream { continuation = $0 }
-        // 先注册再发请求，保证 streamOpened 到达前 chunk 有归属。
         nextRequestID += 1
         let id = String(nextRequestID)
         _ = try await withCheckedThrowingContinuation { (open: CheckedContinuation<StreamID, Error>) in
             pending[id] = .stream(chunks: continuation, open: open)
-            write(.request(id: id, command: .openTestStream))
+            write(.request(id: id, command: command))
         } as StreamID
         return stream
     }

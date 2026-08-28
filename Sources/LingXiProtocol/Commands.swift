@@ -4,6 +4,12 @@ public enum ClientCommand: Sendable, Equatable {
     case getInfo
     case getState
     case openTestStream
+    case createSession
+    case listSessions
+    case getSession(sessionID: SessionID)
+    case getProviderStatus
+    /// 数据面命令：在 Session 中发起一轮对话。
+    case sendMessage(sessionID: SessionID, content: String)
 }
 
 extension ClientCommand {
@@ -13,6 +19,11 @@ extension ClientCommand {
         case getInfo
         case getState
         case openTestStream
+        case createSession
+        case listSessions
+        case getSession
+        case getProviderStatus
+        case sendMessage
     }
 
     public var kind: Kind {
@@ -21,11 +32,19 @@ extension ClientCommand {
         case .getInfo: .getInfo
         case .getState: .getState
         case .openTestStream: .openTestStream
+        case .createSession: .createSession
+        case .listSessions: .listSessions
+        case .getSession: .getSession
+        case .getProviderStatus: .getProviderStatus
+        case .sendMessage: .sendMessage
         }
     }
 
     /// 数据面命令：由连接层路由到 Streaming DMA 通路，而非控制面。
     public var isDataPlane: Bool {
-        self == .openTestStream
+        switch self {
+        case .openTestStream, .sendMessage: true
+        default: false
+        }
     }
 }

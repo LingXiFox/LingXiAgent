@@ -4,6 +4,10 @@ public enum CoreResponse: Sendable, Equatable {
     case info(CoreInfo)
     case state(CoreState)
     case streamOpened(StreamID)
+    case providerStatus(ProviderStatus)
+    case sessionCreated(SessionInfo)
+    case sessionList([SessionInfo])
+    case sessionDetail(SessionSnapshot)
     case error(CoreError)
 }
 
@@ -13,7 +17,14 @@ public struct CoreError: Sendable, Equatable, Error {
         case unsupportedCommand
         case notReady
         case streamNotFound
+        case sessionNotFound
+        /// 同一 Session 已有进行中的 turn（Session Lane 串行保护）。
+        case turnAlreadyRunning
         case transport
+        /// Provider HTTP / API 错误（Provider Error）。
+        case provider
+        /// 推理已开始但流中途失败（Model Stream Error）。
+        case modelStream
     }
 
     public let code: Code

@@ -66,7 +66,7 @@ extension WireMessage: Codable {
 
 extension ClientCommand: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type
+        case type, sessionID, content
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,22 +76,42 @@ extension ClientCommand: Codable {
         case .getInfo: self = .getInfo
         case .getState: self = .getState
         case .openTestStream: self = .openTestStream
+        case .createSession: self = .createSession
+        case .listSessions: self = .listSessions
+        case .getSession:
+            self = .getSession(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
+        case .getProviderStatus: self = .getProviderStatus
+        case .sendMessage:
+            self = .sendMessage(
+                sessionID: try container.decode(SessionID.self, forKey: .sessionID),
+                content: try container.decode(String.self, forKey: .content)
+            )
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(kind, forKey: .type)
+        switch self {
+        case let .getSession(sessionID):
+            try container.encode(sessionID, forKey: .sessionID)
+        case let .sendMessage(sessionID, content):
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(content, forKey: .content)
+        default:
+            break
+        }
     }
 }
 
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
-        case pong, info, state, streamOpened, error
+        case pong, info, state, streamOpened, providerStatus
+        case sessionCreated, sessionList, sessionDetail, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, error
+        case type, info, state, streamID, providerStatus, session, sessions, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -105,6 +125,14 @@ extension CoreResponse: Codable {
             self = .state(try container.decode(CoreState.self, forKey: .state))
         case .streamOpened:
             self = .streamOpened(try container.decode(StreamID.self, forKey: .streamID))
+        case .providerStatus:
+            self = .providerStatus(try container.decode(ProviderStatus.self, forKey: .providerStatus))
+        case .sessionCreated:
+            self = .sessionCreated(try container.decode(SessionInfo.self, forKey: .session))
+        case .sessionList:
+            self = .sessionList(try container.decode([SessionInfo].self, forKey: .sessions))
+        case .sessionDetail:
+            self = .sessionDetail(try container.decode(SessionSnapshot.self, forKey: .session))
         case .error:
             self = .error(try container.decode(CoreError.self, forKey: .error))
         }
@@ -112,21 +140,40 @@ extension CoreResponse: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kindKey, forKey: .type)
         switch self {
         case .pong:
-            try container.encode(TypeKey.pong, forKey: .type)
+            break
         case let .info(info):
-            try container.encode(TypeKey.info, forKey: .type)
             try container.encode(info, forKey: .info)
         case let .state(state):
-            try container.encode(TypeKey.state, forKey: .type)
             try container.encode(state, forKey: .state)
         case let .streamOpened(streamID):
-            try container.encode(TypeKey.streamOpened, forKey: .type)
             try container.encode(streamID, forKey: .streamID)
+        case let .providerStatus(status):
+            try container.encode(status, forKey: .providerStatus)
+        case let .sessionCreated(info):
+            try container.encode(info, forKey: .session)
+        case let .sessionList(infos):
+            try container.encode(infos, forKey: .sessions)
+        case let .sessionDetail(snapshot):
+            try container.encode(snapshot, forKey: .session)
         case let .error(error):
-            try container.encode(TypeKey.error, forKey: .type)
             try container.encode(error, forKey: .error)
+        }
+    }
+
+    private var kindKey: TypeKey {
+        switch self {
+        case .pong: .pong
+        case .info: .info
+        case .state: .state
+        case .streamOpened: .streamOpened
+        case .providerStatus: .providerStatus
+        case .sessionCreated: .sessionCreated
+        case .sessionList: .sessionList
+        case .sessionDetail: .sessionDetail
+        case .error: .error
         }
     }
 }
@@ -151,11 +198,11 @@ extension CoreError: Codable {
 
 extension CoreEvent: Codable {
     private enum TypeKey: String, Codable {
-        case stateChanged
+        case stateChanged, sessionCreated, turnStarted, turnCompleted, turnFailed
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, state
+        case type, state, sessionID, handle, result, failure
     }
 
     public init(from decoder: Decoder) throws {
@@ -163,6 +210,14 @@ extension CoreEvent: Codable {
         switch try container.decode(TypeKey.self, forKey: .type) {
         case .stateChanged:
             self = .stateChanged(try container.decode(CoreState.self, forKey: .state))
+        case .sessionCreated:
+            self = .sessionCreated(try container.decode(SessionID.self, forKey: .sessionID))
+        case .turnStarted:
+            self = .turnStarted(try container.decode(TurnHandle.self, forKey: .handle))
+        case .turnCompleted:
+            self = .turnCompleted(try container.decode(TurnResult.self, forKey: .result))
+        case .turnFailed:
+            self = .turnFailed(try container.decode(TurnFailure.self, forKey: .failure))
         }
     }
 
@@ -172,6 +227,18 @@ extension CoreEvent: Codable {
         case let .stateChanged(state):
             try container.encode(TypeKey.stateChanged, forKey: .type)
             try container.encode(state, forKey: .state)
+        case let .sessionCreated(sessionID):
+            try container.encode(TypeKey.sessionCreated, forKey: .type)
+            try container.encode(sessionID, forKey: .sessionID)
+        case let .turnStarted(handle):
+            try container.encode(TypeKey.turnStarted, forKey: .type)
+            try container.encode(handle, forKey: .handle)
+        case let .turnCompleted(result):
+            try container.encode(TypeKey.turnCompleted, forKey: .type)
+            try container.encode(result, forKey: .result)
+        case let .turnFailed(failure):
+            try container.encode(TypeKey.turnFailed, forKey: .type)
+            try container.encode(failure, forKey: .failure)
         }
     }
 }

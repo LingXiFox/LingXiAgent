@@ -8,8 +8,11 @@ public protocol LingXiConnection: Sendable {
     /// 控制面：发送命令并等待响应。
     func send(_ command: ClientCommand) async throws -> CoreResponse
 
-    /// 数据面：打开 Streaming DMA 通道。
+    /// 数据面：打开内置测试流。
     func openTestStream() async throws -> AsyncThrowingStream<StreamChunk, Error>
+
+    /// 数据面：在 Session 中发起一轮对话，返回 Streaming DMA 通道。
+    func sendMessage(sessionID: SessionID, content: String) async throws -> AsyncThrowingStream<StreamChunk, Error>
 
     /// 控制面：订阅语义事件。
     func events() async -> AsyncStream<CoreEvent>

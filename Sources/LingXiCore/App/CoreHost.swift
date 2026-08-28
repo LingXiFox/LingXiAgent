@@ -1,7 +1,7 @@
 import Foundation
 import LingXiProtocol
 
-/// LingXi Core 宿主：Core 的启动、状态与对外契约实现。
+/// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint {
     public static let coreVersion = "0.1.0"
     public static let protocolVersion = "1"
@@ -9,23 +9,66 @@ public actor CoreHost: CoreEndpoint {
     public let info: CoreInfo
     private let bus = CommandBus()
     private let dataPlane = DataPlane()
+    private let sessionStore: any SessionStore
+    private let gateway: ModelGateway
+    private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
 
-    public init() {
+    /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
+    public init(providerAssembly: ModelRuntimeAssembly? = nil, sessionStore: (any SessionStore)? = nil) {
         info = CoreInfo(
             name: "LingXiCore",
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
+        self.sessionStore = sessionStore ?? InMemorySessionStore()
+
+        let (assembly, missing) = ProviderSetup.resolve()
+        let effective = providerAssembly ?? assembly
+        gateway = ModelGateway(
+            provider: effective.provider,
+            modelID: effective.modelID.rawValue.isEmpty ? nil : effective.modelID,
+            missingRequirements: providerAssembly == nil ? missing : []
+        )
     }
 
     /// 注册控制面路由并进入 ready。
     public func start() async {
-        await bus.add(.ping) { .pong }
-        await bus.add(.getInfo) { [self] in .info(info) }
-        await bus.add(.getState) { [self] in .state(await state) }
-        // .openTestStream 属于数据面，不在控制面路由表中。
+        await bus.add(.ping) { _ in .pong }
+        await bus.add(.getInfo) { [self] _ in .info(info) }
+        await bus.add(.getState) { [self] _ in .state(await state) }
+        await bus.add(.getProviderStatus) { [self] _ in
+            .providerStatus(await providerStatus)
+        }
+        await bus.add(.createSession) { [self] _ in
+            let agent = try await requireAgent()
+            let id = try await agent.createSession()
+            let session = try await sessionStore.session(id)
+            return .sessionCreated(session.toInfo())
+        }
+        await bus.add(.listSessions) { [self] _ in
+            let agent = try await requireAgent()
+            return .sessionList(try await agent.listSessions())
+        }
+        await bus.add(.getSession) { [self] command in
+            let agent = try await requireAgent()
+            guard case let .getSession(sessionID) = command else {
+                return .error(CoreError(code: .unsupportedCommand, message: "getSession 参数缺失"))
+            }
+            return .sessionDetail(try await agent.sessionSnapshot(sessionID))
+        }
+        // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
+
+        let agent = AgentRuntime(
+            store: sessionStore,
+            contextBuilder: SessionContextBuilder(),
+            modelBus: ModelBus(gateway: gateway),
+            dataPlane: dataPlane
+        ) { [weak self] event in
+            await self?.broadcast(event)
+        }
+        self.agent = agent
         setState(.ready)
     }
 
@@ -55,11 +98,42 @@ public actor CoreHost: CoreEndpoint {
 
     // MARK: - CoreEndpoint（数据面）
 
-    public func openTestStream() async throws -> OpenedStream {
-        await dataPlane.openTestStream()
+    public func openDataStream(_ command: ClientCommand) async throws -> OpenedStream {
+        switch command {
+        case .openTestStream:
+            return await dataPlane.openTestStream()
+        case let .sendMessage(sessionID, content):
+            let agent = try requireAgent()
+            return try await agent.sendMessage(sessionID, content)
+        default:
+            throw CoreError(code: .unsupportedCommand, message: "该命令不属于数据面")
+        }
+    }
+
+    // MARK: - 事件广播
+
+    /// Agent 等模块经此把语义事件送入所有控制面订阅者。
+    public func broadcast(_ event: CoreEvent) {
+        eventContinuations.values.forEach { $0.yield(event) }
     }
 
     // MARK: - Private
+
+    private func requireAgent() throws -> AgentRuntime {
+        guard let agent else {
+            throw CoreError(code: .notReady, message: "Agent 尚未启动")
+        }
+        return agent
+    }
+
+    private var providerStatus: ProviderStatus {
+        ProviderStatus(
+            configured: gateway.isConfigured,
+            model: gateway.modelID?.rawValue,
+            baseURL: nil,
+            missingRequirements: gateway.missingRequirements
+        )
+    }
 
     private func setState(_ newState: CoreState) {
         state = newState

@@ -45,14 +45,58 @@ public struct LingXiClient: Sendable {
         }
     }
 
+    /// 查询 Provider 配置状态（不含任何凭据）。
+    public func providerStatus() async throws -> ProviderStatus {
+        guard case let .providerStatus(status) = try await connection.send(.getProviderStatus) else {
+            throw CoreError(code: .transport, message: "getProviderStatus 收到非预期响应")
+        }
+        return status
+    }
+
     /// 订阅控制面语义事件（如状态变化）。
     public func events() async -> AsyncStream<CoreEvent> {
         await connection.events()
     }
 
-    /// 打开测试 Streaming DMA 通道。
+    /// 打开内置测试 Streaming DMA 通道。
     public func openTestStream() async throws -> AsyncThrowingStream<StreamChunk, Error> {
         try await connection.openTestStream()
+    }
+
+    // MARK: - Session API
+
+    /// 创建新 Session。
+    public func createSession() async throws -> SessionID {
+        guard case let .sessionCreated(info) = try await connection.send(.createSession) else {
+            throw CoreError(code: .transport, message: "createSession 收到非预期响应")
+        }
+        return info.id
+    }
+
+    /// 列出全部 Session（摘要）。
+    public func sessions() async throws -> [SessionInfo] {
+        guard case let .sessionList(infos) = try await connection.send(.listSessions) else {
+            throw CoreError(code: .transport, message: "listSessions 收到非预期响应")
+        }
+        return infos
+    }
+
+    /// 查询 Session 完整消息历史（权威数据在 Core）。
+    public func session(_ id: SessionID) async throws -> SessionSnapshot {
+        guard case let .sessionDetail(snapshot) = try await connection.send(.getSession(sessionID: id)) else {
+            throw CoreError(code: .transport, message: "getSession 收到非预期响应")
+        }
+        return snapshot
+    }
+
+    /// 在 Session 中发起一轮对话，返回 Streaming DMA 通道。
+    /// text/reasoning delta 从通道逐块流出（kind 区分）；
+    /// turnCompleted / turnFailed 经 events() 交付。
+    public func sendMessage(
+        sessionID: SessionID,
+        content: String
+    ) async throws -> AsyncThrowingStream<StreamChunk, Error> {
+        try await connection.sendMessage(sessionID: sessionID, content: content)
     }
 
     public func close() async {

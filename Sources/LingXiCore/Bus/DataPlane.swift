@@ -9,28 +9,41 @@ public actor DataPlane {
 
     public init() {}
 
-    /// 打开测试流：逐块产出固定文本。
+    /// 打开内置测试流：逐块产出固定文本。
     public func openTestStream() -> OpenedStream {
-        let id = StreamID(UUID().uuidString)
-        var continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation!
-        let chunks = AsyncThrowingStream { continuation = $0 }
+        let (stream, sink) = makeStream()
+        let id = stream.id
 
         let task = Task {
             let payload = ["Hello ", "LingXiAgent ", "Streaming ", "DMA"]
             for (index, text) in payload.enumerated() {
                 if Task.isCancelled { break }
-                continuation.yield(StreamChunk(streamID: id, index: index, text: text))
+                sink.yield(StreamChunk(streamID: id, index: index, text: text, kind: .text))
                 try? await Task.sleep(for: .milliseconds(120))
             }
-            continuation.finish()
+            sink.finish()
         }
         pumps[id] = task
 
-        return OpenedStream(id: id, chunks: chunks)
+        return stream
+    }
+
+    /// 打开一条 Agent 驱动的流：返回通道与写入端。
+    /// Agent 消费模型事件流后经此 sink 推送 chunk（DMA），结束时报控制面结果。
+    public func openAgentStream() -> (stream: OpenedStream, sink: AsyncThrowingStream<StreamChunk, Error>.Continuation) {
+        let (stream, sink) = makeStream()
+        return (stream, sink)
     }
 
     public func closeAll() {
         for pump in pumps.values { pump.cancel() }
         pumps.removeAll()
+    }
+
+    private func makeStream() -> (OpenedStream, AsyncThrowingStream<StreamChunk, Error>.Continuation) {
+        let id = StreamID(UUID().uuidString)
+        var continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation!
+        let chunks = AsyncThrowingStream { continuation = $0 }
+        return (OpenedStream(id: id, chunks: chunks), continuation!)
     }
 }

@@ -16,10 +16,10 @@ public protocol CoreEndpoint: Sendable {
     /// 控制面：执行一条命令，返回一个响应。
     func handle(_ command: ClientCommand) async throws -> CoreResponse
 
-    /// 数据面：打开一条 Streaming DMA 通道。
+    /// 数据面：按数据面命令（openTestStream / chat）打开 Streaming DMA 通道。
     /// Chunk 不经过控制面事件，直接从该独立通道流出。
-    func openTestStream() async throws -> OpenedStream
+    func openDataStream(_ command: ClientCommand) async throws -> OpenedStream
 
-    /// 控制面：订阅语义事件（如状态变化）。
+    /// 控制面：订阅语义事件（如状态变化、模型流结果）。
     func events() async -> AsyncStream<CoreEvent>
 }

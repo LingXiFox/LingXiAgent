@@ -15,14 +15,18 @@ public struct InProcessConnection: LingXiConnection {
         guard !command.isDataPlane else {
             return .error(CoreError(
                 code: .unsupportedCommand,
-                message: "openTestStream 属于数据面，请使用 openTestStream()"
+                message: "数据面命令请使用 openTestStream() / sendMessage()"
             ))
         }
         return try await endpoint.handle(command)
     }
 
     public func openTestStream() async throws -> AsyncThrowingStream<StreamChunk, Error> {
-        try await endpoint.openTestStream().chunks
+        try await openDataStream(.openTestStream)
+    }
+
+    public func sendMessage(sessionID: SessionID, content: String) async throws -> AsyncThrowingStream<StreamChunk, Error> {
+        try await openDataStream(.sendMessage(sessionID: sessionID, content: content))
     }
 
     public func events() async -> AsyncStream<CoreEvent> {
@@ -30,4 +34,8 @@ public struct InProcessConnection: LingXiConnection {
     }
 
     public func close() async {}
+
+    private func openDataStream(_ command: ClientCommand) async throws -> AsyncThrowingStream<StreamChunk, Error> {
+        try await endpoint.openDataStream(command).chunks
+    }
 }
