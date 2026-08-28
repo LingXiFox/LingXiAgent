@@ -3,20 +3,29 @@ import LingXiProtocol
 
 /// 内存权限状态：ask 时暂停本轮 Tool，收到一次性答复后即释放。
 public actor PermissionEngine {
-    private let rules: [ToolID: PermissionDecision]
-    private let defaultDecision: PermissionDecision
+    private var rules: [ToolID: PermissionDecision]
+    private var configuration: PermissionConfiguration
+    private var legacyDefaultDecision: PermissionDecision?
     private var pending: [PermissionID: CheckedContinuation<PermissionDecision, Never>] = [:]
 
-    public init(rules: [PermissionRule] = [], defaultDecision: PermissionDecision = .ask) {
+    public init(rules: [PermissionRule] = [], configuration: PermissionConfiguration = .strict) {
         self.rules = Dictionary(uniqueKeysWithValues: rules.map { ($0.toolID, $0.decision) })
-        self.defaultDecision = defaultDecision
+        self.configuration = configuration
+        legacyDefaultDecision = nil
+    }
+
+    public init(rules: [PermissionRule] = [], defaultDecision: PermissionDecision) {
+        self.rules = Dictionary(uniqueKeysWithValues: rules.map { ($0.toolID, $0.decision) })
+        configuration = defaultDecision == .allow ? .agent : .strict
+        legacyDefaultDecision = defaultDecision
     }
 
     public func request(
         _ request: PermissionRequest,
         onAsk: @escaping @Sendable () async -> Void
     ) async -> PermissionDecision {
-        let decision = rules[request.toolID] ?? defaultDecision
+        // Explicit deny always wins; auto only removes an otherwise interactive ask.
+        let decision = rules[request.toolID] ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask)
         guard decision == .ask else { return decision }
 
         return await withCheckedContinuation { continuation in
@@ -33,5 +42,12 @@ public actor PermissionEngine {
             throw CoreError(code: .permissionCancelled, message: "权限请求已失效: \(reply.permissionID.rawValue)")
         }
         continuation.resume(returning: reply.decision)
+    }
+
+    public func currentConfiguration() -> PermissionConfiguration { configuration }
+
+    public func setConfiguration(_ configuration: PermissionConfiguration) {
+        self.configuration = configuration
+        legacyDefaultDecision = nil
     }
 }

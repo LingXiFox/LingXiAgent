@@ -13,6 +13,10 @@ public actor CoreHost: CoreEndpoint {
     private let gateway: ModelGateway
     private let permissionEngine: PermissionEngine
     private let toolRuntime: ToolRuntime
+    private let contextEngine: L1ContextEngine
+    private let performanceStore: PerformanceStore
+    private let contextPager: ContextPager
+    private let projectScanner: ProjectScanner
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
@@ -22,7 +26,8 @@ public actor CoreHost: CoreEndpoint {
         providerAssembly: ModelRuntimeAssembly? = nil,
         sessionStore: (any SessionStore)? = nil,
         workspaceRoot: WorkspaceRoot? = nil,
-        permissionDecision: PermissionDecision? = nil
+        permissionDecision: PermissionDecision? = nil,
+        toolRegistry: ToolRegistry? = nil
     ) throws {
         info = CoreInfo(
             name: "LingXiCore",
@@ -31,12 +36,23 @@ public actor CoreHost: CoreEndpoint {
         )
         self.sessionStore = sessionStore ?? InMemorySessionStore()
         let workspace = try workspaceRoot ?? WorkspaceRoot.fromEnvironment()
-        let configuredDecision = PermissionDecision(
-            rawValue: ProcessInfo.processInfo.environment["LINGXI_TOOL_PERMISSION"] ?? ""
-        ) ?? .ask
-        let permissions = PermissionEngine(defaultDecision: permissionDecision ?? configuredDecision)
+        let environment = ProcessInfo.processInfo.environment
+        let legacyDecision = permissionDecision ?? PermissionDecision(rawValue: environment["LINGXI_TOOL_PERMISSION"] ?? "")
+        let policy = PermissionPolicy(rawValue: environment["LINGXI_PERMISSION_POLICY"] ?? "")
+            ?? (legacyDecision == .allow ? .auto : .ask)
+        let profile = ExecutionProfile(rawValue: environment["LINGXI_EXECUTION_PROFILE"] ?? "") ?? .workspace
+        let permissions = legacyDecision.map { PermissionEngine(defaultDecision: $0) }
+            ?? PermissionEngine(configuration: PermissionConfiguration(policy: policy, profile: profile))
         permissionEngine = permissions
-        toolRuntime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: permissions)
+        toolRuntime = ToolRuntime(registry: toolRegistry ?? .builtin(workspace: workspace), permissions: permissions)
+        let l2Budget = Int(environment["LINGXI_L2_MAX_CHARS"] ?? "") ?? 256 * 1024
+        let l1ProjectBudget = Int(environment["LINGXI_L1_PROJECT_MAX_CHARS"] ?? "") ?? 32 * 1024
+        contextPager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
+        projectScanner = ProjectScanner(root: workspace.url)
+        contextEngine = L1ContextEngine(policy: L1ContextPolicy(
+            systemContext: ProcessInfo.processInfo.environment["LINGXI_SYSTEM_CONTEXT"]
+        ))
+        performanceStore = PerformanceStore()
 
         let (assembly, missing) = ProviderSetup.resolve()
         let effective = providerAssembly ?? assembly
@@ -79,14 +95,50 @@ public actor CoreHost: CoreEndpoint {
             try await permissionEngine.reply(reply)
             return .permissionReplyAccepted(reply.permissionID)
         }
+        await bus.add(.getContext) { [self] command in
+            guard case let .getContext(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getContext 参数缺失")) }
+            let agent = try await requireAgent()
+            guard let snapshot = await agent.contextSnapshot(sessionID) else { return .context(nil) }
+            return .context(ContextDebugSnapshot(
+                sessionID: snapshot.sessionID,
+                revision: snapshot.revision,
+                messageCount: snapshot.metrics.messageCount,
+                partCount: snapshot.metrics.partCount,
+                characterCount: snapshot.metrics.characterCount,
+                sourceCounts: Dictionary(uniqueKeysWithValues: snapshot.metrics.sourceCounts.map { ($0.key.rawValue, $0.value) }),
+                sessionCharacterCount: snapshot.metrics.sessionCharacterCount,
+                projectCharacterCount: snapshot.metrics.projectCharacterCount,
+                projectPageCount: snapshot.metrics.projectPageCount
+            ))
+        }
+        await bus.add(.getPerformance) { [self] command in
+            guard case let .getPerformance(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getPerformance 参数缺失")) }
+            let agent = try await requireAgent()
+            return .performance(await agent.performance(sessionID))
+        }
+        await bus.add(.getPermissionConfiguration) { [self] _ in
+            .permissionConfiguration(await permissionEngine.currentConfiguration())
+        }
+        await bus.add(.setPermissionConfiguration) { [self] command in
+            guard case let .setPermissionConfiguration(configuration) = command else { return .error(CoreError(code: .unsupportedCommand, message: "setPermissionConfiguration 参数缺失")) }
+            await permissionEngine.setConfiguration(configuration)
+            return .permissionConfiguration(configuration)
+        }
+        await bus.add(.getProjectCache) { [self] _ in
+            let agent = try await requireAgent()
+            return .projectCache(await agent.projectCache())
+        }
         // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
 
         let agent = AgentRuntime(
             store: sessionStore,
-            contextBuilder: SessionContextBuilder(),
+            contextEngine: contextEngine,
             modelBus: ModelBus(gateway: gateway),
             dataPlane: dataPlane,
-            toolRuntime: toolRuntime
+            toolRuntime: toolRuntime,
+            performanceStore: performanceStore,
+            contextPager: contextPager,
+            projectScanner: projectScanner
         ) { [weak self] event in
             await self?.broadcast(event)
         }

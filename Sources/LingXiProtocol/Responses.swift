@@ -9,6 +9,10 @@ public enum CoreResponse: Sendable, Equatable {
     case sessionList([SessionInfo])
     case sessionDetail(SessionSnapshot)
     case permissionReplyAccepted(PermissionID)
+    case context(ContextDebugSnapshot?)
+    case performance(TurnPerformanceReport?)
+    case permissionConfiguration(PermissionConfiguration)
+    case projectCache(ProjectCacheDebugSnapshot)
     case error(CoreError)
 }
 

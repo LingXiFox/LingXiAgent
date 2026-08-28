@@ -3,8 +3,8 @@ import LingXiProtocol
 
 public protocol ToolExecutor: Sendable {
     var definition: ToolDefinition { get }
-    func resource(for arguments: String) throws -> String
-    func execute(arguments: String) async throws -> String
+    func resource(for arguments: String, profile: ExecutionProfile) throws -> String
+    func execute(arguments: String, profile: ExecutionProfile) async throws -> String
 }
 
 /// 静态注册表。本阶段无动态插件或运行时注册。
@@ -40,17 +40,55 @@ public struct ToolRuntime: Sendable {
 
     public var definitions: [ToolDefinition] { registry.definitions }
 
+    public struct ExecutionOutcome: Sendable {
+        public let result: ToolResult
+        public let permissionWait: Duration
+        public let execution: Duration
+        public let toolName: String
+        public let resource: String?
+    }
+
+    public struct ReadOnlySignature: Sendable, Equatable, Hashable {
+        public let toolName: String
+        public let canonicalArguments: String
+        public let resource: String
+    }
+
+    public func readOnlySignature(for call: ToolCall) throws -> ReadOnlySignature? {
+        guard let tool = registry.tool(for: call.toolID), tool.definition.capability.readOnly else { return nil }
+        return ReadOnlySignature(
+            toolName: tool.definition.name,
+            canonicalArguments: Self.canonicalArguments(call.arguments),
+            resource: try tool.resource(for: call.arguments, profile: .workspace)
+        )
+    }
+
     public func execute(
         _ call: ToolCall,
         sessionID: SessionID,
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
     ) async -> ToolResult {
+        await executeWithMetrics(call, sessionID: sessionID, onPermissionAsked: onPermissionAsked).result
+    }
+
+    public func executeWithMetrics(
+        _ call: ToolCall,
+        sessionID: SessionID,
+        onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
+    ) async -> ExecutionOutcome {
+        let clock = ContinuousClock()
+        var permissionWait: Duration = .zero
+        var execution: Duration = .zero
         do {
             try Task.checkCancellation()
             guard let tool = registry.tool(for: call.toolID) else {
                 throw CoreError(code: .toolNotFound, message: "未注册 Tool: \(call.toolID.rawValue)")
             }
-            let resource = try tool.resource(for: call.arguments)
+            let configuration = await permissions.currentConfiguration()
+            guard tool.definition.capability.readOnly || configuration.profile != .readOnly else {
+                throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 \(call.toolID.rawValue)")
+            }
+            let resource = try tool.resource(for: call.arguments, profile: configuration.profile)
             let request = PermissionRequest(
                 permissionID: PermissionID(UUID().uuidString),
                 sessionID: sessionID,
@@ -59,35 +97,57 @@ public struct ToolRuntime: Sendable {
                 resource: resource,
                 description: "允许 \(call.toolID.rawValue) 读取 \(resource)"
             )
+            let permissionStart = clock.now
             let decision = await permissions.request(request) {
                 await onPermissionAsked(request)
             }
+            permissionWait = permissionStart.duration(to: clock.now)
             guard decision == .allow else {
                 throw CoreError(code: .permissionDenied, message: "已拒绝 \(call.toolID.rawValue): \(resource)")
             }
             try Task.checkCancellation()
-            return ToolResult(callID: call.callID, success: true, content: try await tool.execute(arguments: call.arguments))
+            let executionStart = clock.now
+            let content = try await tool.execute(arguments: call.arguments, profile: configuration.profile)
+            execution = executionStart.duration(to: clock.now)
+            return ExecutionOutcome(
+                result: ToolResult(callID: call.callID, success: true, content: content),
+                permissionWait: permissionWait,
+                execution: execution,
+                toolName: tool.definition.name,
+                resource: resource
+            )
         } catch let error as CoreError {
-            return ToolResult(
-                callID: call.callID,
-                success: false,
-                content: "",
-                error: ToolError(code: error.code.rawValue, message: error.message)
+            return ExecutionOutcome(
+                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message)),
+                permissionWait: permissionWait,
+                execution: execution,
+                toolName: call.toolName,
+                resource: nil
             )
         } catch is CancellationError {
-            return ToolResult(
-                callID: call.callID,
-                success: false,
-                content: "",
-                error: ToolError(code: CoreError.Code.permissionCancelled.rawValue, message: "Tool 执行已取消")
+            return ExecutionOutcome(
+                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.permissionCancelled.rawValue, message: "Tool 执行已取消")),
+                permissionWait: permissionWait,
+                execution: execution,
+                toolName: call.toolName,
+                resource: nil
             )
         } catch {
-            return ToolResult(
-                callID: call.callID,
-                success: false,
-                content: "",
-                error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error))
+            return ExecutionOutcome(
+                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error))),
+                permissionWait: permissionWait,
+                execution: execution,
+                toolName: call.toolName,
+                resource: nil
             )
         }
+    }
+
+    private static func canonicalArguments(_ arguments: String) -> String {
+        guard let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let normalized = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        else { return arguments }
+        return String(decoding: normalized, as: UTF8.self)
     }
 }

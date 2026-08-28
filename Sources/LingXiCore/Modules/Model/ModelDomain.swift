@@ -50,12 +50,14 @@ public struct ModelRequest: Sendable, Equatable {
     public let system: String?
     public let messages: [ModelMessage]
     public let tools: [ToolDefinition]
+    public let debugStep: Int?
 
-    public init(model: ModelID, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = []) {
+    public init(model: ModelID, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], debugStep: Int? = nil) {
         self.model = model
         self.system = system
         self.messages = messages
         self.tools = tools
+        self.debugStep = debugStep
     }
 }
 

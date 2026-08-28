@@ -79,6 +79,23 @@ struct OpenAIAdapterTests {
         #expect(messages[1]["content"] as? String == "LingXiAgent")
     }
 
+    @Test func multipleToolCallsAndResultsKeepOneToOneIDs() throws {
+        let first = ToolCall(callID: ToolCallID("call-a"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
+        let second = ToolCall(callID: ToolCallID("call-b"), toolID: ToolID("read_file"), arguments: #"{"path":"Package.swift"}"#)
+        let data = try OpenAICompatibleProvider.makeRequestBody(
+            ModelRequest(model: ModelID("m"), messages: [
+                ModelMessage(role: .assistant, parts: [.toolCall(first), .toolCall(second)]),
+                ModelMessage(role: .tool, parts: [.toolResult(ToolResult(callID: first.callID, success: true, content: "a"))]),
+                ModelMessage(role: .tool, parts: [.toolResult(ToolResult(callID: second.callID, success: true, content: "b"))]),
+            ]), model: "m"
+        )
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try #require(json["messages"] as? [[String: Any]])
+        let calls = try #require(messages[0]["tool_calls"] as? [[String: Any]])
+        #expect(calls.map { $0["id"] as? String } == ["call-a", "call-b"])
+        #expect(messages.dropFirst().map { $0["tool_call_id"] as? String } == ["call-a", "call-b"])
+    }
+
     // MARK: - URL 拼接
 
     @Test func chatCompletionsURL() throws {

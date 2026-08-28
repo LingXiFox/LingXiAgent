@@ -8,26 +8,35 @@ import LingXiProtocol
 /// 本类型不解析任何 Provider JSON。
 public actor AgentRuntime {
     private let store: any SessionStore
-    private let contextBuilder: SessionContextBuilder
+    private let contextEngine: L1ContextEngine
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
     private let toolRuntime: ToolRuntime
+    private let performanceStore: PerformanceStore
+    private let contextPager: ContextPager
+    private let projectScanner: ProjectScanner
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private var runtimes: [SessionID: SessionRuntime] = [:]
 
     init(
         store: any SessionStore,
-        contextBuilder: SessionContextBuilder,
+        contextEngine: L1ContextEngine,
         modelBus: ModelBus,
         dataPlane: DataPlane,
         toolRuntime: ToolRuntime,
+        performanceStore: PerformanceStore,
+        contextPager: ContextPager,
+        projectScanner: ProjectScanner,
         eventSink: @escaping @Sendable (CoreEvent) async -> Void
     ) {
         self.store = store
-        self.contextBuilder = contextBuilder
+        self.contextEngine = contextEngine
         self.modelBus = modelBus
         self.dataPlane = dataPlane
         self.toolRuntime = toolRuntime
+        self.performanceStore = performanceStore
+        self.contextPager = contextPager
+        self.projectScanner = projectScanner
         self.eventSink = eventSink
     }
 
@@ -48,6 +57,25 @@ public actor AgentRuntime {
         try await store.session(id).toSnapshot()
     }
 
+    public func contextSnapshot(_ id: SessionID) async -> L1ContextSnapshot? {
+        await contextEngine.latestSnapshot(for: id)
+    }
+
+    public func performance(_ id: SessionID) async -> TurnPerformanceReport? {
+        await performanceStore.report(for: id)
+    }
+
+    public func projectCache() async -> ProjectCacheDebugSnapshot {
+        let metrics = await contextPager.debugMetrics(projectRoot: projectScanner.root)
+        return ProjectCacheDebugSnapshot(
+            l2Pages: metrics.l2Pages,
+            l2Characters: metrics.l2Characters,
+            l2HitRate: metrics.l2Lookups == 0 ? nil : Double(metrics.l2Hits) / Double(metrics.l2Lookups),
+            l3Pages: metrics.l3Pages,
+            staleRebuilds: metrics.staleRebuilds
+        )
+    }
+
     // MARK: - 对话
 
     /// 在 Session 中发起一轮对话，返回该轮的 DMA 通道。
@@ -66,8 +94,11 @@ public actor AgentRuntime {
             sessionID: sessionID,
             modelBus: modelBus,
             dataPlane: dataPlane,
-            contextBuilder: contextBuilder,
+            contextEngine: contextEngine,
             toolRuntime: toolRuntime,
+            performanceStore: performanceStore,
+            contextPager: contextPager,
+            projectScanner: projectScanner,
             eventSink: eventSink
         )
     }

@@ -14,6 +14,31 @@ public enum PermissionDecision: String, Sendable, Equatable, Codable {
     case deny
 }
 
+public enum PermissionPolicy: String, Sendable, Equatable, Codable {
+    case ask
+    case auto
+}
+
+public enum ExecutionProfile: String, Sendable, Equatable, Codable {
+    case readOnly
+    case workspace
+    case fullAccess
+}
+
+public struct PermissionConfiguration: Sendable, Equatable, Codable {
+    public let policy: PermissionPolicy
+    public let profile: ExecutionProfile
+
+    public init(policy: PermissionPolicy, profile: ExecutionProfile) {
+        self.policy = policy
+        self.profile = profile
+    }
+
+    public static let strict = PermissionConfiguration(policy: .ask, profile: .workspace)
+    public static let agent = PermissionConfiguration(policy: .auto, profile: .workspace)
+    public static let yolo = PermissionConfiguration(policy: .auto, profile: .fullAccess)
+}
+
 public struct PermissionRule: Sendable, Equatable, Codable {
     public let toolID: ToolID
     public let decision: PermissionDecision

@@ -36,7 +36,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         // 数据面 pump：连接已建立，事件从独立任务流出。
         var continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation!
         let events = AsyncThrowingStream { continuation = $0 }
-        let pump = Pump(source: bytes, continuation: continuation!)
+        let pump = Pump(source: bytes, continuation: continuation!, debugStep: request.debugStep)
         Task { await pump.run() }
         return events
     }
@@ -187,16 +187,18 @@ public struct OpenAICompatibleProvider: ModelProvider {
     private final class Pump: Sendable {
         private let source: URLSession.AsyncBytes
         private let continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation
+        private let debugStep: Int?
 
-        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation) {
+        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, debugStep: Int?) {
             self.source = source
             self.continuation = continuation
+            self.debugStep = debugStep
         }
 
         func run() async {
             var decoder = SSEDecoder()
             var completed: ModelFinishReason?
-            var toolCalls = ToolCallBuffer()
+            var toolCalls = ToolCallBuffer(debugStep: debugStep)
             var sawDone = false
             continuation.yield(.started)
 
@@ -450,6 +452,11 @@ private extension OpenAICompatibleProvider {
         }
 
         private var calls: [Int: Partial] = [:]
+        private let debugStep: Int?
+
+        init(debugStep: Int?) {
+            self.debugStep = debugStep
+        }
 
         mutating func consume(_ deltas: [SSEToolCall]) throws -> [ModelEvent] {
             var events: [ModelEvent] = []
@@ -484,6 +491,10 @@ private extension OpenAICompatibleProvider {
                       (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
                 else {
                     throw CoreError(code: .modelStream, message: "Tool Call 参数不是 JSON object: \(name)")
+                }
+                if ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1" {
+                    let hash = call.arguments.utf8.reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+                    FileHandle.standardError.write(Data("[tool-debug] step=\(debugStep ?? 0) index=\(index) id=\(id) name=\(name) argsHash=\(String(hash, radix: 16))\n".utf8))
                 }
                 return .toolCallCompleted(ToolCall(callID: ToolCallID(id), toolID: ToolID(name), arguments: call.arguments))
             }

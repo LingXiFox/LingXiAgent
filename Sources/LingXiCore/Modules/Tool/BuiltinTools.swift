@@ -17,12 +17,16 @@ public struct WorkspaceRoot: Sendable {
         try WorkspaceRoot(path: environment["LINGXI_WORKSPACE_ROOT"] ?? FileManager.default.currentDirectoryPath)
     }
 
-    public func resolve(_ path: String) throws -> URL {
+    public func resolve(_ path: String, profile: ExecutionProfile = .workspace) throws -> URL {
         let input = URL(fileURLWithPath: path, relativeTo: path.hasPrefix("/") ? nil : url)
         let candidate = input.standardizedFileURL.resolvingSymlinksInPath()
         let root = url.path.hasSuffix("/") ? url.path : url.path + "/"
-        guard candidate.path == url.path || candidate.path.hasPrefix(root) else {
+        guard profile == .fullAccess || candidate.path == url.path || candidate.path.hasPrefix(root) else {
             throw CoreError(code: .workspaceViolation, message: "路径超出 Workspace Root: \(candidate.path)")
+        }
+        let name = candidate.lastPathComponent.lowercased()
+        guard !(name == ".env" || name.hasPrefix(".env.") || name.hasSuffix(".pem") || name.hasSuffix(".key")) else {
+            throw CoreError(code: .workspaceViolation, message: "不允许访问敏感文件: \(candidate.path)")
         }
         return candidate
     }
@@ -61,12 +65,12 @@ public struct ReadFileTool: ToolExecutor {
         capability: ToolCapability(readOnly: true)
     )
 
-    public func resource(for arguments: String) throws -> String {
-        try workspace.resolve(pathArguments(arguments).path).path
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        try workspace.resolve(pathArguments(arguments).path, profile: profile).path
     }
 
-    public func execute(arguments: String) async throws -> String {
-        let file = try workspace.resolve(pathArguments(arguments).path)
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let file = try workspace.resolve(pathArguments(arguments).path, profile: profile)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory) else {
             throw CoreError(code: .toolExecutionFailed, message: "文件不存在: \(file.path)")
@@ -103,12 +107,12 @@ public struct ListDirectoryTool: ToolExecutor {
         capability: ToolCapability(readOnly: true)
     )
 
-    public func resource(for arguments: String) throws -> String {
-        try workspace.resolve(pathArguments(arguments).path).path
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        try workspace.resolve(pathArguments(arguments).path, profile: profile).path
     }
 
-    public func execute(arguments: String) async throws -> String {
-        let directory = try workspace.resolve(pathArguments(arguments).path)
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let directory = try workspace.resolve(pathArguments(arguments).path, profile: profile)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
             throw CoreError(code: .toolExecutionFailed, message: "目录不存在: \(directory.path)")

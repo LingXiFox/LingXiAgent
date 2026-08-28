@@ -66,7 +66,7 @@ extension WireMessage: Codable {
 
 extension ClientCommand: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type, sessionID, content, permissionReply
+        case type, sessionID, content, permissionReply, permissionConfiguration
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,7 +80,15 @@ extension ClientCommand: Codable {
         case .listSessions: self = .listSessions
         case .getSession:
             self = .getSession(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
+        case .getContext:
+            self = .getContext(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
+        case .getPerformance:
+            self = .getPerformance(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
         case .getProviderStatus: self = .getProviderStatus
+        case .getPermissionConfiguration: self = .getPermissionConfiguration
+        case .setPermissionConfiguration:
+            self = .setPermissionConfiguration(try container.decode(PermissionConfiguration.self, forKey: .permissionConfiguration))
+        case .getProjectCache: self = .getProjectCache
         case .replyPermission:
             self = .replyPermission(try container.decode(PermissionReply.self, forKey: .permissionReply))
         case .sendMessage:
@@ -97,11 +105,15 @@ extension ClientCommand: Codable {
         switch self {
         case let .getSession(sessionID):
             try container.encode(sessionID, forKey: .sessionID)
+        case let .getContext(sessionID), let .getPerformance(sessionID):
+            try container.encode(sessionID, forKey: .sessionID)
         case let .sendMessage(sessionID, content):
             try container.encode(sessionID, forKey: .sessionID)
             try container.encode(content, forKey: .content)
         case let .replyPermission(reply):
             try container.encode(reply, forKey: .permissionReply)
+        case let .setPermissionConfiguration(configuration):
+            try container.encode(configuration, forKey: .permissionConfiguration)
         default:
             break
         }
@@ -111,11 +123,11 @@ extension ClientCommand: Codable {
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
         case pong, info, state, streamOpened, providerStatus
-        case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, error
+        case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, context, performance, permissionConfiguration, projectCache, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, providerStatus, session, sessions, permissionID, error
+        case type, info, state, streamID, providerStatus, session, sessions, permissionID, context, performance, permissionConfiguration, projectCache, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -139,6 +151,14 @@ extension CoreResponse: Codable {
             self = .sessionDetail(try container.decode(SessionSnapshot.self, forKey: .session))
         case .permissionReplyAccepted:
             self = .permissionReplyAccepted(try container.decode(PermissionID.self, forKey: .permissionID))
+        case .context:
+            self = .context(try container.decodeIfPresent(ContextDebugSnapshot.self, forKey: .context))
+        case .performance:
+            self = .performance(try container.decodeIfPresent(TurnPerformanceReport.self, forKey: .performance))
+        case .permissionConfiguration:
+            self = .permissionConfiguration(try container.decode(PermissionConfiguration.self, forKey: .permissionConfiguration))
+        case .projectCache:
+            self = .projectCache(try container.decode(ProjectCacheDebugSnapshot.self, forKey: .projectCache))
         case .error:
             self = .error(try container.decode(CoreError.self, forKey: .error))
         }
@@ -166,6 +186,14 @@ extension CoreResponse: Codable {
             try container.encode(snapshot, forKey: .session)
         case let .permissionReplyAccepted(permissionID):
             try container.encode(permissionID, forKey: .permissionID)
+        case let .context(snapshot):
+            try container.encodeIfPresent(snapshot, forKey: .context)
+        case let .performance(report):
+            try container.encodeIfPresent(report, forKey: .performance)
+        case let .permissionConfiguration(configuration):
+            try container.encode(configuration, forKey: .permissionConfiguration)
+        case let .projectCache(snapshot):
+            try container.encode(snapshot, forKey: .projectCache)
         case let .error(error):
             try container.encode(error, forKey: .error)
         }
@@ -182,6 +210,10 @@ extension CoreResponse: Codable {
         case .sessionList: .sessionList
         case .sessionDetail: .sessionDetail
         case .permissionReplyAccepted: .permissionReplyAccepted
+        case .context: .context
+        case .performance: .performance
+        case .permissionConfiguration: .permissionConfiguration
+        case .projectCache: .projectCache
         case .error: .error
         }
     }

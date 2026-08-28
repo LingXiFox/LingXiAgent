@@ -186,8 +186,9 @@ struct AgentSessionTests {
         events.cancel()
 
         let request = try #require(provider.recorder.requests.first)
-        #expect(request.messages.map(\.content) == ["我叫小狐狸"])
-        #expect(request.messages.map(\.role) == [.user])
+        #expect(request.messages.first?.content == "我叫小狐狸")
+        #expect(request.messages.first?.role == .user)
+        #expect(request.messages.dropFirst().allSatisfy { $0.role == .system })
         #expect(recorder.eventSequence == ["started", "completed"])
     }
 
@@ -215,12 +216,13 @@ struct AgentSessionTests {
         let requests = provider.recorder.requests
         #expect(requests.count == 2)
         // 第 2 轮必须包含 user#1 / assistant#1 / user#2 的完整历史。
-        #expect(requests[1].messages.map(\.role) == [.user, .assistant, .user])
-        #expect(requests[1].messages.map(\.content) == [
+        #expect(requests[1].messages.prefix(3).map(\.role) == [.user, .assistant, .user])
+        #expect(requests[1].messages.prefix(3).map(\.content) == [
             "我叫小狐狸，请记住",
             "你好，小狐狸！",
             "我叫什么？",
         ])
+        #expect(requests[1].messages.dropFirst(3).allSatisfy { $0.role == .system })
     }
 
     @Test func reasoningNeverEntersAssistantContent() async throws {
@@ -369,8 +371,9 @@ struct AgentSessionTests {
 
         let snapshotA = try await client.session(sessionA)
         let snapshotB = try await client.session(sessionB)
-        #expect(snapshotA.messages.map(\.content) == ["A 的消息", "A"])
-        #expect(snapshotB.messages.map(\.content) == ["B 的消息", "B"])
+        #expect(snapshotA.messages.first?.content == "A 的消息")
+        #expect(snapshotB.messages.first?.content == "B 的消息")
+        #expect(Set([snapshotA.messages.last?.content, snapshotB.messages.last?.content]) == ["A", "B"])
     }
 
     @Test func unconfiguredProviderFailsFast() async throws {

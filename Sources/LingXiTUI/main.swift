@@ -91,6 +91,72 @@ func showHistory(_ client: LingXiClient, sessionID: SessionID) async {
     }
 }
 
+func showContext(_ client: LingXiClient, sessionID: SessionID) async {
+    do {
+        guard let snapshot = try await client.context(sessionID) else {
+            print("\(dim)[尚无 L1 Context snapshot]\(reset)")
+            return
+        }
+        print("L1 Context")
+        print("Revision: \(snapshot.revision)")
+        print("Messages: \(snapshot.messageCount)")
+        print("Parts: \(snapshot.partCount)")
+        print("Characters: \(snapshot.characterCount)")
+        print("Session characters: \(snapshot.sessionCharacterCount)")
+        print("Project pages: \(snapshot.projectPageCount)")
+        print("Project characters: \(snapshot.projectCharacterCount)")
+        for key in snapshot.sourceCounts.keys.sorted() { print("\(key): \(snapshot.sourceCounts[key] ?? 0)") }
+        try await showCache(client)
+    } catch { print("\(dim)[context 失败: \(error)]\(reset)") }
+}
+
+func showCache(_ client: LingXiClient) async throws {
+    let cache = try await client.projectCache()
+    print("L2: \(cache.l2Pages) pages / \(cache.l2Characters) chars / hit rate \(cache.l2HitRate.map { String(format: "%.1f", $0 * 100) + "%" } ?? "-")")
+    print("L3: \(cache.l3Pages) pages / stale rebuilds \(cache.staleRebuilds)")
+}
+
+func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
+    do {
+        guard let report = try await client.performance(sessionID) else {
+            print("\(dim)[性能调试未开启或尚无报告；设置 LINGXI_PERF_DEBUG=1]\(reset)")
+            return
+        }
+        print("LingXi Performance Report")
+        print("Turn total: \(String(format: "%.2f", report.totalMilliseconds)) ms")
+        print("Core overhead: \(String(format: "%.2f", report.coreOverheadMilliseconds)) ms")
+        print("Steps: \(report.stepCount)")
+        if let firstText = report.firstTextMilliseconds { print("TTFT: \(String(format: "%.2f", firstText)) ms") }
+        if let firstReasoning = report.firstReasoningMilliseconds { print("First reasoning: \(String(format: "%.2f", firstReasoning)) ms") }
+        print("DMA text: \(report.textChunks) chunks / \(report.textCharacters) chars")
+        print("DMA reasoning: \(report.reasoningChunks) chunks / \(report.reasoningCharacters) chars")
+        if let rate = report.textCharactersPerSecond { print("Text throughput: \(String(format: "%.1f", rate)) chars/s") }
+        if let rate = report.outputTokensPerSecond { print("Output throughput: \(String(format: "%.1f", rate)) tok/s") }
+        if let paging = report.contextPaging {
+            print("Context Paging")
+            print("Context Query: \(paging.queryCharacters) chars / \(paging.queryTerms) terms")
+            let turn = paging.turn
+            let turnRate = turn.lookups == 0 ? "-" : String(format: "%.1f%%", Double(turn.hits) / Double(turn.lookups) * 100)
+            print("L2 Turn: lookup \(turn.lookups) / hit \(turn.hits) / miss \(turn.misses) / hit rate \(turnRate)")
+            print("L2 Turn: promotions \(turn.promotions) / evictions \(turn.evictions) / faults \(turn.pageFaults)")
+            if let rate = paging.l2HitRate { print("L2 Project: lookup \(paging.l2Lookups) / hit \(paging.l2Hits) / miss \(paging.l2Misses) / hit rate \(String(format: "%.1f", rate * 100))%") }
+            print("L2 Project: working set \(paging.l2Pages) pages / \(paging.l2Characters) chars / promotions \(paging.promotions) / evictions \(paging.evictions)")
+            print("L3: \(paging.l3Pages) pages / initial files \(paging.initialIndexedFiles) / stale rebuilds \(paging.staleRebuilds)")
+            print("Scanner Turn: checked \(turn.scannerChecked) / rebuilt \(turn.scannerRebuilt) / \(turn.scannerMilliseconds) ms")
+            print("Scanner Project: checked \(paging.filesChecked) / rebuilt \(paging.filesRebuilt) / \(paging.scanMilliseconds) ms")
+            print("Pager Turn: candidates \(turn.candidatePages) / \(turn.candidateCharacters) chars; selected \(turn.selectedPages) / \(turn.selectedCharacters) chars; injected \(turn.injectedPages) / \(turn.injectedCharacters) chars")
+            print("Retrieval: \(String(format: "%.2f", paging.retrievalMilliseconds)) ms / materialize: \(String(format: "%.2f", paging.materializationMilliseconds)) ms")
+        }
+        print("Permissions: auto \(report.permissions.autoApproved) / asked \(report.permissions.asked) / denied \(report.permissions.denied) / wait \(String(format: "%.2f", report.permissions.waitMilliseconds)) ms")
+        for step in report.steps {
+            print("Step \(step.step): dispatch \(String(format: "%.2f", step.modelDispatchMilliseconds)) ms / active \(String(format: "%.2f", step.streamMilliseconds)) ms / first event \(step.firstEventMilliseconds.map { String(format: "%.2f", $0) } ?? "-") ms / text \(step.firstTextMilliseconds.map { String(format: "%.2f", $0) } ?? "-") ms / reasoning \(step.firstReasoningMilliseconds.map { String(format: "%.2f", $0) } ?? "-") ms / tools \(step.toolCallCount)")
+        }
+        for tool in report.tools {
+            print("Step \(tool.step) \(tool.toolName): permission \(String(format: "%.2f", tool.permissionWaitMilliseconds)) ms / execution \(String(format: "%.2f", tool.executionMilliseconds)) ms")
+        }
+    } catch { print("\(dim)[perf 失败: \(error)]\(reset)") }
+}
+
 // MARK: - 主流程
 
 func runTUI() async {
@@ -151,7 +217,7 @@ func runTUI() async {
         return
     }
     print("Session: \(sessionID.rawValue)")
-    print("\(dim)输入 prompt 开始对话；new=新建 Session；history=查看消息；quit=退出。\(reset)")
+    print("\(dim)输入 prompt 开始对话；new/history/context/perf/permission/mode/cache/quit。\(reset)")
 
     while let raw = readLine() {
         let line = raw.trimmingCharacters(in: .whitespaces)
@@ -170,6 +236,39 @@ func runTUI() async {
             }
         case "history":
             await showHistory(client, sessionID: sessionID)
+        case "context":
+            await showContext(client, sessionID: sessionID)
+        case "perf":
+            await showPerformance(client, sessionID: sessionID)
+        case "cache":
+            do { try await showCache(client) }
+            catch { print("\(dim)[cache 失败: \(error)]\(reset)") }
+        case "permission":
+            do {
+                let configuration = try await client.permissionConfiguration()
+                print("Policy: \(configuration.policy.rawValue)")
+                print("Profile: \(configuration.profile.rawValue)")
+            } catch { print("\(dim)[permission 失败: \(error)]\(reset)") }
+        case let command where command.hasPrefix("permission "):
+            let values = command.split(separator: " ")
+            guard values.count == 3,
+                  let policy = PermissionPolicy(rawValue: String(values[1])),
+                  let profile = ExecutionProfile(rawValue: String(values[2]))
+            else { print("用法: permission ask|auto readOnly|workspace|fullAccess"); continue }
+            do { try await client.setPermissionConfiguration(PermissionConfiguration(policy: policy, profile: profile)) }
+            catch { print("\(dim)[permission 失败: \(error)]\(reset)") }
+        case let command where command.hasPrefix("mode "):
+            let preset = command.dropFirst("mode ".count)
+            let configuration: PermissionConfiguration?
+            switch preset {
+            case "strict": configuration = .strict
+            case "agent": configuration = .agent
+            case "yolo": configuration = .yolo
+            default: configuration = nil
+            }
+            guard let configuration else { print("用法: mode strict|agent|yolo"); continue }
+            do { try await client.setPermissionConfiguration(configuration) }
+            catch { print("\(dim)[mode 失败: \(error)]\(reset)") }
         default:
             await runTurn(client, sessionID: sessionID, content: line)
         }

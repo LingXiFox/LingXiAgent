@@ -21,6 +21,31 @@ private actor AgentEventCapture {
     }
 }
 
+private actor ToolCompletionRecorder {
+    private var values: [String] = []
+    func append(_ value: String) { values.append(value) }
+    func snapshot() -> [String] { values }
+}
+
+private struct DelayedReadTool: ToolExecutor {
+    let recorder: ToolCompletionRecorder
+    let definition = ToolDefinition(
+        id: ToolID("delayed_read"), description: "Test-only delayed read.",
+        inputSchema: ToolInputSchema(properties: ["path": ToolInputProperty(type: .string, description: "path")], required: ["path"]),
+        capability: ToolCapability(readOnly: true)
+    )
+
+    func resource(for arguments: String, profile: ExecutionProfile) throws -> String { arguments }
+
+    func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let path = arguments.contains("slow") ? "slow" : arguments.contains("fast") ? "fast" : "failure"
+        if path == "slow" { try await Task.sleep(for: .milliseconds(80)) }
+        if path == "failure" { throw CoreError(code: .toolExecutionFailed, message: "expected") }
+        await recorder.append(path)
+        return path
+    }
+}
+
 struct AgentToolLoopTests {
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -35,12 +60,14 @@ struct AgentToolLoopTests {
     private func makeClient(
         root: URL,
         provider: any ModelProvider,
-        permission: PermissionDecision
+        permission: PermissionDecision,
+        registry: ToolRegistry? = nil
     ) async throws -> LingXiClient {
         let host = try CoreHost(
             providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
             workspaceRoot: try WorkspaceRoot(path: root.path),
-            permissionDecision: permission
+            permissionDecision: permission,
+            toolRegistry: registry
         )
         await host.start()
         return LingXiClient.inProcess(endpoint: host)
@@ -134,5 +161,61 @@ struct AgentToolLoopTests {
         }
         #expect(failure.error.code == .agentStepLimitReached)
         #expect(provider.recorder.requests.count == 8)
+    }
+
+    @Test func consecutiveIdenticalReadIsRecordedOnceAndSecondCallIsBlocked() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "LingXiAgent".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        let first = call()
+        let second = ToolCall(callID: ToolCallID("call-readme-2"), toolID: first.toolID, arguments: first.arguments)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallStarted(callID: first.callID, toolID: first.toolID), .toolCallCompleted(first), .toolCallStarted(callID: second.callID, toolID: second.toolID), .toolCallCompleted(second), .completed(.toolCalls)],
+            [.textDelta("完成。"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "读取 README")
+        for try await _ in stream {}
+
+        let snapshot = try await client.session(sessionID)
+        #expect(provider.recorder.requests.count == 2)
+        #expect(snapshot.messages[1].parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }.count == 2)
+        let results = snapshot.messages.dropFirst(2).prefix(2).compactMap { message -> ToolResult? in
+            guard case let .toolResult(result) = message.parts.first else { return nil }
+            return result
+        }
+        #expect(results.count == 2)
+        #expect(results[0].success)
+        #expect(results[1].error?.code == "duplicateToolCall")
+        #expect(provider.recorder.requests[1].messages.filter { $0.role == .tool }.count == 2)
+    }
+
+    @Test func multiToolBatchExecutesInParallelAndSettlesInProviderOrder() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = ToolCompletionRecorder()
+        let slow = ToolCall(callID: ToolCallID("slow"), toolID: ToolID("delayed_read"), arguments: #"{"path":"slow"}"#)
+        let fast = ToolCall(callID: ToolCallID("fast"), toolID: ToolID("delayed_read"), arguments: #"{"path":"fast"}"#)
+        let failed = ToolCall(callID: ToolCallID("failed"), toolID: ToolID("delayed_read"), arguments: #"{"path":"failure"}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(slow), .toolCallCompleted(fast), .toolCallCompleted(failed), .completed(.toolCalls)],
+            [.textDelta("settled"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow, registry: ToolRegistry([DelayedReadTool(recorder: recorder)]))
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "read three")
+        for try await _ in stream {}
+
+        let snapshot = try await client.session(sessionID)
+        let results = snapshot.messages.compactMap { message -> ToolResult? in
+            guard case let .toolResult(result) = message.parts.first else { return nil }
+            return result
+        }
+        #expect(provider.recorder.requests.count == 2)
+        #expect(results.map(\.callID) == [slow.callID, fast.callID, failed.callID])
+        #expect(results[0].success && results[1].success && !results[2].success)
+        #expect(await recorder.snapshot().first == "fast")
+        #expect(snapshot.messages.last?.content == "settled")
     }
 }

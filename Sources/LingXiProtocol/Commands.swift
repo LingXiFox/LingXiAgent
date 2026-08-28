@@ -9,6 +9,11 @@ public enum ClientCommand: Sendable, Equatable {
     case getSession(sessionID: SessionID)
     case getProviderStatus
     case replyPermission(PermissionReply)
+    case getContext(sessionID: SessionID)
+    case getPerformance(sessionID: SessionID)
+    case getPermissionConfiguration
+    case setPermissionConfiguration(PermissionConfiguration)
+    case getProjectCache
     /// 数据面命令：在 Session 中发起一轮对话。
     case sendMessage(sessionID: SessionID, content: String)
 }
@@ -25,6 +30,11 @@ extension ClientCommand {
         case getSession
         case getProviderStatus
         case replyPermission
+        case getContext
+        case getPerformance
+        case getPermissionConfiguration
+        case setPermissionConfiguration
+        case getProjectCache
         case sendMessage
     }
 
@@ -39,6 +49,11 @@ extension ClientCommand {
         case .getSession: .getSession
         case .getProviderStatus: .getProviderStatus
         case .replyPermission: .replyPermission
+        case .getContext: .getContext
+        case .getPerformance: .getPerformance
+        case .getPermissionConfiguration: .getPermissionConfiguration
+        case .setPermissionConfiguration: .setPermissionConfiguration
+        case .getProjectCache: .getProjectCache
         case .sendMessage: .sendMessage
         }
     }

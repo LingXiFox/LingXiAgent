@@ -96,6 +96,40 @@ public struct LingXiClient: Sendable {
         }
     }
 
+    public func context(_ sessionID: SessionID) async throws -> ContextDebugSnapshot? {
+        guard case let .context(snapshot) = try await connection.send(.getContext(sessionID: sessionID)) else {
+            throw CoreError(code: .transport, message: "getContext 收到非预期响应")
+        }
+        return snapshot
+    }
+
+    public func performance(_ sessionID: SessionID) async throws -> TurnPerformanceReport? {
+        guard case let .performance(report) = try await connection.send(.getPerformance(sessionID: sessionID)) else {
+            throw CoreError(code: .transport, message: "getPerformance 收到非预期响应")
+        }
+        return report
+    }
+
+    public func permissionConfiguration() async throws -> PermissionConfiguration {
+        guard case let .permissionConfiguration(configuration) = try await connection.send(.getPermissionConfiguration) else {
+            throw CoreError(code: .transport, message: "getPermissionConfiguration 收到非预期响应")
+        }
+        return configuration
+    }
+
+    public func setPermissionConfiguration(_ configuration: PermissionConfiguration) async throws {
+        guard case .permissionConfiguration = try await connection.send(.setPermissionConfiguration(configuration)) else {
+            throw CoreError(code: .transport, message: "setPermissionConfiguration 收到非预期响应")
+        }
+    }
+
+    public func projectCache() async throws -> ProjectCacheDebugSnapshot {
+        guard case let .projectCache(snapshot) = try await connection.send(.getProjectCache) else {
+            throw CoreError(code: .transport, message: "getProjectCache 收到非预期响应")
+        }
+        return snapshot
+    }
+
     /// 在 Session 中发起一轮对话，返回 Streaming DMA 通道。
     /// text/reasoning delta 从通道逐块流出（kind 区分）；
     /// turnCompleted / turnFailed 经 events() 交付。

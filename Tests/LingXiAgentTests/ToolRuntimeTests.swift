@@ -131,4 +131,33 @@ struct ToolRuntimeTests {
         #expect(result.success == false)
         #expect(result.error?.code == CoreError.Code.permissionDenied.rawValue)
     }
+
+    @Test func autoAllowsUnlessExplicitlyDenied() async {
+        let engine = PermissionEngine(
+            rules: [PermissionRule(toolID: ToolID("blocked"), decision: .deny)],
+            configuration: .agent
+        )
+        let allowed = PermissionRequest(permissionID: PermissionID("allow"), sessionID: SessionID("s"), toolCallID: ToolCallID("c"), toolID: ToolID("read_file"), resource: "/workspace/a", description: "read")
+        let denied = PermissionRequest(permissionID: PermissionID("deny"), sessionID: SessionID("s"), toolCallID: ToolCallID("c"), toolID: ToolID("blocked"), resource: "/workspace/b", description: "read")
+        #expect(await engine.request(allowed) {} == .allow)
+        #expect(await engine.request(denied) {} == .deny)
+        #expect(await engine.currentConfiguration() == .agent)
+    }
+
+    @Test func fullAccessKeepsCanonicalizationAndSensitiveFileGuard() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.deletingLastPathComponent().appendingPathComponent("lingxi-external-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: external) }
+        try "external".write(to: external, atomically: true, encoding: .utf8)
+        let runtime = ToolRuntime(
+            registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
+            permissions: PermissionEngine(configuration: .yolo)
+        )
+        let allowed = await runtime.execute(call("read_file", external.path), sessionID: SessionID("s")) { _ in }
+        #expect(allowed.content == "external")
+        try "secret".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        let sensitive = await runtime.execute(call("read_file", ".env"), sessionID: SessionID("s")) { _ in }
+        #expect(sensitive.error?.code == CoreError.Code.workspaceViolation.rawValue)
+    }
 }

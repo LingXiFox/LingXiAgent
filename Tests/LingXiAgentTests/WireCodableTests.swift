@@ -16,6 +16,8 @@ struct WireCodableTests {
             .sendMessage(sessionID: SessionID("s-1"), content: "你好，世界"),
             .getProviderStatus,
             .replyPermission(PermissionReply(permissionID: PermissionID("p-1"), decision: .allow)),
+            .getPermissionConfiguration,
+            .setPermissionConfiguration(.agent),
         ]
         for command in commands {
             let decoded = try roundtrip(.request(id: "7", command: command))
@@ -44,6 +46,7 @@ struct WireCodableTests {
             .sessionList([sessionInfo]),
             .sessionDetail(snapshot),
             .permissionReplyAccepted(PermissionID("p-1")),
+            .permissionConfiguration(.agent),
             .error(CoreError(code: .turnAlreadyRunning, message: "已有进行中的轮次")),
         ]
         for response in cases {
