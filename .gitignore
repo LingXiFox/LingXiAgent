@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+.swiftpm/
+Package.resolved
+DerivedData/
+*.xcuserstate
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
