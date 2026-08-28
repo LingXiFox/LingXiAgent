@@ -37,6 +37,48 @@ struct OpenAIAdapterTests {
         #expect(messages.count == 1)
     }
 
+    @Test func toolDefinitionsBecomeOpenAISchema() throws {
+        let tool = ToolDefinition(
+            id: ToolID("read_file"),
+            description: "Read a file",
+            inputSchema: ToolInputSchema(
+                properties: ["path": ToolInputProperty(type: .string, description: "Path")],
+                required: ["path"]
+            ),
+            capability: ToolCapability(readOnly: true)
+        )
+        let data = try OpenAICompatibleProvider.makeRequestBody(
+            ModelRequest(model: ModelID("m"), messages: [ModelMessage(role: .user, content: "hi")], tools: [tool]),
+            model: "m"
+        )
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let tools = try #require(json["tools"] as? [[String: Any]])
+        let function = try #require(tools.first?["function"] as? [String: Any])
+        #expect(function["name"] as? String == "read_file")
+        let parameters = try #require(function["parameters"] as? [String: Any])
+        #expect(parameters["type"] as? String == "object")
+        #expect(parameters["required"] as? [String] == ["path"])
+    }
+
+    @Test func structuredToolHistoryBecomesProviderMessages() throws {
+        let call = ToolCall(callID: ToolCallID("call-1"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
+        let result = ToolResult(callID: call.callID, success: true, content: "LingXiAgent")
+        let data = try OpenAICompatibleProvider.makeRequestBody(
+            ModelRequest(model: ModelID("m"), messages: [
+                ModelMessage(role: .assistant, parts: [.toolCall(call)]),
+                ModelMessage(role: .tool, parts: [.toolResult(result)]),
+            ]),
+            model: "m"
+        )
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try #require(json["messages"] as? [[String: Any]])
+        let calls = try #require(messages[0]["tool_calls"] as? [[String: Any]])
+        #expect(calls[0]["id"] as? String == "call-1")
+        #expect(messages[1]["role"] as? String == "tool")
+        #expect(messages[1]["tool_call_id"] as? String == "call-1")
+        #expect(messages[1]["content"] as? String == "LingXiAgent")
+    }
+
     // MARK: - URL 拼接
 
     @Test func chatCompletionsURL() throws {

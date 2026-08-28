@@ -11,18 +11,32 @@ public actor CoreHost: CoreEndpoint {
     private let dataPlane = DataPlane()
     private let sessionStore: any SessionStore
     private let gateway: ModelGateway
+    private let permissionEngine: PermissionEngine
+    private let toolRuntime: ToolRuntime
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
 
     /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
-    public init(providerAssembly: ModelRuntimeAssembly? = nil, sessionStore: (any SessionStore)? = nil) {
+    public init(
+        providerAssembly: ModelRuntimeAssembly? = nil,
+        sessionStore: (any SessionStore)? = nil,
+        workspaceRoot: WorkspaceRoot? = nil,
+        permissionDecision: PermissionDecision? = nil
+    ) throws {
         info = CoreInfo(
             name: "LingXiCore",
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
         self.sessionStore = sessionStore ?? InMemorySessionStore()
+        let workspace = try workspaceRoot ?? WorkspaceRoot.fromEnvironment()
+        let configuredDecision = PermissionDecision(
+            rawValue: ProcessInfo.processInfo.environment["LINGXI_TOOL_PERMISSION"] ?? ""
+        ) ?? .ask
+        let permissions = PermissionEngine(defaultDecision: permissionDecision ?? configuredDecision)
+        permissionEngine = permissions
+        toolRuntime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: permissions)
 
         let (assembly, missing) = ProviderSetup.resolve()
         let effective = providerAssembly ?? assembly
@@ -58,13 +72,21 @@ public actor CoreHost: CoreEndpoint {
             }
             return .sessionDetail(try await agent.sessionSnapshot(sessionID))
         }
+        await bus.add(.replyPermission) { [self] command in
+            guard case let .replyPermission(reply) = command else {
+                return .error(CoreError(code: .unsupportedCommand, message: "replyPermission 参数缺失"))
+            }
+            try await permissionEngine.reply(reply)
+            return .permissionReplyAccepted(reply.permissionID)
+        }
         // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
 
         let agent = AgentRuntime(
             store: sessionStore,
             contextBuilder: SessionContextBuilder(),
             modelBus: ModelBus(gateway: gateway),
-            dataPlane: dataPlane
+            dataPlane: dataPlane,
+            toolRuntime: toolRuntime
         ) { [weak self] event in
             await self?.broadcast(event)
         }

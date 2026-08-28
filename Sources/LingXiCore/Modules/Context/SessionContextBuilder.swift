@@ -10,7 +10,7 @@ public struct SessionContextBuilder: Sendable {
 
     public func buildModelMessages(from history: [Message]) -> [ModelMessage] {
         history.map { message in
-            ModelMessage(role: modelRole(message.role), content: message.content)
+            ModelMessage(role: modelRole(message.role), parts: message.parts.map(modelPart))
         }
     }
 
@@ -18,6 +18,15 @@ public struct SessionContextBuilder: Sendable {
         switch role {
         case .user: .user
         case .assistant: .assistant
+        case .tool: .tool
+        }
+    }
+
+    private func modelPart(_ part: SessionMessagePart) -> ModelContentPart {
+        switch part {
+        case let .text(text): .text(text)
+        case let .toolCall(call): .toolCall(call)
+        case let .toolResult(result): .toolResult(result)
         }
     }
 }

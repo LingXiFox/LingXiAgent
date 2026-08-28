@@ -10,6 +10,8 @@ public protocol SessionStore: Actor, Sendable {
     func listSessions() async throws -> [Session]
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message
+    @discardableResult
+    func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message
 }
 
 /// 内存实现：actor 保证并发安全。
@@ -39,13 +41,18 @@ public actor InMemorySessionStore: SessionStore {
 
     @discardableResult
     public func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message {
+        try await appendMessage(sessionID, role: role, parts: [.text(content)])
+    }
+
+    @discardableResult
+    public func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message {
         guard sessions[sessionID] != nil else {
             throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(sessionID.rawValue)")
         }
         let message = Message(
             id: MessageID(UUID().uuidString),
             role: role,
-            content: content,
+            parts: parts,
             createdAt: Date()
         )
         sessions[sessionID]?.append(message)

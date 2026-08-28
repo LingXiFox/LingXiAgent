@@ -150,4 +150,71 @@ struct ProviderHTTPTests {
         // 失败后不允许再出现 completed。
         #expect(!events.contains { if case .completed = $0 { return true }; return false })
     }
+
+    @Test func toolCallArgumentsAreAggregatedAcrossSSEChunks() async throws {
+        StubURLProtocol.handler = { _ in
+            StubURLProtocol.StubResponse(
+                status: 200,
+                body: StubURLProtocol.sseBody([
+                    #"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"REA"}}]}}]}"#,
+                    #"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"DME.md\"}"}}]}}]}"#,
+                    #"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                ]) + Data("data: [DONE]\n\n".utf8)
+            )
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let events = try await collect(makeProvider().stream(ModelRequest(
+            model: ModelID("stub-model"), messages: [ModelMessage(role: .user, content: "hi")]
+        )))
+        #expect(events == [
+            .started,
+            .toolCallStarted(callID: ToolCallID("call-1"), toolID: ToolID("read_file")),
+            .toolCallDelta(callID: ToolCallID("call-1"), arguments: #"{"path":"REA"#),
+            .toolCallDelta(callID: ToolCallID("call-1"), arguments: #"DME.md"}"#),
+            .toolCallCompleted(ToolCall(callID: ToolCallID("call-1"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)),
+            .completed(.toolCalls),
+        ])
+    }
+
+    @Test func malformedToolArgumentsBecomeModelStreamFailure() async throws {
+        StubURLProtocol.handler = { _ in
+            StubURLProtocol.StubResponse(
+                status: 200,
+                body: StubURLProtocol.sseBody([
+                    #"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"not-json"}}]}}]}"#,
+                ]) + Data("data: [DONE]\n\n".utf8)
+            )
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let events = try await collect(makeProvider().stream(ModelRequest(
+            model: ModelID("stub-model"), messages: [ModelMessage(role: .user, content: "hi")]
+        )))
+        guard case let .failed(error) = events.last else {
+            Issue.record("非法 Tool arguments 应结束为 failed: \(events)")
+            return
+        }
+        #expect(error.code == .modelStream)
+    }
+
+    @Test func multipleToolCallsCompleteInIndexOrder() async throws {
+        StubURLProtocol.handler = { _ in
+            StubURLProtocol.StubResponse(
+                status: 200,
+                body: StubURLProtocol.sseBody([
+                    #"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call-b","function":{"name":"list_directory","arguments":"{\"path\":\".\"}"}},{"index":0,"id":"call-a","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]}}]}"#,
+                ]) + Data("data: [DONE]\n\n".utf8)
+            )
+        }
+        defer { StubURLProtocol.handler = nil }
+        let events = try await collect(makeProvider().stream(ModelRequest(
+            model: ModelID("stub-model"), messages: [ModelMessage(role: .user, content: "hi")]
+        )))
+        let completed = events.compactMap { event -> ToolCall? in
+            guard case let .toolCallCompleted(call) = event else { return nil }
+            return call
+        }
+        #expect(completed.map(\.callID.rawValue) == ["call-a", "call-b"])
+    }
 }

@@ -60,11 +60,46 @@ public struct OpenAICompatibleProvider: ModelProvider {
         if let system = request.system, !system.isEmpty {
             messages.append(Message(role: "system", content: system))
         }
-        messages.append(contentsOf: request.messages.map {
-            Message(role: $0.role.rawValue, content: $0.content)
-        })
-        let body = ChatRequestBody(model: model, stream: true, messages: messages)
+        messages.append(contentsOf: request.messages.flatMap(providerMessages))
+        let body = ChatRequestBody(
+            model: model,
+            stream: true,
+            messages: messages,
+            tools: request.tools.isEmpty ? nil : request.tools.map(ProviderTool.init)
+        )
         return try JSONEncoder().encode(body)
+    }
+
+    private static func providerMessages(_ message: ModelMessage) -> [ChatRequestBody.Message] {
+        let calls = message.parts.compactMap { part -> ToolCall? in
+            guard case let .toolCall(call) = part else { return nil }
+            return call
+        }
+        let results = message.parts.compactMap { part -> ToolResult? in
+            guard case let .toolResult(result) = part else { return nil }
+            return result
+        }
+        switch message.role {
+        case .tool:
+            return results.map { result in
+                Message(role: "tool", content: resultContent(result), toolCallID: result.callID.rawValue)
+            }
+        case .assistant:
+            return [Message(
+                role: "assistant",
+                content: message.content.isEmpty && !calls.isEmpty ? nil : message.content,
+                toolCalls: calls.isEmpty ? nil : calls.map(ProviderToolCall.init)
+            )]
+        case .system, .user:
+            return [Message(role: message.role.rawValue, content: message.content)]
+        }
+    }
+
+    private static func resultContent(_ result: ToolResult) -> String {
+        guard !result.success else { return result.content }
+        let error = result.error ?? ToolError(code: "toolExecutionFailed", message: "Tool 执行失败")
+        let data = try? JSONEncoder().encode(error)
+        return data.map { String(decoding: $0, as: UTF8.self) } ?? error.message
     }
 
     // MARK: - 错误转换
@@ -83,15 +118,19 @@ public struct OpenAICompatibleProvider: ModelProvider {
     public static func events(forSSEPayload payload: String) throws -> [ModelEvent] {
         let trimmed = payload.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return [] }
-        guard let data = trimmed.data(using: .utf8),
+        return events(from: try decodeSSEChunk(trimmed))
+    }
+
+    private static func decodeSSEChunk(_ payload: String) throws -> SSEChunk {
+        guard let data = payload.data(using: .utf8),
               let chunk = try? JSONDecoder().decode(SSEChunk.self, from: data)
         else {
-            throw CoreError(
-                code: .modelStream,
-                message: "SSE chunk JSON 解析失败: \(trimmed.prefix(200))"
-            )
+            throw CoreError(code: .modelStream, message: "SSE chunk JSON 解析失败: \(payload.prefix(200))")
         }
+        return chunk
+    }
 
+    private static func events(from chunk: SSEChunk) -> [ModelEvent] {
         var events: [ModelEvent] = []
         if let usage = chunk.usage.map(Self.usage(from:)) {
             events.append(.usage(usage))
@@ -115,6 +154,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         case "stop": .stop
         case "length": .maxTokens
         case "content_filter": .contentFilter
+        case "tool_calls": .toolCalls
         case nil, .some(""): nil
         default: .unknown
         }
@@ -156,13 +196,14 @@ public struct OpenAICompatibleProvider: ModelProvider {
         func run() async {
             var decoder = SSEDecoder()
             var completed: ModelFinishReason?
+            var toolCalls = ToolCallBuffer()
             var sawDone = false
             continuation.yield(.started)
 
             do {
                 outer: for try await byte in source {
                     for line in decoder.feed(Data([byte])) {
-                        if try handle(line: line, into: &completed) {
+                        if try handle(line: line, into: &completed, toolCalls: &toolCalls) {
                             sawDone = true
                             break outer
                         }
@@ -170,7 +211,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 }
                 if !sawDone {
                     for line in decoder.flushPending() {
-                        _ = try handle(line: line, into: &completed)
+                        _ = try handle(line: line, into: &completed, toolCalls: &toolCalls)
                     }
                 }
             } catch let error as CoreError {
@@ -183,6 +224,19 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 return
             }
 
+            do {
+                for event in try toolCalls.complete() {
+                    continuation.yield(event)
+                }
+            } catch let error as CoreError {
+                continuation.yield(.failed(error))
+                continuation.finish()
+                return
+            } catch {
+                continuation.yield(.failed(CoreError(code: .modelStream, message: String(describing: error))))
+                continuation.finish()
+                return
+            }
             // [DONE] 或 EOF：有 finish_reason 用之，否则宽容收尾。
             continuation.yield(.completed(completed ?? .unknown))
             continuation.finish()
@@ -190,7 +244,11 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
         /// 处理一行 SSE；返回 true 表示遇到 [DONE]，应停止读取。
         /// malformed JSON 抛错，由 run 统一转为 .failed 并终止。
-        private func handle(line: String, into completed: inout ModelFinishReason?) throws -> Bool {
+        private func handle(
+            line: String,
+            into completed: inout ModelFinishReason?,
+            toolCalls: inout ToolCallBuffer
+        ) throws -> Bool {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix(":") { return false }
             guard trimmed.hasPrefix("data:") else { return false } // event:/retry:/id: 忽略
@@ -198,10 +256,16 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
             if payload == "[DONE]" { return true }
 
-            for event in try OpenAICompatibleProvider.events(forSSEPayload: String(payload)) {
+            let chunk = try OpenAICompatibleProvider.decodeSSEChunk(String(payload))
+            for event in OpenAICompatibleProvider.events(from: chunk) {
                 if case let .completed(reason) = event {
                     completed = reason
                 } else {
+                    continuation.yield(event)
+                }
+            }
+            if let calls = chunk.choices?.first?.delta?.toolCalls {
+                for event in try toolCalls.consume(calls) {
                     continuation.yield(event)
                 }
             }
@@ -214,15 +278,83 @@ private extension OpenAICompatibleProvider {
     struct ChatRequestBody: Encodable {
         struct Message: Encodable {
             let role: String
-            let content: String
+            let content: String?
+            let toolCalls: [ProviderToolCall]?
+            let toolCallID: String?
+
+            init(role: String, content: String?, toolCalls: [ProviderToolCall]? = nil, toolCallID: String? = nil) {
+                self.role = role
+                self.content = content
+                self.toolCalls = toolCalls
+                self.toolCallID = toolCallID
+            }
+
+            enum CodingKeys: String, CodingKey {
+                case role, content
+                case toolCalls = "tool_calls"
+                case toolCallID = "tool_call_id"
+            }
         }
 
         let model: String
         let stream: Bool
         let messages: [Message]
+        let tools: [ProviderTool]?
     }
 
     typealias Message = ChatRequestBody.Message
+
+    struct ProviderTool: Encodable {
+        struct Function: Encodable {
+            struct Parameters: Encodable {
+                struct Property: Encodable {
+                    let type: String
+                    let description: String
+                }
+
+                let type = "object"
+                let properties: [String: Property]
+                let required: [String]
+                let additionalProperties = false
+            }
+
+            let name: String
+            let description: String
+            let parameters: Parameters
+        }
+
+        let type = "function"
+        let function: Function
+
+        init(_ definition: ToolDefinition) {
+            function = Function(
+                name: definition.name,
+                description: definition.description,
+                parameters: Function.Parameters(
+                    properties: definition.inputSchema.properties.mapValues {
+                        Function.Parameters.Property(type: $0.type.rawValue, description: $0.description)
+                    },
+                    required: definition.inputSchema.required
+                )
+            )
+        }
+    }
+
+    struct ProviderToolCall: Encodable {
+        struct Function: Encodable {
+            let name: String
+            let arguments: String
+        }
+
+        let id: String
+        let type = "function"
+        let function: Function
+
+        init(_ call: ToolCall) {
+            id = call.callID.rawValue
+            function = Function(name: call.toolID.rawValue, arguments: call.arguments)
+        }
+    }
 
     struct SSEChunk: Decodable {
         struct Choice: Decodable {
@@ -230,18 +362,21 @@ private extension OpenAICompatibleProvider {
                 let content: String?
                 // reasoning_content（DeepSeek 风格）与 reasoning（OpenRouter 风格）取其一。
                 let reasoning: String?
+                let toolCalls: [SSEToolCall]?
 
                 init(from decoder: Decoder) throws {
                     let container = try decoder.container(keyedBy: CodingKeys.self)
                     content = try container.decodeIfPresent(String.self, forKey: .content)
                     reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
                         ?? container.decodeIfPresent(String.self, forKey: .reasoningContent)
+                    toolCalls = try container.decodeIfPresent([SSEToolCall].self, forKey: .toolCalls)
                 }
 
                 enum CodingKeys: String, CodingKey {
                     case content
                     case reasoning
                     case reasoningContent = "reasoning_content"
+                    case toolCalls = "tool_calls"
                 }
             }
 
@@ -291,6 +426,67 @@ private extension OpenAICompatibleProvider {
             case completionTokens = "completion_tokens"
             case completionTokensDetails = "completion_tokens_details"
             case promptTokensDetails = "prompt_tokens_details"
+        }
+    }
+
+    struct SSEToolCall: Decodable {
+        struct Function: Decodable {
+            let name: String?
+            let arguments: String?
+        }
+
+        let index: Int
+        let id: String?
+        let function: Function?
+    }
+
+    struct ToolCallBuffer {
+        private struct Partial {
+            var id: String?
+            var name: String?
+            var arguments = ""
+            var started = false
+            var emittedArgumentCount = 0
+        }
+
+        private var calls: [Int: Partial] = [:]
+
+        mutating func consume(_ deltas: [SSEToolCall]) throws -> [ModelEvent] {
+            var events: [ModelEvent] = []
+            for delta in deltas {
+                var partial = calls[delta.index] ?? Partial()
+                partial.id = delta.id ?? partial.id
+                partial.name = delta.function?.name ?? partial.name
+                if let arguments = delta.function?.arguments, !arguments.isEmpty {
+                    partial.arguments += arguments
+                }
+                if let id = partial.id, let name = partial.name, !partial.started {
+                    partial.started = true
+                    events.append(.toolCallStarted(callID: ToolCallID(id), toolID: ToolID(name)))
+                }
+                if partial.started, let id = partial.id, partial.emittedArgumentCount < partial.arguments.count {
+                    let arguments = String(partial.arguments.dropFirst(partial.emittedArgumentCount))
+                    partial.emittedArgumentCount = partial.arguments.count
+                    events.append(.toolCallDelta(callID: ToolCallID(id), arguments: arguments))
+                }
+                calls[delta.index] = partial
+            }
+            return events
+        }
+
+        mutating func complete() throws -> [ModelEvent] {
+            defer { calls.removeAll() }
+            return try calls.keys.sorted().map { index in
+                guard let call = calls[index], let id = call.id, let name = call.name, call.started else {
+                    throw CoreError(code: .modelStream, message: "Tool Call 信息不完整")
+                }
+                guard let data = call.arguments.data(using: .utf8),
+                      (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
+                else {
+                    throw CoreError(code: .modelStream, message: "Tool Call 参数不是 JSON object: \(name)")
+                }
+                return .toolCallCompleted(ToolCall(callID: ToolCallID(id), toolID: ToolID(name), arguments: call.arguments))
+            }
         }
     }
 }

@@ -17,15 +17,31 @@ public enum ModelRole: String, Sendable {
     case system
     case user
     case assistant
+    case tool
+}
+
+/// 模型输入的结构化部分；Provider Adapter 再转换为厂商消息格式。
+public enum ModelContentPart: Sendable, Equatable {
+    case text(String)
+    case toolCall(ToolCall)
+    case toolResult(ToolResult)
 }
 
 public struct ModelMessage: Sendable, Equatable {
     public let role: ModelRole
-    public let content: String
+    public let parts: [ModelContentPart]
+
+    public var content: String {
+        parts.compactMap { if case let .text(text) = $0 { text } else { nil } }.joined()
+    }
 
     public init(role: ModelRole, content: String) {
+        self.init(role: role, parts: [.text(content)])
+    }
+
+    public init(role: ModelRole, parts: [ModelContentPart]) {
         self.role = role
-        self.content = content
+        self.parts = parts
     }
 }
 
@@ -33,11 +49,13 @@ public struct ModelRequest: Sendable, Equatable {
     public let model: ModelID
     public let system: String?
     public let messages: [ModelMessage]
+    public let tools: [ToolDefinition]
 
-    public init(model: ModelID, system: String? = nil, messages: [ModelMessage]) {
+    public init(model: ModelID, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = []) {
         self.model = model
         self.system = system
         self.messages = messages
+        self.tools = tools
     }
 }
 
@@ -48,6 +66,9 @@ public enum ModelEvent: Sendable, Equatable {
     case textDelta(String)
     /// 推理内容 delta；Provider 不支持时不会出现。
     case reasoningDelta(String)
+    case toolCallStarted(callID: ToolCallID, toolID: ToolID)
+    case toolCallDelta(callID: ToolCallID, arguments: String)
+    case toolCallCompleted(ToolCall)
     case usage(ModelUsage)
     case completed(ModelFinishReason)
     /// 流中途失败（Model Stream Error）。

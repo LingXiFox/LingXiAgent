@@ -11,6 +11,7 @@ public actor AgentRuntime {
     private let contextBuilder: SessionContextBuilder
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
+    private let toolRuntime: ToolRuntime
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private var runtimes: [SessionID: SessionRuntime] = [:]
 
@@ -19,12 +20,14 @@ public actor AgentRuntime {
         contextBuilder: SessionContextBuilder,
         modelBus: ModelBus,
         dataPlane: DataPlane,
+        toolRuntime: ToolRuntime,
         eventSink: @escaping @Sendable (CoreEvent) async -> Void
     ) {
         self.store = store
         self.contextBuilder = contextBuilder
         self.modelBus = modelBus
         self.dataPlane = dataPlane
+        self.toolRuntime = toolRuntime
         self.eventSink = eventSink
     }
 
@@ -64,6 +67,7 @@ public actor AgentRuntime {
             modelBus: modelBus,
             dataPlane: dataPlane,
             contextBuilder: contextBuilder,
+            toolRuntime: toolRuntime,
             eventSink: eventSink
         )
     }

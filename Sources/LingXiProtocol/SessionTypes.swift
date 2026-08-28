@@ -22,19 +22,63 @@ public struct MessageID: Sendable, Equatable, Hashable, Codable {
 public enum SessionMessageRole: String, Sendable, Equatable, Codable {
     case user
     case assistant
+    case tool
+}
+
+/// Session 的结构化内容。Tool 状态不会伪装成 assistant 文本。
+public enum SessionMessagePart: Sendable, Equatable, Codable {
+    case text(String)
+    case toolCall(ToolCall)
+    case toolResult(ToolResult)
+
+    private enum Kind: String, Codable { case text, toolCall, toolResult }
+    private enum CodingKeys: String, CodingKey { case kind, text, toolCall, toolResult }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .text: self = .text(try container.decode(String.self, forKey: .text))
+        case .toolCall: self = .toolCall(try container.decode(ToolCall.self, forKey: .toolCall))
+        case .toolResult: self = .toolResult(try container.decode(ToolResult.self, forKey: .toolResult))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .text(text):
+            try container.encode(Kind.text, forKey: .kind)
+            try container.encode(text, forKey: .text)
+        case let .toolCall(call):
+            try container.encode(Kind.toolCall, forKey: .kind)
+            try container.encode(call, forKey: .toolCall)
+        case let .toolResult(result):
+            try container.encode(Kind.toolResult, forKey: .kind)
+            try container.encode(result, forKey: .toolResult)
+        }
+    }
 }
 
 /// 一条会话消息的客户端视图。
 public struct SessionMessageSnapshot: Sendable, Equatable, Codable {
     public let id: MessageID
     public let role: SessionMessageRole
-    public let content: String
+    public let parts: [SessionMessagePart]
     public let createdAt: Date
 
+    /// 仅用于简单历史展示；Tool parts 不会被拼进文本。
+    public var content: String {
+        parts.compactMap { if case let .text(text) = $0 { text } else { nil } }.joined()
+    }
+
     public init(id: MessageID, role: SessionMessageRole, content: String, createdAt: Date) {
+        self.init(id: id, role: role, parts: [.text(content)], createdAt: createdAt)
+    }
+
+    public init(id: MessageID, role: SessionMessageRole, parts: [SessionMessagePart], createdAt: Date) {
         self.id = id
         self.role = role
-        self.content = content
+        self.parts = parts
         self.createdAt = createdAt
     }
 }

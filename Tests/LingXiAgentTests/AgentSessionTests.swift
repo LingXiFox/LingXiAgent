@@ -129,7 +129,7 @@ actor ControllableFakeProvider: ModelProvider {
 
 struct AgentSessionTests {
     private func makeHost(_ provider: any ModelProvider) async -> CoreHost {
-        let host = CoreHost(providerAssembly: ModelRuntimeAssembly(
+        let host = try! CoreHost(providerAssembly: ModelRuntimeAssembly(
             provider: provider,
             modelID: ModelID("fake-model")
         ))
@@ -374,7 +374,7 @@ struct AgentSessionTests {
     }
 
     @Test func unconfiguredProviderFailsFast() async throws {
-        let host = CoreHost(providerAssembly: ProviderSetup.unavailable)
+        let host = try CoreHost(providerAssembly: ProviderSetup.unavailable)
         await host.start()
         let client = LingXiClient.inProcess(endpoint: host)
 

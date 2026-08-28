@@ -6,4 +6,7 @@ public enum CoreEvent: Sendable, Equatable {
     case turnStarted(TurnHandle)
     case turnCompleted(TurnResult)
     case turnFailed(TurnFailure)
+    case toolCallCompleted(ToolCall)
+    case toolResult(ToolResult)
+    case permissionAsked(PermissionRequest)
 }

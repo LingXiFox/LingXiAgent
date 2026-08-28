@@ -7,7 +7,7 @@ import LingXiClient
 /// 通过 LingXiClient → CoreEndpoint 契约验证完整通路（进程内 Transport）。
 struct CoreClientTests {
     private func makeClient() async -> CoreHost {
-        let host = CoreHost()
+        let host = try! CoreHost()
         await host.start()
         return host
     }
@@ -50,7 +50,7 @@ struct CoreClientTests {
 
     @Test func stateChangedEvents() async throws {
         // start 之前订阅，验证语义事件通路。
-        let host = CoreHost()
+        let host = try! CoreHost()
         let events = await host.events()
         await host.start()
 

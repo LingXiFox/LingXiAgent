@@ -9,18 +9,27 @@ import LingXiProtocol
 public enum MessageRole: String, Sendable {
     case user
     case assistant
+    case tool
 }
 
 public struct Message: Sendable, Equatable {
     public let id: MessageID
     public let role: MessageRole
-    public let content: String
+    public let parts: [SessionMessagePart]
     public let createdAt: Date
 
+    public var content: String {
+        parts.compactMap { if case let .text(text) = $0 { text } else { nil } }.joined()
+    }
+
     public init(id: MessageID, role: MessageRole, content: String, createdAt: Date) {
+        self.init(id: id, role: role, parts: [.text(content)], createdAt: createdAt)
+    }
+
+    public init(id: MessageID, role: MessageRole, parts: [SessionMessagePart], createdAt: Date) {
         self.id = id
         self.role = role
-        self.content = content
+        self.parts = parts
         self.createdAt = createdAt
     }
 }
@@ -66,7 +75,7 @@ extension Message {
         SessionMessageSnapshot(
             id: id,
             role: SessionMessageRole(rawValue: role.rawValue) ?? .user,
-            content: content,
+            parts: parts,
             createdAt: createdAt
         )
     }

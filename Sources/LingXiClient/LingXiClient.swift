@@ -89,6 +89,13 @@ public struct LingXiClient: Sendable {
         return snapshot
     }
 
+    /// 对当前一次 Permission Request 作出 allow once 或 deny 答复。
+    public func replyPermission(_ reply: PermissionReply) async throws {
+        guard case .permissionReplyAccepted = try await connection.send(.replyPermission(reply)) else {
+            throw CoreError(code: .transport, message: "replyPermission 收到非预期响应")
+        }
+    }
+
     /// 在 Session 中发起一轮对话，返回 Streaming DMA 通道。
     /// text/reasoning delta 从通道逐块流出（kind 区分）；
     /// turnCompleted / turnFailed 经 events() 交付。

@@ -15,6 +15,7 @@ struct WireCodableTests {
             .getSession(sessionID: SessionID("s-1")),
             .sendMessage(sessionID: SessionID("s-1"), content: "你好，世界"),
             .getProviderStatus,
+            .replyPermission(PermissionReply(permissionID: PermissionID("p-1"), decision: .allow)),
         ]
         for command in commands {
             let decoded = try roundtrip(.request(id: "7", command: command))
@@ -42,6 +43,7 @@ struct WireCodableTests {
             .sessionCreated(sessionInfo),
             .sessionList([sessionInfo]),
             .sessionDetail(snapshot),
+            .permissionReplyAccepted(PermissionID("p-1")),
             .error(CoreError(code: .turnAlreadyRunning, message: "已有进行中的轮次")),
         ]
         for response in cases {
@@ -66,6 +68,12 @@ struct WireCodableTests {
             .turnStarted(handle),
             .turnCompleted(result),
             .turnFailed(failure),
+            .toolCallCompleted(ToolCall(callID: ToolCallID("c-1"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)),
+            .toolResult(ToolResult(callID: ToolCallID("c-1"), success: true, content: "LingXiAgent")),
+            .permissionAsked(PermissionRequest(
+                permissionID: PermissionID("p-1"), sessionID: SessionID("s-1"), toolCallID: ToolCallID("c-1"),
+                toolID: ToolID("read_file"), resource: "/workspace/README.md", description: "Read README"
+            )),
         ]
         for event in events {
             #expect(try roundtrip(.event(event)) == .event(event))

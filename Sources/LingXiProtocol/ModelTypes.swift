@@ -7,6 +7,7 @@ public enum ModelFinishReason: String, Sendable, Equatable, Codable {
     case stop
     case maxTokens
     case contentFilter
+    case toolCalls
     case cancelled
     case unknown
 }

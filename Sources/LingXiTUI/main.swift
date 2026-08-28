@@ -77,7 +77,12 @@ func showHistory(_ client: LingXiClient, sessionID: SessionID) async {
         let snapshot = try await client.session(sessionID)
         print("\(dim)Session \(snapshot.id.rawValue) (\(snapshot.messages.count) messages)\(reset)")
         for message in snapshot.messages {
-            let who = message.role == .user ? "user" : "assistant"
+            let who: String
+            switch message.role {
+            case .user: who = "user"
+            case .assistant: who = "assistant"
+            case .tool: who = "tool"
+            }
             let content = message.content.replacingOccurrences(of: "\n", with: " ")
             print("\(dim)[\(who)] \(content)\(reset)")
         }
@@ -116,6 +121,22 @@ func runTUI() async {
                 }
             case let .turnFailed(failure):
                 print("\(dim)[turn failed: \(failure.error.message)]\(reset)")
+            case let .toolCallCompleted(call):
+                print("\(dim)[tool call: \(call.toolID.rawValue)]\(reset)")
+            case let .toolResult(result):
+                let status = result.success ? "ok" : result.error?.message ?? "failed"
+                print("\(dim)[tool result: \(status)]\(reset)")
+            case let .permissionAsked(request):
+                print("\nPermission required:")
+                print("Tool: \(request.toolID.rawValue)")
+                print("Path: \(request.resource)")
+                print("[a] allow once  [d] deny")
+                let decision: PermissionDecision = readLine()?.lowercased() == "a" ? .allow : .deny
+                do {
+                    try await client.replyPermission(PermissionReply(permissionID: request.permissionID, decision: decision))
+                } catch {
+                    print("\(dim)[permission reply failed: \(error)]\(reset)")
+                }
             case .sessionCreated, .turnStarted, .stateChanged:
                 break
             }

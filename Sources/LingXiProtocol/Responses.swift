@@ -8,6 +8,7 @@ public enum CoreResponse: Sendable, Equatable {
     case sessionCreated(SessionInfo)
     case sessionList([SessionInfo])
     case sessionDetail(SessionSnapshot)
+    case permissionReplyAccepted(PermissionID)
     case error(CoreError)
 }
 
@@ -25,6 +26,13 @@ public struct CoreError: Sendable, Equatable, Error {
         case provider
         /// 推理已开始但流中途失败（Model Stream Error）。
         case modelStream
+        case toolNotFound
+        case toolArgumentInvalid
+        case toolExecutionFailed
+        case permissionDenied
+        case permissionCancelled
+        case workspaceViolation
+        case agentStepLimitReached
     }
 
     public let code: Code
