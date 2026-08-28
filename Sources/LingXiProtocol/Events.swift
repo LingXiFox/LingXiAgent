@@ -1,0 +1,5 @@
+/// Core 向客户端广播的语义事件（控制面）。
+/// 高频 Streaming 数据不走这里，走 Data Plane。
+public enum CoreEvent: Sendable, Equatable {
+    case stateChanged(CoreState)
+}
