@@ -15,6 +15,8 @@ public actor AgentRuntime {
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
+    private let compactor: ContextCompactor
+    private let budgetPlanner: ContextBudgetPlanner
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private var runtimes: [SessionID: SessionRuntime] = [:]
 
@@ -27,7 +29,9 @@ public actor AgentRuntime {
         performanceStore: PerformanceStore,
         contextPager: ContextPager,
         projectScanner: ProjectScanner,
-        eventSink: @escaping @Sendable (CoreEvent) async -> Void
+        eventSink: @escaping @Sendable (CoreEvent) async -> Void,
+        compactor: ContextCompactor = ContextCompactor(),
+        budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: ProcessInfo.processInfo.environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init)))
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -38,6 +42,8 @@ public actor AgentRuntime {
         self.contextPager = contextPager
         self.projectScanner = projectScanner
         self.eventSink = eventSink
+        self.compactor = compactor
+        self.budgetPlanner = budgetPlanner
     }
 
     // MARK: - Session 生命周期
@@ -67,6 +73,7 @@ public actor AgentRuntime {
 
     public func projectCache() async -> ProjectCacheDebugSnapshot {
         let metrics = await contextPager.debugMetrics(projectRoot: projectScanner.root)
+        let derived = await compactor.cacheMetrics()
         return ProjectCacheDebugSnapshot(
             l2Pages: metrics.l2Pages,
             l2Characters: metrics.l2Characters,
@@ -76,8 +83,29 @@ public actor AgentRuntime {
             symbolCount: metrics.symbolCount,
             symbolIndexedFiles: metrics.symbolIndexedFiles,
             referenceCount: metrics.referenceCount,
-            dependencyCount: metrics.dependencyCount
+            dependencyCount: metrics.dependencyCount,
+            sessionL2DerivedPages: derived.l2Pages,
+            derivedL3Pages: derived.l3Pages,
+            derivedPageOutCount: derived.pageOutCount,
+            derivedPageInCount: derived.pageInCount,
+            historicalToolEvidencePages: derived.historicalToolPages,
+            derivedL3Hits: derived.l3Hits,
+            sessionL2DerivedHits: derived.l2Hits,
+            sessionL2DerivedPromotions: derived.l2Promotions
         )
+    }
+
+    public func compact(_ sessionID: SessionID) async throws -> CompactSessionResponse {
+        guard let runtime = runtimes[sessionID] else { throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(sessionID.rawValue)") }
+        return try await runtime.compactNow()
+    }
+
+    public func cacheMetrics(_ sessionID: SessionID) async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int)? {
+        await runtimes[sessionID]?.cacheMetrics()
+    }
+
+    public func contextUnitStates(_ sessionID: SessionID) async -> [ContextUnitDebugSnapshot] {
+        await runtimes[sessionID]?.contextUnitStates() ?? []
     }
 
     // MARK: - 对话
@@ -103,7 +131,9 @@ public actor AgentRuntime {
             performanceStore: performanceStore,
             contextPager: contextPager,
             projectScanner: projectScanner,
-            eventSink: eventSink
+            eventSink: eventSink,
+            compactor: compactor,
+            budgetPlanner: budgetPlanner
         )
     }
 }

@@ -9,6 +9,7 @@ public enum ContextSource: String, Sendable, Equatable, Hashable {
     case toolCall
     case toolResult
     case projectPage
+    case derivedPage
 }
 
 public enum ContextRole: Sendable, Equatable {
@@ -42,6 +43,14 @@ public struct ContextMetrics: Sendable, Equatable {
     public let sessionCharacterCount: Int
     public let projectCharacterCount: Int
     public let projectPageCount: Int
+    public let estimatedTokens: Int
+    public let derivedPageCount: Int
+    public let mandatoryTokens: Int
+    public let recentSessionTokens: Int
+    public let projectTokens: Int
+    public let derivedTokens: Int
+    public let liveToolBatchCount: Int
+    public let compactionGeneration: Int
 }
 
 /// 一次 inference 实际可见的不可变 L1 工作集。
@@ -112,10 +121,11 @@ public actor L1ContextEngine {
         self.policy = policy
     }
 
-    public func snapshot(for session: Session, projectPages: [ContextPage] = []) -> L1ContextSnapshot {
+    public func snapshot(for session: Session, projectPages: [ContextPage] = [], activeEntries: [ContextEntry]? = nil, estimatedTokens: Int = 0, mandatoryTokens: Int = 0, liveToolBatchCount: Int = 0, compactionGeneration: Int = 0) -> L1ContextSnapshot {
         let revision = (revisions[session.id] ?? 0) + 1
         revisions[session.id] = revision
-        var entries: [ContextEntry] = []
+        var entries = activeEntries ?? []
+        if activeEntries == nil {
         if let system = policy.systemContext {
             entries.append(ContextEntry(messageID: nil, role: .system, source: .system, part: .text(system)))
         }
@@ -129,6 +139,7 @@ public actor L1ContextEngine {
                 ))
             }
         }
+        }
         let toolContents = Set(session.messages.flatMap { message in
             message.parts.compactMap { if case let .toolResult(result) = $0 { result.content } else { nil } }
         })
@@ -140,7 +151,7 @@ public actor L1ContextEngine {
             sessionID: session.id,
             revision: revision,
             entries: entries,
-            metrics: metrics(entries)
+            metrics: metrics(entries, estimatedTokens: estimatedTokens, mandatoryTokens: mandatoryTokens, liveToolBatchCount: liveToolBatchCount, compactionGeneration: compactionGeneration)
         )
         latest[session.id] = snapshot
         return snapshot
@@ -170,7 +181,19 @@ public actor L1ContextEngine {
         }
     }
 
-    private func metrics(_ entries: [ContextEntry]) -> ContextMetrics {
+    public func entries(for session: Session, projectPages: [ContextPage] = []) -> [ContextEntry] {
+        var entries: [ContextEntry] = []
+        if let system = policy.systemContext { entries.append(ContextEntry(messageID: nil, role: .system, source: .system, part: .text(system))) }
+        for message in session.messages { for part in message.parts { entries.append(ContextEntry(messageID: message.id, role: contextRole(message.role), source: source(message.role, part), part: part)) } }
+        let toolContents = Set(session.messages.flatMap { $0.parts.compactMap { if case let .toolResult(result) = $0 { result.content } else { nil } } })
+        var seen = Set<String>()
+        for page in projectPages where seen.insert("\(page.path)|\(page.hash)").inserted && !toolContents.contains(page.content) {
+            entries.append(ContextEntry(messageID: MessageID("project:\(page.id)"), role: .system, source: .projectPage, part: .text("[Project context: \(page.path):\(page.startLine)-\(page.endLine)]\n\(page.content)"), page: page))
+        }
+        return entries
+    }
+
+    private func metrics(_ entries: [ContextEntry], estimatedTokens: Int, mandatoryTokens: Int, liveToolBatchCount: Int, compactionGeneration: Int) -> ContextMetrics {
         var sourceCounts: [ContextSource: Int] = [:]
         var ids = Set<MessageID>()
         var characters = 0
@@ -193,6 +216,13 @@ public actor L1ContextEngine {
             }
             if entry.source == .projectPage { projectCharacters += count } else { sessionCharacters += count }
         }
-        return ContextMetrics(messageCount: ids.count + (policy.systemContext == nil ? 0 : 1), partCount: entries.count, characterCount: characters, sourceCounts: sourceCounts, sessionCharacterCount: sessionCharacters, projectCharacterCount: projectCharacters, projectPageCount: sourceCounts[.projectPage, default: 0])
+        let projectTokens = max(0, (projectCharacters + 2) / 3)
+        let derivedCharacters = entries.filter { $0.source == .derivedPage }.reduce(0) { $0 + Self.characterCount(of: $1.part) }
+        let derivedTokens = max(0, (derivedCharacters + 2) / 3)
+        return ContextMetrics(messageCount: ids.count + (policy.systemContext == nil ? 0 : 1), partCount: entries.count, characterCount: characters, sourceCounts: sourceCounts, sessionCharacterCount: sessionCharacters, projectCharacterCount: projectCharacters, projectPageCount: sourceCounts[.projectPage, default: 0], estimatedTokens: estimatedTokens, derivedPageCount: sourceCounts[.derivedPage, default: 0], mandatoryTokens: mandatoryTokens, recentSessionTokens: max(0, estimatedTokens - projectTokens - derivedTokens - mandatoryTokens), projectTokens: projectTokens, derivedTokens: derivedTokens, liveToolBatchCount: liveToolBatchCount, compactionGeneration: compactionGeneration)
+    }
+
+    private static func characterCount(of part: SessionMessagePart) -> Int {
+        switch part { case let .text(text): text.count; case let .toolCall(call): call.arguments.count; case let .toolResult(result): result.content.count + (result.error?.message.count ?? 0) }
     }
 }

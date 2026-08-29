@@ -26,6 +26,14 @@ final class TurnProfiler: @unchecked Sendable {
     private var usage: ModelUsage?
     private var paging: ContextPagingPerformance?
     private var pagingTurn = ContextPagingTurnPerformance.zero
+    private var budget: ContextBudgetDebug?
+    private var compactions: [CompactionTurnPerformance] = []
+    private var protocolValidatorPassed = 0
+    private var liveToolBatchCount = 0
+    private var derivedL3Hits = 0
+    private var sessionL2DerivedHits = 0
+    private var sessionL2DerivedPromotions = 0
+    private var derivedPageIns = 0
 
     init(sessionID: SessionID, enabled: Bool) {
         self.sessionID = sessionID
@@ -44,7 +52,15 @@ final class TurnProfiler: @unchecked Sendable {
             sourceCounts: Dictionary(uniqueKeysWithValues: snapshot.metrics.sourceCounts.map { ($0.key.rawValue, $0.value) }),
             sessionCharacterCount: snapshot.metrics.sessionCharacterCount,
             projectCharacterCount: snapshot.metrics.projectCharacterCount,
-            projectPageCount: snapshot.metrics.projectPageCount
+            projectPageCount: snapshot.metrics.projectPageCount,
+            estimatedTokens: snapshot.metrics.estimatedTokens,
+            mandatoryTokens: snapshot.metrics.mandatoryTokens,
+            recentSessionTokens: snapshot.metrics.recentSessionTokens,
+            projectTokens: snapshot.metrics.projectTokens,
+            derivedTokens: snapshot.metrics.derivedTokens,
+            derivedPageCount: snapshot.metrics.derivedPageCount,
+            liveToolBatchCount: snapshot.metrics.liveToolBatchCount,
+            compactionGeneration: snapshot.metrics.compactionGeneration
         )
         steps.append(StepPerformance(step: steps.count + 1, contextRevision: snapshot.revision, contextBuildMilliseconds: build.milliseconds, modelDispatchMilliseconds: 0, streamMilliseconds: 0))
     }
@@ -94,6 +110,26 @@ final class TurnProfiler: @unchecked Sendable {
     }
 
     func recordUsage(_ usage: ModelUsage) { if enabled { self.usage = usage } }
+
+    func recordBudget(_ budget: ContextBudget, modelWindow: Int) {
+        guard enabled else { return }
+        self.budget = ContextBudgetDebug(modelWindow: modelWindow, outputReserve: budget.reservedOutputTokens, fixedOverhead: budget.fixedOverheadTokens, safetyMargin: budget.safetyMarginTokens, hardInputLimit: budget.hardInputLimit, preferredActive: budget.preferredActiveTokens, highWater: budget.highWaterTokens, lowWater: budget.lowWaterTokens)
+    }
+
+    func recordCompaction(_ result: CompactionResult, budget: ContextBudget) {
+        guard enabled else { return }
+        compactions.append(CompactionTurnPerformance(triggerSource: result.triggerSource.rawValue, triggered: result.triggered, beforeTokens: result.beforeTokens, afterTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims))
+    }
+
+    func recordProtocolValidator(liveBatches: Int) { if enabled { protocolValidatorPassed += 1; liveToolBatchCount = liveBatches } }
+
+    func recordDerivedPaging(l3Hits: Int, l2Hits: Int, l2Promotions: Int, pageIns: Int) {
+        guard enabled else { return }
+        derivedL3Hits = l3Hits
+        sessionL2DerivedHits = l2Hits
+        sessionL2DerivedPromotions = l2Promotions
+        derivedPageIns = pageIns
+    }
 
     func recordPaging(_ metrics: ContextPagingDebugMetrics, turn: ContextPagingTurnMetrics = .zero, scan: ProjectPageStoreUpdate? = nil) {
         guard enabled else { return }
@@ -171,6 +207,9 @@ final class TurnProfiler: @unchecked Sendable {
             denied: tools.filter { $0.permissionDecision == "denied" }.count,
             waitMilliseconds: tools.reduce(0) { $0 + $1.permissionWaitMilliseconds }
         )
+        let estimated = context?.estimatedTokens
+        let actual = usage?.inputTokens
+        let error = estimated.flatMap { estimate in actual.map { actual in estimate == 0 ? 0 : Double(abs(estimate - actual)) / Double(estimate) * 100 } }
         return TurnPerformanceReport(
             sessionID: sessionID,
             totalMilliseconds: total,
@@ -189,7 +228,18 @@ final class TurnProfiler: @unchecked Sendable {
             textCharactersPerSecond: charRate,
             coreOverheadMilliseconds: max(0, total - measured),
             contextPaging: paging,
-            permissions: permissions
+            permissions: permissions,
+            contextBudget: budget,
+            compactions: compactions,
+            protocolValidatorPassed: protocolValidatorPassed,
+            liveToolBatchCount: liveToolBatchCount,
+            estimatedPromptTokens: estimated,
+            actualPromptTokens: actual,
+            estimatorErrorPercent: error,
+            derivedL3Hits: derivedL3Hits,
+            sessionL2DerivedHits: sessionL2DerivedHits,
+            sessionL2DerivedPromotions: sessionL2DerivedPromotions,
+            derivedPageIns: derivedPageIns
         )
     }
 }

@@ -1,25 +1,34 @@
 import Foundation
+import Darwin
 import Testing
 import LingXiProtocol
 import LingXiCore
 import LingXiClient
 
-/// 真实 Provider smoke test。
-/// 仅当 LINGXI_PROVIDER_BASE_URL、LINGXI_PROVIDER_MODEL 与 LINGXI_WORKSPACE_ROOT 同时存在时执行；
-/// 否则静默跳过，CI / swift test 永不因缺 Key 失败。
+/// 真实 Provider smoke test。默认跳过，避免离线测试消耗 Provider 配额。
 struct RealProviderSmokeTests {
-    @Test func realInferenceSmoke() async throws {
+    private func send(_ client: LingXiClient, sessionID: SessionID, _ prompt: String) async throws -> String {
+        let stream = try await client.sendMessage(sessionID: sessionID, content: prompt)
+        var text = ""
+        for try await chunk in stream where chunk.kind == .text { text += chunk.text }
+        try await Task.sleep(for: .seconds(5))
+        return text
+    }
+
+    @Test func realProviderPhaseNineSmoke() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
+              let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
               let model = environment[ProviderSetup.modelKey], !model.isEmpty,
               let workspacePath = environment["LINGXI_WORKSPACE_ROOT"], !workspacePath.isEmpty
         else {
-            print("[smoke] 跳过：未设置 Provider 或 LINGXI_WORKSPACE_ROOT")
             return
         }
 
         let (assembly, missing) = ProviderSetup.resolve(environment)
         #expect(missing.isEmpty)
+        setenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS", "372", 1)
+        setenv("LINGXI_PERF_DEBUG", "1", 1)
         let host = try CoreHost(
             providerAssembly: assembly,
             workspaceRoot: try WorkspaceRoot(path: workspacePath),
@@ -30,19 +39,117 @@ struct RealProviderSmokeTests {
 
         do {
             let sessionID = try await client.createSession()
-            let stream = try await client.sendMessage(
-                sessionID: sessionID,
-                content: "请读取当前项目的 README.md，然后告诉我这个项目叫什么。"
-            )
-            var text = ""
-            for try await chunk in stream {
-                if chunk.kind == .text { text += chunk.text }
+            var anchors: [(name: String, messageID: MessageID)] = []
+            var transition: (name: String, messageID: MessageID)?
+            for index in 1...12 {
+                let before = try await client.context(sessionID)
+                let name = String(format: "Anchor-%02d", index)
+                _ = try await send(client, sessionID: sessionID, "记住会话标记 \(name)。")
+                let session = try await client.session(sessionID)
+                let message = try #require(session.messages.last { $0.role == .user && $0.content.contains(name) })
+                anchors.append((name, message.id))
+                let after = try #require(await client.context(sessionID))
+                if transition == nil, let before {
+                    transition = anchors.dropLast().first { anchor in
+                        before.units.first { $0.messageID == anchor.messageID }?.residency == .active &&
+                        after.units.first { $0.messageID == anchor.messageID }?.residency == .derived
+                    }
+                }
             }
-            let snapshot = try await client.session(sessionID)
-            #expect(snapshot.messages.contains { $0.parts.contains { if case .toolCall = $0 { true } else { false } } })
-            #expect(snapshot.messages.contains { $0.parts.contains { if case let .toolResult(result) = $0 { result.success } else { false } } })
-            #expect(text.lowercased().contains("lingxiagent"), "模型应根据 README 回答项目名称")
-            print("[smoke] model=\(assembly.modelID.rawValue) assistant=\(text)")
+            for prompt in [
+                "说明 ToolRuntime 与 PermissionEngine 的关系。直接回答，不调用工具。",
+                "说明 SessionRuntime 与 ContextPager 的关系。直接回答，不调用工具。",
+                "说明 Symbol Index 与 Reference Index 如何参与 Context retrieval。直接回答，不调用工具。",
+            ] {
+                let before = try await client.context(sessionID)
+                _ = try await send(client, sessionID: sessionID, prompt)
+                let after = try #require(await client.context(sessionID))
+                if transition == nil, let before {
+                    transition = anchors.first { anchor in
+                        before.units.first { $0.messageID == anchor.messageID }?.residency == .active &&
+                        after.units.first { $0.messageID == anchor.messageID }?.residency == .derived
+                    }
+                }
+            }
+            let beforeCompact = try #require(await client.context(sessionID))
+            let performanceBeforeCompact = try #require(await client.performance(sessionID))
+            let budget = try #require(performanceBeforeCompact.contextBudget)
+            #expect(budget.lowWater > beforeCompact.mandatoryTokens + 256)
+            print("[rehydration-budget] mandatory=\(beforeCompact.mandatoryTokens) preferred=\(budget.preferredActive) low=\(budget.lowWater) active=\(beforeCompact.estimatedTokens) project=\(beforeCompact.projectTokens) session=\(beforeCompact.recentSessionTokens)")
+            let canonical = try await client.session(sessionID)
+            var compact = try await client.compact(sessionID)
+            var afterCompact = try #require(await client.context(sessionID))
+            #expect(compact.triggerSource == "manual")
+            #expect(compact.beforeEstimatedTokens > compact.afterEstimatedTokens)
+            #expect(compact.reductionPercent > 0)
+            if transition == nil {
+                transition = anchors.first { anchor in
+                    beforeCompact.units.first { $0.messageID == anchor.messageID }?.residency == .active &&
+                    afterCompact.units.first { $0.messageID == anchor.messageID }?.residency == .derived
+                }
+            }
+            if !anchors.contains(where: { anchor in afterCompact.units.first { $0.messageID == anchor.messageID }?.residency == .derived }) {
+                for index in 13...16 {
+                    let beforeSend = try #require(await client.context(sessionID))
+                    let name = String(format: "Anchor-%02d", index)
+                    _ = try await send(client, sessionID: sessionID, "记住会话标记 \(name)。")
+                    let session = try await client.session(sessionID)
+                    let message = try #require(session.messages.last { $0.role == .user && $0.content.contains(name) })
+                    anchors.append((name, message.id))
+                    let afterSend = try #require(await client.context(sessionID))
+                    if transition == nil {
+                        transition = anchors.dropLast().first { anchor in
+                            beforeSend.units.first { $0.messageID == anchor.messageID }?.residency == .active &&
+                            afterSend.units.first { $0.messageID == anchor.messageID }?.residency == .derived
+                        }
+                    }
+                    let canonicalBeforeRetry = try await client.session(sessionID)
+                    compact = try await client.compact(sessionID)
+                    afterCompact = try #require(await client.context(sessionID))
+                    #expect(try await client.session(sessionID) == canonicalBeforeRetry)
+                    if transition == nil {
+                        transition = anchors.first { anchor in
+                            afterSend.units.first { $0.messageID == anchor.messageID }?.residency == .active &&
+                            afterCompact.units.first { $0.messageID == anchor.messageID }?.residency == .derived
+                        }
+                    }
+                    if anchors.contains(where: { anchor in afterCompact.units.first { $0.messageID == anchor.messageID }?.residency == .derived }) { break }
+                }
+            }
+            print("[rehydration-compact] before=\(compact.beforeEstimatedTokens) after=\(compact.afterEstimatedTokens) reduction=\(compact.reductionTokens) percent=\(String(format: "%.2f", compact.reductionPercent)) low=\(compact.targetLowWater) mandatory=\(compact.mandatoryFloor) paged=\(compact.unitsPagedOut) projectOffloads=\(compact.projectBackedOffloads) derivedCreated=\(compact.derivedPagesCreated) historical=\(compact.historicalToolBatchesPagedOut) generation=\(compact.compactionGeneration)")
+            guard let marker = transition ?? anchors.first(where: { anchor in
+                afterCompact.units.first { $0.messageID == anchor.messageID }?.residency == .derived
+            }) else {
+                print("[rehydration-after] active=\(afterCompact.estimatedTokens) project=\(afterCompact.projectTokens) session=\(afterCompact.recentSessionTokens) mandatory=\(afterCompact.mandatoryTokens)")
+                Issue.record("没有 historical ordinary user unit 被换出到 Derived L3")
+                await host.shutdown()
+                return
+            }
+            let markerUnit = try #require(afterCompact.units.first { $0.messageID == marker.messageID })
+            #expect(markerUnit.residency == .derived)
+            let markerPageID = try #require(markerUnit.derivedPageID)
+            #expect(!afterCompact.materializedDerivedPageIDs.contains(markerPageID))
+            let canonicalAfterCompact = try await client.session(sessionID)
+            #expect(Array(canonicalAfterCompact.messages.prefix(canonical.messages.count)) == canonical.messages)
+            let cacheBefore = try await client.projectCache()
+            let answer = try await send(client, sessionID: sessionID, "我之前让你记住的 \(marker.name) 是什么？直接回答，不调用工具。")
+            #expect(answer.contains(marker.name))
+            #expect((try await client.session(sessionID)).messages.count > canonical.messages.count)
+            let cache = try await client.projectCache()
+            #expect(cache.derivedL3Hits > cacheBefore.derivedL3Hits)
+            #expect(cache.sessionL2DerivedPromotions > cacheBefore.sessionL2DerivedPromotions || cache.sessionL2DerivedHits > cacheBefore.sessionL2DerivedHits)
+            #expect(cache.derivedPageInCount > cacheBefore.derivedPageInCount)
+            let rehydrated = try #require(await client.context(sessionID))
+            #expect(rehydrated.derivedPageCount > 0)
+            #expect(rehydrated.derivedTokens > 0)
+            #expect(rehydrated.materializedDerivedPageIDs.contains(markerPageID))
+            let performance = try #require(await client.performance(sessionID))
+            #expect(performance.derivedL3Hits > 0)
+            #expect(performance.sessionL2DerivedPromotions > 0 || performance.sessionL2DerivedHits > 0)
+            #expect(performance.derivedPageIns > 0)
+            #expect(afterCompact.compactionGeneration > 0)
+            unsetenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS")
+            unsetenv("LINGXI_PERF_DEBUG")
             await host.shutdown()
         } catch {
             await host.shutdown()

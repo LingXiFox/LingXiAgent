@@ -1,4 +1,5 @@
 import Foundation
+import LingXiProtocol
 
 /// L2 是有字符上限的 LRU 工作集，页面超出上限时只保留在 L3。
 public actor L2WorkingSet {
@@ -351,6 +352,21 @@ public actor ContextPager {
     public func recordInjection(_ pages: [ContextPage]) {
         latestInjectedPages = pages.count
         latestInjectedCharacters = pages.reduce(0) { $0 + $1.characterCount }
+    }
+
+    /// Session/Derived L3 与 Project L2/L3 共用本 pager 进入 L1，绝不产生 Provider tool role。
+    public func pageInDerived(store: DerivedContextStore, sessionID: SessionID, query: String, remainingTokens: Int) async -> [ContextEntry] {
+        var remaining = max(0, remainingTokens)
+        var entries: [ContextEntry] = []
+        let estimator = ConservativeTokenEstimator()
+        for page in await store.search(sessionID: sessionID, query: query, limit: 4) {
+            let entry = ContextEntry(messageID: MessageID(page.id), role: .system, source: .derivedPage, part: .text("[Session context]\n\(page.content)"))
+            let cost = estimator.estimate(entries: [entry])
+            guard cost <= remaining else { break }
+            entries.append(entry)
+            remaining -= cost
+        }
+        return entries
     }
 
     private func resolve(_ pages: [ContextPage]) async -> [ContextPage] {

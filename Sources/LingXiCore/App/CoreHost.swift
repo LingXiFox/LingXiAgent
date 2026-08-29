@@ -59,7 +59,8 @@ public actor CoreHost: CoreEndpoint {
         gateway = ModelGateway(
             provider: effective.provider,
             modelID: effective.modelID.rawValue.isEmpty ? nil : effective.modelID,
-            missingRequirements: providerAssembly == nil ? missing : []
+            missingRequirements: providerAssembly == nil ? missing : [],
+            contextProfile: effective.contextProfile
         )
     }
 
@@ -99,6 +100,7 @@ public actor CoreHost: CoreEndpoint {
             guard case let .getContext(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getContext 参数缺失")) }
             let agent = try await requireAgent()
             guard let snapshot = await agent.contextSnapshot(sessionID) else { return .context(nil) }
+            let units = await agent.contextUnitStates(sessionID)
             return .context(ContextDebugSnapshot(
                 sessionID: snapshot.sessionID,
                 revision: snapshot.revision,
@@ -108,7 +110,17 @@ public actor CoreHost: CoreEndpoint {
                 sourceCounts: Dictionary(uniqueKeysWithValues: snapshot.metrics.sourceCounts.map { ($0.key.rawValue, $0.value) }),
                 sessionCharacterCount: snapshot.metrics.sessionCharacterCount,
                 projectCharacterCount: snapshot.metrics.projectCharacterCount,
-                projectPageCount: snapshot.metrics.projectPageCount
+                projectPageCount: snapshot.metrics.projectPageCount,
+                estimatedTokens: snapshot.metrics.estimatedTokens,
+                mandatoryTokens: snapshot.metrics.mandatoryTokens,
+                recentSessionTokens: snapshot.metrics.recentSessionTokens,
+                projectTokens: snapshot.metrics.projectTokens,
+                derivedTokens: snapshot.metrics.derivedTokens,
+                derivedPageCount: snapshot.metrics.derivedPageCount,
+                liveToolBatchCount: snapshot.metrics.liveToolBatchCount,
+                compactionGeneration: snapshot.metrics.compactionGeneration,
+                units: units,
+                materializedDerivedPageIDs: snapshot.entries.compactMap { $0.source == .derivedPage ? $0.messageID?.rawValue : nil }
             ))
         }
         await bus.add(.getPerformance) { [self] command in
@@ -127,6 +139,11 @@ public actor CoreHost: CoreEndpoint {
         await bus.add(.getProjectCache) { [self] _ in
             let agent = try await requireAgent()
             return .projectCache(await agent.projectCache())
+        }
+        await bus.add(.compactSession) { [self] command in
+            guard case let .compactSession(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "compactSession 参数缺失")) }
+            let agent = try await requireAgent()
+            return .compactSession(try await agent.compact(sessionID))
         }
         // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
 

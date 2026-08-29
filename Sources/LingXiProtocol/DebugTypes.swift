@@ -1,4 +1,26 @@
 /// 面向 Client 的 L1 摘要，不携带完整上下文内容。
+public enum ContextUnitResidency: String, Sendable, Equatable, Codable {
+    case active
+    case pagedOut
+    case derived
+    case superseded
+}
+
+/// 只暴露 provenance，不暴露原始 Session 正文。
+public struct ContextUnitDebugSnapshot: Sendable, Equatable, Codable {
+    public let messageID: MessageID
+    public let residency: ContextUnitResidency
+    public let derivedPageID: String?
+    public let contentHash: String?
+
+    public init(messageID: MessageID, residency: ContextUnitResidency, derivedPageID: String? = nil, contentHash: String? = nil) {
+        self.messageID = messageID
+        self.residency = residency
+        self.derivedPageID = derivedPageID
+        self.contentHash = contentHash
+    }
+}
+
 public struct ContextDebugSnapshot: Sendable, Equatable, Codable {
     public let sessionID: SessionID
     public let revision: UInt64
@@ -9,8 +31,18 @@ public struct ContextDebugSnapshot: Sendable, Equatable, Codable {
     public let sessionCharacterCount: Int
     public let projectCharacterCount: Int
     public let projectPageCount: Int
+    public let estimatedTokens: Int
+    public let mandatoryTokens: Int
+    public let recentSessionTokens: Int
+    public let projectTokens: Int
+    public let derivedTokens: Int
+    public let derivedPageCount: Int
+    public let liveToolBatchCount: Int
+    public let compactionGeneration: Int
+    public let units: [ContextUnitDebugSnapshot]
+    public let materializedDerivedPageIDs: [String]
 
-    public init(sessionID: SessionID, revision: UInt64, messageCount: Int, partCount: Int, characterCount: Int, sourceCounts: [String: Int], sessionCharacterCount: Int = 0, projectCharacterCount: Int = 0, projectPageCount: Int = 0) {
+    public init(sessionID: SessionID, revision: UInt64, messageCount: Int, partCount: Int, characterCount: Int, sourceCounts: [String: Int], sessionCharacterCount: Int = 0, projectCharacterCount: Int = 0, projectPageCount: Int = 0, estimatedTokens: Int = 0, mandatoryTokens: Int = 0, recentSessionTokens: Int = 0, projectTokens: Int = 0, derivedTokens: Int = 0, derivedPageCount: Int = 0, liveToolBatchCount: Int = 0, compactionGeneration: Int = 0, units: [ContextUnitDebugSnapshot] = [], materializedDerivedPageIDs: [String] = []) {
         self.sessionID = sessionID
         self.revision = revision
         self.messageCount = messageCount
@@ -20,6 +52,16 @@ public struct ContextDebugSnapshot: Sendable, Equatable, Codable {
         self.sessionCharacterCount = sessionCharacterCount
         self.projectCharacterCount = projectCharacterCount
         self.projectPageCount = projectPageCount
+        self.estimatedTokens = estimatedTokens
+        self.mandatoryTokens = mandatoryTokens
+        self.recentSessionTokens = recentSessionTokens
+        self.projectTokens = projectTokens
+        self.derivedTokens = derivedTokens
+        self.derivedPageCount = derivedPageCount
+        self.liveToolBatchCount = liveToolBatchCount
+        self.compactionGeneration = compactionGeneration
+        self.units = units
+        self.materializedDerivedPageIDs = materializedDerivedPageIDs
     }
 }
 
@@ -199,8 +241,16 @@ public struct ProjectCacheDebugSnapshot: Sendable, Equatable, Codable {
     public let symbolIndexedFiles: Int
     public let referenceCount: Int
     public let dependencyCount: Int
+    public let sessionL2DerivedPages: Int
+    public let derivedL3Pages: Int
+    public let derivedPageOutCount: Int
+    public let derivedPageInCount: Int
+    public let historicalToolEvidencePages: Int
+    public let derivedL3Hits: Int
+    public let sessionL2DerivedHits: Int
+    public let sessionL2DerivedPromotions: Int
 
-    public init(l2Pages: Int, l2Characters: Int, l2HitRate: Double?, l3Pages: Int, staleRebuilds: Int, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, referenceCount: Int = 0, dependencyCount: Int = 0) {
+    public init(l2Pages: Int, l2Characters: Int, l2HitRate: Double?, l3Pages: Int, staleRebuilds: Int, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, referenceCount: Int = 0, dependencyCount: Int = 0, sessionL2DerivedPages: Int = 0, derivedL3Pages: Int = 0, derivedPageOutCount: Int = 0, derivedPageInCount: Int = 0, historicalToolEvidencePages: Int = 0, derivedL3Hits: Int = 0, sessionL2DerivedHits: Int = 0, sessionL2DerivedPromotions: Int = 0) {
         self.l2Pages = l2Pages
         self.l2Characters = l2Characters
         self.l2HitRate = l2HitRate
@@ -210,6 +260,49 @@ public struct ProjectCacheDebugSnapshot: Sendable, Equatable, Codable {
         self.symbolIndexedFiles = symbolIndexedFiles
         self.referenceCount = referenceCount
         self.dependencyCount = dependencyCount
+        self.sessionL2DerivedPages = sessionL2DerivedPages
+        self.derivedL3Pages = derivedL3Pages
+        self.derivedPageOutCount = derivedPageOutCount
+        self.derivedPageInCount = derivedPageInCount
+        self.historicalToolEvidencePages = historicalToolEvidencePages
+        self.derivedL3Hits = derivedL3Hits
+        self.sessionL2DerivedHits = sessionL2DerivedHits
+        self.sessionL2DerivedPromotions = sessionL2DerivedPromotions
+    }
+}
+
+public struct ContextBudgetDebug: Sendable, Equatable, Codable {
+    public let modelWindow: Int
+    public let outputReserve: Int
+    public let fixedOverhead: Int
+    public let safetyMargin: Int
+    public let hardInputLimit: Int
+    public let preferredActive: Int
+    public let highWater: Int
+    public let lowWater: Int
+
+    public init(modelWindow: Int, outputReserve: Int, fixedOverhead: Int, safetyMargin: Int, hardInputLimit: Int, preferredActive: Int, highWater: Int, lowWater: Int) {
+        self.modelWindow = modelWindow; self.outputReserve = outputReserve; self.fixedOverhead = fixedOverhead; self.safetyMargin = safetyMargin; self.hardInputLimit = hardInputLimit; self.preferredActive = preferredActive; self.highWater = highWater; self.lowWater = lowWater
+    }
+}
+
+public struct CompactionTurnPerformance: Sendable, Equatable, Codable {
+    public let triggerSource: String
+    public let triggered: Bool
+    public let beforeTokens: Int
+    public let afterTokens: Int
+    public let targetLowWater: Int
+    public let mandatoryFloor: Int
+    public let unitsKept: Int
+    public let unitsPagedOut: Int
+    public let historicalToolBatchesPagedOut: Int
+    public let projectBackedOffloads: Int
+    public let derivedPagesCreated: Int
+    public let redundantDrops: Int
+    public let emergencyTrims: Int
+
+    public init(triggerSource: String, triggered: Bool, beforeTokens: Int, afterTokens: Int, targetLowWater: Int, mandatoryFloor: Int, unitsKept: Int, unitsPagedOut: Int, historicalToolBatchesPagedOut: Int, projectBackedOffloads: Int, derivedPagesCreated: Int, redundantDrops: Int, emergencyTrims: Int) {
+        self.triggerSource = triggerSource; self.triggered = triggered; self.beforeTokens = beforeTokens; self.afterTokens = afterTokens; self.targetLowWater = targetLowWater; self.mandatoryFloor = mandatoryFloor; self.unitsKept = unitsKept; self.unitsPagedOut = unitsPagedOut; self.historicalToolBatchesPagedOut = historicalToolBatchesPagedOut; self.projectBackedOffloads = projectBackedOffloads; self.derivedPagesCreated = derivedPagesCreated; self.redundantDrops = redundantDrops; self.emergencyTrims = emergencyTrims
     }
 }
 
@@ -232,8 +325,19 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
     public let coreOverheadMilliseconds: Double
     public let contextPaging: ContextPagingPerformance?
     public let permissions: PermissionPerformance
+    public let contextBudget: ContextBudgetDebug?
+    public let compactions: [CompactionTurnPerformance]
+    public let protocolValidatorPassed: Int
+    public let liveToolBatchCount: Int
+    public let estimatedPromptTokens: Int?
+    public let actualPromptTokens: Int?
+    public let estimatorErrorPercent: Double?
+    public let derivedL3Hits: Int
+    public let sessionL2DerivedHits: Int
+    public let sessionL2DerivedPromotions: Int
+    public let derivedPageIns: Int
 
-    public init(sessionID: SessionID, totalMilliseconds: Double, stepCount: Int, context: ContextDebugSnapshot?, steps: [StepPerformance], firstTextMilliseconds: Double?, firstReasoningMilliseconds: Double?, textChunks: Int, reasoningChunks: Int, textCharacters: Int, reasoningCharacters: Int, tools: [ToolPerformance], usage: ModelUsage?, outputTokensPerSecond: Double?, textCharactersPerSecond: Double?, coreOverheadMilliseconds: Double = 0, contextPaging: ContextPagingPerformance? = nil, permissions: PermissionPerformance = PermissionPerformance(autoApproved: 0, asked: 0, denied: 0, waitMilliseconds: 0)) {
+    public init(sessionID: SessionID, totalMilliseconds: Double, stepCount: Int, context: ContextDebugSnapshot?, steps: [StepPerformance], firstTextMilliseconds: Double?, firstReasoningMilliseconds: Double?, textChunks: Int, reasoningChunks: Int, textCharacters: Int, reasoningCharacters: Int, tools: [ToolPerformance], usage: ModelUsage?, outputTokensPerSecond: Double?, textCharactersPerSecond: Double?, coreOverheadMilliseconds: Double = 0, contextPaging: ContextPagingPerformance? = nil, permissions: PermissionPerformance = PermissionPerformance(autoApproved: 0, asked: 0, denied: 0, waitMilliseconds: 0), contextBudget: ContextBudgetDebug? = nil, compactions: [CompactionTurnPerformance] = [], protocolValidatorPassed: Int = 0, liveToolBatchCount: Int = 0, estimatedPromptTokens: Int? = nil, actualPromptTokens: Int? = nil, estimatorErrorPercent: Double? = nil, derivedL3Hits: Int = 0, sessionL2DerivedHits: Int = 0, sessionL2DerivedPromotions: Int = 0, derivedPageIns: Int = 0) {
         self.sessionID = sessionID
         self.totalMilliseconds = totalMilliseconds
         self.stepCount = stepCount
@@ -252,5 +356,16 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
         self.coreOverheadMilliseconds = coreOverheadMilliseconds
         self.contextPaging = contextPaging
         self.permissions = permissions
+        self.contextBudget = contextBudget
+        self.compactions = compactions
+        self.protocolValidatorPassed = protocolValidatorPassed
+        self.liveToolBatchCount = liveToolBatchCount
+        self.estimatedPromptTokens = estimatedPromptTokens
+        self.actualPromptTokens = actualPromptTokens
+        self.estimatorErrorPercent = estimatorErrorPercent
+        self.derivedL3Hits = derivedL3Hits
+        self.sessionL2DerivedHits = sessionL2DerivedHits
+        self.sessionL2DerivedPromotions = sessionL2DerivedPromotions
+        self.derivedPageIns = derivedPageIns
     }
 }

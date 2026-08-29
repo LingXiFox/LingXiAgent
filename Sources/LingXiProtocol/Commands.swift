@@ -14,6 +14,7 @@ public enum ClientCommand: Sendable, Equatable {
     case getPermissionConfiguration
     case setPermissionConfiguration(PermissionConfiguration)
     case getProjectCache
+    case compactSession(sessionID: SessionID)
     /// 数据面命令：在 Session 中发起一轮对话。
     case sendMessage(sessionID: SessionID, content: String)
 }
@@ -35,6 +36,7 @@ extension ClientCommand {
         case getPermissionConfiguration
         case setPermissionConfiguration
         case getProjectCache
+        case compactSession
         case sendMessage
     }
 
@@ -54,6 +56,7 @@ extension ClientCommand {
         case .getPermissionConfiguration: .getPermissionConfiguration
         case .setPermissionConfiguration: .setPermissionConfiguration
         case .getProjectCache: .getProjectCache
+        case .compactSession: .compactSession
         case .sendMessage: .sendMessage
         }
     }

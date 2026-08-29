@@ -14,8 +14,12 @@ public actor SessionRuntime {
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
+    private let compactor: ContextCompactor
+    private let budgetPlanner: ContextBudgetPlanner
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private var turnRunning = false
+    private var toolBatches: [ToolExchangeBatch] = []
+    private var compactionGeneration = 0
 
     init(
         store: any SessionStore,
@@ -27,7 +31,9 @@ public actor SessionRuntime {
         performanceStore: PerformanceStore,
         contextPager: ContextPager,
         projectScanner: ProjectScanner,
-        eventSink: @escaping @Sendable (CoreEvent) async -> Void
+        eventSink: @escaping @Sendable (CoreEvent) async -> Void,
+        compactor: ContextCompactor,
+        budgetPlanner: ContextBudgetPlanner
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -39,6 +45,8 @@ public actor SessionRuntime {
         self.contextPager = contextPager
         self.projectScanner = projectScanner
         self.eventSink = eventSink
+        self.compactor = compactor
+        self.budgetPlanner = budgetPlanner
     }
 
     /// 启动一轮对话并立即返回 DMA 通道；同一 Session 只允许一个活动 turn。
@@ -90,7 +98,8 @@ public actor SessionRuntime {
                 let userMessages = session.messages.compactMap { $0.role == .user ? $0.parts.compactMap { if case let .text(text) = $0 { text } else { nil } }.joined() : nil }
                 let query = ContextQuery(currentTask: task, recentUserMessages: Array(userMessages.dropLast()))
                 let pagerResult = await contextPager.query(projectRoot: projectScanner.root, query: query)
-                let pages = pagerResult.pages.filter { page in
+                let projectPages = pagerResult.pages
+                let pages = projectPages.filter { page in
                     !session.messages.contains { message in
                         message.parts.contains { part in
                             if case let .toolResult(result) = part { return result.content == page.content }
@@ -98,7 +107,27 @@ public actor SessionRuntime {
                         }
                     }
                 }
-                let context = await contextEngine.snapshot(for: session, projectPages: pages)
+                let toolTokens = ConservativeTokenEstimator().estimate(tools: toolRuntime.definitions)
+                let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
+                profiler.recordBudget(budget, modelWindow: modelBus.gateway.contextProfile.contextWindowTokens)
+                let allEntries = await contextEngine.entries(for: session, projectPages: pages)
+                let compacted = try await compactor.compact(sessionID: sessionID, entries: allEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(projectPages.map(\.content)))
+                profiler.recordCompaction(compacted, budget: budget)
+                if compacted.triggered { compactionGeneration += 1 }
+                // Project retrieval may use recent turns; Derived rehydration must match the current task only.
+                let pageIn = await contextPager.pageInDerived(store: compactor.derivedStore, sessionID: sessionID, query: task, remainingTokens: max(0, budget.hardInputLimit - compacted.afterTokens))
+                let derivedMetrics = await compactor.cacheMetrics(sessionID: sessionID)
+                profiler.recordDerivedPaging(l3Hits: derivedMetrics.l3Hits, l2Hits: derivedMetrics.l2Hits, l2Promotions: derivedMetrics.l2Promotions, pageIns: derivedMetrics.pageInCount)
+                var finalEntries = compacted.entries + pageIn
+                var finalTokens = ConservativeTokenEstimator().estimate(entries: finalEntries)
+                if finalTokens > budget.hardInputLimit {
+                    let emergency = try await compactor.compact(sessionID: sessionID, entries: finalEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(projectPages.map(\.content)), trigger: .emergencyHardLimit)
+                    profiler.recordCompaction(emergency, budget: budget)
+                    finalEntries = emergency.entries
+                    finalTokens = emergency.afterTokens
+                    if emergency.triggered { compactionGeneration += 1 }
+                }
+                let context = await contextEngine.snapshot(for: session, activeEntries: finalEntries, estimatedTokens: finalTokens, mandatoryTokens: compacted.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
                 await contextPager.recordInjection(pages)
                 let paging = await contextPager.debugMetrics(projectRoot: projectScanner.root)
                 profiler.recordPaging(paging, turn: pagerResult.turnMetrics, scan: scan)
@@ -112,8 +141,14 @@ public actor SessionRuntime {
                     tools: toolRuntime.definitions,
                     debugStep: step + 1
                 )
+                if finalTokens > budget.hardInputLimit {
+                    throw CoreError(code: .contextBudgetExceeded, message: "最终模型请求超出输入预算")
+                }
+                try ModelRequestProtocolValidator.validate(context.entries)
+                profiler.recordProtocolValidator(liveBatches: toolBatches.filter { $0.state != .consumed }.count)
                 trace("provider.stream.begin", step: step + 1)
                 let events = try await modelBus.stream(request)
+                consumeSettledBatches()
                 let dispatch = dispatchStarted.duration(to: clock.now)
                 let streamStarted = clock.now
                 var text = ""
@@ -168,7 +203,8 @@ public actor SessionRuntime {
                     throw CoreError(code: .modelStream, message: "Tool batch 含重复 toolCallID")
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: calls.count)
-                try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts)
+                let assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts)
+                toolBatches.append(ToolExchangeBatch(batchID: UUID().uuidString, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) })))
                 trace("session.parts.append.end", step: step + 1, toolCount: calls.count)
 
                 trace("tool.batch.settle.begin", step: step + 1, toolCount: calls.count)
@@ -223,11 +259,12 @@ public actor SessionRuntime {
                     } else {
                         lastSuccessfulRead = nil
                     }
-                    trace("session.parts.append.begin", step: step + 1, toolCallID: call.callID)
-                    try await store.appendMessage(sessionID, role: .tool, parts: [.toolResult(result)])
-                    trace("session.parts.append.end", step: step + 1, toolCallID: call.callID)
                     await eventSink(.toolResult(result))
                 }
+                trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
+                let resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) })
+                settleLatestBatch(resultMessageID: resultMessage.id, results: settled.map(\.result))
+                trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
                 trace("tool.batch.settle.end", step: step + 1, toolCount: calls.count)
             }
             throw CoreError(code: .agentStepLimitReached, message: "Agent Tool Loop 超过 \(Self.maximumAgentSteps) steps")
@@ -267,6 +304,42 @@ public actor SessionRuntime {
             toolName: signature.toolName,
             resource: signature.resource
         )
+    }
+
+    public func compactNow() async throws -> CompactSessionResponse {
+        guard !turnRunning else { throw CoreError(code: .turnAlreadyRunning, message: "对话进行中，不能压缩当前 Session") }
+        let session = try await store.session(sessionID)
+        let task = session.messages.last { $0.role == .user }?.content ?? ""
+        let scan = try await contextPager.rebuildStaleFiles(using: projectScanner)
+        let users = session.messages.compactMap { $0.role == .user ? $0.content : nil }
+        let query = ContextQuery(currentTask: task, recentUserMessages: Array(users.dropLast()))
+        let projectPages = (await contextPager.query(projectRoot: projectScanner.root, query: query)).pages
+        let toolTokens = ConservativeTokenEstimator().estimate(tools: toolRuntime.definitions)
+        let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
+        let entries = await contextEngine.entries(for: session, projectPages: projectPages)
+        let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: budget, batches: toolBatches, projectBackedContents: Set(projectPages.map(\.content)), trigger: .manual)
+        if result.triggered { compactionGeneration += 1 }
+        // /compact only changes L1 residency; the next user task is the sole Derived page-in trigger.
+        _ = await contextEngine.snapshot(for: session, activeEntries: result.entries, estimatedTokens: result.afterTokens, mandatoryTokens: result.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
+        _ = scan
+        return CompactSessionResponse(triggerSource: result.triggerSource.rawValue, beforeEstimatedTokens: result.beforeTokens, afterEstimatedTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims, compactionGeneration: compactionGeneration, noEligibleReduction: result.noEligibleReduction)
+    }
+
+    public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
+        await compactor.cacheMetrics(sessionID: sessionID)
+    }
+
+    public func contextUnitStates() async -> [ContextUnitDebugSnapshot] {
+        await compactor.unitStates(sessionID: sessionID)
+    }
+
+    private func settleLatestBatch(resultMessageID: MessageID, results: [ToolResult]) {
+        guard let index = toolBatches.lastIndex(where: { $0.state == .pending }) else { return }
+        toolBatches[index] = toolBatches[index].with(state: .settledAwaitingConsumption, resultMessageID: resultMessageID, toolResults: results)
+    }
+
+    private func consumeSettledBatches() {
+        toolBatches = toolBatches.map { $0.state == .settledAwaitingConsumption ? $0.with(state: .consumed) : $0 }
     }
 
     private func completeTurn(

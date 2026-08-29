@@ -5,10 +5,12 @@ import LingXiProtocol
 public struct ModelRuntimeAssembly: Sendable {
     public let provider: any ModelProvider
     public let modelID: ModelID
+    public let contextProfile: ModelContextProfile
 
-    public init(provider: any ModelProvider, modelID: ModelID) {
+    public init(provider: any ModelProvider, modelID: ModelID, contextProfile: ModelContextProfile = ModelContextProfile()) {
         self.provider = provider
         self.modelID = modelID
+        self.contextProfile = contextProfile
     }
 }
 

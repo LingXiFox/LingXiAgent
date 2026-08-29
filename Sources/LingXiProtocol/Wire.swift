@@ -89,6 +89,7 @@ extension ClientCommand: Codable {
         case .setPermissionConfiguration:
             self = .setPermissionConfiguration(try container.decode(PermissionConfiguration.self, forKey: .permissionConfiguration))
         case .getProjectCache: self = .getProjectCache
+        case .compactSession: self = .compactSession(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
         case .replyPermission:
             self = .replyPermission(try container.decode(PermissionReply.self, forKey: .permissionReply))
         case .sendMessage:
@@ -105,7 +106,7 @@ extension ClientCommand: Codable {
         switch self {
         case let .getSession(sessionID):
             try container.encode(sessionID, forKey: .sessionID)
-        case let .getContext(sessionID), let .getPerformance(sessionID):
+        case let .getContext(sessionID), let .getPerformance(sessionID), let .compactSession(sessionID):
             try container.encode(sessionID, forKey: .sessionID)
         case let .sendMessage(sessionID, content):
             try container.encode(sessionID, forKey: .sessionID)
@@ -123,11 +124,11 @@ extension ClientCommand: Codable {
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
         case pong, info, state, streamOpened, providerStatus
-        case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, context, performance, permissionConfiguration, projectCache, error
+        case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, context, performance, permissionConfiguration, projectCache, compactSession, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, providerStatus, session, sessions, permissionID, context, performance, permissionConfiguration, projectCache, error
+        case type, info, state, streamID, providerStatus, session, sessions, permissionID, context, performance, permissionConfiguration, projectCache, compactSession, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -159,6 +160,8 @@ extension CoreResponse: Codable {
             self = .permissionConfiguration(try container.decode(PermissionConfiguration.self, forKey: .permissionConfiguration))
         case .projectCache:
             self = .projectCache(try container.decode(ProjectCacheDebugSnapshot.self, forKey: .projectCache))
+        case .compactSession:
+            self = .compactSession(try container.decode(CompactSessionResponse.self, forKey: .compactSession))
         case .error:
             self = .error(try container.decode(CoreError.self, forKey: .error))
         }
@@ -194,6 +197,8 @@ extension CoreResponse: Codable {
             try container.encode(configuration, forKey: .permissionConfiguration)
         case let .projectCache(snapshot):
             try container.encode(snapshot, forKey: .projectCache)
+        case let .compactSession(response):
+            try container.encode(response, forKey: .compactSession)
         case let .error(error):
             try container.encode(error, forKey: .error)
         }
@@ -214,6 +219,7 @@ extension CoreResponse: Codable {
         case .performance: .performance
         case .permissionConfiguration: .permissionConfiguration
         case .projectCache: .projectCache
+        case .compactSession: .compactSession
         case .error: .error
         }
     }

@@ -181,14 +181,13 @@ struct AgentToolLoopTests {
         let snapshot = try await client.session(sessionID)
         #expect(provider.recorder.requests.count == 2)
         #expect(snapshot.messages[1].parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }.count == 2)
-        let results = snapshot.messages.dropFirst(2).prefix(2).compactMap { message -> ToolResult? in
-            guard case let .toolResult(result) = message.parts.first else { return nil }
-            return result
+        let results = snapshot.messages.flatMap { message in
+            message.parts.compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
         }
         #expect(results.count == 2)
         #expect(results[0].success)
         #expect(results[1].error?.code == "duplicateToolCall")
-        #expect(provider.recorder.requests[1].messages.filter { $0.role == .tool }.count == 2)
+        #expect(provider.recorder.requests[1].messages.filter { $0.role == .tool }.count == 1)
     }
 
     @Test func multiToolBatchExecutesInParallelAndSettlesInProviderOrder() async throws {
@@ -208,13 +207,14 @@ struct AgentToolLoopTests {
         for try await _ in stream {}
 
         let snapshot = try await client.session(sessionID)
-        let results = snapshot.messages.compactMap { message -> ToolResult? in
-            guard case let .toolResult(result) = message.parts.first else { return nil }
-            return result
+        let results = snapshot.messages.flatMap { message in
+            message.parts.compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
         }
         #expect(provider.recorder.requests.count == 2)
         #expect(results.map(\.callID) == [slow.callID, fast.callID, failed.callID])
         #expect(results[0].success && results[1].success && !results[2].success)
+        #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
+        #expect(snapshot.messages.first { $0.role == .tool }?.parts.count == 3)
         #expect(await recorder.snapshot().first == "fast")
         #expect(snapshot.messages.last?.content == "settled")
     }

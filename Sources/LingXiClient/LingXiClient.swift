@@ -130,6 +130,13 @@ public struct LingXiClient: Sendable {
         return snapshot
     }
 
+    public func compact(_ sessionID: SessionID) async throws -> CompactSessionResponse {
+        guard case let .compactSession(response) = try await connection.send(.compactSession(sessionID: sessionID)) else {
+            throw CoreError(code: .transport, message: "compactSession 收到非预期响应")
+        }
+        return response
+    }
+
     /// 在 Session 中发起一轮对话，返回 Streaming DMA 通道。
     /// text/reasoning delta 从通道逐块流出（kind 区分）；
     /// turnCompleted / turnFailed 经 events() 交付。

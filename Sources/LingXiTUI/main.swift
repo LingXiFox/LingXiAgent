@@ -102,9 +102,17 @@ func showContext(_ client: LingXiClient, sessionID: SessionID) async {
         print("Messages: \(snapshot.messageCount)")
         print("Parts: \(snapshot.partCount)")
         print("Characters: \(snapshot.characterCount)")
+        print("Estimated tokens: \(snapshot.estimatedTokens)")
+        print("Mandatory tokens: \(snapshot.mandatoryTokens)")
+        print("Recent session tokens: \(snapshot.recentSessionTokens)")
         print("Session characters: \(snapshot.sessionCharacterCount)")
         print("Project pages: \(snapshot.projectPageCount)")
         print("Project characters: \(snapshot.projectCharacterCount)")
+        print("Project tokens: \(snapshot.projectTokens)")
+        print("Derived pages: \(snapshot.derivedPageCount) / \(snapshot.derivedTokens) tokens")
+        print("Live tool batches: \(snapshot.liveToolBatchCount)")
+        print("Compaction generation: \(snapshot.compactionGeneration)")
+        print("Context unit provenance: \(snapshot.units.count)")
         for key in snapshot.sourceCounts.keys.sorted() { print("\(key): \(snapshot.sourceCounts[key] ?? 0)") }
         try await showCache(client)
     } catch { print("\(dim)[context 失败: \(error)]\(reset)") }
@@ -114,6 +122,7 @@ func showCache(_ client: LingXiClient) async throws {
     let cache = try await client.projectCache()
     print("L2: \(cache.l2Pages) pages / \(cache.l2Characters) chars / hit rate \(cache.l2HitRate.map { String(format: "%.1f", $0 * 100) + "%" } ?? "-")")
     print("L3: \(cache.l3Pages) pages / \(cache.symbolCount) symbols in \(cache.symbolIndexedFiles) Swift files / \(cache.referenceCount) references / \(cache.dependencyCount) dependencies / stale rebuilds \(cache.staleRebuilds)")
+    print("Session context: L2 \(cache.sessionL2DerivedPages) derived pages / L3 \(cache.derivedL3Pages) pages / L3 hits \(cache.derivedL3Hits) / L2 hits \(cache.sessionL2DerivedHits) / promotions \(cache.sessionL2DerivedPromotions) / page out \(cache.derivedPageOutCount) / page in \(cache.derivedPageInCount) / historical tool evidence \(cache.historicalToolEvidencePages)")
 }
 
 func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
@@ -152,6 +161,18 @@ func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
             print("Scanner Project: checked \(paging.filesChecked) / rebuilt \(paging.filesRebuilt) / \(paging.scanMilliseconds) ms")
             print("Pager Turn: candidates \(turn.candidatePages) / \(turn.candidateCharacters) chars; selected \(turn.selectedPages) / \(turn.selectedCharacters) chars; injected \(turn.injectedPages) / \(turn.injectedCharacters) chars")
             print("Retrieval: \(String(format: "%.2f", paging.retrievalMilliseconds)) ms / materialize: \(String(format: "%.2f", paging.materializationMilliseconds)) ms")
+        }
+        if let budget = report.contextBudget {
+            print("Context budget: window \(budget.modelWindow) / reserve \(budget.outputReserve) / fixed \(budget.fixedOverhead) / margin \(budget.safetyMargin) / hard \(budget.hardInputLimit) / preferred \(budget.preferredActive) / high \(budget.highWater) / low \(budget.lowWater)")
+        }
+        for compact in report.compactions {
+            let reduction = compact.beforeTokens == 0 ? 0 : Double(compact.beforeTokens - compact.afterTokens) / Double(compact.beforeTokens) * 100
+            print("Compaction \(compact.triggerSource): \(compact.beforeTokens) -> \(compact.afterTokens) tokens (\(String(format: "%.1f", reduction))%) / target \(compact.targetLowWater) / mandatory \(compact.mandatoryFloor) / paged \(compact.unitsPagedOut)")
+        }
+        print("Protocol validator: \(report.protocolValidatorPassed) passed / live batches \(report.liveToolBatchCount)")
+        print("Derived paging: L3 hits \(report.derivedL3Hits) / Session L2 hits \(report.sessionL2DerivedHits) / promotions \(report.sessionL2DerivedPromotions) / page-in \(report.derivedPageIns)")
+        if let estimated = report.estimatedPromptTokens {
+            print("Estimator: estimated \(estimated) / actual \(report.actualPromptTokens.map(String.init) ?? "unavailable") / error \(report.estimatorErrorPercent.map { String(format: "%.1f%%", $0) } ?? "unavailable")")
         }
         print("Permissions: auto \(report.permissions.autoApproved) / asked \(report.permissions.asked) / denied \(report.permissions.denied) / wait \(String(format: "%.2f", report.permissions.waitMilliseconds)) ms")
         for step in report.steps {
@@ -223,7 +244,7 @@ func runTUI() async {
         return
     }
     print("Session: \(sessionID.rawValue)")
-    print("\(dim)输入 prompt 开始对话；new/history/context/perf/permission/mode/cache/quit。\(reset)")
+    print("\(dim)输入 prompt 开始对话；new/history/context/perf/permission/mode/cache/compact/quit。\(reset)")
 
     while let raw = readLine() {
         let line = raw.trimmingCharacters(in: .whitespaces)
@@ -249,6 +270,11 @@ func runTUI() async {
         case "cache":
             do { try await showCache(client) }
             catch { print("\(dim)[cache 失败: \(error)]\(reset)") }
+        case "compact", "/compact":
+            do {
+                let result = try await client.compact(sessionID)
+                print("Compaction: \(result.triggerSource) \(result.beforeEstimatedTokens) -> \(result.afterEstimatedTokens) tokens (\(String(format: "%.1f", result.reductionPercent))%)")
+            } catch { print("\(dim)[compact 失败: \(error)]\(reset)") }
         case "permission":
             do {
                 let configuration = try await client.permissionConfiguration()

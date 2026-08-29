@@ -13,7 +13,46 @@ public enum CoreResponse: Sendable, Equatable {
     case performance(TurnPerformanceReport?)
     case permissionConfiguration(PermissionConfiguration)
     case projectCache(ProjectCacheDebugSnapshot)
+    case compactSession(CompactSessionResponse)
     case error(CoreError)
+}
+
+public struct CompactSessionResponse: Sendable, Equatable, Codable {
+    public let triggerSource: String
+    public let beforeEstimatedTokens: Int
+    public let afterEstimatedTokens: Int
+    public let reductionTokens: Int
+    public let reductionPercent: Double
+    public let targetLowWater: Int
+    public let mandatoryFloor: Int
+    public let unitsKept: Int
+    public let unitsPagedOut: Int
+    public let historicalToolBatchesPagedOut: Int
+    public let projectBackedOffloads: Int
+    public let derivedPagesCreated: Int
+    public let redundantDrops: Int
+    public let emergencyTrims: Int
+    public let compactionGeneration: Int
+    public let noEligibleReduction: Bool
+
+    public init(triggerSource: String, beforeEstimatedTokens: Int, afterEstimatedTokens: Int, targetLowWater: Int, mandatoryFloor: Int, unitsKept: Int, unitsPagedOut: Int, historicalToolBatchesPagedOut: Int, projectBackedOffloads: Int, derivedPagesCreated: Int, redundantDrops: Int, emergencyTrims: Int, compactionGeneration: Int, noEligibleReduction: Bool) {
+        self.triggerSource = triggerSource
+        self.beforeEstimatedTokens = beforeEstimatedTokens
+        self.afterEstimatedTokens = afterEstimatedTokens
+        reductionTokens = max(0, beforeEstimatedTokens - afterEstimatedTokens)
+        reductionPercent = beforeEstimatedTokens == 0 ? 0 : Double(reductionTokens) / Double(beforeEstimatedTokens) * 100
+        self.targetLowWater = targetLowWater
+        self.mandatoryFloor = mandatoryFloor
+        self.unitsKept = unitsKept
+        self.unitsPagedOut = unitsPagedOut
+        self.historicalToolBatchesPagedOut = historicalToolBatchesPagedOut
+        self.projectBackedOffloads = projectBackedOffloads
+        self.derivedPagesCreated = derivedPagesCreated
+        self.redundantDrops = redundantDrops
+        self.emergencyTrims = emergencyTrims
+        self.compactionGeneration = compactionGeneration
+        self.noEligibleReduction = noEligibleReduction
+    }
 }
 
 /// 协议层错误。
@@ -37,6 +76,8 @@ public struct CoreError: Sendable, Equatable, Error {
         case permissionCancelled
         case workspaceViolation
         case agentStepLimitReached
+        case contextBudgetExceeded
+        case contextProtocolViolation
     }
 
     public let code: Code
