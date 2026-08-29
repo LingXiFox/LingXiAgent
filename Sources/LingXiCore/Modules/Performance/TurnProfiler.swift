@@ -88,7 +88,7 @@ final class TurnProfiler: @unchecked Sendable {
             permissionWaitMilliseconds: outcome.permissionWait.milliseconds,
             executionMilliseconds: outcome.execution.milliseconds,
             resultCharacters: outcome.result.content.count,
-            permissionDecision: outcome.result.error?.code == CoreError.Code.permissionDenied.rawValue ? "denied" : (outcome.permissionWait > .zero ? "asked" : "autoApproved")
+            permissionDecision: outcome.result.error?.code == CoreError.Code.permissionDenied.rawValue ? "denied" : (outcome.permissionAsked ? "asked" : "autoApproved")
         ))
         if !steps.isEmpty { steps[steps.count - 1].toolCallCount += 1 }
     }
@@ -109,13 +109,40 @@ final class TurnProfiler: @unchecked Sendable {
             l3Queries: metrics.l3Queries, l3Candidates: metrics.l3Candidates, l3Materializations: metrics.l3Materializations,
             staleRebuilds: metrics.staleRebuilds, pageFaults: metrics.pageFaults, promotions: metrics.promotions,
             evictions: metrics.evictions,
-            retrievalMilliseconds: metrics.retrievalMilliseconds, materializationMilliseconds: metrics.materializationMilliseconds
+            retrievalMilliseconds: metrics.retrievalMilliseconds, materializationMilliseconds: metrics.materializationMilliseconds,
+            symbolCount: metrics.symbolCount, symbolIndexedFiles: metrics.symbolIndexedFiles,
+            symbolHints: metrics.symbolHints, symbolExactMatches: metrics.symbolExactMatches,
+            symbolQualifiedExactMatches: metrics.symbolQualifiedExactMatches, symbolFallbackExactMatches: metrics.symbolFallbackExactMatches,
+            symbolPrefixMatches: metrics.symbolPrefixMatches, symbolCandidatePages: metrics.symbolCandidatePages,
+            symbolHintExtractionMilliseconds: metrics.symbolHintExtractionMilliseconds,
+            symbolExactLookupMilliseconds: metrics.symbolExactLookupMilliseconds,
+            symbolPrefixLookupMilliseconds: metrics.symbolPrefixLookupMilliseconds,
+            symbolCandidateMergeMilliseconds: metrics.symbolCandidateMergeMilliseconds,
+            symbolRankingMilliseconds: metrics.symbolRankingMilliseconds,
+            symbolTotalMilliseconds: metrics.symbolTotalMilliseconds,
+            lexicalCandidatePages: metrics.lexicalCandidatePages,
+            currentSourceCandidates: metrics.currentSourceCandidates,
+            documentationCandidates: metrics.documentationCandidates,
+            referenceCandidates: metrics.referenceCandidates
         )
         pagingTurn.lookups += turn.lookups; pagingTurn.hits += turn.hits; pagingTurn.misses += turn.misses
         pagingTurn.pageFaults += turn.pageFaults; pagingTurn.promotions += turn.promotions; pagingTurn.evictions += turn.evictions
         pagingTurn.candidatePages += turn.candidatePages; pagingTurn.candidateCharacters += turn.candidateCharacters
         pagingTurn.selectedPages += turn.selectedPages; pagingTurn.selectedCharacters += turn.selectedCharacters
         pagingTurn.injectedPages += metrics.injectedPages; pagingTurn.injectedCharacters += metrics.injectedCharacters
+        pagingTurn.symbolHints += turn.symbolHints; pagingTurn.symbolExactMatches += turn.symbolExactMatches
+        pagingTurn.symbolQualifiedExactMatches += turn.symbolQualifiedExactMatches; pagingTurn.symbolFallbackExactMatches += turn.symbolFallbackExactMatches
+        pagingTurn.symbolPrefixMatches += turn.symbolPrefixMatches; pagingTurn.symbolCandidatePages += turn.symbolCandidatePages
+        pagingTurn.symbolHintExtractionMilliseconds += turn.symbolHintExtractionMilliseconds
+        pagingTurn.symbolExactLookupMilliseconds += turn.symbolExactLookupMilliseconds
+        pagingTurn.symbolPrefixLookupMilliseconds += turn.symbolPrefixLookupMilliseconds
+        pagingTurn.symbolCandidateMergeMilliseconds += turn.symbolCandidateMergeMilliseconds
+        pagingTurn.symbolRankingMilliseconds += turn.symbolRankingMilliseconds
+        pagingTurn.symbolTotalMilliseconds += turn.symbolTotalMilliseconds
+        pagingTurn.lexicalCandidatePages += turn.lexicalCandidatePages
+        pagingTurn.currentSourceCandidates += turn.currentSourceCandidates
+        pagingTurn.documentationCandidates += turn.documentationCandidates
+        pagingTurn.referenceCandidates += turn.referenceCandidates
         if let scan { pagingTurn.scannerChecked += scan.filesChecked; pagingTurn.scannerRebuilt += scan.filesRebuilt; pagingTurn.scannerMilliseconds += scan.scanMilliseconds }
         paging?.turn = pagingTurn
     }

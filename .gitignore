@@ -9,3 +9,4 @@ DerivedData/
 .env
 .env.*
 !.env.example
+Tests/develop.env

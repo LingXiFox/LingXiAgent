@@ -40,10 +40,12 @@ struct ContextProfilerTests {
     }
 
     @Test func contextQueryKeepsOnlyCurrentAndTwoRecentUserMessages() {
-        let query = ContextQuery(currentTask: "current", recentUserMessages: ["old-1", "old-2", "recent-1", "recent-2"])
-        #expect(query.text == "current\nrecent-1\nrecent-2")
+        let query = ContextQuery(currentTask: "current build ToolRuntime.run() then reload()", recentUserMessages: ["old-1", "old-2", "recent-1", "recent-2"])
+        #expect(query.text == "current build ToolRuntime.run() then reload()\nrecent-1\nrecent-2")
         #expect(query.terms.contains("current"))
         #expect(!query.text.contains("old-1"))
+        #expect(query.symbolHints == ["ToolRuntime.run", "ToolRuntime", "run", "reload"])
+        #expect(ContextQuery(currentTask: "Foo.Bar.baz").symbolHints == ["Foo.Bar.baz", "Foo.Bar", "Foo", "baz"])
     }
 
     @Test func l1AddsProjectPagesAsSystemContextWithoutToolDuplicate() async {
@@ -71,6 +73,7 @@ struct ContextProfilerTests {
         let outcome = ToolRuntime.ExecutionOutcome(
             result: ToolResult(callID: ToolCallID("c"), success: true, content: "file"),
             permissionWait: .zero,
+            permissionAsked: false,
             execution: .zero,
             toolName: "read_file",
             resource: nil
@@ -83,6 +86,8 @@ struct ContextProfilerTests {
         #expect(report?.tools.first?.permissionWaitMilliseconds == 0)
         #expect(report?.tools.first?.executionMilliseconds == 0)
         #expect(report?.usage?.outputTokens == 2)
+        #expect(report?.permissions.autoApproved == 1)
+        #expect(report?.permissions.asked == 0)
         #expect(report?.outputTokensPerSecond == nil, "没有可靠 stream duration 时不伪造 token/s")
     }
 }

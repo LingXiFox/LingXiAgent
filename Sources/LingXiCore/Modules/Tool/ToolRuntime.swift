@@ -43,6 +43,7 @@ public struct ToolRuntime: Sendable {
     public struct ExecutionOutcome: Sendable {
         public let result: ToolResult
         public let permissionWait: Duration
+        public let permissionAsked: Bool
         public let execution: Duration
         public let toolName: String
         public let resource: String?
@@ -78,6 +79,7 @@ public struct ToolRuntime: Sendable {
     ) async -> ExecutionOutcome {
         let clock = ContinuousClock()
         var permissionWait: Duration = .zero
+        var permissionAsked = false
         var execution: Duration = .zero
         do {
             try Task.checkCancellation()
@@ -98,11 +100,12 @@ public struct ToolRuntime: Sendable {
                 description: "允许 \(call.toolID.rawValue) 读取 \(resource)"
             )
             let permissionStart = clock.now
-            let decision = await permissions.request(request) {
+            let resolution = await permissions.resolve(request) {
                 await onPermissionAsked(request)
             }
             permissionWait = permissionStart.duration(to: clock.now)
-            guard decision == .allow else {
+            permissionAsked = resolution.asked
+            guard resolution.decision == .allow else {
                 throw CoreError(code: .permissionDenied, message: "已拒绝 \(call.toolID.rawValue): \(resource)")
             }
             try Task.checkCancellation()
@@ -112,6 +115,7 @@ public struct ToolRuntime: Sendable {
             return ExecutionOutcome(
                 result: ToolResult(callID: call.callID, success: true, content: content),
                 permissionWait: permissionWait,
+                permissionAsked: permissionAsked,
                 execution: execution,
                 toolName: tool.definition.name,
                 resource: resource
@@ -120,6 +124,7 @@ public struct ToolRuntime: Sendable {
             return ExecutionOutcome(
                 result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message)),
                 permissionWait: permissionWait,
+                permissionAsked: permissionAsked,
                 execution: execution,
                 toolName: call.toolName,
                 resource: nil
@@ -128,6 +133,7 @@ public struct ToolRuntime: Sendable {
             return ExecutionOutcome(
                 result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.permissionCancelled.rawValue, message: "Tool 执行已取消")),
                 permissionWait: permissionWait,
+                permissionAsked: permissionAsked,
                 execution: execution,
                 toolName: call.toolName,
                 resource: nil
@@ -136,6 +142,7 @@ public struct ToolRuntime: Sendable {
             return ExecutionOutcome(
                 result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error))),
                 permissionWait: permissionWait,
+                permissionAsked: permissionAsked,
                 execution: execution,
                 toolName: call.toolName,
                 resource: nil

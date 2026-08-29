@@ -144,6 +144,21 @@ struct ToolRuntimeTests {
         #expect(await engine.currentConfiguration() == .agent)
     }
 
+    @Test func autoPermissionDoesNotReportAnInteractiveAsk() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "ok".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        let runtime = ToolRuntime(
+            registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
+            permissions: PermissionEngine(configuration: .agent)
+        )
+
+        let outcome = await runtime.executeWithMetrics(call("read_file"), sessionID: SessionID("s")) { _ in }
+
+        #expect(outcome.result.success)
+        #expect(!outcome.permissionAsked)
+    }
+
     @Test func fullAccessKeepsCanonicalizationAndSensitiveFileGuard() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

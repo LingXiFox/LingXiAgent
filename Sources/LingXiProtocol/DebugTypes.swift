@@ -108,10 +108,28 @@ public struct ContextPagingPerformance: Sendable, Equatable, Codable {
     public let evictions: Int
     public let retrievalMilliseconds: Double
     public let materializationMilliseconds: Double
+    public let symbolCount: Int
+    public let symbolIndexedFiles: Int
+    public let symbolHints: Int
+    public let symbolExactMatches: Int
+    public let symbolQualifiedExactMatches: Int
+    public let symbolFallbackExactMatches: Int
+    public let symbolPrefixMatches: Int
+    public let symbolCandidatePages: Int
+    public let symbolHintExtractionMilliseconds: Double
+    public let symbolExactLookupMilliseconds: Double
+    public let symbolPrefixLookupMilliseconds: Double
+    public let symbolCandidateMergeMilliseconds: Double
+    public let symbolRankingMilliseconds: Double
+    public let symbolTotalMilliseconds: Double
+    public let lexicalCandidatePages: Int
+    public let currentSourceCandidates: Int
+    public let documentationCandidates: Int
+    public let referenceCandidates: Int
 
-    public init(queryCharacters: Int, queryTerms: Int, candidatePages: Int, candidateCharacters: Int, selectedPages: Int, selectedCharacters: Int, injectedPages: Int, injectedCharacters: Int, filesChecked: Int, filesRebuilt: Int, scanMilliseconds: Int, initialIndexedFiles: Int, l2Lookups: Int, l2Hits: Int, l2Misses: Int, l2Pages: Int, l2Characters: Int, l3Pages: Int, l3Queries: Int, l3Candidates: Int, l3Materializations: Int, staleRebuilds: Int, pageFaults: Int, promotions: Int, evictions: Int, retrievalMilliseconds: Double, materializationMilliseconds: Double, turn: ContextPagingTurnPerformance = .zero) {
+    public init(queryCharacters: Int, queryTerms: Int, candidatePages: Int, candidateCharacters: Int, selectedPages: Int, selectedCharacters: Int, injectedPages: Int, injectedCharacters: Int, filesChecked: Int, filesRebuilt: Int, scanMilliseconds: Int, initialIndexedFiles: Int, l2Lookups: Int, l2Hits: Int, l2Misses: Int, l2Pages: Int, l2Characters: Int, l3Pages: Int, l3Queries: Int, l3Candidates: Int, l3Materializations: Int, staleRebuilds: Int, pageFaults: Int, promotions: Int, evictions: Int, retrievalMilliseconds: Double, materializationMilliseconds: Double, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, symbolHints: Int = 0, symbolExactMatches: Int = 0, symbolQualifiedExactMatches: Int = 0, symbolFallbackExactMatches: Int = 0, symbolPrefixMatches: Int = 0, symbolCandidatePages: Int = 0, symbolHintExtractionMilliseconds: Double = 0, symbolExactLookupMilliseconds: Double = 0, symbolPrefixLookupMilliseconds: Double = 0, symbolCandidateMergeMilliseconds: Double = 0, symbolRankingMilliseconds: Double = 0, symbolTotalMilliseconds: Double = 0, lexicalCandidatePages: Int = 0, currentSourceCandidates: Int = 0, documentationCandidates: Int = 0, referenceCandidates: Int = 0, turn: ContextPagingTurnPerformance = .zero) {
         self.turn = turn
-        self.queryCharacters = queryCharacters; self.queryTerms = queryTerms; self.candidatePages = candidatePages; self.candidateCharacters = candidateCharacters; self.selectedPages = selectedPages; self.selectedCharacters = selectedCharacters; self.injectedPages = injectedPages; self.injectedCharacters = injectedCharacters; self.filesChecked = filesChecked; self.filesRebuilt = filesRebuilt; self.scanMilliseconds = scanMilliseconds; self.initialIndexedFiles = initialIndexedFiles; self.l2Lookups = l2Lookups; self.l2Hits = l2Hits; self.l2Misses = l2Misses; self.l2Pages = l2Pages; self.l2Characters = l2Characters; self.l3Pages = l3Pages; self.l3Queries = l3Queries; self.l3Candidates = l3Candidates; self.l3Materializations = l3Materializations; self.staleRebuilds = staleRebuilds; self.pageFaults = pageFaults; self.promotions = promotions; self.evictions = evictions; self.retrievalMilliseconds = retrievalMilliseconds; self.materializationMilliseconds = materializationMilliseconds
+        self.queryCharacters = queryCharacters; self.queryTerms = queryTerms; self.candidatePages = candidatePages; self.candidateCharacters = candidateCharacters; self.selectedPages = selectedPages; self.selectedCharacters = selectedCharacters; self.injectedPages = injectedPages; self.injectedCharacters = injectedCharacters; self.filesChecked = filesChecked; self.filesRebuilt = filesRebuilt; self.scanMilliseconds = scanMilliseconds; self.initialIndexedFiles = initialIndexedFiles; self.l2Lookups = l2Lookups; self.l2Hits = l2Hits; self.l2Misses = l2Misses; self.l2Pages = l2Pages; self.l2Characters = l2Characters; self.l3Pages = l3Pages; self.l3Queries = l3Queries; self.l3Candidates = l3Candidates; self.l3Materializations = l3Materializations; self.staleRebuilds = staleRebuilds; self.pageFaults = pageFaults; self.promotions = promotions; self.evictions = evictions; self.retrievalMilliseconds = retrievalMilliseconds; self.materializationMilliseconds = materializationMilliseconds; self.symbolCount = symbolCount; self.symbolIndexedFiles = symbolIndexedFiles; self.symbolHints = symbolHints; self.symbolExactMatches = symbolExactMatches; self.symbolQualifiedExactMatches = symbolQualifiedExactMatches; self.symbolFallbackExactMatches = symbolFallbackExactMatches; self.symbolPrefixMatches = symbolPrefixMatches; self.symbolCandidatePages = symbolCandidatePages; self.symbolHintExtractionMilliseconds = symbolHintExtractionMilliseconds; self.symbolExactLookupMilliseconds = symbolExactLookupMilliseconds; self.symbolPrefixLookupMilliseconds = symbolPrefixLookupMilliseconds; self.symbolCandidateMergeMilliseconds = symbolCandidateMergeMilliseconds; self.symbolRankingMilliseconds = symbolRankingMilliseconds; self.symbolTotalMilliseconds = symbolTotalMilliseconds; self.lexicalCandidatePages = lexicalCandidatePages; self.currentSourceCandidates = currentSourceCandidates; self.documentationCandidates = documentationCandidates; self.referenceCandidates = referenceCandidates
     }
 
     public var l2HitRate: Double? { l2Lookups == 0 ? nil : Double(l2Hits) / Double(l2Lookups) }
@@ -133,8 +151,24 @@ public struct ContextPagingTurnPerformance: Sendable, Equatable, Codable {
     public var scannerChecked: Int
     public var scannerRebuilt: Int
     public var scannerMilliseconds: Int
+    public var symbolHints: Int
+    public var symbolExactMatches: Int
+    public var symbolQualifiedExactMatches: Int
+    public var symbolFallbackExactMatches: Int
+    public var symbolPrefixMatches: Int
+    public var symbolCandidatePages: Int
+    public var symbolHintExtractionMilliseconds: Double
+    public var symbolExactLookupMilliseconds: Double
+    public var symbolPrefixLookupMilliseconds: Double
+    public var symbolCandidateMergeMilliseconds: Double
+    public var symbolRankingMilliseconds: Double
+    public var symbolTotalMilliseconds: Double
+    public var lexicalCandidatePages: Int
+    public var currentSourceCandidates: Int
+    public var documentationCandidates: Int
+    public var referenceCandidates: Int
     public static let zero = ContextPagingTurnPerformance()
-    public init(lookups: Int = 0, hits: Int = 0, misses: Int = 0, pageFaults: Int = 0, promotions: Int = 0, evictions: Int = 0, candidatePages: Int = 0, candidateCharacters: Int = 0, selectedPages: Int = 0, selectedCharacters: Int = 0, injectedPages: Int = 0, injectedCharacters: Int = 0, scannerChecked: Int = 0, scannerRebuilt: Int = 0, scannerMilliseconds: Int = 0) { self.lookups = lookups; self.hits = hits; self.misses = misses; self.pageFaults = pageFaults; self.promotions = promotions; self.evictions = evictions; self.candidatePages = candidatePages; self.candidateCharacters = candidateCharacters; self.selectedPages = selectedPages; self.selectedCharacters = selectedCharacters; self.injectedPages = injectedPages; self.injectedCharacters = injectedCharacters; self.scannerChecked = scannerChecked; self.scannerRebuilt = scannerRebuilt; self.scannerMilliseconds = scannerMilliseconds }
+    public init(lookups: Int = 0, hits: Int = 0, misses: Int = 0, pageFaults: Int = 0, promotions: Int = 0, evictions: Int = 0, candidatePages: Int = 0, candidateCharacters: Int = 0, selectedPages: Int = 0, selectedCharacters: Int = 0, injectedPages: Int = 0, injectedCharacters: Int = 0, scannerChecked: Int = 0, scannerRebuilt: Int = 0, scannerMilliseconds: Int = 0, symbolHints: Int = 0, symbolExactMatches: Int = 0, symbolQualifiedExactMatches: Int = 0, symbolFallbackExactMatches: Int = 0, symbolPrefixMatches: Int = 0, symbolCandidatePages: Int = 0, symbolHintExtractionMilliseconds: Double = 0, symbolExactLookupMilliseconds: Double = 0, symbolPrefixLookupMilliseconds: Double = 0, symbolCandidateMergeMilliseconds: Double = 0, symbolRankingMilliseconds: Double = 0, symbolTotalMilliseconds: Double = 0, lexicalCandidatePages: Int = 0, currentSourceCandidates: Int = 0, documentationCandidates: Int = 0, referenceCandidates: Int = 0) { self.lookups = lookups; self.hits = hits; self.misses = misses; self.pageFaults = pageFaults; self.promotions = promotions; self.evictions = evictions; self.candidatePages = candidatePages; self.candidateCharacters = candidateCharacters; self.selectedPages = selectedPages; self.selectedCharacters = selectedCharacters; self.injectedPages = injectedPages; self.injectedCharacters = injectedCharacters; self.scannerChecked = scannerChecked; self.scannerRebuilt = scannerRebuilt; self.scannerMilliseconds = scannerMilliseconds; self.symbolHints = symbolHints; self.symbolExactMatches = symbolExactMatches; self.symbolQualifiedExactMatches = symbolQualifiedExactMatches; self.symbolFallbackExactMatches = symbolFallbackExactMatches; self.symbolPrefixMatches = symbolPrefixMatches; self.symbolCandidatePages = symbolCandidatePages; self.symbolHintExtractionMilliseconds = symbolHintExtractionMilliseconds; self.symbolExactLookupMilliseconds = symbolExactLookupMilliseconds; self.symbolPrefixLookupMilliseconds = symbolPrefixLookupMilliseconds; self.symbolCandidateMergeMilliseconds = symbolCandidateMergeMilliseconds; self.symbolRankingMilliseconds = symbolRankingMilliseconds; self.symbolTotalMilliseconds = symbolTotalMilliseconds; self.lexicalCandidatePages = lexicalCandidatePages; self.currentSourceCandidates = currentSourceCandidates; self.documentationCandidates = documentationCandidates; self.referenceCandidates = referenceCandidates }
 }
 
 public struct ProjectCacheDebugSnapshot: Sendable, Equatable, Codable {
@@ -143,13 +177,17 @@ public struct ProjectCacheDebugSnapshot: Sendable, Equatable, Codable {
     public let l2HitRate: Double?
     public let l3Pages: Int
     public let staleRebuilds: Int
+    public let symbolCount: Int
+    public let symbolIndexedFiles: Int
 
-    public init(l2Pages: Int, l2Characters: Int, l2HitRate: Double?, l3Pages: Int, staleRebuilds: Int) {
+    public init(l2Pages: Int, l2Characters: Int, l2HitRate: Double?, l3Pages: Int, staleRebuilds: Int, symbolCount: Int = 0, symbolIndexedFiles: Int = 0) {
         self.l2Pages = l2Pages
         self.l2Characters = l2Characters
         self.l2HitRate = l2HitRate
         self.l3Pages = l3Pages
         self.staleRebuilds = staleRebuilds
+        self.symbolCount = symbolCount
+        self.symbolIndexedFiles = symbolIndexedFiles
     }
 }
 

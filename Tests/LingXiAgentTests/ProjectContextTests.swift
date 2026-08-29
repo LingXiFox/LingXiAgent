@@ -119,6 +119,132 @@ struct ProjectContextTests {
         #expect((try scanner.scan().first { $0.path == "README.md" })?.sourceType == .projectMetadata)
     }
 
+    @Test func symbolSearchRanksExactQualifiedNamesAcrossPages() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("struct Container {\n" + String(repeating: "    let value = 1\n", count: 20) + "    func target() {}\n}\n", to: root, path: "Sources/Container.swift")
+        try write(String(repeating: "Container target documentation\n", count: 50), to: root, path: "Docs/Guide.md")
+        let store = ProjectPageStore()
+
+        _ = try await store.rebuildStaleFiles(using: ProjectScanner(root: root, minimumPageBytes: 32, maximumPageBytes: 64))
+        let result = await store.searchResult(projectRoot: root, query: ContextQuery(currentTask: "Container.target()"))
+        let stats = await store.statistics(projectRoot: root)
+
+        #expect(result.pages.first?.path == "Sources/Container.swift")
+        #expect(result.pages.first?.content.contains("func target") == true)
+        #expect(result.symbolMetrics.hints == 3)
+        #expect(result.symbolMetrics.exactMatches == 2)
+        #expect(stats.symbols == 2)
+        #expect(stats.symbolFiles == 1)
+    }
+
+    @Test func symbolIndexReplacesChangedFilesAndRemovesDeletedFiles() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = "Sources/Feature.swift"
+        try write("struct OldFeature {}", to: root, path: path)
+        let store = ProjectPageStore()
+        let scanner = ProjectScanner(root: root)
+
+        _ = try await store.rebuildStaleFiles(using: scanner)
+        try write("struct NewFeature {}", to: root, path: path)
+        _ = try await store.rebuildStaleFiles(using: scanner)
+        let old = await store.searchResult(projectRoot: root, query: ContextQuery(currentTask: "OldFeature"))
+        let fresh = await store.searchResult(projectRoot: root, query: ContextQuery(currentTask: "NewFeature"))
+        try FileManager.default.removeItem(at: root.appending(path: path))
+        _ = try await store.rebuildStaleFiles(using: scanner)
+        let removed = await store.statistics(projectRoot: root)
+
+        #expect(old.symbolMetrics.exactMatches == 0)
+        #expect(fresh.symbolMetrics.exactMatches == 1)
+        #expect(removed.symbols == 0)
+        #expect(removed.symbolFiles == 0)
+    }
+
+    @Test func currentSourceOutranksResearchWhileResearchRemainsRetrievable() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let referencePath = "Docs/opencode-extraction/permission.md"
+        let referenceDocumentationPath = "References/upstream.md"
+        try write("struct PermissionEngine {}", to: root, path: "Sources/PermissionEngine.swift")
+        try write(String(repeating: "OpenCode PermissionEngine legacy reference\n", count: 250), to: root, path: referencePath)
+        try write("Upstream reference", to: root, path: referenceDocumentationPath)
+        let store = ProjectPageStore()
+        let scanner = ProjectScanner(root: root)
+
+        _ = try await store.rebuildStaleFiles(using: scanner)
+        let exact = await store.searchResult(projectRoot: root, query: ContextQuery(currentTask: "PermissionEngine"))
+        let explicitReference = await store.searchResult(projectRoot: root, query: ContextQuery(currentTask: "OpenCode PermissionEngine"))
+        let pages = try scanner.scan()
+
+        #expect(exact.pages.first?.path == "Sources/PermissionEngine.swift")
+        #expect(exact.pages.contains { $0.path == referencePath })
+        #expect(explicitReference.pages.contains { $0.path == referencePath })
+        #expect(pages.first { $0.path == referencePath }?.sourceType == .researchArchive)
+        #expect(pages.first { $0.path == referenceDocumentationPath }?.sourceType == .referenceDocumentation)
+    }
+
+    @Test func documentationStaysSearchableBelowCurrentSource() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("let guideMarker = \"GuideMarker\"", to: root, path: "Sources/Guide.swift")
+        try write("GuideMarker documentation", to: root, path: "Docs/Guide.md")
+        let store = ProjectPageStore()
+
+        _ = try await store.rebuildStaleFiles(using: ProjectScanner(root: root))
+        let result = await store.searchResult(projectRoot: root, query: ContextQuery(currentTask: "GuideMarker"))
+
+        #expect(result.pages.first?.path == "Sources/Guide.swift")
+        #expect(result.pages.contains { $0.path == "Docs/Guide.md" })
+    }
+
+    @Test func pagerReportsSplitSymbolTimingAndSourceCandidates() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("struct PermissionEngine {}", to: root, path: "Sources/PermissionEngine.swift")
+        try write("PermissionEngine reference", to: root, path: "Docs/opencode-extraction/permission.md")
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 1_000)
+
+        _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
+        let result = await pager.query(projectRoot: root, query: ContextQuery(currentTask: "PermissionEngine"))
+
+        #expect(result.turnMetrics.symbolHints == 1)
+        #expect(result.turnMetrics.symbolExactMatches == 1)
+        #expect(result.turnMetrics.symbolTotalMilliseconds >= result.turnMetrics.symbolHintExtractionMilliseconds)
+        #expect(result.turnMetrics.symbolTotalMilliseconds >= result.turnMetrics.symbolExactLookupMilliseconds + result.turnMetrics.symbolPrefixLookupMilliseconds + result.turnMetrics.symbolCandidateMergeMilliseconds + result.turnMetrics.symbolRankingMilliseconds)
+        #expect(result.turnMetrics.currentSourceCandidates == 1)
+        #expect(result.turnMetrics.referenceCandidates == 1)
+    }
+
+    @Test func qualifiedSymbolMissFallsBackToParentAndLeaf() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("struct PermissionEngine {\n    func request() {}\n}\n", to: root, path: "Sources/PermissionEngine.swift")
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 1_000)
+
+        _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
+        let result = await pager.query(projectRoot: root, query: ContextQuery(currentTask: "PermissionEngine.evaluate"))
+
+        #expect(result.pages.first?.path == "Sources/PermissionEngine.swift")
+        #expect(result.turnMetrics.symbolQualifiedExactMatches == 0)
+        #expect(result.turnMetrics.symbolFallbackExactMatches == 1)
+    }
+
+    @Test func l2LexicalHitStillUsesL3StructuralCoverage() async throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("PermissionEngine legacy note", to: root, path: "Docs/Legacy.md")
+        try write("struct PermissionEngine {}", to: root, path: "Sources/PermissionEngine.swift")
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(characterBudget: 64), projectCharacterBudget: 1_000)
+
+        _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
+        _ = await pager.query(projectRoot: root, query: "legacy")
+        let result = await pager.query(projectRoot: root, query: ContextQuery(currentTask: "PermissionEngine"))
+
+        #expect(result.pages.first?.path == "Sources/PermissionEngine.swift")
+        #expect(result.turnMetrics.symbolExactMatches == 1)
+    }
+
     @Test func pagerReportsCandidatesAndNeverExceedsProjectBudget() async throws {
         let root = try makeProject()
         defer { try? FileManager.default.removeItem(at: root) }

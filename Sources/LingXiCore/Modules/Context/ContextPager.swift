@@ -4,13 +4,19 @@ import Foundation
 public actor L2WorkingSet {
     private let characterBudget: Int
     private let policy: L2WorkingSetPolicy
+    private let rankingPolicy: ContextPageRankingPolicy
     private var entries: [String: L2WorkingSetEntry] = [:]
     private var characterCount = 0
     private var clock: UInt64 = 0
 
-    public init(characterBudget: Int = 48 * 1024, policy: L2WorkingSetPolicy = L2WorkingSetPolicy()) {
+    public init(
+        characterBudget: Int = 48 * 1024,
+        policy: L2WorkingSetPolicy = L2WorkingSetPolicy(),
+        rankingPolicy: ContextPageRankingPolicy = ContextPageRankingPolicy()
+    ) {
         self.characterBudget = max(0, characterBudget)
         self.policy = policy
+        self.rankingPolicy = rankingPolicy
     }
 
     public func page(id: String) -> ContextPage? {
@@ -22,18 +28,16 @@ public actor L2WorkingSet {
     }
 
     public func search(projectRoot: URL, query: String, limit: Int) -> [ContextPage] {
-        let terms = lexicalTerms(query)
-        guard !terms.isEmpty else { return [] }
+        search(projectRoot: projectRoot, query: ContextQuery(currentTask: query), limit: limit)
+    }
+
+    public func search(projectRoot: URL, query: ContextQuery, limit: Int) -> [ContextPage] {
         let projectID = ContextPage.projectIdentifier(for: projectRoot)
-        let ranked = entries.compactMap { id, entry -> (String, ContextPage, Int)? in
-            guard entry.page.projectRoot == projectID else { return nil }
-            let haystack = "\(entry.page.path)\n\(entry.page.content)".lowercased()
-            let score = terms.reduce(0) { partial, term in partial + haystack.components(separatedBy: term).count - 1 }
-            return score == 0 ? nil : (id, entry.page, score)
-        }.sorted { lhs, rhs in
-            lhs.2 == rhs.2 ? lhs.0 < rhs.0 : lhs.2 > rhs.2
-        }
-        let pages = ranked.prefix(max(0, limit)).map(\.1)
+        let pages = rankingPolicy.rank(
+            pages: entries.values.filter { $0.page.projectRoot == projectID }.map(\.page),
+            query: query,
+            symbolScoresByPageID: [:]
+        ).prefix(max(0, limit)).map { $0.page }
         touch(pages.map(\.id))
         return pages
     }
@@ -92,10 +96,6 @@ public actor L2WorkingSet {
         return clock
     }
 
-    private func lexicalTerms(_ query: String) -> [String] {
-        query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 1 }
-    }
-
 }
 
 /// 将确定性 L3 查询结果按项目预算装配为模型可用上下文，并维护 L2 命中统计。
@@ -128,6 +128,22 @@ public actor ContextPager {
     private var filesChecked = 0
     private var filesRebuilt = 0
     private var scanMilliseconds = 0
+    private var symbolHints = 0
+    private var symbolExactMatches = 0
+    private var symbolQualifiedExactMatches = 0
+    private var symbolFallbackExactMatches = 0
+    private var symbolPrefixMatches = 0
+    private var symbolCandidatePages = 0
+    private var symbolHintExtractionMilliseconds = 0.0
+    private var symbolExactLookupMilliseconds = 0.0
+    private var symbolPrefixLookupMilliseconds = 0.0
+    private var symbolCandidateMergeMilliseconds = 0.0
+    private var symbolRankingMilliseconds = 0.0
+    private var symbolTotalMilliseconds = 0.0
+    private var lexicalCandidatePages = 0
+    private var currentSourceCandidates = 0
+    private var documentationCandidates = 0
+    private var referenceCandidates = 0
 
     public init(store: ProjectPageStore, workingSet: L2WorkingSet, projectCharacterBudget: Int = 48 * 1024) {
         self.store = store
@@ -148,23 +164,48 @@ public actor ContextPager {
     }
 
     public func query(projectRoot: URL, query: String, limit: Int = 20) async -> ContextPagerResult {
+        await self.query(projectRoot: projectRoot, query: ContextQuery(currentTask: query), limit: limit)
+    }
+
+    public func query(projectRoot: URL, query: ContextQuery, limit: Int = 20) async -> ContextPagerResult {
         guard limit > 0 else { return ContextPagerResult(pages: [], metrics: metrics()) }
         let clock = ContinuousClock()
         let retrievalStart = clock.now
         let l2Candidates = await workingSet.search(projectRoot: projectRoot, query: query, limit: limit)
         let candidates: [ContextPage]
-        if l2Candidates.isEmpty {
-            candidates = await store.search(projectRoot: projectRoot, query: query, limit: .max)
+        let symbolMetrics: SymbolSearchMetrics
+        let requiresStructuralCoverage = !query.symbolHints.isEmpty
+        if l2Candidates.isEmpty || requiresStructuralCoverage {
+            let result = await store.searchResult(projectRoot: projectRoot, query: query, limit: .max)
+            candidates = result.pages
+            symbolMetrics = result.symbolMetrics
             l3Queries += 1
             l3Candidates += candidates.count
         } else {
             candidates = l2Candidates
+            symbolMetrics = .zero
         }
         retrievalMilliseconds += milliseconds(retrievalStart.duration(to: clock.now))
-        queryCharacters = query.count
-        queryTerms = lexicalTerms(query).count
+        queryCharacters = query.text.count
+        queryTerms = query.terms.count
         candidatePages = candidates.count
         candidateCharacters = candidates.reduce(0) { $0 + $1.characterCount }
+        symbolHints = symbolMetrics.hints
+        symbolExactMatches = symbolMetrics.exactMatches
+        symbolQualifiedExactMatches = symbolMetrics.qualifiedExactMatches
+        symbolFallbackExactMatches = symbolMetrics.fallbackExactMatches
+        symbolPrefixMatches = symbolMetrics.prefixMatches
+        symbolCandidatePages = symbolMetrics.candidatePages
+        symbolHintExtractionMilliseconds = query.symbolHintExtractionMilliseconds
+        symbolExactLookupMilliseconds = symbolMetrics.exactLookupMilliseconds
+        symbolPrefixLookupMilliseconds = symbolMetrics.prefixLookupMilliseconds
+        symbolCandidateMergeMilliseconds = symbolMetrics.candidateMergeMilliseconds
+        symbolRankingMilliseconds = symbolMetrics.rankingMilliseconds
+        symbolTotalMilliseconds = query.symbolHintExtractionMilliseconds + symbolMetrics.totalMilliseconds
+        lexicalCandidatePages = symbolMetrics.lexicalCandidatePages
+        currentSourceCandidates = symbolMetrics.currentSourceCandidates
+        documentationCandidates = symbolMetrics.documentationCandidates
+        referenceCandidates = symbolMetrics.referenceCandidates
         var selected: [ContextPage] = []
         var seenIDs = Set<String>()
         var seenContent = Set<String>()
@@ -199,7 +240,20 @@ public actor ContextPager {
                 pageFaults: pageFaults - before.2, promotions: promotions - before.3, evictions: evictions - before.4,
                 candidatePages: candidates.count, candidateCharacters: candidates.reduce(0) { $0 + $1.characterCount },
                 selectedPages: selected.count, selectedCharacters: characters,
-                retrievalMilliseconds: milliseconds(retrievalStart.duration(to: materializationStart)), materializationMilliseconds: materialization
+                retrievalMilliseconds: milliseconds(retrievalStart.duration(to: materializationStart)), materializationMilliseconds: materialization,
+                symbolHints: symbolMetrics.hints, symbolExactMatches: symbolMetrics.exactMatches,
+                symbolQualifiedExactMatches: symbolMetrics.qualifiedExactMatches, symbolFallbackExactMatches: symbolMetrics.fallbackExactMatches,
+                symbolPrefixMatches: symbolMetrics.prefixMatches, symbolCandidatePages: symbolMetrics.candidatePages,
+                symbolHintExtractionMilliseconds: query.symbolHintExtractionMilliseconds,
+                symbolExactLookupMilliseconds: symbolMetrics.exactLookupMilliseconds,
+                symbolPrefixLookupMilliseconds: symbolMetrics.prefixLookupMilliseconds,
+                symbolCandidateMergeMilliseconds: symbolMetrics.candidateMergeMilliseconds,
+                symbolRankingMilliseconds: symbolMetrics.rankingMilliseconds,
+                symbolTotalMilliseconds: query.symbolHintExtractionMilliseconds + symbolMetrics.totalMilliseconds,
+                lexicalCandidatePages: symbolMetrics.lexicalCandidatePages,
+                currentSourceCandidates: symbolMetrics.currentSourceCandidates,
+                documentationCandidates: symbolMetrics.documentationCandidates,
+                referenceCandidates: symbolMetrics.referenceCandidates
             )
         )
     }
@@ -250,7 +304,25 @@ public actor ContextPager {
             promotions: promotions,
             evictions: evictions,
             retrievalMilliseconds: retrievalMilliseconds,
-            materializationMilliseconds: materializationMilliseconds
+            materializationMilliseconds: materializationMilliseconds,
+            symbolCount: l3.symbols,
+            symbolIndexedFiles: l3.symbolFiles,
+            symbolHints: symbolHints,
+            symbolExactMatches: symbolExactMatches,
+            symbolQualifiedExactMatches: symbolQualifiedExactMatches,
+            symbolFallbackExactMatches: symbolFallbackExactMatches,
+            symbolPrefixMatches: symbolPrefixMatches,
+            symbolCandidatePages: symbolCandidatePages,
+            symbolHintExtractionMilliseconds: symbolHintExtractionMilliseconds,
+            symbolExactLookupMilliseconds: symbolExactLookupMilliseconds,
+            symbolPrefixLookupMilliseconds: symbolPrefixLookupMilliseconds,
+            symbolCandidateMergeMilliseconds: symbolCandidateMergeMilliseconds,
+            symbolRankingMilliseconds: symbolRankingMilliseconds,
+            symbolTotalMilliseconds: symbolTotalMilliseconds,
+            lexicalCandidatePages: lexicalCandidatePages,
+            currentSourceCandidates: currentSourceCandidates,
+            documentationCandidates: documentationCandidates,
+            referenceCandidates: referenceCandidates
         )
     }
 

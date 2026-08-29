@@ -89,7 +89,7 @@ public actor SessionRuntime {
                 let scan = try await contextPager.rebuildStaleFiles(using: projectScanner)
                 let userMessages = session.messages.compactMap { $0.role == .user ? $0.parts.compactMap { if case let .text(text) = $0 { text } else { nil } }.joined() : nil }
                 let query = ContextQuery(currentTask: task, recentUserMessages: Array(userMessages.dropLast()))
-                let pagerResult = await contextPager.query(projectRoot: projectScanner.root, query: query.text)
+                let pagerResult = await contextPager.query(projectRoot: projectScanner.root, query: query)
                 let pages = pagerResult.pages.filter { page in
                     !session.messages.contains { message in
                         message.parts.contains { part in
@@ -262,6 +262,7 @@ public actor SessionRuntime {
         ToolRuntime.ExecutionOutcome(
             result: ToolResult(callID: call.callID, success: false, content: content, error: ToolError(code: "duplicateToolCall", message: "连续重复调用已复用前一成功结果")),
             permissionWait: .zero,
+            permissionAsked: false,
             execution: .zero,
             toolName: signature.toolName,
             resource: signature.resource

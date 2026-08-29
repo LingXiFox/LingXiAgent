@@ -3,6 +3,8 @@ import Foundation
 public enum ContextPageSourceType: String, Sendable, Equatable, Hashable {
     case sourceFile
     case documentation
+    case referenceDocumentation
+    case researchArchive
     case configuration
     case test
     case projectMetadata
@@ -181,8 +183,54 @@ public struct ContextPagingTurnMetrics: Sendable, Equatable {
     public let selectedCharacters: Int
     public let retrievalMilliseconds: Double
     public let materializationMilliseconds: Double
+    public let symbolHints: Int
+    public let symbolExactMatches: Int
+    public let symbolQualifiedExactMatches: Int
+    public let symbolFallbackExactMatches: Int
+    public let symbolPrefixMatches: Int
+    public let symbolCandidatePages: Int
+    public let symbolHintExtractionMilliseconds: Double
+    public let symbolExactLookupMilliseconds: Double
+    public let symbolPrefixLookupMilliseconds: Double
+    public let symbolCandidateMergeMilliseconds: Double
+    public let symbolRankingMilliseconds: Double
+    public let symbolTotalMilliseconds: Double
+    public let lexicalCandidatePages: Int
+    public let currentSourceCandidates: Int
+    public let documentationCandidates: Int
+    public let referenceCandidates: Int
 
-    public static let zero = ContextPagingTurnMetrics(lookups: 0, hits: 0, misses: 0, pageFaults: 0, promotions: 0, evictions: 0, candidatePages: 0, candidateCharacters: 0, selectedPages: 0, selectedCharacters: 0, retrievalMilliseconds: 0, materializationMilliseconds: 0)
+    public static let zero = ContextPagingTurnMetrics(lookups: 0, hits: 0, misses: 0, pageFaults: 0, promotions: 0, evictions: 0, candidatePages: 0, candidateCharacters: 0, selectedPages: 0, selectedCharacters: 0, retrievalMilliseconds: 0, materializationMilliseconds: 0, symbolHints: 0, symbolExactMatches: 0, symbolQualifiedExactMatches: 0, symbolFallbackExactMatches: 0, symbolPrefixMatches: 0, symbolCandidatePages: 0, symbolHintExtractionMilliseconds: 0, symbolExactLookupMilliseconds: 0, symbolPrefixLookupMilliseconds: 0, symbolCandidateMergeMilliseconds: 0, symbolRankingMilliseconds: 0, symbolTotalMilliseconds: 0, lexicalCandidatePages: 0, currentSourceCandidates: 0, documentationCandidates: 0, referenceCandidates: 0)
+}
+
+public struct SymbolSearchMetrics: Sendable, Equatable {
+    public let hints: Int
+    public let exactMatches: Int
+    public let qualifiedExactMatches: Int
+    public let fallbackExactMatches: Int
+    public let prefixMatches: Int
+    public let candidatePages: Int
+    public let exactLookupMilliseconds: Double
+    public let prefixLookupMilliseconds: Double
+    public let candidateMergeMilliseconds: Double
+    public let rankingMilliseconds: Double
+    public let totalMilliseconds: Double
+    public let lexicalCandidatePages: Int
+    public let currentSourceCandidates: Int
+    public let documentationCandidates: Int
+    public let referenceCandidates: Int
+
+    public static let zero = SymbolSearchMetrics(hints: 0, exactMatches: 0, qualifiedExactMatches: 0, fallbackExactMatches: 0, prefixMatches: 0, candidatePages: 0, exactLookupMilliseconds: 0, prefixLookupMilliseconds: 0, candidateMergeMilliseconds: 0, rankingMilliseconds: 0, totalMilliseconds: 0, lexicalCandidatePages: 0, currentSourceCandidates: 0, documentationCandidates: 0, referenceCandidates: 0)
+}
+
+public struct ProjectPageSearchResult: Sendable, Equatable {
+    public let pages: [ContextPage]
+    public let symbolMetrics: SymbolSearchMetrics
+
+    public init(pages: [ContextPage], symbolMetrics: SymbolSearchMetrics = .zero) {
+        self.pages = pages
+        self.symbolMetrics = symbolMetrics
+    }
 }
 
 public struct ContextPagerResult: Sendable, Equatable {
@@ -235,4 +283,22 @@ public struct ContextPagingDebugMetrics: Sendable, Equatable {
     public let evictions: Int
     public let retrievalMilliseconds: Double
     public let materializationMilliseconds: Double
+    public let symbolCount: Int
+    public let symbolIndexedFiles: Int
+    public let symbolHints: Int
+    public let symbolExactMatches: Int
+    public let symbolQualifiedExactMatches: Int
+    public let symbolFallbackExactMatches: Int
+    public let symbolPrefixMatches: Int
+    public let symbolCandidatePages: Int
+    public let symbolHintExtractionMilliseconds: Double
+    public let symbolExactLookupMilliseconds: Double
+    public let symbolPrefixLookupMilliseconds: Double
+    public let symbolCandidateMergeMilliseconds: Double
+    public let symbolRankingMilliseconds: Double
+    public let symbolTotalMilliseconds: Double
+    public let lexicalCandidatePages: Int
+    public let currentSourceCandidates: Int
+    public let documentationCandidates: Int
+    public let referenceCandidates: Int
 }

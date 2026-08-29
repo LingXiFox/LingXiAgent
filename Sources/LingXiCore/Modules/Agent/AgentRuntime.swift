@@ -72,7 +72,9 @@ public actor AgentRuntime {
             l2Characters: metrics.l2Characters,
             l2HitRate: metrics.l2Lookups == 0 ? nil : Double(metrics.l2Hits) / Double(metrics.l2Lookups),
             l3Pages: metrics.l3Pages,
-            staleRebuilds: metrics.staleRebuilds
+            staleRebuilds: metrics.staleRebuilds,
+            symbolCount: metrics.symbolCount,
+            symbolIndexedFiles: metrics.symbolIndexedFiles
         )
     }
 

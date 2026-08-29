@@ -113,7 +113,7 @@ func showContext(_ client: LingXiClient, sessionID: SessionID) async {
 func showCache(_ client: LingXiClient) async throws {
     let cache = try await client.projectCache()
     print("L2: \(cache.l2Pages) pages / \(cache.l2Characters) chars / hit rate \(cache.l2HitRate.map { String(format: "%.1f", $0 * 100) + "%" } ?? "-")")
-    print("L3: \(cache.l3Pages) pages / stale rebuilds \(cache.staleRebuilds)")
+    print("L3: \(cache.l3Pages) pages / \(cache.symbolCount) symbols in \(cache.symbolIndexedFiles) Swift files / stale rebuilds \(cache.staleRebuilds)")
 }
 
 func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
@@ -142,6 +142,9 @@ func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
             if let rate = paging.l2HitRate { print("L2 Project: lookup \(paging.l2Lookups) / hit \(paging.l2Hits) / miss \(paging.l2Misses) / hit rate \(String(format: "%.1f", rate * 100))%") }
             print("L2 Project: working set \(paging.l2Pages) pages / \(paging.l2Characters) chars / promotions \(paging.promotions) / evictions \(paging.evictions)")
             print("L3: \(paging.l3Pages) pages / initial files \(paging.initialIndexedFiles) / stale rebuilds \(paging.staleRebuilds)")
+            print("Symbol Query Turn: hints \(turn.symbolHints) / exact \(turn.symbolExactMatches) [qualified \(turn.symbolQualifiedExactMatches) / fallback \(turn.symbolFallbackExactMatches)] / prefix \(turn.symbolPrefixMatches) / symbol pages \(turn.symbolCandidatePages)")
+            print("Symbol Query Time: hints \(String(format: "%.2f", turn.symbolHintExtractionMilliseconds)) / exact \(String(format: "%.2f", turn.symbolExactLookupMilliseconds)) / prefix \(String(format: "%.2f", turn.symbolPrefixLookupMilliseconds)) / merge \(String(format: "%.2f", turn.symbolCandidateMergeMilliseconds)) / ranking \(String(format: "%.2f", turn.symbolRankingMilliseconds)) / total \(String(format: "%.2f", turn.symbolTotalMilliseconds)) ms")
+            print("Retrieval Turn: lexical \(turn.lexicalCandidatePages) / source \(turn.currentSourceCandidates) / docs \(turn.documentationCandidates) / reference \(turn.referenceCandidates)")
             print("Scanner Turn: checked \(turn.scannerChecked) / rebuilt \(turn.scannerRebuilt) / \(turn.scannerMilliseconds) ms")
             print("Scanner Project: checked \(paging.filesChecked) / rebuilt \(paging.filesRebuilt) / \(paging.scanMilliseconds) ms")
             print("Pager Turn: candidates \(turn.candidatePages) / \(turn.candidateCharacters) chars; selected \(turn.selectedPages) / \(turn.selectedCharacters) chars; injected \(turn.injectedPages) / \(turn.injectedCharacters) chars")

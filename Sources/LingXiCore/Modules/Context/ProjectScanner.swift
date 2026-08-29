@@ -7,6 +7,8 @@ public enum ProjectScannerError: Error, Sendable, Equatable {
 /// 仅扫描项目根目录以内的 UTF-8 常规文本文件。
 public struct ProjectScanner: Sendable {
     public static let maximumFileBytes = 1_024 * 1_024
+    public static let referenceDocumentationDirectories: Set<String> = ["references", "reference-docs"]
+    public static let researchArchiveDirectories: Set<String> = ["opencode-extraction", "openchamber-extraction"]
     public let root: URL
     public let minimumPageBytes: Int
     public let maximumPageBytes: Int
@@ -142,7 +144,10 @@ public struct ProjectScanner: Sendable {
     private func page(path: String, startLine: Int, endLine: Int, content: String, version: String) -> ContextPage {
         let extensionName = URL(fileURLWithPath: path).pathExtension.lowercased()
         let sourceType: ContextPageSourceType
-        if path == "README.md" { sourceType = .projectMetadata }
+        let components = path.split(separator: "/").map { $0.lowercased() }
+        if components.contains(where: { Self.researchArchiveDirectories.contains($0) }) { sourceType = .researchArchive }
+        else if components.contains(where: { Self.referenceDocumentationDirectories.contains($0) }) { sourceType = .referenceDocumentation }
+        else if path == "README.md" { sourceType = .projectMetadata }
         else if path.hasPrefix("Tests/") { sourceType = .test }
         else if ["md", "txt"].contains(extensionName) { sourceType = .documentation }
         else if ["json", "yaml", "yml", "toml", "xcconfig"].contains(extensionName) || URL(fileURLWithPath: path).lastPathComponent == "Package.swift" { sourceType = .configuration }
