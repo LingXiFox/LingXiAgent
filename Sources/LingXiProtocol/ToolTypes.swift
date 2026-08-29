@@ -1,5 +1,37 @@
 import Foundation
 
+/// 无损承载外部 JSON Schema；MCP schema 不经过 LingXi 的简化 schema validator。
+public indirect enum JSONValue: Sendable, Equatable, Codable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null }
+        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Double.self) { self = .number(value) }
+        else if let value = try? container.decode(String.self) { self = .string(value) }
+        else if let value = try? container.decode([JSONValue].self) { self = .array(value) }
+        else { self = .object(try container.decode([String: JSONValue].self)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case let .bool(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .string(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case let .object(value): try container.encode(value)
+        }
+    }
+}
+
 /// LingXi 的 Tool 领域类型；不包含任何 Provider 原生 schema 或 DTO。
 public struct ToolID: Sendable, Equatable, Hashable, Codable {
     public let rawValue: String
@@ -62,6 +94,7 @@ public enum ToolCapabilityKind: String, Sendable, Equatable, Hashable, Codable {
     case networkAccess
     case destructive
     case userInteraction
+    case externalService
 }
 
 public struct ToolCapability: Sendable, Equatable, Codable {
@@ -86,19 +119,23 @@ public struct ToolDefinition: Sendable, Equatable, Codable {
     public let description: String
     public let inputSchema: ToolInputSchema
     public let capability: ToolCapability
+    /// 仅外部 MCP lease 使用的完整 JSON Schema。nil 表示 P11 简化 schema。
+    public let rawInputSchema: JSONValue?
 
     public init(
         id: ToolID,
         name: String? = nil,
         description: String,
         inputSchema: ToolInputSchema,
-        capability: ToolCapability
+        capability: ToolCapability,
+        rawInputSchema: JSONValue? = nil
     ) {
         self.id = id
         self.name = name ?? id.rawValue
         self.description = description
         self.inputSchema = inputSchema
         self.capability = capability
+        self.rawInputSchema = rawInputSchema
     }
 }
 

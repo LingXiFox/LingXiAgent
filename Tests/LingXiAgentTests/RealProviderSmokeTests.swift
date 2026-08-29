@@ -252,4 +252,37 @@ struct RealProviderSmokeTests {
         _ = try await within("core-b-shutdown") { await second.shutdown() }
         trace("done")
     }
+
+    @Test func realProviderPhaseTwelveHTTPMCPSmoke() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
+              let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
+              let model = environment[ProviderSetup.modelKey], !model.isEmpty
+        else { return }
+        let (assembly, missing) = ProviderSetup.resolve(environment)
+        #expect(missing.isEmpty)
+        let server = try FixtureMCPHTTPServer()
+        defer { server.stop() }
+        let serverID = MCPServerID("fixture-server")
+        let transport = MCPStreamableHTTPTransport(configuration: MCPServerConfiguration(serverID: serverID, alias: "fixture", transport: .streamableHTTP, endpoint: server.endpoint, timeoutSeconds: 30))
+        let connections = MCPConnectionManager()
+        await connections.register(transport, for: serverID)
+        let pager = MCPToolPager(invoker: connections)
+        try await pager.replaceCatalog(serverID: serverID, tools: try await transport.listTools())
+        let root = try WorkspaceRoot(path: environment["LINGXI_WORKSPACE_ROOT"]?.isEmpty == false ? environment["LINGXI_WORKSPACE_ROOT"]! : FileManager.default.currentDirectoryPath)
+        let host = try CoreHost(providerAssembly: assembly, workspaceRoot: root, permissionDecision: .allow, mcpPager: pager)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let answer = try await within("phase12-http-mcp", seconds: 90) {
+            try await send(client, sessionID: sessionID, "有一个外部 MCP 测试服务包含 phase12 的测试标记。请通过工具目录找到合适能力，load 后立即用 key=phase12 调用该外部工具。不要搜索 workspace，不要猜测，也不要只描述下一步。")
+        }
+        #expect(answer.contains("MCPAnchor-729"))
+        #expect(await pager.leaseCount(sessionID: sessionID) == 0)
+        let residency = await pager.requestSchemaCounts(sessionID: sessionID)
+        #expect(residency.first == 0)
+        #expect(residency.contains(1))
+        #expect(residency.last == 0)
+    }
 }

@@ -41,11 +41,12 @@ struct ToolRuntimeTests {
         ToolCall(callID: ToolCallID("call-1"), toolID: ToolID(tool), arguments: #"{"path":""# + path + #""}"#)
     }
 
-    @Test func definitionsAndRegistryAreStable() throws {
+    @Test func definitionsAndRegistryAreStable() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
         #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "edit_file", "git", "glob", "grep", "list_directory", "process", "question", "read_file", "shell", "write_file"])
+        #expect(await runtime.availableDefinitions().map(\.id.rawValue).contains("search_tools"))
     }
 
     @Test func unknownToolAndInvalidArgumentsAreNormalized() async throws {

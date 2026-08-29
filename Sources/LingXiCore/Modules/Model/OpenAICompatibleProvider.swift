@@ -308,29 +308,9 @@ private extension OpenAICompatibleProvider {
 
     struct ProviderTool: Encodable {
         struct Function: Encodable {
-            struct Parameters: Encodable {
-                struct Property: Encodable {
-                    let type: String
-                    let description: String
-                    let enumValues: [String]?
-                    let minimum: Double?
-                    let maximum: Double?
-
-                    enum CodingKeys: String, CodingKey {
-                        case type, description, minimum, maximum
-                        case enumValues = "enum"
-                    }
-                }
-
-                let type = "object"
-                let properties: [String: Property]
-                let required: [String]
-                let additionalProperties = false
-            }
-
             let name: String
             let description: String
-            let parameters: Parameters
+            let parameters: JSONValue
         }
 
         let type = "function"
@@ -340,12 +320,18 @@ private extension OpenAICompatibleProvider {
             function = Function(
                 name: definition.name,
                 description: definition.description,
-                parameters: Function.Parameters(
-                    properties: definition.inputSchema.properties.mapValues {
-                        Function.Parameters.Property(type: $0.type.rawValue, description: $0.description, enumValues: $0.enumValues, minimum: $0.minimum, maximum: $0.maximum)
-                    },
-                    required: definition.inputSchema.required
-                )
+                parameters: definition.rawInputSchema ?? .object([
+                    "type": .string("object"),
+                    "properties": .object(definition.inputSchema.properties.mapValues { property in
+                        var value: [String: JSONValue] = ["type": .string(property.type.rawValue), "description": .string(property.description)]
+                        if let enumValues = property.enumValues { value["enum"] = .array(enumValues.map(JSONValue.string)) }
+                        if let minimum = property.minimum { value["minimum"] = .number(minimum) }
+                        if let maximum = property.maximum { value["maximum"] = .number(maximum) }
+                        return .object(value)
+                    }),
+                    "required": .array(definition.inputSchema.required.map(JSONValue.string)),
+                    "additionalProperties": .bool(false),
+                ])
             )
         }
     }

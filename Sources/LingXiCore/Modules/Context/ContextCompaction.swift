@@ -15,6 +15,9 @@ public struct ConservativeTokenEstimator: TokenEstimator {
     }
     public func estimate(tools: [ToolDefinition]) -> Int {
         tools.reduce(0) { total, tool in
+            if let rawSchema = tool.rawInputSchema, let data = try? JSONEncoder().encode(rawSchema) {
+                return total + estimate(text: tool.id.rawValue + " " + tool.description + " " + String(decoding: data, as: UTF8.self)) + 12
+            }
             let fields = tool.inputSchema.properties.keys.sorted().compactMap { name in
                 tool.inputSchema.properties[name].map { "\(name):\($0.type.rawValue)" }
             }.joined(separator: ",")

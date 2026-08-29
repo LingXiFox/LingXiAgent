@@ -97,6 +97,15 @@ public struct CoreError: Sendable, Equatable, Error {
         case agentStepLimitReached
         case contextBudgetExceeded
         case contextProtocolViolation
+        case mcpToolLeaseMissing
+        case mcpToolSchemaChanged
+        case mcpToolSchemaTooLarge
+        case mcpToolSchemaBudgetExceeded
+        case mcpServerUnavailable
+        case mcpDiscoveryLimitExceeded
+        case mcpProtocolUnsupported
+        case mcpTaskExecutionUnsupported
+        case mcpInputRequiredUnavailable
     }
 
     public let code: Code

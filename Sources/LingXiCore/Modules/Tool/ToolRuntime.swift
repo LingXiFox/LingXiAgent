@@ -72,27 +72,32 @@ public struct ToolRuntime: Sendable {
     private let outputPolicy: ToolOutputPolicy
     private let outputArchive: ToolOutputArchive?
     private let outputSink: (@Sendable (ToolOutputChunk) async -> Void)?
+    private let mcpPager: MCPToolPager?
 
-    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator? = nil, outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil) {
+    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator? = nil, outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil) {
         self.registry = registry
         self.permissions = permissions
         self.mutations = mutations
         self.outputPolicy = outputPolicy
         self.outputArchive = outputArchive
         self.outputSink = outputSink
+        self.mcpPager = mcpPager
     }
 
     public var definitions: [ToolDefinition] { registry.definitions }
 
-    public func availableDefinitions(interactive: Bool = false) async -> [ToolDefinition] {
+    public func availableDefinitions(sessionID: SessionID? = nil, interactive: Bool = false) async -> [ToolDefinition] {
         let configuration = await permissions.currentConfiguration()
-        return registry.definitions.filter { definition in
+        var definitions = registry.definitions.filter { definition in
             if definition.name == "question" && !interactive { return false }
             if configuration.profile == .readOnly {
                 return definition.capability.readOnly
             }
             return true
         }
+        definitions += [MCPDiscoveryTools.search, MCPDiscoveryTools.load]
+        if let sessionID, let mcpPager { definitions += await mcpPager.providerDefinitions(sessionID: sessionID) }
+        return definitions.sorted { $0.id.rawValue < $1.id.rawValue }
     }
 
     public struct ExecutionOutcome: Sendable {
@@ -122,14 +127,16 @@ public struct ToolRuntime: Sendable {
     public func execute(
         _ call: ToolCall,
         sessionID: SessionID,
+        projectID: ProjectID = ProjectID("ephemeral"),
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
     ) async -> ToolResult {
-        await executeWithMetrics(call, sessionID: sessionID, onPermissionAsked: onPermissionAsked).result
+        await executeWithMetrics(call, sessionID: sessionID, projectID: projectID, onPermissionAsked: onPermissionAsked).result
     }
 
     public func executeWithMetrics(
         _ call: ToolCall,
         sessionID: SessionID,
+        projectID: ProjectID = ProjectID("ephemeral"),
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
     ) async -> ExecutionOutcome {
         let clock = ContinuousClock()
@@ -138,6 +145,17 @@ public struct ToolRuntime: Sendable {
         var execution: Duration = .zero
         do {
             try Task.checkCancellation()
+            if call.toolID == MCPDiscoveryTools.search.id, let mcpPager {
+                let content = try await mcpPager.searchToolResult(sessionID: sessionID, projectID: projectID, arguments: call.arguments)
+                return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+            }
+            if call.toolID == MCPDiscoveryTools.load.id, let mcpPager {
+                let content = try await mcpPager.loadToolResult(sessionID: sessionID, arguments: call.arguments, schemaTokenBudget: 16_000)
+                return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+            }
+            if registry.tool(for: call.toolID) == nil, let mcpPager {
+                return await executeMCP(call, sessionID: sessionID, projectID: projectID, pager: mcpPager, onPermissionAsked: onPermissionAsked)
+            }
             guard let tool = registry.tool(for: call.toolID) else {
                 throw CoreError(code: .toolNotFound, message: "未注册 Tool: \(call.toolID.rawValue)")
             }
@@ -212,6 +230,33 @@ public struct ToolRuntime: Sendable {
                 toolName: call.toolName,
                 resource: nil
             )
+        }
+    }
+
+    public func finishMCPProviderStep(sessionID: SessionID) async { await mcpPager?.finishProviderStep(sessionID: sessionID) }
+
+    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void) async -> ExecutionOutcome {
+        let clock = ContinuousClock()
+        do {
+            let lease = try await pager.resolve(sessionID: sessionID, providerToolID: call.toolID)
+            let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, toolCallID: call.callID, toolID: lease.toolID, capabilities: [.externalService, .networkAccess, .destructive], resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
+            let permissionStarted = clock.now
+            let resolution = await permissions.resolve(request) { await onPermissionAsked(request) }
+            let permissionWait = permissionStarted.duration(to: clock.now)
+            guard resolution.decision == .allow else { throw CoreError(code: .permissionDenied, message: "已拒绝 \(lease.toolID.rawValue)") }
+            let executionStarted = clock.now
+            let response = try await pager.execute(sessionID: sessionID, projectID: projectID, providerToolID: call.toolID, arguments: call.arguments)
+            if !response.content.isEmpty { await outputSink?(ToolOutputChunk(toolCallID: call.callID, stream: .stdout, sequence: 0, payload: response.content)) }
+            let bounded = outputPolicy.excerpt(response.content)
+            let metadata = try await outputArchive?.archive(response.content, metadata: bounded.metadata) ?? bounded.metadata
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: response.lease.toolID.rawValue, metadata: ["mcpToolID": response.lease.toolID.rawValue, "schemaHash": response.lease.schemaHash], output: metadata), permissionWait: permissionWait, permissionAsked: resolution.asked, execution: executionStarted.duration(to: clock.now), toolName: response.lease.toolID.rawValue, resource: response.lease.toolID.rawValue)
+        } catch let error as MCPToolPagerError {
+            let code: CoreError.Code = switch error { case .leaseMissing: .mcpToolLeaseMissing; case .schemaChanged: .mcpToolSchemaChanged; case .schemaTooLarge: .mcpToolSchemaTooLarge; case .schemaBudgetExceeded: .mcpToolSchemaBudgetExceeded; default: .mcpServerUnavailable }
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: code.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+        } catch let error as CoreError {
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+        } catch {
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         }
     }
 

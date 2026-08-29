@@ -36,6 +36,7 @@ public actor CoreHost: CoreEndpoint {
         dataRoot: URL? = nil,
         permissionDecision: PermissionDecision? = nil,
         toolRegistry: ToolRegistry? = nil,
+        mcpPager: MCPToolPager? = nil,
         interactive: Bool? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
@@ -50,6 +51,7 @@ public actor CoreHost: CoreEndpoint {
             protocolVersion: Self.protocolVersion
         )
         let workspace = try workspaceRoot ?? WorkspaceRoot.fromEnvironment()
+        let effectiveMCPPager = mcpPager ?? MCPToolPager()
         let persistentRoot = dataRoot ?? environment["LINGXI_DATA_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
         let persistent = try persistentRoot.map {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
@@ -72,7 +74,8 @@ public actor CoreHost: CoreEndpoint {
             permissions: permissions,
             mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
             outputArchive: ToolOutputArchive(persistence: persistent),
-            outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) }
+            outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
+            mcpPager: effectiveMCPPager
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: ProcessInfo.processInfo.environment["LINGXI_SYSTEM_CONTEXT"]

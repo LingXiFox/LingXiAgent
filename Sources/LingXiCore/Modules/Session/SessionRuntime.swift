@@ -125,7 +125,7 @@ public actor SessionRuntime {
                         }
                     }
                 }
-                let availableTools = await toolRuntime.availableDefinitions(interactive: interactive)
+                let availableTools = await toolRuntime.availableDefinitions(sessionID: sessionID, interactive: interactive)
                 let toolTokens = ConservativeTokenEstimator().estimate(tools: availableTools)
                 let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
                 profiler.recordBudget(budget, modelWindow: modelBus.gateway.contextProfile.contextWindowTokens)
@@ -205,6 +205,7 @@ public actor SessionRuntime {
                 profiler.recordModel(dispatch: dispatch, stream: streamStarted.duration(to: clock.now))
 
                 guard !calls.isEmpty else {
+                    await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
                     await completeTurn(
                         handle: handle,
                         sink: sink,
@@ -254,7 +255,7 @@ public actor SessionRuntime {
                 await withTaskGroup(of: (Int, ToolRuntime.ExecutionOutcome).self) { group in
                     for (offset, call) in calls.enumerated() where outcomes[offset] == nil && primaryByIndex[offset] == offset {
                         group.addTask { [toolRuntime, sessionID, eventSink] in
-                            let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID) { request in
+                            let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral")) { request in
                                 await eventSink(.permissionAsked(request))
                             }
                             return (offset, outcome)
@@ -291,6 +292,7 @@ public actor SessionRuntime {
                 if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: settled.map { .toolResult($0.result) }, createdAt: .now) }
                 else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }) }
                 try await settleLatestBatch(resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage)
+                await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
                 trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
                 trace("tool.batch.settle.end", step: step + 1, toolCount: calls.count)
             }
