@@ -144,6 +144,12 @@ public actor ContextPager {
     private var currentSourceCandidates = 0
     private var documentationCandidates = 0
     private var referenceCandidates = 0
+    private var relationHints = 0
+    private var directReferenceHits = 0
+    private var dependencyHits = 0
+    private var relatedPages = 0
+    private var referenceResolutionMilliseconds = 0.0
+    private var referenceExpansionMilliseconds = 0.0
 
     public init(store: ProjectPageStore, workingSet: L2WorkingSet, projectCharacterBudget: Int = 48 * 1024) {
         self.store = store
@@ -206,6 +212,12 @@ public actor ContextPager {
         currentSourceCandidates = symbolMetrics.currentSourceCandidates
         documentationCandidates = symbolMetrics.documentationCandidates
         referenceCandidates = symbolMetrics.referenceCandidates
+        relationHints = symbolMetrics.relationHints
+        directReferenceHits = symbolMetrics.directReferenceHits
+        dependencyHits = symbolMetrics.dependencyHits
+        relatedPages = symbolMetrics.relatedPages
+        referenceResolutionMilliseconds = symbolMetrics.resolutionMilliseconds
+        referenceExpansionMilliseconds = symbolMetrics.expansionMilliseconds
         var selected: [ContextPage] = []
         var seenIDs = Set<String>()
         var seenContent = Set<String>()
@@ -253,7 +265,11 @@ public actor ContextPager {
                 lexicalCandidatePages: symbolMetrics.lexicalCandidatePages,
                 currentSourceCandidates: symbolMetrics.currentSourceCandidates,
                 documentationCandidates: symbolMetrics.documentationCandidates,
-                referenceCandidates: symbolMetrics.referenceCandidates
+                referenceCandidates: symbolMetrics.referenceCandidates,
+                relationHints: symbolMetrics.relationHints, directReferenceHits: symbolMetrics.directReferenceHits,
+                dependencyHits: symbolMetrics.dependencyHits, relatedPages: symbolMetrics.relatedPages,
+                referenceResolutionMilliseconds: symbolMetrics.resolutionMilliseconds,
+                referenceExpansionMilliseconds: symbolMetrics.expansionMilliseconds
             )
         )
     }
@@ -323,6 +339,12 @@ public actor ContextPager {
             currentSourceCandidates: currentSourceCandidates,
             documentationCandidates: documentationCandidates,
             referenceCandidates: referenceCandidates
+            , referenceCount: l3.references.referenceCount, resolvedReferenceCount: l3.references.resolvedCount,
+            ambiguousReferenceCount: l3.references.ambiguousCount, unresolvedReferenceCount: l3.references.unresolvedCount,
+            dependencyCount: l3.references.dependencyCount, referenceIndexedFiles: l3.references.indexedFileCount,
+            relationHints: relationHints, directReferenceHits: directReferenceHits, dependencyHits: dependencyHits,
+            relatedPages: relatedPages, referenceResolutionMilliseconds: referenceResolutionMilliseconds,
+            referenceExpansionMilliseconds: referenceExpansionMilliseconds
         )
     }
 

@@ -74,7 +74,9 @@ public actor AgentRuntime {
             l3Pages: metrics.l3Pages,
             staleRebuilds: metrics.staleRebuilds,
             symbolCount: metrics.symbolCount,
-            symbolIndexedFiles: metrics.symbolIndexedFiles
+            symbolIndexedFiles: metrics.symbolIndexedFiles,
+            referenceCount: metrics.referenceCount,
+            dependencyCount: metrics.dependencyCount
         )
     }
 

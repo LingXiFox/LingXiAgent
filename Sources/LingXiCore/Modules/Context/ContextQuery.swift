@@ -7,13 +7,15 @@ public struct ContextQuery: Sendable, Equatable {
     public let symbolHints: [String]
     public let symbolHintGroups: [[String]]
     public let symbolHintExtractionMilliseconds: Double
+    public let relationHints: [String]
 
     public init(currentTask: String, recentUserMessages: [String] = []) {
-        text = ([currentTask] + recentUserMessages.suffix(2)).joined(separator: "\n")
-        terms = Array(Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 1 })).sorted()
+        let queryText = ([currentTask] + recentUserMessages.suffix(2)).joined(separator: "\n")
+        text = queryText
+        terms = Array(Set(queryText.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 1 })).sorted()
         let clock = ContinuousClock()
         let started = clock.now
-        let identifiers = text.split { character in
+        let identifiers = queryText.split { character in
             !(character.isLetter || character.isNumber || character == "_" || character == "." || character == "(")
         }.map(String.init).compactMap(Self.symbolIdentifier)
         var groups: [[String]] = []
@@ -35,6 +37,7 @@ public struct ContextQuery: Sendable, Equatable {
         symbolHints = symbolHintGroups.flatMap { $0 }.filter { seen.insert($0).inserted }
         let duration = started.duration(to: clock.now).components
         symbolHintExtractionMilliseconds = Double(duration.seconds) * 1_000 + Double(duration.attoseconds) / 1_000_000_000_000_000
+        relationHints = ["关系", "关联", "依赖", "调用", "relation", "dependency", "depend"].filter { queryText.localizedCaseInsensitiveContains($0) }
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {

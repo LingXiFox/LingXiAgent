@@ -4,13 +4,15 @@ public struct PageCandidate: Sendable, Equatable {
     public let page: ContextPage
     public let score: Int
     public let symbolScore: Int
+    public let referenceScore: Int
     public let textScore: Int
     public let authorityScore: Int
 
-    public init(page: ContextPage, score: Int, symbolScore: Int = 0, textScore: Int = 0, authorityScore: Int = 0) {
+    public init(page: ContextPage, score: Int, symbolScore: Int = 0, referenceScore: Int = 0, textScore: Int = 0, authorityScore: Int = 0) {
         self.page = page
         self.score = score
         self.symbolScore = symbolScore
+        self.referenceScore = referenceScore
         self.textScore = textScore
         self.authorityScore = authorityScore
     }
@@ -19,22 +21,25 @@ public struct PageCandidate: Sendable, Equatable {
 /// 符号与文本命中在同一候选序列中排序，Pager 无需区分检索来源。
 public struct ContextPageRankingPolicy: Sendable {
     public let maximumSymbolContribution: Int
+    public let maximumReferenceContribution: Int
 
-    public init(maximumSymbolContribution: Int = 1_200) {
+    public init(maximumSymbolContribution: Int = 1_200, maximumReferenceContribution: Int = 800) {
         self.maximumSymbolContribution = max(0, maximumSymbolContribution)
+        self.maximumReferenceContribution = max(0, maximumReferenceContribution)
     }
 
-    public func rank(pages: [ContextPage], query: ContextQuery, symbolScoresByPageID: [String: Int]) -> [PageCandidate] {
+    public func rank(pages: [ContextPage], query: ContextQuery, symbolScoresByPageID: [String: Int], referenceScoresByPageID: [String: Int] = [:]) -> [PageCandidate] {
         let lexicalTokens = query.terms
         return pages.compactMap { page in
             let symbolScore = min(maximumSymbolContribution, symbolScoresByPageID[page.id, default: 0])
+            let referenceScore = min(maximumReferenceContribution, referenceScoresByPageID[page.id, default: 0])
             let pathScore = pathScore(page, tokens: lexicalTokens)
             let headingScore = headingScore(page, tokens: lexicalTokens)
             let lexicalScore = lexicalScore(page, tokens: lexicalTokens)
             let textScore = pathScore + headingScore + lexicalScore
             let authorityScore = sourceAuthority(for: page.sourceType)
-            let score = symbolScore + textScore + authorityScore
-            return symbolScore == 0 && textScore == 0 ? nil : PageCandidate(page: page, score: score, symbolScore: symbolScore, textScore: textScore, authorityScore: authorityScore)
+            let score = symbolScore + referenceScore + textScore + authorityScore
+            return symbolScore == 0 && referenceScore == 0 && textScore == 0 ? nil : PageCandidate(page: page, score: score, symbolScore: symbolScore, referenceScore: referenceScore, textScore: textScore, authorityScore: authorityScore)
         }.sorted {
             if $0.score != $1.score { return $0.score > $1.score }
             if $0.page.path != $1.page.path { return $0.page.path < $1.page.path }

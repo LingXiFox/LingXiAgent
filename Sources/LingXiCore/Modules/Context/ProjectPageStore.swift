@@ -5,15 +5,21 @@ public actor ProjectPageStore {
     private var filesByProject: [String: [String: ScannedProjectFile]] = [:]
     private let symbolIndex: ProjectSymbolIndex
     private let symbolExtractor: SwiftSymbolExtractor
+    private let referenceIndex: ProjectReferenceIndex
+    private let referenceExtractor: SwiftReferenceExtractor
     private let rankingPolicy: ContextPageRankingPolicy
 
     public init(
         symbolIndex: ProjectSymbolIndex = ProjectSymbolIndex(),
         symbolExtractor: SwiftSymbolExtractor = SwiftSymbolExtractor(),
+        referenceIndex: ProjectReferenceIndex = ProjectReferenceIndex(),
+        referenceExtractor: SwiftReferenceExtractor = SwiftReferenceExtractor(),
         rankingPolicy: ContextPageRankingPolicy = ContextPageRankingPolicy()
     ) {
         self.symbolIndex = symbolIndex
         self.symbolExtractor = symbolExtractor
+        self.referenceIndex = referenceIndex
+        self.referenceExtractor = referenceExtractor
         self.rankingPolicy = rankingPolicy
     }
 
@@ -37,14 +43,17 @@ public actor ProjectPageStore {
             }
             updatedFiles[path] = file
             await updateSymbols(projectRoot: scan.projectRoot, file: file)
+            await updateReferences(projectRoot: scan.projectRoot, file: file)
         }
         for (path, file) in oldFiles where !isInitialIndex && newFiles[path] == nil {
             removedPaths.append(path)
             invalidatedPageIDs += file.pages.map(\.id)
             updatedFiles.removeValue(forKey: path)
             await symbolIndex.remove(projectRoot: scan.projectRoot, path: path)
+            await referenceIndex.removeReferences(projectRoot: scan.projectRoot, forPath: path)
         }
         filesByProject[scan.projectRoot] = updatedFiles
+        await resolveReferences(projectRoot: scan.projectRoot)
         return ProjectPageStoreUpdate(
             initialIndexedPaths: initialIndexedPaths,
             rebuiltPaths: rebuiltPaths.sorted(),
@@ -65,10 +74,10 @@ public actor ProjectPageStore {
         pages(projectRoot: ContextPage.projectIdentifier(for: projectRoot))
     }
 
-    public func statistics(projectRoot: URL) async -> (files: Int, pages: Int, symbols: Int, symbolFiles: Int) {
+    public func statistics(projectRoot: URL) async -> (files: Int, pages: Int, symbols: Int, symbolFiles: Int, references: ReferenceIndexStats) {
         let files = filesByProject[ContextPage.projectIdentifier(for: projectRoot), default: [:]]
         let symbols = await symbolIndex.stats(projectRoot: ContextPage.projectIdentifier(for: projectRoot))
-        return (files.count, files.values.reduce(0) { $0 + $1.pages.count }, symbols.symbolCount, symbols.fileCount)
+        return (files.count, files.values.reduce(0) { $0 + $1.pages.count }, symbols.symbolCount, symbols.fileCount, await referenceIndex.stats(projectRoot: ContextPage.projectIdentifier(for: projectRoot)))
     }
 
     public func search(projectRoot: URL, query: String, limit: Int = 20) async -> [ContextPage] {
@@ -86,6 +95,8 @@ public actor ProjectPageStore {
         var qualifiedMatches: [Symbol] = []
         var nameMatches: [Symbol] = []
         var prefixMatches: [Symbol] = []
+        var relatedPageIDs = Set<String>()
+        var referenceLookup = ReferenceLookupResult()
         var qualifiedExactIDs = Set<SymbolID>()
         var fallbackExactIDs = Set<SymbolID>()
         let exactStarted = clock.now
@@ -126,12 +137,29 @@ public actor ProjectPageStore {
             symbolScoresByPageID[symbol.pageID] = max(symbolScoresByPageID[symbol.pageID, default: 0], 500)
             if !exactIDs.contains(symbol.id) { prefixIDs.insert(symbol.id) }
         }
+        let resolutionStarted = clock.now
+        let relatedSymbols = Set(exactSymbols.values.map(\.id) + prefixMatches.map(\.id))
+        if !relatedSymbols.isEmpty || !query.relationHints.isEmpty {
+            referenceLookup = await referenceIndex.lookupRelatedPages(
+                projectRoot: projectID,
+                symbolIDs: relatedSymbols,
+                targetNames: Set(query.symbolHints),
+                maximumPages: 8,
+                maximumDepth: 1
+            )
+            relatedPageIDs = Set(referenceLookup.pageIDs)
+        }
+        let referenceResolutionMilliseconds = milliseconds(resolutionStarted.duration(to: clock.now))
+        var referenceScoresByPageID: [String: Int] = [:]
+        for pageID in relatedPageIDs { referenceScoresByPageID[pageID] = 800 }
+        let expansionMilliseconds = milliseconds(resolutionStarted.duration(to: clock.now)) - referenceResolutionMilliseconds
         let candidateMergeMilliseconds = milliseconds(mergeStarted.duration(to: clock.now))
         let rankingStarted = clock.now
         let candidates = rankingPolicy.rank(
             pages: pages(projectRoot: projectID),
             query: query,
-            symbolScoresByPageID: symbolScoresByPageID
+            symbolScoresByPageID: symbolScoresByPageID,
+            referenceScoresByPageID: referenceScoresByPageID
         )
         let rankingMilliseconds = milliseconds(rankingStarted.duration(to: clock.now))
         return ProjectPageSearchResult(
@@ -151,7 +179,13 @@ public actor ProjectPageStore {
                 lexicalCandidatePages: candidates.filter { $0.textScore > 0 }.count,
                 currentSourceCandidates: candidates.filter { $0.page.sourceType == .sourceFile }.count,
                 documentationCandidates: candidates.filter { $0.page.sourceType == .documentation }.count,
-                referenceCandidates: candidates.filter { $0.page.sourceType == .referenceDocumentation || $0.page.sourceType == .researchArchive }.count
+                referenceCandidates: candidates.filter { $0.page.sourceType == .referenceDocumentation || $0.page.sourceType == .researchArchive }.count,
+                relationHints: query.relationHints.count,
+                directReferenceHits: referenceLookup.directReferenceHits,
+                dependencyHits: referenceLookup.dependencyHits,
+                relatedPages: relatedPageIDs.count,
+                resolutionMilliseconds: referenceResolutionMilliseconds,
+                expansionMilliseconds: expansionMilliseconds
             )
         )
     }
@@ -170,6 +204,44 @@ public actor ProjectPageStore {
             path: file.path,
             symbols: symbolExtractor.extract(projectRoot: projectRoot, path: file.path, pages: file.pages)
         )
+    }
+
+    private func updateReferences(projectRoot: String, file: ScannedProjectFile) async {
+        guard URL(fileURLWithPath: file.path).pathExtension.lowercased() == "swift" else {
+            await referenceIndex.removeReferences(projectRoot: projectRoot, forPath: file.path)
+            return
+        }
+        let symbols = await symbolIndex.symbols(projectRoot: projectRoot, path: file.path)
+        await referenceIndex.replaceReferences(
+            projectRoot: projectRoot,
+            forPath: file.path,
+            references: referenceExtractor.extract(projectRoot: projectRoot, path: file.path, pages: file.pages, symbols: symbols)
+        )
+    }
+
+    private func resolveReferences(projectRoot: String) async {
+        let unresolved = await referenceIndex.references(projectRoot: projectRoot)
+        let symbols = await symbolIndex.allSymbols(projectRoot: projectRoot)
+        let byQualifiedName = Dictionary(grouping: symbols, by: \.qualifiedName)
+        let byName = Dictionary(grouping: symbols, by: \.name)
+        var resolved: [ProjectReference] = []
+        for reference in unresolved {
+            guard reference.kind != .import else { resolved.append(reference); continue }
+            var candidates = byQualifiedName[reference.targetName, default: []]
+            var quality: ReferenceResolutionQuality = .exactResolved
+            if candidates.isEmpty {
+                candidates = byName[reference.targetName, default: []]
+                quality = .symbolNameResolved
+            }
+            if candidates.count > 1 {
+                let sameFile = candidates.filter { $0.path == reference.sourcePath }
+                if sameFile.count == 1 { candidates = sameFile }
+                else { resolved.append(reference.resolving(to: candidates, quality: .ambiguous)); continue }
+            }
+            if candidates.isEmpty { resolved.append(reference.resolving(to: [], quality: reference.receiverHint == nil ? .unresolved : .receiverHint)) }
+            else { resolved.append(reference.resolving(to: candidates, quality: quality)) }
+        }
+        await referenceIndex.replaceResolved(projectRoot: projectRoot, references: resolved)
     }
 
     private func milliseconds(_ duration: Duration) -> Double {

@@ -199,8 +199,14 @@ public struct ContextPagingTurnMetrics: Sendable, Equatable {
     public let currentSourceCandidates: Int
     public let documentationCandidates: Int
     public let referenceCandidates: Int
+    public let relationHints: Int
+    public let directReferenceHits: Int
+    public let dependencyHits: Int
+    public let relatedPages: Int
+    public let referenceResolutionMilliseconds: Double
+    public let referenceExpansionMilliseconds: Double
 
-    public static let zero = ContextPagingTurnMetrics(lookups: 0, hits: 0, misses: 0, pageFaults: 0, promotions: 0, evictions: 0, candidatePages: 0, candidateCharacters: 0, selectedPages: 0, selectedCharacters: 0, retrievalMilliseconds: 0, materializationMilliseconds: 0, symbolHints: 0, symbolExactMatches: 0, symbolQualifiedExactMatches: 0, symbolFallbackExactMatches: 0, symbolPrefixMatches: 0, symbolCandidatePages: 0, symbolHintExtractionMilliseconds: 0, symbolExactLookupMilliseconds: 0, symbolPrefixLookupMilliseconds: 0, symbolCandidateMergeMilliseconds: 0, symbolRankingMilliseconds: 0, symbolTotalMilliseconds: 0, lexicalCandidatePages: 0, currentSourceCandidates: 0, documentationCandidates: 0, referenceCandidates: 0)
+    public static let zero = ContextPagingTurnMetrics(lookups: 0, hits: 0, misses: 0, pageFaults: 0, promotions: 0, evictions: 0, candidatePages: 0, candidateCharacters: 0, selectedPages: 0, selectedCharacters: 0, retrievalMilliseconds: 0, materializationMilliseconds: 0, symbolHints: 0, symbolExactMatches: 0, symbolQualifiedExactMatches: 0, symbolFallbackExactMatches: 0, symbolPrefixMatches: 0, symbolCandidatePages: 0, symbolHintExtractionMilliseconds: 0, symbolExactLookupMilliseconds: 0, symbolPrefixLookupMilliseconds: 0, symbolCandidateMergeMilliseconds: 0, symbolRankingMilliseconds: 0, symbolTotalMilliseconds: 0, lexicalCandidatePages: 0, currentSourceCandidates: 0, documentationCandidates: 0, referenceCandidates: 0, relationHints: 0, directReferenceHits: 0, dependencyHits: 0, relatedPages: 0, referenceResolutionMilliseconds: 0, referenceExpansionMilliseconds: 0)
 }
 
 public struct SymbolSearchMetrics: Sendable, Equatable {
@@ -219,8 +225,14 @@ public struct SymbolSearchMetrics: Sendable, Equatable {
     public let currentSourceCandidates: Int
     public let documentationCandidates: Int
     public let referenceCandidates: Int
+    public let relationHints: Int
+    public let directReferenceHits: Int
+    public let dependencyHits: Int
+    public let relatedPages: Int
+    public let resolutionMilliseconds: Double
+    public let expansionMilliseconds: Double
 
-    public static let zero = SymbolSearchMetrics(hints: 0, exactMatches: 0, qualifiedExactMatches: 0, fallbackExactMatches: 0, prefixMatches: 0, candidatePages: 0, exactLookupMilliseconds: 0, prefixLookupMilliseconds: 0, candidateMergeMilliseconds: 0, rankingMilliseconds: 0, totalMilliseconds: 0, lexicalCandidatePages: 0, currentSourceCandidates: 0, documentationCandidates: 0, referenceCandidates: 0)
+    public static let zero = SymbolSearchMetrics(hints: 0, exactMatches: 0, qualifiedExactMatches: 0, fallbackExactMatches: 0, prefixMatches: 0, candidatePages: 0, exactLookupMilliseconds: 0, prefixLookupMilliseconds: 0, candidateMergeMilliseconds: 0, rankingMilliseconds: 0, totalMilliseconds: 0, lexicalCandidatePages: 0, currentSourceCandidates: 0, documentationCandidates: 0, referenceCandidates: 0, relationHints: 0, directReferenceHits: 0, dependencyHits: 0, relatedPages: 0, resolutionMilliseconds: 0, expansionMilliseconds: 0)
 }
 
 public struct ProjectPageSearchResult: Sendable, Equatable {
@@ -301,4 +313,16 @@ public struct ContextPagingDebugMetrics: Sendable, Equatable {
     public let currentSourceCandidates: Int
     public let documentationCandidates: Int
     public let referenceCandidates: Int
+    public let referenceCount: Int
+    public let resolvedReferenceCount: Int
+    public let ambiguousReferenceCount: Int
+    public let unresolvedReferenceCount: Int
+    public let dependencyCount: Int
+    public let referenceIndexedFiles: Int
+    public let relationHints: Int
+    public let directReferenceHits: Int
+    public let dependencyHits: Int
+    public let relatedPages: Int
+    public let referenceResolutionMilliseconds: Double
+    public let referenceExpansionMilliseconds: Double
 }

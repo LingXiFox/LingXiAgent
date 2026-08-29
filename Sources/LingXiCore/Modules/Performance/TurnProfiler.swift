@@ -123,7 +123,14 @@ final class TurnProfiler: @unchecked Sendable {
             lexicalCandidatePages: metrics.lexicalCandidatePages,
             currentSourceCandidates: metrics.currentSourceCandidates,
             documentationCandidates: metrics.documentationCandidates,
-            referenceCandidates: metrics.referenceCandidates
+            referenceCandidates: metrics.referenceCandidates,
+            referenceCount: metrics.referenceCount, resolvedReferenceCount: metrics.resolvedReferenceCount,
+            ambiguousReferenceCount: metrics.ambiguousReferenceCount, unresolvedReferenceCount: metrics.unresolvedReferenceCount,
+            dependencyCount: metrics.dependencyCount, referenceIndexedFiles: metrics.referenceIndexedFiles,
+            relationHints: metrics.relationHints, directReferenceHits: metrics.directReferenceHits,
+            dependencyHits: metrics.dependencyHits, relatedPages: metrics.relatedPages,
+            referenceResolutionMilliseconds: metrics.referenceResolutionMilliseconds,
+            referenceExpansionMilliseconds: metrics.referenceExpansionMilliseconds
         )
         pagingTurn.lookups += turn.lookups; pagingTurn.hits += turn.hits; pagingTurn.misses += turn.misses
         pagingTurn.pageFaults += turn.pageFaults; pagingTurn.promotions += turn.promotions; pagingTurn.evictions += turn.evictions
@@ -143,6 +150,10 @@ final class TurnProfiler: @unchecked Sendable {
         pagingTurn.currentSourceCandidates += turn.currentSourceCandidates
         pagingTurn.documentationCandidates += turn.documentationCandidates
         pagingTurn.referenceCandidates += turn.referenceCandidates
+        pagingTurn.relationHints += turn.relationHints; pagingTurn.directReferenceHits += turn.directReferenceHits
+        pagingTurn.dependencyHits += turn.dependencyHits; pagingTurn.relatedPages += turn.relatedPages
+        pagingTurn.referenceResolutionMilliseconds += turn.referenceResolutionMilliseconds
+        pagingTurn.referenceExpansionMilliseconds += turn.referenceExpansionMilliseconds
         if let scan { pagingTurn.scannerChecked += scan.filesChecked; pagingTurn.scannerRebuilt += scan.filesRebuilt; pagingTurn.scannerMilliseconds += scan.scanMilliseconds }
         paging?.turn = pagingTurn
     }

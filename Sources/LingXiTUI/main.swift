@@ -113,7 +113,7 @@ func showContext(_ client: LingXiClient, sessionID: SessionID) async {
 func showCache(_ client: LingXiClient) async throws {
     let cache = try await client.projectCache()
     print("L2: \(cache.l2Pages) pages / \(cache.l2Characters) chars / hit rate \(cache.l2HitRate.map { String(format: "%.1f", $0 * 100) + "%" } ?? "-")")
-    print("L3: \(cache.l3Pages) pages / \(cache.symbolCount) symbols in \(cache.symbolIndexedFiles) Swift files / stale rebuilds \(cache.staleRebuilds)")
+    print("L3: \(cache.l3Pages) pages / \(cache.symbolCount) symbols in \(cache.symbolIndexedFiles) Swift files / \(cache.referenceCount) references / \(cache.dependencyCount) dependencies / stale rebuilds \(cache.staleRebuilds)")
 }
 
 func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
@@ -144,6 +144,9 @@ func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
             print("L3: \(paging.l3Pages) pages / initial files \(paging.initialIndexedFiles) / stale rebuilds \(paging.staleRebuilds)")
             print("Symbol Query Turn: hints \(turn.symbolHints) / exact \(turn.symbolExactMatches) [qualified \(turn.symbolQualifiedExactMatches) / fallback \(turn.symbolFallbackExactMatches)] / prefix \(turn.symbolPrefixMatches) / symbol pages \(turn.symbolCandidatePages)")
             print("Symbol Query Time: hints \(String(format: "%.2f", turn.symbolHintExtractionMilliseconds)) / exact \(String(format: "%.2f", turn.symbolExactLookupMilliseconds)) / prefix \(String(format: "%.2f", turn.symbolPrefixLookupMilliseconds)) / merge \(String(format: "%.2f", turn.symbolCandidateMergeMilliseconds)) / ranking \(String(format: "%.2f", turn.symbolRankingMilliseconds)) / total \(String(format: "%.2f", turn.symbolTotalMilliseconds)) ms")
+            print("Reference Index: \(paging.referenceCount) references / resolved \(paging.resolvedReferenceCount) / ambiguous \(paging.ambiguousReferenceCount) / unresolved \(paging.unresolvedReferenceCount) / dependencies \(paging.dependencyCount) / files \(paging.referenceIndexedFiles)")
+            print("Reference Query Turn: hints \(turn.relationHints) / direct \(turn.directReferenceHits) / dependency \(turn.dependencyHits) / related pages \(turn.relatedPages)")
+            print("Reference Query Time: resolution \(turn.referenceResolutionMilliseconds) / expansion \(turn.referenceExpansionMilliseconds) ms")
             print("Retrieval Turn: lexical \(turn.lexicalCandidatePages) / source \(turn.currentSourceCandidates) / docs \(turn.documentationCandidates) / reference \(turn.referenceCandidates)")
             print("Scanner Turn: checked \(turn.scannerChecked) / rebuilt \(turn.scannerRebuilt) / \(turn.scannerMilliseconds) ms")
             print("Scanner Project: checked \(paging.filesChecked) / rebuilt \(paging.filesRebuilt) / \(paging.scanMilliseconds) ms")

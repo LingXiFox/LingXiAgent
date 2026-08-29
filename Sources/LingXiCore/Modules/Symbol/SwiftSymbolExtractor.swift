@@ -6,7 +6,7 @@ public struct SwiftSymbolExtractor: Sendable {
         var stack: [(qualifiedName: String, closingDepth: Int)] = []
         var depth = 0
 
-        for (offset, line) in lexicalLines(source).enumerated() {
+        for (offset, line) in Self.lexicalLines(source).enumerated() {
             var start = line.startIndex
             while start < line.endIndex {
                 while start < line.endIndex, line[start].isWhitespace { start = line.index(after: start) }
@@ -111,7 +111,7 @@ public struct SwiftSymbolExtractor: Sendable {
         character.isLetter || character.isNumber || character == "_"
     }
 
-    private func lexicalLines(_ source: String) -> [String] {
+    static func lexicalLines(_ source: String) -> [String] {
         var inBlockComment = false
         var inString = false
         var multilineString = false

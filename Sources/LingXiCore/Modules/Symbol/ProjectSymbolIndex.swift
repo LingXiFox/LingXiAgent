@@ -70,6 +70,10 @@ public actor ProjectSymbolIndex {
         )
     }
 
+    public func allSymbols(projectRoot: String) -> [Symbol] {
+        sorted(symbols(projectRoot: projectRoot))
+    }
+
     private func symbols(projectRoot: String) -> [Symbol] {
         Array(symbolsByProject[projectRoot, default: [:]].values)
     }
