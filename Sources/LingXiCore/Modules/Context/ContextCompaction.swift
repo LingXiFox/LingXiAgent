@@ -70,7 +70,13 @@ public struct ContextBudgetPlanner: Sendable {
 }
 
 public enum DerivedContextSourceKind: String, Sendable, Equatable { case user, assistant, historicalTool }
-public enum ToolExchangeBatchState: Sendable, Equatable { case pending, settledAwaitingConsumption, consumed }
+public enum ToolExchangeBatchState: String, Sendable, Equatable, Codable {
+    case pending
+    case settledAwaitingConsumption
+    case consumed
+    /// 崩溃时 pending batch 从不自动重放，必须由上层显式恢复。
+    case recoveryRequired
+}
 public struct ToolExchangeBatch: Sendable, Equatable {
     public let batchID: String
     public let sessionID: SessionID
@@ -154,10 +160,10 @@ public struct DerivedContextPage: Sendable, Equatable, Hashable {
     public let version: Int
     public let provenanceIDs: [String]
     public let metadata: [String: String]
-    public init(sessionID: SessionID, sourceKind: DerivedContextSourceKind, content: String, messageID: MessageID?, tokenEstimate: Int, locator: String? = nil, provenanceIDs: [String] = [], metadata: [String: String] = [:], createdAt: Date = .now, version: Int = 1) {
+    public init(id: String? = nil, sessionID: SessionID, sourceKind: DerivedContextSourceKind, content: String, messageID: MessageID?, tokenEstimate: Int, locator: String? = nil, provenanceIDs: [String] = [], metadata: [String: String] = [:], createdAt: Date = .now, version: Int = 1) {
         self.sessionID = sessionID; self.sourceKind = sourceKind; self.content = content; self.locator = locator; self.messageID = messageID; self.tokenEstimate = tokenEstimate; self.createdAt = createdAt; self.version = version; self.provenanceIDs = provenanceIDs; self.metadata = metadata
         contentHash = ContextPage.fingerprint(content.utf8)
-        id = "derived:\(sessionID.rawValue):\(messageID?.rawValue ?? contentHash):\(contentHash)"
+        self.id = id ?? "derived:\(sessionID.rawValue):\(messageID?.rawValue ?? contentHash):\(contentHash)"
     }
 }
 
@@ -169,8 +175,18 @@ public actor DerivedContextStore {
     private var l3Hits = 0
     private var l2Hits = 0
     private var l2Promotions = 0
-    public init() {}
-    public func pageOut(_ page: DerivedContextPage) { if !(pages[page.sessionID] ?? []).contains(page) { pages[page.sessionID, default: []].append(page); pageOutCount += 1 } }
+    private let persistence: SQLitePersistenceStore?
+    public init(persistence: SQLitePersistenceStore? = nil) { self.persistence = persistence }
+    public func restore() async throws {
+        guard let persistence else { return }
+        pages = Dictionary(grouping: try await persistence.loadDerived(), by: \.sessionID)
+    }
+    public func pageOut(_ page: DerivedContextPage) async throws {
+        if !(pages[page.sessionID] ?? []).contains(page) {
+            pages[page.sessionID, default: []].append(page)
+            pageOutCount += 1
+        }
+    }
     public func search(sessionID: SessionID, query: String, limit: Int) -> [DerivedContextPage] {
         let normalizedQuery = query.lowercased()
         let terms = Set(normalizedQuery.split { !$0.isLetter && !$0.isNumber }.map(String.init))
@@ -204,6 +220,7 @@ public actor DerivedContextStore {
     public func allMetrics() -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
         (l2.values.reduce(0) { $0 + $1.count }, pages.values.reduce(0) { $0 + $1.count }, pageOutCount, pageInCount, pages.values.flatMap { $0 }.filter { $0.sourceKind == .historicalTool }.count, l3Hits, l2Hits, l2Promotions)
     }
+    public func pages(sessionID: SessionID) -> [DerivedContextPage] { pages[sessionID] ?? [] }
 }
 
 public enum CompactionTrigger: String, Sendable { case automaticHighWater, manual, emergencyHardLimit }
@@ -230,6 +247,10 @@ public actor ContextCompactor {
     public nonisolated let derivedStore: DerivedContextStore
     private var unitResidencies: [SessionID: [MessageID: ContextUnitDebugSnapshot]] = [:]
     public init(estimator: any TokenEstimator = ConservativeTokenEstimator(), derivedStore: DerivedContextStore = DerivedContextStore()) { self.estimator = estimator; self.derivedStore = derivedStore }
+    public func restoreDerived() async throws { try await derivedStore.restore() }
+    public func restoreResidencies(sessionID: SessionID, values: [ContextUnitDebugSnapshot]) {
+        unitResidencies[sessionID] = Dictionary(uniqueKeysWithValues: values.map { ($0.messageID, $0) })
+    }
     private struct Unit {
         let indices: [Int]
         let entries: [ContextEntry]
@@ -279,7 +300,7 @@ public actor ContextCompactor {
                         return "tool=\(call.toolID.rawValue) arguments=\(call.arguments) status=\(result?.success == true ? "ok" : "failed") \(resultSummary)"
                     }.joined(separator: "\n")
                     let page = DerivedContextPage(sessionID: sessionID, sourceKind: .historicalTool, content: "[Historical tool evidence]\n\(evidence)", messageID: batch.assistantMessageID, tokenEstimate: cost, provenanceIDs: [batch.batchID])
-                    await derivedStore.pageOut(page)
+                    try await derivedStore.pageOut(page)
                     derivedUnits.append((unit, page))
                     derivedCreated += 1
                 } else if let first = unit.entries.first, first.source != .projectPage, first.source != .derivedPage {
@@ -287,7 +308,7 @@ public actor ContextCompactor {
                     if !content.isEmpty, !projectBackedContents.contains(content) {
                         let kind: DerivedContextSourceKind = first.source == .userMessage ? .user : .assistant
                         let page = DerivedContextPage(sessionID: sessionID, sourceKind: kind, content: content, messageID: first.messageID, tokenEstimate: cost, provenanceIDs: first.messageID.map { [$0.rawValue] } ?? [])
-                        await derivedStore.pageOut(page)
+                        try await derivedStore.pageOut(page)
                         derivedUnits.append((unit, page))
                         derivedCreated += 1
                     } else { nonDerivedPagedOut.append(unit) }

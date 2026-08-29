@@ -19,6 +19,10 @@ public struct SymbolID: RawRepresentable, Sendable, Equatable, Hashable, Compara
         self.rawValue = rawValue
     }
 
+    public init(projectID: ProjectID, fileID: ProjectFileID, qualifiedName: String, kind: SymbolKind, line: Int) {
+        self.rawValue = Self.fingerprint("\(projectID.rawValue)|\(fileID.rawValue)|\(qualifiedName)|\(kind.rawValue)|\(line)")
+    }
+
     public init(projectRoot: String, path: String, qualifiedName: String, kind: SymbolKind, line: Int) {
         self.rawValue = Self.fingerprint("\(projectRoot)|\(path)|\(qualifiedName)|\(kind.rawValue)|\(line)")
     }
@@ -39,6 +43,8 @@ public struct SymbolID: RawRepresentable, Sendable, Equatable, Hashable, Compara
 
 public struct Symbol: Sendable, Equatable, Hashable {
     public let id: SymbolID
+    public let projectID: ProjectID?
+    public let fileID: ProjectFileID?
     public let projectRoot: String
     public let name: String
     public let qualifiedName: String
@@ -49,6 +55,8 @@ public struct Symbol: Sendable, Equatable, Hashable {
 
     public init(
         projectRoot: String,
+        projectID: ProjectID? = nil,
+        fileID: ProjectFileID? = nil,
         name: String,
         qualifiedName: String,
         kind: SymbolKind,
@@ -58,13 +66,15 @@ public struct Symbol: Sendable, Equatable, Hashable {
         id: SymbolID? = nil
     ) {
         self.projectRoot = projectRoot
+        self.projectID = projectID
+        self.fileID = fileID
         self.name = name
         self.qualifiedName = qualifiedName
         self.kind = kind
         self.path = path
         self.pageID = pageID
         self.line = line
-        self.id = id ?? SymbolID(projectRoot: projectRoot, path: path, qualifiedName: qualifiedName, kind: kind, line: line)
+        self.id = id ?? (projectID.flatMap { project in fileID.map { SymbolID(projectID: project, fileID: $0, qualifiedName: qualifiedName, kind: kind, line: line) } } ?? SymbolID(projectRoot: projectRoot, path: path, qualifiedName: qualifiedName, kind: kind, line: line))
     }
 }
 

@@ -25,6 +25,8 @@ public struct ContextPageMetadata: Sendable, Equatable, Hashable {
 /// 可注入模型项目上下文的最小、不可变文本页。
 public struct ContextPage: Sendable, Equatable, Hashable {
     public let id: String
+    public let projectID: ProjectID?
+    public let fileID: ProjectFileID?
     public let projectRoot: String
     public let path: String
     public let startLine: Int
@@ -40,6 +42,8 @@ public struct ContextPage: Sendable, Equatable, Hashable {
 
     public init(
         projectRoot: String,
+        projectID: ProjectID? = nil,
+        fileID: ProjectFileID? = nil,
         path: String,
         startLine: Int,
         endLine: Int,
@@ -50,6 +54,8 @@ public struct ContextPage: Sendable, Equatable, Hashable {
         metadata: ContextPageMetadata? = nil
     ) {
         self.projectRoot = projectRoot
+        self.projectID = projectID
+        self.fileID = fileID
         self.path = path
         self.startLine = startLine
         self.endLine = endLine
@@ -58,7 +64,11 @@ public struct ContextPage: Sendable, Equatable, Hashable {
         self.version = version ?? Self.fingerprint(content.utf8)
         self.sourceType = sourceType
         self.metadata = metadata ?? ContextPageMetadata(path: path)
-        self.id = "\(projectRoot)|\(path):\(startLine)-\(endLine)"
+        self.id = projectID.flatMap { project in fileID.map { "page:" + Self.fingerprint("\(project.rawValue)|\($0.rawValue)|\(startLine)|\(endLine)".utf8) } } ?? "\(projectRoot)|\(path):\(startLine)-\(endLine)"
+    }
+
+    public func binding(projectID: ProjectID, fileID: ProjectFileID) -> ContextPage {
+        ContextPage(projectRoot: projectRoot, projectID: projectID, fileID: fileID, path: path, startLine: startLine, endLine: endLine, content: content, hash: hash, version: version, sourceType: sourceType, metadata: metadata)
     }
 
     public static func projectIdentifier(for root: URL) -> String {
@@ -88,18 +98,24 @@ public struct ProjectScan: Sendable, Equatable {
 }
 
 public struct ScannedProjectFile: Sendable, Equatable {
+    public let fileID: ProjectFileID?
     public let path: String
     public let version: String
     public let pages: [ContextPage]
     public let fileSize: Int
     public let modificationDate: Date?
 
-    public init(path: String, version: String, pages: [ContextPage], fileSize: Int = -1, modificationDate: Date? = nil) {
+    public init(fileID: ProjectFileID? = nil, path: String, version: String, pages: [ContextPage], fileSize: Int = -1, modificationDate: Date? = nil) {
+        self.fileID = fileID
         self.path = path
         self.version = version
         self.pages = pages
         self.fileSize = fileSize
         self.modificationDate = modificationDate
+    }
+
+    public func binding(projectID: ProjectID, fileID: ProjectFileID) -> ScannedProjectFile {
+        ScannedProjectFile(fileID: fileID, path: path, version: version, pages: pages.map { $0.binding(projectID: projectID, fileID: fileID) }, fileSize: fileSize, modificationDate: modificationDate)
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {

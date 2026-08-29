@@ -36,15 +36,30 @@ public struct Message: Sendable, Equatable {
 
 public struct Session: Sendable, Equatable {
     public let id: SessionID
+    /// Durable cwd 只保存 binding 和相对路径，绝不复制 absolute path。
+    public let projectID: ProjectID?
+    public let cwdRootBindingID: RootBindingID?
+    public let cwdRelativePath: ProjectRelativePath
     public let createdAt: Date
     public private(set) var updatedAt: Date
     public private(set) var messages: [Message]
 
-    public init(id: SessionID, createdAt: Date) {
+    public init(
+        id: SessionID,
+        createdAt: Date,
+        projectID: ProjectID? = nil,
+        cwdRootBindingID: RootBindingID? = nil,
+        cwdRelativePath: ProjectRelativePath = .root,
+        updatedAt: Date? = nil,
+        messages: [Message] = []
+    ) {
         self.id = id
+        self.projectID = projectID
+        self.cwdRootBindingID = cwdRootBindingID
+        self.cwdRelativePath = cwdRelativePath
         self.createdAt = createdAt
-        self.updatedAt = createdAt
-        self.messages = []
+        self.updatedAt = updatedAt ?? createdAt
+        self.messages = messages
     }
 
     public mutating func append(_ message: Message) {

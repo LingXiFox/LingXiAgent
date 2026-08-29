@@ -53,6 +53,8 @@ public struct SwiftSymbolExtractor: Sendable {
             guard let page = pages.first(where: { $0.startLine <= symbol.line && symbol.line <= $0.endLine }) else { return nil }
             return Symbol(
                 projectRoot: symbol.projectRoot,
+                projectID: pages.first?.projectID,
+                fileID: pages.first?.fileID,
                 name: symbol.name,
                 qualifiedName: symbol.qualifiedName,
                 kind: symbol.kind,

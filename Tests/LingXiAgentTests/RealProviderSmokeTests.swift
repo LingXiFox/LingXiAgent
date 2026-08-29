@@ -7,11 +7,40 @@ import LingXiClient
 
 /// 真实 Provider smoke test。默认跳过，避免离线测试消耗 Provider 配额。
 struct RealProviderSmokeTests {
+    private struct SmokeStageTimeout: Error, Sendable, CustomStringConvertible {
+        let stage: String
+        var description: String { "Real Provider Smoke timed out at \(stage)" }
+    }
+
+    private func trace(_ stage: String) {
+        FileHandle.standardError.write(Data(("[real-smoke] \(stage)\n").utf8))
+    }
+
+    private func within<T: Sendable>(
+        _ stage: String,
+        seconds: Double = 45,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                try Task.checkCancellation()
+                throw SmokeStageTimeout(stage: stage)
+            }
+            defer { group.cancelAll() }
+            guard let value = try await group.next() else { throw SmokeStageTimeout(stage: stage) }
+            return value
+        }
+    }
+
     private func send(_ client: LingXiClient, sessionID: SessionID, _ prompt: String) async throws -> String {
+        trace("provider-request-start")
         let stream = try await client.sendMessage(sessionID: sessionID, content: prompt)
         var text = ""
         for try await chunk in stream where chunk.kind == .text { text += chunk.text }
         try await Task.sleep(for: .seconds(5))
+        trace("provider-request-finished")
         return text
     }
 
@@ -19,11 +48,11 @@ struct RealProviderSmokeTests {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
               let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
-              let model = environment[ProviderSetup.modelKey], !model.isEmpty,
-              let workspacePath = environment["LINGXI_WORKSPACE_ROOT"], !workspacePath.isEmpty
+              let model = environment[ProviderSetup.modelKey], !model.isEmpty
         else {
             return
         }
+        let workspacePath = environment["LINGXI_WORKSPACE_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? FileManager.default.currentDirectoryPath
 
         let (assembly, missing) = ProviderSetup.resolve(environment)
         #expect(missing.isEmpty)
@@ -155,5 +184,72 @@ struct RealProviderSmokeTests {
             await host.shutdown()
             throw error
         }
+    }
+
+    @Test func realProviderPhaseTenRestartSmoke() async throws {
+        trace("test-enter")
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1"
+        else { return }
+        let workspacePath = environment["LINGXI_WORKSPACE_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? FileManager.default.currentDirectoryPath
+        let (assembly, missing) = ProviderSetup.resolve(environment)
+        #expect(missing.isEmpty)
+        let dataRoot = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase10-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
+        setenv("LINGXI_DATA_ROOT", dataRoot.path, 1)
+        setenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS", "372", 1)
+        setenv("LINGXI_PERF_DEBUG", "1", 1)
+        defer {
+            unsetenv("LINGXI_DATA_ROOT")
+            unsetenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS")
+            unsetenv("LINGXI_PERF_DEBUG")
+            try? FileManager.default.removeItem(at: dataRoot)
+        }
+
+        let workspace = try WorkspaceRoot(path: workspacePath)
+        trace("core-a-start")
+        let first = try await within("core-a-start") {
+            let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, permissionDecision: .allow)
+            await host.start()
+            return host
+        }
+        let firstClient = LingXiClient.inProcess(endpoint: first)
+        trace("project-open")
+        _ = try await within("project-open") { try await firstClient.projectCache() }
+        trace("session-created")
+        let sessionID = try await within("session-created") { try await firstClient.createSession() }
+        trace("turn-1-start")
+        _ = try await within("turn-1") { try await send(firstClient, sessionID: sessionID, "记住本次持久化测试标记 PersistAnchor-729。" + String(repeating: " PersistAnchor-729", count: 300)) }
+        trace("turn-1-finished")
+        _ = try await within("compact") { try await firstClient.compact(sessionID) }
+        trace("compact-finished")
+        let firstPersistence = try #require(await first.persistence)
+        let projectID = firstPersistence.projectID
+        let mainBindingID = try await firstPersistence.mainRootBinding().id
+        let canonical = try await firstClient.session(sessionID)
+        trace("core-a-shutdown")
+        _ = try await within("core-a-shutdown") { await first.shutdown() }
+
+        trace("core-b-start")
+        let second = try await within("core-b-start") {
+            let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, permissionDecision: .allow)
+            await host.start()
+            return host
+        }
+        let secondClient = LingXiClient.inProcess(endpoint: second)
+        trace("session-restored")
+        let restored = try await within("session-restored") { try await secondClient.session(sessionID) }
+        #expect(restored == canonical)
+        let secondPersistence = try #require(await second.persistence)
+        #expect(secondPersistence.projectID == projectID)
+        #expect(try await secondPersistence.mainRootBinding().id == mainBindingID)
+        trace("turn-2-start")
+        let marker = try await within("turn-2") { try await send(secondClient, sessionID: sessionID, "我之前让你记住的持久化测试标记是什么？直接回答，不调用工具。") }
+        trace("turn-2-finished")
+        #expect(marker.contains("PersistAnchor-729"))
+        let definition = try await within("project-query") { try await send(secondClient, sessionID: sessionID, "ContextPager 定义在哪里，它是什么类型？直接回答，不调用工具。") }
+        #expect(definition.localizedCaseInsensitiveContains("ContextPager"))
+        _ = try await within("core-b-shutdown") { await second.shutdown() }
+        trace("done")
     }
 }

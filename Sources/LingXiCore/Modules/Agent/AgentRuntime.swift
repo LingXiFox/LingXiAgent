@@ -17,6 +17,7 @@ public actor AgentRuntime {
     private let projectScanner: ProjectScanner
     private let compactor: ContextCompactor
     private let budgetPlanner: ContextBudgetPlanner
+    private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private var runtimes: [SessionID: SessionRuntime] = [:]
 
@@ -31,7 +32,8 @@ public actor AgentRuntime {
         projectScanner: ProjectScanner,
         eventSink: @escaping @Sendable (CoreEvent) async -> Void,
         compactor: ContextCompactor = ContextCompactor(),
-        budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: ProcessInfo.processInfo.environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init)))
+        budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: ProcessInfo.processInfo.environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init))),
+        persistence: SQLitePersistenceStore? = nil
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -44,6 +46,7 @@ public actor AgentRuntime {
         self.eventSink = eventSink
         self.compactor = compactor
         self.budgetPlanner = budgetPlanner
+        self.persistence = persistence
     }
 
     // MARK: - Session 生命周期
@@ -53,6 +56,10 @@ public actor AgentRuntime {
         runtimes[session.id] = makeRuntime(for: session.id)
         await eventSink(.sessionCreated(session.id))
         return session.id
+    }
+
+    public func restore() async throws {
+        try await compactor.restoreDerived()
     }
 
     public func listSessions() async throws -> [SessionInfo] {
@@ -96,8 +103,7 @@ public actor AgentRuntime {
     }
 
     public func compact(_ sessionID: SessionID) async throws -> CompactSessionResponse {
-        guard let runtime = runtimes[sessionID] else { throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(sessionID.rawValue)") }
-        return try await runtime.compactNow()
+        try await runtime(for: sessionID).compactNow()
     }
 
     public func cacheMetrics(_ sessionID: SessionID) async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int)? {
@@ -112,10 +118,7 @@ public actor AgentRuntime {
 
     /// 在 Session 中发起一轮对话，返回该轮的 DMA 通道。
     public func sendMessage(_ sessionID: SessionID, _ content: String) async throws -> OpenedStream {
-        guard let runtime = runtimes[sessionID] else {
-            throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(sessionID.rawValue)")
-        }
-        return try await runtime.startTurn(content)
+        try await runtime(for: sessionID).startTurn(content)
     }
 
     // MARK: - Private
@@ -133,7 +136,17 @@ public actor AgentRuntime {
             projectScanner: projectScanner,
             eventSink: eventSink,
             compactor: compactor,
-            budgetPlanner: budgetPlanner
+            budgetPlanner: budgetPlanner,
+            persistence: persistence
         )
+    }
+
+    private func runtime(for sessionID: SessionID) async throws -> SessionRuntime {
+        if let runtime = runtimes[sessionID] { return runtime }
+        _ = try await store.session(sessionID)
+        let runtime = makeRuntime(for: sessionID)
+        try await runtime.restore()
+        runtimes[sessionID] = runtime
+        return runtime
     }
 }

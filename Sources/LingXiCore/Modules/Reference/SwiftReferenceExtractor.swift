@@ -19,7 +19,7 @@ public struct SwiftReferenceExtractor: Sendable, ReferenceExtractor {
             let source = symbols.filter { $0.line <= lineNumber }.max { $0.line < $1.line }?.id
             func add(_ target: String, _ kind: ReferenceKind, receiver: String? = nil) {
                 guard !target.isEmpty, target != "Self" else { return }
-                references.append(ProjectReference(projectRoot: projectRoot, sourceSymbolID: source, sourcePageID: pageID, sourcePath: path, sourceLine: lineNumber, targetName: target, kind: kind, resolutionQuality: receiver == nil ? .unresolved : .receiverHint, receiverHint: receiver))
+                references.append(ProjectReference(projectRoot: projectRoot, projectID: pages.first?.projectID, sourceFileID: pages.first?.fileID, sourceSymbolID: source, sourcePageID: pageID, sourcePath: path, sourceLine: lineNumber, targetName: target, kind: kind, resolutionQuality: receiver == nil ? .unresolved : .receiverHint, receiverHint: receiver))
             }
             if line.contains("import "), let importName = capture(Self.importRegex, in: line) { add(importName, .import) }
             if line.contains(":"), let declaration = capture(Self.conformanceRegex, in: line) {

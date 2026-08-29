@@ -10,6 +10,8 @@ public actor CoreHost: CoreEndpoint {
     private let bus = CommandBus()
     private let dataPlane = DataPlane()
     private let sessionStore: any SessionStore
+    /// nil 表示显式的 ephemeral Core；设置 LINGXI_DATA_ROOT 时启用 project durable state。
+    public let persistence: SQLitePersistenceStore?
     private let gateway: ModelGateway
     private let permissionEngine: PermissionEngine
     private let toolRuntime: ToolRuntime
@@ -17,6 +19,7 @@ public actor CoreHost: CoreEndpoint {
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
+    private let compactor: ContextCompactor
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
@@ -26,6 +29,7 @@ public actor CoreHost: CoreEndpoint {
         providerAssembly: ModelRuntimeAssembly? = nil,
         sessionStore: (any SessionStore)? = nil,
         workspaceRoot: WorkspaceRoot? = nil,
+        dataRoot: URL? = nil,
         permissionDecision: PermissionDecision? = nil,
         toolRegistry: ToolRegistry? = nil
     ) throws {
@@ -34,9 +38,14 @@ public actor CoreHost: CoreEndpoint {
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
-        self.sessionStore = sessionStore ?? InMemorySessionStore()
         let workspace = try workspaceRoot ?? WorkspaceRoot.fromEnvironment()
         let environment = ProcessInfo.processInfo.environment
+        let persistentRoot = dataRoot ?? environment["LINGXI_DATA_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let persistent = try persistentRoot.map {
+            try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
+        }
+        persistence = persistent
+        self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
         let legacyDecision = permissionDecision ?? PermissionDecision(rawValue: environment["LINGXI_TOOL_PERMISSION"] ?? "")
         let policy = PermissionPolicy(rawValue: environment["LINGXI_PERMISSION_POLICY"] ?? "")
             ?? (legacyDecision == .allow ? .auto : .ask)
@@ -47,12 +56,13 @@ public actor CoreHost: CoreEndpoint {
         toolRuntime = ToolRuntime(registry: toolRegistry ?? .builtin(workspace: workspace), permissions: permissions)
         let l2Budget = Int(environment["LINGXI_L2_MAX_CHARS"] ?? "") ?? 256 * 1024
         let l1ProjectBudget = Int(environment["LINGXI_L1_PROJECT_MAX_CHARS"] ?? "") ?? 32 * 1024
-        contextPager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
+        contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url)
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: ProcessInfo.processInfo.environment["LINGXI_SYSTEM_CONTEXT"]
         ))
         performanceStore = PerformanceStore()
+        compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
 
         let (assembly, missing) = ProviderSetup.resolve()
         let effective = providerAssembly ?? assembly
@@ -155,11 +165,20 @@ public actor CoreHost: CoreEndpoint {
             toolRuntime: toolRuntime,
             performanceStore: performanceStore,
             contextPager: contextPager,
-            projectScanner: projectScanner
-        ) { [weak self] event in
-            await self?.broadcast(event)
-        }
+            projectScanner: projectScanner,
+            eventSink: { [weak self] event in
+                await self?.broadcast(event)
+            },
+            compactor: compactor,
+            persistence: persistence
+        )
         self.agent = agent
+        do {
+            try await agent.restore()
+        } catch {
+            setState(.stopped)
+            return
+        }
         setState(.ready)
     }
 

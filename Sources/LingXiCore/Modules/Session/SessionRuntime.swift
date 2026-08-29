@@ -16,6 +16,7 @@ public actor SessionRuntime {
     private let projectScanner: ProjectScanner
     private let compactor: ContextCompactor
     private let budgetPlanner: ContextBudgetPlanner
+    private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private var turnRunning = false
     private var toolBatches: [ToolExchangeBatch] = []
@@ -33,7 +34,8 @@ public actor SessionRuntime {
         projectScanner: ProjectScanner,
         eventSink: @escaping @Sendable (CoreEvent) async -> Void,
         compactor: ContextCompactor,
-        budgetPlanner: ContextBudgetPlanner
+        budgetPlanner: ContextBudgetPlanner,
+        persistence: SQLitePersistenceStore? = nil
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -47,6 +49,16 @@ public actor SessionRuntime {
         self.eventSink = eventSink
         self.compactor = compactor
         self.budgetPlanner = budgetPlanner
+        self.persistence = persistence
+    }
+
+    public func restore() async throws {
+        guard let persistence else { return }
+        toolBatches = try await persistence.toolBatches(sessionID: sessionID)
+        if let compacted = try await persistence.compaction(sessionID: sessionID) {
+            compactionGeneration = compacted.generation
+            await compactor.restoreResidencies(sessionID: sessionID, values: compacted.residencies)
+        }
     }
 
     /// 启动一轮对话并立即返回 DMA 通道；同一 Session 只允许一个活动 turn。
@@ -114,6 +126,7 @@ public actor SessionRuntime {
                 let compacted = try await compactor.compact(sessionID: sessionID, entries: allEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(projectPages.map(\.content)))
                 profiler.recordCompaction(compacted, budget: budget)
                 if compacted.triggered { compactionGeneration += 1 }
+                if compacted.triggered { try await persistCompaction() }
                 // Project retrieval may use recent turns; Derived rehydration must match the current task only.
                 let pageIn = await contextPager.pageInDerived(store: compactor.derivedStore, sessionID: sessionID, query: task, remainingTokens: max(0, budget.hardInputLimit - compacted.afterTokens))
                 let derivedMetrics = await compactor.cacheMetrics(sessionID: sessionID)
@@ -126,6 +139,7 @@ public actor SessionRuntime {
                     finalEntries = emergency.entries
                     finalTokens = emergency.afterTokens
                     if emergency.triggered { compactionGeneration += 1 }
+                    if emergency.triggered { try await persistCompaction() }
                 }
                 let context = await contextEngine.snapshot(for: session, activeEntries: finalEntries, estimatedTokens: finalTokens, mandatoryTokens: compacted.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
                 await contextPager.recordInjection(pages)
@@ -148,7 +162,7 @@ public actor SessionRuntime {
                 profiler.recordProtocolValidator(liveBatches: toolBatches.filter { $0.state != .consumed }.count)
                 trace("provider.stream.begin", step: step + 1)
                 let events = try await modelBus.stream(request)
-                consumeSettledBatches()
+                try await consumeSettledBatches()
                 let dispatch = dispatchStarted.duration(to: clock.now)
                 let streamStarted = clock.now
                 var text = ""
@@ -203,8 +217,12 @@ public actor SessionRuntime {
                     throw CoreError(code: .modelStream, message: "Tool batch 含重复 toolCallID")
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: calls.count)
-                let assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts)
-                toolBatches.append(ToolExchangeBatch(batchID: UUID().uuidString, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) })))
+                let assistantMessage: Message
+                if persistence != nil { assistantMessage = Message(id: MessageID(UUID().uuidString), role: .assistant, parts: assistantParts, createdAt: .now) }
+                else { assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts) }
+                let batch = ToolExchangeBatch(batchID: UUID().uuidString, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }))
+                if let persistence { try await persistence.appendAssistantMessageAndBatch(sessionID: sessionID, message: assistantMessage, batch: batch) }
+                toolBatches.append(batch)
                 trace("session.parts.append.end", step: step + 1, toolCount: calls.count)
 
                 trace("tool.batch.settle.begin", step: step + 1, toolCount: calls.count)
@@ -262,8 +280,10 @@ public actor SessionRuntime {
                     await eventSink(.toolResult(result))
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
-                let resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) })
-                settleLatestBatch(resultMessageID: resultMessage.id, results: settled.map(\.result))
+                let resultMessage: Message
+                if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: settled.map { .toolResult($0.result) }, createdAt: .now) }
+                else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }) }
+                try await settleLatestBatch(resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage)
                 trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
                 trace("tool.batch.settle.end", step: step + 1, toolCount: calls.count)
             }
@@ -322,7 +342,9 @@ public actor SessionRuntime {
         // /compact only changes L1 residency; the next user task is the sole Derived page-in trigger.
         _ = await contextEngine.snapshot(for: session, activeEntries: result.entries, estimatedTokens: result.afterTokens, mandatoryTokens: result.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
         _ = scan
-        return CompactSessionResponse(triggerSource: result.triggerSource.rawValue, beforeEstimatedTokens: result.beforeTokens, afterEstimatedTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims, compactionGeneration: compactionGeneration, noEligibleReduction: result.noEligibleReduction)
+        let response = CompactSessionResponse(triggerSource: result.triggerSource.rawValue, beforeEstimatedTokens: result.beforeTokens, afterEstimatedTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims, compactionGeneration: compactionGeneration, noEligibleReduction: result.noEligibleReduction)
+        try await persistCompaction()
+        return response
     }
 
     public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
@@ -333,13 +355,25 @@ public actor SessionRuntime {
         await compactor.unitStates(sessionID: sessionID)
     }
 
-    private func settleLatestBatch(resultMessageID: MessageID, results: [ToolResult]) {
+    private func settleLatestBatch(resultMessageID: MessageID, results: [ToolResult], resultMessage: Message) async throws {
         guard let index = toolBatches.lastIndex(where: { $0.state == .pending }) else { return }
         toolBatches[index] = toolBatches[index].with(state: .settledAwaitingConsumption, resultMessageID: resultMessageID, toolResults: results)
+        if let persistence { try await persistence.appendToolResultMessageAndSettle(sessionID: sessionID, message: resultMessage, batch: toolBatches[index]) }
     }
 
-    private func consumeSettledBatches() {
+    private func consumeSettledBatches() async throws {
         toolBatches = toolBatches.map { $0.state == .settledAwaitingConsumption ? $0.with(state: .consumed) : $0 }
+        for batch in toolBatches where batch.state == .consumed { try await persistence?.saveToolBatch(batch) }
+    }
+
+    private func persistCompaction() async throws {
+        guard let persistence else { return }
+        try await persistence.saveCompaction(
+            sessionID: sessionID,
+            generation: compactionGeneration,
+            residencies: await compactor.unitStates(sessionID: sessionID),
+            derivedPages: await compactor.derivedStore.pages(sessionID: sessionID)
+        )
     }
 
     private func completeTurn(
@@ -375,6 +409,9 @@ public actor SessionRuntime {
         error: CoreError,
         profiler: TurnProfiler
     ) async {
+        if ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1" {
+            FileHandle.standardError.write(Data("[agent-trace] event=turn.failed sessionID=\(sessionID.rawValue) code=\(error.code.rawValue)\n".utf8))
+        }
         sink.finish()
         turnRunning = false
         if let report = profiler.report() { await performanceStore.save(report) }

@@ -23,6 +23,10 @@ public struct ReferenceID: RawRepresentable, Sendable, Equatable, Hashable, Comp
 
     public init(rawValue: String) { self.rawValue = rawValue }
 
+    public init(projectID: ProjectID, sourceFileID: ProjectFileID, line: Int, kind: ReferenceKind, targetName: String) {
+        self.rawValue = Self.fingerprint("\(projectID.rawValue)|\(sourceFileID.rawValue)|\(line)|\(kind.rawValue)|\(targetName)")
+    }
+
     public init(projectRoot: String, sourcePath: String, line: Int, kind: ReferenceKind, targetName: String) {
         self.rawValue = Self.fingerprint("\(projectRoot)|\(sourcePath)|\(line)|\(kind.rawValue)|\(targetName)")
     }
@@ -38,6 +42,9 @@ public struct ReferenceID: RawRepresentable, Sendable, Equatable, Hashable, Comp
 
 public struct ProjectReference: Sendable, Equatable, Hashable {
     public let id: ReferenceID
+    public let projectID: ProjectID?
+    public let sourceFileID: ProjectFileID?
+    public let targetFileID: ProjectFileID?
     public let projectRoot: String
     public let sourceSymbolID: SymbolID?
     public let sourcePageID: String
@@ -52,14 +59,14 @@ public struct ProjectReference: Sendable, Equatable, Hashable {
     public let candidateSymbolIDs: [SymbolID]
     public let receiverHint: String?
 
-    public init(projectRoot: String, sourceSymbolID: SymbolID? = nil, sourcePageID: String, sourcePath: String, sourceLine: Int, targetName: String, kind: ReferenceKind, targetSymbolID: SymbolID? = nil, targetPageID: String? = nil, targetPath: String? = nil, resolutionQuality: ReferenceResolutionQuality = .unresolved, candidateSymbolIDs: [SymbolID] = [], receiverHint: String? = nil) {
-        self.projectRoot = projectRoot; self.sourceSymbolID = sourceSymbolID; self.sourcePageID = sourcePageID; self.sourcePath = sourcePath; self.sourceLine = sourceLine; self.targetName = targetName; self.kind = kind; self.targetSymbolID = targetSymbolID; self.targetPageID = targetPageID; self.targetPath = targetPath; self.resolutionQuality = resolutionQuality; self.candidateSymbolIDs = candidateSymbolIDs.sorted(); self.receiverHint = receiverHint
-        id = ReferenceID(projectRoot: projectRoot, sourcePath: sourcePath, line: sourceLine, kind: kind, targetName: targetName)
+    public init(projectRoot: String, projectID: ProjectID? = nil, sourceFileID: ProjectFileID? = nil, sourceSymbolID: SymbolID? = nil, sourcePageID: String, sourcePath: String, sourceLine: Int, targetName: String, kind: ReferenceKind, targetFileID: ProjectFileID? = nil, targetSymbolID: SymbolID? = nil, targetPageID: String? = nil, targetPath: String? = nil, resolutionQuality: ReferenceResolutionQuality = .unresolved, candidateSymbolIDs: [SymbolID] = [], receiverHint: String? = nil) {
+        self.projectRoot = projectRoot; self.projectID = projectID; self.sourceFileID = sourceFileID; self.sourceSymbolID = sourceSymbolID; self.sourcePageID = sourcePageID; self.sourcePath = sourcePath; self.sourceLine = sourceLine; self.targetName = targetName; self.kind = kind; self.targetFileID = targetFileID; self.targetSymbolID = targetSymbolID; self.targetPageID = targetPageID; self.targetPath = targetPath; self.resolutionQuality = resolutionQuality; self.candidateSymbolIDs = candidateSymbolIDs.sorted(); self.receiverHint = receiverHint
+        id = projectID.flatMap { project in sourceFileID.map { ReferenceID(projectID: project, sourceFileID: $0, line: sourceLine, kind: kind, targetName: targetName) } } ?? ReferenceID(projectRoot: projectRoot, sourcePath: sourcePath, line: sourceLine, kind: kind, targetName: targetName)
     }
 
     public func resolving(to symbols: [Symbol], quality: ReferenceResolutionQuality) -> ProjectReference {
         let target = symbols.count == 1 ? symbols[0] : nil
-        return ProjectReference(projectRoot: projectRoot, sourceSymbolID: sourceSymbolID, sourcePageID: sourcePageID, sourcePath: sourcePath, sourceLine: sourceLine, targetName: targetName, kind: kind, targetSymbolID: target?.id, targetPageID: target?.pageID, targetPath: target?.path, resolutionQuality: quality, candidateSymbolIDs: symbols.map(\.id), receiverHint: receiverHint)
+        return ProjectReference(projectRoot: projectRoot, projectID: projectID, sourceFileID: sourceFileID, sourceSymbolID: sourceSymbolID, sourcePageID: sourcePageID, sourcePath: sourcePath, sourceLine: sourceLine, targetName: targetName, kind: kind, targetFileID: target?.fileID, targetSymbolID: target?.id, targetPageID: target?.pageID, targetPath: target?.path, resolutionQuality: quality, candidateSymbolIDs: symbols.map(\.id), receiverHint: receiverHint)
     }
 }
 
@@ -72,6 +79,8 @@ public enum DependencyKind: String, Sendable, Equatable, Hashable {
 }
 
 public struct DependencyEdge: Sendable, Equatable, Hashable {
+    public let sourceFileID: ProjectFileID?
+    public let targetFileID: ProjectFileID?
     public let sourcePath: String
     public let targetPath: String?
     public let targetModule: String?
@@ -80,7 +89,7 @@ public struct DependencyEdge: Sendable, Equatable, Hashable {
     public let sourcePageID: String
 
     public init(reference: ProjectReference) {
-        sourcePath = reference.sourcePath; targetPath = reference.targetPath; sourcePageID = reference.sourcePageID; evidence = reference.id
+        sourceFileID = reference.sourceFileID; targetFileID = reference.targetFileID; sourcePath = reference.sourcePath; targetPath = reference.targetPath; sourcePageID = reference.sourcePageID; evidence = reference.id
         if reference.kind == .import { kind = .importModule; targetModule = reference.targetName.split(separator: ".").first.map(String.init) }
         else {
             targetModule = nil

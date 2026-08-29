@@ -8,27 +8,32 @@ public actor ProjectPageStore {
     private let referenceIndex: ProjectReferenceIndex
     private let referenceExtractor: SwiftReferenceExtractor
     private let rankingPolicy: ContextPageRankingPolicy
+    private let persistence: SQLitePersistenceStore?
 
     public init(
         symbolIndex: ProjectSymbolIndex = ProjectSymbolIndex(),
         symbolExtractor: SwiftSymbolExtractor = SwiftSymbolExtractor(),
         referenceIndex: ProjectReferenceIndex = ProjectReferenceIndex(),
         referenceExtractor: SwiftReferenceExtractor = SwiftReferenceExtractor(),
-        rankingPolicy: ContextPageRankingPolicy = ContextPageRankingPolicy()
+        rankingPolicy: ContextPageRankingPolicy = ContextPageRankingPolicy(),
+        persistence: SQLitePersistenceStore? = nil
     ) {
         self.symbolIndex = symbolIndex
         self.symbolExtractor = symbolExtractor
         self.referenceIndex = referenceIndex
         self.referenceExtractor = referenceExtractor
         self.rankingPolicy = rankingPolicy
+        self.persistence = persistence
     }
 
     @discardableResult
     public func rebuildStaleFiles(using scanner: ProjectScanner) async throws -> ProjectPageStoreUpdate {
         let scanStartedAt = Date()
+        _ = try await persistence?.invalidateCachesIfFormatMismatch()
         let isInitialIndex = filesByProject[scanner.projectRoot] == nil
         let oldFiles = filesByProject[scanner.projectRoot, default: [:]]
-        let scan = try scanner.scanManifest(reusing: oldFiles)
+        let rawScan = try scanner.scanManifest(reusing: oldFiles)
+        let scan = try await bindStableFileIdentities(rawScan)
         let newFiles = Dictionary(uniqueKeysWithValues: scan.files.map { ($0.path, $0) })
         let initialIndexedPaths = isInitialIndex ? newFiles.keys.sorted() : []
         var updatedFiles = isInitialIndex ? [:] : oldFiles
@@ -54,6 +59,11 @@ public actor ProjectPageStore {
         }
         filesByProject[scan.projectRoot] = updatedFiles
         await resolveReferences(projectRoot: scan.projectRoot)
+        if let persistence {
+            let symbols = await symbolIndex.allSymbols(projectRoot: scan.projectRoot)
+            let references = await referenceIndex.references(projectRoot: scan.projectRoot)
+            try await persistence.replaceProjectCache(pages: updatedFiles.values.flatMap(\.pages), symbols: symbols, references: references, dependencies: references.map(DependencyEdge.init(reference:)))
+        }
         return ProjectPageStoreUpdate(
             initialIndexedPaths: initialIndexedPaths,
             rebuiltPaths: rebuiltPaths.sorted(),
@@ -78,6 +88,11 @@ public actor ProjectPageStore {
         let files = filesByProject[ContextPage.projectIdentifier(for: projectRoot), default: [:]]
         let symbols = await symbolIndex.stats(projectRoot: ContextPage.projectIdentifier(for: projectRoot))
         return (files.count, files.values.reduce(0) { $0 + $1.pages.count }, symbols.symbolCount, symbols.fileCount, await referenceIndex.stats(projectRoot: ContextPage.projectIdentifier(for: projectRoot)))
+    }
+
+    public func resources(projectRoot: URL) async -> (pages: [ContextPage], symbols: [Symbol], references: [ProjectReference]) {
+        let id = ContextPage.projectIdentifier(for: projectRoot)
+        return (pages(projectRoot: id), await symbolIndex.allSymbols(projectRoot: id), await referenceIndex.references(projectRoot: id))
     }
 
     public func search(projectRoot: URL, query: String, limit: Int = 20) async -> [ContextPage] {
@@ -192,6 +207,44 @@ public actor ProjectPageStore {
 
     private func pages(projectRoot: String) -> [ContextPage] {
         filesByProject[projectRoot, default: [:]].values.flatMap(\.pages)
+    }
+
+    private func bindStableFileIdentities(_ scan: ProjectScan) async throws -> ProjectScan {
+        guard let persistence else { return scan }
+        let main = try await persistence.mainRootBinding()
+        let existing = try await persistence.files().filter { $0.rootBindingID == main.id && $0.state == "active" }
+        let byPath = Dictionary(uniqueKeysWithValues: existing.map { ($0.relativePath.rawValue, $0) })
+        let incomingPaths = Set(scan.files.map(\.path))
+        let missing = existing.filter { !incomingPaths.contains($0.relativePath.rawValue) }
+        let newFiles = scan.files.filter { byPath[$0.path] == nil }
+        let uniqueNewByHash = Dictionary(grouping: newFiles, by: \.version).filter { $0.value.count == 1 }
+        let uniqueMissingByHash = Dictionary(grouping: missing, by: \.contentHash).filter { $0.value.count == 1 }
+        var moved: [String: ProjectFileBinding] = [:]
+        for (hash, candidates) in uniqueNewByHash {
+            guard let old = uniqueMissingByHash[hash]?.first, let file = candidates.first else { continue }
+            try await persistence.relocateFile(old.id, rootBindingID: main.id, relativePath: try ProjectRelativePath(file.path))
+            moved[file.path] = try await persistence.file(old.id)
+        }
+        for old in missing where !moved.values.contains(where: { $0.id == old.id }) {
+            try await persistence.markFileMissing(old.id)
+        }
+        var files: [ScannedProjectFile] = []
+        for file in scan.files {
+            let binding: ProjectFileBinding
+            if let movedBinding = moved[file.path] { binding = movedBinding }
+            else if let existingBinding = byPath[file.path] {
+                binding = try await persistence.upsertFile(
+                    rootBindingID: main.id,
+                    relativePath: try ProjectRelativePath(file.path),
+                    contentHash: file.version,
+                    version: file.version
+                )
+                assert(binding.id == existingBinding.id)
+            }
+            else { binding = try await persistence.upsertFile(rootBindingID: main.id, relativePath: try ProjectRelativePath(file.path), contentHash: file.version, version: file.version) }
+            files.append(file.binding(projectID: persistence.projectID, fileID: binding.id))
+        }
+        return ProjectScan(projectRoot: scan.projectRoot, files: files)
     }
 
     private func updateSymbols(projectRoot: String, file: ScannedProjectFile) async {

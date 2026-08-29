@@ -59,3 +59,44 @@ public actor InMemorySessionStore: SessionStore {
         return message
     }
 }
+
+/// 每 project 一个 state.sqlite 的 canonical Session repository。
+public actor PersistentSessionStore: SessionStore {
+    private let persistence: SQLitePersistenceStore
+
+    public init(persistence: SQLitePersistenceStore) { self.persistence = persistence }
+
+    public func create() async throws -> Session {
+        let main = try await persistence.mainRootBinding()
+        let session = Session(
+            id: SessionID(UUID().uuidString),
+            createdAt: .now,
+            projectID: persistence.projectID,
+            cwdRootBindingID: main.id
+        )
+        try await persistence.createSession(id: session.id, cwdRootBindingID: main.id, cwdRelativePath: .root, createdAt: session.createdAt)
+        return session
+    }
+
+    public func session(_ id: SessionID) async throws -> Session {
+        guard let session = try await persistence.loadSessions().first(where: { $0.id == id }) else {
+            throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(id.rawValue)")
+        }
+        return session
+    }
+
+    public func listSessions() async throws -> [Session] { try await persistence.loadSessions() }
+
+    @discardableResult
+    public func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message {
+        try await appendMessage(sessionID, role: role, parts: [.text(content)])
+    }
+
+    @discardableResult
+    public func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message {
+        _ = try await session(sessionID)
+        let message = Message(id: MessageID(UUID().uuidString), role: role, parts: parts, createdAt: .now)
+        try await persistence.appendMessage(sessionID: sessionID, message: message)
+        return message
+    }
+}
