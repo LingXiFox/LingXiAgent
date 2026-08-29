@@ -6,16 +6,17 @@ public enum WireMessage: Sendable, Equatable {
     case response(id: String, response: CoreResponse)
     case event(CoreEvent)
     case chunk(StreamChunk)
+    case toolOutput(ToolOutputChunk)
     case streamEnd(StreamID)
 }
 
 extension WireMessage: Codable {
     private enum Kind: String, Codable {
-        case request, response, event, chunk, streamEnd
+        case request, response, event, chunk, toolOutput, streamEnd
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, id, command, response, event, chunk, streamID
+        case kind, id, command, response, event, chunk, toolOutput, streamID
     }
 
     public init(from decoder: Decoder) throws {
@@ -35,6 +36,8 @@ extension WireMessage: Codable {
             self = .event(try container.decode(CoreEvent.self, forKey: .event))
         case .chunk:
             self = .chunk(try container.decode(StreamChunk.self, forKey: .chunk))
+        case .toolOutput:
+            self = .toolOutput(try container.decode(ToolOutputChunk.self, forKey: .toolOutput))
         case .streamEnd:
             self = .streamEnd(try container.decode(StreamID.self, forKey: .streamID))
         }
@@ -57,6 +60,9 @@ extension WireMessage: Codable {
         case let .chunk(chunk):
             try container.encode(Kind.chunk, forKey: .kind)
             try container.encode(chunk, forKey: .chunk)
+        case let .toolOutput(chunk):
+            try container.encode(Kind.toolOutput, forKey: .kind)
+            try container.encode(chunk, forKey: .toolOutput)
         case let .streamEnd(streamID):
             try container.encode(Kind.streamEnd, forKey: .kind)
             try container.encode(streamID, forKey: .streamID)
@@ -66,7 +72,7 @@ extension WireMessage: Codable {
 
 extension ClientCommand: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type, sessionID, content, permissionReply, permissionConfiguration
+        case type, sessionID, content, permissionReply, questionReply, permissionConfiguration
     }
 
     public init(from decoder: Decoder) throws {
@@ -92,6 +98,8 @@ extension ClientCommand: Codable {
         case .compactSession: self = .compactSession(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
         case .replyPermission:
             self = .replyPermission(try container.decode(PermissionReply.self, forKey: .permissionReply))
+        case .replyQuestion:
+            self = .replyQuestion(try container.decode(QuestionReply.self, forKey: .questionReply))
         case .sendMessage:
             self = .sendMessage(
                 sessionID: try container.decode(SessionID.self, forKey: .sessionID),
@@ -113,6 +121,8 @@ extension ClientCommand: Codable {
             try container.encode(content, forKey: .content)
         case let .replyPermission(reply):
             try container.encode(reply, forKey: .permissionReply)
+        case let .replyQuestion(reply):
+            try container.encode(reply, forKey: .questionReply)
         case let .setPermissionConfiguration(configuration):
             try container.encode(configuration, forKey: .permissionConfiguration)
         default:
@@ -124,11 +134,11 @@ extension ClientCommand: Codable {
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
         case pong, info, state, streamOpened, providerStatus
-        case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, context, performance, permissionConfiguration, projectCache, compactSession, error
+        case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, questionReplyAccepted, context, performance, permissionConfiguration, projectCache, compactSession, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, providerStatus, session, sessions, permissionID, context, performance, permissionConfiguration, projectCache, compactSession, error
+        case type, info, state, streamID, providerStatus, session, sessions, permissionID, questionID, context, performance, permissionConfiguration, projectCache, compactSession, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -152,6 +162,8 @@ extension CoreResponse: Codable {
             self = .sessionDetail(try container.decode(SessionSnapshot.self, forKey: .session))
         case .permissionReplyAccepted:
             self = .permissionReplyAccepted(try container.decode(PermissionID.self, forKey: .permissionID))
+        case .questionReplyAccepted:
+            self = .questionReplyAccepted(try container.decode(QuestionID.self, forKey: .questionID))
         case .context:
             self = .context(try container.decodeIfPresent(ContextDebugSnapshot.self, forKey: .context))
         case .performance:
@@ -189,6 +201,8 @@ extension CoreResponse: Codable {
             try container.encode(snapshot, forKey: .session)
         case let .permissionReplyAccepted(permissionID):
             try container.encode(permissionID, forKey: .permissionID)
+        case let .questionReplyAccepted(questionID):
+            try container.encode(questionID, forKey: .questionID)
         case let .context(snapshot):
             try container.encodeIfPresent(snapshot, forKey: .context)
         case let .performance(report):
@@ -215,6 +229,7 @@ extension CoreResponse: Codable {
         case .sessionList: .sessionList
         case .sessionDetail: .sessionDetail
         case .permissionReplyAccepted: .permissionReplyAccepted
+        case .questionReplyAccepted: .questionReplyAccepted
         case .context: .context
         case .performance: .performance
         case .permissionConfiguration: .permissionConfiguration
@@ -246,11 +261,11 @@ extension CoreError: Codable {
 extension CoreEvent: Codable {
     private enum TypeKey: String, Codable {
         case stateChanged, sessionCreated, turnStarted, turnCompleted, turnFailed
-        case toolCallCompleted, toolResult, permissionAsked
+        case toolCallCompleted, toolResult, permissionAsked, questionAsked
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, state, sessionID, handle, result, failure, toolCall, toolResult, permissionRequest
+        case type, state, sessionID, handle, result, failure, toolCall, toolResult, permissionRequest, questionRequest
     }
 
     public init(from decoder: Decoder) throws {
@@ -272,6 +287,8 @@ extension CoreEvent: Codable {
             self = .toolResult(try container.decode(ToolResult.self, forKey: .toolResult))
         case .permissionAsked:
             self = .permissionAsked(try container.decode(PermissionRequest.self, forKey: .permissionRequest))
+        case .questionAsked:
+            self = .questionAsked(try container.decode(QuestionRequest.self, forKey: .questionRequest))
         }
     }
 
@@ -302,6 +319,9 @@ extension CoreEvent: Codable {
         case let .permissionAsked(request):
             try container.encode(TypeKey.permissionAsked, forKey: .type)
             try container.encode(request, forKey: .permissionRequest)
+        case let .questionAsked(request):
+            try container.encode(TypeKey.questionAsked, forKey: .type)
+            try container.encode(request, forKey: .questionRequest)
         }
     }
 }

@@ -18,8 +18,8 @@ public struct LingXiClient: Sendable {
     /// 启动 LingXiCoreHost 子进程并连接。
     /// - Parameter corePath: core 可执行文件路径；
     ///   默认取环境变量 LINGXI_CORE_PATH，或本可执行文件同目录下的 LingXiCoreHost。
-    public static func stdioCore(corePath: String? = nil) throws -> LingXiClient {
-        LingXiClient(connection: try StdioConnection(corePath: resolveCorePath(corePath)))
+    public static func stdioCore(corePath: String? = nil, interactive: Bool = false) throws -> LingXiClient {
+        LingXiClient(connection: try StdioConnection(corePath: resolveCorePath(corePath), interactive: interactive))
     }
 
     // MARK: - Core API
@@ -58,6 +58,11 @@ public struct LingXiClient: Sendable {
         await connection.events()
     }
 
+    /// 订阅 Tool stdout/stderr 数据面；不经过 CoreEvent。
+    public func toolOutputEvents() async -> AsyncStream<ToolOutputChunk> {
+        await connection.toolOutputEvents()
+    }
+
     /// 打开内置测试 Streaming DMA 通道。
     public func openTestStream() async throws -> AsyncThrowingStream<StreamChunk, Error> {
         try await connection.openTestStream()
@@ -93,6 +98,12 @@ public struct LingXiClient: Sendable {
     public func replyPermission(_ reply: PermissionReply) async throws {
         guard case .permissionReplyAccepted = try await connection.send(.replyPermission(reply)) else {
             throw CoreError(code: .transport, message: "replyPermission 收到非预期响应")
+        }
+    }
+
+    public func replyQuestion(_ reply: QuestionReply) async throws {
+        guard case let .questionReplyAccepted(questionID) = try await connection.send(.replyQuestion(reply)), questionID == reply.questionID else {
+            throw CoreError(code: .transport, message: "replyQuestion 收到非预期响应")
         }
     }
 

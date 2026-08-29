@@ -9,6 +9,10 @@ public actor CoreHost: CoreEndpoint {
     public let info: CoreInfo
     private let bus = CommandBus()
     private let dataPlane = DataPlane()
+    /// 由 Host 显式声明；headless 默认不允许问题工具等待用户输入。
+    public let interactive: Bool
+    public let questions: QuestionRuntime
+    private let processes: ToolProcessStore
     private let sessionStore: any SessionStore
     /// nil 表示显式的 ephemeral Core；设置 LINGXI_DATA_ROOT 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
@@ -31,15 +35,21 @@ public actor CoreHost: CoreEndpoint {
         workspaceRoot: WorkspaceRoot? = nil,
         dataRoot: URL? = nil,
         permissionDecision: PermissionDecision? = nil,
-        toolRegistry: ToolRegistry? = nil
+        toolRegistry: ToolRegistry? = nil,
+        interactive: Bool? = nil
     ) throws {
+        let environment = ProcessInfo.processInfo.environment
+        let supportsInteraction = interactive ?? (environment["LINGXI_INTERACTIVE"] == "1")
+        self.interactive = supportsInteraction
+        questions = QuestionRuntime(interactive: supportsInteraction)
+        let processes = ToolProcessStore()
+        self.processes = processes
         info = CoreInfo(
             name: "LingXiCore",
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
         let workspace = try workspaceRoot ?? WorkspaceRoot.fromEnvironment()
-        let environment = ProcessInfo.processInfo.environment
         let persistentRoot = dataRoot ?? environment["LINGXI_DATA_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
         let persistent = try persistentRoot.map {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
@@ -53,11 +63,17 @@ public actor CoreHost: CoreEndpoint {
         let permissions = legacyDecision.map { PermissionEngine(defaultDecision: $0) }
             ?? PermissionEngine(configuration: PermissionConfiguration(policy: policy, profile: profile))
         permissionEngine = permissions
-        toolRuntime = ToolRuntime(registry: toolRegistry ?? .builtin(workspace: workspace), permissions: permissions)
         let l2Budget = Int(environment["LINGXI_L2_MAX_CHARS"] ?? "") ?? 256 * 1024
         let l1ProjectBudget = Int(environment["LINGXI_L1_PROJECT_MAX_CHARS"] ?? "") ?? 32 * 1024
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url)
+        toolRuntime = ToolRuntime(
+            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes),
+            permissions: permissions,
+            mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
+            outputArchive: ToolOutputArchive(persistence: persistent),
+            outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) }
+        )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: ProcessInfo.processInfo.environment["LINGXI_SYSTEM_CONTEXT"]
         ))
@@ -76,6 +92,9 @@ public actor CoreHost: CoreEndpoint {
 
     /// 注册控制面路由并进入 ready。
     public func start() async {
+        await questions.setEventSink { [weak self] request in
+            await self?.broadcast(.questionAsked(request))
+        }
         await bus.add(.ping) { _ in .pong }
         await bus.add(.getInfo) { [self] _ in .info(info) }
         await bus.add(.getState) { [self] _ in .state(await state) }
@@ -105,6 +124,13 @@ public actor CoreHost: CoreEndpoint {
             }
             try await permissionEngine.reply(reply)
             return .permissionReplyAccepted(reply.permissionID)
+        }
+        await bus.add(.replyQuestion) { [self] command in
+            guard case let .replyQuestion(reply) = command else {
+                return .error(CoreError(code: .unsupportedCommand, message: "replyQuestion 参数缺失"))
+            }
+            try await questions.reply(reply)
+            return .questionReplyAccepted(reply.questionID)
         }
         await bus.add(.getContext) { [self] command in
             guard case let .getContext(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getContext 参数缺失")) }
@@ -170,7 +196,8 @@ public actor CoreHost: CoreEndpoint {
                 await self?.broadcast(event)
             },
             compactor: compactor,
-            persistence: persistence
+            persistence: persistence,
+            interactive: interactive
         )
         self.agent = agent
         do {
@@ -184,7 +211,10 @@ public actor CoreHost: CoreEndpoint {
 
     public func shutdown() async {
         setState(.shuttingDown)
+        await agent?.shutdown()
         await dataPlane.closeAll()
+        await questions.close()
+        await processes.stopAll()
         eventContinuations.values.forEach { $0.finish() }
         eventContinuations.removeAll()
         setState(.stopped)
@@ -204,6 +234,15 @@ public actor CoreHost: CoreEndpoint {
                 Task { await self?.removeEventContinuation(key) }
             }
         }
+    }
+
+    public func toolOutputEvents() async -> AsyncStream<ToolOutputChunk> {
+        await dataPlane.toolOutputEvents()
+    }
+
+    /// 供 ToolRuntime 或外部进程泵写入独立工具输出数据面。
+    public func emitToolOutput(_ chunk: ToolOutputChunk) async {
+        await dataPlane.emit(chunk)
     }
 
     // MARK: - CoreEndpoint（数据面）

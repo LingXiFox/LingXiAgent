@@ -41,10 +41,12 @@ public struct PermissionConfiguration: Sendable, Equatable, Codable {
 
 public struct PermissionRule: Sendable, Equatable, Codable {
     public let toolID: ToolID
+    public let capability: ToolCapabilityKind?
     public let decision: PermissionDecision
 
-    public init(toolID: ToolID, decision: PermissionDecision) {
+    public init(toolID: ToolID, capability: ToolCapabilityKind? = nil, decision: PermissionDecision) {
         self.toolID = toolID
+        self.capability = capability
         self.decision = decision
     }
 }
@@ -54,6 +56,7 @@ public struct PermissionRequest: Sendable, Equatable, Codable {
     public let sessionID: SessionID
     public let toolCallID: ToolCallID
     public let toolID: ToolID
+    public let capabilities: Set<ToolCapabilityKind>
     /// 经过 Workspace Root 解析后的资源路径。
     public let resource: String
     public let description: String
@@ -63,6 +66,7 @@ public struct PermissionRequest: Sendable, Equatable, Codable {
         sessionID: SessionID,
         toolCallID: ToolCallID,
         toolID: ToolID,
+        capabilities: Set<ToolCapabilityKind> = [],
         resource: String,
         description: String
     ) {
@@ -70,6 +74,7 @@ public struct PermissionRequest: Sendable, Equatable, Codable {
         self.sessionID = sessionID
         self.toolCallID = toolCallID
         self.toolID = toolID
+        self.capabilities = capabilities
         self.resource = resource
         self.description = description
     }

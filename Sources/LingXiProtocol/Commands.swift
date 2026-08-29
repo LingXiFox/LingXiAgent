@@ -9,6 +9,7 @@ public enum ClientCommand: Sendable, Equatable {
     case getSession(sessionID: SessionID)
     case getProviderStatus
     case replyPermission(PermissionReply)
+    case replyQuestion(QuestionReply)
     case getContext(sessionID: SessionID)
     case getPerformance(sessionID: SessionID)
     case getPermissionConfiguration
@@ -31,6 +32,7 @@ extension ClientCommand {
         case getSession
         case getProviderStatus
         case replyPermission
+        case replyQuestion
         case getContext
         case getPerformance
         case getPermissionConfiguration
@@ -51,6 +53,7 @@ extension ClientCommand {
         case .getSession: .getSession
         case .getProviderStatus: .getProviderStatus
         case .replyPermission: .replyPermission
+        case .replyQuestion: .replyQuestion
         case .getContext: .getContext
         case .getPerformance: .getPerformance
         case .getPermissionConfiguration: .getPermissionConfiguration

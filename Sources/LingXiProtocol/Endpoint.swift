@@ -20,6 +20,9 @@ public protocol CoreEndpoint: Sendable {
     /// Chunk 不经过控制面事件，直接从该独立通道流出。
     func openDataStream(_ command: ClientCommand) async throws -> OpenedStream
 
+    /// 数据面：订阅高频 Tool stdout/stderr；不经 CoreEvent 广播。
+    func toolOutputEvents() async -> AsyncStream<ToolOutputChunk>
+
     /// 控制面：订阅语义事件（如状态变化、模型流结果）。
     func events() async -> AsyncStream<CoreEvent>
 }

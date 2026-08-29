@@ -95,6 +95,24 @@ public actor ProjectPageStore {
         return (pages(projectRoot: id), await symbolIndex.allSymbols(projectRoot: id), await referenceIndex.references(projectRoot: id))
     }
 
+    public func symbolLookup(projectRoot: URL, query: String, mode: String) async -> [Symbol] {
+        let id = ContextPage.projectIdentifier(for: projectRoot)
+        switch mode {
+        case "exact": return await symbolIndex.exact(projectRoot: id, name: query)
+        case "qualified": return await symbolIndex.exactQualifiedName(projectRoot: id, name: query)
+        default: return await symbolIndex.prefix(projectRoot: id, prefix: query)
+        }
+    }
+
+    public func references(projectRoot: URL, symbolID: SymbolID) async -> [ProjectReference] {
+        await referenceIndex.referencesTo(projectRoot: ContextPage.projectIdentifier(for: projectRoot), symbol: symbolID)
+    }
+
+    public func dependencies(projectRoot: URL, path: String, incoming: Bool) async -> [DependencyEdge] {
+        let id = ContextPage.projectIdentifier(for: projectRoot)
+        return incoming ? await referenceIndex.dependenciesTo(projectRoot: id, path: path) : await referenceIndex.dependenciesFrom(projectRoot: id, path: path)
+    }
+
     public func search(projectRoot: URL, query: String, limit: Int = 20) async -> [ContextPage] {
         await searchResult(projectRoot: projectRoot, query: ContextQuery(currentTask: query), limit: limit).pages
     }

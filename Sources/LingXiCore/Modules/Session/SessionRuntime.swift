@@ -18,7 +18,9 @@ public actor SessionRuntime {
     private let budgetPlanner: ContextBudgetPlanner
     private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
+    private let interactive: Bool
     private var turnRunning = false
+    private var turnTask: Task<Void, Never>?
     private var toolBatches: [ToolExchangeBatch] = []
     private var compactionGeneration = 0
 
@@ -35,7 +37,8 @@ public actor SessionRuntime {
         eventSink: @escaping @Sendable (CoreEvent) async -> Void,
         compactor: ContextCompactor,
         budgetPlanner: ContextBudgetPlanner,
-        persistence: SQLitePersistenceStore? = nil
+        persistence: SQLitePersistenceStore? = nil,
+        interactive: Bool = false
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -50,6 +53,7 @@ public actor SessionRuntime {
         self.compactor = compactor
         self.budgetPlanner = budgetPlanner
         self.persistence = persistence
+        self.interactive = interactive
     }
 
     public func restore() async throws {
@@ -80,7 +84,9 @@ public actor SessionRuntime {
             let opened = await dataPlane.openAgentStream()
             let handle = TurnHandle(sessionID: sessionID, streamID: opened.stream.id)
             await eventSink(.turnStarted(handle))
-            Task { await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler) }
+            let turnTask = Task { await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler) }
+            self.turnTask = turnTask
+            await dataPlane.trackAgent(turnTask, streamID: opened.stream.id)
             return opened.stream
         } catch {
             turnRunning = false
@@ -119,7 +125,8 @@ public actor SessionRuntime {
                         }
                     }
                 }
-                let toolTokens = ConservativeTokenEstimator().estimate(tools: toolRuntime.definitions)
+                let availableTools = await toolRuntime.availableDefinitions(interactive: interactive)
+                let toolTokens = ConservativeTokenEstimator().estimate(tools: availableTools)
                 let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
                 profiler.recordBudget(budget, modelWindow: modelBus.gateway.contextProfile.contextWindowTokens)
                 let allEntries = await contextEngine.entries(for: session, projectPages: pages)
@@ -152,7 +159,7 @@ public actor SessionRuntime {
                 let request = ModelRequest(
                     model: try modelID(),
                     messages: context.modelMessages(),
-                    tools: toolRuntime.definitions,
+                    tools: availableTools,
                     debugStep: step + 1
                 )
                 if finalTokens > budget.hardInputLimit {
@@ -334,7 +341,7 @@ public actor SessionRuntime {
         let users = session.messages.compactMap { $0.role == .user ? $0.content : nil }
         let query = ContextQuery(currentTask: task, recentUserMessages: Array(users.dropLast()))
         let projectPages = (await contextPager.query(projectRoot: projectScanner.root, query: query)).pages
-        let toolTokens = ConservativeTokenEstimator().estimate(tools: toolRuntime.definitions)
+        let toolTokens = ConservativeTokenEstimator().estimate(tools: await toolRuntime.availableDefinitions())
         let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
         let entries = await contextEngine.entries(for: session, projectPages: projectPages)
         let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: budget, batches: toolBatches, projectBackedContents: Set(projectPages.map(\.content)), trigger: .manual)
@@ -345,6 +352,12 @@ public actor SessionRuntime {
         let response = CompactSessionResponse(triggerSource: result.triggerSource.rawValue, beforeEstimatedTokens: result.beforeTokens, afterEstimatedTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims, compactionGeneration: compactionGeneration, noEligibleReduction: result.noEligibleReduction)
         try await persistCompaction()
         return response
+    }
+
+    public func shutdown() {
+        turnTask?.cancel()
+        turnTask = nil
+        turnRunning = false
     }
 
     public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
@@ -384,10 +397,11 @@ public actor SessionRuntime {
         usage: ModelUsage?,
         profiler: TurnProfiler
     ) async {
-        defer { sink.finish() }
+        defer { Task { await dataPlane.finishAgentStream(handle.streamID) } }
         do {
             let message = try await store.appendMessage(handle.sessionID, role: .assistant, content: content)
             turnRunning = false
+            turnTask = nil
             if let report = profiler.report() { await performanceStore.save(report) }
             await eventSink(.turnCompleted(TurnResult(
                 sessionID: handle.sessionID,
@@ -412,8 +426,9 @@ public actor SessionRuntime {
         if ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1" {
             FileHandle.standardError.write(Data("[agent-trace] event=turn.failed sessionID=\(sessionID.rawValue) code=\(error.code.rawValue)\n".utf8))
         }
-        sink.finish()
+        await dataPlane.finishAgentStream(handle.streamID)
         turnRunning = false
+        turnTask = nil
         if let report = profiler.report() { await performanceStore.save(report) }
         await eventSink(.turnFailed(TurnFailure(sessionID: handle.sessionID, streamID: handle.streamID, error: error)))
     }

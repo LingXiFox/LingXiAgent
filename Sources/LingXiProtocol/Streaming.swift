@@ -28,3 +28,25 @@ public struct StreamChunk: Sendable, Equatable, Codable {
         self.kind = kind
     }
 }
+
+/// High-volume stdout/stderr travels on the data plane, never through CoreEvent.
+public struct ToolOutputChunk: Sendable, Equatable, Codable {
+    public enum Stream: String, Sendable, Equatable, Codable {
+        case stdout
+        case stderr
+    }
+
+    public let toolCallID: ToolCallID?
+    public let processID: String?
+    public let stream: Stream
+    public let sequence: Int
+    public let payload: String
+
+    public init(toolCallID: ToolCallID? = nil, processID: String? = nil, stream: Stream, sequence: Int, payload: String) {
+        self.toolCallID = toolCallID
+        self.processID = processID
+        self.stream = stream
+        self.sequence = sequence
+        self.payload = payload
+    }
+}

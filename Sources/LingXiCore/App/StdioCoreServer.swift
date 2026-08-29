@@ -23,7 +23,16 @@ public struct StdioCoreServer: Sendable {
                 await writer.write(.event(event))
             }
         }
-        defer { eventTask.cancel() }
+        let toolOutputEvents = await endpoint.toolOutputEvents()
+        let toolOutputTask = Task {
+            for await chunk in toolOutputEvents {
+                await writer.write(.toolOutput(chunk))
+            }
+        }
+        defer {
+            eventTask.cancel()
+            toolOutputTask.cancel()
+        }
 
         for try await line in input.bytes.lines {
             guard let data = line.data(using: .utf8),

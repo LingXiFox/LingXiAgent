@@ -312,6 +312,14 @@ private extension OpenAICompatibleProvider {
                 struct Property: Encodable {
                     let type: String
                     let description: String
+                    let enumValues: [String]?
+                    let minimum: Double?
+                    let maximum: Double?
+
+                    enum CodingKeys: String, CodingKey {
+                        case type, description, minimum, maximum
+                        case enumValues = "enum"
+                    }
                 }
 
                 let type = "object"
@@ -334,7 +342,7 @@ private extension OpenAICompatibleProvider {
                 description: definition.description,
                 parameters: Function.Parameters(
                     properties: definition.inputSchema.properties.mapValues {
-                        Function.Parameters.Property(type: $0.type.rawValue, description: $0.description)
+                        Function.Parameters.Property(type: $0.type.rawValue, description: $0.description, enumValues: $0.enumValues, minimum: $0.minimum, maximum: $0.maximum)
                     },
                     required: definition.inputSchema.required
                 )

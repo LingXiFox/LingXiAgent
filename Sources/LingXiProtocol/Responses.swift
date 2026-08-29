@@ -9,6 +9,7 @@ public enum CoreResponse: Sendable, Equatable {
     case sessionList([SessionInfo])
     case sessionDetail(SessionSnapshot)
     case permissionReplyAccepted(PermissionID)
+    case questionReplyAccepted(QuestionID)
     case context(ContextDebugSnapshot?)
     case performance(TurnPerformanceReport?)
     case permissionConfiguration(PermissionConfiguration)
@@ -71,10 +72,28 @@ public struct CoreError: Sendable, Equatable, Error {
         case modelStream
         case toolNotFound
         case toolArgumentInvalid
+        case toolValidationError
         case toolExecutionFailed
         case permissionDenied
         case permissionCancelled
         case workspaceViolation
+        case resourceNotFound
+        case resourceOutsideWorkspace
+        case symlinkEscape
+        case binaryFileUnsupported
+        case contentChanged
+        case ambiguousEdit
+        case invalidPatch
+        case patchConflict
+        case commandFailed
+        case commandTimedOut
+        case sandboxUnavailable
+        case processNotFound
+        case processNotRunning
+        case editTargetNotFound
+        case gitError
+        case questionUnavailable
+        case toolCancelled
         case agentStepLimitReached
         case contextBudgetExceeded
         case contextProtocolViolation

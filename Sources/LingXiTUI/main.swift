@@ -14,6 +14,49 @@ private func emit(_ text: String) {
     fflush(stdout)
 }
 
+private actor PendingQuestions {
+    private var requests: [QuestionRequest] = []
+
+    func append(_ request: QuestionRequest) {
+        requests.append(request)
+    }
+
+    func take() -> QuestionRequest? {
+        requests.isEmpty ? nil : requests.removeFirst()
+    }
+}
+
+private func showQuestion(_ request: QuestionRequest) {
+    print("\nQuestion: \(request.question)")
+    for (index, option) in request.options.enumerated() {
+        print("  \(index + 1). \(option)")
+    }
+    if request.options.isEmpty {
+        print("输入文本，或 cancel 取消")
+    } else if request.allowsFreeText {
+        print(request.allowsMultiple ? "输入编号（如 1,2）或文本；cancel 取消" : "输入编号或文本；cancel 取消")
+    } else {
+        print(request.allowsMultiple ? "输入编号（如 1,2）；cancel 取消" : "输入编号；cancel 取消")
+    }
+}
+
+private func questionReply(_ input: String, for request: QuestionRequest) -> QuestionReply? {
+    let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    if ["cancel", "c"].contains(value.lowercased()) {
+        return QuestionReply(questionID: request.questionID, cancelled: true)
+    }
+    let selections = value.split(whereSeparator: { $0 == "," || $0.isWhitespace }).compactMap { Int($0) }
+    if !selections.isEmpty {
+        guard selections.count == value.split(whereSeparator: { $0 == "," || $0.isWhitespace }).count,
+              request.allowsMultiple || selections.count == 1,
+              selections.allSatisfy({ request.options.indices.contains($0 - 1) })
+        else { return nil }
+        return QuestionReply(questionID: request.questionID, selectedOptionIndices: selections.map { $0 - 1 })
+    }
+    guard request.allowsFreeText, !value.isEmpty else { return nil }
+    return QuestionReply(questionID: request.questionID, text: value)
+}
+
 // MARK: - 启动横幅
 
 func showBanner(_ client: LingXiClient) async -> Bool {
@@ -189,7 +232,7 @@ func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
 func runTUI() async {
     let client: LingXiClient
     do {
-        client = try LingXiClient.stdioCore()
+        client = try LingXiClient.stdioCore(interactive: true)
     } catch {
         FileHandle.standardError.write(Data("无法启动 LingXiCoreHost: \(error)\n".utf8))
         return
@@ -198,6 +241,7 @@ func runTUI() async {
     guard await showBanner(client) else { return }
 
     // 控制面事件：turn 结果异步打印。
+    let pendingQuestions = PendingQuestions()
     let eventLoop = Task {
         for await event in await client.events() {
             switch event {
@@ -230,6 +274,9 @@ func runTUI() async {
                 } catch {
                     print("\(dim)[permission reply failed: \(error)]\(reset)")
                 }
+            case let .questionAsked(request):
+                await pendingQuestions.append(request)
+                showQuestion(request)
             case .sessionCreated, .turnStarted, .stateChanged:
                 break
             }
@@ -246,8 +293,30 @@ func runTUI() async {
     print("Session: \(sessionID.rawValue)")
     print("\(dim)输入 prompt 开始对话；new/history/context/perf/permission/mode/cache/compact/quit。\(reset)")
 
+    var pendingQuestion: QuestionRequest?
     while let raw = readLine() {
         let line = raw.trimmingCharacters(in: .whitespaces)
+        let request: QuestionRequest?
+        if let pendingQuestion {
+            request = pendingQuestion
+        } else {
+            request = await pendingQuestions.take()
+        }
+        if let request {
+            guard let reply = questionReply(line, for: request) else {
+                print("输入无效，请重试。")
+                pendingQuestion = request
+                continue
+            }
+            do {
+                try await client.replyQuestion(reply)
+                pendingQuestion = nil
+            } catch {
+                print("\(dim)[question reply failed: \(error)]\(reset)")
+                pendingQuestion = request
+            }
+            continue
+        }
         guard !line.isEmpty else { continue }
         switch line {
         case "quit", "exit":

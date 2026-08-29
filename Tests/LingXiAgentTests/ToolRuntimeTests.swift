@@ -14,6 +14,17 @@ private actor PermissionCapture {
     }
 }
 
+private actor QuestionCapture {
+    private var request: QuestionRequest?
+
+    func record(_ request: QuestionRequest) { self.request = request }
+
+    func wait() async -> QuestionRequest {
+        while request == nil { await Task.yield() }
+        return request!
+    }
+}
+
 struct ToolRuntimeTests {
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -34,7 +45,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        #expect(runtime.definitions.map(\.id.rawValue) == ["list_directory", "read_file"])
+        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "edit_file", "git", "glob", "grep", "list_directory", "process", "question", "read_file", "shell", "write_file"])
     }
 
     @Test func unknownToolAndInvalidArgumentsAreNormalized() async throws {
@@ -49,6 +60,20 @@ struct ToolRuntimeTests {
             ToolCall(callID: ToolCallID("x"), toolID: ToolID("read_file"), arguments: "not-json"), sessionID: SessionID("s")
         ) { _ in }
         #expect(invalid.error?.code == CoreError.Code.toolArgumentInvalid.rawValue)
+    }
+
+    @Test func schemaValidationRejectsTypeEnumAndRangeBeforeExecution() throws {
+        let schema = ToolInputSchema(
+            properties: [
+                "mode": ToolInputProperty(type: .string, description: "mode", enumValues: ["exact"]),
+                "limit": ToolInputProperty(type: .integer, description: "limit", minimum: 1, maximum: 10),
+            ],
+            required: ["mode", "limit"]
+        )
+        #expect(throws: CoreError.self) { try ToolSchemaValidator.validate(arguments: #"{"mode":"prefix","limit":11}"#, schema: schema) }
+        #expect(throws: CoreError.self) { try ToolSchemaValidator.validate(arguments: #"{"mode":"exact","limit":"1"}"#, schema: schema) }
+        #expect(throws: Never.self) { try ToolSchemaValidator.validate(arguments: #"{"mode":"exact","limit":1}"#, schema: schema) }
+        #expect(throws: CoreError.self) { try ToolSchemaValidator.validate(arguments: #"{"mode":"exact","limit":true}"#, schema: schema) }
     }
 
     @Test func readFileAndListDirectoryStayInsideWorkspace() async throws {
@@ -174,5 +199,103 @@ struct ToolRuntimeTests {
         try "secret".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
         let sensitive = await runtime.execute(call("read_file", ".env"), sessionID: SessionID("s")) { _ in }
         #expect(sensitive.error?.code == CoreError.Code.workspaceViolation.rawValue)
+    }
+
+    @Test func questionToolWaitsForValidatedInteractiveReply() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let questions = QuestionRuntime(interactive: true)
+        let capture = QuestionCapture()
+        await questions.setEventSink { request in await capture.record(request) }
+        let runtime = ToolRuntime(
+            registry: .builtin(workspace: try WorkspaceRoot(path: root.path), questions: questions),
+            permissions: PermissionEngine(defaultDecision: .allow)
+        )
+        #expect(await runtime.availableDefinitions().contains(where: { $0.id == ToolID("question") }) == false)
+        #expect(await runtime.availableDefinitions(interactive: true).contains(where: { $0.id == ToolID("question") }))
+
+        let task = Task {
+            await runtime.execute(
+                ToolCall(callID: ToolCallID("question"), toolID: ToolID("question"), arguments: #"{"question":"继续吗？","options":["是","否"]}"#),
+                sessionID: SessionID("s")
+            ) { _ in }
+        }
+        let request = await capture.wait()
+        try await questions.reply(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
+        let result = await task.value
+        #expect(result.success)
+        #expect(result.content.contains("是"))
+    }
+
+    @Test func workspaceShellRunsInsideWorkspaceAndStripsSecretEnvironment() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(EnvironmentSanitizer.sanitized(from: ["PATH": "/usr/bin:/bin", "LINGXI_TEST_SENTINEL": "secret"])["LINGXI_TEST_SENTINEL"] == nil)
+        let runtime = try runtime(root: root)
+        let result = await runtime.execute(
+            ToolCall(callID: ToolCallID("shell"), toolID: ToolID("shell"), arguments: #"{"command":"printf sandboxed > output.txt","timeout_ms":1000}"#),
+            sessionID: SessionID("s")
+        ) { _ in }
+        #expect(result.success)
+        #expect(try String(contentsOf: root.appendingPathComponent("output.txt"), encoding: .utf8) == "sandboxed")
+    }
+
+    @Test func writeAndEditRequireCurrentVersionUnlessExplicitlyOverwritten() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("file.txt")
+        try "before".write(to: file, atomically: true, encoding: .utf8)
+        let runtime = try runtime(root: root)
+
+        let missingVersion = await runtime.execute(ToolCall(callID: ToolCallID("write-missing"), toolID: ToolID("write_file"), arguments: #"{"path":"file.txt","content":"after"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(missingVersion.error?.code == CoreError.Code.contentChanged.rawValue)
+        let stale = await runtime.execute(ToolCall(callID: ToolCallID("write-stale"), toolID: ToolID("write_file"), arguments: #"{"path":"file.txt","content":"after","expected_hash":"stale"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(stale.error?.code == CoreError.Code.contentChanged.rawValue)
+        let current = sha256Hex("before")
+        let write = await runtime.execute(ToolCall(callID: ToolCallID("write"), toolID: ToolID("write_file"), arguments: "{\"path\":\"file.txt\",\"content\":\"after\",\"expected_hash\":\"\(current)\"}"), sessionID: SessionID("s")) { _ in }
+        #expect(write.success)
+        let edit = await runtime.execute(ToolCall(callID: ToolCallID("edit"), toolID: ToolID("edit_file"), arguments: #"{"path":"file.txt","old_string":"after","new_string":"done"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(edit.error?.code == CoreError.Code.contentChanged.rawValue)
+        let overwrite = await runtime.execute(ToolCall(callID: ToolCallID("overwrite"), toolID: ToolID("write_file"), arguments: #"{"path":"file.txt","content":"done","overwrite":true}"#), sessionID: SessionID("s")) { _ in }
+        #expect(overwrite.success)
+    }
+
+    @Test func secretPathsAndFailedPatchDoNotExposeOrLeavePartialChanges() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".aws"), withIntermediateDirectories: true)
+        try "secret".write(to: root.appendingPathComponent(".aws/credentials"), atomically: true, encoding: .utf8)
+        let runtime = try runtime(root: root)
+        let secret = await runtime.execute(call("read_file", ".aws/credentials"), sessionID: SessionID("s")) { _ in }
+        #expect(secret.error?.code == CoreError.Code.workspaceViolation.rawValue)
+
+        ApplyPatchFailpoint.fail(after: 2)
+        defer { ApplyPatchFailpoint.fail(after: nil) }
+        let patch = await runtime.execute(ToolCall(callID: ToolCallID("patch"), toolID: ToolID("apply_patch"), arguments: #"{"patch":"*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(!patch.success)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("first.txt").path))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("second.txt").path))
+    }
+
+    @Test func shellTimeoutAndManagedProcessLifecycleAreEnforced() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try runtime(root: root)
+        let timeout = await runtime.execute(ToolCall(callID: ToolCallID("timeout"), toolID: ToolID("shell"), arguments: #"{"command":"while :; do :; done","timeout_ms":10}"#), sessionID: SessionID("s")) { _ in }
+        #expect(timeout.outcome == .timedOut)
+
+        let start = await runtime.execute(ToolCall(callID: ToolCallID("start"), toolID: ToolID("process"), arguments: #"{"action":"start","id":"managed","executable":"/bin/sh","arguments":["-c","read value; printf '%s' \"$value\""]}"#), sessionID: SessionID("s")) { _ in }
+        #expect(start.success)
+        let input = await runtime.execute(ToolCall(callID: ToolCallID("input"), toolID: ToolID("process"), arguments: #"{"action":"input","id":"managed","input":"ready\n"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(input.success)
+        var status: ProcessStatus?
+        for _ in 0..<100 {
+            let poll = await runtime.execute(ToolCall(callID: ToolCallID("poll"), toolID: ToolID("process"), arguments: #"{"action":"poll","id":"managed"}"#), sessionID: SessionID("s")) { _ in }
+            status = try? JSONDecoder().decode(ProcessStatus.self, from: Data(poll.content.utf8))
+            if status?.running == false { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(status?.stdout.text == "ready")
+        #expect(status?.running == false)
     }
 }

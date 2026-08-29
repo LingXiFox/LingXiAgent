@@ -21,11 +21,15 @@ public actor StdioConnection: LingXiConnection {
     private var pending: [String: PendingRequest] = [:]
     private var streams: [StreamID: AsyncThrowingStream<StreamChunk, Error>.Continuation] = [:]
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
+    private var toolOutputContinuations: [UUID: AsyncStream<ToolOutputChunk>.Continuation] = [:]
 
-    public init(corePath: String) throws {
+    public init(corePath: String, interactive: Bool = false) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: corePath)
         process.arguments = []
+        if interactive {
+            process.environment = ProcessInfo.processInfo.environment.merging(["LINGXI_INTERACTIVE": "1"]) { _, new in new }
+        }
         let input = Pipe()
         let output = Pipe()
         process.standardInput = input
@@ -91,6 +95,16 @@ public actor StdioConnection: LingXiConnection {
         }
     }
 
+    public func toolOutputEvents() async -> AsyncStream<ToolOutputChunk> {
+        AsyncStream { continuation in
+            let key = UUID()
+            toolOutputContinuations[key] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeToolOutputContinuation(key) }
+            }
+        }
+    }
+
     public func close() async {
         guard process.isRunning else { return }
         process.terminate()
@@ -151,6 +165,10 @@ public actor StdioConnection: LingXiConnection {
             }
         case let .chunk(chunk):
             streams[chunk.streamID]?.yield(chunk)
+        case let .toolOutput(chunk):
+            for continuation in toolOutputContinuations.values {
+                continuation.yield(chunk)
+            }
         case let .streamEnd(streamID):
             streams.removeValue(forKey: streamID)?.finish()
         case .request:
@@ -160,6 +178,10 @@ public actor StdioConnection: LingXiConnection {
 
     private func removeEventContinuation(_ key: UUID) {
         eventContinuations.removeValue(forKey: key)
+    }
+
+    private func removeToolOutputContinuation(_ key: UUID) {
+        toolOutputContinuations.removeValue(forKey: key)
     }
 
     private func finishAll(_ error: CoreError) {
@@ -180,5 +202,9 @@ public actor StdioConnection: LingXiConnection {
             continuation.finish()
         }
         eventContinuations.removeAll()
+        for continuation in toolOutputContinuations.values {
+            continuation.finish()
+        }
+        toolOutputContinuations.removeAll()
     }
 }

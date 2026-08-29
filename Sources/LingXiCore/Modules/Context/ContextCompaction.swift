@@ -14,7 +14,12 @@ public struct ConservativeTokenEstimator: TokenEstimator {
         entries.reduce(0) { $0 + estimate(text: ContextCompactor.content(of: $1.part)) + 4 }
     }
     public func estimate(tools: [ToolDefinition]) -> Int {
-        tools.reduce(0) { $0 + estimate(text: "\($1.id.rawValue) \($1.description) \($1.inputSchema)") + 12 }
+        tools.reduce(0) { total, tool in
+            let fields = tool.inputSchema.properties.keys.sorted().compactMap { name in
+                tool.inputSchema.properties[name].map { "\(name):\($0.type.rawValue)" }
+            }.joined(separator: ",")
+            return total + estimate(text: "\(tool.id.rawValue) \(tool.description) \(fields)") + 12
+        }
     }
 }
 

@@ -33,6 +33,10 @@ public struct InProcessConnection: LingXiConnection {
         await endpoint.events()
     }
 
+    public func toolOutputEvents() async -> AsyncStream<ToolOutputChunk> {
+        await endpoint.toolOutputEvents()
+    }
+
     public func close() async {}
 
     private func openDataStream(_ command: ClientCommand) async throws -> AsyncThrowingStream<StreamChunk, Error> {

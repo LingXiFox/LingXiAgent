@@ -61,13 +61,15 @@ struct AgentToolLoopTests {
         root: URL,
         provider: any ModelProvider,
         permission: PermissionDecision,
-        registry: ToolRegistry? = nil
+        registry: ToolRegistry? = nil,
+        interactive: Bool = false
     ) async throws -> LingXiClient {
         let host = try CoreHost(
             providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
             workspaceRoot: try WorkspaceRoot(path: root.path),
             permissionDecision: permission,
-            toolRegistry: registry
+            toolRegistry: registry,
+            interactive: interactive
         )
         await host.start()
         return LingXiClient.inProcess(endpoint: host)
@@ -100,7 +102,7 @@ struct AgentToolLoopTests {
 
         let requests = provider.recorder.requests
         #expect(requests.count == 2)
-        #expect(requests[0].tools.map(\.id.rawValue) == ["list_directory", "read_file"])
+        #expect(requests[0].tools.map(\.id.rawValue) == ["apply_patch", "dependency_query", "edit_file", "find_references", "git", "glob", "grep", "list_directory", "process", "read_file", "shell", "symbol_lookup", "write_file"])
         #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool])
         #expect(requests[1].messages[1].parts.contains(.toolCall(call())))
         #expect(requests[1].messages[2].parts == [.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project"))])
@@ -217,5 +219,39 @@ struct AgentToolLoopTests {
         #expect(snapshot.messages.first { $0.role == .tool }?.parts.count == 3)
         #expect(await recorder.snapshot().first == "fast")
         #expect(snapshot.messages.last?.content == "settled")
+    }
+
+    @Test func interactiveQuestionReturnsReplyToTheNextModelStep() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let question = ToolCall(callID: ToolCallID("question"), toolID: ToolID("question"), arguments: #"{"question":"继续吗？","options":["继续","停止"]}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(question), .completed(.toolCalls)],
+            [.textDelta("已继续。"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow, interactive: true)
+        let replyTask = Task {
+            for await event in await client.events() {
+                if case let .questionAsked(request) = event {
+                    try? await client.replyQuestion(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
+                    return
+                }
+            }
+        }
+        defer { replyTask.cancel() }
+        await Task.yield()
+
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "需要确认")
+        for try await _ in stream {}
+        _ = await replyTask.value
+        let snapshot = try await client.session(sessionID)
+
+        #expect(provider.recorder.requests[0].tools.contains(where: { $0.id == ToolID("question") }))
+        #expect(snapshot.messages.contains { $0.parts.contains { part in
+            if case let .toolResult(result) = part { return result.callID == question.callID && result.success && result.content.contains("继续") }
+            return false
+        } })
+        #expect(snapshot.messages.last?.content == "已继续。")
     }
 }

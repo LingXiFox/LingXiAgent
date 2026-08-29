@@ -192,6 +192,20 @@ struct AgentSessionTests {
         #expect(recorder.eventSequence == ["started", "completed"])
     }
 
+    @Test func shutdownCancelsActiveTurnAndClosesItsDataStream() async throws {
+        let provider = ControllableFakeProvider()
+        let host = await makeHost(provider)
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "等待")
+        await provider.waitStreams(1)
+
+        await host.shutdown()
+        for try await _ in stream {}
+
+        #expect(try await client.coreState() == .stopped)
+    }
+
     @Test func secondTurnCarriesFullHistory() async throws {
         let provider = ScriptedFakeProvider(script: [
             [.textDelta("你好，小狐狸！"), .completed(.stop)],

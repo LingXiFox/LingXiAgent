@@ -1,0 +1,73 @@
+import LingXiProtocol
+
+/// 交互式问题的挂起答复表；QuestionTool 可通过 CoreHost.questions 使用它。
+public actor QuestionRuntime {
+    private struct Pending {
+        let request: QuestionRequest
+        let continuation: CheckedContinuation<QuestionReply, Error>
+    }
+
+    public let interactive: Bool
+    private var pending: [QuestionID: Pending] = [:]
+    private var onQuestionAsked: (@Sendable (QuestionRequest) async -> Void)?
+
+    public init(interactive: Bool = false) {
+        self.interactive = interactive
+    }
+
+    public func setEventSink(_ sink: @escaping @Sendable (QuestionRequest) async -> Void) {
+        onQuestionAsked = sink
+    }
+
+    public func ask(_ request: QuestionRequest) async throws -> QuestionReply {
+        guard interactive else {
+            throw CoreError(code: .questionUnavailable, message: "当前 Core 不支持交互式问题")
+        }
+        guard pending[request.questionID] == nil else {
+            throw CoreError(code: .questionUnavailable, message: "问题 ID 已在等待答复: \(request.questionID.rawValue)")
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            pending[request.questionID] = Pending(request: request, continuation: continuation)
+            Task { await onQuestionAsked?(request) }
+        }
+    }
+
+    public func reply(_ reply: QuestionReply) throws {
+        guard let waiting = pending[reply.questionID] else {
+            throw CoreError(code: .questionUnavailable, message: "问题不存在或已结束: \(reply.questionID.rawValue)")
+        }
+        try validate(reply, for: waiting.request)
+        pending.removeValue(forKey: reply.questionID)
+        waiting.continuation.resume(returning: reply)
+    }
+
+    public func close() {
+        for waiting in pending.values {
+            waiting.continuation.resume(throwing: CoreError(code: .questionUnavailable, message: "Core 已关闭"))
+        }
+        pending.removeAll()
+    }
+
+    private func validate(_ reply: QuestionReply, for request: QuestionRequest) throws {
+        if reply.cancelled {
+            guard reply.selectedOptionIndices.isEmpty, reply.text == nil else {
+                throw CoreError(code: .questionUnavailable, message: "取消答复不能包含选项或文本")
+            }
+            return
+        }
+        guard reply.selectedOptionIndices.allSatisfy({ request.options.indices.contains($0) }) else {
+            throw CoreError(code: .questionUnavailable, message: "问题选项下标无效")
+        }
+        guard request.allowsMultiple || reply.selectedOptionIndices.count <= 1 else {
+            throw CoreError(code: .questionUnavailable, message: "该问题不支持多选")
+        }
+        if let text = reply.text {
+            guard request.allowsFreeText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CoreError(code: .questionUnavailable, message: "该问题不接受此文本答复")
+            }
+        }
+        guard !reply.selectedOptionIndices.isEmpty || reply.text != nil else {
+            throw CoreError(code: .questionUnavailable, message: "问题答复不能为空")
+        }
+    }
+}

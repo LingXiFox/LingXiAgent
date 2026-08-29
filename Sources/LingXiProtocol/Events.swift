@@ -9,4 +9,5 @@ public enum CoreEvent: Sendable, Equatable {
     case toolCallCompleted(ToolCall)
     case toolResult(ToolResult)
     case permissionAsked(PermissionRequest)
+    case questionAsked(QuestionRequest)
 }

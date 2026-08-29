@@ -283,6 +283,18 @@ public actor ContextPager {
         return (await resolve([stored])).first
     }
 
+    public func symbolLookup(projectRoot: URL, query: String, mode: String) async -> [Symbol] {
+        await store.symbolLookup(projectRoot: projectRoot, query: query, mode: mode)
+    }
+
+    public func references(projectRoot: URL, symbolID: SymbolID) async -> [ProjectReference] {
+        await store.references(projectRoot: projectRoot, symbolID: symbolID)
+    }
+
+    public func dependencies(projectRoot: URL, path: String, incoming: Bool) async -> [DependencyEdge] {
+        await store.dependencies(projectRoot: projectRoot, path: path, incoming: incoming)
+    }
+
     public func metrics() -> ContextPagerMetrics {
         ContextPagerMetrics(hits: hits, misses: misses, pageFaults: pageFaults)
     }

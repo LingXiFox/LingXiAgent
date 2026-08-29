@@ -14,6 +14,9 @@ public protocol LingXiConnection: Sendable {
     /// 数据面：在 Session 中发起一轮对话，返回 Streaming DMA 通道。
     func sendMessage(sessionID: SessionID, content: String) async throws -> AsyncThrowingStream<StreamChunk, Error>
 
+    /// 数据面：订阅 Tool stdout/stderr。
+    func toolOutputEvents() async -> AsyncStream<ToolOutputChunk>
+
     /// 控制面：订阅语义事件。
     func events() async -> AsyncStream<CoreEvent>
 

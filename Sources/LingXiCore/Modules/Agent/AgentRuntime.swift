@@ -19,6 +19,7 @@ public actor AgentRuntime {
     private let budgetPlanner: ContextBudgetPlanner
     private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
+    private let interactive: Bool
     private var runtimes: [SessionID: SessionRuntime] = [:]
 
     init(
@@ -33,7 +34,8 @@ public actor AgentRuntime {
         eventSink: @escaping @Sendable (CoreEvent) async -> Void,
         compactor: ContextCompactor = ContextCompactor(),
         budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: ProcessInfo.processInfo.environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init))),
-        persistence: SQLitePersistenceStore? = nil
+        persistence: SQLitePersistenceStore? = nil,
+        interactive: Bool = false
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -47,6 +49,7 @@ public actor AgentRuntime {
         self.compactor = compactor
         self.budgetPlanner = budgetPlanner
         self.persistence = persistence
+        self.interactive = interactive
     }
 
     // MARK: - Session 生命周期
@@ -60,6 +63,10 @@ public actor AgentRuntime {
 
     public func restore() async throws {
         try await compactor.restoreDerived()
+    }
+
+    public func shutdown() async {
+        for runtime in runtimes.values { await runtime.shutdown() }
     }
 
     public func listSessions() async throws -> [SessionInfo] {
@@ -137,7 +144,8 @@ public actor AgentRuntime {
             eventSink: eventSink,
             compactor: compactor,
             budgetPlanner: budgetPlanner,
-            persistence: persistence
+            persistence: persistence,
+            interactive: interactive
         )
     }
 

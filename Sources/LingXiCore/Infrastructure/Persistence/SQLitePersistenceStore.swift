@@ -210,6 +210,10 @@ public actor SQLitePersistenceStore {
         try Self.writeBatch(state, batch)
     }
 
+    public func storeToolOutput(_ output: String) throws -> String {
+        try blobs.put(Data(output.utf8))
+    }
+
     /// Rebuildable project cache. Bodies remain in the filesystem (or blob store), never here.
     public func replaceProjectCache(pages: [ContextPage], symbols: [Symbol], references: [ProjectReference], dependencies: [DependencyEdge]) throws {
         try Self.transaction(state) {

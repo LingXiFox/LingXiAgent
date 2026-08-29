@@ -8,19 +8,19 @@ public struct PermissionResolution: Sendable, Equatable {
 
 /// 内存权限状态：ask 时暂停本轮 Tool，收到一次性答复后即释放。
 public actor PermissionEngine {
-    private var rules: [ToolID: PermissionDecision]
+    private var rules: [PermissionRule]
     private var configuration: PermissionConfiguration
     private var legacyDefaultDecision: PermissionDecision?
     private var pending: [PermissionID: CheckedContinuation<PermissionDecision, Never>] = [:]
 
     public init(rules: [PermissionRule] = [], configuration: PermissionConfiguration = .strict) {
-        self.rules = Dictionary(uniqueKeysWithValues: rules.map { ($0.toolID, $0.decision) })
+        self.rules = rules
         self.configuration = configuration
         legacyDefaultDecision = nil
     }
 
     public init(rules: [PermissionRule] = [], defaultDecision: PermissionDecision) {
-        self.rules = Dictionary(uniqueKeysWithValues: rules.map { ($0.toolID, $0.decision) })
+        self.rules = rules
         configuration = defaultDecision == .allow ? .agent : .strict
         legacyDefaultDecision = defaultDecision
     }
@@ -37,7 +37,10 @@ public actor PermissionEngine {
         onAsk: @escaping @Sendable () async -> Void
     ) async -> PermissionResolution {
         // Explicit deny always wins; auto only removes an otherwise interactive ask.
-        let decision = rules[request.toolID] ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask)
+        let matching = rules.filter { $0.toolID == request.toolID && ($0.capability == nil || request.capabilities.contains($0.capability!)) }
+        let decision: PermissionDecision
+        if matching.contains(where: { $0.decision == .deny }) { decision = .deny }
+        else { decision = matching.first?.decision ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask) }
         guard decision == .ask else { return PermissionResolution(decision: decision, asked: false) }
 
         let resolved = await withCheckedContinuation { continuation in
