@@ -16,6 +16,12 @@ public enum ClientCommand: Sendable, Equatable {
     case setPermissionConfiguration(PermissionConfiguration)
     case getProjectCache
     case compactSession(sessionID: SessionID)
+    case listChildSessions(parentSessionID: SessionID)
+    case listAgentRuns(sessionID: SessionID)
+    case getAgentRun(runID: AgentRunID)
+    case getAgentTree(rootSessionID: SessionID)
+    case getSubagentResult(runID: AgentRunID)
+    case cancelAgentRun(runID: AgentRunID)
     /// 数据面命令：在 Session 中发起一轮对话。
     case sendMessage(sessionID: SessionID, content: String)
 }
@@ -39,6 +45,12 @@ extension ClientCommand {
         case setPermissionConfiguration
         case getProjectCache
         case compactSession
+        case listChildSessions
+        case listAgentRuns
+        case getAgentRun
+        case getAgentTree
+        case getSubagentResult
+        case cancelAgentRun
         case sendMessage
     }
 
@@ -60,6 +72,12 @@ extension ClientCommand {
         case .setPermissionConfiguration: .setPermissionConfiguration
         case .getProjectCache: .getProjectCache
         case .compactSession: .compactSession
+        case .listChildSessions: .listChildSessions
+        case .listAgentRuns: .listAgentRuns
+        case .getAgentRun: .getAgentRun
+        case .getAgentTree: .getAgentTree
+        case .getSubagentResult: .getSubagentResult
+        case .cancelAgentRun: .cancelAgentRun
         case .sendMessage: .sendMessage
         }
     }

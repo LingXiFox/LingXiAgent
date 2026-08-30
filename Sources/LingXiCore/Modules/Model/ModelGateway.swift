@@ -12,12 +12,14 @@ public struct ModelGateway: Sendable {
     public let modelID: ModelID?
     public let missingRequirements: [String]
     public let contextProfile: ModelContextProfile
+    public let reasoning: String?
 
-    public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile()) {
+    public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile(), reasoning: String? = nil) {
         self.provider = provider
         self.modelID = modelID
         self.missingRequirements = missingRequirements
         self.contextProfile = contextProfile
+        self.reasoning = reasoning
     }
 
     public var isConfigured: Bool { provider != nil && modelID != nil }

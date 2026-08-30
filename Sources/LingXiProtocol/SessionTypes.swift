@@ -86,12 +86,26 @@ public struct SessionMessageSnapshot: Sendable, Equatable, Codable {
 /// Session 列表摘要。
 public struct SessionInfo: Sendable, Equatable, Codable {
     public let id: SessionID
+    public let projectID: ProjectID?
+    public let kind: SessionKind
+    public let parentSessionID: SessionID?
+    public let rootSessionID: SessionID
+    public let spawnedByRunID: AgentRunID?
+    public let spawnedByToolCallID: ToolCallID?
+    public let title: String?
     public let createdAt: Date
     public let updatedAt: Date
     public let messageCount: Int
 
-    public init(id: SessionID, createdAt: Date, updatedAt: Date, messageCount: Int) {
+    public init(id: SessionID, projectID: ProjectID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil, createdAt: Date, updatedAt: Date, messageCount: Int) {
         self.id = id
+        self.projectID = projectID
+        self.kind = kind
+        self.parentSessionID = parentSessionID
+        self.rootSessionID = rootSessionID ?? id
+        self.spawnedByRunID = spawnedByRunID
+        self.spawnedByToolCallID = spawnedByToolCallID
+        self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messageCount = messageCount
@@ -101,12 +115,26 @@ public struct SessionInfo: Sendable, Equatable, Codable {
 /// Session 完整查询结果。
 public struct SessionSnapshot: Sendable, Equatable, Codable {
     public let id: SessionID
+    public let projectID: ProjectID?
+    public let kind: SessionKind
+    public let parentSessionID: SessionID?
+    public let rootSessionID: SessionID
+    public let spawnedByRunID: AgentRunID?
+    public let spawnedByToolCallID: ToolCallID?
+    public let title: String?
     public let createdAt: Date
     public let updatedAt: Date
     public let messages: [SessionMessageSnapshot]
 
-    public init(id: SessionID, createdAt: Date, updatedAt: Date, messages: [SessionMessageSnapshot]) {
+    public init(id: SessionID, projectID: ProjectID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil, createdAt: Date, updatedAt: Date, messages: [SessionMessageSnapshot]) {
         self.id = id
+        self.projectID = projectID
+        self.kind = kind
+        self.parentSessionID = parentSessionID
+        self.rootSessionID = rootSessionID ?? id
+        self.spawnedByRunID = spawnedByRunID
+        self.spawnedByToolCallID = spawnedByToolCallID
+        self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messages = messages

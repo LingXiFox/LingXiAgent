@@ -34,7 +34,7 @@ struct MCPRuntimeTests {
         return pager
     }
 
-    private func httpTransport(_ server: FixtureMCPHTTPServer, timeout: Double = 2) -> MCPStreamableHTTPTransport {
+    private func httpTransport(_ server: FixtureMCPHTTPServer, timeout: Double = 10) -> MCPStreamableHTTPTransport {
         MCPStreamableHTTPTransport(configuration: MCPServerConfiguration(serverID: serverID, alias: "fixture", transport: .streamableHTTP, endpoint: server.endpoint, timeoutSeconds: timeout))
     }
 

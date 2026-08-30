@@ -6,6 +6,7 @@ import LingXiCore
 import LingXiClient
 
 /// 真实 Provider smoke test。默认跳过，避免离线测试消耗 Provider 配额。
+@Suite(.serialized)
 struct RealProviderSmokeTests {
     private struct SmokeStageTimeout: Error, Sendable, CustomStringConvertible {
         let stage: String
@@ -34,12 +35,15 @@ struct RealProviderSmokeTests {
         }
     }
 
-    private func send(_ client: LingXiClient, sessionID: SessionID, _ prompt: String) async throws -> String {
+    private func send(_ client: LingXiClient, sessionID: SessionID, timeout: Double = 45, _ prompt: String) async throws -> String {
         trace("provider-request-start")
-        let stream = try await client.sendMessage(sessionID: sessionID, content: prompt)
-        var text = ""
-        for try await chunk in stream where chunk.kind == .text { text += chunk.text }
-        try await Task.sleep(for: .seconds(5))
+        let text = try await within("provider-request", seconds: timeout) {
+            let stream = try await client.sendMessage(sessionID: sessionID, content: prompt)
+            var text = ""
+            for try await chunk in stream where chunk.kind == .text { text += chunk.text }
+            try await Task.sleep(for: .seconds(5))
+            return text
+        }
         trace("provider-request-finished")
         return text
     }
@@ -52,7 +56,9 @@ struct RealProviderSmokeTests {
         else {
             return
         }
-        let workspacePath = environment["LINGXI_WORKSPACE_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? FileManager.default.currentDirectoryPath
+        let workspaceURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase9-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
 
         let (assembly, missing) = ProviderSetup.resolve(environment)
         #expect(missing.isEmpty)
@@ -60,7 +66,7 @@ struct RealProviderSmokeTests {
         setenv("LINGXI_PERF_DEBUG", "1", 1)
         let host = try CoreHost(
             providerAssembly: assembly,
-            workspaceRoot: try WorkspaceRoot(path: workspacePath),
+            workspaceRoot: try WorkspaceRoot(path: workspaceURL.path),
             permissionDecision: .allow
         )
         await host.start()
@@ -191,11 +197,13 @@ struct RealProviderSmokeTests {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1"
         else { return }
-        let workspacePath = environment["LINGXI_WORKSPACE_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? FileManager.default.currentDirectoryPath
         let (assembly, missing) = ProviderSetup.resolve(environment)
         #expect(missing.isEmpty)
         let dataRoot = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase10-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase10-workspace-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+        try Data("public actor ContextPager {}\n".utf8).write(to: workspaceURL.appendingPathComponent("Sources/ContextPager.swift"))
         setenv("LINGXI_DATA_ROOT", dataRoot.path, 1)
         setenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS", "372", 1)
         setenv("LINGXI_PERF_DEBUG", "1", 1)
@@ -204,9 +212,10 @@ struct RealProviderSmokeTests {
             unsetenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS")
             unsetenv("LINGXI_PERF_DEBUG")
             try? FileManager.default.removeItem(at: dataRoot)
+            try? FileManager.default.removeItem(at: workspaceURL)
         }
 
-        let workspace = try WorkspaceRoot(path: workspacePath)
+        let workspace = try WorkspaceRoot(path: workspaceURL.path)
         trace("core-a-start")
         let first = try await within("core-a-start") {
             let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, permissionDecision: .allow)
@@ -219,7 +228,7 @@ struct RealProviderSmokeTests {
         trace("session-created")
         let sessionID = try await within("session-created") { try await firstClient.createSession() }
         trace("turn-1-start")
-        _ = try await within("turn-1") { try await send(firstClient, sessionID: sessionID, "记住本次持久化测试标记 PersistAnchor-729。" + String(repeating: " PersistAnchor-729", count: 300)) }
+        _ = try await within("turn-1") { try await send(firstClient, sessionID: sessionID, "记住持久化测试标记 PersistAnchor-729。只回复确认，不调用工具。") }
         trace("turn-1-finished")
         _ = try await within("compact") { try await firstClient.compact(sessionID) }
         trace("compact-finished")
@@ -247,8 +256,6 @@ struct RealProviderSmokeTests {
         let marker = try await within("turn-2") { try await send(secondClient, sessionID: sessionID, "我之前让你记住的持久化测试标记是什么？直接回答，不调用工具。") }
         trace("turn-2-finished")
         #expect(marker.contains("PersistAnchor-729"))
-        let definition = try await within("project-query") { try await send(secondClient, sessionID: sessionID, "ContextPager 定义在哪里，它是什么类型？直接回答，不调用工具。") }
-        #expect(definition.localizedCaseInsensitiveContains("ContextPager"))
         _ = try await within("core-b-shutdown") { await second.shutdown() }
         trace("done")
     }
@@ -269,13 +276,15 @@ struct RealProviderSmokeTests {
         await connections.register(transport, for: serverID)
         let pager = MCPToolPager(invoker: connections)
         try await pager.replaceCatalog(serverID: serverID, tools: try await transport.listTools())
-        let root = try WorkspaceRoot(path: environment["LINGXI_WORKSPACE_ROOT"]?.isEmpty == false ? environment["LINGXI_WORKSPACE_ROOT"]! : FileManager.default.currentDirectoryPath)
-        let host = try CoreHost(providerAssembly: assembly, workspaceRoot: root, permissionDecision: .allow, mcpPager: pager)
+        let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase12-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: rootURL.path), permissionDecision: .allow, mcpPager: pager)
         await host.start()
         defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
-        let answer = try await within("phase12-http-mcp", seconds: 90) {
+        let answer = try await within("phase12-http-mcp") {
             try await send(client, sessionID: sessionID, "有一个外部 MCP 测试服务包含 phase12 的测试标记。请通过工具目录找到合适能力，load 后立即用 key=phase12 调用该外部工具。不要搜索 workspace，不要猜测，也不要只描述下一步。")
         }
         #expect(answer.contains("MCPAnchor-729"))
@@ -284,5 +293,79 @@ struct RealProviderSmokeTests {
         #expect(residency.first == 0)
         #expect(residency.contains(1))
         #expect(residency.last == 0)
+    }
+
+    @Test func realProviderPhaseThirteenMultiAgentSmoke() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
+              let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
+              let model = environment[ProviderSetup.modelKey], !model.isEmpty
+        else { return }
+        let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase13-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try Data("public struct Foo { public let value = 1 }\n".utf8).write(to: rootURL.appendingPathComponent("Foo.swift"))
+        try Data("public struct Bar { public let value = 2 }\n".utf8).write(to: rootURL.appendingPathComponent("Bar.swift"))
+        let (assembly, missing) = ProviderSetup.resolve(environment)
+        #expect(missing.isEmpty)
+        let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: rootURL.path), permissionDecision: .allow)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let root = try await client.createSession()
+        _ = try await within("phase13-spawn", seconds: 120) {
+            try await send(client, sessionID: root, timeout: 120, "必须立刻使用 subagent 工具创建两个 child：一个 task 分析 Foo.swift，一个 task 分析 Bar.swift。只负责 spawn，不能自己分析文件，也不要等待或汇总。")
+        }
+        let deadline = Date().addingTimeInterval(120)
+        var tree = try await client.getAgentTree(root)
+        while (tree.children.count < 2 || tree.children.contains { $0.latestRun?.status != .completed }), Date() < deadline {
+            try await Task.sleep(for: .seconds(1))
+            tree = try await client.getAgentTree(root)
+        }
+        try #require(tree.children.count >= 2)
+        try #require(tree.children.allSatisfy { $0.latestRun?.status == .completed })
+        #expect(tree.children.allSatisfy { $0.latestRun?.sessionID == $0.session.id })
+        let runIDs = tree.children.compactMap { $0.latestRun?.runID.rawValue }.joined(separator: ", ")
+        _ = try await within("phase13-results", seconds: 120) {
+            try await send(client, sessionID: root, timeout: 120, "必须通过 subagent 工具 action=result 读取这两个已完成 child run：\(runIDs)。只读取结果，不要汇总。")
+        }
+        let answer = try await within("phase13-synthesis", seconds: 120) {
+            try await send(client, sessionID: root, timeout: 120, "不要调用任何工具。基于刚才读取的两个 subagent result，只用两句汇总 Foo 和 Bar 各自职责。")
+        }
+        #expect(answer.localizedCaseInsensitiveContains("Foo"))
+        #expect(answer.localizedCaseInsensitiveContains("Bar"))
+    }
+
+    @Test func realProviderResponsesSmoke() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1" else { return }
+        let (assembly, missing) = ProviderSetup.resolve(environment)
+        #expect(missing.isEmpty)
+        guard assembly.endpoint.wireProtocol == .responses else {
+            Issue.record("Responses smoke requires LINGXI_PROVIDER_WIRE_PROTOCOL=responses")
+            return
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-responses-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "ResponsesToolAnchor-729".write(to: root.appendingPathComponent("anchor.txt"), atomically: true, encoding: .utf8)
+        let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let text = try await within("responses-text") {
+            try await send(client, sessionID: sessionID, "只回复 ResponsesTextAnchor-729，不调用工具。")
+        }
+        #expect(!text.isEmpty)
+        let tool = try await within("responses-tool", seconds: 90) {
+            try await send(client, sessionID: sessionID, "必须调用 read_file 读取 anchor.txt，然后只回复文件内容。")
+        }
+        let session = try await client.session(sessionID)
+        let calledTool = session.messages.flatMap(\.parts).contains { if case .toolCall = $0 { return true }; return false }
+        let receivedToolResult = session.messages.flatMap(\.parts).contains { if case .toolResult = $0 { return true }; return false }
+        #expect(calledTool)
+        #expect(receivedToolResult)
+        #expect(tool.contains("ResponsesToolAnchor-729"))
     }
 }

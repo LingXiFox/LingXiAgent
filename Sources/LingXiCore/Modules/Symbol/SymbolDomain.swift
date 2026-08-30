@@ -1,4 +1,5 @@
 import Foundation
+import LingXiProtocol
 
 public enum SymbolKind: String, Sendable, Equatable, Hashable, CaseIterable {
     case `class`

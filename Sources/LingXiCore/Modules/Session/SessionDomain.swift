@@ -36,6 +36,12 @@ public struct Message: Sendable, Equatable {
 
 public struct Session: Sendable, Equatable {
     public let id: SessionID
+    public let kind: SessionKind
+    public let parentSessionID: SessionID?
+    public let rootSessionID: SessionID
+    public let spawnedByRunID: AgentRunID?
+    public let spawnedByToolCallID: ToolCallID?
+    public let title: String?
     /// Durable cwd 只保存 binding 和相对路径，绝不复制 absolute path。
     public let projectID: ProjectID?
     public let cwdRootBindingID: RootBindingID?
@@ -47,6 +53,12 @@ public struct Session: Sendable, Equatable {
     public init(
         id: SessionID,
         createdAt: Date,
+        kind: SessionKind = .primary,
+        parentSessionID: SessionID? = nil,
+        rootSessionID: SessionID? = nil,
+        spawnedByRunID: AgentRunID? = nil,
+        spawnedByToolCallID: ToolCallID? = nil,
+        title: String? = nil,
         projectID: ProjectID? = nil,
         cwdRootBindingID: RootBindingID? = nil,
         cwdRelativePath: ProjectRelativePath = .root,
@@ -54,6 +66,12 @@ public struct Session: Sendable, Equatable {
         messages: [Message] = []
     ) {
         self.id = id
+        self.kind = kind
+        self.parentSessionID = parentSessionID
+        self.rootSessionID = rootSessionID ?? id
+        self.spawnedByRunID = spawnedByRunID
+        self.spawnedByToolCallID = spawnedByToolCallID
+        self.title = title
         self.projectID = projectID
         self.cwdRootBindingID = cwdRootBindingID
         self.cwdRelativePath = cwdRelativePath
@@ -72,12 +90,12 @@ public struct Session: Sendable, Equatable {
 
 extension Session {
     public func toInfo() -> SessionInfo {
-        SessionInfo(id: id, createdAt: createdAt, updatedAt: updatedAt, messageCount: messages.count)
+        SessionInfo(id: id, projectID: projectID, kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title, createdAt: createdAt, updatedAt: updatedAt, messageCount: messages.count)
     }
 
     public func toSnapshot() -> SessionSnapshot {
         SessionSnapshot(
-            id: id,
+            id: id, projectID: projectID, kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title,
             createdAt: createdAt,
             updatedAt: updatedAt,
             messages: messages.map(\.toSnapshot)

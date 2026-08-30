@@ -19,6 +19,9 @@ public actor SessionRuntime {
     private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private let interactive: Bool
+    private let runID: AgentRunID?
+    private let rootSessionID: SessionID
+    private let runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)?
     private var turnRunning = false
     private var turnTask: Task<Void, Never>?
     private var toolBatches: [ToolExchangeBatch] = []
@@ -38,7 +41,10 @@ public actor SessionRuntime {
         compactor: ContextCompactor,
         budgetPlanner: ContextBudgetPlanner,
         persistence: SQLitePersistenceStore? = nil,
-        interactive: Bool = false
+        interactive: Bool = false,
+        runID: AgentRunID? = nil,
+        rootSessionID: SessionID? = nil,
+        runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -54,6 +60,9 @@ public actor SessionRuntime {
         self.budgetPlanner = budgetPlanner
         self.persistence = persistence
         self.interactive = interactive
+        self.runID = runID
+        self.rootSessionID = rootSessionID ?? sessionID
+        self.runObserver = runObserver
     }
 
     public func restore() async throws {
@@ -84,7 +93,15 @@ public actor SessionRuntime {
             let opened = await dataPlane.openAgentStream()
             let handle = TurnHandle(sessionID: sessionID, streamID: opened.stream.id)
             await eventSink(.turnStarted(handle))
-            let turnTask = Task { await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler) }
+            await runObserver?(.running, nil, nil, nil)
+            let runID = self.runID
+            let rootSessionID = self.rootSessionID
+            let sessionID = self.sessionID
+            let turnTask = Task {
+                await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID) }) {
+                    await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler)
+                }
+            }
             self.turnTask = turnTask
             await dataPlane.trackAgent(turnTask, streamID: opened.stream.id)
             return opened.stream
@@ -160,6 +177,7 @@ public actor SessionRuntime {
                     model: try modelID(),
                     messages: context.modelMessages(),
                     tools: availableTools,
+                    reasoning: modelBus.gateway.reasoning,
                     debugStep: step + 1
                 )
                 if finalTokens > budget.hardInputLimit {
@@ -180,12 +198,12 @@ public actor SessionRuntime {
                     case .started:
                         profiler.recordFirstEvent(streamElapsed: streamStarted.duration(to: clock.now))
                     case let .textDelta(delta):
-                        sink.yield(StreamChunk(streamID: handle.streamID, index: index, text: delta, kind: .text))
+                        sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, index: index, text: delta, kind: .text))
                         profiler.recordText(delta, streamElapsed: streamStarted.duration(to: clock.now))
                         index += 1
                         text += delta
                     case let .reasoningDelta(delta):
-                        sink.yield(StreamChunk(streamID: handle.streamID, index: index, text: delta, kind: .reasoning))
+                        sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, index: index, text: delta, kind: .reasoning))
                         profiler.recordReasoning(delta, streamElapsed: streamStarted.duration(to: clock.now))
                         index += 1
                     case .toolCallStarted, .toolCallDelta:
@@ -405,6 +423,7 @@ public actor SessionRuntime {
             turnRunning = false
             turnTask = nil
             if let report = profiler.report() { await performanceStore.save(report) }
+            await runObserver?(.completed, content, usage, nil)
             await eventSink(.turnCompleted(TurnResult(
                 sessionID: handle.sessionID,
                 streamID: handle.streamID,
@@ -432,6 +451,7 @@ public actor SessionRuntime {
         turnRunning = false
         turnTask = nil
         if let report = profiler.report() { await performanceStore.save(report) }
+        await runObserver?(Task.isCancelled ? .cancelled : .failed, nil, nil, error)
         await eventSink(.turnFailed(TurnFailure(sessionID: handle.sessionID, streamID: handle.streamID, error: error)))
     }
 }

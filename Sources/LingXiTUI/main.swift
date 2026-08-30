@@ -277,7 +277,12 @@ func runTUI() async {
             case let .questionAsked(request):
                 await pendingQuestions.append(request)
                 showQuestion(request)
-            case .sessionCreated, .turnStarted, .stateChanged:
+            case let .questionEscalated(request):
+                await pendingQuestions.append(request)
+                showQuestion(request)
+            case let .subagentSpawned(run), let .agentRunStarted(run), let .agentRunStatusChanged(run), let .agentRunCompleted(run), let .agentRunFailed(run), let .agentRunCancelled(run):
+                print("\(dim)[subagent \(run.title ?? run.sessionID.rawValue): \(run.status.rawValue) / \(run.modelSelection.modelID)]\(reset)")
+            case .childSessionCreated, .agentRunQueued, .subagentResultAvailable, .sessionCreated, .turnStarted, .stateChanged:
                 break
             }
         }
@@ -291,7 +296,7 @@ func runTUI() async {
         return
     }
     print("Session: \(sessionID.rawValue)")
-    print("\(dim)输入 prompt 开始对话；new/history/context/perf/permission/mode/cache/compact/quit。\(reset)")
+    print("\(dim)输入 prompt 开始对话；new/history/context/perf/subagents/permission/mode/cache/compact/quit。\(reset)")
 
     var pendingQuestion: QuestionRequest?
     while let raw = readLine() {
@@ -336,6 +341,17 @@ func runTUI() async {
             await showContext(client, sessionID: sessionID)
         case "perf":
             await showPerformance(client, sessionID: sessionID)
+        case "subagents":
+            do {
+                let snapshot = try await client.session(sessionID)
+                let tree = try await client.getAgentTree(snapshot.rootSessionID)
+                func printTree(_ node: AgentTreeNode, _ indent: String = "") {
+                    let run = node.latestRun
+                    print("\(indent)\(node.session.title ?? node.session.id.rawValue)\(run.map { "  \($0.status.rawValue) / \($0.modelSelection.modelID)" } ?? "")")
+                    for child in node.children { printTree(child, indent + "  ") }
+                }
+                printTree(tree)
+            } catch { print("\(dim)[subagents 失败: \(error)]\(reset)") }
         case "cache":
             do { try await showCache(client) }
             catch { print("\(dim)[cache 失败: \(error)]\(reset)") }

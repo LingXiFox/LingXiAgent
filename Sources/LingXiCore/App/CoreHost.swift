@@ -17,6 +17,8 @@ public actor CoreHost: CoreEndpoint {
     /// nil 表示显式的 ephemeral Core；设置 LINGXI_DATA_ROOT 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
     private let gateway: ModelGateway
+    private let modelResolver: SubagentModelResolver
+    private let subagentService: SubagentToolService
     private let permissionEngine: PermissionEngine
     private let toolRuntime: ToolRuntime
     private let contextEngine: L1ContextEngine
@@ -45,6 +47,8 @@ public actor CoreHost: CoreEndpoint {
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
         self.processes = processes
+        let subagentService = SubagentToolService()
+        self.subagentService = subagentService
         info = CoreInfo(
             name: "LingXiCore",
             version: Self.coreVersion,
@@ -75,7 +79,8 @@ public actor CoreHost: CoreEndpoint {
             mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
             outputArchive: ToolOutputArchive(persistence: persistent),
             outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
-            mcpPager: effectiveMCPPager
+            mcpPager: effectiveMCPPager,
+            subagents: subagentService
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: ProcessInfo.processInfo.environment["LINGXI_SYSTEM_CONTEXT"]
@@ -91,12 +96,24 @@ public actor CoreHost: CoreEndpoint {
             missingRequirements: providerAssembly == nil ? missing : [],
             contextProfile: effective.contextProfile
         )
+        if let childModel = environment["LINGXI_SUBAGENT_SMOKE_MODEL"], !childModel.isEmpty {
+            let child = ModelRuntimeAssembly(
+                provider: effective.provider,
+                modelID: ModelID(childModel),
+                contextProfile: effective.contextProfile,
+                endpoint: ResolvedModelEndpoint(providerID: "subagent", modelID: ModelID(childModel), baseURL: effective.endpoint.baseURL, wireProtocol: effective.endpoint.wireProtocol, contextProfile: effective.contextProfile)
+            )
+            modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: ["subagent": child], defaultSubagentSelection: ModelSelection(providerID: "subagent", modelID: childModel))
+        } else {
+            modelResolver = SubagentModelResolver(defaultRuntime: effective)
+        }
     }
 
     /// 注册控制面路由并进入 ready。
     public func start() async {
         await questions.setEventSink { [weak self] request in
-            await self?.broadcast(.questionAsked(request))
+            await self?.agent?.markWaitingForQuestion(request, waiting: true)
+            await self?.broadcast(request.originSessionID == request.rootSessionID ? .questionAsked(request) : .questionEscalated(request))
         }
         await bus.add(.ping) { _ in .pong }
         await bus.add(.getInfo) { [self] _ in .info(info) }
@@ -132,7 +149,9 @@ public actor CoreHost: CoreEndpoint {
             guard case let .replyQuestion(reply) = command else {
                 return .error(CoreError(code: .unsupportedCommand, message: "replyQuestion 参数缺失"))
             }
+            let request = await questions.request(reply.questionID)
             try await questions.reply(reply)
+            if let request { await agent?.markWaitingForQuestion(request, waiting: false) }
             return .questionReplyAccepted(reply.questionID)
         }
         await bus.add(.getContext) { [self] command in
@@ -184,6 +203,37 @@ public actor CoreHost: CoreEndpoint {
             let agent = try await requireAgent()
             return .compactSession(try await agent.compact(sessionID))
         }
+        await bus.add(.listChildSessions) { [self] command in
+            guard case let .listChildSessions(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "listChildSessions 参数缺失")) }
+            let agent = try await requireAgent()
+            return .childSessionList(try await agent.listChildSessions(id))
+        }
+        await bus.add(.listAgentRuns) { [self] command in
+            guard case let .listAgentRuns(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "listAgentRuns 参数缺失")) }
+            let agent = try await requireAgent()
+            return .agentRunList(await agent.listAgentRuns(id))
+        }
+        await bus.add(.getAgentRun) { [self] command in
+            guard case let .getAgentRun(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getAgentRun 参数缺失")) }
+            let agent = try await requireAgent()
+            return .agentRun(try await agent.agentRun(id))
+        }
+        await bus.add(.getAgentTree) { [self] command in
+            guard case let .getAgentTree(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getAgentTree 参数缺失")) }
+            let agent = try await requireAgent()
+            return .agentTree(try await agent.agentTree(id))
+        }
+        await bus.add(.getSubagentResult) { [self] command in
+            guard case let .getSubagentResult(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getSubagentResult 参数缺失")) }
+            let agent = try await requireAgent()
+            return .subagentResult(try await agent.agentRunResult(id))
+        }
+        await bus.add(.cancelAgentRun) { [self] command in
+            guard case let .cancelAgentRun(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "cancelAgentRun 参数缺失")) }
+            let agent = try await requireAgent()
+            try await agent.cancelAgentRun(id)
+            return .agentRunCancelled(id)
+        }
         // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
 
         let agent = AgentRuntime(
@@ -200,9 +250,17 @@ public actor CoreHost: CoreEndpoint {
             },
             compactor: compactor,
             persistence: persistence,
-            interactive: interactive
+            interactive: interactive,
+            modelResolver: modelResolver
         )
         self.agent = agent
+        await subagentService.bind(
+            spawn: { [weak agent] sessionID, runID, task, title, model, toolCallID in try await agent?.spawn(parentSessionID: sessionID, parentRunID: runID, task: task, title: title, modelSelection: model, toolCallID: toolCallID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
+            status: { [weak agent] runID in try await agent?.agentRun(runID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
+            result: { [weak agent] runID in try await agent?.agentRunResult(runID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
+            cancel: { [weak agent] runID in try await agent?.cancelAgentRun(runID) },
+            message: { [weak agent] sessionID, parentRunID, content in try await agent?.continueChild(sessionID: sessionID, parentRunID: parentRunID, content: content) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() }
+        )
         do {
             try await agent.restore()
         } catch {

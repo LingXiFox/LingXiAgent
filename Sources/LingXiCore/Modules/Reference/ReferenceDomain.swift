@@ -1,4 +1,5 @@
 import Foundation
+import LingXiProtocol
 
 public enum ReferenceKind: String, Sendable, Equatable, Hashable, CaseIterable {
     case `import`

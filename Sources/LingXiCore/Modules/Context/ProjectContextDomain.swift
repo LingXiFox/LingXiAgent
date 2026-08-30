@@ -1,4 +1,5 @@
 import Foundation
+import LingXiProtocol
 
 public enum ContextPageSourceType: String, Sendable, Equatable, Hashable {
     case sourceFile

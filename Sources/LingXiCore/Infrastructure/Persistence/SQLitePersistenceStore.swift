@@ -21,7 +21,7 @@ public struct StructuredPathAuditViolation: Sendable, Equatable {
 
 /// 单 actor 持有两个 SQLite handle；所有写入均经过此序列化事务边界。
 public actor SQLitePersistenceStore {
-    public static let databaseSchemaVersion = 1
+    public static let databaseSchemaVersion = 2
     public static let contextFormatVersion = 1
     public static let indexFormatVersion = 1
 
@@ -38,7 +38,7 @@ public actor SQLitePersistenceStore {
         let catalogDB = try Self.open(dataRoot.appendingPathComponent("catalog.sqlite"))
         catalog = catalogDB
         try Self.configure(catalogDB)
-        try Self.migrate(catalogDB) { try Self.createCatalogSchema(catalogDB) }
+        try Self.migrate(catalogDB, create: { try Self.createCatalogSchema(catalogDB) }, upgrade: { try Self.execute(catalogDB, "PRAGMA user_version = 2", []) })
         let canonicalRoot = mainRoot.standardizedFileURL.resolvingSymlinksInPath()
         if let projectID {
             self.projectID = projectID
@@ -52,7 +52,7 @@ public actor SQLitePersistenceStore {
         let stateDB = try Self.open(projectDirectory.appendingPathComponent("state.sqlite"))
         state = stateDB
         try Self.configure(stateDB)
-        try Self.migrate(stateDB) { try Self.createStateSchema(stateDB) }
+        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) })
         try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS persistence_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
         blobs = try FileBlobStore(directory: projectDirectory.appendingPathComponent("blobs", isDirectory: true))
         try Self.transaction(catalogDB) {
@@ -134,8 +134,9 @@ public actor SQLitePersistenceStore {
         try Self.execute(state, "UPDATE project_files SET state = 'missing', time_updated = ? WHERE file_id = ?", [Self.now, id.rawValue])
     }
 
-    public func createSession(id: SessionID, cwdRootBindingID: RootBindingID, cwdRelativePath: ProjectRelativePath, createdAt: Date) throws {
-        try Self.execute(state, "INSERT INTO sessions(session_id, project_id, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, metadata) VALUES(?, ?, ?, ?, ?, ?, '{}')", [id.rawValue, projectID.rawValue, cwdRootBindingID.rawValue, cwdRelativePath.rawValue, Self.date(createdAt), Self.date(createdAt)])
+    public func createSession(_ session: Session) throws {
+        guard let root = session.cwdRootBindingID else { throw PersistenceError.missingMainRoot(projectID) }
+        try Self.execute(state, "INSERT INTO sessions(session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, metadata) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')", [session.id.rawValue, projectID.rawValue, session.kind.rawValue, session.parentSessionID?.rawValue ?? NSNull(), session.rootSessionID.rawValue, session.spawnedByRunID?.rawValue ?? NSNull(), session.spawnedByToolCallID?.rawValue ?? NSNull(), session.title ?? NSNull(), root.rawValue, session.cwdRelativePath.rawValue, Self.date(session.createdAt), Self.date(session.createdAt)])
     }
 
     public func appendMessage(sessionID: SessionID, message: Message) throws {
@@ -162,10 +163,10 @@ public actor SQLitePersistenceStore {
     }
 
     public func loadSessions() throws -> [Session] {
-        let sessions = try Self.rows(state, "SELECT session_id, project_id, cwd_root_binding_id, cwd_relative_path, created_at, updated_at FROM sessions WHERE project_id = ? ORDER BY created_at", [projectID.rawValue])
+        let sessions = try Self.rows(state, "SELECT session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at FROM sessions WHERE project_id = ? ORDER BY created_at", [projectID.rawValue])
         return try sessions.map { row in
             let id = SessionID(row[0]); let messages = try loadMessages(sessionID: id)
-            return Session(id: id, createdAt: Self.parseDate(row[4]), projectID: ProjectID(row[1]), cwdRootBindingID: RootBindingID(row[2]), cwdRelativePath: ProjectRelativePath(rawValue: row[3]), updatedAt: Self.parseDate(row[5]), messages: messages)
+            return Session(id: id, createdAt: Self.parseDate(row[10]), kind: SessionKind(rawValue: row[2]) ?? .primary, parentSessionID: row[3].isEmpty ? nil : SessionID(row[3]), rootSessionID: SessionID(row[4]), spawnedByRunID: row[5].isEmpty ? nil : AgentRunID(row[5]), spawnedByToolCallID: row[6].isEmpty ? nil : ToolCallID(row[6]), title: row[7].isEmpty ? nil : row[7], projectID: ProjectID(row[1]), cwdRootBindingID: RootBindingID(row[8]), cwdRelativePath: ProjectRelativePath(rawValue: row[9]), updatedAt: Self.parseDate(row[11]), messages: messages)
         }
     }
 
@@ -175,6 +176,32 @@ public actor SQLitePersistenceStore {
             guard let role = MessageRole(rawValue: row[1]) else { throw PersistenceError.sqlite("invalid message role") }
             return Message(id: MessageID(row[0]), role: role, parts: parts, createdAt: Self.parseDate(row[2]))
         }
+    }
+
+    public func saveAgentRun(_ run: AgentRunInfo, profile: SubagentExecutionProfile? = nil) throws {
+        let selection = run.modelSelection
+        let usage = String(decoding: try JSONEncoder().encode(run.usage), as: UTF8.self)
+        let error = try run.error.map { try String(decoding: JSONEncoder().encode($0), as: UTF8.self) }
+        let tools = try profile?.toolProfile.map { try String(decoding: JSONEncoder().encode($0), as: UTF8.self) }
+        try Self.execute(state, "INSERT OR REPLACE INTO agent_runs(run_id, session_id, project_id, parent_run_id, root_run_id, agent_kind, status, provider_id, model_id, reasoning, context_profile, permission_profile, tool_profile, budget_profile, started_at, finished_at, latest_activity_at, usage_json, error_json, title) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [run.runID.rawValue, run.sessionID.rawValue, run.projectID?.rawValue ?? projectID.rawValue, run.parentRunID?.rawValue ?? NSNull(), run.rootRunID.rawValue, run.agentKind.rawValue, run.status.rawValue, selection.providerID, selection.modelID, selection.reasoning ?? NSNull(), selection.contextProfile ?? NSNull(), profile?.permissionProfile ?? NSNull(), tools ?? NSNull(), profile?.budgetProfile ?? NSNull(), run.startedAt.map(Self.date) ?? NSNull(), run.finishedAt.map(Self.date) ?? NSNull(), Self.date(run.latestActivityAt), usage, error ?? NSNull(), run.title ?? NSNull()])
+    }
+
+    public func loadAgentRuns(sessionID: SessionID? = nil) throws -> [AgentRunInfo] {
+        let query = sessionID == nil ? "SELECT run_id, session_id, project_id, parent_run_id, root_run_id, agent_kind, status, provider_id, model_id, reasoning, context_profile, started_at, finished_at, latest_activity_at, usage_json, error_json, title FROM agent_runs ORDER BY latest_activity_at" : "SELECT run_id, session_id, project_id, parent_run_id, root_run_id, agent_kind, status, provider_id, model_id, reasoning, context_profile, started_at, finished_at, latest_activity_at, usage_json, error_json, title FROM agent_runs WHERE session_id = ? ORDER BY latest_activity_at"
+        return try Self.rows(state, query, sessionID.map { [$0.rawValue] } ?? []).compactMap { row in
+            guard let kind = SessionKind(rawValue: row[5]), let status = AgentRunStatus(rawValue: row[6]) else { return nil }
+            return AgentRunInfo(runID: AgentRunID(row[0]), sessionID: SessionID(row[1]), projectID: ProjectID(row[2]), parentRunID: row[3].isEmpty ? nil : AgentRunID(row[3]), rootRunID: AgentRunID(row[4]), agentKind: kind, status: status, modelSelection: ModelSelection(providerID: row[7], modelID: row[8], reasoning: row[9].isEmpty ? nil : row[9], contextProfile: row[10].isEmpty ? nil : row[10]), startedAt: row[11].isEmpty ? nil : Self.parseDate(row[11]), finishedAt: row[12].isEmpty ? nil : Self.parseDate(row[12]), latestActivityAt: Self.parseDate(row[13]), error: row[15].isEmpty ? nil : try? JSONDecoder().decode(CoreError.self, from: Data(row[15].utf8)), usage: (try? JSONDecoder().decode(AgentRunUsage.self, from: Data(row[14].utf8))) ?? AgentRunUsage(), title: row[16].isEmpty ? nil : row[16])
+        }
+    }
+
+    public func saveAgentRunResult(_ result: SubagentResult) throws {
+        let error = try result.error.map { try String(decoding: JSONEncoder().encode($0), as: UTF8.self) }
+        try Self.execute(state, "INSERT OR REPLACE INTO agent_run_results(run_id, status, final_text, touched_resources_json, artifact_refs_json, usage_json, error_json, timestamp) VALUES(?, ?, ?, ?, ?, ?, ?, ?)", [result.runID.rawValue, result.status.rawValue, result.finalText ?? NSNull(), String(decoding: try JSONEncoder().encode(result.touchedResources), as: UTF8.self), String(decoding: try JSONEncoder().encode(result.artifactReferences), as: UTF8.self), String(decoding: try JSONEncoder().encode(result.usage), as: UTF8.self), error ?? NSNull(), Self.date(result.timestamp)])
+    }
+
+    public func agentRunResult(_ runID: AgentRunID) throws -> SubagentResult? {
+        guard let row = try Self.rows(state, "SELECT r.session_id, x.status, x.final_text, x.touched_resources_json, x.artifact_refs_json, x.usage_json, x.error_json, x.timestamp FROM agent_runs r JOIN agent_run_results x ON x.run_id = r.run_id WHERE r.run_id = ?", [runID.rawValue]).first, let status = AgentRunStatus(rawValue: row[1]) else { return nil }
+        return SubagentResult(childSessionID: SessionID(row[0]), runID: runID, status: status, finalText: row[2].isEmpty ? nil : row[2], touchedResources: (try? JSONDecoder().decode([ToolTouchedResource].self, from: Data(row[3].utf8))) ?? [], artifactReferences: (try? JSONDecoder().decode([String].self, from: Data(row[4].utf8))) ?? [], usage: (try? JSONDecoder().decode(AgentRunUsage.self, from: Data(row[5].utf8))) ?? AgentRunUsage(), error: row[6].isEmpty ? nil : try? JSONDecoder().decode(CoreError.self, from: Data(row[6].utf8)), timestamp: Self.parseDate(row[7]))
     }
 
     public func saveDerived(_ page: DerivedContextPage) throws {
@@ -312,9 +339,9 @@ public actor SQLitePersistenceStore {
         var db: OpaquePointer?; guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else { throw PersistenceError.sqlite("open \(url.lastPathComponent)") }; return db
     }
     private static func configure(_ db: OpaquePointer) throws { try script(db, "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000") }
-    private static func migrate(_ db: OpaquePointer, createV1: () throws -> Void) throws {
+    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void) throws {
         let version = Int(try scalar(db, "PRAGMA user_version", []) ?? "0") ?? 0
-        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: createV1) }
+        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade) }
     }
     private static func transaction(_ db: OpaquePointer, _ body: () throws -> Void) throws { try execute(db, "BEGIN IMMEDIATE", []); do { try body(); try execute(db, "COMMIT", []) } catch { try? execute(db, "ROLLBACK", []); throw error } }
     private static func nextMessageOrdinal(_ db: OpaquePointer, _ sessionID: SessionID) throws -> Int { try scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0 }
@@ -344,6 +371,9 @@ public actor SQLitePersistenceStore {
     private static func rows(_ db: OpaquePointer, _ sql: String, _ values: [Any]) throws -> [[String]] { var statement: OpaquePointer?; guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw PersistenceError.sqlite(String(cString: sqlite3_errmsg(db))) }; defer { sqlite3_finalize(statement) }; try bind(statement, values); var result: [[String]] = []; while sqlite3_step(statement) == SQLITE_ROW { result.append((0..<Int(sqlite3_column_count(statement))).map { sqlite3_column_text(statement, Int32($0)).map { String(cString: $0) } ?? "" }) }; return result }
     private static func bind(_ statement: OpaquePointer, _ values: [Any]) throws { for (index, value) in values.enumerated() { let i = Int32(index + 1); let rc: Int32; if value is NSNull { rc = sqlite3_bind_null(statement, i) } else { rc = sqlite3_bind_text(statement, i, String(describing: value), -1, SQLITE_TRANSIENT) }; guard rc == SQLITE_OK else { throw PersistenceError.sqlite("bind") } } }
     private static func createCatalogSchema(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS root_bindings(binding_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(project_id), kind TEXT NOT NULL, absolute_root TEXT NOT NULL, parent_binding_id TEXT REFERENCES root_bindings(binding_id), binding_revision INTEGER NOT NULL, lifecycle_state TEXT NOT NULL, time_created TEXT NOT NULL, time_updated TEXT NOT NULL, time_last_seen TEXT); CREATE UNIQUE INDEX IF NOT EXISTS one_active_main_root ON root_bindings(project_id) WHERE kind = 'main' AND lifecycle_state = 'active'; PRAGMA user_version = 1") }
+    private static func upgradeStateSchemaV2(_ db: OpaquePointer) throws {
+        try script(db, "ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'primary'; ALTER TABLE sessions ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN root_session_id TEXT; ALTER TABLE sessions ADD COLUMN spawned_by_run_id TEXT; ALTER TABLE sessions ADD COLUMN spawned_by_tool_call_id TEXT; ALTER TABLE sessions ADD COLUMN title TEXT; UPDATE sessions SET root_session_id = session_id WHERE root_session_id IS NULL; CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions(parent_session_id); CREATE TABLE IF NOT EXISTS agent_runs(run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), project_id TEXT NOT NULL, parent_run_id TEXT, root_run_id TEXT NOT NULL, agent_kind TEXT NOT NULL, status TEXT NOT NULL, provider_id TEXT NOT NULL, model_id TEXT NOT NULL, reasoning TEXT, context_profile TEXT, permission_profile TEXT, tool_profile TEXT, budget_profile TEXT, started_at TEXT, finished_at TEXT, latest_activity_at TEXT NOT NULL, usage_json TEXT NOT NULL, error_json TEXT, title TEXT); CREATE INDEX IF NOT EXISTS agent_runs_session_idx ON agent_runs(session_id, latest_activity_at); CREATE TABLE IF NOT EXISTS agent_run_results(run_id TEXT PRIMARY KEY REFERENCES agent_runs(run_id), status TEXT NOT NULL, final_text TEXT, touched_resources_json TEXT NOT NULL, artifact_refs_json TEXT NOT NULL, usage_json TEXT NOT NULL, error_json TEXT, timestamp TEXT NOT NULL); PRAGMA user_version = 2")
+    }
     private static func createStateSchema(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd_root_binding_id TEXT NOT NULL, cwd_relative_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), ordinal INTEGER NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, ordinal)); CREATE TABLE IF NOT EXISTS message_parts(message_id TEXT NOT NULL REFERENCES messages(message_id), ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(message_id, ordinal)); CREATE TABLE IF NOT EXISTS tool_exchange_batches(batch_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), assistant_message_id TEXT NOT NULL, result_message_id TEXT, provider_step INTEGER NOT NULL, state TEXT NOT NULL, estimated_tokens INTEGER NOT NULL, tool_calls_json TEXT NOT NULL, tool_results_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS derived_context(derived_page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(session_id), source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, inline_content TEXT, blob_ref TEXT, message_id TEXT, token_estimate INTEGER NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL, provenance_json TEXT NOT NULL, metadata_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS compaction_state(session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), generation INTEGER NOT NULL, residency_json TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS project_files(file_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_binding_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL, time_created TEXT NOT NULL, time_updated TEXT NOT NULL, time_last_seen TEXT, UNIQUE(root_binding_id, relative_path)); CREATE TABLE IF NOT EXISTS project_pages(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, characters INTEGER NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_symbols(symbol_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL, page_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_references(reference_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, source_line INTEGER NOT NULL, target_name TEXT NOT NULL, kind TEXT NOT NULL, resolution TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_dependencies(project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, kind TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(project_id, source_file_id, evidence_id)); CREATE TABLE IF NOT EXISTS project_l2(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, score REAL NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS session_l2(derived_page_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version INTEGER NOT NULL); PRAGMA user_version = 1") }
     private static func decodeRoot(_ row: [String]) -> RootBinding? { guard row.count == 10, let kind = RootBindingKind(rawValue: row[2]), let state = RootBindingLifecycleState(rawValue: row[6]) else { return nil }; return RootBinding(id: RootBindingID(row[0]), projectID: ProjectID(row[1]), kind: kind, absoluteRoot: URL(fileURLWithPath: row[3]), parentBindingID: row[4].isEmpty ? nil : RootBindingID(row[4]), bindingRevision: Int(row[5]) ?? 0, lifecycleState: state, createdAt: parseDate(row[7]), updatedAt: parseDate(row[8]), lastSeenAt: row[9].isEmpty ? nil : parseDate(row[9])) }
     private static func decodeFile(_ row: [String]) -> ProjectFileBinding? { guard row.count == 10 else { return nil }; return ProjectFileBinding(id: ProjectFileID(row[0]), projectID: ProjectID(row[1]), rootBindingID: RootBindingID(row[2]), relativePath: ProjectRelativePath(rawValue: row[3]), contentHash: row[4], version: row[5], state: row[6], createdAt: parseDate(row[7]), updatedAt: parseDate(row[8]), lastSeenAt: row[9].isEmpty ? nil : parseDate(row[9])) }

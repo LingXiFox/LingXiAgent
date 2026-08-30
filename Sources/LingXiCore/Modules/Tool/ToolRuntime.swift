@@ -73,8 +73,9 @@ public struct ToolRuntime: Sendable {
     private let outputArchive: ToolOutputArchive?
     private let outputSink: (@Sendable (ToolOutputChunk) async -> Void)?
     private let mcpPager: MCPToolPager?
+    private let subagents: SubagentToolService?
 
-    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator? = nil, outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil) {
+    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator? = nil, outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil, subagents: SubagentToolService? = nil) {
         self.registry = registry
         self.permissions = permissions
         self.mutations = mutations
@@ -82,6 +83,7 @@ public struct ToolRuntime: Sendable {
         self.outputArchive = outputArchive
         self.outputSink = outputSink
         self.mcpPager = mcpPager
+        self.subagents = subagents
     }
 
     public var definitions: [ToolDefinition] { registry.definitions }
@@ -96,6 +98,7 @@ public struct ToolRuntime: Sendable {
             return true
         }
         definitions += [MCPDiscoveryTools.search, MCPDiscoveryTools.load]
+        if subagents != nil { definitions.append(SubagentTool.definition) }
         if let sessionID, let mcpPager { definitions += await mcpPager.providerDefinitions(sessionID: sessionID) }
         return definitions.sorted { $0.id.rawValue < $1.id.rawValue }
     }
@@ -145,6 +148,11 @@ public struct ToolRuntime: Sendable {
         var execution: Duration = .zero
         do {
             try Task.checkCancellation()
+            if call.toolID == SubagentTool.definition.id, let subagents {
+                try ToolSchemaValidator.validate(arguments: call.arguments, schema: SubagentTool.definition.inputSchema)
+                let content = try await subagents.execute(arguments: call.arguments, sessionID: sessionID, callID: call.callID)
+                return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+            }
             if call.toolID == MCPDiscoveryTools.search.id, let mcpPager {
                 let content = try await mcpPager.searchToolResult(sessionID: sessionID, projectID: projectID, arguments: call.arguments)
                 return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)

@@ -5,13 +5,19 @@ import LingXiProtocol
 /// 当前实现：InMemorySessionStore；未来 SQLite 到来时替换实现，
 /// AgentRuntime / SessionRuntime / TUI 的领域逻辑不变。
 public protocol SessionStore: Actor, Sendable {
-    func create() async throws -> Session
+    func create(kind: SessionKind, parentSessionID: SessionID?, rootSessionID: SessionID?, spawnedByRunID: AgentRunID?, spawnedByToolCallID: ToolCallID?, title: String?) async throws -> Session
     func session(_ id: SessionID) async throws -> Session
     func listSessions() async throws -> [Session]
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message
+}
+
+public extension SessionStore {
+    func create() async throws -> Session {
+        try await create(kind: .primary, parentSessionID: nil, rootSessionID: nil, spawnedByRunID: nil, spawnedByToolCallID: nil, title: nil)
+    }
 }
 
 /// 内存实现：actor 保证并发安全。
@@ -21,8 +27,10 @@ public actor InMemorySessionStore: SessionStore {
 
     public init() {}
 
-    public func create() async throws -> Session {
-        let session = Session(id: SessionID(UUID().uuidString), createdAt: Date())
+    public func create(kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
+        guard parentSessionID == nil || sessions[parentSessionID!] != nil else { throw CoreError(code: .sessionNotFound, message: "Parent Session 不存在") }
+        let id = SessionID(UUID().uuidString)
+        let session = Session(id: id, createdAt: Date(), kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID ?? parentSessionID.flatMap { sessions[$0]?.rootSessionID } ?? id, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title)
         sessions[session.id] = session
         order.append(session.id)
         return session
@@ -66,15 +74,28 @@ public actor PersistentSessionStore: SessionStore {
 
     public init(persistence: SQLitePersistenceStore) { self.persistence = persistence }
 
-    public func create() async throws -> Session {
+    public func create(kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
         let main = try await persistence.mainRootBinding()
+        let parentRoot: SessionID?
+        if let parentSessionID {
+            parentRoot = try await session(parentSessionID).rootSessionID
+        } else {
+            parentRoot = nil
+        }
+        let id = SessionID(UUID().uuidString)
         let session = Session(
-            id: SessionID(UUID().uuidString),
+            id: id,
             createdAt: .now,
+            kind: kind,
+            parentSessionID: parentSessionID,
+            rootSessionID: rootSessionID ?? parentRoot ?? id,
+            spawnedByRunID: spawnedByRunID,
+            spawnedByToolCallID: spawnedByToolCallID,
+            title: title,
             projectID: persistence.projectID,
             cwdRootBindingID: main.id
         )
-        try await persistence.createSession(id: session.id, cwdRootBindingID: main.id, cwdRelativePath: .root, createdAt: session.createdAt)
+        try await persistence.createSession(session)
         return session
     }
 

@@ -13,19 +13,31 @@ public struct QuestionRequest: Sendable, Equatable, Codable {
     public let options: [String]
     public let allowsMultiple: Bool
     public let allowsFreeText: Bool
+    public let originSessionID: SessionID?
+    public let originRunID: AgentRunID?
+    public let rootSessionID: SessionID?
+    public let parentSessionID: SessionID?
 
     public init(
         questionID: QuestionID,
         question: String,
         options: [String] = [],
         allowsMultiple: Bool = false,
-        allowsFreeText: Bool = true
+        allowsFreeText: Bool = true,
+        originSessionID: SessionID? = nil,
+        originRunID: AgentRunID? = nil,
+        rootSessionID: SessionID? = nil,
+        parentSessionID: SessionID? = nil
     ) {
         self.questionID = questionID
         self.question = question
         self.options = options
         self.allowsMultiple = allowsMultiple
         self.allowsFreeText = allowsFreeText
+        self.originSessionID = originSessionID
+        self.originRunID = originRunID
+        self.rootSessionID = rootSessionID
+        self.parentSessionID = parentSessionID
     }
 }
 

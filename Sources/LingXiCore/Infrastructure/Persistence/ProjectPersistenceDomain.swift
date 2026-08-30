@@ -1,10 +1,5 @@
 import Foundation
-
-public struct ProjectID: RawRepresentable, Sendable, Equatable, Hashable, Codable {
-    public let rawValue: String
-    public init(_ rawValue: String) { self.rawValue = rawValue }
-    public init(rawValue: String) { self.rawValue = rawValue }
-}
+import LingXiProtocol
 
 public struct RootBindingID: RawRepresentable, Sendable, Equatable, Hashable, Codable {
     public let rawValue: String

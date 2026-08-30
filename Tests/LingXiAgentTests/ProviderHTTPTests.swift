@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import LingXiProtocol
 @testable import LingXiCore
+import LingXiClient
 
 /// URLProtocol stub：离线验证 Provider HTTP 层（200 SSE 流 / 非 2xx / 中途失败）。
 /// handler 是进程级静态，套件必须串行执行避免互相覆盖。
@@ -13,16 +14,23 @@ final class StubURLProtocol: URLProtocol {
     }
 
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> StubResponse)?
+    nonisolated(unsafe) static var queuedResponses: [StubResponse] = []
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = Self.handler, let url = request.url else {
+        guard let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
-        let response = handler(request)
+        let response: StubResponse
+        if let handler = Self.handler { response = handler(request) }
+        else if !Self.queuedResponses.isEmpty { response = Self.queuedResponses.removeFirst() }
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
         let http = HTTPURLResponse(
             url: url,
             statusCode: response.status,
@@ -216,5 +224,91 @@ struct ProviderHTTPTests {
             return call
         }
         #expect(completed.map(\.callID.rawValue) == ["call-a", "call-b"])
+    }
+
+    @Test func responsesProviderRunsParallelToolLoopThroughDomainRuntime() async throws {
+        StubURLProtocol.queuedResponses = [
+            StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
+                #"{"type":"response.output_item.added","item":{"type":"function_call","id":"provider-a","call_id":"call-a","name":"read_file","arguments":""}}"#,
+                #"{"type":"response.output_item.added","item":{"type":"function_call","id":"provider-b","call_id":"call-b","name":"read_file","arguments":""}}"#,
+                #"{"type":"response.function_call_arguments.done","call_id":"call-a","name":"read_file","arguments":"{\"path\":\"A.md\"}"}"#,
+                #"{"type":"response.function_call_arguments.done","call_id":"call-b","name":"read_file","arguments":"{\"path\":\"B.md\"}"}"#,
+                #"{"type":"response.completed","response":{"status":"completed"}}"#,
+            ])),
+            StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
+                #"{"type":"response.output_text.delta","delta":"A and B read."}"#,
+                #"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":3}}}"#,
+            ])),
+        ]
+        defer { StubURLProtocol.queuedResponses = [] }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "A".write(to: root.appendingPathComponent("A.md"), atomically: true, encoding: .utf8)
+        try "B".write(to: root.appendingPathComponent("B.md"), atomically: true, encoding: .utf8)
+        let provider = OpenAIResponsesProvider(config: ProviderConfig(baseURL: URL(string: "https://stub.test/v1")!, apiKey: nil, model: "stub", wireProtocol: .responses), session: StubURLProtocol.makeSession())
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "Read both files")
+        var text = ""
+        for try await chunk in stream where chunk.kind == .text { text += chunk.text }
+        let snapshot = try await client.session(sessionID)
+        #expect(text == "A and B read.")
+        #expect(snapshot.messages.map(\.role) == [.user, .assistant, .tool, .assistant])
+        #expect(snapshot.messages[1].parts.compactMap { if case let .toolCall(call) = $0 { call.callID.rawValue } else { nil } } == ["call-a", "call-b"])
+        #expect(snapshot.messages[2].parts.count == 2)
+    }
+
+    @Test func dualWireProvidersPreserveToolLoopSessionSemantics() async throws {
+        let chat = OpenAICompatibleProvider(config: ProviderConfig(baseURL: URL(string: "https://stub.test/v1")!, apiKey: nil, model: "stub"), session: StubURLProtocol.makeSession())
+        let responses = OpenAIResponsesProvider(config: ProviderConfig(baseURL: URL(string: "https://stub.test/v1")!, apiKey: nil, model: "stub", wireProtocol: .responses), session: StubURLProtocol.makeSession())
+        let chatResult = try await runToolLoop(provider: chat, responses: [
+            StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-a","function":{"name":"read_file","arguments":"{\"path\":\"A.md\"}"}},{"index":1,"id":"call-b","function":{"name":"read_file","arguments":"{\"path\":\"B.md\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+                "[DONE]",
+            ])),
+            StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
+                #"{"choices":[{"delta":{"content":"A and B read."},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ])),
+        ])
+        let responsesResult = try await runToolLoop(provider: responses, responses: [
+            StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
+                #"{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call-a","name":"read_file","arguments":""}}"#,
+                #"{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call-b","name":"read_file","arguments":""}}"#,
+                #"{"type":"response.function_call_arguments.done","call_id":"call-a","name":"read_file","arguments":"{\"path\":\"A.md\"}"}"#,
+                #"{"type":"response.function_call_arguments.done","call_id":"call-b","name":"read_file","arguments":"{\"path\":\"B.md\"}"}"#,
+                #"{"type":"response.completed","response":{"status":"completed"}}"#,
+            ])),
+            StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
+                #"{"type":"response.output_text.delta","delta":"A and B read."}"#,
+                #"{"type":"response.completed","response":{"status":"completed"}}"#,
+            ])),
+        ])
+        #expect(chatResult == responsesResult)
+    }
+
+    private func runToolLoop(provider: any ModelProvider, responses: [StubURLProtocol.StubResponse]) async throws -> ([SessionMessageRole], String) {
+        StubURLProtocol.handler = nil
+        StubURLProtocol.queuedResponses = responses
+        defer { StubURLProtocol.queuedResponses = [] }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "A".write(to: root.appendingPathComponent("A.md"), atomically: true, encoding: .utf8)
+        try "B".write(to: root.appendingPathComponent("B.md"), atomically: true, encoding: .utf8)
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "Read both files")
+        var text = ""
+        for try await chunk in stream where chunk.kind == .text { text += chunk.text }
+        return (try await client.session(sessionID).messages.map(\.role), text)
     }
 }

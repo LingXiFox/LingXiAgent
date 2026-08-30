@@ -102,7 +102,7 @@ struct AgentToolLoopTests {
 
         let requests = provider.recorder.requests
         #expect(requests.count == 2)
-        #expect(requests[0].tools.map(\.id.rawValue) == ["apply_patch", "dependency_query", "edit_file", "find_references", "git", "glob", "grep", "list_directory", "load_tool", "process", "read_file", "search_tools", "shell", "symbol_lookup", "write_file"])
+        #expect(requests[0].tools.map(\.id.rawValue) == ["apply_patch", "dependency_query", "edit_file", "find_references", "git", "glob", "grep", "list_directory", "load_tool", "process", "read_file", "search_tools", "shell", "subagent", "symbol_lookup", "write_file"])
         #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool])
         #expect(requests[1].messages[1].parts.contains(.toolCall(call())))
         #expect(requests[1].messages[2].parts == [.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project"))])

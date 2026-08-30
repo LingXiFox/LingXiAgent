@@ -26,9 +26,12 @@ public actor QuestionRuntime {
         guard pending[request.questionID] == nil else {
             throw CoreError(code: .questionUnavailable, message: "问题 ID 已在等待答复: \(request.questionID.rawValue)")
         }
+        let contextual = if let context = AgentExecutionContext.current {
+            QuestionRequest(questionID: request.questionID, question: request.question, options: request.options, allowsMultiple: request.allowsMultiple, allowsFreeText: request.allowsFreeText, originSessionID: context.sessionID, originRunID: context.runID, rootSessionID: context.rootSessionID, parentSessionID: nil)
+        } else { request }
         return try await withCheckedThrowingContinuation { continuation in
-            pending[request.questionID] = Pending(request: request, continuation: continuation)
-            Task { await onQuestionAsked?(request) }
+            pending[contextual.questionID] = Pending(request: contextual, continuation: continuation)
+            Task { await onQuestionAsked?(contextual) }
         }
     }
 
@@ -40,6 +43,8 @@ public actor QuestionRuntime {
         pending.removeValue(forKey: reply.questionID)
         waiting.continuation.resume(returning: reply)
     }
+
+    public func request(_ questionID: QuestionID) -> QuestionRequest? { pending[questionID]?.request }
 
     public func close() {
         for waiting in pending.values {

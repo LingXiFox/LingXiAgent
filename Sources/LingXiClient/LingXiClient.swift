@@ -148,6 +148,35 @@ public struct LingXiClient: Sendable {
         return response
     }
 
+    public func listChildSessions(_ parentSessionID: SessionID) async throws -> [SessionInfo] {
+        guard case let .childSessionList(sessions) = try await connection.send(.listChildSessions(parentSessionID: parentSessionID)) else { throw CoreError(code: .transport, message: "listChildSessions 收到非预期响应") }
+        return sessions
+    }
+
+    public func listAgentRuns(_ sessionID: SessionID) async throws -> [AgentRunInfo] {
+        guard case let .agentRunList(runs) = try await connection.send(.listAgentRuns(sessionID: sessionID)) else { throw CoreError(code: .transport, message: "listAgentRuns 收到非预期响应") }
+        return runs
+    }
+
+    public func getAgentRun(_ runID: AgentRunID) async throws -> AgentRunInfo {
+        guard case let .agentRun(run) = try await connection.send(.getAgentRun(runID: runID)) else { throw CoreError(code: .transport, message: "getAgentRun 收到非预期响应") }
+        return run
+    }
+
+    public func getAgentTree(_ rootSessionID: SessionID) async throws -> AgentTreeNode {
+        guard case let .agentTree(tree) = try await connection.send(.getAgentTree(rootSessionID: rootSessionID)) else { throw CoreError(code: .transport, message: "getAgentTree 收到非预期响应") }
+        return tree
+    }
+
+    public func subagentResult(_ runID: AgentRunID) async throws -> SubagentResult {
+        guard case let .subagentResult(result) = try await connection.send(.getSubagentResult(runID: runID)) else { throw CoreError(code: .transport, message: "getSubagentResult 收到非预期响应") }
+        return result
+    }
+
+    public func cancelAgentRun(_ runID: AgentRunID) async throws {
+        guard case let .agentRunCancelled(id) = try await connection.send(.cancelAgentRun(runID: runID)), id == runID else { throw CoreError(code: .transport, message: "cancelAgentRun 收到非预期响应") }
+    }
+
     /// 在 Session 中发起一轮对话，返回 Streaming DMA 通道。
     /// text/reasoning delta 从通道逐块流出（kind 区分）；
     /// turnCompleted / turnFailed 经 events() 交付。

@@ -15,6 +15,12 @@ public enum CoreResponse: Sendable, Equatable {
     case permissionConfiguration(PermissionConfiguration)
     case projectCache(ProjectCacheDebugSnapshot)
     case compactSession(CompactSessionResponse)
+    case childSessionList([SessionInfo])
+    case agentRunList([AgentRunInfo])
+    case agentRun(AgentRunInfo)
+    case agentTree(AgentTreeNode)
+    case subagentResult(SubagentResult)
+    case agentRunCancelled(AgentRunID)
     case error(CoreError)
 }
 
@@ -106,6 +112,9 @@ public struct CoreError: Sendable, Equatable, Error {
         case mcpProtocolUnsupported
         case mcpTaskExecutionUnsupported
         case mcpInputRequiredUnavailable
+        case subagentModelNotAllowed
+        case subagentDepthExceeded
+        case agentRunNotFound
     }
 
     public let code: Code

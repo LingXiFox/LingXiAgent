@@ -21,12 +21,14 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         let urlRequest = try makeURLRequest(request)
+        Self.log("request step=\(request.debugStep ?? 0) bytes=\(urlRequest.httpBody?.count ?? 0)")
 
         // 连接阶段：失败直接 throw（Provider Error），由调用方转换为控制面结果。
         let (bytes, response) = try await session.bytes(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {
             throw CoreError(code: .provider, message: "Provider 返回非 HTTP 响应")
         }
+        Self.log("http step=\(request.debugStep ?? 0) status=\(http.statusCode)")
         guard (200..<300).contains(http.statusCode) else {
             // 读错误 body（截断），转换为 LingXi ProviderError；不输出任何凭据。
             let body = (try? await Self.collectText(bytes)) ?? ""
@@ -181,6 +183,11 @@ public struct OpenAICompatibleProvider: ModelProvider {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private static func log(_ message: String) {
+        guard ProcessInfo.processInfo.environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1" else { return }
+        FileHandle.standardError.write(Data(("[chat-diagnostic] \(message)\n").utf8))
+    }
+
     // MARK: - Pump（数据面）
 
     /// 消费网络字节：bytes → SSE buffer → 行 → JSON → ModelEvent。
@@ -200,12 +207,15 @@ public struct OpenAICompatibleProvider: ModelProvider {
             var completed: ModelFinishReason?
             var toolCalls = ToolCallBuffer(debugStep: debugStep)
             var sawDone = false
+            var textChunks = 0
+            var reasoningChunks = 0
+            var toolChunks = 0
             continuation.yield(.started)
 
             do {
                 outer: for try await byte in source {
                     for line in decoder.feed(Data([byte])) {
-                        if try handle(line: line, into: &completed, toolCalls: &toolCalls) {
+                        if try handle(line: line, into: &completed, toolCalls: &toolCalls, textChunks: &textChunks, reasoningChunks: &reasoningChunks, toolChunks: &toolChunks) {
                             sawDone = true
                             break outer
                         }
@@ -213,7 +223,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 }
                 if !sawDone {
                     for line in decoder.flushPending() {
-                        _ = try handle(line: line, into: &completed, toolCalls: &toolCalls)
+                        _ = try handle(line: line, into: &completed, toolCalls: &toolCalls, textChunks: &textChunks, reasoningChunks: &reasoningChunks, toolChunks: &toolChunks)
                     }
                 }
             } catch let error as CoreError {
@@ -240,6 +250,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 return
             }
             // [DONE] 或 EOF：有 finish_reason 用之，否则宽容收尾。
+            OpenAICompatibleProvider.log("stream step=\(debugStep ?? 0) textChunks=\(textChunks) reasoningChunks=\(reasoningChunks) toolChunks=\(toolChunks) finish=\(String(describing: completed))")
             continuation.yield(.completed(completed ?? .unknown))
             continuation.finish()
         }
@@ -249,7 +260,10 @@ public struct OpenAICompatibleProvider: ModelProvider {
         private func handle(
             line: String,
             into completed: inout ModelFinishReason?,
-            toolCalls: inout ToolCallBuffer
+            toolCalls: inout ToolCallBuffer,
+            textChunks: inout Int,
+            reasoningChunks: inout Int,
+            toolChunks: inout Int
         ) throws -> Bool {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix(":") { return false }
@@ -259,6 +273,11 @@ public struct OpenAICompatibleProvider: ModelProvider {
             if payload == "[DONE]" { return true }
 
             let chunk = try OpenAICompatibleProvider.decodeSSEChunk(String(payload))
+            if let delta = chunk.choices?.first?.delta {
+                if !(delta.content ?? "").isEmpty { textChunks += 1 }
+                if !(delta.reasoning ?? "").isEmpty { reasoningChunks += 1 }
+                toolChunks += delta.toolCalls?.count ?? 0
+            }
             for event in OpenAICompatibleProvider.events(from: chunk) {
                 if case let .completed(reason) = event {
                     completed = reason
