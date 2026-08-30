@@ -20,12 +20,14 @@ public actor AgentRuntime {
     private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private let interactive: Bool
+    private let diagnosticsEnabled: Bool
     private var runtimes: [SessionID: SessionRuntime] = [:]
     private let modelResolver: SubagentModelResolver
     private let scheduler: AgentRunScheduler
+    private let limits: SubagentRuntimeLimits
     private var runs: [AgentRunID: AgentRunInfo] = [:]
     private var results: [AgentRunID: SubagentResult] = [:]
-    private var activeSessionRuns: [SessionID: AgentRunID] = [:]
+    private var activeSessions: Set<SessionID> = []
 
     init(
         store: any SessionStore,
@@ -38,11 +40,13 @@ public actor AgentRuntime {
         projectScanner: ProjectScanner,
         eventSink: @escaping @Sendable (CoreEvent) async -> Void,
         compactor: ContextCompactor = ContextCompactor(),
-        budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: ProcessInfo.processInfo.environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init))),
+        budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(),
         persistence: SQLitePersistenceStore? = nil,
         interactive: Bool = false,
+        diagnosticsEnabled: Bool = false,
         modelResolver: SubagentModelResolver,
-        scheduler: AgentRunScheduler = AgentRunScheduler()
+        limits: SubagentRuntimeLimits = SubagentRuntimeLimits(),
+        scheduler: AgentRunScheduler? = nil
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -57,8 +61,10 @@ public actor AgentRuntime {
         self.budgetPlanner = budgetPlanner
         self.persistence = persistence
         self.interactive = interactive
+        self.diagnosticsEnabled = diagnosticsEnabled
         self.modelResolver = modelResolver
-        self.scheduler = scheduler
+        self.limits = limits
+        self.scheduler = scheduler ?? AgentRunScheduler(limits: limits)
     }
 
     // MARK: - Session 生命周期
@@ -105,9 +111,21 @@ public actor AgentRuntime {
         return run
     }
 
+    public func agentRun(_ runID: AgentRunID, requester: AgentRunID) throws -> AgentRunInfo {
+        let run = try agentRun(runID)
+        try requireSameTree(run, requester: requester)
+        return run
+    }
+
     public func agentRunResult(_ runID: AgentRunID) throws -> SubagentResult {
         guard let result = results[runID] else { throw CoreError(code: .agentRunNotFound, message: "AgentRun 尚无稳定结果: \(runID.rawValue)") }
         return result
+    }
+
+    public func agentRunResult(_ runID: AgentRunID, requester: AgentRunID) throws -> SubagentResult {
+        let run = try agentRun(runID)
+        try requireSameTree(run, requester: requester)
+        return try agentRunResult(runID)
     }
 
     public func agentTree(_ rootSessionID: SessionID) async throws -> AgentTreeNode {
@@ -172,26 +190,30 @@ public actor AgentRuntime {
 
     /// 在 Session 中发起一轮对话，返回该轮的 DMA 通道。
     public func sendMessage(_ sessionID: SessionID, _ content: String) async throws -> OpenedStream {
-        guard activeSessionRuns[sessionID] == nil else { throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次") }
+        guard !activeSessions.contains(sessionID) else { throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次") }
         // Preserve the established contract: an unavailable provider still records the user turn.
         if modelBus.gateway.modelID == nil { return try await runtime(for: sessionID).startTurn(content) }
         do {
             // Reserve before the first await so concurrent callers cannot create a second lane.
-            activeSessionRuns[sessionID] = AgentRunID("starting")
+            activeSessions.insert(sessionID)
             let session = try await store.session(sessionID)
             let run = try await createRun(session: session, parentRunID: nil, requestedModel: nil, title: session.title)
-            activeSessionRuns[sessionID] = run.runID
             return try await runtime(for: sessionID, run: run).startTurn(content)
         } catch {
-            activeSessionRuns.removeValue(forKey: sessionID)
+            activeSessions.remove(sessionID)
             throw error
         }
     }
 
     public func spawn(parentSessionID: SessionID, parentRunID: AgentRunID, task: String, title: String? = nil, modelSelection: ModelSelection? = nil, profile: SubagentExecutionProfile? = nil, toolCallID: ToolCallID? = nil) async throws -> (SessionID, AgentRunInfo) {
         let parent = try await store.session(parentSessionID)
+        let parentRun = try agentRun(parentRunID)
+        guard parentRun.sessionID == parentSessionID, !parentRun.status.isTerminal else { throw CoreError(code: .toolArgumentInvalid, message: "Parent AgentRun 与 Session 不匹配或已结束") }
         let depth = try await depth(of: parent)
-        guard depth < 3 else { throw CoreError(code: .subagentDepthExceeded, message: "Subagent 最大深度已达到") }
+        guard depth < limits.maxSubagentDepth else { throw CoreError(code: .subagentDepthExceeded, message: "Subagent 最大深度已达到") }
+        guard runs.values.filter({ $0.rootRunID == parentRun.rootRunID }).count < limits.maxTotalRunsPerRootRun else {
+            throw CoreError(code: .subagentDepthExceeded, message: "单个 Root AgentRun 的运行总数已达到上限")
+        }
         let child = try await store.create(kind: .subagent, parentSessionID: parent.id, rootSessionID: parent.rootSessionID, spawnedByRunID: parentRunID, spawnedByToolCallID: toolCallID, title: title)
         await eventSink(.childSessionCreated(child.toInfo()))
         var run = try await createRun(session: child, parentRunID: parentRunID, requestedModel: profile?.modelSelection ?? modelSelection, title: title)
@@ -203,6 +225,7 @@ public actor AgentRuntime {
             try await persistence?.saveAgentRun(run, profile: profile)
         }
         await eventSink(.subagentSpawned(run))
+        if status == .queued { await eventSink(.agentRunQueued(run)) }
         return (child.id, run)
     }
 
@@ -216,13 +239,30 @@ public actor AgentRuntime {
         }
     }
 
+    public func cancelAgentRun(_ runID: AgentRunID, requester: AgentRunID) async throws {
+        let run = try agentRun(runID)
+        try requireSameTree(run, requester: requester)
+        try await cancelAgentRun(runID)
+    }
+
     public func continueChild(sessionID: SessionID, parentRunID: AgentRunID, content: String) async throws -> AgentRunInfo {
         let session = try await store.session(sessionID)
         guard session.kind == .subagent else { throw CoreError(code: .toolArgumentInvalid, message: "只能继续 Child Session") }
-        var run = try await createRun(session: session, parentRunID: parentRunID, requestedModel: nil, title: session.title)
+        let parentRun = try agentRun(parentRunID)
+        guard let spawnedBy = session.spawnedByRunID, let original = runs[spawnedBy], original.rootRunID == parentRun.rootRunID else { throw CoreError(code: .permissionDenied, message: "Child Session 不属于当前 Agent 树") }
+        guard !activeSessions.contains(sessionID) else { throw CoreError(code: .turnAlreadyRunning, message: "该 Child Session 已有进行中的 AgentRun") }
+        activeSessions.insert(sessionID)
+        var run: AgentRunInfo
+        do {
+            run = try await createRun(session: session, parentRunID: parentRunID, requestedModel: nil, title: session.title)
+        } catch {
+            activeSessions.remove(sessionID)
+            throw error
+        }
         let runID = run.runID
         let status = await scheduler.submit(runID: runID) { [weak self] in await self?.runChild(runID: runID, task: content) }
         if status == .queued { run = updated(run, status: .queued); runs[runID] = run; try await persistence?.saveAgentRun(run) }
+        if status == .queued { await eventSink(.agentRunQueued(run)) }
         return run
     }
 
@@ -252,8 +292,10 @@ public actor AgentRuntime {
             budgetPlanner: budgetPlanner,
             persistence: persistence,
             interactive: interactive,
+            diagnosticsEnabled: diagnosticsEnabled,
             runID: run?.runID,
             rootSessionID: rootSessionID ?? sessionID,
+            parentSessionID: run?.parentRunID.flatMap { runs[$0]?.sessionID },
             runObserver: { [weak self] status, text, usage, error in
                 guard let run else { return }
                 await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error)
@@ -307,13 +349,17 @@ public actor AgentRuntime {
         let usage = AgentRunUsage(model: usage, elapsedMilliseconds: old.startedAt.map { Date().timeIntervalSince($0) * 1_000 })
         let run = AgentRunInfo(runID: old.runID, sessionID: old.sessionID, projectID: old.projectID, parentRunID: old.parentRunID, rootRunID: old.rootRunID, agentKind: old.agentKind, status: status, modelSelection: old.modelSelection, startedAt: old.startedAt, finishedAt: status.isTerminal ? .now : nil, latestActivityAt: .now, error: error, usage: usage, title: old.title)
         runs[runID] = run
-        if status.isTerminal, activeSessionRuns[run.sessionID] == runID { activeSessionRuns.removeValue(forKey: run.sessionID) }
+        if status.isTerminal { activeSessions.remove(run.sessionID) }
         if status.isTerminal {
+            if let resolved = try? await modelResolver.resolve(old.modelSelection, subagent: old.agentKind == .subagent) {
+                await resolved.assembly.provider.endExecution(runID)
+            }
             let result = SubagentResult(childSessionID: run.sessionID, runID: runID, status: status, finalText: text, usage: usage, error: error)
             results[runID] = result
             try? await persistence?.saveAgentRunResult(result)
             await scheduler.complete(runID)
             await eventSink(status == .completed ? .agentRunCompleted(run) : status == .cancelled ? .agentRunCancelled(run) : .agentRunFailed(run))
+            await eventSink(.subagentResultAvailable(result))
         } else {
             await eventSink(.agentRunStatusChanged(run))
         }
@@ -330,6 +376,12 @@ public actor AgentRuntime {
         var current = run.parentRunID
         while let id = current { if id == ancestor { return true }; current = runs[id]?.parentRunID }
         return false
+    }
+
+    private func requireSameTree(_ target: AgentRunInfo, requester: AgentRunID) throws {
+        guard let requesterRun = runs[requester], requesterRun.rootRunID == target.rootRunID else {
+            throw CoreError(code: .permissionDenied, message: "AgentRun 不属于当前 Agent 树")
+        }
     }
 
     private func updated(_ run: AgentRunInfo, status: AgentRunStatus) -> AgentRunInfo {

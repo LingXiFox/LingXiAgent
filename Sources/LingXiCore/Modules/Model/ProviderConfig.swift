@@ -16,7 +16,7 @@ public struct ModelRuntimeAssembly: Sendable {
     }
 }
 
-/// Provider 配置装载：只从环境读取，永不写死、永不提交、不输出 Key。
+/// Provider 调试覆盖装载。正式用户配置由 App/Bootstrap 解析后进入 typed runtime。
 public enum ProviderSetup {
     public static let baseURLKey = "LINGXI_PROVIDER_BASE_URL"
     public static let apiKeyKey = "LINGXI_PROVIDER_API_KEY"
@@ -25,9 +25,7 @@ public enum ProviderSetup {
 
     /// 环境未配置时返回占位 Provider + 缺失项清单；
     /// API Key 允许为空，因为部分 Provider 不要求认证。
-    public static func resolve(
-        _ environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> (assembly: ModelRuntimeAssembly, missing: [String]) {
+    public static func resolve(_ environment: [String: String]) -> (assembly: ModelRuntimeAssembly, missing: [String]) {
         let baseString = (environment[baseURLKey] ?? "").trimmingCharacters(in: .whitespaces)
         let model = environment[modelKey] ?? ""
         let apiKey = environment[apiKeyKey] ?? ""
@@ -39,16 +37,29 @@ public enum ProviderSetup {
         if !baseString.isEmpty, baseURLValue(baseString) == nil {
             missing.append("\(baseURLKey)（URL 无法解析）")
         }
-        if wireProtocol == nil { missing.append("\(wireProtocolKey)（仅支持 chatCompletions 或 responses）") }
+        if wireProtocol == nil { missing.append("\(wireProtocolKey)（仅支持 chatCompletions、responses 或 anthropicMessages）") }
 
         guard missing.isEmpty, let baseURL = baseURLValue(baseString), let wireProtocol else {
             return (assembly: unavailable, missing: missing)
         }
 
-        let config = ProviderConfig(baseURL: baseURL, apiKey: apiKey.isEmpty ? nil : apiKey, model: model, wireProtocol: wireProtocol)
+        let config = ProviderConfig(
+            baseURL: baseURL,
+            apiKey: apiKey.isEmpty ? nil : apiKey,
+            model: model,
+            wireProtocol: wireProtocol,
+            diagnosticsEnabled: environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1",
+            performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1"
+        )
+        let provider: any ModelProvider
+        switch wireProtocol {
+        case .chatCompletions: provider = OpenAICompatibleProvider(config: config)
+        case .responses: provider = OpenAIResponsesProvider(config: config)
+        case .anthropicMessages: provider = AnthropicMessagesProvider(config: config)
+        }
         return (
             assembly: ModelRuntimeAssembly(
-                provider: wireProtocol == .chatCompletions ? OpenAICompatibleProvider(config: config) : OpenAIResponsesProvider(config: config),
+                provider: provider,
                 modelID: ModelID(model),
                 endpoint: ResolvedModelEndpoint(providerID: "default", modelID: ModelID(model), baseURL: baseURL, wireProtocol: wireProtocol)
             ),
@@ -75,16 +86,52 @@ private struct UnavailableProvider: ModelProvider {
 /// Provider 连接配置（仅存在于 Core 内部，不进入协议层）。
 public struct ProviderConfig: Sendable {
     public let baseURL: URL
-    /// 允许为空：部分 Provider 不要求认证。
-    public let apiKey: String?
+    public let authentication: ProviderAuthentication
     public let model: String
     public let wireProtocol: ModelWireProtocol
+    public let diagnosticsEnabled: Bool
+    public let performanceDiagnosticsEnabled: Bool
+    public let remoteStateEnabled: Bool
+    public let maxOutputTokens: Int?
 
-    public init(baseURL: URL, apiKey: String?, model: String, wireProtocol: ModelWireProtocol = .chatCompletions) {
+    public init(
+        baseURL: URL,
+        apiKey: String?,
+        model: String,
+        wireProtocol: ModelWireProtocol = .chatCompletions,
+        diagnosticsEnabled: Bool = false,
+        performanceDiagnosticsEnabled: Bool = false,
+        remoteStateEnabled: Bool = false,
+        maxOutputTokens: Int? = nil
+    ) {
         self.baseURL = baseURL
-        self.apiKey = apiKey
+        authentication = apiKey.map(ProviderAuthentication.bearer) ?? .none
         self.model = model
         self.wireProtocol = wireProtocol
+        self.diagnosticsEnabled = diagnosticsEnabled
+        self.performanceDiagnosticsEnabled = performanceDiagnosticsEnabled
+        self.remoteStateEnabled = remoteStateEnabled
+        self.maxOutputTokens = maxOutputTokens
+    }
+
+    public init(
+        baseURL: URL,
+        authentication: ProviderAuthentication,
+        model: String,
+        wireProtocol: ModelWireProtocol,
+        diagnosticsEnabled: Bool = false,
+        performanceDiagnosticsEnabled: Bool = false,
+        remoteStateEnabled: Bool = false,
+        maxOutputTokens: Int? = nil
+    ) {
+        self.baseURL = baseURL
+        self.authentication = authentication
+        self.model = model
+        self.wireProtocol = wireProtocol
+        self.diagnosticsEnabled = diagnosticsEnabled
+        self.performanceDiagnosticsEnabled = performanceDiagnosticsEnabled
+        self.remoteStateEnabled = remoteStateEnabled
+        self.maxOutputTokens = maxOutputTokens
     }
 
     /// OpenAI-compatible chat completions 端点。
@@ -102,12 +149,25 @@ public struct ProviderConfig: Sendable {
         if trimmedString.hasSuffix("/responses") { return baseURL }
         return URL(string: trimmedString + "/responses") ?? baseURL
     }
+
+    public var anthropicMessagesURL: URL {
+        let trimmedString = baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if trimmedString.hasSuffix("/v1/messages") || trimmedString.hasSuffix("/messages") { return baseURL }
+        return URL(string: trimmedString + "/v1/messages") ?? baseURL
+    }
+}
+
+public enum ProviderAuthentication: Sendable, Equatable {
+    case none
+    case bearer(String)
+    case header(name: String, value: String)
 }
 
 /// Wire protocol is selected by the resolved endpoint, not by a Provider brand.
 public enum ModelWireProtocol: String, Sendable, Equatable, Codable {
     case chatCompletions
     case responses
+    case anthropicMessages
 }
 
 public struct ResolvedModelEndpoint: Sendable, Equatable {

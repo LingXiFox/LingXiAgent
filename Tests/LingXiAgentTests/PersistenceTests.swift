@@ -185,6 +185,30 @@ struct PersistenceTests {
         #expect(try await PersistentSessionStore(persistence: reopened).session(session.id).messages.first?.content == "migration-anchor")
     }
 
+    @Test func agentRunAccountSelectionSurvivesReopen() async throws {
+        let fixture = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let root = fixture.appendingPathComponent("Root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let data = fixture.appendingPathComponent("data", isDirectory: true)
+        let first = try SQLitePersistenceStore(dataRoot: data, mainRoot: root)
+        let session = try await PersistentSessionStore(persistence: first).create()
+        let runID = AgentRunID("account-run")
+        try await first.saveAgentRun(AgentRunInfo(
+            runID: runID,
+            sessionID: session.id,
+            projectID: first.projectID,
+            rootRunID: runID,
+            agentKind: .primary,
+            status: .completed,
+            modelSelection: ModelSelection(providerID: "custom", accountID: "account", profileID: "profile", modelID: "model")
+        ))
+
+        let second = try SQLitePersistenceStore(dataRoot: data, mainRoot: root, projectID: first.projectID)
+        #expect(try await second.loadAgentRuns().first?.modelSelection.accountID == "account")
+        #expect(try await second.loadAgentRuns().first?.modelSelection.profileID == "profile")
+    }
+
     @Test func pendingAndSettledToolBatchesRecoverWithoutReplay() async throws {
         let fixture = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: fixture) }

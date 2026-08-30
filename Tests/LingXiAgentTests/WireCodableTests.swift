@@ -88,6 +88,15 @@ struct WireCodableTests {
         #expect(try roundtrip(.chunk(chunk)) == .chunk(chunk))
     }
 
+    @Test func streamEndRoundtripAndLegacyDecode() throws {
+        let streamID = StreamID("s-1")
+        let error = CoreError(code: .modelStream, message: "中断")
+        #expect(try roundtrip(.streamEnd(streamID, error: error)) == .streamEnd(streamID, error: error))
+
+        let legacy = Data(#"{"kind":"streamEnd","streamID":{"rawValue":"s-1"}}"#.utf8)
+        #expect(try JSONDecoder().decode(WireMessage.self, from: legacy) == .streamEnd(streamID))
+    }
+
     @Test func dataPlaneFlag() {
         #expect(ClientCommand.openTestStream.isDataPlane)
         #expect(ClientCommand.sendMessage(sessionID: SessionID("s-1"), content: "hi").isDataPlane)

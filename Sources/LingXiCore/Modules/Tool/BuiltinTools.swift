@@ -3,18 +3,16 @@ import LingXiProtocol
 
 public struct WorkspaceRoot: Sendable {
     public let url: URL
+    public let sensitivePathPolicy: SensitivePathPolicy
 
-    public init(path: String) throws {
+    public init(path: String, sensitivePathPolicy: SensitivePathPolicy? = nil) throws {
         let candidate = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw CoreError(code: .workspaceViolation, message: "Workspace Root 不存在或不是目录: \(candidate.path)")
         }
         url = candidate
-    }
-
-    public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> WorkspaceRoot {
-        try WorkspaceRoot(path: environment["LINGXI_WORKSPACE_ROOT"] ?? FileManager.default.currentDirectoryPath)
+        self.sensitivePathPolicy = sensitivePathPolicy ?? SensitivePathPolicy(root: candidate)
     }
 
     public func resolve(_ path: String, profile: ExecutionProfile = .workspace) throws -> URL {
@@ -22,15 +20,10 @@ public struct WorkspaceRoot: Sendable {
         let candidate = input.standardizedFileURL.resolvingSymlinksInPath()
         let root = url.path.hasSuffix("/") ? url.path : url.path + "/"
         guard profile == .fullAccess || candidate.path == url.path || candidate.path.hasPrefix(root) else {
-            throw CoreError(code: .workspaceViolation, message: "路径超出 Workspace Root: \(candidate.path)")
+            throw CoreError(code: .workspaceViolation, message: "路径超出 Workspace Root")
         }
-        let name = candidate.lastPathComponent.lowercased()
-        let components = Set(candidate.pathComponents.map { $0.lowercased() })
-        let sensitive = name == ".env" || name.hasPrefix(".env.") || name.hasSuffix(".pem") || name.hasSuffix(".key")
-            || [".aws", ".ssh", ".gnupg", ".netrc", ".npmrc", "credentials", "credential.json", "credentials.json", "id_rsa"].contains(name)
-            || !components.isDisjoint(with: [".aws", ".ssh", ".gnupg"])
-        guard !sensitive else {
-            throw CoreError(code: .workspaceViolation, message: "不允许访问敏感文件: \(candidate.path)")
+        guard !sensitivePathPolicy.isSensitive(candidate) else {
+            throw CoreError(code: .workspaceViolation, message: "不允许访问敏感路径")
         }
         return candidate
     }
@@ -242,7 +235,7 @@ public struct ListDirectoryTool: ToolExecutor {
             includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         )
-        return try entries.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { entry in
+        return try entries.filter { !workspace.sensitivePathPolicy.isSensitive($0) }.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { entry in
             let values = try entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
             let kind = values.isDirectory == true ? "directory" : "file"
             let size = values.fileSize.map(String.init) ?? "-"
@@ -293,6 +286,10 @@ private func files(at root: URL, workspace: WorkspaceRoot, profile: ExecutionPro
     while let entry = enumerator.nextObject() as? URL {
         let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         if values?.isSymbolicLink == true { enumerator.skipDescendants() }
+        if workspace.sensitivePathPolicy.isSensitive(entry) {
+            if values?.isDirectory == true { enumerator.skipDescendants() }
+            continue
+        }
         if let resolved = try? workspace.resolve(entry.path, profile: profile) { result.append(resolved) }
     }
     return result
@@ -465,7 +462,7 @@ public enum ApplyPatchFailpoint {
     public static func fail(after operation: Int?) { state.set(after: operation) }
 
     fileprivate static func shouldFail(at operation: Int) -> Bool {
-        state.shouldFail(at: operation) || ProcessInfo.processInfo.environment["LINGXI_APPLY_PATCH_FAIL_AFTER"].flatMap(Int.init) == operation
+        state.shouldFail(at: operation)
     }
 }
 

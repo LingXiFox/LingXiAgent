@@ -22,6 +22,7 @@ public actor StdioConnection: LingXiConnection {
     private var streams: [StreamID: AsyncThrowingStream<StreamChunk, Error>.Continuation] = [:]
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
     private var toolOutputContinuations: [UUID: AsyncStream<ToolOutputChunk>.Continuation] = [:]
+    private var terminalError: CoreError?
 
     public init(corePath: String, interactive: Bool = false) throws {
         let process = Process()
@@ -40,6 +41,11 @@ public actor StdioConnection: LingXiConnection {
         try process.run()
         // 读循环独立运行，随管道 EOF 结束；进程生命周期即连接生命周期。
         Task { await self.readLoop(pipe: output) }
+    }
+
+    init(input: FileHandle) {
+        self.process = Process()
+        self.input = input
     }
 
     deinit {
@@ -72,13 +78,18 @@ public actor StdioConnection: LingXiConnection {
 
     /// 先注册 chunk 归属再发请求，保证 streamOpened 到达前 chunk 不丢失。
     private func openDataStream(_ command: ClientCommand) async throws -> AsyncThrowingStream<StreamChunk, Error> {
+        if let terminalError { throw terminalError }
         var continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation!
         let stream = AsyncThrowingStream { continuation = $0 }
         nextRequestID += 1
         let id = String(nextRequestID)
         _ = try await withCheckedThrowingContinuation { (open: CheckedContinuation<StreamID, Error>) in
             pending[id] = .stream(chunks: continuation, open: open)
-            write(.request(id: id, command: command))
+            do {
+                try write(.request(id: id, command: command))
+            } catch {
+                failConnection(CoreError(code: .transport, message: "Core 请求写入失败: \(error.localizedDescription)"))
+            }
         } as StreamID
         return stream
     }
@@ -106,24 +117,32 @@ public actor StdioConnection: LingXiConnection {
     }
 
     public func close() async {
-        guard process.isRunning else { return }
-        process.terminate()
+        failConnection(CoreError(code: .transport, message: "Core 连接已关闭"))
+        try? input.close()
+        if process.isRunning {
+            process.terminate()
+        }
     }
 
     // MARK: - Private
 
     private func dispatch(_ command: ClientCommand) async throws -> CoreResponse {
+        if let terminalError { throw terminalError }
         nextRequestID += 1
         let id = String(nextRequestID)
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = .command(continuation)
-            write(.request(id: id, command: command))
+            do {
+                try write(.request(id: id, command: command))
+            } catch {
+                failConnection(CoreError(code: .transport, message: "Core 请求写入失败: \(error.localizedDescription)"))
+            }
         }
     }
 
-    private func write(_ message: WireMessage) {
-        guard let data = try? encoder.encode(message) else { return }
-        try? input.write(contentsOf: data + Data("\n".utf8))
+    private func write(_ message: WireMessage) throws {
+        let data = try encoder.encode(message)
+        try input.write(contentsOf: data + Data("\n".utf8))
     }
 
     private func readLoop(pipe: Pipe) async {
@@ -132,15 +151,26 @@ public actor StdioConnection: LingXiConnection {
                 handle(line: line)
             }
         } catch {
-            // 进程退出或管道断开。
+            failConnection(CoreError(code: .transport, message: "Core 连接读取失败: \(error.localizedDescription)"))
+            return
         }
-        finishAll(CoreError(code: .transport, message: "Core 连接已关闭"))
+        failConnection(CoreError(code: .transport, message: "Core 连接已关闭"))
     }
 
-    private func handle(line: String) {
-        guard let data = line.data(using: .utf8),
-              let message = try? decoder.decode(WireMessage.self, from: data)
-        else { return }
+    func handle(line: String) {
+        guard terminalError == nil else { return }
+        let message: WireMessage
+        do {
+            message = try decoder.decode(WireMessage.self, from: Data(line.utf8))
+        } catch {
+            failConnection(CoreError(code: .transport, message: "Core 返回非法 JSON: \(error.localizedDescription)"))
+            return
+        }
+        handle(message)
+    }
+
+    func handle(_ message: WireMessage) {
+        guard terminalError == nil else { return }
         switch message {
         case let .response(id, response):
             switch pending.removeValue(forKey: id) {
@@ -152,9 +182,12 @@ public actor StdioConnection: LingXiConnection {
                     streams[streamID] = chunks
                     open.resume(returning: streamID)
                 case let .error(error):
+                    chunks.finish(throwing: error)
                     open.resume(throwing: error)
                 default:
-                    open.resume(throwing: CoreError(code: .transport, message: "stream 请求收到非预期响应"))
+                    let error = CoreError(code: .transport, message: "stream 请求收到非预期响应")
+                    chunks.finish(throwing: error)
+                    open.resume(throwing: error)
                 }
             case nil:
                 break
@@ -169,11 +202,19 @@ public actor StdioConnection: LingXiConnection {
             for continuation in toolOutputContinuations.values {
                 continuation.yield(chunk)
             }
-        case let .streamEnd(streamID):
-            streams.removeValue(forKey: streamID)?.finish()
+        case let .streamEnd(streamID, error):
+            if let error {
+                streams.removeValue(forKey: streamID)?.finish(throwing: error)
+            } else {
+                streams.removeValue(forKey: streamID)?.finish()
+            }
         case .request:
             break
         }
+    }
+
+    func inputDidClose() {
+        failConnection(CoreError(code: .transport, message: "Core 连接已关闭"))
     }
 
     private func removeEventContinuation(_ key: UUID) {
@@ -184,18 +225,21 @@ public actor StdioConnection: LingXiConnection {
         toolOutputContinuations.removeValue(forKey: key)
     }
 
-    private func finishAll(_ error: CoreError) {
+    private func failConnection(_ error: CoreError) {
+        guard terminalError == nil else { return }
+        terminalError = error
         for request in pending.values {
             switch request {
             case let .command(continuation):
                 continuation.resume(throwing: error)
-            case let .stream(_, open):
+            case let .stream(chunks, open):
+                chunks.finish(throwing: error)
                 open.resume(throwing: error)
             }
         }
         pending.removeAll()
         for continuation in streams.values {
-            continuation.finish()
+            continuation.finish(throwing: error)
         }
         streams.removeAll()
         for continuation in eventContinuations.values {

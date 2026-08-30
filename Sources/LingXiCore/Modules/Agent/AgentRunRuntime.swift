@@ -16,20 +16,23 @@ public struct SubagentRuntimeLimits: Sendable, Equatable {
 public actor SubagentModelResolver {
     private let runtimes: [String: ModelRuntimeAssembly]
     private let allowedModels: Set<String>?
+    private let defaultSelection: ModelSelection?
     private let defaultSubagentSelection: ModelSelection?
 
-    public init(defaultRuntime: ModelRuntimeAssembly, runtimes: [String: ModelRuntimeAssembly] = [:], allowedModels: Set<String>? = nil, defaultSubagentSelection: ModelSelection? = nil) {
+    public init(defaultRuntime: ModelRuntimeAssembly, runtimes: [String: ModelRuntimeAssembly] = [:], allowedModels: Set<String>? = nil, defaultSelection: ModelSelection? = nil, defaultSubagentSelection: ModelSelection? = nil) {
         var values = runtimes
         values["default"] = values["default"] ?? defaultRuntime
         self.runtimes = values
         self.allowedModels = allowedModels
+        self.defaultSelection = defaultSelection
         self.defaultSubagentSelection = defaultSubagentSelection
     }
 
     public func resolve(_ requested: ModelSelection?, subagent: Bool = false) throws -> (selection: ModelSelection, assembly: ModelRuntimeAssembly) {
-        let requested = requested ?? (subagent ? defaultSubagentSelection : nil)
+        let requested = requested ?? (subagent ? defaultSubagentSelection ?? defaultSelection : defaultSelection)
         let providerID = requested?.providerID ?? "default"
-        guard let assembly = runtimes[providerID] else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Provider 不可用: \(providerID)") }
+        let key = requested?.accountID.map { "\($0)::\(requested!.profileID ?? requested!.modelID)" }
+        guard let assembly = key.flatMap({ runtimes[$0] }) ?? runtimes[providerID] else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Provider 不可用: \(providerID)") }
         guard !assembly.modelID.rawValue.isEmpty else { throw CoreError(code: .provider, message: "未配置模型 Provider") }
         let selection = requested ?? ModelSelection(providerID: providerID, modelID: assembly.modelID.rawValue)
         guard selection.modelID == assembly.modelID.rawValue else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Model 不可用: \(selection.modelID)") }
@@ -80,5 +83,5 @@ public actor AgentRunScheduler {
 }
 
 enum AgentExecutionContext {
-    @TaskLocal static var current: (sessionID: SessionID, runID: AgentRunID, rootSessionID: SessionID)?
+    @TaskLocal static var current: (sessionID: SessionID, runID: AgentRunID, rootSessionID: SessionID, parentSessionID: SessionID?)?
 }

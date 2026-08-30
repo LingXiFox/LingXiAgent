@@ -21,25 +21,37 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         let urlRequest = try makeURLRequest(request)
-        Self.log("request step=\(request.debugStep ?? 0) bytes=\(urlRequest.httpBody?.count ?? 0)")
+        Self.log("request step=\(request.debugStep ?? 0) bytes=\(urlRequest.httpBody?.count ?? 0)", enabled: config.diagnosticsEnabled)
 
         // 连接阶段：失败直接 throw（Provider Error），由调用方转换为控制面结果。
         let (bytes, response) = try await session.bytes(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {
             throw CoreError(code: .provider, message: "Provider 返回非 HTTP 响应")
         }
-        Self.log("http step=\(request.debugStep ?? 0) status=\(http.statusCode)")
+        let requestID = http.value(forHTTPHeaderField: "x-request-id")
+            ?? http.value(forHTTPHeaderField: "openai-request-id")
+            ?? http.value(forHTTPHeaderField: "cf-ray")
+        Self.log("http step=\(request.debugStep ?? 0) status=\(http.statusCode)", enabled: config.diagnosticsEnabled)
         guard (200..<300).contains(http.statusCode) else {
-            // 读错误 body（截断），转换为 LingXi ProviderError；不输出任何凭据。
-            let body = (try? await Self.collectText(bytes)) ?? ""
-            throw Self.httpError(status: http.statusCode, body: body)
+            throw Self.httpError(status: http.statusCode, requestID: requestID)
         }
 
         // 数据面 pump：连接已建立，事件从独立任务流出。
-        var continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation!
-        let events = AsyncThrowingStream { continuation = $0 }
-        let pump = Pump(source: bytes, continuation: continuation!, debugStep: request.debugStep)
-        Task { await pump.run() }
+        let events = AsyncThrowingStream<ModelEvent, Error> { continuation in
+            let pump = Task {
+                await Pump(
+                    source: bytes,
+                    continuation: continuation,
+                    debugStep: request.debugStep,
+                    diagnosticsEnabled: config.diagnosticsEnabled,
+                    performanceDiagnosticsEnabled: config.performanceDiagnosticsEnabled
+                ).run()
+            }
+            continuation.onTermination = { @Sendable _ in
+                pump.cancel()
+                bytes.task.cancel()
+            }
+        }
         return events
     }
 
@@ -49,22 +61,24 @@ public struct OpenAICompatibleProvider: ModelProvider {
         var urlRequest = URLRequest(url: config.chatCompletionsURL)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let apiKey = config.apiKey, !apiKey.isEmpty {
-            urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        switch config.authentication {
+        case .none: break
+        case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        case let .header(name, value): urlRequest.setValue(value, forHTTPHeaderField: name)
         }
-        urlRequest.httpBody = try Self.makeRequestBody(request, model: config.model)
+        urlRequest.httpBody = try Self.makeRequestBody(request)
         return urlRequest
     }
 
     /// 可测试：Domain 请求 → wire JSON。
-    public static func makeRequestBody(_ request: ModelRequest, model: String) throws -> Data {
+    public static func makeRequestBody(_ request: ModelRequest) throws -> Data {
         var messages: [ChatRequestBody.Message] = []
         if let system = request.system, !system.isEmpty {
             messages.append(Message(role: "system", content: system))
         }
         messages.append(contentsOf: request.messages.flatMap(providerMessages))
         let body = ChatRequestBody(
-            model: model,
+            model: request.model.rawValue,
             stream: true,
             messages: messages,
             tools: request.tools.isEmpty ? nil : request.tools.map(ProviderTool.init)
@@ -106,13 +120,12 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
     // MARK: - 错误转换
 
-    public static func httpError(status: Int, body: String) -> CoreError {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let preview = trimmed.isEmpty ? "<无响应体>" : String(trimmed.prefix(2000))
-        return CoreError(
-            code: .provider,
-            message: "Provider HTTP \(status): \(preview)"
-        )
+    public static func httpError(status: Int, requestID: String? = nil) -> CoreError {
+        let safeRequestID = requestID.map { String($0.prefix(128)) }.flatMap { value in
+            value.isEmpty || !value.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) ? nil : value
+        }
+        let suffix = safeRequestID.map { " requestID=\($0)" } ?? ""
+        return CoreError(code: .provider, message: "Provider HTTP 请求失败: status=\(status)\(suffix)")
     }
 
     /// 可测试：SSE data 行 payload → 0..n 个 ModelEvent。
@@ -127,7 +140,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         guard let data = payload.data(using: .utf8),
               let chunk = try? JSONDecoder().decode(SSEChunk.self, from: data)
         else {
-            throw CoreError(code: .modelStream, message: "SSE chunk JSON 解析失败: \(payload.prefix(200))")
+            throw CoreError(code: .modelStream, message: "SSE chunk JSON 解析失败")
         }
         return chunk
     }
@@ -183,8 +196,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func log(_ message: String) {
-        guard ProcessInfo.processInfo.environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1" else { return }
+    private static func log(_ message: String, enabled: Bool) {
+        guard enabled else { return }
         FileHandle.standardError.write(Data(("[chat-diagnostic] \(message)\n").utf8))
     }
 
@@ -195,17 +208,21 @@ public struct OpenAICompatibleProvider: ModelProvider {
         private let source: URLSession.AsyncBytes
         private let continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation
         private let debugStep: Int?
+        private let diagnosticsEnabled: Bool
+        private let performanceDiagnosticsEnabled: Bool
 
-        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, debugStep: Int?) {
+        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, debugStep: Int?, diagnosticsEnabled: Bool, performanceDiagnosticsEnabled: Bool) {
             self.source = source
             self.continuation = continuation
             self.debugStep = debugStep
+            self.diagnosticsEnabled = diagnosticsEnabled
+            self.performanceDiagnosticsEnabled = performanceDiagnosticsEnabled
         }
 
         func run() async {
             var decoder = SSEDecoder()
             var completed: ModelFinishReason?
-            var toolCalls = ToolCallBuffer(debugStep: debugStep)
+            var toolCalls = ToolCallBuffer(debugStep: debugStep, diagnosticsEnabled: performanceDiagnosticsEnabled)
             var sawDone = false
             var textChunks = 0
             var reasoningChunks = 0
@@ -227,11 +244,20 @@ public struct OpenAICompatibleProvider: ModelProvider {
                     }
                 }
             } catch let error as CoreError {
+                if Task.isCancelled { continuation.finish(); return }
                 continuation.yield(.failed(error))
                 continuation.finish()
                 return
             } catch {
-                continuation.yield(.failed(CoreError(code: .modelStream, message: "Provider 连接中断: \(error)")))
+                if Task.isCancelled { continuation.finish(); return }
+                continuation.yield(.failed(CoreError(code: .modelStream, message: "Provider 流连接中断")))
+                continuation.finish()
+                return
+            }
+
+            if Task.isCancelled { continuation.finish(); return }
+            guard sawDone || completed != nil else {
+                continuation.yield(.failed(CoreError(code: .modelStream, message: "Provider SSE 意外结束")))
                 continuation.finish()
                 return
             }
@@ -245,12 +271,12 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 continuation.finish()
                 return
             } catch {
-                continuation.yield(.failed(CoreError(code: .modelStream, message: String(describing: error))))
+                continuation.yield(.failed(CoreError(code: .modelStream, message: "Tool Call 聚合失败")))
                 continuation.finish()
                 return
             }
             // [DONE] 或 EOF：有 finish_reason 用之，否则宽容收尾。
-            OpenAICompatibleProvider.log("stream step=\(debugStep ?? 0) textChunks=\(textChunks) reasoningChunks=\(reasoningChunks) toolChunks=\(toolChunks) finish=\(String(describing: completed))")
+            OpenAICompatibleProvider.log("stream step=\(debugStep ?? 0) textChunks=\(textChunks) reasoningChunks=\(reasoningChunks) toolChunks=\(toolChunks) finish=\(String(describing: completed))", enabled: diagnosticsEnabled)
             continuation.yield(.completed(completed ?? .unknown))
             continuation.finish()
         }
@@ -466,9 +492,11 @@ private extension OpenAICompatibleProvider {
 
         private var calls: [Int: Partial] = [:]
         private let debugStep: Int?
+        private let diagnosticsEnabled: Bool
 
-        init(debugStep: Int?) {
+        init(debugStep: Int?, diagnosticsEnabled: Bool) {
             self.debugStep = debugStep
+            self.diagnosticsEnabled = diagnosticsEnabled
         }
 
         mutating func consume(_ deltas: [SSEToolCall]) throws -> [ModelEvent] {
@@ -503,11 +531,11 @@ private extension OpenAICompatibleProvider {
                 guard let data = call.arguments.data(using: .utf8),
                       (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
                 else {
-                    throw CoreError(code: .modelStream, message: "Tool Call 参数不是 JSON object: \(name)")
+                    throw CoreError(code: .modelStream, message: "Tool Call 参数不是 JSON object")
                 }
-                if ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1" {
+                if diagnosticsEnabled {
                     let hash = call.arguments.utf8.reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
-                    FileHandle.standardError.write(Data("[tool-debug] step=\(debugStep ?? 0) index=\(index) id=\(id) name=\(name) argsHash=\(String(hash, radix: 16))\n".utf8))
+                    FileHandle.standardError.write(Data("[tool-debug] step=\(debugStep ?? 0) index=\(index) argsHash=\(String(hash, radix: 16))\n".utf8))
                 }
                 return .toolCallCompleted(ToolCall(callID: ToolCallID(id), toolID: ToolID(name), arguments: call.arguments))
             }

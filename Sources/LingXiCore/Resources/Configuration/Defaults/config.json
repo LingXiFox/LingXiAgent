@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schemas.example.invalid/lingxiagent/config.schema.json",
+  "agent": {
+    "maxConcurrentSubagents": 4,
+    "maxSubagentDepth": 3,
+    "maxTotalRunsPerRootRun": 32
+  },
+  "core": {
+    "locale": "system",
+    "logLevel": "info"
+  },
+  "runtime": {
+    "commandTimeoutSeconds": 60,
+    "interactive": false
+  },
+  "version": 1
+}

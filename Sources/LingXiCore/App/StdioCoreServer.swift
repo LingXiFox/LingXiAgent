@@ -15,6 +15,12 @@ public struct StdioCoreServer: Sendable {
         self.output = .standardOutput
     }
 
+    init(endpoint: any CoreEndpoint, input: FileHandle, output: FileHandle) {
+        self.endpoint = endpoint
+        self.input = input
+        self.output = output
+    }
+
     public func run() async throws {
         let writer = WireWriter(output: output)
         let events = await endpoint.events()
@@ -51,16 +57,17 @@ public struct StdioCoreServer: Sendable {
                 do {
                     let opened = try await endpoint.openDataStream(command)
                     await writer.write(.response(id: id, response: .streamOpened(opened.id)))
+                    var terminalError: CoreError?
                     do {
                         for try await chunk in opened.chunks {
                             await writer.write(.chunk(chunk))
                         }
                     } catch let error as CoreError {
-                        await writer.write(.response(id: id, response: .error(error)))
+                        terminalError = error
                     } catch {
-                        await writer.write(.response(id: id, response: .error(CoreError(code: .modelStream, message: String(describing: error)))))
+                        terminalError = CoreError(code: .modelStream, message: String(describing: error))
                     }
-                    await writer.write(.streamEnd(opened.id))
+                    await writer.write(.streamEnd(opened.id, error: terminalError))
                 } catch let error as CoreError {
                     await writer.write(.response(id: id, response: .error(error)))
                 } catch {
@@ -77,6 +84,10 @@ public struct StdioCoreServer: Sendable {
                 }
             }
         }
+    }
+
+    func handleMessage(_ message: WireMessage) {
+        handleMessage(message, writer: WireWriter(output: output))
     }
 }
 

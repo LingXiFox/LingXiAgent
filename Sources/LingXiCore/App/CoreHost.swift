@@ -26,6 +26,9 @@ public actor CoreHost: CoreEndpoint {
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
     private let compactor: ContextCompactor
+    private let budgetPlanner: ContextBudgetPlanner
+    private let diagnosticsEnabled: Bool
+    private let subagentLimits: SubagentRuntimeLimits
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
@@ -33,6 +36,10 @@ public actor CoreHost: CoreEndpoint {
     /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
     public init(
         providerAssembly: ModelRuntimeAssembly? = nil,
+        providerMissingRequirements: [String] = [],
+        modelRuntimes: [String: ModelRuntimeAssembly] = [:],
+        defaultModelSelection: ModelSelection? = nil,
+        configuration: CoreConfiguration? = nil,
         sessionStore: (any SessionStore)? = nil,
         workspaceRoot: WorkspaceRoot? = nil,
         dataRoot: URL? = nil,
@@ -42,7 +49,7 @@ public actor CoreHost: CoreEndpoint {
         interactive: Bool? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
-        let supportsInteraction = interactive ?? (environment["LINGXI_INTERACTIVE"] == "1")
+        let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? (environment["LINGXI_INTERACTIVE"] == "1")
         self.interactive = supportsInteraction
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
@@ -54,9 +61,11 @@ public actor CoreHost: CoreEndpoint {
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
-        let workspace = try workspaceRoot ?? WorkspaceRoot.fromEnvironment()
-        let effectiveMCPPager = mcpPager ?? MCPToolPager()
+        let baseWorkspace = try workspaceRoot ?? WorkspaceRoot(path: environment["LINGXI_WORKSPACE_ROOT"] ?? FileManager.default.currentDirectoryPath)
         let persistentRoot = dataRoot ?? environment["LINGXI_DATA_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url, excluding: persistentRoot.map { [$0] } ?? [])
+        let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
+        let effectiveMCPPager = mcpPager ?? MCPToolPager()
         let persistent = try persistentRoot.map {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
         }
@@ -72,7 +81,7 @@ public actor CoreHost: CoreEndpoint {
         let l2Budget = Int(environment["LINGXI_L2_MAX_CHARS"] ?? "") ?? 256 * 1024
         let l1ProjectBudget = Int(environment["LINGXI_L1_PROJECT_MAX_CHARS"] ?? "") ?? 32 * 1024
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
-        projectScanner = ProjectScanner(root: workspace.url)
+        projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         toolRuntime = ToolRuntime(
             registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes),
             permissions: permissions,
@@ -83,17 +92,25 @@ public actor CoreHost: CoreEndpoint {
             subagents: subagentService
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
-            systemContext: ProcessInfo.processInfo.environment["LINGXI_SYSTEM_CONTEXT"]
+            systemContext: environment["LINGXI_SYSTEM_CONTEXT"]
         ))
-        performanceStore = PerformanceStore()
+        diagnosticsEnabled = environment["LINGXI_PERF_DEBUG"] == "1"
+        let agentSettings = configuration?.agent ?? AgentSettings()
+        subagentLimits = SubagentRuntimeLimits(
+            maxConcurrentSubagents: agentSettings.maxConcurrentSubagents,
+            maxSubagentDepth: agentSettings.maxSubagentDepth,
+            maxTotalRunsPerRootRun: agentSettings.maxTotalRunsPerRootRun
+        )
+        performanceStore = PerformanceStore(enabled: diagnosticsEnabled)
         compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
+        budgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init)))
 
-        let (assembly, missing) = ProviderSetup.resolve()
-        let effective = providerAssembly ?? assembly
+        let fallback = ProviderSetup.resolve(environment)
+        let effective = providerAssembly ?? fallback.assembly
         gateway = ModelGateway(
             provider: effective.provider,
             modelID: effective.modelID.rawValue.isEmpty ? nil : effective.modelID,
-            missingRequirements: providerAssembly == nil ? missing : [],
+            missingRequirements: providerAssembly == nil ? fallback.missing : providerMissingRequirements,
             contextProfile: effective.contextProfile
         )
         if let childModel = environment["LINGXI_SUBAGENT_SMOKE_MODEL"], !childModel.isEmpty {
@@ -103,14 +120,17 @@ public actor CoreHost: CoreEndpoint {
                 contextProfile: effective.contextProfile,
                 endpoint: ResolvedModelEndpoint(providerID: "subagent", modelID: ModelID(childModel), baseURL: effective.endpoint.baseURL, wireProtocol: effective.endpoint.wireProtocol, contextProfile: effective.contextProfile)
             )
-            modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: ["subagent": child], defaultSubagentSelection: ModelSelection(providerID: "subagent", modelID: childModel))
+            var runtimes = modelRuntimes
+            runtimes["subagent"] = child
+            modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: runtimes, defaultSelection: defaultModelSelection, defaultSubagentSelection: ModelSelection(providerID: "subagent", modelID: childModel))
         } else {
-            modelResolver = SubagentModelResolver(defaultRuntime: effective)
+            modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: defaultModelSelection)
         }
     }
 
     /// 注册控制面路由并进入 ready。
     public func start() async {
+        guard state == .starting else { return }
         await questions.setEventSink { [weak self] request in
             await self?.agent?.markWaitingForQuestion(request, waiting: true)
             await self?.broadcast(request.originSessionID == request.rootSessionID ? .questionAsked(request) : .questionEscalated(request))
@@ -249,21 +269,25 @@ public actor CoreHost: CoreEndpoint {
                 await self?.broadcast(event)
             },
             compactor: compactor,
+            budgetPlanner: budgetPlanner,
             persistence: persistence,
             interactive: interactive,
-            modelResolver: modelResolver
+            diagnosticsEnabled: diagnosticsEnabled,
+            modelResolver: modelResolver,
+            limits: subagentLimits
         )
         self.agent = agent
         await subagentService.bind(
             spawn: { [weak agent] sessionID, runID, task, title, model, toolCallID in try await agent?.spawn(parentSessionID: sessionID, parentRunID: runID, task: task, title: title, modelSelection: model, toolCallID: toolCallID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
-            status: { [weak agent] runID in try await agent?.agentRun(runID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
-            result: { [weak agent] runID in try await agent?.agentRunResult(runID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
-            cancel: { [weak agent] runID in try await agent?.cancelAgentRun(runID) },
+            status: { [weak agent] runID, requester in try await agent?.agentRun(runID, requester: requester) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
+            result: { [weak agent] runID, requester in try await agent?.agentRunResult(runID, requester: requester) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
+            cancel: { [weak agent] runID, requester in try await agent?.cancelAgentRun(runID, requester: requester) },
             message: { [weak agent] sessionID, parentRunID, content in try await agent?.continueChild(sessionID: sessionID, parentRunID: parentRunID, content: content) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() }
         )
         do {
             try await agent.restore()
         } catch {
+            self.agent = nil
             setState(.stopped)
             return
         }
@@ -276,6 +300,7 @@ public actor CoreHost: CoreEndpoint {
         await dataPlane.closeAll()
         await questions.close()
         await processes.stopAll()
+        agent = nil
         eventContinuations.values.forEach { $0.finish() }
         eventContinuations.removeAll()
         setState(.stopped)
@@ -284,7 +309,13 @@ public actor CoreHost: CoreEndpoint {
     // MARK: - CoreEndpoint（控制面）
 
     public func handle(_ command: ClientCommand) async throws -> CoreResponse {
-        try await bus.dispatch(command)
+        switch command {
+        case .ping, .getInfo, .getState, .getProviderStatus:
+            break
+        default:
+            guard state == .ready else { throw CoreError(code: .notReady, message: "Core 未就绪") }
+        }
+        return try await bus.dispatch(command)
     }
 
     public func events() -> AsyncStream<CoreEvent> {
@@ -309,6 +340,7 @@ public actor CoreHost: CoreEndpoint {
     // MARK: - CoreEndpoint（数据面）
 
     public func openDataStream(_ command: ClientCommand) async throws -> OpenedStream {
+        guard state == .ready else { throw CoreError(code: .notReady, message: "Core 未就绪") }
         switch command {
         case .openTestStream:
             return await dataPlane.openTestStream()
@@ -330,7 +362,7 @@ public actor CoreHost: CoreEndpoint {
     // MARK: - Private
 
     private func requireAgent() throws -> AgentRuntime {
-        guard let agent else {
+        guard state == .ready, let agent else {
             throw CoreError(code: .notReady, message: "Agent 尚未启动")
         }
         return agent

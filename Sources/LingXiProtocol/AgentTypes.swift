@@ -39,12 +39,16 @@ public enum AgentRunStatus: String, Sendable, Equatable, Codable {
 /// A model choice belongs to one execution, never to a durable Session.
 public struct ModelSelection: Sendable, Equatable, Codable {
     public let providerID: String
+    public let accountID: String?
+    public let profileID: String?
     public let modelID: String
     public let reasoning: String?
     public let contextProfile: String?
 
-    public init(providerID: String = "default", modelID: String, reasoning: String? = nil, contextProfile: String? = nil) {
+    public init(providerID: String = "default", accountID: String? = nil, profileID: String? = nil, modelID: String, reasoning: String? = nil, contextProfile: String? = nil) {
         self.providerID = providerID
+        self.accountID = accountID
+        self.profileID = profileID
         self.modelID = modelID
         self.reasoning = reasoning
         self.contextProfile = contextProfile

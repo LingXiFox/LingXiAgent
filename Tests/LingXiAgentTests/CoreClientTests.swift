@@ -31,6 +31,19 @@ struct CoreClientTests {
         try await LingXiClient.inProcess(endpoint: host).ping()
     }
 
+    @Test func typedFacadePreservesCoreError() async {
+        let expected = CoreError(code: .sessionNotFound, message: "missing")
+        let client = LingXiClient(connection: ErrorConnection(error: expected))
+        do {
+            _ = try await client.coreInfo()
+            #expect(Bool(false), "typed API 应抛出 CoreResponse.error")
+        } catch let error as CoreError {
+            #expect(error == expected)
+        } catch {
+            #expect(Bool(false), "应保留原始 CoreError")
+        }
+    }
+
     @Test func streamingReceivesOrderedChunks() async throws {
         let host = await makeClient()
         let client = LingXiClient.inProcess(endpoint: host)
@@ -62,5 +75,20 @@ struct CoreClientTests {
             }
         }
         #expect(seen.contains(.ready))
+    }
+}
+
+private struct ErrorConnection: LingXiConnection {
+    let error: CoreError
+
+    func send(_ command: ClientCommand) async throws -> CoreResponse { .error(error) }
+    func openTestStream() async throws -> AsyncThrowingStream<StreamChunk, Error> { emptyStream() }
+    func sendMessage(sessionID: SessionID, content: String) async throws -> AsyncThrowingStream<StreamChunk, Error> { emptyStream() }
+    func toolOutputEvents() async -> AsyncStream<ToolOutputChunk> { AsyncStream { $0.finish() } }
+    func events() async -> AsyncStream<CoreEvent> { AsyncStream { $0.finish() } }
+    func close() async {}
+
+    private func emptyStream() -> AsyncThrowingStream<StreamChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
     }
 }

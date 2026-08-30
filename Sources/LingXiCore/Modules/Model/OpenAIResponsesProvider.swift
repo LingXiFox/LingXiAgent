@@ -18,10 +18,12 @@ public struct OpenAIResponsesProvider: ModelProvider {
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         let toolResultIDs = Self.trailingToolResultIDs(request)
-        let previousResponseID = await provenance.responseID(for: toolResultIDs)
+        let previousResponseID = config.remoteStateEnabled
+            ? await provenance.responseID(for: toolResultIDs, executionID: request.executionID)
+            : nil
         let urlRequest = try makeURLRequest(request, previousResponseID: previousResponseID)
         let startedAt = Date()
-        Self.logRequest(urlRequest, step: request.debugStep)
+        Self.logRequest(urlRequest, step: request.debugStep, enabled: config.diagnosticsEnabled)
         let (bytes, response) = try await session.bytes(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {
             throw CoreError(code: .provider, message: "Provider 返回非 HTTP 响应")
@@ -29,34 +31,52 @@ public struct OpenAIResponsesProvider: ModelProvider {
         let requestID = http.value(forHTTPHeaderField: "x-request-id")
             ?? http.value(forHTTPHeaderField: "openai-request-id")
             ?? http.value(forHTTPHeaderField: "cf-ray")
-        Self.log("http step=\(request.debugStep ?? 0) status=\(http.statusCode) requestID=\(requestID ?? "none") elapsedMs=\(Self.elapsed(since: startedAt))")
+        Self.log("http step=\(request.debugStep ?? 0) status=\(http.statusCode) requestID=\(requestID ?? "none") elapsedMs=\(Self.elapsed(since: startedAt))", enabled: config.diagnosticsEnabled)
         guard (200..<300).contains(http.statusCode) else {
             let body = (try? await OpenAICompatibleProvider.collectText(bytes)) ?? ""
-            Self.logHTTPError(body, step: request.debugStep, status: http.statusCode, requestID: requestID)
-            throw OpenAICompatibleProvider.httpError(status: http.statusCode, body: body)
+            Self.logHTTPError(body, step: request.debugStep, status: http.statusCode, requestID: requestID, enabled: config.diagnosticsEnabled)
+            throw OpenAICompatibleProvider.httpError(status: http.statusCode, requestID: requestID)
         }
 
-        var continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation!
-        let events = AsyncThrowingStream { continuation = $0 }
-        Task { await Pump(source: bytes, continuation: continuation!, step: request.debugStep, requestID: requestID, startedAt: startedAt, provenance: provenance).run() }
+        let events = AsyncThrowingStream<ModelEvent, Error> { continuation in
+            let pump = Task {
+                await Pump(source: bytes, continuation: continuation, step: request.debugStep, requestID: requestID, startedAt: startedAt, provenance: provenance, executionID: config.remoteStateEnabled ? request.executionID : nil, diagnosticsEnabled: config.diagnosticsEnabled).run()
+            }
+            continuation.onTermination = { @Sendable _ in
+                pump.cancel()
+                bytes.task.cancel()
+            }
+        }
         return events
+    }
+
+    public func endExecution(_ executionID: AgentRunID) async {
+        await provenance.remove(executionID)
     }
 
     public func makeURLRequest(_ request: ModelRequest, previousResponseID: String? = nil) throws -> URLRequest {
         var urlRequest = URLRequest(url: config.responsesURL)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let apiKey = config.apiKey, !apiKey.isEmpty { urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        urlRequest.httpBody = try Self.makeRequestBody(request, model: config.model, previousResponseID: previousResponseID)
+        switch config.authentication {
+        case .none: break
+        case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        case let .header(name, value): urlRequest.setValue(value, forHTTPHeaderField: name)
+        }
+        urlRequest.httpBody = try Self.makeRequestBody(
+            request,
+            previousResponseID: config.remoteStateEnabled ? previousResponseID : nil,
+            store: config.remoteStateEnabled
+        )
         return urlRequest
     }
 
     /// Domain request -> Responses API JSON.
-    public static func makeRequestBody(_ request: ModelRequest, model: String) throws -> Data {
-        try makeRequestBody(request, model: model, previousResponseID: nil)
+    public static func makeRequestBody(_ request: ModelRequest) throws -> Data {
+        try makeRequestBody(request, previousResponseID: nil, store: false)
     }
 
-    private static func makeRequestBody(_ request: ModelRequest, model: String, previousResponseID: String?) throws -> Data {
+    private static func makeRequestBody(_ request: ModelRequest, previousResponseID: String?, store: Bool) throws -> Data {
         let messages = previousResponseID == nil ? request.messages : continuationMessages(request)
         let input = messages.flatMap { message -> [ResponseRequestBody.Input] in
             let calls = message.parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }
@@ -76,9 +96,9 @@ public struct OpenAIResponsesProvider: ModelProvider {
             }
         }
         return try JSONEncoder().encode(ResponseRequestBody(
-            model: model,
+            model: request.model.rawValue,
             stream: true,
-            store: true,
+            store: store,
             instructions: request.system,
             input: input,
             tools: request.tools.isEmpty ? nil : request.tools.map(ResponseRequestBody.Tool.init),
@@ -114,8 +134,8 @@ public struct OpenAIResponsesProvider: ModelProvider {
         return [request.messages[toolIndex]]
     }
 
-    private static func logRequest(_ request: URLRequest, step: Int?) {
-        guard diagnosticsEnabled, let body = request.httpBody,
+    private static func logRequest(_ request: URLRequest, step: Int?, enabled: Bool) {
+        guard enabled, let body = request.httpBody,
               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         else { return }
         let input = object["input"] as? [[String: Any]] ?? []
@@ -123,18 +143,17 @@ public struct OpenAIResponsesProvider: ModelProvider {
         let callCount = input.filter { $0["type"] as? String == "function_call" }.count
         let toolCount = (object["tools"] as? [[String: Any]])?.count ?? 0
         let continued = object["previous_response_id"] != nil
-        log("request step=\(step ?? 0) wire=responses continued=\(continued) inputItems=\(input.count) functionCalls=\(callCount) functionOutputs=\(outputCount) tools=\(toolCount) bytes=\(body.count) timeoutSec=\(Int(request.timeoutInterval))")
+        log("request step=\(step ?? 0) wire=responses continued=\(continued) inputItems=\(input.count) functionCalls=\(callCount) functionOutputs=\(outputCount) tools=\(toolCount) bytes=\(body.count) timeoutSec=\(Int(request.timeoutInterval))", enabled: enabled)
     }
 
-    private static func logHTTPError(_ body: String, step: Int?, status: Int, requestID: String?) {
+    private static func logHTTPError(_ body: String, step: Int?, status: Int, requestID: String?, enabled: Bool) {
         let value = body.lowercased()
-        log("httpError step=\(step ?? 0) status=\(status) requestID=\(requestID ?? "none") mentionsPreviousResponseID=\(value.contains("previous_response_id")) mentionsStore=\(value.contains("store")) unsupported=\(value.contains("unsupported") || value.contains("not supported")) notFound=\(value.contains("not found") || value.contains("unknown response")) malformed=\(value.contains("deserialize") || value.contains("invalid json") || value.contains("malformed"))")
+        log("httpError step=\(step ?? 0) status=\(status) requestID=\(requestID ?? "none") mentionsPreviousResponseID=\(value.contains("previous_response_id")) mentionsStore=\(value.contains("store")) unsupported=\(value.contains("unsupported") || value.contains("not supported")) notFound=\(value.contains("not found") || value.contains("unknown response")) malformed=\(value.contains("deserialize") || value.contains("invalid json") || value.contains("malformed"))", enabled: enabled)
     }
 
-    private static var diagnosticsEnabled: Bool { ProcessInfo.processInfo.environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1" }
     private static func elapsed(since date: Date) -> Int { Int(Date().timeIntervalSince(date) * 1_000) }
-    private static func log(_ message: String) {
-        guard diagnosticsEnabled else { return }
+    private static func log(_ message: String, enabled: Bool) {
+        guard enabled else { return }
         FileHandle.standardError.write(Data(("[responses-diagnostic] \(message)\n").utf8))
     }
 
@@ -145,14 +164,18 @@ public struct OpenAIResponsesProvider: ModelProvider {
         private let requestID: String?
         private let startedAt: Date
         private let provenance: ResponsesProvenanceStore
+        private let executionID: AgentRunID?
+        private let diagnosticsEnabled: Bool
 
-        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, step: Int?, requestID: String?, startedAt: Date, provenance: ResponsesProvenanceStore) {
+        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, step: Int?, requestID: String?, startedAt: Date, provenance: ResponsesProvenanceStore, executionID: AgentRunID?, diagnosticsEnabled: Bool) {
             self.source = source
             self.continuation = continuation
             self.step = step
             self.requestID = requestID
             self.startedAt = startedAt
             self.provenance = provenance
+            self.executionID = executionID
+            self.diagnosticsEnabled = diagnosticsEnabled
         }
 
         func run() async {
@@ -161,50 +184,69 @@ public struct OpenAIResponsesProvider: ModelProvider {
             var completed: ModelFinishReason?
             var lastEventType = "none"
             var terminalObserved = false
+            var failureObserved = false
             var responseID: String?
             continuation.yield(.started)
             do {
                 outer: for try await byte in source {
                     for line in lines.feed(Data([byte])) {
-                        if try emit(line, decoder: &decoder, completed: &completed, lastEventType: &lastEventType, terminalObserved: &terminalObserved, responseID: &responseID) { break outer }
+                        if try emit(line, decoder: &decoder, completed: &completed, lastEventType: &lastEventType, terminalObserved: &terminalObserved, failureObserved: &failureObserved, responseID: &responseID) { break outer }
                     }
                 }
                 if !terminalObserved {
                     for line in lines.flushPending() {
-                        _ = try emit(line, decoder: &decoder, completed: &completed, lastEventType: &lastEventType, terminalObserved: &terminalObserved, responseID: &responseID)
+                        _ = try emit(line, decoder: &decoder, completed: &completed, lastEventType: &lastEventType, terminalObserved: &terminalObserved, failureObserved: &failureObserved, responseID: &responseID)
                     }
                 }
-                if let responseID { await provenance.record(responseID: responseID, callIDs: decoder.completedCallIDs) }
-                OpenAIResponsesProvider.log("eof step=\(step ?? 0) requestID=\(requestID ?? "none") responseID=\(responseID ?? "none") lastEvent=\(lastEventType) terminal=\(terminalObserved) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt))")
+                if Task.isCancelled { continuation.finish(); return }
+                if failureObserved { continuation.finish(); return }
+                guard terminalObserved else { throw CoreError(code: .modelStream, message: "Responses SSE 意外结束") }
+                if let responseID { await provenance.record(responseID: responseID, callIDs: decoder.completedCallIDs, executionID: executionID) }
+                OpenAIResponsesProvider.log("eof step=\(step ?? 0) requestID=\(requestID ?? "none") responseIDPresent=\(responseID != nil) lastEvent=\(lastEventType) terminal=\(terminalObserved) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt))", enabled: diagnosticsEnabled)
                 continuation.yield(.completed(completed ?? .unknown))
                 continuation.finish()
             } catch let error as CoreError {
-                OpenAIResponsesProvider.log("failed step=\(step ?? 0) requestID=\(requestID ?? "none") responseID=\(responseID ?? "none") lastEvent=\(lastEventType) terminal=\(terminalObserved) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt)) code=\(error.code.rawValue)")
+                if Task.isCancelled { continuation.finish(); return }
+                OpenAIResponsesProvider.log("failed step=\(step ?? 0) requestID=\(requestID ?? "none") responseIDPresent=\(responseID != nil) lastEvent=\(lastEventType) terminal=\(terminalObserved) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt)) code=\(error.code.rawValue)", enabled: diagnosticsEnabled)
                 continuation.yield(.failed(error))
                 continuation.finish()
             } catch {
-                OpenAIResponsesProvider.log("failed step=\(step ?? 0) requestID=\(requestID ?? "none") responseID=\(responseID ?? "none") lastEvent=\(lastEventType) terminal=\(terminalObserved) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt)) code=transport")
-                continuation.yield(.failed(CoreError(code: .modelStream, message: "Responses SSE 中断: \(error)")))
+                if Task.isCancelled { continuation.finish(); return }
+                OpenAIResponsesProvider.log("failed step=\(step ?? 0) requestID=\(requestID ?? "none") responseIDPresent=\(responseID != nil) lastEvent=\(lastEventType) terminal=\(terminalObserved) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt)) code=transport", enabled: diagnosticsEnabled)
+                continuation.yield(.failed(CoreError(code: .modelStream, message: "Responses SSE 连接中断")))
                 continuation.finish()
             }
         }
 
-        private func emit(_ line: String, decoder: inout ResponsesSSEDecoder, completed: inout ModelFinishReason?, lastEventType: inout String, terminalObserved: inout Bool, responseID: inout String?) throws -> Bool {
+        private func emit(_ line: String, decoder: inout ResponsesSSEDecoder, completed: inout ModelFinishReason?, lastEventType: inout String, terminalObserved: inout Bool, failureObserved: inout Bool, responseID: inout String?) throws -> Bool {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("data:") else { return false }
             let payload = String(trimmed.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
             guard payload != "[DONE]" else { return true }
             if let data = payload.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let type = object["type"] as? String {
-                lastEventType = type
+                lastEventType = Self.diagnosticEventType(type)
                 terminalObserved = terminalObserved || ["response.completed", "response.incomplete", "response.failed", "error"].contains(type)
                 if let response = object["response"] as? [String: Any], let id = response["id"] as? String { responseID = id }
-                OpenAIResponsesProvider.log("event step=\(step ?? 0) requestID=\(requestID ?? "none") responseID=\(responseID ?? "none") type=\(type) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt))")
+                    OpenAIResponsesProvider.log("event step=\(step ?? 0) requestID=\(requestID ?? "none") responseIDPresent=\(responseID != nil) type=\(lastEventType) elapsedMs=\(OpenAIResponsesProvider.elapsed(since: startedAt))", enabled: diagnosticsEnabled)
             }
             for event in try decoder.consume(payload) {
                 if case let .completed(reason) = event { completed = reason }
+                else if case .failed = event { failureObserved = true; continuation.yield(event) }
                 else { continuation.yield(event) }
             }
             return terminalObserved
+        }
+
+        private static func diagnosticEventType(_ type: String) -> String {
+            switch type {
+            case "response.output_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta",
+                 "response.function_call_arguments.delta", "response.function_call_arguments.done",
+                 "response.output_item.added", "response.output_item.done", "response.completed",
+                 "response.incomplete", "response.failed", "error":
+                type
+            default:
+                "unknown"
+            }
         }
     }
 }
@@ -230,7 +272,7 @@ public struct ResponsesSSEDecoder {
         guard let data = payload.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String
-        else { throw CoreError(code: .modelStream, message: "Responses SSE JSON 解析失败: \(payload.prefix(200))") }
+        else { throw CoreError(code: .modelStream, message: "Responses SSE JSON 解析失败") }
         switch type {
         case "response.output_text.delta":
             return (object["delta"] as? String).map { [.textDelta($0)] } ?? []
@@ -257,8 +299,7 @@ public struct ResponsesSSEDecoder {
             }
             return [.completed(.maxTokens)]
         case "response.failed", "error":
-            let message = (object["error"] as? [String: Any])?["message"] as? String ?? object["message"] as? String ?? "Responses API 返回错误事件"
-            return [.failed(CoreError(code: .modelStream, message: message))]
+            return [.failed(CoreError(code: .modelStream, message: "Responses SSE 返回 \(type)"))]
         default:
             return []
         }
@@ -380,17 +421,22 @@ private struct ResponseRequestBody: Encodable {
 }
 
 public actor ResponsesProvenanceStore {
-    private var responseByCallID: [String: String] = [:]
+    private var responsesByExecution: [AgentRunID: [String: String]] = [:]
 
     public init() {}
 
-    func responseID(for callIDs: [String]) -> String? {
-        guard !callIDs.isEmpty else { return nil }
+    func responseID(for callIDs: [String], executionID: AgentRunID?) -> String? {
+        guard let executionID, !callIDs.isEmpty, let responseByCallID = responsesByExecution[executionID] else { return nil }
         let values = Set(callIDs.compactMap { responseByCallID[$0] })
         return values.count == 1 && callIDs.allSatisfy { responseByCallID[$0] != nil } ? values.first : nil
     }
 
-    func record(responseID: String, callIDs: [String]) {
-        for callID in callIDs { responseByCallID[callID] = responseID }
+    func record(responseID: String, callIDs: [String], executionID: AgentRunID?) {
+        guard let executionID else { return }
+        for callID in callIDs { responsesByExecution[executionID, default: [:]][callID] = responseID }
+    }
+
+    func remove(_ executionID: AgentRunID) {
+        responsesByExecution.removeValue(forKey: executionID)
     }
 }

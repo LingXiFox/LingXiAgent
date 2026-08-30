@@ -173,6 +173,10 @@ final class ManagedToolProcess: @unchecked Sendable {
         try input.fileHandleForWriting.write(contentsOf: Data(text.utf8))
     }
 
+    func closeInput() throws {
+        try input.fileHandleForWriting.close()
+    }
+
     func waitForExit() async {
         await withCheckedContinuation { continuation in
             lock.lock()
@@ -224,15 +228,19 @@ func runToolProcess(
     invocation: ToolProcessInvocation,
     cwd: URL,
     environment: [String: String],
-    timeoutMilliseconds: Int?
+    timeoutMilliseconds: Int?,
+    standardInput: String? = nil
 ) async throws -> CommandResult {
     let managed = ManagedToolProcess(invocation: invocation, cwd: cwd, environment: environment)
     try managed.launch()
+    if let standardInput { try managed.write(standardInput) }
+    try managed.closeInput()
     let watchdog = timeoutMilliseconds.map { milliseconds in
-        Task { [managed] in
-            try? await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
-            if !Task.isCancelled { managed.terminate(timedOut: true) }
-        }
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+        timer.schedule(deadline: .now() + .milliseconds(milliseconds))
+        timer.setEventHandler { [managed] in managed.terminate(timedOut: true) }
+        timer.resume()
+        return timer
     }
     defer { watchdog?.cancel() }
     return try await withTaskCancellationHandler(operation: {

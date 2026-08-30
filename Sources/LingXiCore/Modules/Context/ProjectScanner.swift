@@ -10,11 +10,14 @@ public struct ProjectScanner: Sendable {
     public static let referenceDocumentationDirectories: Set<String> = ["references", "reference-docs"]
     public static let researchArchiveDirectories: Set<String> = ["opencode-extraction", "openchamber-extraction"]
     public let root: URL
+    public let sensitivePathPolicy: SensitivePathPolicy
     public let minimumPageBytes: Int
     public let maximumPageBytes: Int
 
-    public init(root: URL, minimumPageBytes: Int = 8 * 1024, maximumPageBytes: Int = 16 * 1024) {
-        self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+    public init(root: URL, sensitivePathPolicy: SensitivePathPolicy? = nil, minimumPageBytes: Int = 8 * 1024, maximumPageBytes: Int = 16 * 1024) {
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        self.root = resolvedRoot
+        self.sensitivePathPolicy = sensitivePathPolicy ?? SensitivePathPolicy(root: resolvedRoot)
         self.minimumPageBytes = max(1, minimumPageBytes)
         self.maximumPageBytes = max(max(1, minimumPageBytes), maximumPageBytes)
     }
@@ -86,15 +89,9 @@ public struct ProjectScanner: Sendable {
     }
 
     private func isExcludedPath(_ url: URL) -> Bool {
+        if sensitivePathPolicy.isSensitive(url) { return true }
         let components = url.pathComponents.map { $0.lowercased() }
-        if components.contains(where: { [".git", ".build", ".swiftpm", "deriveddata", "node_modules"].contains($0) }) {
-            return true
-        }
-        if components.contains(where: { $0.contains("credential") || $0.contains("secret") }) {
-            return true
-        }
-        let name = url.lastPathComponent.lowercased()
-        return name == ".env" || name.hasPrefix(".env.") || name.hasSuffix(".pem") || name.hasSuffix(".key")
+        return components.contains(where: { [".git", ".build", ".swiftpm", "deriveddata", "node_modules"].contains($0) })
     }
 
     private func isBinary(_ data: Data) -> Bool {

@@ -43,9 +43,17 @@ public actor PermissionEngine {
         else { decision = matching.first?.decision ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask) }
         guard decision == .ask else { return PermissionResolution(decision: decision, asked: false) }
 
-        let resolved = await withCheckedContinuation { continuation in
-            pending[request.permissionID] = continuation
-            Task { await onAsk() }
+        let resolved = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: PermissionDecision.deny)
+                    return
+                }
+                pending[request.permissionID] = continuation
+                Task { await onAsk() }
+            }
+        } onCancel: {
+            Task { await self.cancel(request.permissionID) }
         }
         return PermissionResolution(decision: resolved, asked: true)
     }
@@ -65,5 +73,9 @@ public actor PermissionEngine {
     public func setConfiguration(_ configuration: PermissionConfiguration) {
         self.configuration = configuration
         legacyDefaultDecision = nil
+    }
+
+    private func cancel(_ permissionID: PermissionID) {
+        pending.removeValue(forKey: permissionID)?.resume(returning: .deny)
     }
 }

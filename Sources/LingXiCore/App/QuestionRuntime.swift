@@ -27,11 +27,19 @@ public actor QuestionRuntime {
             throw CoreError(code: .questionUnavailable, message: "问题 ID 已在等待答复: \(request.questionID.rawValue)")
         }
         let contextual = if let context = AgentExecutionContext.current {
-            QuestionRequest(questionID: request.questionID, question: request.question, options: request.options, allowsMultiple: request.allowsMultiple, allowsFreeText: request.allowsFreeText, originSessionID: context.sessionID, originRunID: context.runID, rootSessionID: context.rootSessionID, parentSessionID: nil)
+            QuestionRequest(questionID: request.questionID, question: request.question, options: request.options, allowsMultiple: request.allowsMultiple, allowsFreeText: request.allowsFreeText, originSessionID: context.sessionID, originRunID: context.runID, rootSessionID: context.rootSessionID, parentSessionID: context.parentSessionID)
         } else { request }
-        return try await withCheckedThrowingContinuation { continuation in
-            pending[contextual.questionID] = Pending(request: contextual, continuation: continuation)
-            Task { await onQuestionAsked?(contextual) }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                pending[contextual.questionID] = Pending(request: contextual, continuation: continuation)
+                Task { await onQuestionAsked?(contextual) }
+            }
+        } onCancel: {
+            Task { await self.cancel(contextual.questionID) }
         }
     }
 
@@ -51,6 +59,11 @@ public actor QuestionRuntime {
             waiting.continuation.resume(throwing: CoreError(code: .questionUnavailable, message: "Core 已关闭"))
         }
         pending.removeAll()
+    }
+
+    private func cancel(_ questionID: QuestionID) {
+        guard let waiting = pending.removeValue(forKey: questionID) else { return }
+        waiting.continuation.resume(throwing: CancellationError())
     }
 
     private func validate(_ reply: QuestionReply, for request: QuestionRequest) throws {

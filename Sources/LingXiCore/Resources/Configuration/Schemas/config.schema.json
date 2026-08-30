@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.invalid/lingxiagent/config.schema.json",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "enum": [
+        "https://schemas.example.invalid/lingxiagent/config.schema.json"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ],
+      "minimum": 1
+    },
+    "core": {
+      "type": "object",
+      "properties": {
+        "locale": {
+          "type": "string"
+        },
+        "logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warning",
+            "error"
+          ]
+        }
+      },
+      "required": [
+        "locale",
+        "logLevel"
+      ],
+      "additionalProperties": false
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "maxConcurrentSubagents": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxSubagentDepth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxTotalRunsPerRootRun": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "maxConcurrentSubagents",
+        "maxSubagentDepth",
+        "maxTotalRunsPerRootRun"
+      ],
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "interactive": {
+          "type": "boolean"
+        },
+        "commandTimeoutSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "interactive",
+        "commandTimeoutSeconds"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "$schema",
+    "version",
+    "core",
+    "agent",
+    "runtime"
+  ],
+  "additionalProperties": false
+}

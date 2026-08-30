@@ -47,14 +47,16 @@ public struct ModelMessage: Sendable, Equatable {
 
 public struct ModelRequest: Sendable, Equatable {
     public let model: ModelID
+    public let executionID: AgentRunID?
     public let system: String?
     public let messages: [ModelMessage]
     public let tools: [ToolDefinition]
     public let reasoning: String?
     public let debugStep: Int?
 
-    public init(model: ModelID, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil) {
+    public init(model: ModelID, executionID: AgentRunID? = nil, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil) {
         self.model = model
+        self.executionID = executionID
         self.system = system
         self.messages = messages
         self.tools = tools

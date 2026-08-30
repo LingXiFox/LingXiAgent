@@ -150,8 +150,25 @@ public struct ToolRuntime: Sendable {
             try Task.checkCancellation()
             if call.toolID == SubagentTool.definition.id, let subagents {
                 try ToolSchemaValidator.validate(arguments: call.arguments, schema: SubagentTool.definition.inputSchema)
+                let request = PermissionRequest(
+                    permissionID: PermissionID(UUID().uuidString),
+                    sessionID: sessionID,
+                    toolCallID: call.callID,
+                    toolID: call.toolID,
+                    capabilities: SubagentTool.definition.capability.kinds,
+                    resource: "child Agent session",
+                    description: "允许创建或控制 Child Agent"
+                )
+                let permissionStart = clock.now
+                let resolution = await permissions.resolve(request) { await onPermissionAsked(request) }
+                permissionWait = permissionStart.duration(to: clock.now)
+                permissionAsked = resolution.asked
+                guard resolution.decision == .allow else { throw CoreError(code: .permissionDenied, message: "已拒绝 subagent") }
+                try Task.checkCancellation()
+                let executionStart = clock.now
                 let content = try await subagents.execute(arguments: call.arguments, sessionID: sessionID, callID: call.callID)
-                return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+                execution = executionStart.duration(to: clock.now)
+                return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: permissionWait, permissionAsked: permissionAsked, execution: execution, toolName: call.toolID.rawValue, resource: request.resource)
             }
             if call.toolID == MCPDiscoveryTools.search.id, let mcpPager {
                 let content = try await mcpPager.searchToolResult(sessionID: sessionID, projectID: projectID, arguments: call.arguments)
@@ -259,7 +276,7 @@ public struct ToolRuntime: Sendable {
             let metadata = try await outputArchive?.archive(response.content, metadata: bounded.metadata) ?? bounded.metadata
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: response.lease.toolID.rawValue, metadata: ["mcpToolID": response.lease.toolID.rawValue, "schemaHash": response.lease.schemaHash], output: metadata), permissionWait: permissionWait, permissionAsked: resolution.asked, execution: executionStarted.duration(to: clock.now), toolName: response.lease.toolID.rawValue, resource: response.lease.toolID.rawValue)
         } catch let error as MCPToolPagerError {
-            let code: CoreError.Code = switch error { case .leaseMissing: .mcpToolLeaseMissing; case .schemaChanged: .mcpToolSchemaChanged; case .schemaTooLarge: .mcpToolSchemaTooLarge; case .schemaBudgetExceeded: .mcpToolSchemaBudgetExceeded; default: .mcpServerUnavailable }
+            let code: CoreError.Code = switch error { case .leaseMissing, .leaseExpired: .mcpToolLeaseMissing; case .schemaChanged: .mcpToolSchemaChanged; case .schemaTooLarge: .mcpToolSchemaTooLarge; case .schemaBudgetExceeded: .mcpToolSchemaBudgetExceeded; default: .mcpServerUnavailable }
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: code.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         } catch let error as CoreError {
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)

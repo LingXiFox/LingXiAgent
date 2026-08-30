@@ -19,8 +19,10 @@ public actor SessionRuntime {
     private let persistence: SQLitePersistenceStore?
     private let eventSink: @Sendable (CoreEvent) async -> Void
     private let interactive: Bool
+    private let diagnosticsEnabled: Bool
     private let runID: AgentRunID?
     private let rootSessionID: SessionID
+    private let parentSessionID: SessionID?
     private let runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)?
     private var turnRunning = false
     private var turnTask: Task<Void, Never>?
@@ -42,8 +44,10 @@ public actor SessionRuntime {
         budgetPlanner: ContextBudgetPlanner,
         persistence: SQLitePersistenceStore? = nil,
         interactive: Bool = false,
+        diagnosticsEnabled: Bool = false,
         runID: AgentRunID? = nil,
         rootSessionID: SessionID? = nil,
+        parentSessionID: SessionID? = nil,
         runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil
     ) {
         self.store = store
@@ -60,8 +64,10 @@ public actor SessionRuntime {
         self.budgetPlanner = budgetPlanner
         self.persistence = persistence
         self.interactive = interactive
+        self.diagnosticsEnabled = diagnosticsEnabled
         self.runID = runID
         self.rootSessionID = rootSessionID ?? sessionID
+        self.parentSessionID = parentSessionID
         self.runObserver = runObserver
     }
 
@@ -96,9 +102,10 @@ public actor SessionRuntime {
             await runObserver?(.running, nil, nil, nil)
             let runID = self.runID
             let rootSessionID = self.rootSessionID
+            let parentSessionID = self.parentSessionID
             let sessionID = self.sessionID
             let turnTask = Task {
-                await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID) }) {
+                await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
                     await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler)
                 }
             }
@@ -175,6 +182,7 @@ public actor SessionRuntime {
                 trace("model.next.begin", step: step + 1)
                 let request = ModelRequest(
                     model: try modelID(),
+                    executionID: runID,
                     messages: context.modelMessages(),
                     tools: availableTools,
                     reasoning: modelBus.gateway.reasoning,
@@ -238,6 +246,7 @@ public actor SessionRuntime {
                 var assistantParts: [SessionMessagePart] = calls.map(SessionMessagePart.toolCall)
                 if !text.isEmpty { assistantParts.insert(.text(text), at: 0) }
                 trace("tool.batch.begin", step: step + 1, toolCount: calls.count)
+                await runObserver?(.waitingForTool, nil, finalUsage, nil)
                 trace("tool.batch.count", step: step + 1, toolCount: calls.count)
                 guard Set(calls.map(\.callID)).count == calls.count else {
                     throw CoreError(code: .modelStream, message: "Tool batch 含重复 toolCallID")
@@ -311,13 +320,16 @@ public actor SessionRuntime {
                 else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }) }
                 try await settleLatestBatch(resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage)
                 await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
+                await runObserver?(.running, nil, finalUsage, nil)
                 trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
                 trace("tool.batch.settle.end", step: step + 1, toolCount: calls.count)
             }
             throw CoreError(code: .agentStepLimitReached, message: "Agent Tool Loop 超过 \(Self.maximumAgentSteps) steps")
         } catch let error as CoreError {
+            await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler)
         } catch {
+            await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
             await failTurn(
                 handle: handle,
                 sink: sink,
@@ -335,7 +347,7 @@ public actor SessionRuntime {
     }
 
     private func trace(_ event: String, step: Int, toolCallID: ToolCallID? = nil, toolCount: Int? = nil) {
-        guard ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1" else { return }
+        guard diagnosticsEnabled else { return }
         var fields = ["[agent-trace]", "event=\(event)", "sessionID=\(sessionID.rawValue)", "step=\(step)"]
         if let toolCallID { fields.append("toolCallID=\(toolCallID.rawValue)") }
         if let toolCount { fields.append("toolCount=\(toolCount)") }
@@ -444,7 +456,7 @@ public actor SessionRuntime {
         error: CoreError,
         profiler: TurnProfiler
     ) async {
-        if ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1" {
+        if diagnosticsEnabled {
             FileHandle.standardError.write(Data("[agent-trace] event=turn.failed sessionID=\(sessionID.rawValue) code=\(error.code.rawValue)\n".utf8))
         }
         await dataPlane.finishAgentStream(handle.streamID)

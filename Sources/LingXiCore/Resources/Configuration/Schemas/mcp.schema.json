@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.invalid/lingxiagent/mcp.schema.json",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "enum": [
+        "https://schemas.example.invalid/lingxiagent/mcp.schema.json"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ],
+      "minimum": 1
+    },
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "alias": {
+            "type": "string"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "stdio",
+              "streamableHTTP"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "protocolPreference": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "modern",
+              "legacy"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "authentication": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "bearer",
+                  "header"
+                ]
+              },
+              "headerName": {
+                "type": "string"
+              },
+              "credential": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "environment": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "credential": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "credential"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "alias",
+          "transport",
+          "arguments",
+          "protocolPreference",
+          "enabled",
+          "authentication",
+          "environment",
+          "timeoutSeconds"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "$schema",
+    "version",
+    "servers"
+  ],
+  "additionalProperties": false
+}

@@ -248,7 +248,7 @@ public actor PerformanceStore {
     public let enabled: Bool
     private var reports: [SessionID: TurnPerformanceReport] = [:]
 
-    public init(enabled: Bool = ProcessInfo.processInfo.environment["LINGXI_PERF_DEBUG"] == "1") {
+    public init(enabled: Bool = false) {
         self.enabled = enabled
     }
 

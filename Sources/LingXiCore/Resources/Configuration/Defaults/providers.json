@@ -1,0 +1,7 @@
+{
+  "$schema": "https://schemas.example.invalid/lingxiagent/providers.schema.json",
+  "accounts": [],
+  "customProviders": [],
+  "modelProfiles": [],
+  "version": 1
+}

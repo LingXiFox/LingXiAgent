@@ -7,7 +7,7 @@ public enum WireMessage: Sendable, Equatable {
     case event(CoreEvent)
     case chunk(StreamChunk)
     case toolOutput(ToolOutputChunk)
-    case streamEnd(StreamID)
+    case streamEnd(StreamID, error: CoreError? = nil)
 }
 
 extension WireMessage: Codable {
@@ -16,7 +16,7 @@ extension WireMessage: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, id, command, response, event, chunk, toolOutput, streamID
+        case kind, id, command, response, event, chunk, toolOutput, streamID, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -39,7 +39,10 @@ extension WireMessage: Codable {
         case .toolOutput:
             self = .toolOutput(try container.decode(ToolOutputChunk.self, forKey: .toolOutput))
         case .streamEnd:
-            self = .streamEnd(try container.decode(StreamID.self, forKey: .streamID))
+            self = .streamEnd(
+                try container.decode(StreamID.self, forKey: .streamID),
+                error: try container.decodeIfPresent(CoreError.self, forKey: .error)
+            )
         }
     }
 
@@ -63,9 +66,10 @@ extension WireMessage: Codable {
         case let .toolOutput(chunk):
             try container.encode(Kind.toolOutput, forKey: .kind)
             try container.encode(chunk, forKey: .toolOutput)
-        case let .streamEnd(streamID):
+        case let .streamEnd(streamID, error):
             try container.encode(Kind.streamEnd, forKey: .kind)
             try container.encode(streamID, forKey: .streamID)
+            try container.encodeIfPresent(error, forKey: .error)
         }
     }
 }

@@ -1,0 +1,5 @@
+{
+  "$schema": "https://schemas.example.invalid/lingxiagent/mcp.schema.json",
+  "servers": [],
+  "version": 1
+}

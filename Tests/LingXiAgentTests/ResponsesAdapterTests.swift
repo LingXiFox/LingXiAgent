@@ -22,9 +22,10 @@ struct ResponsesAdapterTests {
                 ModelMessage(role: .user, content: "read it"),
                 ModelMessage(role: .assistant, parts: [.toolCall(call)]),
                 ModelMessage(role: .tool, parts: [.toolResult(result)]),
-            ], tools: [tool()], reasoning: "medium"), model: "gpt")
+            ], tools: [tool()], reasoning: "medium"))
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["instructions"] as? String == "system instruction")
+        #expect(json["store"] as? Bool == false)
         #expect(json["reasoning"] as? [String: String] == ["effort": "medium"])
         let input = try #require(json["input"] as? [[String: Any]])
         #expect(input.map { $0["type"] as? String } == [nil, nil, "function_call", "function_call_output"])
@@ -59,6 +60,22 @@ struct ResponsesAdapterTests {
         #expect(config.responsesURL == base)
     }
 
+    @Test func wireBodyUsesRequestModelInsteadOfProviderConfigModel() throws {
+        let provider = OpenAIResponsesProvider(config: ProviderConfig(
+            baseURL: try #require(URL(string: "https://api.example.com/v1")),
+            apiKey: nil,
+            model: "config-A",
+            wireProtocol: .responses
+        ))
+        let request = try provider.makeURLRequest(ModelRequest(
+            model: ModelID("request-B"),
+            messages: [ModelMessage(role: .user, content: "hello")]
+        ))
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["model"] as? String == "request-B")
+    }
+
     @Test func reasoningToolSequenceKeepsProviderLineageAdapterLocal() async throws {
         var decoder = ResponsesSSEDecoder()
         let payloads = [
@@ -73,16 +90,17 @@ struct ResponsesAdapterTests {
         #expect(decoder.completedCallIDs == ["call-1"])
 
         let provenance = ResponsesProvenanceStore()
-        await provenance.record(responseID: "response-1", callIDs: decoder.completedCallIDs)
-        #expect(await provenance.responseID(for: ["call-1"]) == "response-1")
+        let executionID = AgentRunID("run-1")
+        await provenance.record(responseID: "response-1", callIDs: decoder.completedCallIDs, executionID: executionID)
+        #expect(await provenance.responseID(for: ["call-1"], executionID: executionID) == "response-1")
 
         let provider = OpenAIResponsesProvider(
-            config: ProviderConfig(baseURL: URL(string: "https://api.example.com/v1")!, apiKey: nil, model: "m", wireProtocol: .responses),
+            config: ProviderConfig(baseURL: URL(string: "https://api.example.com/v1")!, apiKey: nil, model: "m", wireProtocol: .responses, remoteStateEnabled: true),
             provenance: provenance
         )
         let result = ToolResult(callID: ToolCallID("call-1"), success: true, content: "A")
         let request = try provider.makeURLRequest(
-            ModelRequest(model: ModelID("m"), messages: [
+            ModelRequest(model: ModelID("m"), executionID: executionID, messages: [
                 ModelMessage(role: .user, content: "read"),
                 ModelMessage(role: .tool, parts: [.toolResult(result)]),
                 ModelMessage(role: .system, content: "project context"),
@@ -103,5 +121,28 @@ struct ResponsesAdapterTests {
     @Test func incompleteIsTerminalMaxTokens() throws {
         var decoder = ResponsesSSEDecoder()
         #expect(try decoder.consume(#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#) == [.completed(.maxTokens)])
+    }
+
+    @Test func provenanceIsIsolatedByExecutionAndDisabledWithoutIdentity() async {
+        let provenance = ResponsesProvenanceStore()
+        let first = AgentRunID("run-a")
+        let second = AgentRunID("run-b")
+        await provenance.record(responseID: "response-a", callIDs: ["same-call"], executionID: first)
+        await provenance.record(responseID: "response-b", callIDs: ["same-call"], executionID: second)
+
+        #expect(await provenance.responseID(for: ["same-call"], executionID: first) == "response-a")
+        #expect(await provenance.responseID(for: ["same-call"], executionID: second) == "response-b")
+        #expect(await provenance.responseID(for: ["same-call"], executionID: nil) == nil)
+        await provenance.record(responseID: "unscoped", callIDs: ["same-call"], executionID: nil)
+        #expect(await provenance.responseID(for: ["same-call"], executionID: nil) == nil)
+    }
+
+    @Test func failedPayloadUsesSafeStableError() throws {
+        let sentinel = "SENTINEL_PROVIDER_SECRET"
+        var decoder = ResponsesSSEDecoder()
+        let events = try decoder.consume(#"{"type":"response.failed","error":{"message":"SENTINEL_PROVIDER_SECRET"}}"#)
+        let error = try #require(events.compactMap { if case let .failed(error) = $0 { error } else { nil } }.first)
+        #expect(!error.message.contains(sentinel))
+        #expect(!String(decoding: try JSONEncoder().encode(error), as: UTF8.self).contains(sentinel))
     }
 }

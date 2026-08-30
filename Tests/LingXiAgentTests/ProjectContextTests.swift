@@ -28,6 +28,28 @@ struct ProjectContextTests {
         #expect(first.allSatisfy { !$0.hash.isEmpty })
     }
 
+    @Test func sensitivePolicyHidesSentinelsFromManifestAndContext() throws {
+        let root = try makeProject()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dataRoot = root.appending(path: "runtime-data", directoryHint: .isDirectory)
+        let sensitivePaths = [
+            ".ssh/config", ".aws/config", ".gnupg/private.key", ".netrc", ".npmrc",
+            ".env", ".env.local", "develop.env", "db-credentials.json", "service-secret.txt", "api-token.txt",
+            "runtime-data/blobs/page.txt",
+        ]
+        for path in sensitivePaths { try write("sensitive-sentinel", to: root, path: path) }
+        try write("visible-sentinel", to: root, path: "scratch/untracked.txt")
+        let policy = SensitivePathPolicy(root: root, excluding: [dataRoot])
+        let scanner = ProjectScanner(root: root, sensitivePathPolicy: policy)
+
+        let manifest = try scanner.scanManifest()
+        let context = try scanner.scan()
+
+        #expect(manifest.files.map(\.path) == ["scratch/untracked.txt"])
+        #expect(context.map(\.path) == ["scratch/untracked.txt"])
+        #expect(context.allSatisfy { !$0.content.contains("sensitive-sentinel") })
+    }
+
     @Test func storeIndexesInitiallyAndRebuildsOnlyChangedFiles() async throws {
         let root = try makeProject()
         defer { try? FileManager.default.removeItem(at: root) }

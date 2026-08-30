@@ -32,8 +32,8 @@ struct ToolRuntimeTests {
         return root
     }
 
-    private func runtime(root: URL, decision: PermissionDecision = .allow) throws -> ToolRuntime {
-        let workspace = try WorkspaceRoot(path: root.path)
+    private func runtime(root: URL, decision: PermissionDecision = .allow, sensitivePathPolicy: SensitivePathPolicy? = nil) throws -> ToolRuntime {
+        let workspace = try WorkspaceRoot(path: root.path, sensitivePathPolicy: sensitivePathPolicy)
         return ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(defaultDecision: decision))
     }
 
@@ -116,6 +116,34 @@ struct ToolRuntimeTests {
         #expect(traversal.error?.code == CoreError.Code.workspaceViolation.rawValue)
         let symlink = await runtime.execute(call("read_file", "escape/secret.txt"), sessionID: SessionID("s")) { _ in }
         #expect(symlink.error?.code == CoreError.Code.workspaceViolation.rawValue)
+    }
+
+    @Test func builtinReadAndListHideSensitiveSentinelsWithoutEchoingPaths() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dataRoot = root.appendingPathComponent("runtime-data", isDirectory: true)
+        let sensitivePaths = [
+            ".ssh/config", ".aws/config", ".gnupg/private.key", ".netrc", ".npmrc",
+            ".env.local", "develop.env", "db-credentials.json", "service-secret.txt", "api-token.txt",
+            "runtime-data/blobs/page.txt",
+        ]
+        for path in sensitivePaths {
+            let file = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "sensitive-sentinel".write(to: file, atomically: true, encoding: .utf8)
+        }
+        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        let policy = SensitivePathPolicy(root: root, excluding: [dataRoot])
+        let runtime = try runtime(root: root, sensitivePathPolicy: policy)
+
+        let listed = await runtime.execute(call("list_directory", "."), sessionID: SessionID("s")) { _ in }
+        #expect(listed.content == "visible.txt\tfile\t7")
+        for path in sensitivePaths {
+            let read = await runtime.execute(call("read_file", path), sessionID: SessionID("s")) { _ in }
+            #expect(read.error?.code == CoreError.Code.workspaceViolation.rawValue)
+            #expect(read.error?.message == "不允许访问敏感路径")
+            #expect(read.error?.message.contains(path) == false)
+        }
     }
 
     @Test func listDirectoryRejectsFilesAndEscape() async throws {

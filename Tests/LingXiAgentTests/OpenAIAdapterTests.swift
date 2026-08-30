@@ -14,7 +14,7 @@ struct OpenAIAdapterTests {
             system: "be nice",
             messages: [ModelMessage(role: .user, content: "hello")]
         )
-        let data = try OpenAICompatibleProvider.makeRequestBody(request, model: "m-1")
+        let data = try OpenAICompatibleProvider.makeRequestBody(request)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["model"] as? String == "m-1")
         #expect(json["stream"] as? Bool == true)
@@ -31,7 +31,7 @@ struct OpenAIAdapterTests {
             model: ModelID("m-1"),
             messages: [ModelMessage(role: .user, content: "hello")]
         )
-        let data = try OpenAICompatibleProvider.makeRequestBody(request, model: "m-1")
+        let data = try OpenAICompatibleProvider.makeRequestBody(request)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
         #expect(messages.count == 1)
@@ -48,8 +48,7 @@ struct OpenAIAdapterTests {
             capability: ToolCapability(readOnly: true)
         )
         let data = try OpenAICompatibleProvider.makeRequestBody(
-            ModelRequest(model: ModelID("m"), messages: [ModelMessage(role: .user, content: "hi")], tools: [tool]),
-            model: "m"
+            ModelRequest(model: ModelID("m"), messages: [ModelMessage(role: .user, content: "hi")], tools: [tool])
         )
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let tools = try #require(json["tools"] as? [[String: Any]])
@@ -67,8 +66,7 @@ struct OpenAIAdapterTests {
             ModelRequest(model: ModelID("m"), messages: [
                 ModelMessage(role: .assistant, parts: [.toolCall(call)]),
                 ModelMessage(role: .tool, parts: [.toolResult(result)]),
-            ]),
-            model: "m"
+            ])
         )
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
@@ -87,7 +85,7 @@ struct OpenAIAdapterTests {
                 ModelMessage(role: .assistant, parts: [.toolCall(first), .toolCall(second)]),
                 ModelMessage(role: .tool, parts: [.toolResult(ToolResult(callID: first.callID, success: true, content: "a"))]),
                 ModelMessage(role: .tool, parts: [.toolResult(ToolResult(callID: second.callID, success: true, content: "b"))]),
-            ]), model: "m"
+            ])
         )
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
@@ -97,6 +95,21 @@ struct OpenAIAdapterTests {
     }
 
     // MARK: - URL 拼接
+
+    @Test func wireBodyUsesRequestModelInsteadOfProviderConfigModel() throws {
+        let provider = OpenAICompatibleProvider(config: ProviderConfig(
+            baseURL: try #require(URL(string: "https://api.example.com/v1")),
+            apiKey: nil,
+            model: "config-A"
+        ))
+        let request = try provider.makeURLRequest(ModelRequest(
+            model: ModelID("request-B"),
+            messages: [ModelMessage(role: .user, content: "hello")]
+        ))
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["model"] as? String == "request-B")
+    }
 
     @Test func chatCompletionsURL() throws {
         func url(_ base: String) throws -> URL {

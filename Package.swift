@@ -9,7 +9,11 @@ let package = Package(
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
         // Core：业务能力与状态权威。仅依赖 Protocol。
-        .target(name: "LingXiCore", dependencies: ["LingXiProtocol"]),
+        .target(
+            name: "LingXiCore",
+            dependencies: ["LingXiProtocol"],
+            resources: [.copy("Resources/Configuration")]
+        ),
         // Client：所有客户端访问 Core 的正式入口。仅依赖 Protocol。
         .target(name: "LingXiClient", dependencies: ["LingXiProtocol"]),
         // Core Host executable：独立启动 Core 进程。

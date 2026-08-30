@@ -8,4 +8,9 @@ public protocol ModelProvider: Sendable {
     /// 建立推理流。连接 / HTTP 失败直接 throw（Provider Error）；
     /// 成功后返回 ModelEvent 流（流中途失败以 .failed 事件交付）。
     func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error>
+    func endExecution(_ executionID: AgentRunID) async
+}
+
+public extension ModelProvider {
+    func endExecution(_ executionID: AgentRunID) async {}
 }

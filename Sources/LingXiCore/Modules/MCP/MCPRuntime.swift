@@ -65,7 +65,7 @@ public struct MCPToolSchemaLease: Sendable, Equatable, Codable {
 }
 
 public enum MCPToolPagerError: Error, Sendable, Equatable {
-    case missingTool, unavailable, schemaMissing, schemaChanged, schemaTooLarge, schemaBudgetExceeded, leaseMissing, taskUnsupported
+    case missingTool, unavailable, schemaMissing, schemaChanged, schemaTooLarge, schemaBudgetExceeded, leaseMissing, leaseExpired, taskUnsupported
 }
 
 public protocol MCPToolInvoker: Sendable {
@@ -79,6 +79,7 @@ public actor MCPToolSchemaStore {
     public func schema(toolID: ToolID, hash: String) -> JSONValue? { values[key(toolID, hash)] }
     public func count() -> Int { values.count }
     public func bytes() -> Int { values.values.reduce(0) { $0 + ((try? JSONEncoder().encode($1).count) ?? 0) } }
+    public func remove(toolID: ToolID) { values = values.filter { !$0.key.hasPrefix("\(toolID.rawValue)@") } }
     private func key(_ id: ToolID, _ hash: String) -> String { "\(id.rawValue)@\(hash)" }
 }
 
@@ -114,7 +115,7 @@ public actor MCPToolPager {
             guard encoded.count <= maxSchemaBytes, depth(tool.inputSchema) <= maxSchemaDepth else { throw MCPToolPagerError.schemaTooLarge }
         }
         let old = catalog.values.filter { $0.serverID == serverID }.map(\.toolID)
-        for id in old { catalog[id]?.available = false; removeReferences(id) }
+        for id in old { catalog[id]?.available = false; removeReferences(id); await schemas.remove(toolID: id) }
         for tool in tools {
             catalog[tool.entry.toolID] = tool.entry
             await schemas.put(tool.inputSchema, toolID: tool.entry.toolID, hash: tool.entry.schemaHash)
@@ -164,8 +165,12 @@ public actor MCPToolPager {
         return result.sorted { $0.id.rawValue < $1.id.rawValue }
     }
 
-    public func resolve(sessionID: SessionID, providerToolID: ToolID) throws -> MCPToolSchemaLease {
+    public func resolve(sessionID: SessionID, providerToolID: ToolID, now: Date = .now) throws -> MCPToolSchemaLease {
         guard let lease = sessions[sessionID]?.leases.values.first(where: { $0.providerName == providerToolID.rawValue && $0.state == .armed }) else { throw MCPToolPagerError.leaseMissing }
+        guard lease.expiresAt > now else {
+            sessions[sessionID]?.leases.removeValue(forKey: lease.leaseID)
+            throw MCPToolPagerError.leaseExpired
+        }
         guard let entry = catalog[lease.toolID], entry.schemaHash == lease.schemaHash else { throw MCPToolPagerError.schemaChanged }
         return lease
     }
@@ -216,7 +221,7 @@ public actor MCPToolPager {
     public func requestSchemaCounts(sessionID: SessionID) -> [Int] { providerSchemaCounts[sessionID] ?? [] }
     public func catalogCount() -> Int { catalog.count }
     public func schemaStoreMetrics() async -> (count: Int, bytes: Int) { (await schemas.count(), await schemas.bytes()) }
-    public func fullSchemaResidencyCount() -> Int { 0 }
+    public func fullSchemaResidencyCount() -> Int { sessions.values.reduce(0) { $0 + $1.presented.count } }
 
     private func removeReferences(_ toolID: ToolID) {
         for sessionID in sessions.keys { sessions[sessionID]?.l1.removeValue(forKey: toolID); sessions[sessionID]?.leases = sessions[sessionID]!.leases.filter { $0.value.toolID != toolID } }

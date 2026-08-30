@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.invalid/lingxiagent/plugins.schema.json",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "enum": [
+        "https://schemas.example.invalid/lingxiagent/plugins.schema.json"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ],
+      "minimum": 1
+    }
+  },
+  "required": [
+    "$schema",
+    "version"
+  ],
+  "additionalProperties": false
+}
