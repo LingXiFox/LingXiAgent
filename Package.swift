@@ -28,7 +28,9 @@ let package = Package(
         ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient"]
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient"],
+            exclude: ["VCR/README.md"],
+            resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),
     ]
 )

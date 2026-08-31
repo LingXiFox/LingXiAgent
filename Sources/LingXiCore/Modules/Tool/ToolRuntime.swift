@@ -88,11 +88,13 @@ public struct ToolRuntime: Sendable {
 
     public var definitions: [ToolDefinition] { registry.definitions }
 
-    public func availableDefinitions(sessionID: SessionID? = nil, interactive: Bool = false) async -> [ToolDefinition] {
+    public func availableDefinitions(sessionID: SessionID? = nil, interactive: Bool = false, executionProfile: SubagentExecutionProfile? = nil) async -> [ToolDefinition] {
         let configuration = await permissions.currentConfiguration()
+        let profile = Self.attenuatedProfile(requested: executionProfile?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:)), parent: configuration.profile)
         var definitions = registry.definitions.filter { definition in
             if definition.name == "question" && !interactive { return false }
-            if configuration.profile == .readOnly {
+            if definition.id == ToolID("skill"), let values = definition.inputSchema.properties["name"]?.enumValues, values.isEmpty { return false }
+            if profile == .readOnly {
                 return definition.capability.readOnly
             }
             return true
@@ -100,6 +102,10 @@ public struct ToolRuntime: Sendable {
         definitions += [MCPDiscoveryTools.search, MCPDiscoveryTools.load]
         if subagents != nil { definitions.append(SubagentTool.definition) }
         if let sessionID, let mcpPager { definitions += await mcpPager.providerDefinitions(sessionID: sessionID) }
+        if let allowed = executionProfile?.toolProfile.map(Set.init) {
+            definitions = definitions.filter { allowed.contains($0.id.rawValue) }
+        }
+        if profile == .readOnly { definitions = definitions.filter(\.capability.readOnly) }
         return definitions.sorted { $0.id.rawValue < $1.id.rawValue }
     }
 
@@ -131,15 +137,17 @@ public struct ToolRuntime: Sendable {
         _ call: ToolCall,
         sessionID: SessionID,
         projectID: ProjectID = ProjectID("ephemeral"),
+        executionProfile: SubagentExecutionProfile? = nil,
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
     ) async -> ToolResult {
-        await executeWithMetrics(call, sessionID: sessionID, projectID: projectID, onPermissionAsked: onPermissionAsked).result
+        await executeWithMetrics(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, onPermissionAsked: onPermissionAsked).result
     }
 
     public func executeWithMetrics(
         _ call: ToolCall,
         sessionID: SessionID,
         projectID: ProjectID = ProjectID("ephemeral"),
+        executionProfile: SubagentExecutionProfile? = nil,
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
     ) async -> ExecutionOutcome {
         let clock = ContinuousClock()
@@ -148,6 +156,11 @@ public struct ToolRuntime: Sendable {
         var execution: Duration = .zero
         do {
             try Task.checkCancellation()
+            if let allowed = executionProfile?.toolProfile, !allowed.contains(call.toolID.rawValue) {
+                throw CoreError(code: .permissionDenied, message: "Execution Profile 不允许 \(call.toolID.rawValue)")
+            }
+            let baseConfiguration = await permissions.currentConfiguration()
+            let effectiveProfile = Self.attenuatedProfile(requested: executionProfile?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:)), parent: baseConfiguration.profile)
             if call.toolID == SubagentTool.definition.id, let subagents {
                 try ToolSchemaValidator.validate(arguments: call.arguments, schema: SubagentTool.definition.inputSchema)
                 let request = PermissionRequest(
@@ -179,18 +192,17 @@ public struct ToolRuntime: Sendable {
                 return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
             }
             if registry.tool(for: call.toolID) == nil, let mcpPager {
-                return await executeMCP(call, sessionID: sessionID, projectID: projectID, pager: mcpPager, onPermissionAsked: onPermissionAsked)
+                return await executeMCP(call, sessionID: sessionID, projectID: projectID, profile: effectiveProfile, pager: mcpPager, onPermissionAsked: onPermissionAsked)
             }
             guard let tool = registry.tool(for: call.toolID) else {
                 throw CoreError(code: .toolNotFound, message: "未注册 Tool: \(call.toolID.rawValue)")
             }
             try ToolSchemaValidator.validate(arguments: call.arguments, schema: tool.definition.inputSchema)
-            let configuration = await permissions.currentConfiguration()
-            let capabilities = try tool.capabilities(for: call.arguments, profile: configuration.profile)
-            guard configuration.profile != .readOnly || (!capabilities.contains(.projectWrite) && !capabilities.contains(.repositoryWrite) && !capabilities.contains(.processExecute)) else {
+            let capabilities = try tool.capabilities(for: call.arguments, profile: effectiveProfile)
+            guard effectiveProfile != .readOnly || ToolCapability(capabilities).readOnly else {
                 throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 \(call.toolID.rawValue)")
             }
-            let resource = try tool.resource(for: call.arguments, profile: configuration.profile)
+            let resource = try tool.resource(for: call.arguments, profile: effectiveProfile)
             let request = PermissionRequest(
                 permissionID: PermissionID(UUID().uuidString),
                 sessionID: sessionID,
@@ -212,7 +224,7 @@ public struct ToolRuntime: Sendable {
             try Task.checkCancellation()
             let executionStart = clock.now
             let mutates = capabilities.contains(.projectWrite) || capabilities.contains(.repositoryWrite)
-            let operation: @Sendable () async throws -> String = { try await tool.execute(arguments: call.arguments, profile: configuration.profile) }
+            let operation: @Sendable () async throws -> String = { try await tool.execute(arguments: call.arguments, profile: effectiveProfile) }
             let rawContent = mutates && mutations != nil ? try await mutations!.execute(operation) : try await operation()
             if !rawContent.isEmpty {
                 await outputSink?(ToolOutputChunk(toolCallID: call.callID, stream: .stdout, sequence: 0, payload: rawContent))
@@ -221,7 +233,7 @@ public struct ToolRuntime: Sendable {
             let metadata = try await outputArchive?.archive(rawContent, metadata: bounded.metadata) ?? bounded.metadata
             execution = executionStart.duration(to: clock.now)
             return ExecutionOutcome(
-                result: ToolResult(callID: call.callID, success: true, content: bounded.content, output: metadata),
+                result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: tool.definition.name, output: metadata),
                 permissionWait: permissionWait,
                 permissionAsked: permissionAsked,
                 execution: execution,
@@ -248,7 +260,7 @@ public struct ToolRuntime: Sendable {
             )
         } catch {
             return ExecutionOutcome(
-                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error))),
+                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolName),
                 permissionWait: permissionWait,
                 permissionAsked: permissionAsked,
                 execution: execution,
@@ -259,12 +271,14 @@ public struct ToolRuntime: Sendable {
     }
 
     public func finishMCPProviderStep(sessionID: SessionID) async { await mcpPager?.finishProviderStep(sessionID: sessionID) }
+    public func abortMCPTurn(sessionID: SessionID) async { await mcpPager?.abortTurn(sessionID: sessionID) }
 
-    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void) async -> ExecutionOutcome {
+    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, profile: ExecutionProfile, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void) async -> ExecutionOutcome {
         let clock = ContinuousClock()
         do {
             let lease = try await pager.resolve(sessionID: sessionID, providerToolID: call.toolID)
             let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, toolCallID: call.callID, toolID: lease.toolID, capabilities: [.externalService, .networkAccess, .destructive], resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
+            guard profile != .readOnly || ToolCapability(request.capabilities).readOnly else { throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 MCP Tool") }
             let permissionStarted = clock.now
             let resolution = await permissions.resolve(request) { await onPermissionAsked(request) }
             let permissionWait = permissionStarted.duration(to: clock.now)
@@ -292,6 +306,12 @@ public struct ToolRuntime: Sendable {
         else { return arguments }
         return String(decoding: normalized, as: UTF8.self)
     }
+
+    private static func attenuatedProfile(requested: ExecutionProfile?, parent: ExecutionProfile) -> ExecutionProfile {
+        let rank: [ExecutionProfile: Int] = [.readOnly: 0, .workspace: 1, .fullAccess: 2]
+        guard let requested, rank[requested, default: 0] < rank[parent, default: 0] else { return parent }
+        return requested
+    }
 }
 
 /// JSON object is decoded once at the runtime boundary before permission or side effects.
@@ -301,14 +321,22 @@ enum ToolSchemaValidator {
               let object = try? JSONSerialization.jsonObject(with: data),
               let values = object as? [String: Any]
         else { throw CoreError(code: .toolArgumentInvalid, message: "Tool 参数必须是 JSON object") }
-        guard Set(values.keys).isSubset(of: Set(schema.properties.keys)) else {
+        var allowedProperties = schema.properties
+        if schema.properties["action"] != nil && schema.properties["task"] != nil {
+            allowedProperties["permission_profile"] = ToolInputProperty(type: .string, description: "Optional permission profile")
+            allowedProperties["budget_profile"] = ToolInputProperty(type: .string, description: "Optional budget profile")
+            allowedProperties["context_profile"] = ToolInputProperty(type: .string, description: "Optional context profile")
+            allowedProperties["max_steps"] = ToolInputProperty(type: .integer, description: "Optional maximum steps", minimum: 1)
+            allowedProperties["timeout_seconds"] = ToolInputProperty(type: .integer, description: "Optional timeout in seconds", minimum: 1)
+        }
+        guard Set(values.keys).isSubset(of: Set(allowedProperties.keys)) else {
             throw CoreError(code: .toolArgumentInvalid, message: "Tool 参数包含未知字段")
         }
         for name in schema.required where values[name] == nil {
             throw CoreError(code: .toolArgumentInvalid, message: "Tool 参数缺少必填字段: \(name)")
         }
         for (name, value) in values {
-            guard let property = schema.properties[name], matches(value, property.type) else {
+            guard let property = allowedProperties[name], matches(value, property.type) else {
                 throw CoreError(code: .toolArgumentInvalid, message: "Tool 参数类型无效: \(name)")
             }
             if let values = property.enumValues, let value = value as? String, !values.contains(value) {

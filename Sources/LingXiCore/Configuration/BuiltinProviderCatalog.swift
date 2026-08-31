@@ -5,7 +5,7 @@ public enum BuiltinProviderCategory: String, Sendable, Equatable, Codable {
 }
 
 public enum BuiltinProviderStatus: String, Sendable, Equatable, Codable {
-    case declared, unsupported, unverified, requiresAdapterOrAuthImplementation
+    case verified, declared, unsupported, unverified, requiresAdapterOrAuthImplementation
 }
 
 public struct BuiltinProviderDefinition: Sendable, Equatable {
@@ -42,7 +42,7 @@ public struct BuiltinProviderDefinition: Sendable, Equatable {
 /// Product-owned definitions only. User accounts and credentials are persisted separately.
 public enum BuiltinProviderCatalog {
     public static let definitions: [BuiltinProviderDefinition] = [
-        .init(id: "anthropic", displayName: "Anthropic", category: .modelProvider, status: .unverified),
+        .init(id: "anthropic", displayName: "Anthropic", category: .modelProvider, defaultBaseURL: URL(string: "https://api.anthropic.com"), endpointEditable: true, supportedWires: [.anthropicMessages], status: .verified, officialSources: [URL(string: "https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/provider.ts")!]),
         .init(id: "cloudflare-ai-gateway", displayName: "Cloudflare AI Gateway", category: .gateway, status: .unverified),
         .init(id: "deepseek", displayName: "DeepSeek", category: .modelProvider, status: .unverified),
         .init(id: "hugging-face", displayName: "Hugging Face", category: .modelProvider, status: .unverified),
@@ -51,7 +51,7 @@ public enum BuiltinProviderCatalog {
         .init(id: "minimax", displayName: "MiniMax", category: .modelProvider, status: .unverified),
         .init(id: "ollama", displayName: "Ollama", category: .localRuntime, status: .unverified),
         .init(id: "ollama-cloud", displayName: "Ollama Cloud", category: .modelProvider, status: .unverified),
-        .init(id: "openai", displayName: "OpenAI / Codex OAuth", category: .modelProvider, status: .unverified),
+        .init(id: "openai", displayName: "OpenAI / Codex OAuth", category: .modelProvider, defaultBaseURL: URL(string: "https://api.openai.com/v1"), endpointEditable: true, supportedWires: [.responses], status: .verified, officialSources: [URL(string: "https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/provider.ts")!]),
         .init(id: "gemini", displayName: "Gemini / OAuth", category: .modelProvider, status: .unverified),
         .init(id: "antigravity", displayName: "Antigravity / OAuth", category: .modelProvider, status: .unsupported),
         .init(id: "opencode-zen", displayName: "OpenCode Zen", category: .aggregator, status: .unverified),

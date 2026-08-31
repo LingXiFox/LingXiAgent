@@ -43,7 +43,7 @@ struct AnthropicAdapterTests {
     }
 
     @Test func streamDecoderCorrelatesToolUseAndMapsTerminalEvents() throws {
-        var decoder = AnthropicSSEDecoder()
+        var decoder = AnthropicSSEDecoder(requestID: ModelRequestID("anthropic-request"))
         let payloads = [
             #"{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":3}}}"#,
             #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
@@ -58,8 +58,10 @@ struct AnthropicAdapterTests {
         let events = try payloads.flatMap { try decoder.consume($0) }
 
         #expect(events.contains(.textDelta("hello")))
-        #expect(events.contains(.toolCallStarted(callID: ToolCallID("tool-use-1"), toolID: ToolID("read_file"))))
-        #expect(events.contains(.toolCallCompleted(ToolCall(callID: ToolCallID("tool-use-1"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#))))
+        let domainID = ToolCallID("lingxi:anthropic-request:1")
+        #expect(events.contains(.toolCallStarted(callID: domainID, toolID: ToolID("read_file"))))
+        #expect(events.contains(.toolCallCompleted(ToolCall(callID: domainID, toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#))))
+        #expect(decoder.references.first?.externalCallID == "tool-use-1")
         #expect(events.contains(.usage(ModelUsage(inputTokens: 12, outputTokens: nil, reasoningTokens: nil, cacheReadTokens: 3, cacheWriteTokens: nil))))
         #expect(events.contains(.completed(.toolCalls)))
     }

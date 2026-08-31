@@ -15,7 +15,7 @@ This document records the stabilized P1-P13 runtime. It does not introduce Phase
 | Workspace path boundary | Complete | Shared `SensitivePathPolicy`; workspace containment; secret-path regression tests |
 | Persistent configuration | Complete | `config.json`, `providers.json`, `mcp.json`, `plugins.json`; bundled offline schemas |
 | Data root | Complete | Host resolves `LINGXI_DATA_ROOT` override or `~/.lingxiagent`; Core receives the resolved path |
-| Credentials | Complete with documented limitation | `CredentialRef` in config; plaintext `credentials.vault` isolated by 0700/0600 permissions |
+| Credentials | Complete | `CredentialRef` in config; AES-256-GCM vault with PBKDF2-HMAC-SHA256 passphrase derivation and encrypted v1 migration backup |
 | Provider resolution | Complete for configured custom profiles | Explicit Account + ModelProfile + default selection; no model-name or Provider-name inference |
 | OpenAI Chat wire | Complete | Request-scoped model, structured tool history, strict stream terminal handling |
 | OpenAI Responses wire | Complete | Execution-scoped provenance; remote state defaults off and requires explicit Profile enablement |
@@ -23,7 +23,7 @@ This document records the stabilized P1-P13 runtime. It does not introduce Phase
 | MCP runtime | Complete for current transports | HTTP/stdio mapping, credential preload, discovery, leases, schema limits, stdio timeout |
 | AgentRun model identity | Complete | Provider, account, profile, model persisted independently per run |
 | Architecture boundaries | Complete | Domain environment-access, Client/Core dependency, adapter strategy and identity guards |
-| Real Provider acceptance | Externally blocked | Last smoke result was HTTP 429; no retry performed |
+| Real Provider acceptance | Complete | Real `gpt-5.6-terra` full-core-stack-v1 Record PASS; repository Golden Offline Replay PASS |
 
 ## Configuration Precedence
 
@@ -128,7 +128,7 @@ flowchart TD
     State --> Context[Derived context and tool batches]
 ```
 
-Durable truth is preserved during migrations. Rebuildable indexes may be invalidated independently. Raw credentials must not enter Session history, AgentRun rows, Context, tool archives, protocol messages, logs, or fixtures.
+Durable truth is preserved during migrations. Rebuildable indexes may be invalidated independently. Raw credentials must not enter Session history, AgentRun rows, Context, tool archives, protocol messages, logs, or fixtures. `credentials.vault` is encrypted using `LINGXI_CREDENTIALS_PASSPHRASE`; this passphrase is bootstrap-only and is never persisted.
 
 ## Core State
 
@@ -150,13 +150,12 @@ Canonical offline command:
 swift test --skip RealProviderSmokeTests
 ```
 
-Latest result: 176 tests in 26 suites passed, including the stdio timeout regression.
+Latest result: see `P1-P13-FINAL-ACCEPTANCE.md` for the current Final Seal.
 
 Semgrep MCP was unavailable in the connected MCP set. A local source-pattern audit found no dynamic `eval`/`exec`; subprocess, filesystem, network, and credential call sites were manually reviewed at their shared boundaries.
 
 ## External Follow-up
 
 - Rotate and remove the plaintext credentials previously reported in `Tests/develop.env`; this remains a user-owned action and the file was not read or modified.
-- Re-run Real Provider smoke only after the external 429 condition is cleared and explicit approval is given.
-- Attach official source URLs and verified endpoint/auth/model metadata before promoting any Builtin Provider from `unverified`.
+- Provider/OAuth metadata verification belongs to P14 formal work.
 - Notion synchronization remains stopped because the production Development databases and policy page could not be located.

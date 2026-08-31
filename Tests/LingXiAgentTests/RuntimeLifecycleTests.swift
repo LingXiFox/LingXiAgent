@@ -42,9 +42,8 @@ struct RuntimeLifecycleTests {
         let service = SubagentToolService()
         let childRun = AgentRunInfo(runID: AgentRunID("child-run"), sessionID: SessionID("child-session"), projectID: nil, parentRunID: AgentRunID("parent-run"), rootRunID: AgentRunID("parent-run"), agentKind: .subagent, status: .completed, modelSelection: ModelSelection(modelID: "model"))
         await service.bind(
-            spawn: { _, _, _, _, selection, _ in
-                #expect(selection?.providerID == "provider")
-                #expect(selection?.modelID == "model")
+            spawn: { _, _, _, _, selection, _, _ in
+                #expect(selection == nil)
                 return (childRun.sessionID, childRun)
             },
             status: { id, requester in #expect(id == childRun.runID); #expect(requester == AgentRunID("parent-run")); return childRun },
@@ -53,7 +52,7 @@ struct RuntimeLifecycleTests {
             message: { id, _, content in #expect(id == childRun.sessionID); #expect(content == "next"); return childRun }
         )
         let runtime = ToolRuntime(registry: ToolRegistry([]), permissions: permissions, subagents: service)
-        let call = ToolCall(callID: ToolCallID("spawn"), toolID: ToolID("subagent"), arguments: #"{"action":"spawn","task":"inspect","provider_id":"provider","model_id":"model"}"#)
+        let call = ToolCall(callID: ToolCallID("spawn"), toolID: ToolID("subagent"), arguments: #"{"action":"spawn","task":"inspect"}"#)
         let outcome = await AgentExecutionContext.$current.withValue((SessionID("parent-session"), AgentRunID("parent-run"), SessionID("parent-session"), nil)) {
             await runtime.executeWithMetrics(call, sessionID: SessionID("parent-session")) { request in
                 try? await permissions.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
@@ -69,6 +68,12 @@ struct RuntimeLifecycleTests {
         _ = try await AgentExecutionContext.$current.withValue((SessionID("parent-session"), AgentRunID("parent-run"), SessionID("parent-session"), nil)) {
             try await service.execute(arguments: #"{"action":"message","session_id":"child-session","content":"next"}"#, sessionID: SessionID("parent-session"), callID: ToolCallID("message"))
         }
+
+        await #expect(throws: CoreError.self) {
+            try await AgentExecutionContext.$current.withValue((SessionID("parent-session"), AgentRunID("parent-run"), SessionID("parent-session"), nil)) {
+                try await service.execute(arguments: #"{"action":"spawn","task":"inspect","model_id":"model"}"#, sessionID: SessionID("parent-session"), callID: ToolCallID("partial"))
+            }
+        }
     }
 
     @Test func mcpRejectsExpiredLeaseAndDropsOldSchemaVersions() async throws {
@@ -83,6 +88,7 @@ struct RuntimeLifecycleTests {
         try await pager.replaceCatalog(serverID: server, tools: [tool(hash: "v2")])
         #expect(await schemas.count() == 1)
 
+        _ = await pager.search(sessionID: SessionID("session"), projectID: ProjectID("project"), query: "tool")
         let lease = try await pager.load(sessionID: SessionID("session"), toolID: toolID, schemaTokenBudget: 100)
         await #expect(throws: MCPToolPagerError.leaseExpired) {
             try await pager.resolve(sessionID: SessionID("session"), providerToolID: ToolID(lease.providerName), now: lease.expiresAt.addingTimeInterval(1))

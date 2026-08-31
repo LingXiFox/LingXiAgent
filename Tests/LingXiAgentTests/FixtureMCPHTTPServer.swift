@@ -8,6 +8,7 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
     private let listener: Int32
     private let lock = NSLock()
     private var running = true
+    private var calls: [(toolName: String, key: String?)] = []
     private var acceptTask: Task<Void, Never>?
 
     init() throws {
@@ -39,6 +40,11 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         Darwin.shutdown(listener, SHUT_RDWR)
         Darwin.close(listener)
         acceptTask?.cancel()
+    }
+
+    func callCount(toolName: String, key: String? = nil) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return calls.filter { $0.toolName == toolName && (key == nil || $0.key == key) }.count
     }
 
     private func acceptLoop() {
@@ -96,8 +102,11 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         if method == "tools/list" { return json(id: id, result: toolList(cursor: params["cursor"] as? String)) }
         guard method == "tools/call", let name = params["name"] as? String, request.headers["mcp-name"] == name else { return (400, "text/plain", Data("routing mismatch".utf8)) }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
+        lock.lock(); calls.append((name, arguments["key"] as? String)); lock.unlock()
         switch name {
-        case "lookup_anchor": return json(id: id, result: content((arguments["key"] as? String) == "phase12" ? "MCPAnchor-729" : "missing"))
+        case "lookup_anchor":
+            let key = arguments["key"] as? String
+            return json(id: id, result: content(key == "phase12" || key == "full-core-stack-v1" ? "MCPAnchor-729" : "missing"))
         case "echo":
             let value = String(describing: arguments["value"] ?? "")
             let payload = jsonData(id: id, result: content(value))
@@ -110,7 +119,7 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
     }
 
     private func toolList(cursor: String?) -> [String: Any] {
-        let anchor: [String: Any] = ["name": "lookup_anchor", "description": "Retrieve a test anchor by key.", "inputSchema": ["type": "object", "properties": ["key": ["type": "string"]], "required": ["key"]]]
+        let anchor: [String: Any] = ["name": "lookup_anchor", "description": "Retrieve the phase12 or full-core-stack-v1 deterministic test anchor by key.", "inputSchema": ["type": "object", "properties": ["key": ["type": "string"]], "required": ["key"]]]
         let echo: [String: Any] = ["name": "echo", "description": "Echo text.", "inputSchema": ["type": "object", "properties": ["value": ["type": "string"]]]]
         let large: [String: Any] = ["name": "large_result", "description": "Return a large result.", "inputSchema": ["type": "object", "properties": [:]]]
         let slow: [String: Any] = ["name": "slow_tool", "description": "Return after delay.", "inputSchema": ["type": "object", "properties": [:]]]

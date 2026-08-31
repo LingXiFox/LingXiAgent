@@ -36,7 +36,8 @@ struct ResponsesAdapterTests {
     }
 
     @Test func parallelCallsMapToTheSameDomainEventsAsChatCompletions() throws {
-        var responses = ResponsesSSEDecoder()
+        let requestID = ModelRequestID("responses-parallel")
+        var responses = ResponsesSSEDecoder(requestID: requestID)
         let payloads = [
             #"{"type":"response.output_item.added","item":{"type":"function_call","id":"provider-item-a","call_id":"call-a","name":"read_file","arguments":""}}"#,
             #"{"type":"response.output_item.added","item":{"type":"function_call","id":"provider-item-b","call_id":"call-b","name":"read_file","arguments":""}}"#,
@@ -48,10 +49,22 @@ struct ResponsesAdapterTests {
         let events = try payloads.flatMap { try responses.consume($0) }
         let calls = events.compactMap { event -> ToolCall? in if case let .toolCallCompleted(call) = event { call } else { nil } }
         #expect(calls == [
-            ToolCall(callID: ToolCallID("call-a"), toolID: ToolID("read_file"), arguments: #"{"path":"A.md"}"#),
-            ToolCall(callID: ToolCallID("call-b"), toolID: ToolID("read_file"), arguments: #"{"path":"B.md"}"#),
+            ToolCall(callID: ToolCallID("lingxi:responses-parallel:0"), toolID: ToolID("read_file"), arguments: #"{"path":"A.md"}"#),
+            ToolCall(callID: ToolCallID("lingxi:responses-parallel:1"), toolID: ToolID("read_file"), arguments: #"{"path":"B.md"}"#),
         ])
+        #expect(responses.references.map(\.externalCallID) == ["call-a", "call-b"])
         #expect(!events.description.contains("provider-item"))
+    }
+
+    @Test func completedArgumentsReplaceDifferentlyOrderedDeltas() throws {
+        var decoder = ResponsesSSEDecoder(requestID: ModelRequestID("ordered-arguments"))
+        let payloads = [
+            #"{"type":"response.output_item.added","item":{"type":"function_call","id":"item","call_id":"call","name":"question","arguments":""}}"#,
+            #"{"type":"response.function_call_arguments.delta","item_id":"item","delta":"{\"question\":\"Continue?\",\"multiple\":false}"}"#,
+            #"{"type":"response.function_call_arguments.done","item_id":"item","arguments":"{\"multiple\":false,\"question\":\"Continue?\"}"}"#,
+        ]
+        let call = try #require(try payloads.flatMap { try decoder.consume($0) }.compactMap { if case let .toolCallCompleted(call) = $0 { call } else { nil } }.first)
+        #expect(call.arguments == #"{"multiple":false,"question":"Continue?"}"#)
     }
 
     @Test func responsesURLDoesNotAppendTwice() throws {
@@ -89,10 +102,11 @@ struct ResponsesAdapterTests {
         _ = try payloads.flatMap { try decoder.consume($0) }
         #expect(decoder.completedCallIDs == ["call-1"])
 
-        let provenance = ResponsesProvenanceStore()
+        let provenance = ProviderProvenanceStore()
         let executionID = AgentRunID("run-1")
-        await provenance.record(responseID: "response-1", callIDs: decoder.completedCallIDs, executionID: executionID)
-        #expect(await provenance.responseID(for: ["call-1"], executionID: executionID) == "response-1")
+        let requestID = ModelRequestID("request-1")
+        try await provenance.record(ProviderContinuation(requestID: requestID, executionID: executionID, wire: .responses, responseID: "response-1", references: decoder.references, orderedItems: decoder.orderedItems))
+        #expect(try await provenance.continuation(for: requestID, wire: .responses)?.responseID == "response-1")
 
         let provider = OpenAIResponsesProvider(
             config: ProviderConfig(baseURL: URL(string: "https://api.example.com/v1")!, apiKey: nil, model: "m", wireProtocol: .responses, remoteStateEnabled: true),
@@ -123,26 +137,52 @@ struct ResponsesAdapterTests {
         #expect(try decoder.consume(#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#) == [.completed(.maxTokens)])
     }
 
-    @Test func provenanceIsIsolatedByExecutionAndDisabledWithoutIdentity() async {
-        let provenance = ResponsesProvenanceStore()
+    @Test func provenanceIsIsolatedByExecutionAndDisabledWithoutIdentity() async throws {
+        let provenance = ProviderProvenanceStore()
         let first = AgentRunID("run-a")
         let second = AgentRunID("run-b")
-        await provenance.record(responseID: "response-a", callIDs: ["same-call"], executionID: first)
-        await provenance.record(responseID: "response-b", callIDs: ["same-call"], executionID: second)
+        let firstRequest = ModelRequestID("request-a")
+        let secondRequest = ModelRequestID("request-b")
+        try await provenance.record(ProviderContinuation(requestID: firstRequest, executionID: first, wire: .responses, responseID: "response-a", references: []))
+        try await provenance.record(ProviderContinuation(requestID: secondRequest, executionID: second, wire: .responses, responseID: "response-b", references: []))
 
-        #expect(await provenance.responseID(for: ["same-call"], executionID: first) == "response-a")
-        #expect(await provenance.responseID(for: ["same-call"], executionID: second) == "response-b")
-        #expect(await provenance.responseID(for: ["same-call"], executionID: nil) == nil)
-        await provenance.record(responseID: "unscoped", callIDs: ["same-call"], executionID: nil)
-        #expect(await provenance.responseID(for: ["same-call"], executionID: nil) == nil)
+        #expect(try await provenance.continuation(for: firstRequest, wire: .responses)?.responseID == "response-a")
+        #expect(try await provenance.continuation(for: secondRequest, wire: .responses)?.responseID == "response-b")
+        #expect(try await provenance.continuation(for: firstRequest, wire: .chatCompletions) == nil)
+        await provenance.remove(first)
+        #expect(try await provenance.continuation(for: firstRequest, wire: .responses) == nil)
+    }
+
+    @Test func provenanceSurvivesStoreRestartWithoutEnteringDomainIDs() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let requestID = ModelRequestID("durable-request")
+        let domainID = ToolCallID("lingxi:durable-request:0")
+        let value = ProviderContinuation(requestID: requestID, executionID: AgentRunID("run"), wire: .responses, references: [ProviderToolCallReference(wire: .responses, domainCallID: domainID, externalCallID: "provider-call")], orderedItems: [.toolCall(domainID), .opaque(Data(#"{"type":"reasoning","encrypted_content":"opaque"}"#.utf8))])
+        try await ProviderProvenanceStore(directory: directory).record(value)
+        #expect(try await ProviderProvenanceStore(directory: directory).continuation(for: requestID, wire: .responses) == value)
     }
 
     @Test func failedPayloadUsesSafeStableError() throws {
-        let sentinel = "SENTINEL_PROVIDER_SECRET"
-        var decoder = ResponsesSSEDecoder()
-        let events = try decoder.consume(#"{"type":"response.failed","error":{"message":"SENTINEL_PROVIDER_SECRET"}}"#)
+        let sentinel = "actual-key-123"
+        var decoder = ResponsesSSEDecoder(sensitiveValues: [sentinel])
+        let events = try decoder.consume(#"{"type":"response.failed","response":{"error":{"code":"invalid_function_output","message":"Function output was rejected for actual-key-123","param":"input[3].call_id"}}}"#)
         let error = try #require(events.compactMap { if case let .failed(error) = $0 { error } else { nil } }.first)
+        #expect(error.code == .modelStream)
+        #expect(error.message.contains("code=invalid_function_output"))
+        #expect(error.message.contains("param=input[3].call_id"))
+        #expect(error.message.contains("Function output was rejected"))
         #expect(!error.message.contains(sentinel))
         #expect(!String(decoding: try JSONEncoder().encode(error), as: UTF8.self).contains(sentinel))
+    }
+
+    @Test func topLevelErrorPreservesSanitizedDetails() throws {
+        var decoder = ResponsesSSEDecoder()
+        let events = try decoder.consume(#"{"type":"error","code":"rate_limit_exceeded","message":"Please retry later","param":"requests"}"#)
+        let error = try #require(events.compactMap { if case let .failed(error) = $0 { error } else { nil } }.first)
+        #expect(error.message.contains("event=error"))
+        #expect(error.message.contains("code=rate_limit_exceeded"))
+        #expect(error.message.contains("param=requests"))
+        #expect(error.message.contains("Please retry later"))
     }
 }

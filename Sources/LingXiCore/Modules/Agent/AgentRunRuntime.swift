@@ -22,6 +22,7 @@ public actor SubagentModelResolver {
     public init(defaultRuntime: ModelRuntimeAssembly, runtimes: [String: ModelRuntimeAssembly] = [:], allowedModels: Set<String>? = nil, defaultSelection: ModelSelection? = nil, defaultSubagentSelection: ModelSelection? = nil) {
         var values = runtimes
         values["default"] = values["default"] ?? defaultRuntime
+        values[defaultRuntime.endpoint.providerID] = values[defaultRuntime.endpoint.providerID] ?? defaultRuntime
         self.runtimes = values
         self.allowedModels = allowedModels
         self.defaultSelection = defaultSelection
@@ -31,10 +32,13 @@ public actor SubagentModelResolver {
     public func resolve(_ requested: ModelSelection?, subagent: Bool = false) throws -> (selection: ModelSelection, assembly: ModelRuntimeAssembly) {
         let requested = requested ?? (subagent ? defaultSubagentSelection ?? defaultSelection : defaultSelection)
         let providerID = requested?.providerID ?? "default"
-        let key = requested?.accountID.map { "\($0)::\(requested!.profileID ?? requested!.modelID)" }
-        guard let assembly = key.flatMap({ runtimes[$0] }) ?? runtimes[providerID] else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Provider 不可用: \(providerID)") }
+        guard (requested?.accountID == nil) == (requested?.profileID == nil) else { throw CoreError(code: .subagentModelNotAllowed, message: "ModelSelection 必须同时提供 accountID 与 profileID") }
+        let key = requested?.accountID.flatMap { account in requested?.profileID.map { "\(account)::\($0)" } }
+        guard let assembly = key.flatMap({ runtimes[$0] }) ?? (requested?.accountID == nil ? runtimes[providerID] : nil) else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Provider 不可用: \(providerID)") }
         guard !assembly.modelID.rawValue.isEmpty else { throw CoreError(code: .provider, message: "未配置模型 Provider") }
         let selection = requested ?? ModelSelection(providerID: providerID, modelID: assembly.modelID.rawValue)
+        guard selection.providerID == assembly.endpoint.providerID || selection.providerID == "default" else { throw CoreError(code: .subagentModelNotAllowed, message: "ModelSelection Provider 与 resolved endpoint 不一致") }
+        guard selection.accountID == nil || selection.accountID == assembly.endpoint.accountID, selection.profileID == nil || selection.profileID == assembly.endpoint.profileID else { throw CoreError(code: .subagentModelNotAllowed, message: "ModelSelection account/profile 与 resolved endpoint 不一致") }
         guard selection.modelID == assembly.modelID.rawValue else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Model 不可用: \(selection.modelID)") }
         guard allowedModels?.contains(selection.modelID) ?? true else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Model 未获用户许可: \(selection.modelID)") }
         return (selection, assembly)

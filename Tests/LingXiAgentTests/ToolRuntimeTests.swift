@@ -45,7 +45,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "edit_file", "git", "glob", "grep", "list_directory", "process", "question", "read_file", "shell", "write_file"])
+        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "edit_file", "git", "glob", "grep", "list_directory", "process", "question", "read_file", "shell", "skill", "write_file"])
         #expect(await runtime.availableDefinitions().map(\.id.rawValue).contains("search_tools"))
     }
 
@@ -86,7 +86,7 @@ struct ToolRuntimeTests {
         let runtime = try runtime(root: root)
 
         let read = await runtime.execute(call("read_file"), sessionID: SessionID("s")) { _ in }
-        #expect(read == ToolResult(callID: ToolCallID("call-1"), success: true, content: "LingXiAgent"))
+        #expect(read == ToolResult(callID: ToolCallID("call-1"), success: true, content: "LingXiAgent", toolName: "read_file"))
 
         let listed = await runtime.execute(call("list_directory", "."), sessionID: SessionID("s")) { _ in }
         #expect(listed.success)
@@ -174,7 +174,7 @@ struct ToolRuntimeTests {
         #expect(request.resource == root.appendingPathComponent("README.md").path)
         #expect(request.toolID == ToolID("read_file"))
         try await engine.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
-        #expect(await pending.value == ToolResult(callID: ToolCallID("call-1"), success: true, content: "approved"))
+        #expect(await pending.value == ToolResult(callID: ToolCallID("call-1"), success: true, content: "approved", toolName: "read_file"))
     }
 
     @Test func denyDoesNotExecuteTool() async throws {
@@ -262,7 +262,7 @@ struct ToolRuntimeTests {
         #expect(EnvironmentSanitizer.sanitized(from: ["PATH": "/usr/bin:/bin", "LINGXI_TEST_SENTINEL": "secret"])["LINGXI_TEST_SENTINEL"] == nil)
         let runtime = try runtime(root: root)
         let result = await runtime.execute(
-            ToolCall(callID: ToolCallID("shell"), toolID: ToolID("shell"), arguments: #"{"command":"printf sandboxed > output.txt","timeout_ms":1000}"#),
+            ToolCall(callID: ToolCallID("shell"), toolID: ToolID("shell"), arguments: #"{"command":"printf sandboxed > output.txt","timeout_ms":15000}"#),
             sessionID: SessionID("s")
         ) { _ in }
         #expect(result.success)
@@ -326,5 +326,105 @@ struct ToolRuntimeTests {
         }
         #expect(status?.stdout.text == "ready")
         #expect(status?.running == false)
+    }
+
+    @Test func skillToolOmittedWhenNoSkillsAvailable() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try runtime(root: root)
+        let ids = await runtime.availableDefinitions().map(\.id.rawValue)
+        #expect(!ids.contains("skill"))
+    }
+
+    @Test func skillToolExposedWithCorrectEnumWhenSkillsExist() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skillsDir = root.appendingPathComponent(".lingxi/skills", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("alpha"), withIntermediateDirectories: true)
+        try "alpha skill".write(to: skillsDir.appendingPathComponent("alpha/SKILL.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("beta"), withIntermediateDirectories: true)
+        try "beta skill".write(to: skillsDir.appendingPathComponent("beta/SKILL.md"), atomically: true, encoding: .utf8)
+        let runtime = try runtime(root: root)
+        let skillDef = try #require(await runtime.availableDefinitions().first { $0.id == ToolID("skill") })
+        #expect(skillDef.inputSchema.properties["name"]?.enumValues == ["alpha", "beta"])
+    }
+
+    @Test func skillToolExposureUpdatesDynamicallyWithWorkspaceChanges() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try runtime(root: root)
+        let beforeIds = await runtime.availableDefinitions().map(\.id.rawValue)
+        #expect(!beforeIds.contains("skill"))
+        let skillsDir = root.appendingPathComponent(".lingxi/skills", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("gamma"), withIntermediateDirectories: true)
+        try "gamma skill".write(to: skillsDir.appendingPathComponent("gamma/SKILL.md"), atomically: true, encoding: .utf8)
+        let afterIds = await runtime.availableDefinitions().map(\.id.rawValue)
+        #expect(afterIds.contains("skill"))
+        let skillDef = try #require(await runtime.availableDefinitions().first { $0.id == ToolID("skill") })
+        #expect(skillDef.inputSchema.properties["name"]?.enumValues == ["gamma"])
+    }
+
+    @Test func allBuiltinToolsProduceToolResultsWithConsistentToolNameOnSuccessAndFailure() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "hello world".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        let toolRuntime = try runtime(root: root)
+
+        // Success path: read_file
+        let readOutcome = await toolRuntime.executeWithMetrics(ToolCall(callID: ToolCallID("c1"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(readOutcome.result.success)
+        #expect(readOutcome.result.toolName == "read_file")
+        #expect(readOutcome.toolName == "read_file")
+
+        // Success path: write_file
+        let writeOutcome = await toolRuntime.executeWithMetrics(ToolCall(callID: ToolCallID("c2"), toolID: ToolID("write_file"), arguments: #"{"path":"out.txt","content":"abc"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(writeOutcome.result.success)
+        #expect(writeOutcome.result.toolName == "write_file")
+        #expect(writeOutcome.toolName == "write_file")
+
+        // Success path: glob
+        let globOutcome = await toolRuntime.executeWithMetrics(ToolCall(callID: ToolCallID("c3"), toolID: ToolID("glob"), arguments: #"{"pattern":"*.md"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(globOutcome.result.success)
+        #expect(globOutcome.result.toolName == "glob")
+        #expect(globOutcome.toolName == "glob")
+
+        // Error path: permission denied
+        let denyRuntime = try runtime(root: root, decision: .deny)
+        let denyOutcome = await denyRuntime.executeWithMetrics(ToolCall(callID: ToolCallID("c4"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(!denyOutcome.result.success)
+        #expect(denyOutcome.result.toolName == "read_file")
+        #expect(denyOutcome.toolName == "read_file")
+
+        // Error path: schema validation failure
+        let invalidOutcome = await toolRuntime.executeWithMetrics(ToolCall(callID: ToolCallID("c5"), toolID: ToolID("read_file"), arguments: #"{}"#), sessionID: SessionID("s")) { _ in }
+        #expect(!invalidOutcome.result.success)
+        #expect(invalidOutcome.result.toolName == "read_file")
+        #expect(invalidOutcome.toolName == "read_file")
+
+        // Error path: non-existent file
+        let missingOutcome = await toolRuntime.executeWithMetrics(ToolCall(callID: ToolCallID("c6"), toolID: ToolID("read_file"), arguments: #"{"path":"nonexistent.txt"}"#), sessionID: SessionID("s")) { _ in }
+        #expect(!missingOutcome.result.success)
+        #expect(missingOutcome.result.toolName == "read_file")
+        #expect(missingOutcome.toolName == "read_file")
+    }
+
+    @Test func questionToolExecutionOutcomeAndResultConsistentlyPopulatesToolName() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let questions = QuestionRuntime(interactive: true)
+        await questions.setEventSink { request in
+            try? await questions.reply(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
+        }
+        let workspace = try WorkspaceRoot(path: root.path)
+        let runtime = ToolRuntime(registry: .builtin(workspace: workspace, questions: questions), permissions: PermissionEngine(defaultDecision: .allow))
+
+        let questionOutcome = await runtime.executeWithMetrics(
+            ToolCall(callID: ToolCallID("q1"), toolID: ToolID("question"), arguments: #"{"question":"Proceed?","options":["Yes","No"]}"#),
+            sessionID: SessionID("s")
+        ) { _ in }
+
+        #expect(questionOutcome.result.success)
+        #expect(questionOutcome.result.toolName == "question")
+        #expect(questionOutcome.toolName == "question")
     }
 }

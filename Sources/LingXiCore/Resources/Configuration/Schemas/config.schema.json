@@ -52,6 +52,29 @@
         "maxTotalRunsPerRootRun": {
           "type": "integer",
           "minimum": 1
+        },
+        "permissionPolicy": {
+          "type": "string",
+          "enum": ["ask", "auto"]
+        },
+        "executionProfile": {
+          "type": "string",
+          "enum": ["readOnly", "workspace", "fullAccess"]
+        },
+        "systemContext": {
+          "type": ["string", "null"]
+        },
+        "l2MaxCharacters": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "l1ProjectMaxCharacters": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preferredActiveTokens": {
+          "type": ["integer", "null"],
+          "minimum": 1
         }
       },
       "required": [

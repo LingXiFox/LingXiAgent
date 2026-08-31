@@ -3,8 +3,6 @@ import LingXiProtocol
 
 /// 一个 Session 的串行 Agent Lane。Tool 结果以结构化 parts 回写 Session，再进入下一步模型输入。
 public actor SessionRuntime {
-    private static let maximumAgentSteps = 8
-
     private let store: any SessionStore
     private let sessionID: SessionID
     private let modelBus: ModelBus
@@ -24,10 +22,13 @@ public actor SessionRuntime {
     private let rootSessionID: SessionID
     private let parentSessionID: SessionID?
     private let runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)?
+    private let executionProfile: SubagentExecutionProfile?
+    private let maximumAgentSteps: Int
     private var turnRunning = false
     private var turnTask: Task<Void, Never>?
     private var toolBatches: [ToolExchangeBatch] = []
     private var compactionGeneration = 0
+    private var latestModelRequestID: ModelRequestID?
 
     init(
         store: any SessionStore,
@@ -48,6 +49,7 @@ public actor SessionRuntime {
         runID: AgentRunID? = nil,
         rootSessionID: SessionID? = nil,
         parentSessionID: SessionID? = nil,
+        executionProfile: SubagentExecutionProfile? = nil,
         runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil
     ) {
         self.store = store
@@ -68,6 +70,8 @@ public actor SessionRuntime {
         self.runID = runID
         self.rootSessionID = rootSessionID ?? sessionID
         self.parentSessionID = parentSessionID
+        self.executionProfile = executionProfile
+        maximumAgentSteps = max(1, executionProfile?.maxSteps ?? 8)
         self.runObserver = runObserver
     }
 
@@ -93,7 +97,7 @@ public actor SessionRuntime {
             guard modelBus.gateway.modelID != nil else {
                 throw CoreError(
                     code: .provider,
-                    message: "未配置模型 Provider，缺少环境变量: \(modelBus.gateway.missingRequirements.joined(separator: ", "))"
+                    message: "未配置模型 Provider；请检查 providers.json 与 CredentialStore: \(modelBus.gateway.missingRequirements.joined(separator: ", "))"
                 )
             }
             let opened = await dataPlane.openAgentStream()
@@ -128,9 +132,10 @@ public actor SessionRuntime {
         var finalUsage: ModelUsage?
         var finalReason: ModelFinishReason?
         var lastSuccessfulRead: (signature: ToolRuntime.ReadOnlySignature, content: String)?
+        let executionProfile = self.executionProfile
 
         do {
-            for step in 0..<Self.maximumAgentSteps {
+            for step in 0..<maximumAgentSteps {
                 trace("agent.step.begin", step: step + 1)
                 let session = try await store.session(sessionID)
                 let clock = ContinuousClock()
@@ -149,10 +154,15 @@ public actor SessionRuntime {
                         }
                     }
                 }
-                let availableTools = await toolRuntime.availableDefinitions(sessionID: sessionID, interactive: interactive)
+                let availableTools = await toolRuntime.availableDefinitions(sessionID: sessionID, interactive: interactive, executionProfile: executionProfile)
                 let toolTokens = ConservativeTokenEstimator().estimate(tools: availableTools)
-                let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
-                profiler.recordBudget(budget, modelWindow: modelBus.gateway.contextProfile.contextWindowTokens)
+                let endpointProfile = modelBus.gateway.contextProfile
+                let requestedWindow = executionProfile?.contextProfile.flatMap(Int.init)
+                let contextProfile = ModelContextProfile(contextWindowTokens: min(endpointProfile.contextWindowTokens, requestedWindow ?? endpointProfile.contextWindowTokens), maxOutputTokens: endpointProfile.maxOutputTokens, recommendedOutputReserveTokens: endpointProfile.recommendedOutputReserveTokens, source: endpointProfile.source)
+                let preferred = executionProfile?.budgetProfile.flatMap(Int.init)
+                let planner = preferred.map { budgetPlanner.with(preferredActiveTokens: $0) } ?? budgetPlanner
+                let budget = planner.plan(profile: contextProfile, toolTokens: toolTokens)
+                profiler.recordBudget(budget, modelWindow: contextProfile.contextWindowTokens)
                 let allEntries = await contextEngine.entries(for: session, projectPages: pages)
                 let compacted = try await compactor.compact(sessionID: sessionID, entries: allEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(projectPages.map(\.content)))
                 profiler.recordCompaction(compacted, budget: budget)
@@ -180,7 +190,9 @@ public actor SessionRuntime {
                 profiler.recordContext(context, build: contextStarted.duration(to: clock.now))
                 let dispatchStarted = clock.now
                 trace("model.next.begin", step: step + 1)
+                let effectiveContinuationID = toolBatches.last(where: { $0.state == .settledAwaitingConsumption })?.continuationRequestID ?? latestModelRequestID
                 let request = ModelRequest(
+                    continuationOf: effectiveContinuationID,
                     model: try modelID(),
                     executionID: runID,
                     messages: context.modelMessages(),
@@ -193,9 +205,10 @@ public actor SessionRuntime {
                 }
                 try ModelRequestProtocolValidator.validate(context.entries)
                 profiler.recordProtocolValidator(liveBatches: toolBatches.filter { $0.state != .consumed }.count)
+                let submittedBatchIDs = Set(toolBatches.filter { $0.state == .settledAwaitingConsumption }.map(\.batchID))
                 trace("provider.stream.begin", step: step + 1)
+                latestModelRequestID = request.requestID
                 let events = try await modelBus.stream(request)
-                try await consumeSettledBatches()
                 let dispatch = dispatchStarted.duration(to: clock.now)
                 let streamStarted = clock.now
                 var text = ""
@@ -228,6 +241,7 @@ public actor SessionRuntime {
                     }
                 }
                 trace("provider.stream.end", step: step + 1)
+                try await consumeSettledBatches(submittedBatchIDs)
                 profiler.recordModel(dispatch: dispatch, stream: streamStarted.duration(to: clock.now))
 
                 guard !calls.isEmpty else {
@@ -255,7 +269,7 @@ public actor SessionRuntime {
                 let assistantMessage: Message
                 if persistence != nil { assistantMessage = Message(id: MessageID(UUID().uuidString), role: .assistant, parts: assistantParts, createdAt: .now) }
                 else { assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts) }
-                let batch = ToolExchangeBatch(batchID: UUID().uuidString, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }))
+                let batch = ToolExchangeBatch(batchID: UUID().uuidString, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, continuationRequestID: request.requestID, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }))
                 if let persistence { try await persistence.appendAssistantMessageAndBatch(sessionID: sessionID, message: assistantMessage, batch: batch) }
                 toolBatches.append(batch)
                 trace("session.parts.append.end", step: step + 1, toolCount: calls.count)
@@ -282,7 +296,7 @@ public actor SessionRuntime {
                 await withTaskGroup(of: (Int, ToolRuntime.ExecutionOutcome).self) { group in
                     for (offset, call) in calls.enumerated() where outcomes[offset] == nil && primaryByIndex[offset] == offset {
                         group.addTask { [toolRuntime, sessionID, eventSink] in
-                            let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral")) { request in
+                            let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile) { request in
                                 await eventSink(.permissionAsked(request))
                             }
                             return (offset, outcome)
@@ -324,12 +338,12 @@ public actor SessionRuntime {
                 trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
                 trace("tool.batch.settle.end", step: step + 1, toolCount: calls.count)
             }
-            throw CoreError(code: .agentStepLimitReached, message: "Agent Tool Loop 超过 \(Self.maximumAgentSteps) steps")
+            throw CoreError(code: .agentStepLimitReached, message: "Agent Tool Loop 超过 \(maximumAgentSteps) steps")
         } catch let error as CoreError {
-            await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
+            await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler)
         } catch {
-            await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
+            await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(
                 handle: handle,
                 sink: sink,
@@ -356,7 +370,7 @@ public actor SessionRuntime {
 
     private func duplicateOutcome(for call: ToolCall, signature: ToolRuntime.ReadOnlySignature, content: String) -> ToolRuntime.ExecutionOutcome {
         ToolRuntime.ExecutionOutcome(
-            result: ToolResult(callID: call.callID, success: false, content: content, error: ToolError(code: "duplicateToolCall", message: "连续重复调用已复用前一成功结果")),
+            result: ToolResult(callID: call.callID, success: false, content: content, error: ToolError(code: "duplicateToolCall", message: "连续重复调用已复用前一成功结果"), toolName: signature.toolName),
             permissionWait: .zero,
             permissionAsked: false,
             execution: .zero,
@@ -406,9 +420,13 @@ public actor SessionRuntime {
         if let persistence { try await persistence.appendToolResultMessageAndSettle(sessionID: sessionID, message: resultMessage, batch: toolBatches[index]) }
     }
 
-    private func consumeSettledBatches() async throws {
-        toolBatches = toolBatches.map { $0.state == .settledAwaitingConsumption ? $0.with(state: .consumed) : $0 }
-        for batch in toolBatches where batch.state == .consumed { try await persistence?.saveToolBatch(batch) }
+    private func consumeSettledBatches(_ batchIDs: Set<String>) async throws {
+        let updates = toolBatches.enumerated().compactMap { index, batch -> (Int, ToolExchangeBatch)? in
+            guard batchIDs.contains(batch.batchID), batch.state == .settledAwaitingConsumption else { return nil }
+            return (index, batch.with(state: .consumed))
+        }
+        if let persistence { try await persistence.saveToolBatches(updates.map(\.1)) }
+        for (index, batch) in updates { toolBatches[index] = batch }
     }
 
     private func persistCompaction() async throws {
@@ -459,6 +477,7 @@ public actor SessionRuntime {
         if diagnosticsEnabled {
             FileHandle.standardError.write(Data("[agent-trace] event=turn.failed sessionID=\(sessionID.rawValue) code=\(error.code.rawValue)\n".utf8))
         }
+        sink.finish(throwing: error)
         await dataPlane.finishAgentStream(handle.streamID)
         turnRunning = false
         turnTask = nil

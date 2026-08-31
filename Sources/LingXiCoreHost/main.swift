@@ -9,14 +9,15 @@ let dataRoot = LingXiDataRootResolver.resolve(
 )
 let configurations = try ConfigurationStore(dataRoot: dataRoot)
 let snapshot = try await configurations.load()
-let credentials = try FileCredentialStore(dataRoot: dataRoot)
+let credentials = try FileCredentialStore(dataRoot: dataRoot, passphrase: environment["LINGXI_CREDENTIALS_PASSPHRASE"])
 let providers = try await RuntimeConfigurationResolver.resolveProviders(
     snapshot.providers,
     credentials: credentials,
+    provenanceDirectory: dataRoot.appendingPathComponent("provider-provenance", isDirectory: true),
     diagnosticsEnabled: environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1",
     performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1"
 )
-let mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials)
+let mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true))
 let host = try CoreHost(
     providerAssembly: providers.assembly,
     providerMissingRequirements: providers.missingRequirements,
@@ -24,7 +25,8 @@ let host = try CoreHost(
     defaultModelSelection: providers.defaultSelection,
     configuration: snapshot.core,
     dataRoot: dataRoot,
-    mcpPager: mcp.pager
+    mcpPager: mcp.pager,
+    interactive: CoreHost.stdioInteractive(environment: environment)
 )
 await host.start()
 let server = StdioCoreServer(endpoint: host)

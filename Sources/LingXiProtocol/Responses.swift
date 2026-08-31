@@ -72,6 +72,7 @@ public struct CoreError: Sendable, Equatable, Error {
         /// 同一 Session 已有进行中的 turn（Session Lane 串行保护）。
         case turnAlreadyRunning
         case transport
+        case persistence
         /// Provider HTTP / API 错误（Provider Error）。
         case provider
         /// 推理已开始但流中途失败（Model Stream Error）。
@@ -115,6 +116,7 @@ public struct CoreError: Sendable, Equatable, Error {
         case subagentModelNotAllowed
         case subagentDepthExceeded
         case agentRunNotFound
+        case contextProfileNotViable
     }
 
     public let code: Code

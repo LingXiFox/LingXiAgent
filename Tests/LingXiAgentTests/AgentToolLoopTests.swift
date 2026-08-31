@@ -105,7 +105,7 @@ struct AgentToolLoopTests {
         #expect(requests[0].tools.map(\.id.rawValue) == ["apply_patch", "dependency_query", "edit_file", "find_references", "git", "glob", "grep", "list_directory", "load_tool", "process", "read_file", "search_tools", "shell", "subagent", "symbol_lookup", "write_file"])
         #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool])
         #expect(requests[1].messages[1].parts.contains(.toolCall(call())))
-        #expect(requests[1].messages[2].parts == [.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project"))])
+        #expect(requests[1].messages[2].parts == [.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project", toolName: "read_file"))])
 
         let snapshot = try await client.session(sessionID)
         #expect(snapshot.messages.map(\.role) == [.user, .assistant, .tool, .assistant])
@@ -115,7 +115,7 @@ struct AgentToolLoopTests {
         #expect(snapshot.messages[3].content == "这个项目叫 LingXiAgent。")
         #expect(!snapshot.messages[3].content.contains("need file"))
         #expect(events.contains(.toolCallCompleted(call())))
-        #expect(events.contains(.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project"))))
+        #expect(events.contains(.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project", toolName: "read_file"))))
     }
 
     @Test func deniedToolIsRecordedAndModelCanFinish() async throws {
@@ -155,7 +155,12 @@ struct AgentToolLoopTests {
 
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "loop")
-        for try await _ in stream {}
+        do {
+            for try await _ in stream {}
+            Issue.record("step limit 必须终止数据流")
+        } catch let error as CoreError {
+            #expect(error.code == .agentStepLimitReached)
+        }
         let events = await capture.waitForTerminal()
         guard case let .turnFailed(failure)? = events.last else {
             Issue.record("step limit 必须触发 turnFailed: \(events)")

@@ -1,9 +1,15 @@
 {
   "$schema": "https://schemas.example.invalid/lingxiagent/config.schema.json",
   "agent": {
+    "executionProfile": "workspace",
+    "l1ProjectMaxCharacters": 32768,
+    "l2MaxCharacters": 262144,
     "maxConcurrentSubagents": 4,
     "maxSubagentDepth": 3,
-    "maxTotalRunsPerRootRun": 32
+    "maxTotalRunsPerRootRun": 32,
+    "permissionPolicy": "ask",
+    "preferredActiveTokens": null,
+    "systemContext": null
   },
   "core": {
     "locale": "system",

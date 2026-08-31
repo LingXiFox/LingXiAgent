@@ -12,6 +12,7 @@ public protocol SessionStore: Actor, Sendable {
     func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message
+    func deleteSession(_ id: SessionID) async throws
 }
 
 public extension SessionStore {
@@ -66,6 +67,11 @@ public actor InMemorySessionStore: SessionStore {
         sessions[sessionID]?.append(message)
         return message
     }
+
+    public func deleteSession(_ id: SessionID) async throws {
+        sessions.removeValue(forKey: id)
+        order.removeAll { $0 == id }
+    }
 }
 
 /// 每 project 一个 state.sqlite 的 canonical Session repository。
@@ -119,5 +125,9 @@ public actor PersistentSessionStore: SessionStore {
         let message = Message(id: MessageID(UUID().uuidString), role: role, parts: parts, createdAt: .now)
         try await persistence.appendMessage(sessionID: sessionID, message: message)
         return message
+    }
+
+    public func deleteSession(_ id: SessionID) async throws {
+        try await persistence.deleteSession(id)
     }
 }

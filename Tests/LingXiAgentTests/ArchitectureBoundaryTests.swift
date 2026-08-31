@@ -53,6 +53,15 @@ struct ArchitectureBoundaryTests {
         }
     }
 
+    @Test func productionSourcesContainNoVCRModeOrCassetteImplementation() throws {
+        for file in try swiftFiles(in: root.appendingPathComponent("Sources")) {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            for forbidden in ["VCRMode", "VCRProviderTransport", "VCRCassette", "CassetteMismatch", "LINGXI_VCR_"] {
+                #expect(!source.contains(forbidden), "\(file.path) must not contain test-only VCR implementation")
+            }
+        }
+    }
+
     private func swiftFiles(in directory: URL) throws -> [URL] {
         guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
         return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }

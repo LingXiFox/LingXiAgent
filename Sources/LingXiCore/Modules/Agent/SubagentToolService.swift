@@ -30,6 +30,11 @@ private struct SubagentToolArguments: Decodable {
     let providerID: String?
     let modelID: String?
     let reasoning: String?
+    let permissionProfile: String?
+    let budgetProfile: String?
+    let contextProfile: String?
+    let maxSteps: Int?
+    let timeoutSeconds: Int?
 
     enum CodingKeys: String, CodingKey {
         case action, task, title, content, reasoning
@@ -37,12 +42,30 @@ private struct SubagentToolArguments: Decodable {
         case sessionID = "session_id"
         case providerID = "provider_id"
         case modelID = "model_id"
+        case permissionProfile = "permission_profile"
+        case budgetProfile = "budget_profile"
+        case contextProfile = "context_profile"
+        case maxSteps = "max_steps"
+        case timeoutSeconds = "timeout_seconds"
+    }
+
+    var executionProfile: SubagentExecutionProfile? {
+        guard permissionProfile != nil || budgetProfile != nil || contextProfile != nil || maxSteps != nil || timeoutSeconds != nil else {
+            return nil
+        }
+        return SubagentExecutionProfile(
+            permissionProfile: permissionProfile,
+            budgetProfile: budgetProfile,
+            contextProfile: contextProfile,
+            maxSteps: maxSteps,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 }
 
 /// The Tool Plane calls this actor; it owns no Session state and delegates only through explicit runtime closures.
 public actor SubagentToolService {
-    private var spawn: (@Sendable (SessionID, AgentRunID, String, String?, ModelSelection?, ToolCallID) async throws -> (SessionID, AgentRunInfo))?
+    private var spawn: (@Sendable (SessionID, AgentRunID, String, String?, ModelSelection?, SubagentExecutionProfile?, ToolCallID) async throws -> (SessionID, AgentRunInfo))?
     private var status: (@Sendable (AgentRunID, AgentRunID) async throws -> AgentRunInfo)?
     private var result: (@Sendable (AgentRunID, AgentRunID) async throws -> SubagentResult)?
     private var cancel: (@Sendable (AgentRunID, AgentRunID) async throws -> Void)?
@@ -51,7 +74,7 @@ public actor SubagentToolService {
     public init() {}
 
     public func bind(
-        spawn: @escaping @Sendable (SessionID, AgentRunID, String, String?, ModelSelection?, ToolCallID) async throws -> (SessionID, AgentRunInfo),
+        spawn: @escaping @Sendable (SessionID, AgentRunID, String, String?, ModelSelection?, SubagentExecutionProfile?, ToolCallID) async throws -> (SessionID, AgentRunInfo),
         status: @escaping @Sendable (AgentRunID, AgentRunID) async throws -> AgentRunInfo,
         result: @escaping @Sendable (AgentRunID, AgentRunID) async throws -> SubagentResult,
         cancel: @escaping @Sendable (AgentRunID, AgentRunID) async throws -> Void,
@@ -67,9 +90,26 @@ public actor SubagentToolService {
         let encode: @Sendable (any Encodable) throws -> String = { String(decoding: try encoder.encode(AnyEncodable($0)), as: UTF8.self) }
         switch input.action {
         case "spawn":
-            guard let parentRunID = AgentExecutionContext.current?.runID, let task = input.task, !task.isEmpty, let spawn else { throw CoreError(code: .toolArgumentInvalid, message: "spawn 需要当前 AgentRun 与 task") }
-            let selection = input.modelID.map { ModelSelection(providerID: input.providerID ?? "default", modelID: $0, reasoning: input.reasoning) }
-            let (childSessionID, run) = try await spawn(sessionID, parentRunID, task, input.title, selection, callID)
+            guard let parentRunID = AgentExecutionContext.current?.runID,
+                  let task = (input.task ?? input.content)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !task.isEmpty,
+                  let spawn else {
+                throw CoreError(code: .toolArgumentInvalid, message: "spawn 需要当前 AgentRun 与 task")
+            }
+            let providerID = input.providerID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let modelID = input.modelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reasoning = input.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let requestedSelection: ModelSelection?
+            switch (providerID?.isEmpty == false ? providerID : nil, modelID?.isEmpty == false ? modelID : nil) {
+            case (nil, nil) where reasoning?.isEmpty != false:
+                requestedSelection = nil
+            case let (providerID?, modelID?):
+                requestedSelection = ModelSelection(providerID: providerID, modelID: modelID, reasoning: reasoning?.isEmpty == false ? reasoning : nil)
+            default:
+                throw CoreError(code: .toolArgumentInvalid, message: "subagent 的 provider_id 与 model_id 必须同时提供")
+            }
+            let title = input.title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            let (childSessionID, run) = try await spawn(sessionID, parentRunID, task, title, requestedSelection, input.executionProfile, callID)
             return try encode(SubagentSpawnResponse(childSessionID: childSessionID, run: run))
         case "status":
             guard let id = input.runID, let requester = AgentExecutionContext.current?.runID, let status else { throw CoreError(code: .toolArgumentInvalid, message: "status 需要 run_id 与当前 AgentRun") }
@@ -81,7 +121,7 @@ public actor SubagentToolService {
             guard let id = input.runID, let requester = AgentExecutionContext.current?.runID, let cancel else { throw CoreError(code: .toolArgumentInvalid, message: "cancel 需要 run_id 与当前 AgentRun") }
             try await cancel(AgentRunID(id), requester); return #"{"status":"cancelled"}"#
         case "message":
-            guard let child = input.sessionID, let content = input.content, !content.isEmpty, let parentRunID = AgentExecutionContext.current?.runID, let message else { throw CoreError(code: .toolArgumentInvalid, message: "message 需要 session_id、content 与当前 AgentRun") }
+            guard let child = input.sessionID, let content = input.content?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty, let parentRunID = AgentExecutionContext.current?.runID, let message else { throw CoreError(code: .toolArgumentInvalid, message: "message 需要 session_id、content 与当前 AgentRun") }
             return try encode(try await message(SessionID(child), parentRunID, content))
         default: throw CoreError(code: .toolArgumentInvalid, message: "未知 subagent action: \(input.action)")
         }

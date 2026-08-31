@@ -155,7 +155,12 @@ struct ContextCompactionTests {
         let sessionID = try await client.createSession()
 
         let stream = try await client.sendMessage(sessionID: sessionID, content: "must not reach provider")
-        for try await _ in stream {}
+        do {
+            for try await _ in stream {}
+            Issue.record("超预算请求必须终止数据流")
+        } catch let error as CoreError {
+            #expect(error.code == .contextBudgetExceeded)
+        }
 
         #expect(provider.recorder.requests.isEmpty)
         #expect((try await client.session(sessionID)).messages.map(\.role) == [.user])

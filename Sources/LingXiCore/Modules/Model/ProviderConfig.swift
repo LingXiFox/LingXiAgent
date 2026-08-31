@@ -1,80 +1,19 @@
 import Foundation
 import LingXiProtocol
 
-/// Provider 运行时组装结果：Provider 实例 + 模型名。
+/// Provider 实例与已解析端点必须原子组装，endpoint 是运行时唯一真相。
 public struct ModelRuntimeAssembly: Sendable {
     public let provider: any ModelProvider
-    public let modelID: ModelID
-    public let contextProfile: ModelContextProfile
     public let endpoint: ResolvedModelEndpoint
+    public var modelID: ModelID { endpoint.modelID }
+    public var contextProfile: ModelContextProfile { endpoint.contextProfile }
 
     public init(provider: any ModelProvider, modelID: ModelID, contextProfile: ModelContextProfile = ModelContextProfile(), endpoint: ResolvedModelEndpoint? = nil) {
         self.provider = provider
-        self.modelID = modelID
-        self.contextProfile = contextProfile
         self.endpoint = endpoint ?? ResolvedModelEndpoint(providerID: "default", modelID: modelID, baseURL: nil, wireProtocol: .chatCompletions, contextProfile: contextProfile)
     }
-}
 
-/// Provider 调试覆盖装载。正式用户配置由 App/Bootstrap 解析后进入 typed runtime。
-public enum ProviderSetup {
-    public static let baseURLKey = "LINGXI_PROVIDER_BASE_URL"
-    public static let apiKeyKey = "LINGXI_PROVIDER_API_KEY"
-    public static let modelKey = "LINGXI_PROVIDER_MODEL"
-    public static let wireProtocolKey = "LINGXI_PROVIDER_WIRE_PROTOCOL"
-
-    /// 环境未配置时返回占位 Provider + 缺失项清单；
-    /// API Key 允许为空，因为部分 Provider 不要求认证。
-    public static func resolve(_ environment: [String: String]) -> (assembly: ModelRuntimeAssembly, missing: [String]) {
-        let baseString = (environment[baseURLKey] ?? "").trimmingCharacters(in: .whitespaces)
-        let model = environment[modelKey] ?? ""
-        let apiKey = environment[apiKeyKey] ?? ""
-        let wireProtocol = ModelWireProtocol(rawValue: environment[wireProtocolKey] ?? "chatCompletions")
-
-        var missing: [String] = []
-        if baseString.isEmpty { missing.append(baseURLKey) }
-        if model.isEmpty { missing.append(modelKey) }
-        if !baseString.isEmpty, baseURLValue(baseString) == nil {
-            missing.append("\(baseURLKey)（URL 无法解析）")
-        }
-        if wireProtocol == nil { missing.append("\(wireProtocolKey)（仅支持 chatCompletions、responses 或 anthropicMessages）") }
-
-        guard missing.isEmpty, let baseURL = baseURLValue(baseString), let wireProtocol else {
-            return (assembly: unavailable, missing: missing)
-        }
-
-        let config = ProviderConfig(
-            baseURL: baseURL,
-            apiKey: apiKey.isEmpty ? nil : apiKey,
-            model: model,
-            wireProtocol: wireProtocol,
-            diagnosticsEnabled: environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1",
-            performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1"
-        )
-        let provider: any ModelProvider
-        switch wireProtocol {
-        case .chatCompletions: provider = OpenAICompatibleProvider(config: config)
-        case .responses: provider = OpenAIResponsesProvider(config: config)
-        case .anthropicMessages: provider = AnthropicMessagesProvider(config: config)
-        }
-        return (
-            assembly: ModelRuntimeAssembly(
-                provider: provider,
-                modelID: ModelID(model),
-                endpoint: ResolvedModelEndpoint(providerID: "default", modelID: ModelID(model), baseURL: baseURL, wireProtocol: wireProtocol)
-            ),
-            missing: []
-        )
-    }
-
-    static var unavailable: ModelRuntimeAssembly {
-        ModelRuntimeAssembly(provider: UnavailableProvider(), modelID: ModelID(""))
-    }
-
-    static func baseURLValue(_ string: String) -> URL? {
-        guard let url = URL(string: string), url.scheme != nil, url.host() != nil else { return nil }
-        return url
-    }
+    public static let unavailable = ModelRuntimeAssembly(provider: UnavailableProvider(), modelID: ModelID(""))
 }
 
 private struct UnavailableProvider: ModelProvider {
@@ -172,16 +111,38 @@ public enum ModelWireProtocol: String, Sendable, Equatable, Codable {
 
 public struct ResolvedModelEndpoint: Sendable, Equatable {
     public let providerID: String
+    public let accountID: String?
+    public let profileID: String?
     public let modelID: ModelID
     public let baseURL: URL?
     public let wireProtocol: ModelWireProtocol
     public let contextProfile: ModelContextProfile
+    public let capabilities: ModelCapabilities
 
-    public init(providerID: String, modelID: ModelID, baseURL: URL?, wireProtocol: ModelWireProtocol, contextProfile: ModelContextProfile = ModelContextProfile()) {
+    public init(providerID: String, accountID: String? = nil, profileID: String? = nil, modelID: ModelID, baseURL: URL?, wireProtocol: ModelWireProtocol, contextProfile: ModelContextProfile = ModelContextProfile(), capabilities: ModelCapabilities = ModelCapabilities()) {
         self.providerID = providerID
+        self.accountID = accountID
+        self.profileID = profileID
         self.modelID = modelID
         self.baseURL = baseURL
         self.wireProtocol = wireProtocol
         self.contextProfile = contextProfile
+        self.capabilities = capabilities
+    }
+}
+
+public struct ModelCapabilities: Sendable, Equatable {
+    public let toolCalling: Bool
+    public let parallelToolCalling: Bool
+    public let reasoning: Bool
+    public let vision: Bool
+    public let structuredOutput: Bool
+
+    public init(toolCalling: Bool = false, parallelToolCalling: Bool = false, reasoning: Bool = false, vision: Bool = false, structuredOutput: Bool = false) {
+        self.toolCalling = toolCalling
+        self.parallelToolCalling = parallelToolCalling
+        self.reasoning = reasoning
+        self.vision = vision
+        self.structuredOutput = structuredOutput
     }
 }

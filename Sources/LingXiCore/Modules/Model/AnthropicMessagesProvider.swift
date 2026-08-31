@@ -7,32 +7,46 @@ import LingXiProtocol
 /// Anthropic Messages adapter. Native wire identities and DTOs remain local to this file.
 public struct AnthropicMessagesProvider: ModelProvider {
     private let config: ProviderConfig
-    private let session: URLSession
+    private let transport: any ProviderHTTPTransport
+    private let provenance: ProviderProvenanceStore
 
-    public init(config: ProviderConfig, session: URLSession = .shared) {
+    public init(config: ProviderConfig, session: URLSession = .shared, provenance: ProviderProvenanceStore = ProviderProvenanceStore()) {
         self.config = config
-        self.session = session
+        transport = URLSessionProviderHTTPTransport(session: session)
+        self.provenance = provenance
+    }
+
+    public init(config: ProviderConfig, transport: any ProviderHTTPTransport, provenance: ProviderProvenanceStore = ProviderProvenanceStore()) {
+        self.config = config
+        self.transport = transport
+        self.provenance = provenance
     }
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
-        let urlRequest = try makeURLRequest(request)
-        let (bytes, response) = try await session.bytes(for: urlRequest)
-        guard let http = response as? HTTPURLResponse else {
-            throw CoreError(code: .provider, message: "Provider returned a non-HTTP response")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw OpenAICompatibleProvider.httpError(status: http.statusCode, requestID: http.value(forHTTPHeaderField: "request-id"))
+        let prior = try await provenance.resolveContinuation(for: request.continuationOf, wire: .anthropicMessages)
+        let urlRequest = try makeURLRequest(request, continuation: prior)
+        let response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .anthropicMessages, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+        guard (200..<300).contains(response.statusCode) else {
+            _ = try? await OpenAICompatibleProvider.collectText(response.body)
+            throw OpenAICompatibleProvider.httpError(status: response.statusCode, requestID: response.header("request-id"))
         }
         return AsyncThrowingStream { continuation in
-            let pump = Task { await Pump(source: bytes, continuation: continuation).run() }
+            let pump = Task { await Pump(source: response.body, continuation: continuation, request: request, prior: prior, provenance: provenance).run() }
             continuation.onTermination = { @Sendable _ in
                 pump.cancel()
-                bytes.task.cancel()
             }
         }
     }
 
+    public func endExecution(_ executionID: AgentRunID) async {
+        await provenance.remove(executionID)
+    }
+
     public func makeURLRequest(_ request: ModelRequest) throws -> URLRequest {
+        try makeURLRequest(request, continuation: nil)
+    }
+
+    private func makeURLRequest(_ request: ModelRequest, continuation: ProviderContinuation?) throws -> URLRequest {
         guard request.reasoning == nil else {
             throw CoreError(code: .provider, message: "Anthropic reasoning configuration is not implemented")
         }
@@ -45,11 +59,15 @@ public struct AnthropicMessagesProvider: ModelProvider {
         case let .bearer(secret): result.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): result.setValue(value, forHTTPHeaderField: name)
         }
-        result.httpBody = try Self.makeRequestBody(request, maxOutputTokens: config.maxOutputTokens ?? 4_096)
+        result.httpBody = try Self.makeRequestBody(request, maxOutputTokens: config.maxOutputTokens ?? 4_096, continuation: continuation)
         return result
     }
 
     public static func makeRequestBody(_ request: ModelRequest, maxOutputTokens: Int = 4_096) throws -> Data {
+        try makeRequestBody(request, maxOutputTokens: maxOutputTokens, continuation: nil)
+    }
+
+    private static func makeRequestBody(_ request: ModelRequest, maxOutputTokens: Int, continuation: ProviderContinuation?) throws -> Data {
         let messageSystem = request.messages.filter { $0.role == .system }.map(\.content).filter { !$0.isEmpty }
         let system = ([request.system].compactMap { $0 } + messageSystem).joined(separator: "\n\n")
         let messages = try request.messages.compactMap { message -> RequestBody.Message? in
@@ -70,7 +88,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
                               let input = try? JSONDecoder().decode(JSONValue.self, from: data),
                               case .object = input
                         else { throw CoreError(code: .provider, message: "Anthropic tool input must be a JSON object") }
-                        return .toolUse(id: call.callID.rawValue, name: call.toolID.rawValue, input: input)
+                        return .toolUse(id: continuation?.externalCallID(for: call.callID) ?? call.callID.rawValue, name: call.toolID.rawValue, input: input)
                     case .toolResult:
                         throw CoreError(code: .provider, message: "Anthropic assistant message cannot contain tool results")
                     }
@@ -78,7 +96,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
             case .tool:
                 return RequestBody.Message(role: "user", content: message.parts.compactMap { part in
                     guard case let .toolResult(result) = part else { return nil }
-                    return .toolResult(id: result.callID.rawValue, content: result.content, isError: !result.success)
+                    return .toolResult(id: continuation?.externalCallID(for: result.callID) ?? result.callID.rawValue, content: result.content, isError: !result.success)
                 })
             }
         }
@@ -94,23 +112,29 @@ public struct AnthropicMessagesProvider: ModelProvider {
     }
 
     private final class Pump: Sendable {
-        private let source: URLSession.AsyncBytes
+        private let source: AsyncThrowingStream<Data, Error>
         private let continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation
+        private let request: ModelRequest
+        private let prior: ProviderContinuation?
+        private let provenance: ProviderProvenanceStore
 
-        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation) {
+        init(source: AsyncThrowingStream<Data, Error>, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, request: ModelRequest, prior: ProviderContinuation?, provenance: ProviderProvenanceStore) {
             self.source = source
             self.continuation = continuation
+            self.request = request
+            self.prior = prior
+            self.provenance = provenance
         }
 
         func run() async {
             var lines = SSEDecoder()
-            var decoder = AnthropicSSEDecoder()
+            var decoder = AnthropicSSEDecoder(requestID: request.requestID)
             var terminal = false
             var failed = false
             continuation.yield(.started)
             do {
-                outer: for try await byte in source {
-                    for line in lines.feed(Data([byte])) {
+                outer: for try await chunk in source {
+                    for line in lines.feed(chunk) {
                         if try emit(line, decoder: &decoder, terminal: &terminal, failed: &failed) { break outer }
                     }
                 }
@@ -121,6 +145,10 @@ public struct AnthropicMessagesProvider: ModelProvider {
                 }
                 if Task.isCancelled || failed { continuation.finish(); return }
                 guard terminal else { throw CoreError(code: .modelStream, message: "Anthropic SSE ended unexpectedly") }
+                let combinedReferences = (prior?.references ?? []).filter { priorRef in !decoder.references.contains { $0.domainCallID == priorRef.domainCallID } } + decoder.references
+                if !combinedReferences.isEmpty {
+                    try await provenance.record(ProviderContinuation(requestID: request.requestID, executionID: request.executionID, wire: .anthropicMessages, references: combinedReferences))
+                }
                 continuation.finish()
             } catch let error as CoreError {
                 if Task.isCancelled { continuation.finish(); return }
@@ -137,7 +165,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("data:") else { return false }
             let payload = String(trimmed.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
-            if payload == "[DONE]" { terminal = true; return true }
+            if payload == "[DONE]" { return false }
             if let data = payload.data(using: .utf8),
                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let type = object["type"] as? String {
@@ -154,14 +182,18 @@ public struct AnthropicMessagesProvider: ModelProvider {
 
 public struct AnthropicSSEDecoder {
     private struct PartialTool {
-        var id: String
+        var externalID: String
+        var domainID: ToolCallID
         var name: String
         var arguments = ""
     }
 
     private var tools: [Int: PartialTool] = [:]
+    private let requestID: ModelRequestID
+    private var pendingFinishReason: ModelFinishReason?
+    public private(set) var references: [ProviderToolCallReference] = []
 
-    public init() {}
+    public init(requestID: ModelRequestID = ModelRequestID()) { self.requestID = requestID }
 
     public mutating func consume(_ payload: String) throws -> [ModelEvent] {
         guard let data = payload.data(using: .utf8),
@@ -182,8 +214,9 @@ public struct AnthropicSSEDecoder {
                 guard let id = block["id"] as? String, let name = block["name"] as? String else {
                     throw CoreError(code: .modelStream, message: "Anthropic tool use is missing identity")
                 }
-                tools[index] = PartialTool(id: id, name: name)
-                return [.toolCallStarted(callID: ToolCallID(id), toolID: ToolID(name))]
+                let domainID = ToolCallID("lingxi:\(requestID.rawValue):\(index)")
+                tools[index] = PartialTool(externalID: id, domainID: domainID, name: name)
+                return [.toolCallStarted(callID: domainID, toolID: ToolID(name))]
             default: return []
             }
         case "content_block_delta":
@@ -195,7 +228,7 @@ public struct AnthropicSSEDecoder {
                 guard var tool = tools[index], let fragment = delta["partial_json"] as? String else { return [] }
                 tool.arguments += fragment
                 tools[index] = tool
-                return [.toolCallDelta(callID: ToolCallID(tool.id), arguments: fragment)]
+                return [.toolCallDelta(callID: tool.domainID, arguments: fragment)]
             default: return []
             }
         case "content_block_stop":
@@ -203,15 +236,16 @@ public struct AnthropicSSEDecoder {
             guard let data = tool.arguments.data(using: .utf8),
                   (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
             else { throw CoreError(code: .modelStream, message: "Anthropic tool input is not a JSON object") }
-            return [.toolCallCompleted(ToolCall(callID: ToolCallID(tool.id), toolID: ToolID(tool.name), arguments: tool.arguments))]
+            references.append(ProviderToolCallReference(wire: .anthropicMessages, domainCallID: tool.domainID, externalCallID: tool.externalID))
+            return [.toolCallCompleted(ToolCall(callID: tool.domainID, toolID: ToolID(tool.name), arguments: tool.arguments))]
         case "message_delta":
             var events: [ModelEvent] = []
             if let value = usage(object["usage"] as? [String: Any]) { events.append(.usage(value)) }
             let delta = object["delta"] as? [String: Any]
-            if let reason = finishReason(delta?["stop_reason"] as? String) { events.append(.completed(reason)) }
+            if let reason = finishReason(delta?["stop_reason"] as? String) { pendingFinishReason = reason }
             return events
         case "message_stop":
-            return []
+            return [.completed(pendingFinishReason ?? .unknown)]
         case "error":
             return [.failed(CoreError(code: .modelStream, message: "Anthropic SSE returned an error"))]
         default:

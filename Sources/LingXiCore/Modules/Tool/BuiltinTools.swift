@@ -161,6 +161,7 @@ private struct ProcessArguments: Decodable {
 }
 private struct QuestionArguments: Decodable { let question: String; let options: [String]?; let multiple: Bool? }
 private struct SymbolArguments: Decodable { let symbol: String; let mode: String?; let direction: String? }
+private struct SkillArguments: Decodable { let name: String }
 
 private func pathArguments(_ arguments: String) throws -> PathArguments { try decodeArguments(arguments) }
 
@@ -900,6 +901,53 @@ private struct QuestionToolResult: Codable {
     let text: String?
 }
 
+private struct SkillTool: ToolExecutor {
+    let workspace: WorkspaceRoot
+
+    var definition: ToolDefinition {
+        let names = Self.names(in: workspace)
+        return ToolDefinition(
+            id: ToolID("skill"),
+            description: names.isEmpty ? "Load a workspace skill by name. No skills are currently available." : "Load a workspace skill by name. Available: \(names.joined(separator: ", ")).",
+            inputSchema: ToolInputSchema(properties: ["name": ToolInputProperty(type: .string, description: "Available skill name", enumValues: names)], required: ["name"]),
+            capability: ToolCapability(readOnly: true)
+        )
+    }
+
+    init(workspace: WorkspaceRoot) {
+        self.workspace = workspace
+    }
+
+    func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: SkillArguments = try decodeArguments(arguments)
+        return try skillFile(input.name, profile: profile).path
+    }
+
+    func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: SkillArguments = try decodeArguments(arguments)
+        return try readText(skillFile(input.name, profile: profile), operation: "skill")
+    }
+
+    private func skillFile(_ name: String, profile: ExecutionProfile) throws -> URL {
+        guard !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || "-_".contains($0) }) else {
+            throw CoreError(code: .toolArgumentInvalid, message: "Skill 名称无效")
+        }
+        let file = try workspace.resolve(".lingxi/skills/\(name)/SKILL.md", profile: profile)
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            throw CoreError(code: .resourceNotFound, message: "Skill 不存在: \(name)")
+        }
+        return file
+    }
+
+    private static func names(in workspace: WorkspaceRoot) -> [String] {
+        let root = workspace.url.appendingPathComponent(".lingxi/skills", isDirectory: true)
+        return ((try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [])
+            .filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("SKILL.md").path) }
+            .map(\.lastPathComponent)
+            .sorted()
+    }
+}
+
 private struct IndexResult: Codable {
     let id: String
     let path: String
@@ -965,6 +1013,7 @@ public extension BuiltInToolProvider {
             ShellTool(workspace: workspace),
             ProcessTool(workspace: workspace, store: processes ?? ToolProcessStore()),
             GitTool(workspace: workspace),
+            SkillTool(workspace: workspace),
             QuestionTool(questions: questions)
         ] + indexTools)
     }

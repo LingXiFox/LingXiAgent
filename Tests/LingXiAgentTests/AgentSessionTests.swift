@@ -295,7 +295,12 @@ struct AgentSessionTests {
 
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "这条会失败")
-        for try await _ in stream {}
+        do {
+            for try await _ in stream {}
+            Issue.record("失败 turn 的数据流必须抛错")
+        } catch let error as CoreError {
+            #expect(error.code == .modelStream)
+        }
 
         await waitForTurns(recorder, count: 1)
         events.cancel()
@@ -391,7 +396,7 @@ struct AgentSessionTests {
     }
 
     @Test func unconfiguredProviderFailsFast() async throws {
-        let host = try CoreHost(providerAssembly: ProviderSetup.unavailable)
+        let host = try CoreHost(providerAssembly: .unavailable)
         await host.start()
         let client = LingXiClient.inProcess(endpoint: host)
 

@@ -17,6 +17,20 @@ struct RealProviderSmokeTests {
         FileHandle.standardError.write(Data(("[real-smoke] \(stage)\n").utf8))
     }
 
+    private func smokeAssembly(_ environment: [String: String]) -> ModelRuntimeAssembly? {
+        guard let base = environment["LINGXI_PROVIDER_BASE_URL"], let baseURL = URL(string: base), baseURL.scheme != nil, baseURL.host() != nil,
+              let model = environment["LINGXI_PROVIDER_MODEL"], !model.isEmpty,
+              let wire = environment["LINGXI_PROVIDER_WIRE_PROTOCOL"].flatMap(ModelWireProtocol.init(rawValue:))
+        else { return nil }
+        let config = ProviderConfig(baseURL: baseURL, apiKey: environment["LINGXI_PROVIDER_API_KEY"], model: model, wireProtocol: wire)
+        let provider: any ModelProvider = switch wire {
+        case .chatCompletions: OpenAICompatibleProvider(config: config)
+        case .responses: OpenAIResponsesProvider(config: config)
+        case .anthropicMessages: AnthropicMessagesProvider(config: config)
+        }
+        return ModelRuntimeAssembly(provider: provider, modelID: ModelID(model), endpoint: ResolvedModelEndpoint(providerID: "smoke", modelID: ModelID(model), baseURL: baseURL, wireProtocol: wire))
+    }
+
     private func within<T: Sendable>(
         _ stage: String,
         seconds: Double = 45,
@@ -51,8 +65,7 @@ struct RealProviderSmokeTests {
     @Test func realProviderPhaseNineSmoke() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
-              let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
-              let model = environment[ProviderSetup.modelKey], !model.isEmpty
+              let assembly = smokeAssembly(environment)
         else {
             return
         }
@@ -60,9 +73,6 @@ struct RealProviderSmokeTests {
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workspaceURL) }
 
-        let (assembly, missing) = ProviderSetup.resolve(environment)
-        #expect(missing.isEmpty)
-        setenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS", "372", 1)
         setenv("LINGXI_PERF_DEBUG", "1", 1)
         let host = try CoreHost(
             providerAssembly: assembly,
@@ -183,7 +193,6 @@ struct RealProviderSmokeTests {
             #expect(performance.sessionL2DerivedPromotions > 0 || performance.sessionL2DerivedHits > 0)
             #expect(performance.derivedPageIns > 0)
             #expect(afterCompact.compactionGeneration > 0)
-            unsetenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS")
             unsetenv("LINGXI_PERF_DEBUG")
             await host.shutdown()
         } catch {
@@ -195,21 +204,16 @@ struct RealProviderSmokeTests {
     @Test func realProviderPhaseTenRestartSmoke() async throws {
         trace("test-enter")
         let environment = ProcessInfo.processInfo.environment
-        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1"
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
+              let assembly = smokeAssembly(environment)
         else { return }
-        let (assembly, missing) = ProviderSetup.resolve(environment)
-        #expect(missing.isEmpty)
         let dataRoot = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase10-\(UUID().uuidString)", isDirectory: true)
         let workspaceURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase10-workspace-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent("Sources"), withIntermediateDirectories: true)
         try Data("public actor ContextPager {}\n".utf8).write(to: workspaceURL.appendingPathComponent("Sources/ContextPager.swift"))
-        setenv("LINGXI_DATA_ROOT", dataRoot.path, 1)
-        setenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS", "372", 1)
         setenv("LINGXI_PERF_DEBUG", "1", 1)
         defer {
-            unsetenv("LINGXI_DATA_ROOT")
-            unsetenv("LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS")
             unsetenv("LINGXI_PERF_DEBUG")
             try? FileManager.default.removeItem(at: dataRoot)
             try? FileManager.default.removeItem(at: workspaceURL)
@@ -218,7 +222,7 @@ struct RealProviderSmokeTests {
         let workspace = try WorkspaceRoot(path: workspaceURL.path)
         trace("core-a-start")
         let first = try await within("core-a-start") {
-            let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, permissionDecision: .allow)
+            let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, dataRoot: dataRoot, permissionDecision: .allow)
             await host.start()
             return host
         }
@@ -241,7 +245,7 @@ struct RealProviderSmokeTests {
 
         trace("core-b-start")
         let second = try await within("core-b-start") {
-            let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, permissionDecision: .allow)
+            let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, dataRoot: dataRoot, permissionDecision: .allow)
             await host.start()
             return host
         }
@@ -263,11 +267,8 @@ struct RealProviderSmokeTests {
     @Test func realProviderPhaseTwelveHTTPMCPSmoke() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
-              let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
-              let model = environment[ProviderSetup.modelKey], !model.isEmpty
+              let assembly = smokeAssembly(environment)
         else { return }
-        let (assembly, missing) = ProviderSetup.resolve(environment)
-        #expect(missing.isEmpty)
         let server = try FixtureMCPHTTPServer()
         defer { server.stop() }
         let serverID = MCPServerID("fixture-server")
@@ -284,8 +285,8 @@ struct RealProviderSmokeTests {
         defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
-        let answer = try await within("phase12-http-mcp") {
-            try await send(client, sessionID: sessionID, "有一个外部 MCP 测试服务包含 phase12 的测试标记。请通过工具目录找到合适能力，load 后立即用 key=phase12 调用该外部工具。不要搜索 workspace，不要猜测，也不要只描述下一步。")
+        let answer = try await within("phase12-http-mcp", seconds: 180) {
+            try await send(client, sessionID: sessionID, timeout: 180, "有一个外部 MCP 测试服务包含 phase12 的测试标记。请通过工具目录找到合适能力，load 后立即用 key=phase12 调用该外部工具。不要搜索 workspace，不要猜测，也不要只描述下一步。")
         }
         #expect(answer.contains("MCPAnchor-729"))
         #expect(await pager.leaseCount(sessionID: sessionID) == 0)
@@ -298,16 +299,13 @@ struct RealProviderSmokeTests {
     @Test func realProviderPhaseThirteenMultiAgentSmoke() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
-              let base = environment[ProviderSetup.baseURLKey], !base.isEmpty,
-              let model = environment[ProviderSetup.modelKey], !model.isEmpty
+              let assembly = smokeAssembly(environment)
         else { return }
         let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase13-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rootURL) }
         try Data("public struct Foo { public let value = 1 }\n".utf8).write(to: rootURL.appendingPathComponent("Foo.swift"))
         try Data("public struct Bar { public let value = 2 }\n".utf8).write(to: rootURL.appendingPathComponent("Bar.swift"))
-        let (assembly, missing) = ProviderSetup.resolve(environment)
-        #expect(missing.isEmpty)
         let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: rootURL.path), permissionDecision: .allow)
         await host.start()
         defer { Task { await host.shutdown() } }
@@ -338,9 +336,9 @@ struct RealProviderSmokeTests {
 
     @Test func realProviderResponsesSmoke() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1" else { return }
-        let (assembly, missing) = ProviderSetup.resolve(environment)
-        #expect(missing.isEmpty)
+        guard environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1",
+              let assembly = smokeAssembly(environment)
+        else { return }
         guard assembly.endpoint.wireProtocol == .responses else {
             Issue.record("Responses smoke requires LINGXI_PROVIDER_WIRE_PROTOCOL=responses")
             return

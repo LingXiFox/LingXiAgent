@@ -87,7 +87,7 @@ struct ConfigurationStoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let configurations = try ConfigurationStore(dataRoot: root)
         var snapshot = try await configurations.load()
-        let credentials = try FileCredentialStore(dataRoot: root)
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
         let reference = CredentialRef("provider-main")
         let sentinel = "secret-sentinel-729"
 
@@ -139,7 +139,9 @@ struct ConfigurationStoreTests {
             let text = try String(contentsOf: root.appendingPathComponent(filename), encoding: .utf8)
             #expect(!text.contains(sentinel))
         }
-        #expect(try String(contentsOf: root.appendingPathComponent("credentials.vault"), encoding: .utf8).contains(sentinel))
+        let vaultText = try String(contentsOf: root.appendingPathComponent("credentials.vault"), encoding: .utf8)
+        #expect(!vaultText.contains(sentinel))
+        #expect(vaultText.contains(#""name" : "AES-256-GCM""#))
 
         let invalidVault: [String: Any] = ["version": 1, "credentials": [:], "extra": true]
         try write(invalidVault, to: root.appendingPathComponent("credentials.vault"))
@@ -152,13 +154,52 @@ struct ConfigurationStoreTests {
         }
     }
 
+    @Test func legacyVaultMigratesToEncryptedAtRestWithoutPlaintextBackup() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sentinel = "secret-sentinel-729"
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try write(["version": 1, "credentials": ["provider-main": sentinel]], to: root.appendingPathComponent("credentials.vault"))
+
+        let store = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        #expect(try await store.secret(for: CredentialRef("provider-main")) == sentinel)
+        for filename in ["credentials.vault", "credentials.vault.v1-migration-backup"] {
+            let contents = try String(contentsOf: root.appendingPathComponent(filename), encoding: .utf8)
+            #expect(!contents.contains(sentinel))
+            #expect(contents.contains(#""version" : 2"#))
+        }
+
+        let reopened = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        #expect(try await reopened.secret(for: CredentialRef("provider-main")) == sentinel)
+
+        let unavailable = try FileCredentialStore(dataRoot: root)
+        await #expect(throws: ConfigurationValidationError.self) {
+            _ = try await unavailable.secret(for: CredentialRef("provider-main"))
+        }
+    }
+
+    @Test func legacyVaultDoesNotOverwriteAnExistingMigrationBackup() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let vault = root.appendingPathComponent("credentials.vault")
+        try write(["version": 1, "credentials": ["provider-main": "secret-sentinel-729"]], to: vault)
+        try Data("existing encrypted backup".utf8).write(to: root.appendingPathComponent("credentials.vault.v1-migration-backup"))
+
+        let store = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        await #expect(throws: ConfigurationValidationError.self) {
+            _ = try await store.secret(for: CredentialRef("provider-main"))
+        }
+        #expect(try String(contentsOf: vault, encoding: .utf8).contains("secret-sentinel-729"))
+    }
+
     #if !os(Windows)
     @Test func unixPermissionsAreRestricted() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try ConfigurationStore(dataRoot: root)
         _ = try await store.load()
-        let credentials = try FileCredentialStore(dataRoot: root)
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
         try await credentials.setSecret("permission-sentinel", for: CredentialRef("test"))
 
         #expect(try permissions(at: root) == 0o700)

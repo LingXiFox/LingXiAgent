@@ -193,6 +193,15 @@ public actor L1ContextEngine {
         return entries
     }
 
+    public func initialMandatoryTokens(task: String, estimator: any TokenEstimator = ConservativeTokenEstimator()) -> Int {
+        var tokens = 0
+        if let system = policy.systemContext, !system.isEmpty {
+            tokens += estimator.estimate(text: system) + 4
+        }
+        tokens += estimator.estimate(text: task) + 4
+        return tokens
+    }
+
     private func metrics(_ entries: [ContextEntry], estimatedTokens: Int, mandatoryTokens: Int, liveToolBatchCount: Int, compactionGeneration: Int) -> ContextMetrics {
         var sourceCounts: [ContextSource: Int] = [:]
         var ids = Set<MessageID>()

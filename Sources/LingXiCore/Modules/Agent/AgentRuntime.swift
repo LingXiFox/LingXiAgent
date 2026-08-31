@@ -27,6 +27,7 @@ public actor AgentRuntime {
     private let limits: SubagentRuntimeLimits
     private var runs: [AgentRunID: AgentRunInfo] = [:]
     private var results: [AgentRunID: SubagentResult] = [:]
+    private var executionProfiles: [AgentRunID: SubagentExecutionProfile] = [:]
     private var activeSessions: Set<SessionID> = []
 
     init(
@@ -86,6 +87,7 @@ public actor AgentRuntime {
                 try await persistence.saveAgentRun(run)
             }
             runs[run.runID] = run
+            if let profile = try await persistence.agentRunProfile(run.runID) { executionProfiles[run.runID] = profile }
             if let result = try await persistence.agentRunResult(run.runID) { results[run.runID] = result }
         }
     }
@@ -214,19 +216,84 @@ public actor AgentRuntime {
         guard runs.values.filter({ $0.rootRunID == parentRun.rootRunID }).count < limits.maxTotalRunsPerRootRun else {
             throw CoreError(code: .subagentDepthExceeded, message: "单个 Root AgentRun 的运行总数已达到上限")
         }
-        let child = try await store.create(kind: .subagent, parentSessionID: parent.id, rootSessionID: parent.rootSessionID, spawnedByRunID: parentRunID, spawnedByToolCallID: toolCallID, title: title)
-        await eventSink(.childSessionCreated(child.toInfo()))
-        var run = try await createRun(session: child, parentRunID: parentRunID, requestedModel: profile?.modelSelection ?? modelSelection, title: title)
-        let runID = run.runID
-        let status = await scheduler.submit(runID: runID) { [weak self] in await self?.runChild(runID: runID, task: task) }
-        if status == .queued {
-            run = updated(run, status: .queued)
-            runs[run.runID] = run
-            try await persistence?.saveAgentRun(run, profile: profile)
+        let normalizedProfile = try normalized(profile: profile, parent: executionProfiles[parentRunID])
+        let requestedModel = normalizedProfile?.modelSelection ?? modelSelection
+        let resolved = try await modelResolver.resolve(requestedModel, subagent: true)
+
+        let endpointProfile = resolved.assembly.contextProfile
+        let requestedWindow = normalizedProfile?.contextProfile.flatMap(Int.init)
+        let effectiveWindow = min(endpointProfile.contextWindowTokens, requestedWindow ?? endpointProfile.contextWindowTokens)
+        let prospectiveProfile = ModelContextProfile(
+            contextWindowTokens: effectiveWindow,
+            maxOutputTokens: endpointProfile.maxOutputTokens,
+            recommendedOutputReserveTokens: endpointProfile.recommendedOutputReserveTokens,
+            source: endpointProfile.source
+        )
+        let childTools = await toolRuntime.availableDefinitions(sessionID: parentSessionID, interactive: interactive, executionProfile: normalizedProfile)
+        let estimator = ConservativeTokenEstimator()
+        let toolTokens = estimator.estimate(tools: childTools)
+        let preferred = normalizedProfile?.budgetProfile.flatMap(Int.init)
+        let planner = preferred.map { budgetPlanner.with(preferredActiveTokens: $0) } ?? budgetPlanner
+        let prospectiveBudget = planner.plan(profile: prospectiveProfile, toolTokens: toolTokens)
+        let initialMandatoryTokens = await contextEngine.initialMandatoryTokens(task: task, estimator: estimator)
+
+        logBudgetDiagnostic(
+            requestedContextWindow: requestedWindow,
+            endpointWindow: endpointProfile.contextWindowTokens,
+            effectiveWindow: effectiveWindow,
+            toolTokens: toolTokens,
+            outputReserve: prospectiveBudget.reservedOutputTokens,
+            fixedOverhead: budgetPlanner.policy.fixedOverheadTokens,
+            safetyMargin: budgetPlanner.policy.safetyMarginTokens,
+            hardInputLimit: prospectiveBudget.hardInputLimit,
+            initialMandatoryTokens: initialMandatoryTokens
+        )
+
+        guard prospectiveBudget.hardInputLimit >= initialMandatoryTokens, prospectiveBudget.hardInputLimit > 0 else {
+            throw CoreError(
+                code: .contextProfileNotViable,
+                message: "contextProfile 不可行: hardInputLimit=\(prospectiveBudget.hardInputLimit) 不足以容纳初始 mandatory context (\(initialMandatoryTokens) tokens)"
+            )
         }
-        await eventSink(.subagentSpawned(run))
-        if status == .queued { await eventSink(.agentRunQueued(run)) }
-        return (child.id, run)
+
+        let child: Session
+        var run: AgentRunInfo
+        if let persistence {
+            let root = try await persistence.mainRootBinding()
+            child = Session(id: SessionID(UUID().uuidString), createdAt: .now, kind: .subagent, parentSessionID: parent.id, rootSessionID: parent.rootSessionID, spawnedByRunID: parentRunID, spawnedByToolCallID: toolCallID, title: title, projectID: persistence.projectID, cwdRootBindingID: root.id)
+            let runID = AgentRunID(UUID().uuidString)
+            run = AgentRunInfo(runID: runID, sessionID: child.id, projectID: child.projectID, parentRunID: parentRunID, rootRunID: parentRun.rootRunID, agentKind: .subagent, status: .starting, modelSelection: resolved.selection, startedAt: .now, latestActivityAt: .now, title: title)
+            try await persistence.createChildSessionAndRun(child, run: run, profile: normalizedProfile)
+            runs[runID] = run
+            if let normalizedProfile { executionProfiles[runID] = normalizedProfile }
+        } else {
+            child = try await store.create(kind: .subagent, parentSessionID: parent.id, rootSessionID: parent.rootSessionID, spawnedByRunID: parentRunID, spawnedByToolCallID: toolCallID, title: title)
+            run = try await createRun(session: child, parentRunID: parentRunID, requestedModel: nil, resolvedModel: resolved, title: title, profile: normalizedProfile, emitEvent: false)
+        }
+        do {
+            let runID = run.runID
+            let status = await scheduler.submit(runID: runID) { [weak self] in await self?.runChild(runID: runID, task: task) }
+            if status == .queued {
+                run = updated(run, status: .queued)
+                runs[run.runID] = run
+                try await persistence?.saveAgentRun(run, profile: normalizedProfile)
+            }
+            await eventSink(.childSessionCreated(child.toInfo()))
+            await eventSink(.agentRunStarted(run))
+            await eventSink(.subagentSpawned(run))
+            if status == .queued { await eventSink(.agentRunQueued(run)) }
+            return (child.id, run)
+        } catch {
+            logDiagnostic("spawn failed parentSession=\(parentSessionID.rawValue) parentRun=\(parentRunID.rawValue) childSession=\(child.id.rawValue): \(error)")
+            let childRuns = runs.values.filter { $0.sessionID == child.id }
+            for r in childRuns {
+                runs.removeValue(forKey: r.runID)
+                executionProfiles.removeValue(forKey: r.runID)
+                try? await persistence?.deleteAgentRun(r.runID)
+            }
+            try? await store.deleteSession(child.id)
+            throw error
+        }
     }
 
     public func cancelAgentRun(_ runID: AgentRunID, descendants: Bool = true) async throws {
@@ -270,7 +337,7 @@ public actor AgentRuntime {
         guard let runID = request.originRunID, let run = runs[runID], !run.status.isTerminal else { return }
         let updated = updated(run, status: waiting ? .waitingForUser : .running)
         runs[runID] = updated
-        try? await persistence?.saveAgentRun(updated)
+        try? await persistence?.saveAgentRun(updated, profile: executionProfiles[runID])
         await eventSink(.agentRunStatusChanged(updated))
     }
 
@@ -296,6 +363,7 @@ public actor AgentRuntime {
             runID: run?.runID,
             rootSessionID: rootSessionID ?? sessionID,
             parentSessionID: run?.parentRunID.flatMap { runs[$0]?.sessionID },
+            executionProfile: run.flatMap { executionProfiles[$0.runID] },
             runObserver: { [weak self] status, text, usage, error in
                 guard let run else { return }
                 await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error)
@@ -306,7 +374,7 @@ public actor AgentRuntime {
     private func runtime(for sessionID: SessionID, run: AgentRunInfo? = nil) async throws -> SessionRuntime {
         if let run {
             let resolved = try await modelResolver.resolve(run.modelSelection, subagent: run.agentKind == .subagent)
-            let bus = ModelBus(gateway: ModelGateway(provider: resolved.assembly.provider, modelID: resolved.assembly.modelID, contextProfile: resolved.assembly.contextProfile, reasoning: run.modelSelection.reasoning))
+            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning))
             let session = try await store.session(sessionID)
             let runtime = makeRuntime(for: sessionID, run: run, modelBus: bus, rootSessionID: session.rootSessionID)
             try await runtime.restore()
@@ -321,49 +389,88 @@ public actor AgentRuntime {
         return runtime
     }
 
-    private func createRun(session: Session, parentRunID: AgentRunID?, requestedModel: ModelSelection?, title: String?) async throws -> AgentRunInfo {
-        let resolved = try await modelResolver.resolve(requestedModel, subagent: session.kind == .subagent)
+    private func createRun(session: Session, parentRunID: AgentRunID?, requestedModel: ModelSelection? = nil, resolvedModel: (selection: ModelSelection, assembly: ModelRuntimeAssembly)? = nil, title: String?, profile: SubagentExecutionProfile? = nil, emitEvent: Bool = true) async throws -> AgentRunInfo {
+        let resolved = try await (resolvedModel != nil ? resolvedModel! : modelResolver.resolve(requestedModel, subagent: session.kind == .subagent))
         let id = AgentRunID(UUID().uuidString)
         let root = parentRunID.flatMap { runs[$0]?.rootRunID } ?? id
         let run = AgentRunInfo(runID: id, sessionID: session.id, projectID: session.projectID, parentRunID: parentRunID, rootRunID: root, agentKind: session.kind, status: .starting, modelSelection: resolved.selection, startedAt: .now, latestActivityAt: .now, title: title)
         runs[id] = run
-        try await persistence?.saveAgentRun(run)
-        await eventSink(.agentRunStarted(run))
+        if let profile { executionProfiles[id] = profile }
+        do {
+            try await persistence?.saveAgentRun(run, profile: profile)
+        } catch {
+            runs.removeValue(forKey: id)
+            executionProfiles.removeValue(forKey: id)
+            throw error
+        }
+        if emitEvent {
+            await eventSink(.agentRunStarted(run))
+        }
         return run
     }
 
     private func runChild(runID: AgentRunID, task: String) async {
         guard let run = runs[runID] else { return }
         do {
-            let stream = try await runtime(for: run.sessionID, run: run).startTurn(task)
-            for try await _ in stream.chunks {}
+            if let seconds = executionProfiles[runID]?.timeoutSeconds {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { [weak self] in try await self?.consumeChildTurn(run: run, task: task) }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(seconds))
+                        throw CoreError(code: .commandTimedOut, message: "Subagent 超过 timeoutSeconds")
+                    }
+                    _ = try await group.next()
+                    group.cancelAll()
+                }
+            } else {
+                try await consumeChildTurn(run: run, task: task)
+            }
         } catch let error as CoreError {
-            await finishRun(runID, status: .failed, text: nil, usage: nil, error: error)
+            await finishRun(runID, status: error.code == .commandTimedOut ? .timedOut : .failed, text: nil, usage: nil, error: error)
         } catch {
             await finishRun(runID, status: .failed, text: nil, usage: nil, error: CoreError(code: .provider, message: String(describing: error)))
         }
+    }
+
+    private func consumeChildTurn(run: AgentRunInfo, task: String) async throws {
+        let stream = try await runtime(for: run.sessionID, run: run).startTurn(task)
+        for try await _ in stream.chunks {}
     }
 
     private func finishRun(_ runID: AgentRunID, status: AgentRunStatus, text: String?, usage: ModelUsage?, error: CoreError?) async {
         guard let old = runs[runID], !old.status.isTerminal else { return }
         let usage = AgentRunUsage(model: usage, elapsedMilliseconds: old.startedAt.map { Date().timeIntervalSince($0) * 1_000 })
         let run = AgentRunInfo(runID: old.runID, sessionID: old.sessionID, projectID: old.projectID, parentRunID: old.parentRunID, rootRunID: old.rootRunID, agentKind: old.agentKind, status: status, modelSelection: old.modelSelection, startedAt: old.startedAt, finishedAt: status.isTerminal ? .now : nil, latestActivityAt: .now, error: error, usage: usage, title: old.title)
+        let result = status.isTerminal ? SubagentResult(childSessionID: run.sessionID, runID: runID, status: status, finalText: text, usage: usage, error: error) : nil
+        do {
+            if let result {
+                try await persistence?.saveTerminalAgentRun(run, result: result, profile: executionProfiles[runID])
+            } else {
+                try await persistence?.saveAgentRun(run, profile: executionProfiles[runID])
+            }
+        } catch {
+            let persistenceError = CoreError(code: .persistence, message: "AgentRun 持久化失败: \(String(describing: error))")
+            let failed = AgentRunInfo(runID: old.runID, sessionID: old.sessionID, projectID: old.projectID, parentRunID: old.parentRunID, rootRunID: old.rootRunID, agentKind: old.agentKind, status: .failed, modelSelection: old.modelSelection, startedAt: old.startedAt, finishedAt: .now, latestActivityAt: .now, error: persistenceError, usage: usage, title: old.title)
+            runs[runID] = failed
+            activeSessions.remove(failed.sessionID)
+            let failedResult = SubagentResult(childSessionID: failed.sessionID, runID: runID, status: .failed, usage: usage, error: persistenceError)
+            results[runID] = failedResult
+            await scheduler.complete(runID)
+            await eventSink(.agentRunFailed(failed))
+            await eventSink(.subagentResultAvailable(failedResult))
+            logDiagnostic("finishRun persistence failed run=\(runID.rawValue): \(error)")
+            return
+        }
         runs[runID] = run
         if status.isTerminal { activeSessions.remove(run.sessionID) }
-        if status.isTerminal {
-            if let resolved = try? await modelResolver.resolve(old.modelSelection, subagent: old.agentKind == .subagent) {
-                await resolved.assembly.provider.endExecution(runID)
-            }
-            let result = SubagentResult(childSessionID: run.sessionID, runID: runID, status: status, finalText: text, usage: usage, error: error)
+        if let result {
             results[runID] = result
-            try? await persistence?.saveAgentRunResult(result)
             await scheduler.complete(runID)
             await eventSink(status == .completed ? .agentRunCompleted(run) : status == .cancelled ? .agentRunCancelled(run) : .agentRunFailed(run))
             await eventSink(.subagentResultAvailable(result))
         } else {
             await eventSink(.agentRunStatusChanged(run))
         }
-        try? await persistence?.saveAgentRun(run)
     }
 
     private func depth(of session: Session) async throws -> Int {
@@ -386,5 +493,93 @@ public actor AgentRuntime {
 
     private func updated(_ run: AgentRunInfo, status: AgentRunStatus) -> AgentRunInfo {
         AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: status, modelSelection: run.modelSelection, startedAt: run.startedAt, finishedAt: run.finishedAt, latestActivityAt: .now, error: run.error, usage: run.usage, title: run.title)
+    }
+
+    private func normalized(profile: SubagentExecutionProfile?, parent: SubagentExecutionProfile?) throws -> SubagentExecutionProfile? {
+        guard let profile else { return parent.map { SubagentExecutionProfile(permissionProfile: $0.permissionProfile, toolProfile: $0.toolProfile, budgetProfile: $0.budgetProfile, contextProfile: $0.contextProfile, maxSteps: nil, timeoutSeconds: nil) } }
+        let rawPermission: String?
+        if let raw = profile.permissionProfile {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, ExecutionProfile(rawValue: trimmed) != nil else {
+                throw CoreError(code: .toolArgumentInvalid, message: "未知 permissionProfile: \(raw)")
+            }
+            rawPermission = trimmed
+        } else {
+            rawPermission = nil
+        }
+
+        let budget: String?
+        if let raw = profile.budgetProfile {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let val = Int(trimmed), val > 0 else {
+                throw CoreError(code: .toolArgumentInvalid, message: "budgetProfile 必须是正整数 token budget")
+            }
+            budget = trimmed
+        } else {
+            budget = nil
+        }
+
+        let context: String?
+        if let raw = profile.contextProfile {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let val = Int(trimmed), val > 0 else {
+                throw CoreError(code: .toolArgumentInvalid, message: "contextProfile 必须是正整数 context window")
+            }
+            context = trimmed
+        } else {
+            context = nil
+        }
+
+        if let value = profile.maxSteps, value <= 0 { throw CoreError(code: .toolArgumentInvalid, message: "maxSteps 必须大于 0") }
+        if let value = profile.timeoutSeconds, value <= 0 { throw CoreError(code: .toolArgumentInvalid, message: "timeoutSeconds 必须大于 0") }
+        let childTools = profile.toolProfile.map(Set.init)
+        let parentTools = parent?.toolProfile.map(Set.init)
+        let tools: [String]? = switch (childTools, parentTools) {
+        case let (.some(child), .some(parent)): Array(child.intersection(parent)).sorted()
+        case let (.some(child), .none): Array(child).sorted()
+        case let (.none, .some(parent)): Array(parent).sorted()
+        case (.none, .none): nil
+        }
+        let rank: [ExecutionProfile: Int] = [.readOnly: 0, .workspace: 1, .fullAccess: 2]
+        let requestedPermission = rawPermission.flatMap(ExecutionProfile.init(rawValue:))
+        let parentPermission = parent?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:))
+        let permission: ExecutionProfile? = switch (requestedPermission, parentPermission) {
+        case let (.some(child), .some(parent)): rank[child, default: 0] <= rank[parent, default: 0] ? child : parent
+        case let (.some(child), .none): child
+        case let (.none, .some(parent)): parent
+        case (.none, .none): nil
+        }
+        return SubagentExecutionProfile(modelSelection: profile.modelSelection, permissionProfile: permission?.rawValue, toolProfile: tools, budgetProfile: budget ?? parent?.budgetProfile, contextProfile: context ?? parent?.contextProfile, maxSteps: profile.maxSteps, timeoutSeconds: profile.timeoutSeconds)
+    }
+
+    private func logBudgetDiagnostic(
+        requestedContextWindow: Int?,
+        endpointWindow: Int,
+        effectiveWindow: Int,
+        toolTokens: Int,
+        outputReserve: Int,
+        fixedOverhead: Int,
+        safetyMargin: Int,
+        hardInputLimit: Int,
+        initialMandatoryTokens: Int
+    ) {
+        guard diagnosticsEnabled else { return }
+        let fields = [
+            "requestedContextWindow=\(requestedContextWindow.map(String.init) ?? "omitted")",
+            "endpointWindow=\(endpointWindow)",
+            "effectiveWindow=\(effectiveWindow)",
+            "toolTokens=\(toolTokens)",
+            "outputReserve=\(outputReserve)",
+            "fixedOverhead=\(fixedOverhead)",
+            "safetyMargin=\(safetyMargin)",
+            "hardInputLimit=\(hardInputLimit)",
+            "initialMandatoryTokens=\(initialMandatoryTokens)"
+        ]
+        FileHandle.standardError.write(Data(("[AgentRuntime] spawn context budget: " + fields.joined(separator: " ") + "\n").utf8))
+    }
+
+    private func logDiagnostic(_ message: String) {
+        guard diagnosticsEnabled else { return }
+        FileHandle.standardError.write(Data("[AgentRuntime] \(message)\n".utf8))
     }
 }

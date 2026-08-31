@@ -5,6 +5,12 @@ import LingXiProtocol
 @testable import LingXiCore
 
 struct StdioConnectionTests {
+    @Test func stdioInteractiveBootstrapIsExplicitAndOptIn() {
+        #expect(CoreHost.stdioInteractive(environment: [:]) == false)
+        #expect(CoreHost.stdioInteractive(environment: ["LINGXI_INTERACTIVE": "0"]) == false)
+        #expect(CoreHost.stdioInteractive(environment: ["LINGXI_INTERACTIVE": "1"]) == true)
+    }
+
     @Test func normalStreamFinishes() async throws {
         let result = try await runStream(endpoint: StdioEndpoint(error: nil))
         #expect(result.chunks.map(\.text) == ["ok"])

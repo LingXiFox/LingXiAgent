@@ -51,6 +51,33 @@ public struct MCPToolSearchCandidate: Sendable, Equatable, Codable {
     public let riskHint: String
     public let availability: String
     public let temperature: String
+    fileprivate enum CodingKeys: String, CodingKey { case toolID = "tool_id", displayName, serverAlias, shortDescription, riskHint, availability, temperature }
+}
+
+extension MCPToolSearchCandidate {
+    /// Wire contract: `load_tool` takes a plain-string `tool_id`; a synthesized
+    /// `{"rawValue": ...}` encoding is unusable for the model.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        toolID = ToolID(try container.decode(String.self, forKey: .toolID))
+        displayName = try container.decode(String.self, forKey: .displayName)
+        serverAlias = try container.decode(String.self, forKey: .serverAlias)
+        shortDescription = try container.decode(String.self, forKey: .shortDescription)
+        riskHint = try container.decode(String.self, forKey: .riskHint)
+        availability = try container.decode(String.self, forKey: .availability)
+        temperature = try container.decode(String.self, forKey: .temperature)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(toolID.rawValue, forKey: .toolID)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(serverAlias, forKey: .serverAlias)
+        try container.encode(shortDescription, forKey: .shortDescription)
+        try container.encode(riskHint, forKey: .riskHint)
+        try container.encode(availability, forKey: .availability)
+        try container.encode(temperature, forKey: .temperature)
+    }
 }
 
 public struct MCPToolSchemaLease: Sendable, Equatable, Codable {
@@ -65,7 +92,7 @@ public struct MCPToolSchemaLease: Sendable, Equatable, Codable {
 }
 
 public enum MCPToolPagerError: Error, Sendable, Equatable {
-    case missingTool, unavailable, schemaMissing, schemaChanged, schemaTooLarge, schemaBudgetExceeded, leaseMissing, leaseExpired, taskUnsupported
+    case missingTool, unavailable, schemaMissing, schemaChanged, schemaTooLarge, schemaBudgetExceeded, leaseMissing, leaseExpired, taskUnsupported, catalogTooLarge
 }
 
 public protocol MCPToolInvoker: Sendable {
@@ -73,14 +100,31 @@ public protocol MCPToolInvoker: Sendable {
 }
 
 public actor MCPToolSchemaStore {
-    private var values: [String: JSONValue] = [:]
-    public init() {}
-    public func put(_ schema: JSONValue, toolID: ToolID, hash: String) { values[key(toolID, hash)] = schema }
-    public func schema(toolID: ToolID, hash: String) -> JSONValue? { values[key(toolID, hash)] }
-    public func count() -> Int { values.count }
-    public func bytes() -> Int { values.values.reduce(0) { $0 + ((try? JSONEncoder().encode($1).count) ?? 0) } }
-    public func remove(toolID: ToolID) { values = values.filter { !$0.key.hasPrefix("\(toolID.rawValue)@") } }
-    private func key(_ id: ToolID, _ hash: String) -> String { "\(id.rawValue)@\(hash)" }
+    private let directory: URL
+    public init(directory: URL? = nil) {
+        self.directory = directory ?? FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-mcp-schemas-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: self.directory.path)
+    }
+    public func put(_ schema: JSONValue, toolID: ToolID, hash: String) throws {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let url = file(toolID, hash)
+        try encoder.encode(schema).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    public func schema(toolID: ToolID, hash: String) -> JSONValue? {
+        guard let data = try? Data(contentsOf: file(toolID, hash)) else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: data)
+    }
+    public func count() -> Int { files().count }
+    public func bytes() -> Int { files().reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) } }
+    public func remove(toolID: ToolID, keepingHash: String? = nil) {
+        let keep = keepingHash.map { file(toolID, $0).lastPathComponent }
+        for url in files() where url.lastPathComponent.hasPrefix(prefix(toolID)) && url.lastPathComponent != keep { try? FileManager.default.removeItem(at: url) }
+    }
+    private func files() -> [URL] { (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? [] }
+    private func prefix(_ id: ToolID) -> String { sha256Hex(id.rawValue) + "-" }
+    private func file(_ id: ToolID, _ hash: String) -> URL { directory.appendingPathComponent(prefix(id) + sha256Hex(hash) + ".json") }
 }
 
 public struct ProviderToolNameCodec: Sendable {
@@ -92,11 +136,12 @@ public struct ProviderToolNameCodec: Sendable {
 }
 
 public actor MCPToolPager {
-    private struct SessionState { var l1: [ToolID: Int] = [:]; var leases: [String: MCPToolSchemaLease] = [:]; var presented: Set<String> = [] }
+    private struct SessionState { var l1: [ToolID: Int] = [:]; var candidates: Set<ToolID> = []; var leases: [String: MCPToolSchemaLease] = [:]; var presented: Set<String> = [] }
     private let schemas: MCPToolSchemaStore
     private let codec = ProviderToolNameCodec()
     private let maxSchemaBytes: Int
     private let maxSchemaDepth: Int
+    private let maxCatalogTools: Int
     private let invoker: (any MCPToolInvoker)?
     private var catalog: [ToolID: MCPToolCatalogEntry] = [:]
     private var sessions: [SessionID: SessionState] = [:]
@@ -104,25 +149,32 @@ public actor MCPToolPager {
     private var providerSchemaCounts: [SessionID: [Int]] = [:]
     public private(set) var pageFaults = 0
 
-    public init(schemaStore: MCPToolSchemaStore = MCPToolSchemaStore(), invoker: (any MCPToolInvoker)? = nil, maxSchemaBytes: Int = 128 * 1024, maxSchemaDepth: Int = 64) {
-        self.schemas = schemaStore; self.invoker = invoker; self.maxSchemaBytes = maxSchemaBytes; self.maxSchemaDepth = maxSchemaDepth
+    public init(schemaStore: MCPToolSchemaStore = MCPToolSchemaStore(), invoker: (any MCPToolInvoker)? = nil, maxSchemaBytes: Int = 128 * 1024, maxSchemaDepth: Int = 64, maxCatalogTools: Int = 1_000) {
+        self.schemas = schemaStore; self.invoker = invoker; self.maxSchemaBytes = maxSchemaBytes; self.maxSchemaDepth = maxSchemaDepth; self.maxCatalogTools = maxCatalogTools
     }
 
     /// Catalog update is all-or-nothing at the caller boundary: callers pass only a completed tools/list generation.
     public func replaceCatalog(serverID: MCPServerID, tools: [MCPDiscoveredTool]) async throws {
+        let old = catalog.values.filter { $0.serverID == serverID }.map(\.toolID)
+        guard Set(tools.map { $0.entry.toolID }).count == tools.count else { throw MCPToolPagerError.missingTool }
+        guard tools.allSatisfy({ catalog[$0.entry.toolID]?.serverID == nil || catalog[$0.entry.toolID]?.serverID == serverID }) else { throw MCPToolPagerError.missingTool }
+        guard catalog.count - old.count + tools.count <= maxCatalogTools else { throw MCPToolPagerError.catalogTooLarge }
         for tool in tools {
             let encoded = try JSONEncoder().encode(tool.inputSchema)
             guard encoded.count <= maxSchemaBytes, depth(tool.inputSchema) <= maxSchemaDepth else { throw MCPToolPagerError.schemaTooLarge }
         }
-        let old = catalog.values.filter { $0.serverID == serverID }.map(\.toolID)
-        for id in old { catalog[id]?.available = false; removeReferences(id); await schemas.remove(toolID: id) }
         for tool in tools {
-            catalog[tool.entry.toolID] = tool.entry
-            await schemas.put(tool.inputSchema, toolID: tool.entry.toolID, hash: tool.entry.schemaHash)
+            try await schemas.put(tool.inputSchema, toolID: tool.entry.toolID, hash: tool.entry.schemaHash)
         }
+        let incoming = Dictionary(uniqueKeysWithValues: tools.map { ($0.entry.toolID, $0.entry.schemaHash) })
+        for id in old { catalog.removeValue(forKey: id); removeReferences(id); await schemas.remove(toolID: id, keepingHash: incoming[id]) }
+        for tool in tools { catalog[tool.entry.toolID] = tool.entry }
     }
 
     public func search(sessionID: SessionID, projectID: ProjectID, query: String, server: String? = nil, capability: String? = nil, maxResults: Int = 6) -> [MCPToolSearchCandidate] {
+        // Models commonly pass "" for optional filters; an empty filter must mean "unfiltered", not "matches empty alias".
+        let server = server?.isEmpty == true ? nil : server
+        let capability = capability?.isEmpty == true ? nil : capability
         let terms = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         let session = sessions[sessionID] ?? SessionState()
         let project = l2[projectID] ?? [:]
@@ -134,13 +186,21 @@ public actor MCPToolPager {
             if terms.isEmpty || lexical >= 100 { matched.append((entry, lexical + boost)) }
         }
         matched.sort { $0.score == $1.score ? $0.entry.toolID.rawValue < $1.entry.toolID.rawValue : $0.score > $1.score }
-        return matched.prefix(max(1, min(maxResults, 8))).map { item in
+        let result = matched.prefix(max(1, min(maxResults, 8))).map { item in
             let entry = item.entry
             return MCPToolSearchCandidate(toolID: entry.toolID, displayName: "\(entry.serverAlias).\(entry.upstreamName)", serverAlias: entry.serverAlias, shortDescription: entry.shortDescription, riskHint: entry.annotations.readOnlyHint == true ? "external/read-only hint" : "external/untrusted", availability: entry.available ? (entry.stale ? "stale" : "available") : "unavailable", temperature: session.l1[entry.toolID] != nil ? "hot" : project[entry.toolID] != nil ? "warm" : "cold")
         }
+        var updated = session; updated.candidates = Set(result.map(\.toolID)); sessions[sessionID] = updated
+        return result
     }
 
     public func load(sessionID: SessionID, toolID: ToolID, schemaTokenBudget: Int) async throws -> MCPToolSchemaLease {
+        purgeExpired(sessionID)
+        guard sessions[sessionID]?.candidates.contains(toolID) == true else { throw MCPToolPagerError.missingTool }
+        if let current = sessions[sessionID]?.leases.values.first(where: { $0.state == .armed && $0.expiresAt > .now }) {
+            guard current.toolID == toolID else { throw MCPToolPagerError.taskUnsupported }
+            return current
+        }
         guard let entry = catalog[toolID], entry.available else { throw MCPToolPagerError.unavailable }
         guard let schema = await schemas.schema(toolID: toolID, hash: entry.schemaHash) else { throw MCPToolPagerError.schemaMissing }
         let bytes = try JSONEncoder().encode(schema).count
@@ -154,8 +214,10 @@ public actor MCPToolPager {
     }
 
     public func providerDefinitions(sessionID: SessionID) async -> [ToolDefinition] {
+        purgeExpired(sessionID)
         let leases = sessions[sessionID]?.leases.values.filter { $0.state == .armed && $0.expiresAt > .now } ?? []
         providerSchemaCounts[sessionID, default: []].append(leases.count)
+        if providerSchemaCounts[sessionID]!.count > 64 { providerSchemaCounts[sessionID]!.removeFirst(providerSchemaCounts[sessionID]!.count - 64) }
         if !leases.isEmpty { var state = sessions[sessionID] ?? SessionState(); state.presented.formUnion(leases.map(\.leaseID)); sessions[sessionID] = state }
         var result: [ToolDefinition] = []
         for lease in leases {
@@ -178,8 +240,10 @@ public actor MCPToolPager {
     public func markUsed(sessionID: SessionID, providerToolID: ToolID, projectID: ProjectID) throws -> MCPToolSchemaLease {
         let lease = try resolve(sessionID: sessionID, providerToolID: providerToolID)
         var state = sessions[sessionID] ?? SessionState(); state.l1[lease.toolID, default: 0] += 1
+        trim(&state.l1)
         if var stored = state.leases[lease.leaseID] { stored.state = .used; state.leases[lease.leaseID] = stored }; sessions[sessionID] = state
         l2[projectID, default: [:]][lease.toolID, default: 0] += 1
+        trim(&l2[projectID]!)
         return lease
     }
 
@@ -193,7 +257,8 @@ public actor MCPToolPager {
         struct Input: Decodable { let query: String; let server: String?; let capability: String?; let maxResults: Int? }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         let input = try decoder.decode(Input.self, from: Data(arguments.utf8))
-        return String(decoding: try JSONEncoder().encode(search(sessionID: sessionID, projectID: projectID, query: input.query, server: input.server, capability: input.capability, maxResults: input.maxResults ?? 6)), as: UTF8.self)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(search(sessionID: sessionID, projectID: projectID, query: input.query, server: input.server, capability: input.capability, maxResults: input.maxResults ?? 6)), as: UTF8.self)
     }
 
     public func loadToolResult(sessionID: SessionID, arguments: String, schemaTokenBudget: Int) async throws -> String {
@@ -201,7 +266,8 @@ public actor MCPToolPager {
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         let input = try decoder.decode(Input.self, from: Data(arguments.utf8))
         let lease = try await load(sessionID: sessionID, toolID: ToolID(input.toolId), schemaTokenBudget: schemaTokenBudget)
-        return String(decoding: try JSONEncoder().encode(["status": "leased", "tool": lease.toolID.rawValue, "provider_name": lease.providerName]), as: UTF8.self)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(["status": "leased", "tool": lease.toolID.rawValue, "provider_name": lease.providerName]), as: UTF8.self)
     }
 
     /// Called after every provider response; this is the sole schema page-out path.
@@ -216,7 +282,10 @@ public actor MCPToolPager {
         sessions[sessionID] = state
     }
 
-    public func leaseCount(sessionID: SessionID) -> Int { sessions[sessionID]?.leases.count ?? 0 }
+    public func abortTurn(sessionID: SessionID) { sessions[sessionID]?.leases.removeAll(); sessions[sessionID]?.presented.removeAll() }
+    public func discardSession(_ sessionID: SessionID) { sessions.removeValue(forKey: sessionID); providerSchemaCounts.removeValue(forKey: sessionID) }
+
+    public func leaseCount(sessionID: SessionID) -> Int { purgeExpired(sessionID); return sessions[sessionID]?.leases.count ?? 0 }
     /// Request audit only: counts, never schema bodies.
     public func requestSchemaCounts(sessionID: SessionID) -> [Int] { providerSchemaCounts[sessionID] ?? [] }
     public func catalogCount() -> Int { catalog.count }
@@ -224,9 +293,15 @@ public actor MCPToolPager {
     public func fullSchemaResidencyCount() -> Int { sessions.values.reduce(0) { $0 + $1.presented.count } }
 
     private func removeReferences(_ toolID: ToolID) {
-        for sessionID in sessions.keys { sessions[sessionID]?.l1.removeValue(forKey: toolID); sessions[sessionID]?.leases = sessions[sessionID]!.leases.filter { $0.value.toolID != toolID } }
+        for sessionID in sessions.keys { sessions[sessionID]?.l1.removeValue(forKey: toolID); sessions[sessionID]?.candidates.remove(toolID); sessions[sessionID]?.leases = sessions[sessionID]!.leases.filter { $0.value.toolID != toolID } }
         for projectID in l2.keys { l2[projectID]?.removeValue(forKey: toolID) }
     }
+    private func purgeExpired(_ sessionID: SessionID, now: Date = .now) {
+        guard var state = sessions[sessionID] else { return }
+        state.leases = state.leases.filter { $0.value.expiresAt > now }
+        sessions[sessionID] = state
+    }
+    private func trim(_ values: inout [ToolID: Int]) { while values.count > 32, let key = values.min(by: { $0.value < $1.value })?.key { values.removeValue(forKey: key) } }
     private func depth(_ value: JSONValue) -> Int { switch value { case let .array(values): return 1 + (values.map(depth).max() ?? 0); case let .object(values): return 1 + (values.values.map(depth).max() ?? 0); default: return 1 } }
 }
 

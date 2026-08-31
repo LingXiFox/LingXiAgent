@@ -194,6 +194,7 @@ struct PersistenceTests {
         let first = try SQLitePersistenceStore(dataRoot: data, mainRoot: root)
         let session = try await PersistentSessionStore(persistence: first).create()
         let runID = AgentRunID("account-run")
+        let profile = SubagentExecutionProfile(permissionProfile: "readOnly", toolProfile: ["read_file"], budgetProfile: "2048", contextProfile: "8192", maxSteps: 3, timeoutSeconds: 20)
         try await first.saveAgentRun(AgentRunInfo(
             runID: runID,
             sessionID: session.id,
@@ -202,11 +203,12 @@ struct PersistenceTests {
             agentKind: .primary,
             status: .completed,
             modelSelection: ModelSelection(providerID: "custom", accountID: "account", profileID: "profile", modelID: "model")
-        ))
+        ), profile: profile)
 
         let second = try SQLitePersistenceStore(dataRoot: data, mainRoot: root, projectID: first.projectID)
         #expect(try await second.loadAgentRuns().first?.modelSelection.accountID == "account")
         #expect(try await second.loadAgentRuns().first?.modelSelection.profileID == "profile")
+        #expect(try await second.agentRunProfile(runID) == profile)
     }
 
     @Test func pendingAndSettledToolBatchesRecoverWithoutReplay() async throws {
@@ -223,7 +225,8 @@ struct PersistenceTests {
         try await first.appendAssistantMessageAndBatch(sessionID: session.id, message: assistant, batch: pending)
         let settledCall = ToolCall(callID: ToolCallID("settled-call"), toolID: ToolID("readFile"), arguments: "{}")
         let settledAssistant = Message(id: MessageID("settled-assistant"), role: .assistant, parts: [.toolCall(settledCall)], createdAt: .now)
-        let unsettled = ToolExchangeBatch(batchID: "settled", sessionID: session.id, assistantMessageID: settledAssistant.id, toolCalls: [settledCall], providerStep: 2, state: .pending, estimatedTokens: 1)
+        let continuationRequestID = ModelRequestID("provider-request")
+        let unsettled = ToolExchangeBatch(batchID: "settled", sessionID: session.id, assistantMessageID: settledAssistant.id, toolCalls: [settledCall], continuationRequestID: continuationRequestID, providerStep: 2, state: .pending, estimatedTokens: 1)
         try await first.appendAssistantMessageAndBatch(sessionID: session.id, message: settledAssistant, batch: unsettled)
         let result = ToolResult(callID: settledCall.callID, success: true, content: "settled")
         let tool = Message(id: MessageID("tool"), role: .tool, parts: [.toolResult(result)], createdAt: .now)
@@ -237,6 +240,35 @@ struct PersistenceTests {
         #expect(recovered.first { $0.batchID == "pending" }?.toolCalls == [call])
         #expect(recovered.first { $0.batchID == "settled" }?.state == .settledAwaitingConsumption)
         #expect(recovered.first { $0.batchID == "settled" }?.toolResults == [result])
+        #expect(recovered.first { $0.batchID == "settled" }?.continuationRequestID == continuationRequestID)
+    }
+
+    @Test func childRunAndTerminalResultCommitAtomically() async throws {
+        let fixture = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let root = fixture.appendingPathComponent("Root", isDirectory: true)
+        let data = fixture.appendingPathComponent("data", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try SQLitePersistenceStore(dataRoot: data, mainRoot: root)
+        let parent = try await PersistentSessionStore(persistence: store).create()
+        let binding = try await store.mainRootBinding()
+        let child = Session(id: SessionID("child"), createdAt: .now, kind: .subagent, parentSessionID: parent.id, rootSessionID: parent.id, spawnedByRunID: AgentRunID("parent-run"), cwdRootBindingID: binding.id)
+        let starting = AgentRunInfo(runID: AgentRunID("child-run"), sessionID: child.id, projectID: store.projectID, parentRunID: AgentRunID("parent-run"), rootRunID: AgentRunID("parent-run"), agentKind: .subagent, status: .starting, modelSelection: ModelSelection(modelID: "model"))
+
+        await store.armFailpoint(.beforeSaveAgentRun(.subagent))
+        await #expect(throws: PersistenceError.self) {
+            try await store.createChildSessionAndRun(child, run: starting)
+        }
+        #expect(try await store.loadSessions().contains { $0.id == child.id } == false)
+        #expect(try await store.loadAgentRuns().contains { $0.runID == starting.runID } == false)
+
+        try await store.createChildSessionAndRun(child, run: starting)
+        let completed = AgentRunInfo(runID: starting.runID, sessionID: child.id, projectID: store.projectID, parentRunID: starting.parentRunID, rootRunID: starting.rootRunID, agentKind: .subagent, status: .completed, modelSelection: starting.modelSelection, startedAt: starting.startedAt, finishedAt: .now, latestActivityAt: .now)
+        let result = SubagentResult(childSessionID: child.id, runID: completed.runID, status: .completed, finalText: "complete")
+        try await store.saveTerminalAgentRun(completed, result: result)
+        #expect(try await store.loadAgentRuns().first { $0.runID == completed.runID }?.status == .completed)
+        #expect(try await store.agentRunResult(completed.runID)?.status == .completed)
+        #expect(try await store.agentRunResult(completed.runID)?.finalText == "complete")
     }
 
     @Test func fullCoreRestartRestoresSessionAndDerivedRehydratesThroughL2() async throws {

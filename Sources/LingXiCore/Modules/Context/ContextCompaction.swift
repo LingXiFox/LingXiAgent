@@ -26,7 +26,7 @@ public struct ConservativeTokenEstimator: TokenEstimator {
     }
 }
 
-public struct ModelContextProfile: Sendable, Equatable {
+public struct ModelContextProfile: Sendable, Equatable, Codable {
     public let contextWindowTokens: Int
     public let maxOutputTokens: Int?
     public let recommendedOutputReserveTokens: Int?
@@ -40,7 +40,7 @@ public struct ModelContextProfile: Sendable, Equatable {
     }
 }
 
-public struct ContextBudgetPolicy: Sendable, Equatable {
+public struct ContextBudgetPolicy: Sendable, Equatable, Codable {
     public let preferredActiveTokens: Int?
     public let preferredRatio: Double
     public let defaultActiveCeiling: Int
@@ -53,6 +53,16 @@ public struct ContextBudgetPolicy: Sendable, Equatable {
         self.defaultActiveCeiling = defaultActiveCeiling
         self.safetyMarginTokens = safetyMarginTokens
         self.fixedOverheadTokens = fixedOverheadTokens
+    }
+
+    public func with(preferredActiveTokens: Int?) -> ContextBudgetPolicy {
+        ContextBudgetPolicy(
+            preferredActiveTokens: preferredActiveTokens,
+            preferredRatio: preferredRatio,
+            defaultActiveCeiling: defaultActiveCeiling,
+            safetyMarginTokens: safetyMarginTokens,
+            fixedOverheadTokens: fixedOverheadTokens
+        )
     }
 }
 
@@ -69,6 +79,11 @@ public struct ContextBudget: Sendable, Equatable {
 public struct ContextBudgetPlanner: Sendable {
     public let policy: ContextBudgetPolicy
     public init(policy: ContextBudgetPolicy = ContextBudgetPolicy()) { self.policy = policy }
+
+    public func with(preferredActiveTokens: Int?) -> ContextBudgetPlanner {
+        ContextBudgetPlanner(policy: policy.with(preferredActiveTokens: preferredActiveTokens))
+    }
+
     public func plan(profile: ModelContextProfile, requestedMaxOutputTokens: Int? = nil, toolTokens: Int = 0) -> ContextBudget {
         let reserve = max(requestedMaxOutputTokens ?? 0, profile.recommendedOutputReserveTokens ?? profile.maxOutputTokens ?? 4_096)
         let hard = max(0, profile.contextWindowTokens - reserve - policy.fixedOverheadTokens - toolTokens - policy.safetyMarginTokens)
@@ -92,25 +107,27 @@ public struct ToolExchangeBatch: Sendable, Equatable {
     public let resultMessageID: MessageID?
     public let toolCalls: [ToolCall]
     public let toolResults: [ToolResult]
+    public let continuationRequestID: ModelRequestID?
     public let providerStep: Int
     public let state: ToolExchangeBatchState
     public let estimatedTokens: Int
     public var isComplete: Bool { Set(toolCalls.map(\.callID)) == Set(toolResults.map(\.callID)) && toolCalls.count == toolResults.count }
 
-    public init(batchID: String, sessionID: SessionID, assistantMessageID: MessageID, resultMessageID: MessageID? = nil, toolCalls: [ToolCall], toolResults: [ToolResult] = [], providerStep: Int, state: ToolExchangeBatchState, estimatedTokens: Int) {
+    public init(batchID: String, sessionID: SessionID, assistantMessageID: MessageID, resultMessageID: MessageID? = nil, toolCalls: [ToolCall], toolResults: [ToolResult] = [], continuationRequestID: ModelRequestID? = nil, providerStep: Int, state: ToolExchangeBatchState, estimatedTokens: Int) {
         self.batchID = batchID
         self.sessionID = sessionID
         self.assistantMessageID = assistantMessageID
         self.resultMessageID = resultMessageID
         self.toolCalls = toolCalls
         self.toolResults = toolResults
+        self.continuationRequestID = continuationRequestID
         self.providerStep = providerStep
         self.state = state
         self.estimatedTokens = estimatedTokens
     }
 
     public func with(state: ToolExchangeBatchState, resultMessageID: MessageID? = nil, toolResults: [ToolResult]? = nil, estimatedTokens: Int? = nil) -> ToolExchangeBatch {
-        ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessageID, resultMessageID: resultMessageID ?? self.resultMessageID, toolCalls: toolCalls, toolResults: toolResults ?? self.toolResults, providerStep: providerStep, state: state, estimatedTokens: estimatedTokens ?? self.estimatedTokens)
+        ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessageID, resultMessageID: resultMessageID ?? self.resultMessageID, toolCalls: toolCalls, toolResults: toolResults ?? self.toolResults, continuationRequestID: continuationRequestID, providerStep: providerStep, state: state, estimatedTokens: estimatedTokens ?? self.estimatedTokens)
     }
 }
 

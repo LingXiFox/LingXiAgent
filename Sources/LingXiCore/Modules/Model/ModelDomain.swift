@@ -13,6 +13,15 @@ public struct ModelID: Sendable, Equatable, Hashable {
     }
 }
 
+/// 一次模型调用的 Core 身份。它不同于 AgentRun，也不同于 Provider request/response ID。
+public struct ModelRequestID: Sendable, Equatable, Hashable, Codable {
+    public let rawValue: String
+
+    public init(_ rawValue: String = UUID().uuidString) {
+        self.rawValue = rawValue
+    }
+}
+
 public enum ModelRole: String, Sendable {
     case system
     case user
@@ -46,6 +55,8 @@ public struct ModelMessage: Sendable, Equatable {
 }
 
 public struct ModelRequest: Sendable, Equatable {
+    public let requestID: ModelRequestID
+    public let continuationOf: ModelRequestID?
     public let model: ModelID
     public let executionID: AgentRunID?
     public let system: String?
@@ -54,7 +65,9 @@ public struct ModelRequest: Sendable, Equatable {
     public let reasoning: String?
     public let debugStep: Int?
 
-    public init(model: ModelID, executionID: AgentRunID? = nil, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil) {
+    public init(requestID: ModelRequestID = ModelRequestID(), continuationOf: ModelRequestID? = nil, model: ModelID, executionID: AgentRunID? = nil, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil) {
+        self.requestID = requestID
+        self.continuationOf = continuationOf
         self.model = model
         self.executionID = executionID
         self.system = system

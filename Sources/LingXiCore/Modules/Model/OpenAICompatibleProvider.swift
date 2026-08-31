@@ -10,38 +10,48 @@ import LingXiProtocol
 /// 出口一律转换为 LingXi ModelEvent。
 public struct OpenAICompatibleProvider: ModelProvider {
     private let config: ProviderConfig
-    private let session: URLSession
+    private let transport: any ProviderHTTPTransport
+    private let provenance: ProviderProvenanceStore
 
-    public init(config: ProviderConfig, session: URLSession = .shared) {
+    public init(config: ProviderConfig, session: URLSession = .shared, provenance: ProviderProvenanceStore = ProviderProvenanceStore()) {
         self.config = config
-        self.session = session
+        transport = URLSessionProviderHTTPTransport(session: session)
+        self.provenance = provenance
+    }
+
+    public init(config: ProviderConfig, transport: any ProviderHTTPTransport, provenance: ProviderProvenanceStore = ProviderProvenanceStore()) {
+        self.config = config
+        self.transport = transport
+        self.provenance = provenance
     }
 
     // MARK: - ModelProvider
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
-        let urlRequest = try makeURLRequest(request)
+        let prior = try await provenance.resolveContinuation(for: request.continuationOf, wire: .chatCompletions)
+        let urlRequest = try makeURLRequest(request, continuation: prior)
         Self.log("request step=\(request.debugStep ?? 0) bytes=\(urlRequest.httpBody?.count ?? 0)", enabled: config.diagnosticsEnabled)
 
         // 连接阶段：失败直接 throw（Provider Error），由调用方转换为控制面结果。
-        let (bytes, response) = try await session.bytes(for: urlRequest)
-        guard let http = response as? HTTPURLResponse else {
-            throw CoreError(code: .provider, message: "Provider 返回非 HTTP 响应")
-        }
-        let requestID = http.value(forHTTPHeaderField: "x-request-id")
-            ?? http.value(forHTTPHeaderField: "openai-request-id")
-            ?? http.value(forHTTPHeaderField: "cf-ray")
-        Self.log("http step=\(request.debugStep ?? 0) status=\(http.statusCode)", enabled: config.diagnosticsEnabled)
-        guard (200..<300).contains(http.statusCode) else {
-            throw Self.httpError(status: http.statusCode, requestID: requestID)
+        let response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .chatCompletions, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+        let requestID = response.header("x-request-id")
+            ?? response.header("openai-request-id")
+            ?? response.header("cf-ray")
+        Self.log("http step=\(request.debugStep ?? 0) status=\(response.statusCode)", enabled: config.diagnosticsEnabled)
+        guard (200..<300).contains(response.statusCode) else {
+            _ = try? await Self.collectText(response.body)
+            throw Self.httpError(status: response.statusCode, requestID: requestID)
         }
 
         // 数据面 pump：连接已建立，事件从独立任务流出。
         let events = AsyncThrowingStream<ModelEvent, Error> { continuation in
             let pump = Task {
                 await Pump(
-                    source: bytes,
+                    source: response.body,
                     continuation: continuation,
+                    request: request,
+                    prior: prior,
+                    provenance: provenance,
                     debugStep: request.debugStep,
                     diagnosticsEnabled: config.diagnosticsEnabled,
                     performanceDiagnosticsEnabled: config.performanceDiagnosticsEnabled
@@ -49,7 +59,6 @@ public struct OpenAICompatibleProvider: ModelProvider {
             }
             continuation.onTermination = { @Sendable _ in
                 pump.cancel()
-                bytes.task.cancel()
             }
         }
         return events
@@ -58,6 +67,10 @@ public struct OpenAICompatibleProvider: ModelProvider {
     // MARK: - Request 转换（Domain → OpenAI-compatible JSON）
 
     public func makeURLRequest(_ request: ModelRequest) throws -> URLRequest {
+        try makeURLRequest(request, continuation: nil)
+    }
+
+    private func makeURLRequest(_ request: ModelRequest, continuation: ProviderContinuation?) throws -> URLRequest {
         var urlRequest = URLRequest(url: config.chatCompletionsURL)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -66,17 +79,21 @@ public struct OpenAICompatibleProvider: ModelProvider {
         case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): urlRequest.setValue(value, forHTTPHeaderField: name)
         }
-        urlRequest.httpBody = try Self.makeRequestBody(request)
+        urlRequest.httpBody = try Self.makeRequestBody(request, continuation: continuation)
         return urlRequest
     }
 
     /// 可测试：Domain 请求 → wire JSON。
     public static func makeRequestBody(_ request: ModelRequest) throws -> Data {
+        try makeRequestBody(request, continuation: nil)
+    }
+
+    private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?) throws -> Data {
         var messages: [ChatRequestBody.Message] = []
         if let system = request.system, !system.isEmpty {
             messages.append(Message(role: "system", content: system))
         }
-        messages.append(contentsOf: request.messages.flatMap(providerMessages))
+        messages.append(contentsOf: request.messages.flatMap { providerMessages($0, continuation: continuation) })
         let body = ChatRequestBody(
             model: request.model.rawValue,
             stream: true,
@@ -86,7 +103,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         return try JSONEncoder().encode(body)
     }
 
-    private static func providerMessages(_ message: ModelMessage) -> [ChatRequestBody.Message] {
+    private static func providerMessages(_ message: ModelMessage, continuation: ProviderContinuation?) -> [ChatRequestBody.Message] {
         let calls = message.parts.compactMap { part -> ToolCall? in
             guard case let .toolCall(call) = part else { return nil }
             return call
@@ -98,13 +115,13 @@ public struct OpenAICompatibleProvider: ModelProvider {
         switch message.role {
         case .tool:
             return results.map { result in
-                Message(role: "tool", content: resultContent(result), toolCallID: result.callID.rawValue)
+                Message(role: "tool", content: resultContent(result), toolCallID: continuation?.externalCallID(for: result.callID) ?? result.callID.rawValue)
             }
         case .assistant:
             return [Message(
                 role: "assistant",
                 content: message.content.isEmpty && !calls.isEmpty ? nil : message.content,
-                toolCalls: calls.isEmpty ? nil : calls.map(ProviderToolCall.init)
+                toolCalls: calls.isEmpty ? nil : calls.map { ProviderToolCall(id: continuation?.externalCallID(for: $0.callID) ?? $0.callID.rawValue, function: ProviderToolCall.Function(name: $0.toolID.rawValue, arguments: $0.arguments)) }
             )]
         case .system, .user:
             return [Message(role: message.role.rawValue, content: message.content)]
@@ -196,6 +213,18 @@ public struct OpenAICompatibleProvider: ModelProvider {
         return String(decoding: data, as: UTF8.self)
     }
 
+    static func collectText(_ stream: AsyncThrowingStream<Data, Error>) async throws -> String {
+        var data = Data()
+        var count = 0
+        for try await chunk in stream {
+            let remaining = 64 * 1024 - count
+            guard remaining > 0 else { break }
+            data.append(chunk.prefix(remaining))
+            count += min(chunk.count, remaining)
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     private static func log(_ message: String, enabled: Bool) {
         guard enabled else { return }
         FileHandle.standardError.write(Data(("[chat-diagnostic] \(message)\n").utf8))
@@ -205,15 +234,21 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
     /// 消费网络字节：bytes → SSE buffer → 行 → JSON → ModelEvent。
     private final class Pump: Sendable {
-        private let source: URLSession.AsyncBytes
+        private let source: AsyncThrowingStream<Data, Error>
         private let continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation
+        private let request: ModelRequest
+        private let prior: ProviderContinuation?
+        private let provenance: ProviderProvenanceStore
         private let debugStep: Int?
         private let diagnosticsEnabled: Bool
         private let performanceDiagnosticsEnabled: Bool
 
-        init(source: URLSession.AsyncBytes, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, debugStep: Int?, diagnosticsEnabled: Bool, performanceDiagnosticsEnabled: Bool) {
+        init(source: AsyncThrowingStream<Data, Error>, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, request: ModelRequest, prior: ProviderContinuation?, provenance: ProviderProvenanceStore, debugStep: Int?, diagnosticsEnabled: Bool, performanceDiagnosticsEnabled: Bool) {
             self.source = source
             self.continuation = continuation
+            self.request = request
+            self.prior = prior
+            self.provenance = provenance
             self.debugStep = debugStep
             self.diagnosticsEnabled = diagnosticsEnabled
             self.performanceDiagnosticsEnabled = performanceDiagnosticsEnabled
@@ -222,7 +257,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         func run() async {
             var decoder = SSEDecoder()
             var completed: ModelFinishReason?
-            var toolCalls = ToolCallBuffer(debugStep: debugStep, diagnosticsEnabled: performanceDiagnosticsEnabled)
+            var toolCalls = ToolCallBuffer(requestID: request.requestID, debugStep: debugStep, diagnosticsEnabled: performanceDiagnosticsEnabled)
             var sawDone = false
             var textChunks = 0
             var reasoningChunks = 0
@@ -230,8 +265,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
             continuation.yield(.started)
 
             do {
-                outer: for try await byte in source {
-                    for line in decoder.feed(Data([byte])) {
+                outer: for try await chunk in source {
+                    for line in decoder.feed(chunk) {
                         if try handle(line: line, into: &completed, toolCalls: &toolCalls, textChunks: &textChunks, reasoningChunks: &reasoningChunks, toolChunks: &toolChunks) {
                             sawDone = true
                             break outer
@@ -265,6 +300,10 @@ public struct OpenAICompatibleProvider: ModelProvider {
             do {
                 for event in try toolCalls.complete() {
                     continuation.yield(event)
+                }
+                let combinedReferences = (prior?.references ?? []).filter { priorRef in !toolCalls.references.contains { $0.domainCallID == priorRef.domainCallID } } + toolCalls.references
+                if !combinedReferences.isEmpty {
+                    try await provenance.record(ProviderContinuation(requestID: request.requestID, executionID: request.executionID, wire: .chatCompletions, references: combinedReferences))
                 }
             } catch let error as CoreError {
                 continuation.yield(.failed(error))
@@ -391,6 +430,11 @@ private extension OpenAICompatibleProvider {
         let type = "function"
         let function: Function
 
+        init(id: String, function: Function) {
+            self.id = id
+            self.function = function
+        }
+
         init(_ call: ToolCall) {
             id = call.callID.rawValue
             function = Function(name: call.toolID.rawValue, arguments: call.arguments)
@@ -491,10 +535,14 @@ private extension OpenAICompatibleProvider {
         }
 
         private var calls: [Int: Partial] = [:]
+        private var domainIDs: [Int: ToolCallID] = [:]
+        private let requestID: ModelRequestID
         private let debugStep: Int?
         private let diagnosticsEnabled: Bool
+        private(set) var references: [ProviderToolCallReference] = []
 
-        init(debugStep: Int?, diagnosticsEnabled: Bool) {
+        init(requestID: ModelRequestID, debugStep: Int?, diagnosticsEnabled: Bool) {
+            self.requestID = requestID
             self.debugStep = debugStep
             self.diagnosticsEnabled = diagnosticsEnabled
         }
@@ -509,13 +557,16 @@ private extension OpenAICompatibleProvider {
                     partial.arguments += arguments
                 }
                 if let id = partial.id, let name = partial.name, !partial.started {
+                    let domainID = ToolCallID("lingxi:\(requestID.rawValue):\(delta.index)")
+                    domainIDs[delta.index] = domainID
+                    references.append(ProviderToolCallReference(wire: .chatCompletions, domainCallID: domainID, externalCallID: id))
                     partial.started = true
-                    events.append(.toolCallStarted(callID: ToolCallID(id), toolID: ToolID(name)))
+                    events.append(.toolCallStarted(callID: domainID, toolID: ToolID(name)))
                 }
-                if partial.started, let id = partial.id, partial.emittedArgumentCount < partial.arguments.count {
+                if partial.started, let domainID = domainIDs[delta.index], partial.emittedArgumentCount < partial.arguments.count {
                     let arguments = String(partial.arguments.dropFirst(partial.emittedArgumentCount))
                     partial.emittedArgumentCount = partial.arguments.count
-                    events.append(.toolCallDelta(callID: ToolCallID(id), arguments: arguments))
+                    events.append(.toolCallDelta(callID: domainID, arguments: arguments))
                 }
                 calls[delta.index] = partial
             }
@@ -525,7 +576,7 @@ private extension OpenAICompatibleProvider {
         mutating func complete() throws -> [ModelEvent] {
             defer { calls.removeAll() }
             return try calls.keys.sorted().map { index in
-                guard let call = calls[index], let id = call.id, let name = call.name, call.started else {
+                guard let call = calls[index], let domainID = domainIDs[index], let name = call.name, call.started else {
                     throw CoreError(code: .modelStream, message: "Tool Call 信息不完整")
                 }
                 guard let data = call.arguments.data(using: .utf8),
@@ -537,7 +588,7 @@ private extension OpenAICompatibleProvider {
                     let hash = call.arguments.utf8.reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
                     FileHandle.standardError.write(Data("[tool-debug] step=\(debugStep ?? 0) index=\(index) argsHash=\(String(hash, radix: 16))\n".utf8))
                 }
-                return .toolCallCompleted(ToolCall(callID: ToolCallID(id), toolID: ToolID(name), arguments: call.arguments))
+                return .toolCallCompleted(ToolCall(callID: domainID, toolID: ToolID(name), arguments: call.arguments))
             }
         }
     }

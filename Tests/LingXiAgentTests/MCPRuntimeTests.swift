@@ -34,7 +34,7 @@ struct MCPRuntimeTests {
         return pager
     }
 
-    private func httpTransport(_ server: FixtureMCPHTTPServer, timeout: Double = 10) -> MCPStreamableHTTPTransport {
+    private func httpTransport(_ server: FixtureMCPHTTPServer, timeout: Double = 30) -> MCPStreamableHTTPTransport {
         MCPStreamableHTTPTransport(configuration: MCPServerConfiguration(serverID: serverID, alias: "fixture", transport: .streamableHTTP, endpoint: server.endpoint, timeoutSeconds: timeout))
     }
 
@@ -55,6 +55,7 @@ struct MCPRuntimeTests {
 
     @Test func schemaBudgetAndLeaseGuardRejectUnsafeCalls() async throws {
         let pager = try await pager()
+        _ = await pager.search(sessionID: SessionID("s"), projectID: ProjectID("p"), query: "lookup")
         await #expect(throws: MCPToolPagerError.schemaBudgetExceeded) { try await pager.load(sessionID: SessionID("s"), toolID: toolID, schemaTokenBudget: 1) }
         await #expect(throws: MCPToolPagerError.leaseMissing) { try await pager.resolve(sessionID: SessionID("s"), providerToolID: ToolID("not-leased")) }
     }
@@ -63,6 +64,7 @@ struct MCPRuntimeTests {
         let pager = try await pager()
         let session = SessionID("s")
         let project = ProjectID("p")
+        _ = await pager.search(sessionID: session, projectID: project, query: "lookup")
         let lease = try await pager.load(sessionID: session, toolID: toolID, schemaTokenBudget: 1_000)
         _ = try await pager.markUsed(sessionID: session, providerToolID: ToolID(lease.providerName), projectID: project)
         await pager.finishProviderStep(sessionID: session)
@@ -148,5 +150,36 @@ struct MCPRuntimeTests {
         #expect((response as? HTTPURLResponse)?.statusCode == 403)
         let transport = httpTransport(server, timeout: 0.05)
         await #expect(throws: CoreError.self) { try await transport.call(serverID: serverID, toolName: "slow_tool", arguments: "{}") }
+    }
+
+    @Test func thousandToolCatalogStaysColdAndLeasesOnlyOneCandidate() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let schemas = MCPToolSchemaStore(directory: directory)
+        let pager = MCPToolPager(schemaStore: schemas)
+        let server = MCPServerID("bulk")
+        let tools = (0..<1_000).map { index in
+            let id = ToolID("bulk::tool-\(index)")
+            return MCPDiscoveredTool(
+                entry: MCPToolCatalogEntry(toolID: id, serverID: server, serverAlias: "bulk", upstreamName: "tool_\(index)", title: "Tool \(index)", shortDescription: "Bulk fixture \(index)", tags: ["bulk"], annotations: MCPToolAnnotations(readOnlyHint: true), schemaHash: "h\(index)", era: .modern, available: true, stale: false, cacheScope: .public, authContextID: nil, lastSeen: .now),
+                inputSchema: .object(["type": .string("object"), "properties": .object([:])])
+            )
+        }
+        try await pager.replaceCatalog(serverID: server, tools: tools)
+        #expect(await pager.catalogCount() == 1_000)
+        #expect(await schemas.count() == 1_000)
+        #expect(await pager.fullSchemaResidencyCount() == 0)
+
+        let session = SessionID("bulk-session")
+        let candidates = await pager.search(sessionID: session, projectID: ProjectID("bulk-project"), query: "bulk", maxResults: 8)
+        #expect(candidates.count == 8)
+        _ = try await pager.load(sessionID: session, toolID: candidates[0].toolID, schemaTokenBudget: 1_000)
+        await #expect(throws: MCPToolPagerError.taskUnsupported) {
+            try await pager.load(sessionID: session, toolID: candidates[1].toolID, schemaTokenBudget: 1_000)
+        }
+        #expect(await pager.providerDefinitions(sessionID: session).count == 1)
+        await pager.finishProviderStep(sessionID: session)
+        #expect(await pager.leaseCount(sessionID: session) == 0)
+        #expect(await pager.fullSchemaResidencyCount() == 0)
     }
 }

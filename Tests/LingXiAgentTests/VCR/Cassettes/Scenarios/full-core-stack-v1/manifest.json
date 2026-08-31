@@ -1,0 +1,16 @@
+{
+  "cassetteVersion" : 1,
+  "contextProfile" : {
+    "contextWindowTokens" : 128000,
+    "maxOutputTokens" : 4096,
+    "recommendedOutputReserveTokens" : 4096,
+    "source" : "vcr-manifest"
+  },
+  "createdAt" : "2026-08-31T04:07:10Z",
+  "lingXiCommit" : "33eebe89521a65454aeacf31fc36810843c14a98",
+  "lingXiVersion" : "0.1.0",
+  "modelAlias" : "vcr-model",
+  "sanitizationVersion" : 1,
+  "scenario" : "full-core-stack-v1",
+  "wire" : "responses"
+}

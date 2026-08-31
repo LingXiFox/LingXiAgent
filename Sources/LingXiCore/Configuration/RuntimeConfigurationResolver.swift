@@ -26,6 +26,7 @@ public enum RuntimeConfigurationResolver {
     public static func resolveProviders(
         _ configuration: ProvidersConfiguration,
         credentials: any CredentialStore,
+        provenanceDirectory: URL? = nil,
         diagnosticsEnabled: Bool = false,
         performanceDiagnosticsEnabled: Bool = false
     ) async throws -> ProviderRuntimeResolution {
@@ -34,20 +35,32 @@ public enum RuntimeConfigurationResolver {
         try requireUnique(configuration.modelProfiles.map(\.id), path: "$.modelProfiles")
 
         var runtimes: [String: ModelRuntimeAssembly] = [:]
+        let provenance = ProviderProvenanceStore(directory: provenanceDirectory)
         for account in configuration.accounts where account.enabled {
             let profiles = configuration.modelProfiles.filter { $0.providerID == account.providerID }
             guard !profiles.isEmpty else { continue }
-            guard let provider = configuration.customProviders.first(where: { $0.id == account.providerID }) else {
-                throw ConfigurationValidationError(path: "$.accounts.\(account.id).providerID", reason: "provider is not present in the built-in catalog or custom providers")
+            let custom = configuration.customProviders.first(where: { $0.id == account.providerID })
+            let builtin = BuiltinProviderCatalog.definition(id: account.providerID)
+            if let builtin, builtin.status != .verified {
+                throw ConfigurationValidationError(path: "$.accounts.\(account.id).providerID", reason: "built-in provider is not verified for runtime use")
             }
-            let baseURL = try ConfigurationEndpointPolicy.resolve(account.endpointOverride ?? provider.baseURL, path: "$.accounts.\(account.id).endpointOverride")
+            guard custom != nil || builtin != nil else {
+                throw ConfigurationValidationError(path: "$.accounts.\(account.id).providerID", reason: "unknown provider; define it explicitly in customProviders")
+            }
+            let endpoint = account.endpointOverride ?? custom?.baseURL ?? builtin?.defaultBaseURL?.absoluteString
+            guard let endpoint else { throw ConfigurationValidationError(path: "$.accounts.\(account.id).endpointOverride", reason: "provider endpoint is required") }
+            let baseURL = try ConfigurationEndpointPolicy.resolve(endpoint, path: "$.accounts.\(account.id).endpointOverride")
             let authentication = try await authentication(for: account, credentials: credentials)
             for profile in profiles {
+                if let builtin, !builtin.supportedWires.contains(profile.wireProtocol) {
+                    throw ConfigurationValidationError(path: "$.modelProfiles.\(profile.id).wireProtocol", reason: "wire is not verified for this built-in provider")
+                }
                 runtimes["\(account.id)::\(profile.id)"] = try providerAssembly(
                     account: account,
                     profile: profile,
                     baseURL: baseURL,
                     authentication: authentication,
+                    provenance: provenance,
                     diagnosticsEnabled: diagnosticsEnabled,
                     performanceDiagnosticsEnabled: performanceDiagnosticsEnabled
                 )
@@ -55,7 +68,7 @@ public enum RuntimeConfigurationResolver {
         }
 
         guard let selected = configuration.defaultSelection else {
-            return ProviderRuntimeResolution(assembly: ProviderSetup.unavailable, missingRequirements: ["providers.defaultSelection"], runtimes: runtimes, defaultSelection: nil)
+            return ProviderRuntimeResolution(assembly: .unavailable, missingRequirements: ["providers.defaultSelection"], runtimes: runtimes, defaultSelection: nil)
         }
         guard let account = configuration.accounts.first(where: { $0.id == selected.accountID }) else {
             throw ConfigurationValidationError(path: "$.defaultSelection.accountID", reason: "unknown provider account")
@@ -86,6 +99,7 @@ public enum RuntimeConfigurationResolver {
         profile: ModelProfileConfiguration,
         baseURL: URL,
         authentication: ProviderAuthentication,
+        provenance: ProviderProvenanceStore,
         diagnosticsEnabled: Bool,
         performanceDiagnosticsEnabled: Bool
     ) throws -> ModelRuntimeAssembly {
@@ -111,27 +125,28 @@ public enum RuntimeConfigurationResolver {
         )
         let provider: any ModelProvider
         switch wireProtocol {
-        case .chatCompletions: provider = OpenAICompatibleProvider(config: runtimeConfig)
-        case .responses: provider = OpenAIResponsesProvider(config: runtimeConfig)
-        case .anthropicMessages: provider = AnthropicMessagesProvider(config: runtimeConfig)
+        case .chatCompletions: provider = OpenAICompatibleProvider(config: runtimeConfig, provenance: provenance)
+        case .responses: provider = OpenAIResponsesProvider(config: runtimeConfig, provenance: provenance)
+        case .anthropicMessages: provider = AnthropicMessagesProvider(config: runtimeConfig, provenance: provenance)
         }
         return ModelRuntimeAssembly(
             provider: provider,
             modelID: ModelID(profile.modelID),
             contextProfile: context,
-            endpoint: ResolvedModelEndpoint(providerID: account.providerID, modelID: ModelID(profile.modelID), baseURL: baseURL, wireProtocol: wireProtocol, contextProfile: context)
+            endpoint: ResolvedModelEndpoint(providerID: account.providerID, accountID: account.id, profileID: profile.id, modelID: ModelID(profile.modelID), baseURL: baseURL, wireProtocol: wireProtocol, contextProfile: context, capabilities: ModelCapabilities(toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, reasoning: profile.capabilities.reasoning, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput))
         )
     }
 
     public static func resolveMCP(
         _ configuration: MCPConfiguration,
         credentials: any CredentialStore,
+        schemaStoreDirectory: URL? = nil,
         discoverTools: Bool = true
     ) async throws -> MCPRuntimeResolution {
         try requireUnique(configuration.servers.map(\.id), path: "$.servers")
         try requireUnique(configuration.servers.map(\.alias), path: "$.servers.alias")
         let manager = MCPConnectionManager()
-        let pager = MCPToolPager(invoker: manager)
+        let pager = MCPToolPager(schemaStore: MCPToolSchemaStore(directory: schemaStoreDirectory), invoker: manager)
         var resolved: [MCPServerConfiguration] = []
 
         for stored in configuration.servers {

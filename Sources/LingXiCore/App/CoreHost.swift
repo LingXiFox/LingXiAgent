@@ -6,6 +6,10 @@ public actor CoreHost: CoreEndpoint {
     public static let coreVersion = "0.1.0"
     public static let protocolVersion = "1"
 
+    public static func stdioInteractive(environment: [String: String]) -> Bool {
+        environment["LINGXI_INTERACTIVE"] == "1"
+    }
+
     public let info: CoreInfo
     private let bus = CommandBus()
     private let dataPlane = DataPlane()
@@ -14,7 +18,7 @@ public actor CoreHost: CoreEndpoint {
     public let questions: QuestionRuntime
     private let processes: ToolProcessStore
     private let sessionStore: any SessionStore
-    /// nil 表示显式的 ephemeral Core；设置 LINGXI_DATA_ROOT 时启用 project durable state。
+    /// nil 表示显式的 ephemeral Core；调用方传入 dataRoot 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
     private let gateway: ModelGateway
     private let modelResolver: SubagentModelResolver
@@ -32,6 +36,7 @@ public actor CoreHost: CoreEndpoint {
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
+    package var toolRuntimeRef: ToolRuntime { toolRuntime }
 
     /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
     public init(
@@ -49,7 +54,7 @@ public actor CoreHost: CoreEndpoint {
         interactive: Bool? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
-        let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? (environment["LINGXI_INTERACTIVE"] == "1")
+        let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
         self.interactive = supportsInteraction
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
@@ -61,8 +66,8 @@ public actor CoreHost: CoreEndpoint {
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
-        let baseWorkspace = try workspaceRoot ?? WorkspaceRoot(path: environment["LINGXI_WORKSPACE_ROOT"] ?? FileManager.default.currentDirectoryPath)
-        let persistentRoot = dataRoot ?? environment["LINGXI_DATA_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let baseWorkspace = try workspaceRoot ?? WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
+        let persistentRoot = dataRoot
         let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url, excluding: persistentRoot.map { [$0] } ?? [])
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
         let effectiveMCPPager = mcpPager ?? MCPToolPager()
@@ -71,15 +76,12 @@ public actor CoreHost: CoreEndpoint {
         }
         persistence = persistent
         self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
-        let legacyDecision = permissionDecision ?? PermissionDecision(rawValue: environment["LINGXI_TOOL_PERMISSION"] ?? "")
-        let policy = PermissionPolicy(rawValue: environment["LINGXI_PERMISSION_POLICY"] ?? "")
-            ?? (legacyDecision == .allow ? .auto : .ask)
-        let profile = ExecutionProfile(rawValue: environment["LINGXI_EXECUTION_PROFILE"] ?? "") ?? .workspace
-        let permissions = legacyDecision.map { PermissionEngine(defaultDecision: $0) }
-            ?? PermissionEngine(configuration: PermissionConfiguration(policy: policy, profile: profile))
+        let agentSettings = configuration?.agent ?? AgentSettings()
+        let permissions = permissionDecision.map { PermissionEngine(defaultDecision: $0) }
+            ?? PermissionEngine(configuration: PermissionConfiguration(policy: agentSettings.permissionPolicy, profile: agentSettings.executionProfile))
         permissionEngine = permissions
-        let l2Budget = Int(environment["LINGXI_L2_MAX_CHARS"] ?? "") ?? 256 * 1024
-        let l1ProjectBudget = Int(environment["LINGXI_L1_PROJECT_MAX_CHARS"] ?? "") ?? 32 * 1024
+        let l2Budget = agentSettings.l2MaxCharacters
+        let l1ProjectBudget = agentSettings.l1ProjectMaxCharacters
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         toolRuntime = ToolRuntime(
@@ -92,10 +94,9 @@ public actor CoreHost: CoreEndpoint {
             subagents: subagentService
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
-            systemContext: environment["LINGXI_SYSTEM_CONTEXT"]
+            systemContext: agentSettings.systemContext
         ))
         diagnosticsEnabled = environment["LINGXI_PERF_DEBUG"] == "1"
-        let agentSettings = configuration?.agent ?? AgentSettings()
         subagentLimits = SubagentRuntimeLimits(
             maxConcurrentSubagents: agentSettings.maxConcurrentSubagents,
             maxSubagentDepth: agentSettings.maxSubagentDepth,
@@ -103,29 +104,12 @@ public actor CoreHost: CoreEndpoint {
         )
         performanceStore = PerformanceStore(enabled: diagnosticsEnabled)
         compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
-        budgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: environment["LINGXI_CONTEXT_PREFERRED_ACTIVE_TOKENS"].flatMap(Int.init)))
+        budgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: agentSettings.preferredActiveTokens))
 
-        let fallback = ProviderSetup.resolve(environment)
-        let effective = providerAssembly ?? fallback.assembly
-        gateway = ModelGateway(
-            provider: effective.provider,
-            modelID: effective.modelID.rawValue.isEmpty ? nil : effective.modelID,
-            missingRequirements: providerAssembly == nil ? fallback.missing : providerMissingRequirements,
-            contextProfile: effective.contextProfile
-        )
-        if let childModel = environment["LINGXI_SUBAGENT_SMOKE_MODEL"], !childModel.isEmpty {
-            let child = ModelRuntimeAssembly(
-                provider: effective.provider,
-                modelID: ModelID(childModel),
-                contextProfile: effective.contextProfile,
-                endpoint: ResolvedModelEndpoint(providerID: "subagent", modelID: ModelID(childModel), baseURL: effective.endpoint.baseURL, wireProtocol: effective.endpoint.wireProtocol, contextProfile: effective.contextProfile)
-            )
-            var runtimes = modelRuntimes
-            runtimes["subagent"] = child
-            modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: runtimes, defaultSelection: defaultModelSelection, defaultSubagentSelection: ModelSelection(providerID: "subagent", modelID: childModel))
-        } else {
-            modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: defaultModelSelection)
-        }
+        let effective = providerAssembly ?? .unavailable
+        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements)
+        let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
+        modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
     }
 
     /// 注册控制面路由并进入 ready。
@@ -278,7 +262,7 @@ public actor CoreHost: CoreEndpoint {
         )
         self.agent = agent
         await subagentService.bind(
-            spawn: { [weak agent] sessionID, runID, task, title, model, toolCallID in try await agent?.spawn(parentSessionID: sessionID, parentRunID: runID, task: task, title: title, modelSelection: model, toolCallID: toolCallID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
+            spawn: { [weak agent] sessionID, runID, task, title, selection, profile, toolCallID in try await agent?.spawn(parentSessionID: sessionID, parentRunID: runID, task: task, title: title, modelSelection: selection, profile: profile, toolCallID: toolCallID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
             status: { [weak agent] runID, requester in try await agent?.agentRun(runID, requester: requester) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
             result: { [weak agent] runID, requester in try await agent?.agentRunResult(runID, requester: requester) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
             cancel: { [weak agent] runID, requester in try await agent?.cancelAgentRun(runID, requester: requester) },
