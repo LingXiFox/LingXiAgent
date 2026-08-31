@@ -8,6 +8,7 @@ let package = Package(
     targets: [
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
+        .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol"]),
         // Core：业务能力与状态权威。仅依赖 Protocol。
         .target(
             name: "LingXiCore",
@@ -24,11 +25,11 @@ let package = Package(
         // TUI：Reference Client。禁止依赖 LingXiCore。
         .executableTarget(
             name: "LingXiTUI",
-            dependencies: ["LingXiClient", "LingXiProtocol"]
+            dependencies: ["LingXiClient", "LingXiApplication", "LingXiProtocol"]
         ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient"],
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication"],
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),

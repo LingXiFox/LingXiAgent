@@ -53,6 +53,35 @@ public struct LingXiClient: Sendable {
         return status
     }
 
+    public func listProviderProducts() async throws -> [ProviderProductSummary] {
+        guard case let .providerProducts(products) = try await send(.listProviderProducts) else { throw CoreError(code: .transport, message: "listProviderProducts 收到非预期响应") }
+        return products
+    }
+
+    public func listProviderAccounts() async throws -> [ProviderAccountInfo] {
+        guard case let .providerAccounts(accounts) = try await send(.listProviderAccounts) else { throw CoreError(code: .transport, message: "listProviderAccounts 收到非预期响应") }
+        return accounts
+    }
+
+    public func storeProviderCredential(_ secret: String) async throws -> CredentialRef {
+        guard case let .providerCredential(result) = try await send(.storeProviderCredential(ProviderCredentialWriteRequest(secret: secret))) else { throw CoreError(code: .transport, message: "storeProviderCredential 收到非预期响应") }
+        return result.reference
+    }
+
+    public func createProviderAccount(_ request: ProviderAccountCreateRequest) async throws -> ProviderAccountInfo {
+        guard case let .providerAccount(account) = try await send(.createProviderAccount(request)) else { throw CoreError(code: .transport, message: "createProviderAccount 收到非预期响应") }
+        return account
+    }
+
+    public func disconnectProviderAccount(_ accountID: String, deleteUnusedCredential: Bool = false) async throws -> ProviderDisconnectResult {
+        guard case let .providerDisconnected(result) = try await send(.deleteProviderAccount(accountID: accountID, deleteUnusedCredential: deleteUnusedCredential)) else { throw CoreError(code: .transport, message: "deleteProviderAccount 收到非预期响应") }
+        return result
+    }
+
+    public func deleteProviderCredential(_ reference: CredentialRef) async throws {
+        guard case .providerCredential = try await send(.deleteProviderCredential(reference)) else { throw CoreError(code: .transport, message: "deleteProviderCredential 收到非预期响应") }
+    }
+
     /// 订阅控制面语义事件（如状态变化）。
     public func events() async -> AsyncStream<CoreEvent> {
         await connection.events()

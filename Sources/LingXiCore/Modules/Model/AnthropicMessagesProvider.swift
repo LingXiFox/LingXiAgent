@@ -59,6 +59,9 @@ public struct AnthropicMessagesProvider: ModelProvider {
         case let .bearer(secret): result.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): result.setValue(value, forHTTPHeaderField: name)
         }
+        for (name, value) in config.requiredHeaders where result.value(forHTTPHeaderField: name) == nil {
+            result.setValue(value, forHTTPHeaderField: name)
+        }
         result.httpBody = try Self.makeRequestBody(request, maxOutputTokens: config.maxOutputTokens ?? 4_096, continuation: continuation)
         return result
     }

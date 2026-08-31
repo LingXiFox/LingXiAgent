@@ -6,6 +6,7 @@ public struct ProviderRuntimeResolution: Sendable {
     public let missingRequirements: [String]
     public let runtimes: [String: ModelRuntimeAssembly]
     public let defaultSelection: ModelSelection?
+    public let availability: [String: ProviderAvailability]
 }
 
 public struct MCPRuntimeResolution: Sendable {
@@ -35,40 +36,77 @@ public enum RuntimeConfigurationResolver {
         try requireUnique(configuration.modelProfiles.map(\.id), path: "$.modelProfiles")
 
         var runtimes: [String: ModelRuntimeAssembly] = [:]
+        var availability: [String: ProviderAvailability] = [:]
         let provenance = ProviderProvenanceStore(directory: provenanceDirectory)
         for account in configuration.accounts where account.enabled {
             let profiles = configuration.modelProfiles.filter { $0.providerID == account.providerID }
             guard !profiles.isEmpty else { continue }
             let custom = configuration.customProviders.first(where: { $0.id == account.providerID })
             let builtin = BuiltinProviderCatalog.definition(id: account.providerID)
-            if let builtin, builtin.status != .verified {
-                throw ConfigurationValidationError(path: "$.accounts.\(account.id).providerID", reason: "built-in provider is not verified for runtime use")
+            if let builtin, !builtin.verificationStatus.isRuntimeVerified {
+                throw ProviderResolutionError.providerProductUnverified(builtin.id)
             }
             guard custom != nil || builtin != nil else {
                 throw ConfigurationValidationError(path: "$.accounts.\(account.id).providerID", reason: "unknown provider; define it explicitly in customProviders")
             }
-            let endpoint = account.endpointOverride ?? custom?.baseURL ?? builtin?.defaultBaseURL?.absoluteString
-            guard let endpoint else { throw ConfigurationValidationError(path: "$.accounts.\(account.id).endpointOverride", reason: "provider endpoint is required") }
-            let baseURL = try ConfigurationEndpointPolicy.resolve(endpoint, path: "$.accounts.\(account.id).endpointOverride")
+            let builtinEndpoint = builtin.flatMap { product in
+                profiles.lazy.compactMap { profile in
+                    let wire = Self.providerWire(for: profile.wireProtocol)
+                    return product.endpoints.first { endpoint in Self.wireMatches(endpoint.wire, wire) && endpoint.verificationStatus.isRuntimeVerified }
+                }.first
+            }
+            if builtin != nil, builtinEndpoint == nil {
+                throw ProviderResolutionError.providerEndpointUnverified(ProviderEndpointID(rawValue: profiles.first?.endpointID ?? ""))
+            }
             let authentication = try await authentication(for: account, credentials: credentials)
             for profile in profiles {
-                if let builtin, !builtin.supportedWires.contains(profile.wireProtocol) {
-                    throw ConfigurationValidationError(path: "$.modelProfiles.\(profile.id).wireProtocol", reason: "wire is not verified for this built-in provider")
+                let productEndpoint = builtin.flatMap { product in
+                    let requestedWire = Self.providerWire(for: profile.wireProtocol)
+                    if let endpointID = profile.endpointID { return product.endpoint(id: ProviderEndpointID(rawValue: endpointID)) }
+                    return product.endpoints.first { Self.wireMatches($0.wire, requestedWire) }
+                }
+                if let builtin {
+                    guard let productEndpoint else { throw ProviderResolutionError.providerWireUnsupported(Self.providerWire(for: profile.wireProtocol)) }
+                    guard Self.wireMatches(productEndpoint.wire, Self.providerWire(for: profile.wireProtocol)) else {
+                        throw ProviderResolutionError.providerWireUnsupported(Self.providerWire(for: profile.wireProtocol))
+                    }
+                    guard productEndpoint.verificationStatus.isRuntimeVerified else { throw ProviderResolutionError.providerEndpointUnverified(productEndpoint.id) }
+                    guard productEndpoint.wire.modelWireProtocol != nil else { throw ProviderResolutionError.providerWireUnsupported(productEndpoint.wire) }
+                    guard builtin.accountTypes.contains(account.accountType) else {
+                        throw ProviderResolutionError.authenticationUnsupported(productEndpoint.requestAuthentication)
+                    }
+                    try Self.validateRequestAuthentication(account: account, endpoint: productEndpoint)
+                }
+                let profileEndpoint = productEndpoint ?? builtinEndpoint
+                let profileBaseURL: URL
+                if let override = account.endpointOverride {
+                    guard profileEndpoint?.allowsEndpointOverride ?? true else {
+                        throw ProviderResolutionError.providerEndpointUnverified(profileEndpoint?.id ?? ProviderEndpointID(rawValue: ""))
+                    }
+                    profileBaseURL = try ConfigurationEndpointPolicy.resolve(override, path: "$.accounts.\(account.id).endpointOverride")
+                } else if let builtinURL = profileEndpoint?.baseURL {
+                    profileBaseURL = builtinURL
+                } else if let customURL = custom?.baseURL {
+                    profileBaseURL = try ConfigurationEndpointPolicy.resolve(customURL, path: "$.accounts.\(account.id).endpointOverride")
+                } else {
+                    throw ProviderResolutionError.providerEndpointUnverified(profileEndpoint?.id ?? ProviderEndpointID(rawValue: ""))
                 }
                 runtimes["\(account.id)::\(profile.id)"] = try providerAssembly(
                     account: account,
                     profile: profile,
-                    baseURL: baseURL,
+                    baseURL: profileBaseURL,
                     authentication: authentication,
+                    endpoint: profileEndpoint,
                     provenance: provenance,
                     diagnosticsEnabled: diagnosticsEnabled,
                     performanceDiagnosticsEnabled: performanceDiagnosticsEnabled
                 )
+                availability["\(account.id)::\(profile.id)"] = .available
             }
         }
 
         guard let selected = configuration.defaultSelection else {
-            return ProviderRuntimeResolution(assembly: .unavailable, missingRequirements: ["providers.defaultSelection"], runtimes: runtimes, defaultSelection: nil)
+            return ProviderRuntimeResolution(assembly: .unavailable, missingRequirements: ["providers.defaultSelection"], runtimes: runtimes, defaultSelection: nil, availability: availability)
         }
         guard let account = configuration.accounts.first(where: { $0.id == selected.accountID }) else {
             throw ConfigurationValidationError(path: "$.defaultSelection.accountID", reason: "unknown provider account")
@@ -90,7 +128,8 @@ public enum RuntimeConfigurationResolver {
             assembly: assembly,
             missingRequirements: [],
             runtimes: runtimes,
-            defaultSelection: selection
+            defaultSelection: selection,
+            availability: availability
         )
     }
 
@@ -99,6 +138,7 @@ public enum RuntimeConfigurationResolver {
         profile: ModelProfileConfiguration,
         baseURL: URL,
         authentication: ProviderAuthentication,
+        endpoint: ProviderProductEndpoint?,
         provenance: ProviderProvenanceStore,
         diagnosticsEnabled: Bool,
         performanceDiagnosticsEnabled: Bool
@@ -121,7 +161,8 @@ public enum RuntimeConfigurationResolver {
             diagnosticsEnabled: diagnosticsEnabled,
             performanceDiagnosticsEnabled: performanceDiagnosticsEnabled,
             remoteStateEnabled: profile.remoteStateEnabled,
-            maxOutputTokens: profile.maxOutputTokens
+            maxOutputTokens: profile.maxOutputTokens,
+            requiredHeaders: endpoint?.requiredHeaders ?? [:]
         )
         let provider: any ModelProvider
         switch wireProtocol {
@@ -133,8 +174,43 @@ public enum RuntimeConfigurationResolver {
             provider: provider,
             modelID: ModelID(profile.modelID),
             contextProfile: context,
-            endpoint: ResolvedModelEndpoint(providerID: account.providerID, accountID: account.id, profileID: profile.id, modelID: ModelID(profile.modelID), baseURL: baseURL, wireProtocol: wireProtocol, contextProfile: context, capabilities: ModelCapabilities(toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, reasoning: profile.capabilities.reasoning, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput))
+            endpoint: ResolvedModelEndpoint(providerID: account.providerID, productID: account.providerID, endpointID: endpoint?.id.rawValue, accountID: account.id, profileID: profile.id, modelID: ModelID(profile.modelID), baseURL: baseURL, wireProtocol: wireProtocol, contextProfile: context, capabilities: ModelCapabilities(toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, reasoning: profile.capabilities.reasoning, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput))
         )
+    }
+
+    private static func providerWire(for wire: StoredProviderWireProtocol) -> ProviderWire {
+        switch wire {
+        case .chatCompletions: .openAIChatCompletions
+        case .responses: .openAIResponses
+        case .anthropicMessages: .anthropicMessages
+        }
+    }
+
+    private static func validateRequestAuthentication(account: ProviderAccountConfiguration, endpoint: ProviderProductEndpoint) throws {
+        switch endpoint.requestAuthentication {
+        case .none:
+            guard account.authentication == .none else { throw ProviderResolutionError.authenticationUnsupported(endpoint.requestAuthentication) }
+        case .bearerToken, .oauthAccessToken, .workloadIdentityToken, .gatewayToken:
+            guard account.authentication == .bearer, account.credential != nil else { throw ProviderResolutionError.authenticationUnsupported(endpoint.requestAuthentication) }
+        case let .apiKeyHeader(name):
+            guard account.authentication == .header, account.headerName?.caseInsensitiveCompare(name) == .orderedSame, account.credential != nil else {
+                throw ProviderResolutionError.authenticationUnsupported(endpoint.requestAuthentication)
+            }
+        case .customHeaderSet, .providerNative:
+            throw ProviderResolutionError.authenticationUnsupported(endpoint.requestAuthentication)
+        }
+    }
+
+    private static func wireMatches(_ endpointWire: ProviderWire, _ requestedWire: ProviderWire) -> Bool {
+        switch (endpointWire, requestedWire) {
+        case (.openAIChatCompletions, .openAIChatCompletions), (.openAIChatCompletions, .openAICompatible),
+             (.openAICompatible, .openAIChatCompletions), (.openAICompatible, .openAICompatible),
+             (.openAIResponses, .openAIResponses), (.anthropicMessages, .anthropicMessages),
+             (.providerNative, .providerNative):
+            return true
+        default:
+            return false
+        }
     }
 
     public static func resolveMCP(

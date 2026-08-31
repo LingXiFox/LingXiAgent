@@ -32,6 +32,8 @@ public actor CoreHost: CoreEndpoint {
     private let compactor: ContextCompactor
     private let budgetPlanner: ContextBudgetPlanner
     private let diagnosticsEnabled: Bool
+    private let configurationStore: ConfigurationStore?
+    private let credentialStore: (any CredentialStore)?
     private let subagentLimits: SubagentRuntimeLimits
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
@@ -52,10 +54,14 @@ public actor CoreHost: CoreEndpoint {
         toolRegistry: ToolRegistry? = nil,
         mcpPager: MCPToolPager? = nil,
         interactive: Bool? = nil
+        , configurationStore: ConfigurationStore? = nil
+        , credentialStore: (any CredentialStore)? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
         let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
         self.interactive = supportsInteraction
+        self.configurationStore = configurationStore
+        self.credentialStore = credentialStore
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
         self.processes = processes
@@ -124,6 +130,25 @@ public actor CoreHost: CoreEndpoint {
         await bus.add(.getState) { [self] _ in .state(await state) }
         await bus.add(.getProviderStatus) { [self] _ in
             .providerStatus(await providerStatus)
+        }
+        await bus.add(.listProviderProducts) { _ in .providerProducts(BuiltinProviderCatalog.connectableProducts()) }
+        await bus.add(.listProviderAccounts) { [self] _ in .providerAccounts(try await providerAccounts()) }
+        await bus.add(.storeProviderCredential) { [self] command in
+            guard case let .storeProviderCredential(request) = command else { return .error(CoreError(code: .unsupportedCommand, message: "storeProviderCredential 参数缺失")) }
+            return .providerCredential(try await storeProviderCredential(request))
+        }
+        await bus.add(.createProviderAccount) { [self] command in
+            guard case let .createProviderAccount(request) = command else { return .error(CoreError(code: .unsupportedCommand, message: "createProviderAccount 参数缺失")) }
+            return .providerAccount(try await createProviderAccount(request))
+        }
+        await bus.add(.deleteProviderAccount) { [self] command in
+            guard case let .deleteProviderAccount(accountID, deleteUnusedCredential) = command else { return .error(CoreError(code: .unsupportedCommand, message: "deleteProviderAccount 参数缺失")) }
+            return .providerDisconnected(try await deleteProviderAccount(id: accountID, deleteUnusedCredential: deleteUnusedCredential))
+        }
+        await bus.add(.deleteProviderCredential) { [self] command in
+            guard case let .deleteProviderCredential(reference) = command else { return .error(CoreError(code: .unsupportedCommand, message: "deleteProviderCredential 参数缺失")) }
+            try await deleteProviderCredential(reference)
+            return .providerCredential(ProviderCredentialResult(reference: reference))
         }
         await bus.add(.createSession) { [self] _ in
             let agent = try await requireAgent()
@@ -359,6 +384,112 @@ public actor CoreHost: CoreEndpoint {
             baseURL: nil,
             missingRequirements: gateway.missingRequirements
         )
+    }
+
+    private func requireConfigurationStore() throws -> ConfigurationStore {
+        guard let configurationStore else { throw CoreError(code: .persistence, message: "Provider 配置存储未连接") }
+        return configurationStore
+    }
+
+    private func requireCredentialStore() throws -> any CredentialStore {
+        guard let credentialStore else { throw CoreError(code: .persistence, message: "CredentialStore 未连接") }
+        return credentialStore
+    }
+
+    private func providerAccounts() async throws -> [ProviderAccountInfo] {
+        let snapshot = try await requireConfigurationStore().load()
+        return snapshot.providers.accounts.map(accountInfo)
+    }
+
+    private func storeProviderCredential(_ request: ProviderCredentialWriteRequest) async throws -> ProviderCredentialResult {
+        guard !request.secret.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "credential 不能为空") }
+        let reference = CredentialRef("provider-\(UUID().uuidString)")
+        try await requireCredentialStore().setSecret(request.secret, for: reference)
+        return ProviderCredentialResult(reference: reference)
+    }
+
+    private func createProviderAccount(_ request: ProviderAccountCreateRequest) async throws -> ProviderAccountInfo {
+        guard let product = BuiltinProviderCatalog.definition(id: request.productID), product.verificationStatus == .verified else {
+            throw CoreError(code: .provider, message: "Provider Product 未验证或不可连接")
+        }
+        guard product.accountTypes.contains(ProviderAccountType(rawValue: request.accountType.rawValue) ?? .anonymousLocal) else {
+            throw CoreError(code: .provider, message: "Provider Account 类型不受支持")
+        }
+        guard request.fields.keys.allSatisfy({ product.requiredAccountFields.contains($0) }) else {
+            throw CoreError(code: .toolArgumentInvalid, message: "Provider Account 包含未声明字段")
+        }
+        for field in product.requiredAccountFields where request.fields[field]?.isEmpty != false {
+            throw CoreError(code: .toolArgumentInvalid, message: "缺少 Provider Account 字段: \(field)")
+        }
+        if let endpoint = request.endpoint {
+            _ = try ConfigurationEndpointPolicy.resolve(endpoint, path: "$.providerAccount.endpoint")
+        } else if product.type == .localRuntime {
+            throw CoreError(code: .toolArgumentInvalid, message: "本地 Provider endpoint 必填")
+        }
+        let authentication = try storedAuthentication(request.authentication, headerName: request.headerName)
+        guard let endpoint = product.endpoints.first else { throw CoreError(code: .provider, message: "Provider endpoint 未验证") }
+        try validateStoredAuthentication(authentication.kind, headerName: authentication.headerName, against: endpoint.requestAuthentication)
+        if authentication.kind != .none && request.credentialRef == nil { throw CoreError(code: .provider, message: "Provider credential reference 必填") }
+        if let reference = request.credentialRef, try await requireCredentialStore().secret(for: reference) == nil {
+            throw CoreError(code: .provider, message: "Provider credential 不存在")
+        }
+        let store = try requireConfigurationStore()
+        var snapshot = try await store.load()
+        guard !snapshot.providers.accounts.contains(where: { $0.id == request.id }) else { throw CoreError(code: .provider, message: "Provider Account 已存在") }
+        let account = ProviderAccountConfiguration(id: request.id, providerID: request.productID, displayName: request.displayName, authentication: authentication.kind, headerName: authentication.headerName, credential: request.credentialRef, endpointOverride: request.endpoint, configOverrides: request.fields, accountType: request.accountType, createdAt: .now, updatedAt: .now)
+        snapshot.providers.accounts.append(account)
+        try await store.saveProviders(snapshot.providers)
+        return accountInfo(account)
+    }
+
+    private func deleteProviderAccount(id: String, deleteUnusedCredential: Bool) async throws -> ProviderDisconnectResult {
+        let store = try requireConfigurationStore()
+        var snapshot = try await store.load()
+        guard let account = snapshot.providers.accounts.first(where: { $0.id == id }) else { throw CoreError(code: .provider, message: "Provider Account 不存在") }
+        snapshot.providers.accounts.removeAll { $0.id == id }
+        if snapshot.providers.defaultSelection?.accountID == id {
+            snapshot.providers.defaultSelection = nil
+        }
+        try await store.saveProviders(snapshot.providers)
+        var deleted = false
+        if deleteUnusedCredential, let reference = account.credential, !snapshot.providers.accounts.contains(where: { $0.credential == reference }) {
+            try await requireCredentialStore().removeSecret(for: reference)
+            deleted = true
+        }
+        return ProviderDisconnectResult(accountID: id, credentialDeleted: deleted)
+    }
+
+    private func deleteProviderCredential(_ reference: CredentialRef) async throws {
+        let snapshot = try await requireConfigurationStore().load()
+        guard !snapshot.providers.accounts.contains(where: { $0.credential == reference }) else { throw CoreError(code: .provider, message: "Credential 仍被其他 Account 使用") }
+        try await requireCredentialStore().removeSecret(for: reference)
+    }
+
+    private func accountInfo(_ account: ProviderAccountConfiguration) -> ProviderAccountInfo {
+        ProviderAccountInfo(id: account.id, productID: account.providerID, displayName: account.displayName, accountType: account.accountType, credentialRef: account.credential, endpoint: account.endpointOverride, availability: account.enabled ? "configured" : "unavailable")
+    }
+
+    private func storedAuthentication(_ raw: ProviderStoredAuthentication, headerName: String?) throws -> (kind: StoredProviderAuthenticationKind, headerName: String?) {
+        switch raw {
+        case .none: return (.none, nil)
+        case .bearer: return (.bearer, nil)
+        case .header:
+            guard let headerName, !headerName.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "header auth 需要 headerName") }
+            return (.header, headerName)
+        }
+    }
+
+    private func validateStoredAuthentication(_ kind: StoredProviderAuthenticationKind, headerName: String?, against requestAuthentication: RequestAuthentication) throws {
+        switch requestAuthentication {
+        case .none:
+            guard kind == .none else { throw CoreError(code: .provider, message: "request authentication 与 Product endpoint 不匹配") }
+        case .bearerToken, .oauthAccessToken, .workloadIdentityToken, .gatewayToken:
+            guard kind == .bearer else { throw CoreError(code: .provider, message: "request authentication 与 Product endpoint 不匹配") }
+        case let .apiKeyHeader(name):
+            guard kind == .header, headerName?.caseInsensitiveCompare(name) == .orderedSame else { throw CoreError(code: .provider, message: "request authentication 与 Product endpoint 不匹配") }
+        case .customHeaderSet, .providerNative:
+            throw CoreError(code: .provider, message: "Provider endpoint authentication 暂不支持")
+        }
     }
 
     private func setState(_ newState: CoreState) {

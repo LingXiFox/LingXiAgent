@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import LingXiProtocol
 @testable import LingXiCore
 
 struct ConfigurationStoreTests {

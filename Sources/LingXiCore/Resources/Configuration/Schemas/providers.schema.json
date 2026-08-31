@@ -32,9 +32,9 @@
           }
         },
         "required": [
-          "id",
-          "displayName",
-          "baseURL"
+           "id",
+           "displayName",
+           "baseURL"
         ],
         "additionalProperties": false
       }
@@ -58,11 +58,15 @@
           "configOverrides": {
             "type": "object"
           },
+          "accountType": {
+            "type": "string",
+            "enum": ["apiKey", "oauthUser", "workloadIdentity", "subscription", "localInstance", "gateway", "anonymousLocal"]
+          },
           "createdAt": { "type": "number" },
           "updatedAt": { "type": "number" }
         },
         "required": [
-          "id", "providerID", "displayName", "enabled", "authentication",
+           "id", "providerID", "displayName", "enabled", "authentication",
           "configOverrides", "createdAt", "updatedAt"
         ],
         "additionalProperties": false
@@ -80,6 +84,15 @@
           "wireProtocol": {
             "type": "string",
             "enum": ["chatCompletions", "responses", "anthropicMessages"]
+          },
+          "endpointID": { "type": "string" },
+          "catalogSource": {
+            "type": "string",
+            "enum": ["officialAPI", "officialStaticCatalog", "gatewayCatalog", "localRuntime", "userConfiguration", "unavailable"]
+          },
+          "verificationStatus": {
+            "type": "string",
+            "enum": ["verified", "partial", "nonOfficialRunnableEvidence", "unverified", "unsupported"]
           },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
@@ -99,7 +112,7 @@
         },
         "required": [
           "id", "providerID", "modelID", "displayName", "wireProtocol",
-          "contextWindow", "capabilities", "remoteStateEnabled"
+           "contextWindow", "capabilities", "remoteStateEnabled"
         ],
         "additionalProperties": false
       }

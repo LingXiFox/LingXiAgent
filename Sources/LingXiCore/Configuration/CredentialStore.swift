@@ -1,6 +1,7 @@
 import CoreFoundation
 import CryptoKit
 import Foundation
+import LingXiProtocol
 
 public protocol CredentialStore: Sendable {
     func secret(for reference: CredentialRef) async throws -> String?

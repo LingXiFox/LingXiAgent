@@ -26,7 +26,9 @@ let host = try CoreHost(
     configuration: snapshot.core,
     dataRoot: dataRoot,
     mcpPager: mcp.pager,
-    interactive: CoreHost.stdioInteractive(environment: environment)
+    interactive: CoreHost.stdioInteractive(environment: environment),
+    configurationStore: configurations,
+    credentialStore: credentials
 )
 await host.start()
 let server = StdioCoreServer(endpoint: host)

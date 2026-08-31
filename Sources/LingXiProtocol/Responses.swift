@@ -21,6 +21,11 @@ public enum CoreResponse: Sendable, Equatable {
     case agentTree(AgentTreeNode)
     case subagentResult(SubagentResult)
     case agentRunCancelled(AgentRunID)
+    case providerProducts([ProviderProductSummary])
+    case providerAccounts([ProviderAccountInfo])
+    case providerAccount(ProviderAccountInfo)
+    case providerCredential(ProviderCredentialResult)
+    case providerDisconnected(ProviderDisconnectResult)
     case error(CoreError)
 }
 

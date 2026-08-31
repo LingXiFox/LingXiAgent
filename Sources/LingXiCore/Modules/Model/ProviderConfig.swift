@@ -32,6 +32,7 @@ public struct ProviderConfig: Sendable {
     public let performanceDiagnosticsEnabled: Bool
     public let remoteStateEnabled: Bool
     public let maxOutputTokens: Int?
+    public let requiredHeaders: [String: String]
 
     public init(
         baseURL: URL,
@@ -41,7 +42,8 @@ public struct ProviderConfig: Sendable {
         diagnosticsEnabled: Bool = false,
         performanceDiagnosticsEnabled: Bool = false,
         remoteStateEnabled: Bool = false,
-        maxOutputTokens: Int? = nil
+        maxOutputTokens: Int? = nil,
+        requiredHeaders: [String: String] = [:]
     ) {
         self.baseURL = baseURL
         authentication = apiKey.map(ProviderAuthentication.bearer) ?? .none
@@ -51,6 +53,7 @@ public struct ProviderConfig: Sendable {
         self.performanceDiagnosticsEnabled = performanceDiagnosticsEnabled
         self.remoteStateEnabled = remoteStateEnabled
         self.maxOutputTokens = maxOutputTokens
+        self.requiredHeaders = requiredHeaders
     }
 
     public init(
@@ -61,7 +64,8 @@ public struct ProviderConfig: Sendable {
         diagnosticsEnabled: Bool = false,
         performanceDiagnosticsEnabled: Bool = false,
         remoteStateEnabled: Bool = false,
-        maxOutputTokens: Int? = nil
+        maxOutputTokens: Int? = nil,
+        requiredHeaders: [String: String] = [:]
     ) {
         self.baseURL = baseURL
         self.authentication = authentication
@@ -71,6 +75,7 @@ public struct ProviderConfig: Sendable {
         self.performanceDiagnosticsEnabled = performanceDiagnosticsEnabled
         self.remoteStateEnabled = remoteStateEnabled
         self.maxOutputTokens = maxOutputTokens
+        self.requiredHeaders = requiredHeaders
     }
 
     /// OpenAI-compatible chat completions 端点。
@@ -111,6 +116,8 @@ public enum ModelWireProtocol: String, Sendable, Equatable, Codable {
 
 public struct ResolvedModelEndpoint: Sendable, Equatable {
     public let providerID: String
+    public let productID: String
+    public let endpointID: String?
     public let accountID: String?
     public let profileID: String?
     public let modelID: ModelID
@@ -119,8 +126,10 @@ public struct ResolvedModelEndpoint: Sendable, Equatable {
     public let contextProfile: ModelContextProfile
     public let capabilities: ModelCapabilities
 
-    public init(providerID: String, accountID: String? = nil, profileID: String? = nil, modelID: ModelID, baseURL: URL?, wireProtocol: ModelWireProtocol, contextProfile: ModelContextProfile = ModelContextProfile(), capabilities: ModelCapabilities = ModelCapabilities()) {
+    public init(providerID: String, productID: String? = nil, endpointID: String? = nil, accountID: String? = nil, profileID: String? = nil, modelID: ModelID, baseURL: URL?, wireProtocol: ModelWireProtocol, contextProfile: ModelContextProfile = ModelContextProfile(), capabilities: ModelCapabilities = ModelCapabilities()) {
         self.providerID = providerID
+        self.productID = productID ?? providerID
+        self.endpointID = endpointID
         self.accountID = accountID
         self.profileID = profileID
         self.modelID = modelID
@@ -131,14 +140,14 @@ public struct ResolvedModelEndpoint: Sendable, Equatable {
     }
 }
 
-public struct ModelCapabilities: Sendable, Equatable {
-    public let toolCalling: Bool
-    public let parallelToolCalling: Bool
-    public let reasoning: Bool
-    public let vision: Bool
-    public let structuredOutput: Bool
+public struct ModelCapabilities: Codable, Sendable, Equatable {
+    public let toolCalling: Bool?
+    public let parallelToolCalling: Bool?
+    public let reasoning: Bool?
+    public let vision: Bool?
+    public let structuredOutput: Bool?
 
-    public init(toolCalling: Bool = false, parallelToolCalling: Bool = false, reasoning: Bool = false, vision: Bool = false, structuredOutput: Bool = false) {
+    public init(toolCalling: Bool? = nil, parallelToolCalling: Bool? = nil, reasoning: Bool? = nil, vision: Bool? = nil, structuredOutput: Bool? = nil) {
         self.toolCalling = toolCalling
         self.parallelToolCalling = parallelToolCalling
         self.reasoning = reasoning

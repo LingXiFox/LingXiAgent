@@ -76,7 +76,7 @@ extension WireMessage: Codable {
 
 extension ClientCommand: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type, sessionID, content, permissionReply, questionReply, permissionConfiguration, runID
+        case type, sessionID, content, permissionReply, questionReply, permissionConfiguration, runID, providerCredential, providerAccount, accountID, deleteUnusedCredential, credential
     }
 
     public init(from decoder: Decoder) throws {
@@ -115,6 +115,12 @@ extension ClientCommand: Codable {
                 sessionID: try container.decode(SessionID.self, forKey: .sessionID),
                 content: try container.decode(String.self, forKey: .content)
             )
+        case .listProviderProducts: self = .listProviderProducts
+        case .listProviderAccounts: self = .listProviderAccounts
+        case .storeProviderCredential: self = .storeProviderCredential(try container.decode(ProviderCredentialWriteRequest.self, forKey: .providerCredential))
+        case .createProviderAccount: self = .createProviderAccount(try container.decode(ProviderAccountCreateRequest.self, forKey: .providerAccount))
+        case .deleteProviderAccount: self = .deleteProviderAccount(accountID: try container.decode(String.self, forKey: .accountID), deleteUnusedCredential: try container.decode(Bool.self, forKey: .deleteUnusedCredential))
+        case .deleteProviderCredential: self = .deleteProviderCredential(try container.decode(CredentialRef.self, forKey: .credential))
         }
     }
 
@@ -139,6 +145,12 @@ extension ClientCommand: Codable {
             try container.encode(reply, forKey: .questionReply)
         case let .setPermissionConfiguration(configuration):
             try container.encode(configuration, forKey: .permissionConfiguration)
+        case let .storeProviderCredential(request): try container.encode(request, forKey: .providerCredential)
+        case let .createProviderAccount(request): try container.encode(request, forKey: .providerAccount)
+        case let .deleteProviderAccount(accountID, deleteUnusedCredential):
+            try container.encode(accountID, forKey: .accountID)
+            try container.encode(deleteUnusedCredential, forKey: .deleteUnusedCredential)
+        case let .deleteProviderCredential(reference): try container.encode(reference, forKey: .credential)
         default:
             break
         }
@@ -147,12 +159,12 @@ extension ClientCommand: Codable {
 
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
-        case pong, info, state, streamOpened, providerStatus
+        case pong, info, state, streamOpened, providerStatus, providerProducts, providerAccounts, providerAccount, providerCredential, providerDisconnected
         case sessionCreated, sessionList, sessionDetail, permissionReplyAccepted, questionReplyAccepted, context, performance, permissionConfiguration, projectCache, compactSession, childSessionList, agentRunList, agentRun, agentTree, subagentResult, agentRunCancelled, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, providerStatus, session, sessions, permissionID, questionID, context, performance, permissionConfiguration, projectCache, compactSession, agentRuns, agentRun, agentTree, subagentResult, runID, error
+        case type, info, state, streamID, providerStatus, providerProducts, providerAccounts, providerAccount, providerCredential, providerDisconnected, session, sessions, permissionID, questionID, context, performance, permissionConfiguration, projectCache, compactSession, agentRuns, agentRun, agentTree, subagentResult, runID, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -168,6 +180,16 @@ extension CoreResponse: Codable {
             self = .streamOpened(try container.decode(StreamID.self, forKey: .streamID))
         case .providerStatus:
             self = .providerStatus(try container.decode(ProviderStatus.self, forKey: .providerStatus))
+        case .providerProducts:
+            self = .providerProducts(try container.decode([ProviderProductSummary].self, forKey: .providerProducts))
+        case .providerAccounts:
+            self = .providerAccounts(try container.decode([ProviderAccountInfo].self, forKey: .providerAccounts))
+        case .providerAccount:
+            self = .providerAccount(try container.decode(ProviderAccountInfo.self, forKey: .providerAccount))
+        case .providerCredential:
+            self = .providerCredential(try container.decode(ProviderCredentialResult.self, forKey: .providerCredential))
+        case .providerDisconnected:
+            self = .providerDisconnected(try container.decode(ProviderDisconnectResult.self, forKey: .providerDisconnected))
         case .sessionCreated:
             self = .sessionCreated(try container.decode(SessionInfo.self, forKey: .session))
         case .sessionList:
@@ -219,6 +241,11 @@ extension CoreResponse: Codable {
             try container.encode(streamID, forKey: .streamID)
         case let .providerStatus(status):
             try container.encode(status, forKey: .providerStatus)
+        case let .providerProducts(products): try container.encode(products, forKey: .providerProducts)
+        case let .providerAccounts(accounts): try container.encode(accounts, forKey: .providerAccounts)
+        case let .providerAccount(account): try container.encode(account, forKey: .providerAccount)
+        case let .providerCredential(credential): try container.encode(credential, forKey: .providerCredential)
+        case let .providerDisconnected(result): try container.encode(result, forKey: .providerDisconnected)
         case let .sessionCreated(info):
             try container.encode(info, forKey: .session)
         case let .sessionList(infos):
@@ -263,6 +290,11 @@ extension CoreResponse: Codable {
         case .state: .state
         case .streamOpened: .streamOpened
         case .providerStatus: .providerStatus
+        case .providerProducts: .providerProducts
+        case .providerAccounts: .providerAccounts
+        case .providerAccount: .providerAccount
+        case .providerCredential: .providerCredential
+        case .providerDisconnected: .providerDisconnected
         case .sessionCreated: .sessionCreated
         case .sessionList: .sessionList
         case .sessionDetail: .sessionDetail

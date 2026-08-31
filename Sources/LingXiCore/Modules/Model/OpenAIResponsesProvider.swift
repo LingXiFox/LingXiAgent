@@ -67,6 +67,9 @@ public struct OpenAIResponsesProvider: ModelProvider {
         case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): urlRequest.setValue(value, forHTTPHeaderField: name)
         }
+        for (name, value) in config.requiredHeaders where urlRequest.value(forHTTPHeaderField: name) == nil {
+            urlRequest.setValue(value, forHTTPHeaderField: name)
+        }
         urlRequest.httpBody = try Self.makeRequestBody(
             request,
             continuation: continuation,

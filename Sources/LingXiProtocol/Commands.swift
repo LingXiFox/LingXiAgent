@@ -24,6 +24,12 @@ public enum ClientCommand: Sendable, Equatable {
     case cancelAgentRun(runID: AgentRunID)
     /// 数据面命令：在 Session 中发起一轮对话。
     case sendMessage(sessionID: SessionID, content: String)
+    case listProviderProducts
+    case listProviderAccounts
+    case storeProviderCredential(ProviderCredentialWriteRequest)
+    case createProviderAccount(ProviderAccountCreateRequest)
+    case deleteProviderAccount(accountID: String, deleteUnusedCredential: Bool)
+    case deleteProviderCredential(CredentialRef)
 }
 
 extension ClientCommand {
@@ -52,6 +58,7 @@ extension ClientCommand {
         case getSubagentResult
         case cancelAgentRun
         case sendMessage
+        case listProviderProducts, listProviderAccounts, storeProviderCredential, createProviderAccount, deleteProviderAccount, deleteProviderCredential
     }
 
     public var kind: Kind {
@@ -79,6 +86,12 @@ extension ClientCommand {
         case .getSubagentResult: .getSubagentResult
         case .cancelAgentRun: .cancelAgentRun
         case .sendMessage: .sendMessage
+        case .listProviderProducts: .listProviderProducts
+        case .listProviderAccounts: .listProviderAccounts
+        case .storeProviderCredential: .storeProviderCredential
+        case .createProviderAccount: .createProviderAccount
+        case .deleteProviderAccount: .deleteProviderAccount
+        case .deleteProviderCredential: .deleteProviderCredential
         }
     }
 

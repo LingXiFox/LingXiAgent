@@ -1,6 +1,8 @@
 import Foundation
 import LingXiProtocol
 
+public typealias CredentialRef = LingXiProtocol.CredentialRef
+
 public enum ConfigurationSchemaURI {
     public static let core = "https://schemas.example.invalid/lingxiagent/config.schema.json"
     public static let providers = "https://schemas.example.invalid/lingxiagent/providers.schema.json"
@@ -10,27 +12,6 @@ public enum ConfigurationSchemaURI {
 
 public enum ConfigurationFormat {
     public static let currentVersion = 1
-}
-
-public struct CredentialRef: RawRepresentable, Codable, Sendable, Equatable, Hashable {
-    public var rawValue: String
-
-    public init(rawValue: String) {
-        self.rawValue = rawValue
-    }
-
-    public init(_ rawValue: String) {
-        self.rawValue = rawValue
-    }
-
-    public init(from decoder: any Decoder) throws {
-        rawValue = try decoder.singleValueContainer().decode(String.self)
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum ConfigurationLogLevel: String, Codable, Sendable, Equatable {
@@ -141,8 +122,15 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
     public var credential: CredentialRef?
     public var endpointOverride: String?
     public var configOverrides: [String: String]
+    public var accountType: ProviderAccountType
     public var createdAt: Date
     public var updatedAt: Date
+
+    public var productID: String { providerID }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, providerID, displayName, enabled, authentication, headerName, credential, endpointOverride, configOverrides, accountType, createdAt, updatedAt
+    }
 
     public init(
         id: String,
@@ -154,6 +142,7 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
         credential: CredentialRef? = nil,
         endpointOverride: String? = nil,
         configOverrides: [String: String] = [:],
+        accountType: ProviderAccountType = .apiKey,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -166,8 +155,25 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
         self.credential = credential
         self.endpointOverride = endpointOverride
         self.configOverrides = configOverrides
+        self.accountType = accountType
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        authentication = try values.decode(StoredProviderAuthenticationKind.self, forKey: .authentication)
+        headerName = try values.decodeIfPresent(String.self, forKey: .headerName)
+        credential = try values.decodeIfPresent(CredentialRef.self, forKey: .credential)
+        endpointOverride = try values.decodeIfPresent(String.self, forKey: .endpointOverride)
+        configOverrides = try values.decodeIfPresent([String: String].self, forKey: .configOverrides) ?? [:]
+        accountType = try values.decodeIfPresent(ProviderAccountType.self, forKey: .accountType) ?? .apiKey
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
     }
 }
 
@@ -197,6 +203,9 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
     public var maxOutputTokens: Int?
     public var capabilities: ModelCapabilitiesConfiguration
     public var remoteStateEnabled: Bool
+    public var endpointID: String?
+    public var catalogSource: ModelCatalogSource
+    public var verificationStatus: ProviderVerificationStatus
 
     public init(
         id: String,
@@ -207,7 +216,10 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
         contextWindow: Int,
         maxOutputTokens: Int? = nil,
         capabilities: ModelCapabilitiesConfiguration = ModelCapabilitiesConfiguration(),
-        remoteStateEnabled: Bool = false
+        remoteStateEnabled: Bool = false,
+        endpointID: String? = nil,
+        catalogSource: ModelCatalogSource = .userConfiguration,
+        verificationStatus: ProviderVerificationStatus = .unverified
     ) {
         self.id = id
         self.providerID = providerID
@@ -218,6 +230,29 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
         self.maxOutputTokens = maxOutputTokens
         self.capabilities = capabilities
         self.remoteStateEnabled = remoteStateEnabled
+        self.endpointID = endpointID
+        self.catalogSource = catalogSource
+        self.verificationStatus = verificationStatus
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, providerID, modelID, displayName, wireProtocol, contextWindow, maxOutputTokens, capabilities, remoteStateEnabled, endpointID, catalogSource, verificationStatus
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        modelID = try values.decode(String.self, forKey: .modelID)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        wireProtocol = try values.decode(StoredProviderWireProtocol.self, forKey: .wireProtocol)
+        contextWindow = try values.decode(Int.self, forKey: .contextWindow)
+        maxOutputTokens = try values.decodeIfPresent(Int.self, forKey: .maxOutputTokens)
+        capabilities = try values.decode(ModelCapabilitiesConfiguration.self, forKey: .capabilities)
+        remoteStateEnabled = try values.decode(Bool.self, forKey: .remoteStateEnabled)
+        endpointID = try values.decodeIfPresent(String.self, forKey: .endpointID)
+        catalogSource = try values.decodeIfPresent(ModelCatalogSource.self, forKey: .catalogSource) ?? .userConfiguration
+        verificationStatus = try values.decodeIfPresent(ProviderVerificationStatus.self, forKey: .verificationStatus) ?? .unverified
     }
 }
 

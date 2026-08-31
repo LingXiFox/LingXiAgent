@@ -1,4 +1,5 @@
 import Foundation
+import LingXiApplication
 import LingXiClient
 import LingXiProtocol
 
@@ -227,6 +228,50 @@ func showPerformance(_ client: LingXiClient, sessionID: SessionID) async {
     } catch { print("\(dim)[perf 失败: \(error)]\(reset)") }
 }
 
+func connectProvider(_ client: LingXiClient) async {
+    let service = ProviderConnectionService(client: client)
+    do {
+        let products = try await service.listConnectableProducts()
+        guard !products.isEmpty else { print("没有可连接的 Provider"); return }
+        print("Connectable Providers")
+        for (index, product) in products.enumerated() { print("  \(index + 1). \(product.displayName) [\(product.id)]") }
+        guard let input = readLine(), let index = Int(input), products.indices.contains(index - 1) else { print("选择无效"); return }
+        let flowID = try await service.beginConnection(productID: products[index - 1].id)
+        while true {
+            let state = try await service.state(flowID: flowID)
+            switch state {
+            case .requestingCredential:
+                print("输入 credential（不会显示）:")
+                guard let secret = readLine(), !secret.isEmpty else { print("credential 不能为空"); return }
+                _ = try await service.submitCredential(flowID: flowID, credential: secret)
+            case let .requestingAccountFields(fields):
+                var values: [String: String] = [:]
+                for field in fields { print("输入 \(field):"); values[field] = readLine() ?? "" }
+                _ = try await service.submitAccountFields(flowID: flowID, fields: values)
+            case .requestingLocalEndpoint:
+                print("输入本地 endpoint:")
+                _ = try await service.submitLocalEndpoint(flowID: flowID, endpoint: readLine() ?? "")
+            case let .connected(account):
+                print("Connected: \(account.displayName) [\(account.id)]")
+                return
+            case .failed, .cancelled:
+                print("连接未完成")
+                return
+            default:
+                continue
+            }
+        }
+    } catch { print("\(dim)[connect 失败: \(error)]\(reset)") }
+}
+
+func showProviderAccounts(_ client: LingXiClient) async {
+    do {
+        let accounts = try await ProviderConnectionService(client: client).accounts()
+        if accounts.isEmpty { print("没有已连接的 Provider Account"); return }
+        for account in accounts { print("\(account.displayName) [\(account.productID)] \(account.availability)") }
+    } catch { print("\(dim)[providers 失败: \(error)]\(reset)") }
+}
+
 // MARK: - 主流程
 
 func runTUI() async {
@@ -296,7 +341,7 @@ func runTUI() async {
         return
     }
     print("Session: \(sessionID.rawValue)")
-    print("\(dim)输入 prompt 开始对话；new/history/context/perf/subagents/permission/mode/cache/compact/quit。\(reset)")
+    print("\(dim)输入 prompt 开始对话；/connect /providers new/history/context/perf/subagents/permission/mode/cache/compact/quit。\(reset)")
 
     var pendingQuestion: QuestionRequest?
     while let raw = readLine() {
@@ -335,6 +380,10 @@ func runTUI() async {
             } catch {
                 print("\(dim)[新建 Session 失败: \(error)]\(reset)")
             }
+        case "/connect":
+            await connectProvider(client)
+        case "/providers":
+            await showProviderAccounts(client)
         case "history":
             await showHistory(client, sessionID: sessionID)
         case "context":
