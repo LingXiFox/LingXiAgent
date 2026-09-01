@@ -101,8 +101,9 @@ public actor CoreHost: CoreEndpoint {
         let l1ProjectBudget = agentSettings.l1ProjectMaxCharacters
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
+        let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
         toolRuntime = ToolRuntime(
-            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes),
+            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence),
             permissions: permissions,
             mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
             outputArchive: ToolOutputArchive(persistence: persistent),

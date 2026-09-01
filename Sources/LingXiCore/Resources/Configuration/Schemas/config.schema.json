@@ -61,6 +61,9 @@
           "type": "string",
           "enum": ["readOnly", "workspace", "fullAccess"]
         },
+        "codeIntelligenceEnabled": {
+          "type": "boolean"
+        },
         "behaviorProfile": {
           "type": ["string", "null"],
           "enum": ["build", "plan", "explore", null]

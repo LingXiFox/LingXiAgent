@@ -192,6 +192,7 @@ private struct ProcessArguments: Decodable {
 }
 private struct QuestionArguments: Decodable { let question: String; let options: [String]?; let multiple: Bool? }
 private struct SymbolArguments: Decodable { let symbol: String; let mode: String?; let direction: String? }
+private struct CodeIntelligenceArguments: Decodable { let action: String; let query: String?; let path: String?; let line: Int?; let character: Int?; let maximumCharacters: Int? }
 private struct SkillArguments: Decodable { let name: String }
 
 private func pathArguments(_ arguments: String) throws -> PathArguments { try decodeArguments(arguments) }
@@ -1191,8 +1192,38 @@ private struct ProjectIndexTool: ToolExecutor {
     }
 }
 
+private struct CodeIntelligenceTool: ToolExecutor {
+    let definition: ToolDefinition
+    let intelligence: CodeIntelligence
+    let workspace: WorkspaceRoot
+
+    func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: CodeIntelligenceArguments = try decodeArguments(arguments)
+        return input.path ?? input.query ?? workspace.url.path
+    }
+
+    func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: CodeIntelligenceArguments = try decodeArguments(arguments)
+        switch input.action {
+        case "symbols": return try json(await intelligence.symbols(input.query ?? ""))
+        case "definition": return try json(await intelligence.definition(path: try required(input.path, "path"), line: try required(input.line, "line"), character: input.character ?? 0))
+        case "references": return try json(await intelligence.references(path: try required(input.path, "path"), line: try required(input.line, "line"), character: input.character ?? 0))
+        case "document_symbols": return try json(await intelligence.documentSymbols(path: try required(input.path, "path")))
+        case "diagnostics": return try json(await intelligence.diagnostics(path: try required(input.path, "path")))
+        case "repo_map": return await intelligence.repoMap()
+        case "context": return try json(await intelligence.context(input.query ?? "", maximumCharacters: min(max(0, input.maximumCharacters ?? 16_000), 32_768)))
+        default: throw CoreError(code: .toolArgumentInvalid, message: "未知 code_intelligence action")
+        }
+    }
+
+    private func required<T>(_ value: T?, _ name: String) throws -> T {
+        guard let value else { throw CoreError(code: .toolArgumentInvalid, message: "code_intelligence 缺少 \(name)") }
+        return value
+    }
+}
+
 public extension BuiltInToolProvider {
-    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil) {
+    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil) {
         let indexTools: [any ToolExecutor]
         if let contextPager, let scanner {
             indexTools = [
@@ -1203,6 +1234,9 @@ public extension BuiltInToolProvider {
         } else {
             indexTools = []
         }
+        let intelligenceTools: [any ToolExecutor] = codeIntelligence.map { intelligence in
+            [CodeIntelligenceTool(definition: ToolDefinition(id: ToolID("code_intelligence"), description: "Structured code intelligence. Prefer this for symbols, definitions, references, diagnostics, repository map, and bounded context; it falls back safely when LSP is unavailable.", inputSchema: ToolInputSchema(properties: ["action": ToolInputProperty(type: .string, description: "symbols, definition, references, document_symbols, diagnostics, repo_map, or context", enumValues: ["symbols", "definition", "references", "document_symbols", "diagnostics", "repo_map", "context"]), "query": ToolInputProperty(type: .string, description: "Symbol or task query"), "path": ToolInputProperty(type: .string, description: "Workspace-relative source path"), "line": ToolInputProperty(type: .integer, description: "One-based line", minimum: 1), "character": ToolInputProperty(type: .integer, description: "Zero-based character", minimum: 0), "maximum_characters": ToolInputProperty(type: .integer, description: "Bounded context character limit", minimum: 0, maximum: 32_768)], required: ["action"]), capability: ToolCapability(readOnly: true)), intelligence: intelligence, workspace: workspace)]
+        } ?? []
         self.init(tools: [
             ReadFileTool(workspace: workspace),
             ListDirectoryTool(workspace: workspace),
@@ -1216,12 +1250,12 @@ public extension BuiltInToolProvider {
             GitTool(workspace: workspace),
             SkillTool(workspace: workspace),
             QuestionTool(questions: questions)
-        ] + indexTools)
+        ] + indexTools + intelligenceTools)
     }
 }
 
 public extension ToolRegistry {
-    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil) -> ToolRegistry {
-        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes).tools)
+    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil) -> ToolRegistry {
+        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence).tools)
     }
 }

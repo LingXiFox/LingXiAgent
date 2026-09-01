@@ -39,8 +39,9 @@ public struct AgentSettings: Codable, Sendable, Equatable {
     public var l2MaxCharacters: Int
     public var l1ProjectMaxCharacters: Int
     public var preferredActiveTokens: Int?
+    public var codeIntelligenceEnabled: Bool
 
-    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil) {
+    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false) {
         self.maxConcurrentSubagents = maxConcurrentSubagents
         self.maxSubagentDepth = maxSubagentDepth
         self.maxTotalRunsPerRootRun = maxTotalRunsPerRootRun
@@ -51,9 +52,10 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         self.l2MaxCharacters = l2MaxCharacters
         self.l1ProjectMaxCharacters = l1ProjectMaxCharacters
         self.preferredActiveTokens = preferredActiveTokens
+        self.codeIntelligenceEnabled = codeIntelligenceEnabled
     }
 
-    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens }
+    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens, codeIntelligenceEnabled }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -67,6 +69,7 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         l2MaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l2MaxCharacters) ?? 256 * 1024
         l1ProjectMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l1ProjectMaxCharacters) ?? 32 * 1024
         preferredActiveTokens = try values.decodeIfPresent(Int.self, forKey: .preferredActiveTokens)
+        codeIntelligenceEnabled = try values.decodeIfPresent(Bool.self, forKey: .codeIntelligenceEnabled) ?? false
     }
 }
 

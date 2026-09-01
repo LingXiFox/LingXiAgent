@@ -332,7 +332,7 @@ public struct ToolRuntime: Sendable {
     private func category(for call: ToolCall) -> ExecutionTimeoutCategory {
         switch call.toolID.rawValue {
         case "read_file", "list_directory", "skill": return .quickFilesystem
-        case "glob", "grep", "symbol_lookup", "find_references", "dependency_query": return .search
+        case "glob", "grep", "symbol_lookup", "find_references", "dependency_query", "code_intelligence": return .search
         case "shell", "git", "process": return .foregroundShell
         default: return .foregroundShell
         }
