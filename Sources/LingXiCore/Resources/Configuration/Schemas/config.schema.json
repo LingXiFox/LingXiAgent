@@ -61,6 +61,10 @@
           "type": "string",
           "enum": ["readOnly", "workspace", "fullAccess"]
         },
+        "behaviorProfile": {
+          "type": ["string", "null"],
+          "enum": ["build", "plan", "explore", null]
+        },
         "systemContext": {
           "type": ["string", "null"]
         },

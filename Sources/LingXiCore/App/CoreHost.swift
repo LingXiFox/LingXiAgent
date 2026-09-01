@@ -36,6 +36,7 @@ public actor CoreHost: CoreEndpoint {
     private let credentialStore: (any CredentialStore)?
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
+    private let behaviorProfile: AgentBehaviorProfile
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
@@ -77,13 +78,20 @@ public actor CoreHost: CoreEndpoint {
         let persistentRoot = dataRoot
         let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url, excluding: persistentRoot.map { [$0] } ?? [])
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
+        let instructions = try AgentInstructionSet.load(workspace: workspace.url)
+        let agentSettings = configuration?.agent ?? AgentSettings()
+        let behaviorProfile = agentSettings.behaviorProfile ?? .build
+        self.behaviorProfile = behaviorProfile
+        // Preserve legacy request bytes unless behavior policy or repository instructions are configured.
+        let systemContext = agentSettings.behaviorProfile != nil || instructions.rendered() != nil
+            ? AgentBehaviorInstructions.render(profile: behaviorProfile, configured: agentSettings.systemContext, repository: instructions)
+            : agentSettings.systemContext
         let effectiveMCPPager = mcpPager ?? MCPToolPager()
         let persistent = try persistentRoot.map {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
         }
         persistence = persistent
         self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
-        let agentSettings = configuration?.agent ?? AgentSettings()
         let executionDeadlinePolicy = ExecutionDeadlinePolicy(settings: configuration?.runtime.execution ?? ExecutionTimeoutSettings())
         self.executionDeadlinePolicy = executionDeadlinePolicy
         let permissions = permissionDecision.map { PermissionEngine(defaultDecision: $0) }
@@ -104,7 +112,7 @@ public actor CoreHost: CoreEndpoint {
             deadlinePolicy: executionDeadlinePolicy
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
-            systemContext: agentSettings.systemContext
+            systemContext: systemContext
         ))
         diagnosticsEnabled = environment["LINGXI_PERF_DEBUG"] == "1"
         subagentLimits = SubagentRuntimeLimits(
@@ -288,6 +296,7 @@ public actor CoreHost: CoreEndpoint {
             diagnosticsEnabled: diagnosticsEnabled,
             modelResolver: modelResolver,
             limits: subagentLimits,
+            behaviorProfile: behaviorProfile,
             deadlinePolicy: executionDeadlinePolicy
         )
         self.agent = agent

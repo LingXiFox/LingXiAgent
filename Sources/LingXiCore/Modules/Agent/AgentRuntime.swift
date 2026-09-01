@@ -25,6 +25,7 @@ public actor AgentRuntime {
     private let modelResolver: SubagentModelResolver
     private let scheduler: AgentRunScheduler
     private let limits: SubagentRuntimeLimits
+    private let behaviorProfile: AgentBehaviorProfile
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private var runs: [AgentRunID: AgentRunInfo] = [:]
     private var results: [AgentRunID: SubagentResult] = [:]
@@ -50,6 +51,7 @@ public actor AgentRuntime {
         modelResolver: SubagentModelResolver,
         limits: SubagentRuntimeLimits = SubagentRuntimeLimits(),
         scheduler: AgentRunScheduler? = nil,
+        behaviorProfile: AgentBehaviorProfile = .build,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()
     ) {
         self.store = store
@@ -69,6 +71,7 @@ public actor AgentRuntime {
         self.modelResolver = modelResolver
         self.limits = limits
         self.scheduler = scheduler ?? AgentRunScheduler(limits: limits)
+        self.behaviorProfile = behaviorProfile
         self.deadlinePolicy = deadlinePolicy
     }
 
@@ -203,7 +206,7 @@ public actor AgentRuntime {
             // Reserve before the first await so concurrent callers cannot create a second lane.
             activeSessions.insert(sessionID)
             let session = try await store.session(sessionID)
-            let run = try await createRun(session: session, parentRunID: nil, requestedModel: nil, title: session.title)
+            let run = try await createRun(session: session, parentRunID: nil, requestedModel: nil, title: session.title, profile: behaviorProfile.executionProfile)
             return try await runtime(for: sessionID, run: run).startTurn(content)
         } catch {
             activeSessions.remove(sessionID)
@@ -397,15 +400,16 @@ public actor AgentRuntime {
     }
 
     private func createRun(session: Session, parentRunID: AgentRunID?, requestedModel: ModelSelection? = nil, resolvedModel: (selection: ModelSelection, assembly: ModelRuntimeAssembly)? = nil, title: String?, profile: SubagentExecutionProfile? = nil, emitEvent: Bool = true) async throws -> AgentRunInfo {
+        let effectiveProfile = profile ?? (session.kind == .primary ? behaviorProfile.executionProfile : nil)
         let resolved = try await (resolvedModel != nil ? resolvedModel! : modelResolver.resolve(requestedModel, subagent: session.kind == .subagent))
         let id = AgentRunID(UUID().uuidString)
         let root = parentRunID.flatMap { runs[$0]?.rootRunID } ?? id
         let run = AgentRunInfo(runID: id, sessionID: session.id, projectID: session.projectID, parentRunID: parentRunID, rootRunID: root, agentKind: session.kind, status: .starting, modelSelection: resolved.selection, startedAt: .now, latestActivityAt: .now, title: title)
         runs[id] = run
-        runDeadlines[id] = deadlinePolicy.deadline(for: session.kind == .subagent ? .subagent : .agentRun, requested: profile?.timeoutSeconds.map { .seconds($0) }, parent: parentRunID.flatMap { runDeadlines[$0] })
-        if let profile { executionProfiles[id] = profile }
+        runDeadlines[id] = deadlinePolicy.deadline(for: session.kind == .subagent ? .subagent : .agentRun, requested: effectiveProfile?.timeoutSeconds.map { .seconds($0) }, parent: parentRunID.flatMap { runDeadlines[$0] })
+        if let effectiveProfile { executionProfiles[id] = effectiveProfile }
         do {
-            try await persistence?.saveAgentRun(run, profile: profile)
+            try await persistence?.saveAgentRun(run, profile: effectiveProfile)
         } catch {
             runs.removeValue(forKey: id)
             runDeadlines.removeValue(forKey: id)

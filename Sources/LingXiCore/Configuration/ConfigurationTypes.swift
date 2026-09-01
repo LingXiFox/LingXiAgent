@@ -34,24 +34,26 @@ public struct AgentSettings: Codable, Sendable, Equatable {
     public var maxTotalRunsPerRootRun: Int
     public var permissionPolicy: PermissionPolicy
     public var executionProfile: ExecutionProfile
+    public var behaviorProfile: AgentBehaviorProfile?
     public var systemContext: String?
     public var l2MaxCharacters: Int
     public var l1ProjectMaxCharacters: Int
     public var preferredActiveTokens: Int?
 
-    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil) {
+    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil) {
         self.maxConcurrentSubagents = maxConcurrentSubagents
         self.maxSubagentDepth = maxSubagentDepth
         self.maxTotalRunsPerRootRun = maxTotalRunsPerRootRun
         self.permissionPolicy = permissionPolicy
         self.executionProfile = executionProfile
+        self.behaviorProfile = behaviorProfile
         self.systemContext = systemContext
         self.l2MaxCharacters = l2MaxCharacters
         self.l1ProjectMaxCharacters = l1ProjectMaxCharacters
         self.preferredActiveTokens = preferredActiveTokens
     }
 
-    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens }
+    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -60,6 +62,7 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         maxTotalRunsPerRootRun = try values.decode(Int.self, forKey: .maxTotalRunsPerRootRun)
         permissionPolicy = try values.decodeIfPresent(PermissionPolicy.self, forKey: .permissionPolicy) ?? .ask
         executionProfile = try values.decodeIfPresent(ExecutionProfile.self, forKey: .executionProfile) ?? .workspace
+        behaviorProfile = try values.decodeIfPresent(AgentBehaviorProfile.self, forKey: .behaviorProfile)
         systemContext = try values.decodeIfPresent(String.self, forKey: .systemContext)
         l2MaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l2MaxCharacters) ?? 256 * 1024
         l1ProjectMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l1ProjectMaxCharacters) ?? 32 * 1024

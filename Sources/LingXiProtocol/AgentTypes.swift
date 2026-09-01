@@ -16,6 +16,20 @@ public enum SessionKind: String, Sendable, Equatable, Codable {
     case subagent
 }
 
+/// Agent 行为策略；只读策略还会在 Tool Runtime 中收窄 capability，不能仅依赖 prompt。
+public enum AgentBehaviorProfile: String, Sendable, Equatable, Codable {
+    case build
+    case plan
+    case explore
+
+    public var executionProfile: SubagentExecutionProfile? {
+        switch self {
+        case .build: nil
+        case .plan, .explore: SubagentExecutionProfile(permissionProfile: ExecutionProfile.readOnly.rawValue)
+        }
+    }
+}
+
 public enum AgentRunStatus: String, Sendable, Equatable, Codable {
     case queued
     case starting
