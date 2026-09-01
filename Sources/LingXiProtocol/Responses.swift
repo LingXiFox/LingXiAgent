@@ -99,6 +99,10 @@ public struct CoreError: Sendable, Equatable, Error {
         case patchConflict
         case commandFailed
         case commandTimedOut
+        case idleTimedOut
+        case transportLost
+        case executionStateUnknown
+        case cleanupTimedOut
         case sandboxUnavailable
         case processNotFound
         case processNotRunning

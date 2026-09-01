@@ -170,6 +170,7 @@ public enum ToolOutcome: String, Sendable, Equatable, Codable {
     case denied
     case cancelled
     case timedOut
+    case idleTimedOut
 }
 
 public struct ToolProvenance: Sendable, Equatable, Codable {

@@ -25,10 +25,12 @@ public actor AgentRuntime {
     private let modelResolver: SubagentModelResolver
     private let scheduler: AgentRunScheduler
     private let limits: SubagentRuntimeLimits
+    private let deadlinePolicy: ExecutionDeadlinePolicy
     private var runs: [AgentRunID: AgentRunInfo] = [:]
     private var results: [AgentRunID: SubagentResult] = [:]
     private var executionProfiles: [AgentRunID: SubagentExecutionProfile] = [:]
     private var activeSessions: Set<SessionID> = []
+    private var runDeadlines: [AgentRunID: ExecutionDeadline] = [:]
 
     init(
         store: any SessionStore,
@@ -47,7 +49,8 @@ public actor AgentRuntime {
         diagnosticsEnabled: Bool = false,
         modelResolver: SubagentModelResolver,
         limits: SubagentRuntimeLimits = SubagentRuntimeLimits(),
-        scheduler: AgentRunScheduler? = nil
+        scheduler: AgentRunScheduler? = nil,
+        deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -66,6 +69,7 @@ public actor AgentRuntime {
         self.modelResolver = modelResolver
         self.limits = limits
         self.scheduler = scheduler ?? AgentRunScheduler(limits: limits)
+        self.deadlinePolicy = deadlinePolicy
     }
 
     // MARK: - Session 生命周期
@@ -265,6 +269,7 @@ public actor AgentRuntime {
             run = AgentRunInfo(runID: runID, sessionID: child.id, projectID: child.projectID, parentRunID: parentRunID, rootRunID: parentRun.rootRunID, agentKind: .subagent, status: .starting, modelSelection: resolved.selection, startedAt: .now, latestActivityAt: .now, title: title)
             try await persistence.createChildSessionAndRun(child, run: run, profile: normalizedProfile)
             runs[runID] = run
+            runDeadlines[runID] = deadlinePolicy.deadline(for: .subagent, requested: normalizedProfile?.timeoutSeconds.map { .seconds($0) }, parent: runDeadlines[parentRunID])
             if let normalizedProfile { executionProfiles[runID] = normalizedProfile }
         } else {
             child = try await store.create(kind: .subagent, parentSessionID: parent.id, rootSessionID: parent.rootSessionID, spawnedByRunID: parentRunID, spawnedByToolCallID: toolCallID, title: title)
@@ -288,6 +293,7 @@ public actor AgentRuntime {
             let childRuns = runs.values.filter { $0.sessionID == child.id }
             for r in childRuns {
                 runs.removeValue(forKey: r.runID)
+                runDeadlines.removeValue(forKey: r.runID)
                 executionProfiles.removeValue(forKey: r.runID)
                 try? await persistence?.deleteAgentRun(r.runID)
             }
@@ -367,14 +373,15 @@ public actor AgentRuntime {
             runObserver: { [weak self] status, text, usage, error in
                 guard let run else { return }
                 await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error)
-            }
+            },
+            deadlinePolicy: deadlinePolicy
         )
     }
 
     private func runtime(for sessionID: SessionID, run: AgentRunInfo? = nil) async throws -> SessionRuntime {
         if let run {
             let resolved = try await modelResolver.resolve(run.modelSelection, subagent: run.agentKind == .subagent)
-            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning))
+            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning, deadlinePolicy: deadlinePolicy))
             let session = try await store.session(sessionID)
             let runtime = makeRuntime(for: sessionID, run: run, modelBus: bus, rootSessionID: session.rootSessionID)
             try await runtime.restore()
@@ -395,11 +402,13 @@ public actor AgentRuntime {
         let root = parentRunID.flatMap { runs[$0]?.rootRunID } ?? id
         let run = AgentRunInfo(runID: id, sessionID: session.id, projectID: session.projectID, parentRunID: parentRunID, rootRunID: root, agentKind: session.kind, status: .starting, modelSelection: resolved.selection, startedAt: .now, latestActivityAt: .now, title: title)
         runs[id] = run
+        runDeadlines[id] = deadlinePolicy.deadline(for: session.kind == .subagent ? .subagent : .agentRun, requested: profile?.timeoutSeconds.map { .seconds($0) }, parent: parentRunID.flatMap { runDeadlines[$0] })
         if let profile { executionProfiles[id] = profile }
         do {
             try await persistence?.saveAgentRun(run, profile: profile)
         } catch {
             runs.removeValue(forKey: id)
+            runDeadlines.removeValue(forKey: id)
             executionProfiles.removeValue(forKey: id)
             throw error
         }
@@ -412,21 +421,10 @@ public actor AgentRuntime {
     private func runChild(runID: AgentRunID, task: String) async {
         guard let run = runs[runID] else { return }
         do {
-            if let seconds = executionProfiles[runID]?.timeoutSeconds {
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    group.addTask { [weak self] in try await self?.consumeChildTurn(run: run, task: task) }
-                    group.addTask {
-                        try await Task.sleep(for: .seconds(seconds))
-                        throw CoreError(code: .commandTimedOut, message: "Subagent 超过 timeoutSeconds")
-                    }
-                    _ = try await group.next()
-                    group.cancelAll()
-                }
-            } else {
-                try await consumeChildTurn(run: run, task: task)
-            }
+            guard let deadline = runDeadlines[runID] else { throw CoreError(code: .commandTimedOut, message: "Subagent deadline missing") }
+            try await ExecutionWatchdog.run(deadline) { [weak self] in try await self?.consumeChildTurn(run: run, task: task) }
         } catch let error as CoreError {
-            await finishRun(runID, status: error.code == .commandTimedOut ? .timedOut : .failed, text: nil, usage: nil, error: error)
+            await finishRun(runID, status: [.commandTimedOut, .idleTimedOut].contains(error.code) ? .timedOut : .failed, text: nil, usage: nil, error: error)
         } catch {
             await finishRun(runID, status: .failed, text: nil, usage: nil, error: CoreError(code: .provider, message: String(describing: error)))
         }
@@ -463,6 +461,7 @@ public actor AgentRuntime {
         }
         runs[runID] = run
         if status.isTerminal { activeSessions.remove(run.sessionID) }
+        if status.isTerminal { runDeadlines.removeValue(forKey: runID) }
         if let result {
             results[runID] = result
             await scheduler.complete(runID)
@@ -496,7 +495,7 @@ public actor AgentRuntime {
     }
 
     private func normalized(profile: SubagentExecutionProfile?, parent: SubagentExecutionProfile?) throws -> SubagentExecutionProfile? {
-        guard let profile else { return parent.map { SubagentExecutionProfile(permissionProfile: $0.permissionProfile, toolProfile: $0.toolProfile, budgetProfile: $0.budgetProfile, contextProfile: $0.contextProfile, maxSteps: nil, timeoutSeconds: nil) } }
+        guard let profile else { return parent }
         let rawPermission: String?
         if let raw = profile.permissionProfile {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

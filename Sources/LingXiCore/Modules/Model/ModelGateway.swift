@@ -12,21 +12,24 @@ public struct ModelGateway: Sendable {
     public let endpoint: ResolvedModelEndpoint?
     public let missingRequirements: [String]
     public let reasoning: String?
+    public let deadlinePolicy: ExecutionDeadlinePolicy
     public var modelID: ModelID? { endpoint?.modelID }
     public var contextProfile: ModelContextProfile { endpoint?.contextProfile ?? ModelContextProfile() }
 
-    public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile(), reasoning: String? = nil) {
+    public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile(), reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()) {
         self.provider = provider
         endpoint = modelID.map { ResolvedModelEndpoint(providerID: "default", modelID: $0, baseURL: nil, wireProtocol: .chatCompletions, contextProfile: contextProfile) }
         self.missingRequirements = missingRequirements
         self.reasoning = reasoning
+        self.deadlinePolicy = deadlinePolicy
     }
 
-    public init(assembly: ModelRuntimeAssembly?, missingRequirements: [String] = [], reasoning: String? = nil) {
+    public init(assembly: ModelRuntimeAssembly?, missingRequirements: [String] = [], reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()) {
         provider = assembly?.provider
         endpoint = assembly?.endpoint
         self.missingRequirements = missingRequirements
         self.reasoning = reasoning
+        self.deadlinePolicy = deadlinePolicy
     }
 
     public var isConfigured: Bool { provider != nil && modelID != nil }
@@ -48,7 +51,15 @@ public struct ModelGateway: Sendable {
                 message: "未配置模型 Provider；请检查 providers.json 与 CredentialStore: \(missingRequirements.joined(separator: ", "))"
             )
         }
-        return try await provider.stream(request)
+        let deadline = deadlinePolicy.deadline(
+            for: .provider,
+            requested: request.overallTimeoutSeconds.map { .milliseconds(Int($0 * 1_000)) }
+        )
+        let source = try await ExecutionWatchdog.run(deadline) {
+            try await provider.stream(request)
+        }
+        let effective = ExecutionDeadline(category: .provider, startedAt: deadline.startedAt, timeout: deadline.timeout, idleTimeout: request.idleTimeoutSeconds.map { .milliseconds(Int($0 * 1_000)) } ?? deadline.idleTimeout)
+        return ExecutionWatchdog.stream(source, deadline: effective)
     }
 }
 

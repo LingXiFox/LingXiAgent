@@ -93,6 +93,22 @@
         "commandTimeoutSeconds": {
           "type": "number",
           "minimum": 0
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "quickFilesystemSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "searchSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "foregroundShellSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "buildTestSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "mcpSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "providerSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "providerIdleSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "subagentSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "agentRunSeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "maximumSeconds": { "type": "number", "exclusiveMinimum": 0 }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

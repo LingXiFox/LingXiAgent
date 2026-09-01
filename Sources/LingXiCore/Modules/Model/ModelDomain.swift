@@ -90,8 +90,10 @@ public struct ModelRequest: Sendable, Equatable {
     public let tools: [ToolDefinition]
     public let reasoning: String?
     public let debugStep: Int?
+    public let overallTimeoutSeconds: Double?
+    public let idleTimeoutSeconds: Double?
 
-    public init(requestID: ModelRequestID = ModelRequestID(), continuationOf: ModelRequestID? = nil, model: ModelID, executionID: AgentRunID? = nil, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil) {
+    public init(requestID: ModelRequestID = ModelRequestID(), continuationOf: ModelRequestID? = nil, model: ModelID, executionID: AgentRunID? = nil, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil, overallTimeoutSeconds: Double? = nil, idleTimeoutSeconds: Double? = nil) {
         self.requestID = requestID
         self.continuationOf = continuationOf
         self.model = model
@@ -101,6 +103,8 @@ public struct ModelRequest: Sendable, Equatable {
         self.tools = tools
         self.reasoning = reasoning
         self.debugStep = debugStep
+        self.overallTimeoutSeconds = overallTimeoutSeconds
+        self.idleTimeoutSeconds = idleTimeoutSeconds
     }
 }
 

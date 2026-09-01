@@ -1003,8 +1003,9 @@ public actor ToolProcessStore {
         return process.snapshot(id: id, stdoutCursor: stdoutCursor, stderrCursor: stderrCursor)
     }
 
-    func stopAll() {
+    func stopAll() async {
         for process in processes.values { process.terminate() }
+        for process in processes.values { await process.waitForExit() }
         processes.removeAll()
     }
 }

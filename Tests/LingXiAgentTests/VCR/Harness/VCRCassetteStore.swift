@@ -105,6 +105,7 @@ actor VCRCassetteStore {
         guard context.model == manifest.modelAlias else {
             throw CassetteMismatch(message: "model=\(context.model) expected=\(manifest.modelAlias)")
         }
+        try bindSpawnedRuns(in: request, context: context)
         let baseline = normalizer
         var normalized = try normalizer.normalizeRequest(request, context: context)
         let execution = context.executionID?.rawValue ?? "anonymous"
@@ -247,6 +248,53 @@ actor VCRCassetteStore {
         defer { try? handle.close() }
         try handle.seekToEnd()
         try handle.write(contentsOf: data)
+    }
+
+    private func bindSpawnedRuns(in request: URLRequest, context: ProviderHTTPRequestContext) throws {
+        guard let execution = context.executionID?.rawValue,
+              let role = boundRoles[execution],
+              let body = request.httpBody,
+              let live = try? JSONSerialization.jsonObject(with: body),
+              let expected = exchanges.first(where: { $0.role == role && $0.step == context.step && $0.wire == context.wireProtocol }),
+              let recorded = comparableRequests[expected.sequence].flatMap({ try? JSONSerialization.jsonObject(with: Data($0.normalized.utf8)) })
+        else { return }
+
+        let liveRuns = Self.titledRuns(in: live)
+        let recordedRuns = Self.titledRuns(in: recorded)
+        guard !liveRuns.isEmpty, liveRuns.count == recordedRuns.count else { return }
+        for (title, liveID) in liveRuns {
+            guard let recordedID = recordedRuns[title] else { return }
+            normalizer.bindRun(AgentRunID(liveID), to: recordedID)
+        }
+    }
+
+    private static func titledRuns(in value: Any) -> [String: String] {
+        var runs: [String: String] = [:]
+        var duplicateTitles = Set<String>()
+
+        func collect(_ value: Any) {
+            if let text = value as? String,
+               (text.hasPrefix("{") || text.hasPrefix("[")),
+               let nested = try? JSONSerialization.jsonObject(with: Data(text.utf8)) {
+                collect(nested)
+                return
+            }
+            if let object = value as? [String: Any] {
+                if let run = object["run"] as? [String: Any],
+                   let title = run["title"] as? String, !title.isEmpty,
+                   let runID = run["runID"] as? [String: Any], let rawValue = runID["rawValue"] as? String {
+                    if runs[title] == nil { runs[title] = rawValue }
+                    else { duplicateTitles.insert(title) }
+                }
+                for value in object.values { collect(value) }
+                return
+            }
+            if let values = value as? [Any] { for value in values { collect(value) } }
+        }
+
+        collect(value)
+        for title in duplicateTitles { runs.removeValue(forKey: title) }
+        return runs
     }
 
     private static func readJSONL<T: Decodable>(_ type: T.Type, from file: URL) throws -> [T] {

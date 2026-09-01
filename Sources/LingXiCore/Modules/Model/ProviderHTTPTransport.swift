@@ -48,7 +48,17 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
     }
 
     public func send(_ request: URLRequest, context: ProviderHTTPRequestContext) async throws -> ProviderHTTPResponse {
-        let (bytes, response) = try await session.bytes(for: request)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .timedOut {
+            throw CoreError(code: .commandTimedOut, message: "Provider request timed out")
+        } catch {
+            throw CoreError(code: .transportLost, message: "Provider transport failed")
+        }
         guard let http = response as? HTTPURLResponse else {
             throw CoreError(code: .provider, message: "Provider 返回非 HTTP 响应")
         }

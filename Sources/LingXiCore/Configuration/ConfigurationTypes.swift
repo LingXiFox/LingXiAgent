@@ -70,10 +70,21 @@ public struct AgentSettings: Codable, Sendable, Equatable {
 public struct RuntimeSettings: Codable, Sendable, Equatable {
     public var interactive: Bool
     public var commandTimeoutSeconds: Double
+    public var execution: ExecutionTimeoutSettings
 
-    public init(interactive: Bool = false, commandTimeoutSeconds: Double = 60) {
+    public init(interactive: Bool = false, commandTimeoutSeconds: Double = 60, execution: ExecutionTimeoutSettings = ExecutionTimeoutSettings()) {
         self.interactive = interactive
         self.commandTimeoutSeconds = commandTimeoutSeconds
+        self.execution = execution
+    }
+
+    private enum CodingKeys: String, CodingKey { case interactive, commandTimeoutSeconds, execution }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        interactive = try values.decode(Bool.self, forKey: .interactive)
+        commandTimeoutSeconds = try values.decodeIfPresent(Double.self, forKey: .commandTimeoutSeconds) ?? 60
+        execution = try values.decodeIfPresent(ExecutionTimeoutSettings.self, forKey: .execution) ?? ExecutionTimeoutSettings(foregroundShellSeconds: commandTimeoutSeconds)
     }
 }
 

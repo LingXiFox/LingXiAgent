@@ -64,13 +64,26 @@ public actor MCPServerRegistry {
 }
 
 public actor MCPConnectionManager: MCPToolInvoker {
+    public enum Health: String, Sendable, Codable { case healthy, degraded, unavailable }
     private var invokers: [MCPServerID: any MCPToolInvoker] = [:]
+    private var health: [MCPServerID: Health] = [:]
     public init() {}
-    public func register(_ invoker: any MCPToolInvoker, for serverID: MCPServerID) { invokers[serverID] = invoker }
+    public func register(_ invoker: any MCPToolInvoker, for serverID: MCPServerID) { invokers[serverID] = invoker; health[serverID] = .healthy }
+    public func health(for serverID: MCPServerID) -> Health { health[serverID] ?? .unavailable }
     public func call(serverID: MCPServerID, toolName: String, arguments: String) async throws -> String {
         guard let invoker = invokers[serverID] else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server unavailable: \(serverID.rawValue)") }
-        return try await invoker.call(serverID: serverID, toolName: toolName, arguments: arguments)
+        do {
+            let result = try await invoker.call(serverID: serverID, toolName: toolName, arguments: arguments)
+            health[serverID] = .healthy
+            return result
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            health[serverID] = .degraded
+            throw error
+        }
     }
+    public func shutdown() { invokers.removeAll(); health.removeAll() }
 }
 
 /// Minimal Streamable HTTP JSON-RPC transport. It deliberately does not implement deprecated HTTP+SSE.
@@ -130,7 +143,8 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
         request.httpBody = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": UUID().uuidString, "method": method, "params": parameters], options: [.sortedKeys])
         let (data, response): (Data, URLResponse)
         do { (data, response) = try await session.data(for: request) }
-        catch let error as URLError where error.code == .timedOut { throw CoreError(code: .commandTimedOut, message: "MCP HTTP \(method) timed out") }
+         catch is CancellationError { throw CancellationError() }
+         catch let error as URLError where error.code == .timedOut { throw CoreError(code: .commandTimedOut, message: "MCP HTTP \(method) timed out") }
         catch { throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP \(method) transport failed") }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP \(method) failed") }
         return (data, http.value(forHTTPHeaderField: "Content-Type") ?? "application/json")

@@ -77,8 +77,9 @@ public struct ToolRuntime: Sendable {
     private let outputSink: (@Sendable (ToolOutputChunk) async -> Void)?
     private let mcpPager: MCPToolPager?
     private let subagents: SubagentToolService?
+    private let deadlinePolicy: ExecutionDeadlinePolicy
 
-    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator = ToolMutationCoordinator(), outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil, subagents: SubagentToolService? = nil) {
+    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator = ToolMutationCoordinator(), outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil, subagents: SubagentToolService? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()) {
         self.registry = registry
         self.permissions = permissions
         self.mutations = mutations
@@ -87,6 +88,7 @@ public struct ToolRuntime: Sendable {
         self.outputSink = outputSink
         self.mcpPager = mcpPager
         self.subagents = subagents
+        self.deadlinePolicy = deadlinePolicy
     }
 
     public var definitions: [ToolDefinition] { registry.definitions }
@@ -151,8 +153,36 @@ public struct ToolRuntime: Sendable {
         sessionID: SessionID,
         projectID: ProjectID = ProjectID("ephemeral"),
         executionProfile: SubagentExecutionProfile? = nil,
-        onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
+        onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void,
+        parentDeadline: ExecutionDeadline? = nil
     ) async -> ExecutionOutcome {
+        let deadline = deadlinePolicy.deadline(for: category(for: call), requested: executionProfile?.timeoutSeconds.map { .seconds($0) }, parent: parentDeadline)
+        do {
+            let outcome = try await ExecutionWatchdog.run(deadline) {
+                try await self.executeWithMetricsUnbounded(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, onPermissionAsked: onPermissionAsked)
+            }
+            return outcome
+        } catch let error as CoreError {
+            let outcome: ToolOutcome = error.code == .idleTimedOut ? .idleTimedOut : error.code == .toolCancelled || error.code == .permissionCancelled ? .cancelled : .timedOut
+            let unknown = !isReadOnly(call)
+            var metadata = ["deadlineCategory": deadline.category.rawValue, "effectiveTimeoutSeconds": String(format: "%.3f", deadline.timeoutSeconds)]
+            if unknown { metadata["executionState"] = "unknown"; metadata["verificationRequired"] = "true" }
+            let code = unknown && outcome != .cancelled ? CoreError.Code.executionStateUnknown.rawValue : error.code.rawValue
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: code, message: error.message), toolName: call.toolName, outcome: outcome, metadata: metadata), permissionWait: .zero, permissionAsked: false, execution: deadline.timeout, toolName: call.toolName, resource: nil)
+        } catch is CancellationError {
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolCancelled.rawValue, message: "Tool 执行已取消"), toolName: call.toolName, outcome: .cancelled), permissionWait: .zero, permissionAsked: false, execution: deadline.timeout, toolName: call.toolName, resource: nil)
+        } catch {
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: "Tool 执行失败"), toolName: call.toolName), permissionWait: .zero, permissionAsked: false, execution: deadline.timeout, toolName: call.toolName, resource: nil)
+        }
+    }
+
+    private func executeWithMetricsUnbounded(
+        _ call: ToolCall,
+        sessionID: SessionID,
+        projectID: ProjectID,
+        executionProfile: SubagentExecutionProfile?,
+        onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
+    ) async throws -> ExecutionOutcome {
         let clock = ContinuousClock()
         var permissionWait: Duration = .zero
         var permissionAsked = false
@@ -267,8 +297,9 @@ public struct ToolRuntime: Sendable {
                 let rawContent = command.stdout + (command.stdout.isEmpty || command.stderr.isEmpty ? "" : "\n") + command.stderr
                 let bounded = outputPolicy.excerpt(rawContent)
                 let metadata = (try? await outputArchive?.archive(rawContent, metadata: bounded.metadata)) ?? bounded.metadata
+                let timedOut = error.code == .commandTimedOut
                 return ExecutionOutcome(
-                    result: ToolResult(callID: call.callID, success: false, content: bounded.content, error: ToolError(code: error.code.rawValue, message: "命令以状态 \(command.exitCode) 退出"), toolName: call.toolName, outcome: .failure, summary: "command failed", output: metadata, exitCode: Int(command.exitCode), diagnostics: ToolDiagnostics(stdout: command.stdout, stderr: command.stderr), continuation: metadata.outputBlobRef),
+                    result: ToolResult(callID: call.callID, success: false, content: bounded.content, error: ToolError(code: timedOut ? CoreError.Code.executionStateUnknown.rawValue : error.code.rawValue, message: timedOut ? "命令超时；执行状态需要验证" : "命令以状态 \(command.exitCode) 退出"), toolName: call.toolName, outcome: timedOut ? .timedOut : .failure, summary: "command failed", metadata: timedOut ? ["executionState": "unknown", "verificationRequired": "true"] : [:], output: metadata, exitCode: Int(command.exitCode), diagnostics: ToolDiagnostics(stdout: command.stdout, stderr: command.stderr), continuation: metadata.outputBlobRef),
                     permissionWait: permissionWait,
                     permissionAsked: permissionAsked,
                     execution: execution,
@@ -285,14 +316,7 @@ public struct ToolRuntime: Sendable {
                 resource: nil
             )
         } catch is CancellationError {
-            return ExecutionOutcome(
-                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.permissionCancelled.rawValue, message: "Tool 执行已取消"), toolName: call.toolName, outcome: .cancelled),
-                permissionWait: permissionWait,
-                permissionAsked: permissionAsked,
-                execution: execution,
-                toolName: call.toolName,
-                resource: nil
-            )
+            throw CancellationError()
         } catch {
             return ExecutionOutcome(
                 result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolName),
@@ -303,6 +327,20 @@ public struct ToolRuntime: Sendable {
                 resource: nil
             )
         }
+    }
+
+    private func category(for call: ToolCall) -> ExecutionTimeoutCategory {
+        switch call.toolID.rawValue {
+        case "read_file", "list_directory", "skill": return .quickFilesystem
+        case "glob", "grep", "symbol_lookup", "find_references", "dependency_query": return .search
+        case "shell", "git", "process": return .foregroundShell
+        default: return .foregroundShell
+        }
+    }
+
+    private func isReadOnly(_ call: ToolCall) -> Bool {
+        if call.toolID == MCPDiscoveryTools.search.id || call.toolID == MCPDiscoveryTools.load.id { return true }
+        return registry.tool(for: call.toolID)?.definition.capability.readOnly ?? false
     }
 
     public func finishMCPProviderStep(sessionID: SessionID) async { await mcpPager?.finishProviderStep(sessionID: sessionID) }
@@ -328,7 +366,8 @@ public struct ToolRuntime: Sendable {
             let code: CoreError.Code = switch error { case .leaseMissing, .leaseExpired: .mcpToolLeaseMissing; case .schemaChanged: .mcpToolSchemaChanged; case .schemaTooLarge: .mcpToolSchemaTooLarge; case .schemaBudgetExceeded: .mcpToolSchemaBudgetExceeded; default: .mcpServerUnavailable }
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: code.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         } catch let error as CoreError {
-            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+            let timedOut = error.code == .commandTimedOut || error.code == .idleTimedOut
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolID.rawValue, outcome: error.code == .idleTimedOut ? .idleTimedOut : timedOut ? .timedOut : .failure), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         } catch {
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         }

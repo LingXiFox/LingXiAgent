@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 import LingXiProtocol
+#if os(macOS)
+import Darwin
+#endif
 
 /// 子进程只继承运行命令所需的环境，避免把宿主机凭据传给工具。
 public enum EnvironmentSanitizer {
@@ -227,14 +230,33 @@ final class ManagedToolProcess: @unchecked Sendable {
         try process.run()
         try output.fileHandleForWriting.close()
         try error.fileHandleForWriting.close()
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3_600))
+            self?.terminate(timedOut: true)
+        }
     }
 
     func terminate(timedOut: Bool = false) {
         lock.lock()
-        didTimeOut = didTimeOut || timedOut
         let running = process.isRunning
+        didTimeOut = didTimeOut || (timedOut && running)
         lock.unlock()
-        if running { process.terminate() }
+        if running {
+            process.terminate()
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                self?.forceKillIfRunning()
+            }
+        }
+    }
+
+    private func forceKillIfRunning() {
+        guard process.isRunning else { return }
+        #if os(macOS)
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        #else
+        process.terminate()
+        #endif
     }
 
     func write(_ text: String) throws {
@@ -286,6 +308,7 @@ final class ManagedToolProcess: @unchecked Sendable {
         stdout.append(output.fileHandleForReading.readDataToEndOfFile())
         stderr.append(error.fileHandleForReading.readDataToEndOfFile())
         lock.lock()
+        guard !didFinish else { lock.unlock(); return }
         didFinish = true
         let continuation = waiter
         waiter = nil
@@ -316,7 +339,10 @@ func runToolProcess(
     return try await withTaskCancellationHandler(operation: {
         await managed.waitForExit()
         try Task.checkCancellation()
-        if managed.timedOut { throw CoreError(code: .commandTimedOut, message: "命令超过 \(timeoutMilliseconds ?? 0)ms 限制") }
+        if managed.timedOut {
+            let output = try JSONEncoder().encode(managed.commandResult())
+            throw CoreError(code: .commandTimedOut, message: String(decoding: output, as: UTF8.self))
+        }
         return managed.commandResult()
     }, onCancel: {
         managed.terminate()

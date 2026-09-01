@@ -24,6 +24,7 @@ public actor SessionRuntime {
     private let runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)?
     private let executionProfile: SubagentExecutionProfile?
     private let maximumAgentSteps: Int
+    private let deadlinePolicy: ExecutionDeadlinePolicy
     private var turnRunning = false
     private var turnTask: Task<Void, Never>?
     private var toolBatches: [ToolExchangeBatch] = []
@@ -51,6 +52,7 @@ public actor SessionRuntime {
         parentSessionID: SessionID? = nil,
         executionProfile: SubagentExecutionProfile? = nil,
         runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil
+        , deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -73,6 +75,7 @@ public actor SessionRuntime {
         self.executionProfile = executionProfile
         maximumAgentSteps = max(1, executionProfile?.maxSteps ?? 8)
         self.runObserver = runObserver
+        self.deadlinePolicy = deadlinePolicy
     }
 
     public func restore() async throws {
@@ -108,9 +111,20 @@ public actor SessionRuntime {
             let rootSessionID = self.rootSessionID
             let parentSessionID = self.parentSessionID
             let sessionID = self.sessionID
+            let deadline = deadlinePolicy.deadline(for: runID == nil ? .agentRun : .subagent, requested: executionProfile?.timeoutSeconds.map { .seconds($0) })
             let turnTask = Task {
-                await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
-                    await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler)
+                do {
+                    try await ExecutionWatchdog.run(deadline) {
+                        await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
+                            await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler, deadline: deadline)
+                        }
+                    }
+                } catch let error as CoreError {
+                    await self.failTurn(handle: handle, sink: opened.sink, error: error, profiler: profiler)
+                } catch is CancellationError {
+                    await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler)
+                } catch {
+                    await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .transportLost, message: "AgentRun 执行中断"), profiler: profiler)
                 }
             }
             self.turnTask = turnTask
@@ -126,7 +140,8 @@ public actor SessionRuntime {
         handle: TurnHandle,
         sink: AsyncThrowingStream<StreamChunk, Error>.Continuation,
         task: String,
-        profiler: TurnProfiler
+        profiler: TurnProfiler,
+        deadline: ExecutionDeadline
     ) async {
         var index = 0
         var finalUsage: ModelUsage?
@@ -198,7 +213,9 @@ public actor SessionRuntime {
                     messages: context.modelMessages(),
                     tools: availableTools,
                     reasoning: modelBus.gateway.reasoning,
-                    debugStep: step + 1
+                    debugStep: step + 1,
+                    overallTimeoutSeconds: deadline.remainingSeconds(),
+                    idleTimeoutSeconds: deadlinePolicy.idleTimeout(for: .provider).map { Self.durationSeconds($0) }
                 )
                 if finalTokens > budget.hardInputLimit {
                     throw CoreError(code: .contextBudgetExceeded, message: "最终模型请求超出输入预算")
@@ -296,9 +313,9 @@ public actor SessionRuntime {
                 await withTaskGroup(of: (Int, ToolRuntime.ExecutionOutcome).self) { group in
                     for (offset, call) in calls.enumerated() where outcomes[offset] == nil && primaryByIndex[offset] == offset {
                         group.addTask { [toolRuntime, sessionID, eventSink] in
-                            let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile) { request in
+                            let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile, onPermissionAsked: { request in
                                 await eventSink(.permissionAsked(request))
-                            }
+                            }, parentDeadline: deadline)
                             return (offset, outcome)
                         }
                     }
@@ -400,10 +417,13 @@ public actor SessionRuntime {
         return response
     }
 
-    public func shutdown() {
-        turnTask?.cancel()
+    public func shutdown() async {
+        guard let task = turnTask else { turnRunning = false; return }
+        task.cancel()
+        lifecycle("cancellationRequested", waitingOn: "turnTask")
         turnTask = nil
         turnRunning = false
+        lifecycle("cleanupCompleted", waitingOn: "turnTask")
     }
 
     public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
@@ -482,7 +502,17 @@ public actor SessionRuntime {
         turnRunning = false
         turnTask = nil
         if let report = profiler.report() { await performanceStore.save(report) }
-        await runObserver?(Task.isCancelled ? .cancelled : .failed, nil, nil, error)
+        let status: AgentRunStatus = Task.isCancelled ? .cancelled : [.commandTimedOut, .idleTimedOut].contains(error.code) ? .timedOut : .failed
+        await runObserver?(status, nil, nil, error)
         await eventSink(.turnFailed(TurnFailure(sessionID: handle.sessionID, streamID: handle.streamID, error: error)))
+    }
+
+    private static func durationSeconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func lifecycle(_ event: String, waitingOn: String) {
+        ExecutionLifecycleTrace.log(event, category: runID == nil ? .agentRun : .subagent, waitingOn: waitingOn)
     }
 }

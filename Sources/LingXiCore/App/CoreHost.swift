@@ -35,6 +35,7 @@ public actor CoreHost: CoreEndpoint {
     private let configurationStore: ConfigurationStore?
     private let credentialStore: (any CredentialStore)?
     private let subagentLimits: SubagentRuntimeLimits
+    private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private var agent: AgentRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
@@ -83,6 +84,8 @@ public actor CoreHost: CoreEndpoint {
         persistence = persistent
         self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
         let agentSettings = configuration?.agent ?? AgentSettings()
+        let executionDeadlinePolicy = ExecutionDeadlinePolicy(settings: configuration?.runtime.execution ?? ExecutionTimeoutSettings())
+        self.executionDeadlinePolicy = executionDeadlinePolicy
         let permissions = permissionDecision.map { PermissionEngine(defaultDecision: $0) }
             ?? PermissionEngine(configuration: PermissionConfiguration(policy: agentSettings.permissionPolicy, profile: agentSettings.executionProfile))
         permissionEngine = permissions
@@ -97,7 +100,8 @@ public actor CoreHost: CoreEndpoint {
             outputArchive: ToolOutputArchive(persistence: persistent),
             outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
             mcpPager: effectiveMCPPager,
-            subagents: subagentService
+            subagents: subagentService,
+            deadlinePolicy: executionDeadlinePolicy
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: agentSettings.systemContext
@@ -113,7 +117,7 @@ public actor CoreHost: CoreEndpoint {
         budgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: agentSettings.preferredActiveTokens))
 
         let effective = providerAssembly ?? .unavailable
-        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements)
+        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy)
         let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
         modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
     }
@@ -283,7 +287,8 @@ public actor CoreHost: CoreEndpoint {
             interactive: interactive,
             diagnosticsEnabled: diagnosticsEnabled,
             modelResolver: modelResolver,
-            limits: subagentLimits
+            limits: subagentLimits,
+            deadlinePolicy: executionDeadlinePolicy
         )
         self.agent = agent
         await subagentService.bind(
@@ -305,14 +310,27 @@ public actor CoreHost: CoreEndpoint {
 
     public func shutdown() async {
         setState(.shuttingDown)
+        lifecycle("cleanupStarted", waitingOn: "agent")
         await agent?.shutdown()
+        lifecycle("cleanupCompleted", waitingOn: "agent")
+        lifecycle("cleanupStarted", waitingOn: "dataPlane")
         await dataPlane.closeAll()
+        lifecycle("cleanupCompleted", waitingOn: "dataPlane")
+        lifecycle("cleanupStarted", waitingOn: "questions")
         await questions.close()
+        lifecycle("cleanupCompleted", waitingOn: "questions")
+        lifecycle("cleanupStarted", waitingOn: "processes")
         await processes.stopAll()
+        lifecycle("cleanupCompleted", waitingOn: "processes")
         agent = nil
         eventContinuations.values.forEach { $0.finish() }
         eventContinuations.removeAll()
         setState(.stopped)
+    }
+
+    private func lifecycle(_ event: String, waitingOn: String) {
+        guard ExecutionLifecycleTrace.enabled else { return }
+        FileHandle.standardError.write(Data("[execution-lifecycle] event=\(event) kind=coreHost waitingOn=\(waitingOn)\n".utf8))
     }
 
     // MARK: - CoreEndpoint（控制面）

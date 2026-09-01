@@ -17,6 +17,18 @@
   },
   "runtime": {
     "commandTimeoutSeconds": 60,
+    "execution": {
+      "agentRunSeconds": 1800,
+      "buildTestSeconds": 300,
+      "foregroundShellSeconds": 60,
+      "maximumSeconds": 3600,
+      "mcpSeconds": 60,
+      "providerIdleSeconds": 45,
+      "providerSeconds": 120,
+      "quickFilesystemSeconds": 10,
+      "searchSeconds": 30,
+      "subagentSeconds": 600
+    },
     "interactive": false
   },
   "version": 1

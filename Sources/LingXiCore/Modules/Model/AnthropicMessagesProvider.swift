@@ -52,6 +52,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
         }
         var result = URLRequest(url: config.anthropicMessagesURL)
         result.httpMethod = "POST"
+        if let timeout = request.overallTimeoutSeconds { result.timeoutInterval = timeout }
         result.setValue("application/json", forHTTPHeaderField: "Content-Type")
         result.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         switch config.authentication {

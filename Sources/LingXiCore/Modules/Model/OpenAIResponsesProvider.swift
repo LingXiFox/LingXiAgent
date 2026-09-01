@@ -61,6 +61,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
     private func makeURLRequest(_ request: ModelRequest, continuation: ProviderContinuation?, previousResponseID: String?) throws -> URLRequest {
         var urlRequest = URLRequest(url: config.responsesURL)
         urlRequest.httpMethod = "POST"
+        if let timeout = request.overallTimeoutSeconds { urlRequest.timeoutInterval = timeout }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         switch config.authentication {
         case .none: break

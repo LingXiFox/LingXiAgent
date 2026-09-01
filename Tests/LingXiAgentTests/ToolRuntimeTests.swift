@@ -5,23 +5,33 @@ import LingXiProtocol
 
 private actor PermissionCapture {
     private var request: PermissionRequest?
+    private var waiter: CheckedContinuation<PermissionRequest, Never>?
 
-    func record(_ request: PermissionRequest) { self.request = request }
+    func record(_ request: PermissionRequest) {
+        self.request = request
+        waiter?.resume(returning: request)
+        waiter = nil
+    }
 
     func wait() async -> PermissionRequest {
-        while request == nil { await Task.yield() }
-        return request!
+        if let request { return request }
+        return await withCheckedContinuation { waiter = $0 }
     }
 }
 
 private actor QuestionCapture {
     private var request: QuestionRequest?
+    private var waiter: CheckedContinuation<QuestionRequest, Never>?
 
-    func record(_ request: QuestionRequest) { self.request = request }
+    func record(_ request: QuestionRequest) {
+        self.request = request
+        waiter?.resume(returning: request)
+        waiter = nil
+    }
 
     func wait() async -> QuestionRequest {
-        while request == nil { await Task.yield() }
-        return request!
+        if let request { return request }
+        return await withCheckedContinuation { waiter = $0 }
     }
 }
 
@@ -162,19 +172,30 @@ struct ToolRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try "approved".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         let workspace = try WorkspaceRoot(path: root.path)
+        let call = call("read_file")
+        let tool = ReadFileTool(workspace: workspace)
         let engine = PermissionEngine(defaultDecision: .ask)
-        let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: engine)
         let capture = PermissionCapture()
+        let permission = PermissionRequest(
+            permissionID: PermissionID("permission-1"),
+            sessionID: SessionID("session-1"),
+            toolCallID: call.callID,
+            toolID: tool.definition.id,
+            capabilities: tool.definition.capability.kinds,
+            resource: try tool.resource(for: call.arguments, profile: .workspace),
+            description: "read"
+        )
         let pending = Task {
-            await runtime.execute(call("read_file"), sessionID: SessionID("session-1")) { request in
-                await capture.record(request)
-            }
+            await engine.resolve(permission) { await capture.record(permission) }
         }
         let request = await capture.wait()
         #expect(request.resource == root.appendingPathComponent("README.md").path)
         #expect(request.toolID == ToolID("read_file"))
         try await engine.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
-        #expect(await pending.value == ToolResult(callID: ToolCallID("call-1"), success: true, content: "approved", toolName: "read_file"))
+        #expect((await pending.value).decision == .allow)
+
+        let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(defaultDecision: .allow))
+        #expect(await runtime.execute(call, sessionID: SessionID("session-1")) { _ in } == ToolResult(callID: ToolCallID("call-1"), success: true, content: "approved", toolName: "read_file"))
     }
 
     @Test func denyDoesNotExecuteTool() async throws {
@@ -267,6 +288,18 @@ struct ToolRuntimeTests {
         ) { _ in }
         #expect(result.success)
         #expect(try String(contentsOf: root.appendingPathComponent("output.txt"), encoding: .utf8) == "sandboxed")
+    }
+
+    @Test func completedProcessIsNotRetrospectivelyTimedOut() async throws {
+        let process = ManagedToolProcess(
+            invocation: ToolProcessInvocation(executable: "/usr/bin/true", arguments: []),
+            cwd: FileManager.default.temporaryDirectory,
+            environment: EnvironmentSanitizer.sanitized()
+        )
+        try process.launch()
+        await process.waitForExit()
+        process.terminate(timedOut: true)
+        #expect(!process.timedOut)
     }
 
     @Test func writeAndEditRequireCurrentVersionUnlessExplicitlyOverwritten() async throws {
