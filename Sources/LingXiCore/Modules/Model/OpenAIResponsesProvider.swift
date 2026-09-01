@@ -91,7 +91,10 @@ public struct OpenAIResponsesProvider: ModelProvider {
             let results = message.parts.compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
             switch message.role {
             case .tool:
-                return results.map { .functionOutput(callID: continuation?.externalCallID(for: $0.callID) ?? $0.callID.rawValue, output: resultContent($0)) }
+                return results.map {
+                    let projected = ModelToolResultProjection.project($0)
+                    return .functionOutput(callID: continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue, output: projected.content)
+                }
             case .assistant:
                 var items: [ResponseRequestBody.Input] = []
                 if !message.content.isEmpty { items.append(.message(role: "assistant", content: message.content)) }
@@ -131,12 +134,6 @@ public struct OpenAIResponsesProvider: ModelProvider {
 
     public static func events(forSSEPayload payload: String, decoder: inout ResponsesSSEDecoder) throws -> [ModelEvent] {
         try decoder.consume(payload)
-    }
-
-    private static func resultContent(_ result: ToolResult) -> String {
-        guard !result.success else { return result.content }
-        let error = result.error ?? ToolError(code: "toolExecutionFailed", message: "Tool 执行失败")
-        return (try? String(decoding: JSONEncoder().encode(error), as: UTF8.self)) ?? error.message
     }
 
     private static func continuationMessages(_ request: ModelRequest) -> [ModelMessage] {

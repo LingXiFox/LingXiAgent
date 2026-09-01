@@ -7,9 +7,15 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
     let endpoint: URL
     private let listener: Int32
     private let lock = NSLock()
+    private let acceptQueue = DispatchQueue(label: "LingXiAgent.FixtureMCPHTTPServer.accept.\(UUID().uuidString)")
+    private let lifecycle = DispatchGroup()
     private var running = true
+    private var state = "created"
     private var calls: [(toolName: String, key: String?)] = []
-    private var acceptTask: Task<Void, Never>?
+    private var activeClients: Set<Int32> = []
+    private var requestCount = 0
+    private var responseStartedCount = 0
+    private var responseCompletedCount = 0
 
     init() throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -29,17 +35,31 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         guard withUnsafeMutablePointer(to: &assigned, { pointer in pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }) == 0 else { throw POSIXError(.EADDRNOTAVAIL) }
         listener = fd
         endpoint = URL(string: "http://127.0.0.1:\(UInt16(bigEndian: assigned.sin_port))/mcp")!
-        acceptTask = Task.detached { [weak self] in self?.acceptLoop() }
+        state = "listening"
+        lifecycle.enter()
+        acceptQueue.async { [weak self] in
+            defer { self?.lifecycle.leave() }
+            self?.acceptLoop()
+        }
     }
 
     deinit { stop() }
 
     func stop() {
-        lock.lock(); let shouldClose = running; running = false; lock.unlock()
+        lock.lock()
+        let shouldClose = running
+        running = false
+        state = "stopping"
+        let clients = activeClients
+        lock.unlock()
         guard shouldClose else { return }
         Darwin.shutdown(listener, SHUT_RDWR)
         Darwin.close(listener)
-        acceptTask?.cancel()
+        for client in clients {
+            Darwin.shutdown(client, SHUT_RDWR)
+        }
+        lifecycle.wait()
+        lock.lock(); state = "stopped"; lock.unlock()
     }
 
     func callCount(toolName: String, key: String? = nil) -> Int {
@@ -47,22 +67,39 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         return calls.filter { $0.toolName == toolName && (key == nil || $0.key == key) }.count
     }
 
+    func diagnostics() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return "fixtureID=\(ObjectIdentifier(self).hashValue) endpoint=\(endpoint.host ?? "loopback"):\(endpoint.port ?? 0) state=\(state) ready=\(state == "listening") requestCount=\(requestCount) responseStarted=\(responseStartedCount) responseCompleted=\(responseCompletedCount) activeClients=\(activeClients.count) calls=\(calls.count)"
+    }
+
     private func acceptLoop() {
         while active {
             var address = sockaddr(); var length = socklen_t(MemoryLayout<sockaddr>.size)
             let client = accept(listener, &address, &length)
             guard client >= 0 else { continue }
-            Task.detached { [weak self] in self?.handle(client) }
+            lock.lock(); activeClients.insert(client); lock.unlock()
+            lifecycle.enter()
+            Thread.detachNewThread { [weak self] in
+                defer { self?.lifecycle.leave() }
+                self?.handle(client)
+            }
         }
     }
 
     private var active: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
     private func handle(_ client: Int32) {
-        defer { Darwin.close(client) }
+        defer {
+            lock.lock(); activeClients.remove(client); lock.unlock()
+            Darwin.close(client)
+        }
         guard let request = readRequest(client) else { return }
+        lock.lock(); requestCount += 1; state = "handling"; lock.unlock()
         let response = respond(to: request)
+        lock.lock(); responseStartedCount += 1; lock.unlock()
         write(response, to: client)
+        lock.lock(); responseCompletedCount += 1; if running { state = "listening" }; lock.unlock()
     }
 
     private func readRequest(_ client: Int32) -> (method: String, path: String, headers: [String: String], body: Data)? {
@@ -133,6 +170,15 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
     private func write(_ response: (Int, String, Data), to socket: Int32) {
         let reason = response.0 == 200 ? "OK" : response.0 == 204 ? "No Content" : response.0 == 400 ? "Bad Request" : response.0 == 403 ? "Forbidden" : response.0 == 404 ? "Not Found" : "Internal Server Error"
         var data = Data("HTTP/1.1 \(response.0) \(reason)\r\nContent-Type: \(response.1)\r\nContent-Length: \(response.2.count)\r\nConnection: close\r\n\r\n".utf8); data.append(response.2)
-        _ = data.withUnsafeBytes { send(socket, $0.baseAddress, data.count, 0) }
+        data.withUnsafeBytes { raw in
+            guard let start = raw.baseAddress else { return }
+            var offset = 0
+            while offset < data.count {
+                let written = send(socket, start.advanced(by: offset), data.count - offset, 0)
+                if written > 0 { offset += written }
+                else if written < 0, errno == EINTR { continue }
+                else { return }
+            }
+        }
     }
 }

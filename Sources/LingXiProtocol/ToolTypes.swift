@@ -224,6 +224,19 @@ public struct ToolOutputMetadata: Sendable, Equatable, Codable {
     }
 }
 
+/// 供 Coding Tool 返回可恢复的命令和测试诊断；正文仍保留在 content 中。
+public struct ToolDiagnostics: Sendable, Equatable, Codable {
+    public let command: String?
+    public let stdout: String
+    public let stderr: String
+
+    public init(command: String? = nil, stdout: String = "", stderr: String = "") {
+        self.command = command
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+}
+
 public struct ToolResult: Sendable, Equatable, Codable {
     public let callID: ToolCallID
     public let success: Bool
@@ -238,8 +251,16 @@ public struct ToolResult: Sendable, Equatable, Codable {
     public let timing: ToolTiming
     public let output: ToolOutputMetadata
     public let exitCode: Int?
+    public let diagnostics: ToolDiagnostics?
+    public let changedFiles: [String]
+    /// 完整输出在持久化 archive 中时，供调用方继续读取的引用。
+    public let continuation: String?
 
-    public init(callID: ToolCallID, success: Bool, content: String, error: ToolError? = nil, toolName: String? = nil, outcome: ToolOutcome? = nil, summary: String = "", metadata: [String: String] = [:], provenance: ToolProvenance? = nil, touchedResources: [ToolTouchedResource] = [], timing: ToolTiming = ToolTiming(), output: ToolOutputMetadata? = nil, exitCode: Int? = nil) {
+    private enum CodingKeys: String, CodingKey {
+        case callID, success, content, error, toolName, outcome, summary, metadata, provenance, touchedResources, timing, output, exitCode, diagnostics, changedFiles, continuation
+    }
+
+    public init(callID: ToolCallID, success: Bool, content: String, error: ToolError? = nil, toolName: String? = nil, outcome: ToolOutcome? = nil, summary: String = "", metadata: [String: String] = [:], provenance: ToolProvenance? = nil, touchedResources: [ToolTouchedResource] = [], timing: ToolTiming = ToolTiming(), output: ToolOutputMetadata? = nil, exitCode: Int? = nil, diagnostics: ToolDiagnostics? = nil, changedFiles: [String] = [], continuation: String? = nil) {
         self.callID = callID
         self.success = success
         self.content = content
@@ -253,5 +274,28 @@ public struct ToolResult: Sendable, Equatable, Codable {
         self.timing = timing
         self.output = output ?? ToolOutputMetadata(totalCharacters: content.count)
         self.exitCode = exitCode
+        self.diagnostics = diagnostics
+        self.changedFiles = changedFiles
+        self.continuation = continuation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        callID = try values.decode(ToolCallID.self, forKey: .callID)
+        success = try values.decode(Bool.self, forKey: .success)
+        content = try values.decode(String.self, forKey: .content)
+        error = try values.decodeIfPresent(ToolError.self, forKey: .error)
+        toolName = try values.decodeIfPresent(String.self, forKey: .toolName)
+        outcome = try values.decodeIfPresent(ToolOutcome.self, forKey: .outcome) ?? (success ? .success : .failure)
+        summary = try values.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        metadata = try values.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+        provenance = try values.decodeIfPresent(ToolProvenance.self, forKey: .provenance)
+        touchedResources = try values.decodeIfPresent([ToolTouchedResource].self, forKey: .touchedResources) ?? []
+        timing = try values.decodeIfPresent(ToolTiming.self, forKey: .timing) ?? ToolTiming()
+        output = try values.decodeIfPresent(ToolOutputMetadata.self, forKey: .output) ?? ToolOutputMetadata(totalCharacters: content.count)
+        exitCode = try values.decodeIfPresent(Int.self, forKey: .exitCode)
+        diagnostics = try values.decodeIfPresent(ToolDiagnostics.self, forKey: .diagnostics)
+        changedFiles = try values.decodeIfPresent([String].self, forKey: .changedFiles) ?? []
+        continuation = try values.decodeIfPresent(String.self, forKey: .continuation)
     }
 }

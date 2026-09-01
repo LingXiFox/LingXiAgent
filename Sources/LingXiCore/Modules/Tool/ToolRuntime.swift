@@ -6,11 +6,14 @@ public protocol ToolExecutor: Sendable {
     var definition: ToolDefinition { get }
     func resource(for arguments: String, profile: ExecutionProfile) throws -> String
     func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind>
+    /// 外部目录审批必须引用 canonical path；Shell 的主要权限资源仍是命令文本。
+    func externalResource(for arguments: String, profile: ExecutionProfile) throws -> String?
     func execute(arguments: String, profile: ExecutionProfile) async throws -> String
 }
 
 public extension ToolExecutor {
     func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> { definition.capability.kinds }
+    func externalResource(for arguments: String, profile: ExecutionProfile) throws -> String? { nil }
 }
 
 public protocol ToolProvider: Sendable {
@@ -68,14 +71,14 @@ public struct ToolRegistry: Sendable {
 public struct ToolRuntime: Sendable {
     private let registry: ToolRegistry
     private let permissions: PermissionEngine
-    private let mutations: ToolMutationCoordinator?
+    private let mutations: ToolMutationCoordinator
     private let outputPolicy: ToolOutputPolicy
     private let outputArchive: ToolOutputArchive?
     private let outputSink: (@Sendable (ToolOutputChunk) async -> Void)?
     private let mcpPager: MCPToolPager?
     private let subagents: SubagentToolService?
 
-    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator? = nil, outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil, subagents: SubagentToolService? = nil) {
+    public init(registry: ToolRegistry, permissions: PermissionEngine, mutations: ToolMutationCoordinator = ToolMutationCoordinator(), outputPolicy: ToolOutputPolicy = ToolOutputPolicy(), outputArchive: ToolOutputArchive? = nil, outputSink: (@Sendable (ToolOutputChunk) async -> Void)? = nil, mcpPager: MCPToolPager? = nil, subagents: SubagentToolService? = nil) {
         self.registry = registry
         self.permissions = permissions
         self.mutations = mutations
@@ -197,7 +200,7 @@ public struct ToolRuntime: Sendable {
             guard let tool = registry.tool(for: call.toolID) else {
                 throw CoreError(code: .toolNotFound, message: "未注册 Tool: \(call.toolID.rawValue)")
             }
-            try ToolSchemaValidator.validate(arguments: call.arguments, schema: tool.definition.inputSchema)
+            try ToolSchemaValidator.validate(arguments: call.arguments, schema: tool.definition.inputSchema, additionalProperties: Self.codingProperties(for: tool.definition.id))
             let capabilities = try tool.capabilities(for: call.arguments, profile: effectiveProfile)
             guard effectiveProfile != .readOnly || ToolCapability(capabilities).readOnly else {
                 throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 \(call.toolID.rawValue)")
@@ -212,8 +215,26 @@ public struct ToolRuntime: Sendable {
                 resource: resource,
                 description: "允许 \(call.toolID.rawValue) 访问 \(resource)"
             )
+            if capabilities.contains(.externalFilesystem) {
+                let externalRequest = PermissionRequest(
+                    permissionID: PermissionID(UUID().uuidString),
+                    sessionID: sessionID,
+                    toolCallID: call.callID,
+                    toolID: call.toolID,
+                    capabilities: [.externalFilesystem],
+                    resource: try tool.externalResource(for: call.arguments, profile: effectiveProfile) ?? resource,
+                    description: "允许 \(call.toolID.rawValue) 访问 Workspace 外目录"
+                )
+                let externalResolution = await permissions.resolve(externalRequest, action: .externalDirectory) {
+                    await onPermissionAsked(externalRequest)
+                }
+                permissionAsked = permissionAsked || externalResolution.asked
+                guard externalResolution.decision == .allow else {
+                    throw CoreError(code: .permissionDenied, message: "已拒绝 Workspace 外目录: \(resource)")
+                }
+            }
             let permissionStart = clock.now
-            let resolution = await permissions.resolve(request) {
+            let resolution = await permissions.resolve(request, action: Self.permissionAction(for: tool.definition.id)) {
                 await onPermissionAsked(request)
             }
             permissionWait = permissionStart.duration(to: clock.now)
@@ -225,15 +246,16 @@ public struct ToolRuntime: Sendable {
             let executionStart = clock.now
             let mutates = capabilities.contains(.projectWrite) || capabilities.contains(.repositoryWrite)
             let operation: @Sendable () async throws -> String = { try await tool.execute(arguments: call.arguments, profile: effectiveProfile) }
-            let rawContent = mutates && mutations != nil ? try await mutations!.execute(operation) : try await operation()
+            let rawContent = mutates ? try await mutations.execute(operation) : try await operation()
             if !rawContent.isEmpty {
                 await outputSink?(ToolOutputChunk(toolCallID: call.callID, stream: .stdout, sequence: 0, payload: rawContent))
             }
             let bounded = outputPolicy.excerpt(rawContent)
             let metadata = try await outputArchive?.archive(rawContent, metadata: bounded.metadata) ?? bounded.metadata
             execution = executionStart.duration(to: clock.now)
+            let coding = Self.codingDetails(toolID: tool.definition.id, content: rawContent)
             return ExecutionOutcome(
-                result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: tool.definition.name, output: metadata),
+                result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: tool.definition.name, summary: coding.summary, metadata: coding.metadata, output: metadata, exitCode: coding.exitCode, diagnostics: coding.diagnostics, changedFiles: coding.changedFiles, continuation: metadata.outputBlobRef),
                 permissionWait: permissionWait,
                 permissionAsked: permissionAsked,
                 execution: execution,
@@ -241,6 +263,19 @@ public struct ToolRuntime: Sendable {
                 resource: resource
             )
         } catch let error as CoreError {
+            if let command = Self.commandResult(from: error.message) {
+                let rawContent = command.stdout + (command.stdout.isEmpty || command.stderr.isEmpty ? "" : "\n") + command.stderr
+                let bounded = outputPolicy.excerpt(rawContent)
+                let metadata = (try? await outputArchive?.archive(rawContent, metadata: bounded.metadata)) ?? bounded.metadata
+                return ExecutionOutcome(
+                    result: ToolResult(callID: call.callID, success: false, content: bounded.content, error: ToolError(code: error.code.rawValue, message: "命令以状态 \(command.exitCode) 退出"), toolName: call.toolName, outcome: .failure, summary: "command failed", output: metadata, exitCode: Int(command.exitCode), diagnostics: ToolDiagnostics(stdout: command.stdout, stderr: command.stderr), continuation: metadata.outputBlobRef),
+                    permissionWait: permissionWait,
+                    permissionAsked: permissionAsked,
+                    execution: execution,
+                    toolName: call.toolName,
+                    resource: nil
+                )
+            }
             return ExecutionOutcome(
                 result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolName, outcome: error.code == .permissionDenied ? .denied : error.code == .commandTimedOut ? .timedOut : .failure),
                 permissionWait: permissionWait,
@@ -312,16 +347,55 @@ public struct ToolRuntime: Sendable {
         guard let requested, rank[requested, default: 0] < rank[parent, default: 0] else { return parent }
         return requested
     }
+
+    private static func permissionAction(for toolID: ToolID) -> PermissionAction? {
+        switch toolID.rawValue {
+        case "read_file", "list_directory": return .read
+        case "edit_file", "write_file", "apply_patch": return .edit
+        case "shell", "process", "git": return .shell
+        default: return nil
+        }
+    }
+
+    private static func commandResult(from message: String) -> CommandResult? {
+        guard let data = message.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(CommandResult.self, from: data)
+    }
+
+    private static func codingDetails(toolID: ToolID, content: String) -> (summary: String, metadata: [String: String], exitCode: Int?, diagnostics: ToolDiagnostics?, changedFiles: [String]) {
+        guard let data = content.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) else { return ("", [:], nil, nil, []) }
+        if let operations = json as? [[String: Any]] {
+            return ("applied \(operations.count) file operation(s)", [:], nil, nil, operations.compactMap { $0["path"] as? String }.sorted())
+        }
+        guard let object = json as? [String: Any] else { return ("", [:], nil, nil, []) }
+        let changedFiles = object["changed_files"] as? [String] ?? []
+        let summary = object["summary"] as? String ?? ""
+        let exitCode = (object["exit_code"] as? NSNumber)?.intValue ?? (object["exitCode"] as? NSNumber)?.intValue
+        let stdout = object["stdout"] as? String
+        let stderr = object["stderr"] as? String
+        let diagnostics = stdout.map { ToolDiagnostics(command: object["command"] as? String, stdout: $0, stderr: stderr ?? "") }
+        return (summary, [:], exitCode, diagnostics, changedFiles)
+    }
+
+    private static func codingProperties(for toolID: ToolID) -> [String: ToolInputProperty] {
+        switch toolID.rawValue {
+        case "read_file": return ["start_line": ToolInputProperty(type: .integer, description: "", minimum: 1), "end_line": ToolInputProperty(type: .integer, description: "", minimum: 1), "max_lines": ToolInputProperty(type: .integer, description: "", minimum: 1, maximum: 2_000), "line_numbers": ToolInputProperty(type: .boolean, description: "")]
+        case "glob": return ["include_hidden": ToolInputProperty(type: .boolean, description: ""), "include_ignored": ToolInputProperty(type: .boolean, description: ""), "include_generated": ToolInputProperty(type: .boolean, description: "")]
+        case "grep": return ["glob": ToolInputProperty(type: .string, description: ""), "include_hidden": ToolInputProperty(type: .boolean, description: ""), "include_ignored": ToolInputProperty(type: .boolean, description: ""), "include_generated": ToolInputProperty(type: .boolean, description: "")]
+        default: return [:]
+        }
+    }
 }
 
 /// JSON object is decoded once at the runtime boundary before permission or side effects.
 enum ToolSchemaValidator {
-    static func validate(arguments: String, schema: ToolInputSchema) throws {
+    static func validate(arguments: String, schema: ToolInputSchema, additionalProperties: [String: ToolInputProperty] = [:]) throws {
         guard let data = arguments.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let values = object as? [String: Any]
         else { throw CoreError(code: .toolArgumentInvalid, message: "Tool 参数必须是 JSON object") }
         var allowedProperties = schema.properties
+        allowedProperties.merge(additionalProperties) { _, replacement in replacement }
         if schema.properties["action"] != nil && schema.properties["task"] != nil {
             allowedProperties["permission_profile"] = ToolInputProperty(type: .string, description: "Optional permission profile")
             allowedProperties["budget_profile"] = ToolInputProperty(type: .string, description: "Optional budget profile")

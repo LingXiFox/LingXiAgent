@@ -110,6 +110,7 @@ struct FullCoreStackV1Tests {
     @Test func fullCoreStackV1() async throws {
         let trace = VCRProgressTrace()
         var activeHost: CoreHost?
+        var activeMCPServer: FixtureMCPHTTPServer?
         do {
             let configuration = try Self.resolveConfiguration()
             await trace.emit("bootstrap")
@@ -132,7 +133,7 @@ struct FullCoreStackV1Tests {
         try installWorkspaceFixture(at: workspace)
 
         let mcpServer = try FixtureMCPHTTPServer()
-        defer { mcpServer.stop() }
+        activeMCPServer = mcpServer
         let pager = try await mcpPager(server: mcpServer)
         let preflight = await pager.search(sessionID: SessionID("vcr-preflight"), projectID: ProjectID("vcr-preflight"), query: "full-core-stack-v1")
         guard let anchor = preflight.first(where: { $0.toolID == ToolID("vcr-fixture::lookup_anchor") }), anchor.availability == "available" else {
@@ -240,8 +241,12 @@ struct FullCoreStackV1Tests {
         await trace.emit("cassette.sanitize")
         try await cassette.audit()
         await trace.emit(configuration.mode == .record ? "record.complete" : "replay.complete")
+        mcpServer.stop()
+        activeMCPServer = nil
         } catch {
             await trace.failed(error)
+            if let activeMCPServer { print("VCR MCP fixture diagnostics: \(activeMCPServer.diagnostics())") }
+            activeMCPServer?.stop()
             if let activeHost { await activeHost.shutdown() }
             throw error
         }

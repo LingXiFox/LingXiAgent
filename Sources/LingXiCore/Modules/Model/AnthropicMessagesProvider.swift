@@ -99,7 +99,8 @@ public struct AnthropicMessagesProvider: ModelProvider {
             case .tool:
                 return RequestBody.Message(role: "user", content: message.parts.compactMap { part in
                     guard case let .toolResult(result) = part else { return nil }
-                    return .toolResult(id: continuation?.externalCallID(for: result.callID) ?? result.callID.rawValue, content: result.content, isError: !result.success)
+                    let projected = ModelToolResultProjection.project(result)
+                    return .toolResult(id: continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue, content: projected.content, isError: !projected.success)
                 })
             }
         }

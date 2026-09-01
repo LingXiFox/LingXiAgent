@@ -19,6 +19,27 @@ public enum PermissionPolicy: String, Sendable, Equatable, Codable {
     case auto
 }
 
+/// Coding Tool 共享的权限动作域。write、edit 与 patch 必须使用同一个 edit 域。
+public enum PermissionAction: String, Sendable, Equatable, Codable {
+    case read
+    case edit
+    case shell
+    case externalDirectory
+}
+
+public struct PermissionResourceRule: Sendable, Equatable, Codable {
+    public let action: PermissionAction
+    /// 支持 * 通配符；文件动作匹配 canonical path，shell 匹配原始 command。
+    public let resourcePattern: String
+    public let decision: PermissionDecision
+
+    public init(action: PermissionAction, resourcePattern: String = "*", decision: PermissionDecision) {
+        self.action = action
+        self.resourcePattern = resourcePattern
+        self.decision = decision
+    }
+}
+
 public enum ExecutionProfile: String, Sendable, Equatable, Codable {
     case readOnly
     case workspace

@@ -36,6 +36,32 @@ public enum ModelContentPart: Sendable, Equatable {
     case toolResult(ToolResult)
 }
 
+/// Provider wire 只能消费此稳定投影；ToolResult 的内部诊断与持久化字段不会自动外泄。
+public struct ModelToolResultProjection: Sendable, Equatable {
+    public let callID: ToolCallID
+    public let toolName: String?
+    public let success: Bool
+    public let content: String
+
+    public init(callID: ToolCallID, toolName: String?, success: Bool, content: String) {
+        self.callID = callID
+        self.toolName = toolName
+        self.success = success
+        self.content = content
+    }
+
+    public static func project(_ result: ToolResult) -> Self {
+        let content: String
+        if result.success {
+            content = result.content
+        } else {
+            let error = result.error ?? ToolError(code: "toolExecutionFailed", message: "Tool 执行失败")
+            content = (try? String(decoding: JSONEncoder().encode(error), as: UTF8.self)) ?? error.message
+        }
+        return Self(callID: result.callID, toolName: result.toolName, success: result.success, content: content)
+    }
+}
+
 public struct ModelMessage: Sendable, Equatable {
     public let role: ModelRole
     public let parts: [ModelContentPart]

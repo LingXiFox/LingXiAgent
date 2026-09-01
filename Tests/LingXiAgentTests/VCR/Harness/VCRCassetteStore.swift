@@ -105,10 +105,11 @@ actor VCRCassetteStore {
         guard context.model == manifest.modelAlias else {
             throw CassetteMismatch(message: "model=\(context.model) expected=\(manifest.modelAlias)")
         }
-        let normalized = try normalizer.normalizeRequest(request, context: context)
+        let baseline = normalizer
+        var normalized = try normalizer.normalizeRequest(request, context: context)
         let execution = context.executionID?.rawValue ?? "anonymous"
         let boundRole = boundRoles[execution]
-        let candidates = exchanges.filter { exchange in
+        var candidates = exchanges.filter { exchange in
             guard !consumedSequences.contains(exchange.sequence), !reservedSequences.contains(exchange.sequence),
                   exchange.wire == context.wireProtocol,
                   exchange.model == manifest.modelAlias,
@@ -119,6 +120,33 @@ actor VCRCassetteStore {
                   let request = comparableRequests[exchange.sequence]
             else { return false }
             return request.fingerprint == normalized.1 && request.normalized == normalized.0
+        }
+        if candidates.isEmpty, boundRole == nil {
+            normalizer = baseline
+            let structural = exchanges.filter { exchange in
+                guard !consumedSequences.contains(exchange.sequence), !reservedSequences.contains(exchange.sequence),
+                      exchange.wire == context.wireProtocol, exchange.model == manifest.modelAlias, exchange.step == context.step,
+                      exchange.requestHeaders == normalized.2,
+                      roleBindings[exchange.role] == nil || roleBindings[exchange.role] == execution,
+                      let comparable = comparableRequests[exchange.sequence]
+                else { return false }
+                return Self.matchesIgnoringUnboundRunIDs(recorded: comparable.normalized, replayed: normalized.0)
+            }
+            guard structural.count == 1, let candidate = structural.first else {
+                let roles = structural.map(\.role).sorted().joined(separator: ",")
+                throw CassetteMismatch(message: "unbound run candidate count=\(structural.count) roles=[\(roles)]")
+            }
+            guard roleBindings[candidate.role] == nil || roleBindings[candidate.role] == execution else {
+                throw CassetteMismatch(message: "role \(candidate.role) already bound")
+            }
+            boundRoles[execution] = candidate.role
+            roleBindings[candidate.role] = execution
+            normalizer.bindRun(context.executionID, to: candidate.role)
+            normalized = try normalizer.normalizeRequest(request, context: context)
+            candidates = exchanges.filter { exchange in
+                guard exchange.sequence == candidate.sequence, let comparable = comparableRequests[exchange.sequence] else { return false }
+                return comparable.fingerprint == normalized.1 && comparable.normalized == normalized.0
+            }
         }
         guard let match = candidates.min(by: { $0.sequence < $1.sequence }) else {
             let sameRole = exchanges.filter { $0.wire == context.wireProtocol && $0.step == context.step && $0.role == (boundRole ?? normalizer.role(for: context.executionID)) }
@@ -233,7 +261,40 @@ actor VCRCassetteStore {
         return firstDifferencePath(left, right, path: "$")
     }
 
+    private static func matchesIgnoringUnboundRunIDs(recorded: String, replayed: String) -> Bool {
+        guard let left = try? JSONSerialization.jsonObject(with: Data(recorded.utf8)), let right = try? JSONSerialization.jsonObject(with: Data(replayed.utf8)) else { return false }
+        return equalIgnoringUnboundRunIDs(left, right, key: nil, parent: nil)
+    }
+
+    private static func equalIgnoringUnboundRunIDs(_ left: Any, _ right: Any, key: String?, parent: String?) -> Bool {
+        let normalized = key?.replacingOccurrences(of: "_", with: "").lowercased()
+        if normalized == "runid" || (normalized == "rawvalue" && parent?.replacingOccurrences(of: "_", with: "").lowercased().contains("run") == true) { return true }
+        if let left = left as? [String: Any], let right = right as? [String: Any] {
+            guard Set(left.keys) == Set(right.keys) else { return false }
+            return left.keys.allSatisfy { equalIgnoringUnboundRunIDs(left[$0]!, right[$0]!, key: $0, parent: key) }
+        }
+        if let left = left as? [Any], let right = right as? [Any] {
+            return left.count == right.count && zip(left, right).allSatisfy { equalIgnoringUnboundRunIDs($0.0, $0.1, key: key, parent: parent) }
+        }
+        if let left = left as? String, let right = right as? String,
+           let leftJSON = try? JSONSerialization.jsonObject(with: Data(left.utf8)), let rightJSON = try? JSONSerialization.jsonObject(with: Data(right.utf8)) {
+            return equalIgnoringUnboundRunIDs(leftJSON, rightJSON, key: key, parent: parent)
+        }
+        return String(describing: left) == String(describing: right)
+    }
+
     private static func firstDifferencePath(_ left: Any, _ right: Any, path: String) -> String? {
+        if let left = left as? String, let right = right as? String {
+            if left == right { return nil }
+            if let leftData = left.data(using: .utf8), let rightData = right.data(using: .utf8),
+               let leftJSON = try? JSONSerialization.jsonObject(with: leftData), let rightJSON = try? JSONSerialization.jsonObject(with: rightData) {
+                return firstDifferencePath(leftJSON, rightJSON, path: "\(path)<json>")
+            }
+            if [left, right].allSatisfy({ $0.hasPrefix("session-") || $0.hasPrefix("child-session-") || $0.hasPrefix("run-") }) {
+                return "\(path)[\(left)!=\(right)]"
+            }
+            return "\(path)[\(left)!=\(right)]"
+        }
         if String(describing: left) == String(describing: right) { return nil }
         if let left = left as? [String: Any], let right = right as? [String: Any] {
             for key in Set(left.keys).union(right.keys).sorted() {
@@ -248,15 +309,6 @@ actor VCRCassetteStore {
                 if let difference = firstDifferencePath(left[index], right[index], path: "\(path)[\(index)]") { return difference }
             }
             return nil
-        }
-        if let left = left as? String, let right = right as? String,
-           let leftData = left.data(using: .utf8), let rightData = right.data(using: .utf8),
-           let leftJSON = try? JSONSerialization.jsonObject(with: leftData), let rightJSON = try? JSONSerialization.jsonObject(with: rightData) {
-            return firstDifferencePath(leftJSON, rightJSON, path: "\(path)<json>")
-        }
-        if let left = left as? String, let right = right as? String,
-           [left, right].allSatisfy({ $0.hasPrefix("session-") || $0.hasPrefix("child-session-") || $0.hasPrefix("run-") }) {
-            return "\(path)[\(left)!=\(right)]"
         }
         return String(describing: left) == String(describing: right) ? nil : "\(path)<\(type(of: left))!=\(type(of: right))>"
     }

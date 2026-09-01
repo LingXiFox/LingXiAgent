@@ -118,7 +118,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
         switch message.role {
         case .tool:
             return results.map { result in
-                Message(role: "tool", content: resultContent(result), toolCallID: continuation?.externalCallID(for: result.callID) ?? result.callID.rawValue)
+                let projected = ModelToolResultProjection.project(result)
+                return Message(role: "tool", content: projected.content, toolCallID: continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue)
             }
         case .assistant:
             return [Message(
@@ -129,13 +130,6 @@ public struct OpenAICompatibleProvider: ModelProvider {
         case .system, .user:
             return [Message(role: message.role.rawValue, content: message.content)]
         }
-    }
-
-    private static func resultContent(_ result: ToolResult) -> String {
-        guard !result.success else { return result.content }
-        let error = result.error ?? ToolError(code: "toolExecutionFailed", message: "Tool 执行失败")
-        let data = try? JSONEncoder().encode(error)
-        return data.map { String(decoding: $0, as: UTF8.self) } ?? error.message
     }
 
     // MARK: - 错误转换

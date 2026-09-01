@@ -12,7 +12,9 @@ public enum EnvironmentSanitizer {
             "TMPDIR": environment["TMPDIR"] ?? FileManager.default.temporaryDirectory.path,
         ]
         for (key, value) in environment where key.hasPrefix("LC_") || ["DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"].contains(key) {
-            result[key] = value
+            if key != "DEVELOPER_DIR" || FileManager.default.fileExists(atPath: value) {
+                result[key] = value
+            }
         }
         // The allow-list above intentionally excludes every LINGXI_* value, including test sentinels.
         return result
@@ -23,7 +25,52 @@ func sha256Hex(_ content: String) -> String {
     SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
-public enum ShellSandboxBackend: Sendable {
+public enum SandboxFilesystemAccess: Sendable, Equatable {
+    case workspaceReadWrite
+    case workspaceReadOnly
+}
+
+public enum SandboxNetworkAccess: Sendable, Equatable {
+    case deny
+    /// 当前 macOS backend 不能可靠表达 host allow-list，必须 fail closed。
+    case allowHosts([String])
+}
+
+public struct SandboxPolicy: Sendable, Equatable {
+    public let workspace: URL
+    public let readOnlyPaths: [URL]
+    public let filesystem: SandboxFilesystemAccess
+    public let network: SandboxNetworkAccess
+    public let allowSubprocesses: Bool
+
+    public init(workspace: URL, readOnlyPaths: [URL] = [], filesystem: SandboxFilesystemAccess = .workspaceReadWrite, network: SandboxNetworkAccess = .deny, allowSubprocesses: Bool = true) {
+        self.workspace = workspace.standardizedFileURL.resolvingSymlinksInPath()
+        self.readOnlyPaths = readOnlyPaths.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        self.filesystem = filesystem
+        self.network = network
+        self.allowSubprocesses = allowSubprocesses
+    }
+}
+
+public struct SandboxCapabilities: Sendable, Equatable {
+    public let filesystemEnforced: Bool
+    public let networkEnforced: Bool
+    public let processIsolationEnforced: Bool
+
+    public init(filesystemEnforced: Bool, networkEnforced: Bool, processIsolationEnforced: Bool) {
+        self.filesystemEnforced = filesystemEnforced
+        self.networkEnforced = networkEnforced
+        self.processIsolationEnforced = processIsolationEnforced
+    }
+}
+
+public protocol SandboxExecutor: Sendable {
+    var capabilities: SandboxCapabilities { get }
+    func invocation(executable: String, arguments: [String], policy: SandboxPolicy) throws -> ToolProcessInvocation
+}
+
+/// macOS sandbox-exec backend。不能满足 policy 时绝不回退到未隔离 shell。
+public enum ShellSandboxBackend: Sendable, SandboxExecutor {
     case sandboxExec
     case unavailable
 
@@ -31,10 +78,21 @@ public enum ShellSandboxBackend: Sendable {
         FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") ? .sandboxExec : .unavailable
     }
 
-    func invocation(executable: String, arguments: [String], workspace: URL) throws -> ToolProcessInvocation {
+    public var capabilities: SandboxCapabilities {
+        switch self {
+        case .sandboxExec: return SandboxCapabilities(filesystemEnforced: true, networkEnforced: true, processIsolationEnforced: false)
+        case .unavailable: return SandboxCapabilities(filesystemEnforced: false, networkEnforced: false, processIsolationEnforced: false)
+        }
+    }
+
+    public func invocation(executable: String, arguments: [String], policy: SandboxPolicy) throws -> ToolProcessInvocation {
         guard self == .sandboxExec else {
             throw CoreError(code: .sandboxUnavailable, message: "workspace shell 需要 macOS /usr/bin/sandbox-exec")
         }
+        guard case .deny = policy.network else {
+            throw CoreError(code: .sandboxUnavailable, message: "当前 sandbox backend 不支持可靠的 host allow-list")
+        }
+        let workspace = policy.workspace
         let roots = Set([
             workspace.path,
             workspace.resolvingSymlinksInPath().path,
@@ -42,26 +100,36 @@ public enum ShellSandboxBackend: Sendable {
             workspace.path.replacingOccurrences(of: "/var/", with: "/private/var/")
         ]).sorted().map { root in
             let path = sandboxString(root)
-            return "(allow file-read* (subpath \"\(path)\"))\n(allow file-write* (subpath \"\(path)\"))"
+            let read = "(allow file-read* (subpath \"\(path)\"))"
+            return policy.filesystem == .workspaceReadWrite ? read + "\n(allow file-write* (subpath \"\(path)\"))" : read
         }.joined(separator: "\n")
+        let readOnlyRoots = Set(policy.readOnlyPaths.map(\.path)).sorted().map { root in
+            "(allow file-read* (subpath \"\(sandboxString(root))\"))"
+        }.joined(separator: "\n")
+        let processRules = policy.allowSubprocesses ? "(allow process-exec)\n(allow process-fork)" : ""
+        let trustedRoots = ["/usr/lib", "/System/Library", "/Applications/Xcode.app", "/Applications/Xcode-beta.app", "/Library/Developer", "/opt/homebrew"]
+            .map { "(allow file-read* (subpath \"\(sandboxString($0))\"))" }
+            .joined(separator: "\n")
         let profile = """
         (version 1)
         (deny default)
         (import \"system.sb\")
-        (allow process-exec)
-        (allow process-fork)
+        (deny network*)
+        \(processRules)
         (allow signal (target self))
         (allow file-read-metadata (subpath \"/\"))
         \(roots)
+        \(readOnlyRoots)
         (allow file-read* (literal \"\(sandboxString(executable))\"))
         (allow file-read* (literal \"/bin/sh\"))
         (allow file-read* (literal \"/private/var/select/sh\"))
-        (allow file-read* (subpath \"/usr/lib\"))
-        (allow file-read* (subpath \"/System/Library\"))
-        (allow file-read* (subpath \"/Applications/Xcode.app\"))
-        (allow file-read* (subpath \"/Library/Developer\"))
+        \(trustedRoots)
         """
         return ToolProcessInvocation(executable: "/usr/bin/sandbox-exec", arguments: ["-p", profile, executable] + arguments)
+    }
+
+    func invocation(executable: String, arguments: [String], workspace: URL) throws -> ToolProcessInvocation {
+        try invocation(executable: executable, arguments: arguments, policy: SandboxPolicy(workspace: workspace))
     }
 }
 
@@ -71,7 +139,7 @@ private func sandboxString(_ value: String) -> String {
         .replacingOccurrences(of: "\n", with: "\\n")
 }
 
-struct ToolProcessInvocation: Sendable {
+public struct ToolProcessInvocation: Sendable {
     let executable: String
     let arguments: [String]
 }
@@ -90,6 +158,7 @@ struct PipeCursor: Codable, Sendable {
 
 struct ProcessStatus: Codable, Sendable {
     let id: String
+    let pid: Int32?
     let running: Bool
     let exitCode: Int32?
     let stdout: PipeCursor
@@ -197,6 +266,7 @@ final class ManagedToolProcess: @unchecked Sendable {
     func snapshot(id: String, stdoutCursor: Int?, stderrCursor: Int?) -> ProcessStatus {
         ProcessStatus(
             id: id,
+            pid: process.isRunning ? process.processIdentifier : nil,
             running: process.isRunning,
             exitCode: process.isRunning ? nil : process.terminationStatus,
             stdout: stdout.value(after: stdoutCursor),

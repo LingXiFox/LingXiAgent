@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LingXiProtocol
 
@@ -95,24 +96,39 @@ private func writeText(_ content: String, to file: URL) throws {
     try Data(content.utf8).write(to: file, options: .atomic)
 }
 
-private func checkExpectedContent(_ content: String?, hash: String?, version: String?, overwrite: Bool?) throws {
+private func fileVersion(_ file: URL) throws -> String {
+    let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+    let bytes = (attributes[.size] as? NSNumber)?.intValue ?? 0
+    let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
+    return "stat:\(bytes):\(modified)"
+}
+
+private func checkExpectedContent(_ content: String?, hash: String?, version: String?, currentVersion: String? = nil, overwrite: Bool?) throws {
     guard overwrite != true else { return }
     guard hash != nil || version != nil else {
         throw CoreError(code: .contentChanged, message: "修改现有文件需要 expected_hash 或 expected_version")
     }
     let actual = sha256Hex(content ?? "")
-    let expected = [hash, version].compactMap { $0 }.map { $0.lowercased().replacingOccurrences(of: "sha256:", with: "") }
-    guard expected.allSatisfy({ $0 == actual }) else {
+    let normalizedHash = hash?.lowercased().replacingOccurrences(of: "sha256:", with: "")
+    let versionMatches = version.map { $0 == (currentVersion ?? actual) } ?? true
+    guard (normalizedHash == nil || normalizedHash == actual) && versionMatches else {
         throw CoreError(code: .contentChanged, message: "文件内容已变更；expected_hash 或 expected_version 不匹配")
     }
 }
 
 private func fileWriteResult(for file: URL, workspace: WorkspaceRoot, content: String) -> FileWriteResult {
     let hash = sha256Hex(content)
-    return FileWriteResult(path: relativePath(file, workspace: workspace), bytes: content.lengthOfBytes(using: .utf8), hash: hash, version: hash)
+    return FileWriteResult(path: relativePath(file, workspace: workspace), bytes: content.lengthOfBytes(using: .utf8), hash: hash, version: (try? fileVersion(file)) ?? hash)
 }
 
 private struct PathArguments: Decodable { let path: String }
+private struct ReadArguments: Decodable {
+    let path: String
+    let startLine: Int?
+    let endLine: Int?
+    let maxLines: Int?
+    let lineNumbers: Bool?
+}
 private struct WriteArguments: Decodable {
     let path: String
     let content: String
@@ -129,9 +145,24 @@ private struct EditArguments: Decodable {
     let expectedVersion: String?
     let overwrite: Bool?
 }
-private struct GlobArguments: Decodable { let pattern: String; let path: String?; let maxResults: Int? }
-private struct GrepArguments: Decodable { let pattern: String; let path: String?; let maxResults: Int? }
-private struct PatchArguments: Decodable { let patch: String }
+private struct GlobArguments: Decodable {
+    let pattern: String
+    let path: String?
+    let maxResults: Int?
+    let includeHidden: Bool?
+    let includeIgnored: Bool?
+    let includeGenerated: Bool?
+}
+private struct GrepArguments: Decodable {
+    let pattern: String
+    let path: String?
+    let glob: String?
+    let maxResults: Int?
+    let includeHidden: Bool?
+    let includeIgnored: Bool?
+    let includeGenerated: Bool?
+}
+private struct PatchArguments: Decodable { let patch: String; let expectedHashes: [String: String]? }
 private struct ShellArguments: Decodable {
     let command: String?
     let executable: String?
@@ -165,6 +196,57 @@ private struct SkillArguments: Decodable { let name: String }
 
 private func pathArguments(_ arguments: String) throws -> PathArguments { try decodeArguments(arguments) }
 
+private struct ReadLine: Codable { let number: Int; let content: String }
+private struct ReadPage: Codable {
+    let path: String
+    let lines: [ReadLine]
+    let startLine: Int
+    let endLine: Int
+    let nextLine: Int?
+    let truncated: Bool
+    let hash: String?
+    let version: String
+}
+
+private func readPage(_ file: URL, workspace: WorkspaceRoot, input: ReadArguments) throws -> ReadPage {
+    let start = max(1, input.startLine ?? 1)
+    let end = input.endLine
+    if let end, end < start { throw CoreError(code: .toolArgumentInvalid, message: "end_line 必须不小于 start_line") }
+    let count = min(max(1, input.maxLines ?? end.map { $0 - start + 1 } ?? 200), 2_000)
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    var carry = Data()
+    var lineNumber = 1
+    var lines: [ReadLine] = []
+    var hasMore = false
+    while let chunk = try handle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
+        if chunk.contains(0) { throw CoreError(code: .binaryFileUnsupported, message: "文件包含 NUL 字节，不能作为文本读取") }
+        carry.append(chunk)
+        while let newline = carry.firstIndex(of: 10) {
+            let lineData = carry.prefix(upTo: newline)
+            carry.removeSubrange(...newline)
+            guard let text = String(data: lineData, encoding: .utf8) else {
+                throw CoreError(code: .binaryFileUnsupported, message: "文件不是 UTF-8 文本")
+            }
+            if lineNumber >= start && (end.map { lineNumber <= $0 } ?? true) {
+                if lines.count < count { lines.append(ReadLine(number: lineNumber, content: text)) }
+                else { hasMore = true; break }
+            }
+            lineNumber += 1
+        }
+        if hasMore { break }
+    }
+    if !carry.isEmpty && !hasMore {
+        guard let text = String(data: carry, encoding: .utf8) else { throw CoreError(code: .binaryFileUnsupported, message: "文件不是 UTF-8 文本") }
+        if lineNumber >= start && (end.map { lineNumber <= $0 } ?? true) {
+            if lines.count < count { lines.append(ReadLine(number: lineNumber, content: text)) }
+            else { hasMore = true }
+        }
+    }
+    let nextLine = hasMore ? (lines.last?.number ?? start) + 1 : nil
+    return ReadPage(path: relativePath(file, workspace: workspace), lines: lines, startLine: lines.first?.number ?? start, endLine: lines.last?.number ?? start - 1, nextLine: nextLine, truncated: hasMore, hash: nil, version: try fileVersion(file))
+}
+
 public struct ReadFileTool: ToolExecutor {
     public static let maximumBytes = 1_024 * 1_024
     private let workspace: WorkspaceRoot
@@ -192,7 +274,11 @@ public struct ReadFileTool: ToolExecutor {
     }
 
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
-        let file = try workspace.resolve(pathArguments(arguments).path, profile: profile)
+        let input: ReadArguments = try decodeArguments(arguments)
+        let file = try workspace.resolve(input.path, profile: profile)
+        if input.startLine != nil || input.endLine != nil || input.maxLines != nil || input.lineNumbers == true {
+            return try json(readPage(file, workspace: workspace, input: input))
+        }
         return try readText(file, operation: "read_file")
     }
 }
@@ -317,19 +403,98 @@ public struct GlobTool: ToolExecutor {
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: GlobArguments = try decodeArguments(arguments)
         let root = try workspace.resolve(input.path ?? ".", profile: profile)
-        let expression: NSRegularExpression
-        do { expression = try regex(forGlob: input.pattern) }
-        catch { throw CoreError(code: .toolArgumentInvalid, message: "glob pattern 无效: \(error.localizedDescription)") }
-        let limit = input.maxResults ?? 1_000
-        let paths = try files(at: root, workspace: workspace, profile: profile)
-            .map { relativePath($0, workspace: workspace) }
-            .filter { expression.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil }
+        let limit = min(max(1, input.maxResults ?? 1_000), 10_000)
+        let result = try await runRipgrep(arguments: ripgrepArguments(input, root: root), root: root, workspace: workspace, profile: profile)
+        let paths = ignoredByWorkspaceGitignore(result.stdout.split(separator: "\n", omittingEmptySubsequences: true).map(String.init), root: root, includeIgnored: input.includeIgnored)
+            .map { workspaceRelativeSearchPath($0, root: root, workspace: workspace) }
             .sorted()
         return try json(Array(paths.prefix(limit)))
     }
 }
 
 private struct GrepMatch: Codable { let path: String; let line: Int; let content: String }
+private struct SearchResult<T: Codable>: Codable { let matches: [T]; let truncated: Bool }
+
+private func ripgrepExecutable() throws -> String {
+    let candidates = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"]
+    guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+        throw CoreError(code: .toolExecutionFailed, message: "未找到受支持的 ripgrep (rg) 可执行文件")
+    }
+    return executable
+}
+
+private func generatedExcludes(_ includeGenerated: Bool?) -> [String] {
+    guard includeGenerated != true else { return [] }
+    return ["!**/.build/**", "!**/build/**", "!**/dist/**", "!**/node_modules/**", "!**/vendor/**", "!**/coverage/**"]
+}
+
+private let sensitiveSearchExcludes = [
+    "!**/.ssh/**", "!**/.aws/**", "!**/.gnupg/**", "!**/.env", "!**/.env.*", "!**/*.pem", "!**/*.key",
+    "!**/*credential*", "!**/*secret*", "!**/*token*"
+]
+
+private func workspaceIgnoreArguments(root: URL, includeIgnored: Bool?) -> [String] {
+    guard includeIgnored != true else { return [] }
+    let ignore = root.appendingPathComponent(".gitignore")
+    return FileManager.default.fileExists(atPath: ignore.path) ? ["--ignore-file", ignore.path] : []
+}
+
+private func ignoredByWorkspaceGitignore(_ paths: [String], root: URL, includeIgnored: Bool?) -> [String] {
+    guard includeIgnored != true,
+          let text = try? String(contentsOf: root.appendingPathComponent(".gitignore"), encoding: .utf8)
+    else { return paths }
+    let patterns = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    return paths.filter { original in
+        let path = original.hasPrefix("./") ? String(original.dropFirst(2)) : original
+        var ignored = false
+        for raw in patterns {
+            let negated = raw.hasPrefix("!")
+            let pattern = negated ? String(raw.dropFirst()) : raw
+            let matches: Bool
+            if !pattern.contains("/") { matches = path.split(separator: "/").contains(pattern[...]) }
+            else { matches = (try? regex(forGlob: pattern).firstMatch(in: path, range: NSRange(path.startIndex..., in: path))) != nil }
+            if matches { ignored = !negated }
+        }
+        return !ignored
+    }
+}
+
+private func ripgrepArguments(_ input: GlobArguments, root: URL) -> [String] {
+    var arguments = ["--files", "--no-require-git", "--color", "never", "--glob", input.pattern]
+    if input.includeHidden == true { arguments.append("--hidden") }
+    if input.includeIgnored == true { arguments.append("--no-ignore") }
+    arguments += workspaceIgnoreArguments(root: root, includeIgnored: input.includeIgnored)
+    for exclude in generatedExcludes(input.includeGenerated) + sensitiveSearchExcludes { arguments += ["--glob", exclude] }
+    return arguments
+}
+
+private func ripgrepArguments(_ input: GrepArguments, root: URL) -> [String] {
+    var arguments = ["--json", "--no-require-git", "--line-number", "--color", "never", "--regexp", input.pattern]
+    if let glob = input.glob { arguments += ["--glob", glob] }
+    if input.includeHidden == true { arguments.append("--hidden") }
+    if input.includeIgnored == true { arguments.append("--no-ignore") }
+    arguments += workspaceIgnoreArguments(root: root, includeIgnored: input.includeIgnored)
+    for exclude in generatedExcludes(input.includeGenerated) + sensitiveSearchExcludes { arguments += ["--glob", exclude] }
+    arguments.append(".")
+    return arguments
+}
+
+private func runRipgrep(arguments: [String], root: URL, workspace: WorkspaceRoot, profile: ExecutionProfile) async throws -> CommandResult {
+    let executable = try ripgrepExecutable()
+    let setup = try processSetup(executable: executable, arguments: arguments, workspace: workspace, cwd: root, profile: profile)
+    let result = try await runToolProcess(invocation: setup.0, cwd: root, environment: setup.1, timeoutMilliseconds: 30_000)
+    guard result.exitCode == 0 || result.exitCode == 1 else {
+        throw CoreError(code: .commandFailed, message: try json(result))
+    }
+    return result
+}
+
+private func workspaceRelativeSearchPath(_ path: String, root: URL, workspace: WorkspaceRoot) -> String {
+    let local = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
+    if root.path == workspace.url.path { return local }
+    let prefix = relativePath(root, workspace: workspace)
+    return prefix == "." || prefix.isEmpty ? local : prefix + "/" + local
+}
 
 public struct GrepTool: ToolExecutor {
     private let workspace: WorkspaceRoot
@@ -352,25 +517,24 @@ public struct GrepTool: ToolExecutor {
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: GrepArguments = try decodeArguments(arguments)
         let root = try workspace.resolve(input.path ?? ".", profile: profile)
-        let expression: NSRegularExpression
-        do { expression = try NSRegularExpression(pattern: input.pattern) }
-        catch { throw CoreError(code: .toolArgumentInvalid, message: "grep pattern 无效: \(error.localizedDescription)") }
-        let limit = input.maxResults ?? 1_000
+        let limit = min(max(1, input.maxResults ?? 1_000), 10_000)
+        let result = try await runRipgrep(arguments: ripgrepArguments(input, root: root), root: root, workspace: workspace, profile: profile)
         var matches: [GrepMatch] = []
-        for file in try files(at: root, workspace: workspace, profile: profile).sorted(by: { $0.path < $1.path }) {
-            guard matches.count < limit else { break }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory), !isDirectory.boolValue,
-                  let content = try? readText(file, operation: "grep") else { continue }
-            for (offset, line) in content.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-                guard matches.count < limit else { break }
-                let text = String(line)
-                if expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil {
-                    matches.append(GrepMatch(path: relativePath(file, workspace: workspace), line: offset + 1, content: text))
-                }
-            }
+        for row in result.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = row.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["type"] as? String == "match",
+                  let payload = object["data"] as? [String: Any],
+                  let pathObject = payload["path"] as? [String: Any],
+                  let path = pathObject["text"] as? String,
+                  let line = (payload["line_number"] as? NSNumber)?.intValue,
+                  let lineObject = payload["lines"] as? [String: Any],
+                  let text = lineObject["text"] as? String
+            else { continue }
+            matches.append(GrepMatch(path: workspaceRelativeSearchPath(path, root: root, workspace: workspace), line: line, content: text.hasSuffix("\n") ? String(text.dropLast()) : text))
         }
-        return try json(matches)
+        let ordered = matches.filter { !ignoredByWorkspaceGitignore([$0.path], root: root, includeIgnored: input.includeIgnored).isEmpty }.sorted { $0.path == $1.path ? $0.line < $1.line : $0.path < $1.path }
+        return try json(Array(ordered.prefix(limit)))
     }
 }
 
@@ -379,6 +543,16 @@ private struct FileWriteResult: Codable {
     let bytes: Int
     let hash: String
     let version: String
+}
+
+private struct CommandToolResult: Codable {
+    let command: String
+    let stdout: String
+    let stderr: String
+    let exitCode: Int32
+    let summary: String
+
+    enum CodingKeys: String, CodingKey { case command, stdout, stderr, exitCode = "exit_code", summary }
 }
 
 public struct WriteFileTool: ToolExecutor {
@@ -406,7 +580,7 @@ public struct WriteFileTool: ToolExecutor {
         let file = try workspace.resolve(input.path, profile: profile)
         if FileManager.default.fileExists(atPath: file.path) {
             let existing = try readText(file, operation: "write_file")
-            try checkExpectedContent(existing, hash: input.expectedHash, version: input.expectedVersion, overwrite: input.overwrite)
+            try checkExpectedContent(existing, hash: input.expectedHash, version: input.expectedVersion, currentVersion: try fileVersion(file), overwrite: input.overwrite)
         }
         try writeText(input.content, to: file)
         return try json(fileWriteResult(for: file, workspace: workspace, content: input.content))
@@ -440,7 +614,7 @@ public struct EditFileTool: ToolExecutor {
         guard !input.oldString.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "old_string 不能为空") }
         let file = try workspace.resolve(input.path, profile: profile)
         let original = try readText(file, operation: "edit_file")
-        try checkExpectedContent(original, hash: input.expectedHash, version: input.expectedVersion, overwrite: input.overwrite)
+        try checkExpectedContent(original, hash: input.expectedHash, version: input.expectedVersion, currentVersion: try fileVersion(file), overwrite: input.overwrite)
         let count = original.components(separatedBy: input.oldString).count - 1
         guard count > 0 else { throw CoreError(code: .contentChanged, message: "未找到要替换的文本: \(file.path)") }
         guard input.replaceAll == true || count == 1 else { throw CoreError(code: .ambiguousEdit, message: "匹配到 \(count) 处文本；请使用 replace_all") }
@@ -561,7 +735,7 @@ private func applyHunks(_ rows: [String], to content: String) throws -> String {
     return result.joined(separator: "\n")
 }
 
-private func patchPlan(_ specs: [PatchSpec], workspace: WorkspaceRoot, profile: ExecutionProfile) throws -> PatchPlan {
+private func patchPlan(_ specs: [PatchSpec], expectedHashes: [String: String]?, workspace: WorkspaceRoot, profile: ExecutionProfile) throws -> PatchPlan {
     var writes: [PatchWrite] = []
     var deletes: [URL] = []
     var touched = Set<String>()
@@ -580,6 +754,9 @@ private func patchPlan(_ specs: [PatchSpec], workspace: WorkspaceRoot, profile: 
             writes.append(PatchWrite(url: source, content: content))
         case .update:
             let original = try readText(source, operation: "apply_patch")
+            if let expected = expectedHashes?[spec.path], expected.lowercased().replacingOccurrences(of: "sha256:", with: "") != sha256Hex(original) {
+                throw CoreError(code: .contentChanged, message: "Patch 前置版本不匹配: \(spec.path)")
+            }
             try writableFile(target)
             if target != source {
                 guard !FileManager.default.fileExists(atPath: target.path) else { throw CoreError(code: .patchConflict, message: "移动目标已存在: \(target.path)") }
@@ -589,7 +766,10 @@ private func patchPlan(_ specs: [PatchSpec], workspace: WorkspaceRoot, profile: 
             writes.append(PatchWrite(url: target, content: try applyHunks(spec.lines, to: original)))
         case .delete:
             guard spec.lines.isEmpty else { throw CoreError(code: .invalidPatch, message: "Delete File 不接受内容") }
-            _ = try readText(source, operation: "apply_patch")
+            let original = try readText(source, operation: "apply_patch")
+            if let expected = expectedHashes?[spec.path], expected.lowercased().replacingOccurrences(of: "sha256:", with: "") != sha256Hex(original) {
+                throw CoreError(code: .contentChanged, message: "Patch 前置版本不匹配: \(spec.path)")
+            }
             deletes.append(source)
         }
     }
@@ -601,7 +781,9 @@ public struct ApplyPatchTool: ToolExecutor {
     public init(workspace: WorkspaceRoot) { self.workspace = workspace }
     public let definition = ToolDefinition(
         id: ToolID("apply_patch"), description: "Apply an Add, Update, Delete, or Move patch in the workspace.",
-        inputSchema: ToolInputSchema(properties: ["patch": ToolInputProperty(type: .string, description: "Patch in *** Begin Patch syntax")], required: ["patch"]),
+        inputSchema: ToolInputSchema(properties: [
+            "patch": ToolInputProperty(type: .string, description: "Patch in *** Begin Patch syntax")
+        ], required: ["patch"]),
         capability: ToolCapability([.projectWrite, .destructive])
     )
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
@@ -622,7 +804,7 @@ public struct ApplyPatchTool: ToolExecutor {
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: PatchArguments = try decodeArguments(arguments)
         let specs = try parsePatch(input.patch)
-        let plan = try patchPlan(specs, workspace: workspace, profile: profile)
+        let plan = try patchPlan(specs, expectedHashes: input.expectedHashes, workspace: workspace, profile: profile)
         let snapshots = try patchSnapshots(for: plan)
         do {
             var operation = 0
@@ -664,8 +846,16 @@ private func processSetup(executable: String, arguments: [String], workspace: Wo
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
     environment["HOME"] = home.path
     environment["TMPDIR"] = temporary.path
+    // /usr/bin/git is a system tool; inherited Xcode selection can force xcrun to write host-global caches outside policy.
+    if executable.hasSuffix("/git") {
+        environment.removeValue(forKey: "DEVELOPER_DIR")
+        environment.removeValue(forKey: "SDKROOT")
+        environment.removeValue(forKey: "TOOLCHAINS")
+    }
     if profile == .workspace {
-        return (try ShellSandboxBackend.workspace().invocation(executable: executable, arguments: arguments, workspace: workspace.url), environment)
+        let developerDirectory = environment["DEVELOPER_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let policy = SandboxPolicy(workspace: workspace.url, readOnlyPaths: developerDirectory.map { [$0] } ?? [])
+        return (try ShellSandboxBackend.workspace().invocation(executable: executable, arguments: arguments, policy: policy), environment)
     }
     return (ToolProcessInvocation(executable: executable, arguments: arguments), environment)
 }
@@ -685,7 +875,16 @@ public struct ShellTool: ToolExecutor {
     )
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
         let input: ShellArguments = try decodeArguments(arguments)
+        _ = try cwd(input.cwd, workspace: workspace, profile: profile)
+        return input.command ?? ([input.executable ?? ""] + (input.arguments ?? [])).joined(separator: " ")
+    }
+    public func externalResource(for arguments: String, profile: ExecutionProfile) throws -> String? {
+        let input: ShellArguments = try decodeArguments(arguments)
         return try cwd(input.cwd, workspace: workspace, profile: profile).path
+    }
+    public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
+        let input: ShellArguments = try decodeArguments(arguments)
+        return Set([.processExecute]).union(filesystemCapabilities(try cwd(input.cwd, workspace: workspace, profile: profile), workspace: workspace, write: true))
     }
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: ShellArguments = try decodeArguments(arguments)
@@ -766,7 +965,8 @@ public struct GitTool: ToolExecutor {
         _ = try capabilities(for: arguments, profile: profile)
         let (_, command) = try gitCommand(input)
         let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
-        let setup = try processSetup(executable: "/usr/bin/git", arguments: command, workspace: workspace, cwd: directory, profile: profile)
+        let gitExecutable = ["/Library/Developer/CommandLineTools/usr/bin/git", "/usr/bin/git"].first(where: FileManager.default.isExecutableFile(atPath:))!
+        let setup = try processSetup(executable: gitExecutable, arguments: command, workspace: workspace, cwd: directory, profile: profile)
         let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: 60_000)
         guard result.exitCode == 0 else { throw CoreError(code: .gitError, message: try json(result)) }
         return try json(result)
