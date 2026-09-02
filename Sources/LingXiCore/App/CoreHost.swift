@@ -20,6 +20,7 @@ public actor CoreHost: CoreEndpoint {
     private let sessionStore: any SessionStore
     /// nil 表示显式的 ephemeral Core；调用方传入 dataRoot 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
+    public let extensionPlatform: ExtensionPlatform
     private let gateway: ModelGateway
     private let modelResolver: SubagentModelResolver
     private let subagentService: SubagentToolService
@@ -61,7 +62,8 @@ public actor CoreHost: CoreEndpoint {
         interactive: Bool? = nil
         , configurationStore: ConfigurationStore? = nil
         , credentialStore: (any CredentialStore)? = nil,
-        restoreScheduler: SessionRestoreScheduler? = nil
+        restoreScheduler: SessionRestoreScheduler? = nil,
+        extensionPlatform: ExtensionPlatform? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
         let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
@@ -102,6 +104,12 @@ public actor CoreHost: CoreEndpoint {
         let permissions = permissionDecision.map { PermissionEngine(defaultDecision: $0) }
             ?? PermissionEngine(configuration: PermissionConfiguration(policy: agentSettings.permissionPolicy, profile: agentSettings.executionProfile))
         permissionEngine = permissions
+        self.extensionPlatform = extensionPlatform ?? ExtensionPlatform(
+            globalRoot: persistentRoot?.appendingPathComponent("global-extensions", isDirectory: true) ?? FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-extensions-\(UUID().uuidString)", isDirectory: true),
+            projectRoot: workspace.url,
+            permissions: permissions,
+            deadlinePolicy: executionDeadlinePolicy
+        )
         let l2Budget = agentSettings.l2MaxCharacters
         let l1ProjectBudget = agentSettings.l1ProjectMaxCharacters
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
@@ -139,6 +147,7 @@ public actor CoreHost: CoreEndpoint {
     /// 注册控制面路由并进入 ready。
     public func start() async {
         guard state == .starting else { return }
+        await extensionPlatform.restore()
         await questions.setEventSink { [weak self] request in
             await self?.agent?.markWaitingForQuestion(request, waiting: true)
             await self?.routeWorkflowQuestion(request)

@@ -58,9 +58,11 @@ public enum MCPProtocolVersionNegotiator {
 public actor MCPServerRegistry {
     private var servers: [MCPServerID: MCPServerConfiguration] = [:]
     public init(_ configurations: [MCPServerConfiguration] = []) { servers = Dictionary(uniqueKeysWithValues: configurations.map { ($0.serverID, $0) }) }
+    public func register(_ configuration: MCPServerConfiguration) { servers[configuration.serverID] = configuration }
     public func list() -> [MCPServerConfiguration] { servers.values.sorted { $0.alias < $1.alias } }
     public func server(_ id: MCPServerID) -> MCPServerConfiguration? { servers[id] }
     public func setEnabled(_ id: MCPServerID, enabled: Bool) { guard let value = servers[id] else { return }; servers[id] = MCPServerConfiguration(serverID: value.serverID, alias: value.alias, transport: value.transport, command: value.command, arguments: value.arguments, endpoint: value.endpoint, protocolPreference: value.protocolPreference, enabled: enabled, auth: value.auth, environment: value.environment, timeoutSeconds: value.timeoutSeconds) }
+    public func replace(_ configurations: [MCPServerConfiguration]) { servers = Dictionary(uniqueKeysWithValues: configurations.map { ($0.serverID, $0) }) }
 }
 
 public actor MCPConnectionManager: MCPToolInvoker {
@@ -69,6 +71,7 @@ public actor MCPConnectionManager: MCPToolInvoker {
     private var health: [MCPServerID: Health] = [:]
     public init() {}
     public func register(_ invoker: any MCPToolInvoker, for serverID: MCPServerID) { invokers[serverID] = invoker; health[serverID] = .healthy }
+    public func unregister(_ serverID: MCPServerID) { invokers.removeValue(forKey: serverID); health.removeValue(forKey: serverID) }
     public func health(for serverID: MCPServerID) -> Health { health[serverID] ?? .unavailable }
     public func call(serverID: MCPServerID, toolName: String, arguments: String) async throws -> String {
         guard let invoker = invokers[serverID] else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server unavailable: \(serverID.rawValue)") }

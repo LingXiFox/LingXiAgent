@@ -47,14 +47,7 @@ public actor PermissionEngine {
         action: PermissionAction? = nil,
         onAsk: @escaping @Sendable () async -> Void
     ) async -> PermissionResolution {
-        // Explicit deny always wins; auto only removes an otherwise interactive ask.
-        let matching = rules.filter { $0.toolID == request.toolID && ($0.capability == nil || request.capabilities.contains($0.capability!)) }
-        let resourceMatching = action.map { action in
-            resourceRules.filter { $0.action == action && Self.matches($0.resourcePattern, request.resource) }
-        } ?? []
-        let decision: PermissionDecision
-        if matching.contains(where: { $0.decision == .deny }) || resourceMatching.contains(where: { $0.decision == .deny }) { decision = .deny }
-        else { decision = resourceMatching.last?.decision ?? matching.first?.decision ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask) }
+        let decision = decision(for: request, action: action)
         guard decision == .ask else { return PermissionResolution(decision: decision, asked: false) }
         if let restored = restoredReplies.removeValue(forKey: request.toolCallID) {
             return PermissionResolution(decision: restored, asked: true)
@@ -73,6 +66,12 @@ public actor PermissionEngine {
             Task { await self.cancel(request.permissionID) }
         }
         return PermissionResolution(decision: resolved, asked: true)
+    }
+
+    /// 非阻塞检查，供没有 HITL 通道的扩展控制面使用。`.ask` 不会创建 pending request。
+    public func check(_ request: PermissionRequest, action: PermissionAction? = nil) -> PermissionResolution {
+        let decision = decision(for: request, action: action)
+        return PermissionResolution(decision: decision, asked: false)
     }
 
     /// Re-register a durable ask after restart. Its reply resumes the owning scheduler, not a lost continuation.
@@ -108,6 +107,13 @@ public actor PermissionEngine {
 
     private func cancel(_ permissionID: PermissionID) {
         pending.removeValue(forKey: permissionID)?.continuation?.resume(returning: .deny)
+    }
+
+    private func decision(for request: PermissionRequest, action: PermissionAction?) -> PermissionDecision {
+        let matching = rules.filter { $0.toolID == request.toolID && ($0.capability == nil || request.capabilities.contains($0.capability!)) }
+        let resourceMatching = action.map { value in resourceRules.filter { $0.action == value && Self.matches($0.resourcePattern, request.resource) } } ?? []
+        if matching.contains(where: { $0.decision == .deny }) || resourceMatching.contains(where: { $0.decision == .deny }) { return .deny }
+        return resourceMatching.last?.decision ?? matching.first?.decision ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask)
     }
 
     private static func matches(_ pattern: String, _ value: String) -> Bool {
