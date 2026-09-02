@@ -1,14 +1,56 @@
 import Foundation
 import LingXiProtocol
 
+public actor SessionRestoreScheduler {
+    private var ready = false
+    private var completed = false
+    private var readyWaiters: [CheckedContinuation<Void, Never>] = []
+    private var completionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    func markReady() {
+        guard !ready else { return }
+        ready = true
+        readyWaiters.forEach { $0.resume() }
+        readyWaiters.removeAll()
+    }
+
+    func markCompleted() {
+        guard !completed else { return }
+        completed = true
+        completionWaiters.forEach { $0.resume() }
+        completionWaiters.removeAll()
+    }
+
+    public func waitUntilReady() async {
+        guard !ready else { return }
+        await withCheckedContinuation { readyWaiters.append($0) }
+    }
+
+    public func waitUntilCompleted() async {
+        guard !completed else { return }
+        await withCheckedContinuation { completionWaiters.append($0) }
+    }
+}
+
 /// 一个 Session 的串行 Agent Lane。Tool 结果以结构化 parts 回写 Session，再进入下一步模型输入。
 public actor SessionRuntime {
+    private struct ActiveExecution {
+        let id: UUID
+        let task: Task<Void, Never>
+        let streamID: StreamID
+        let isRestore: Bool
+    }
+
     private let store: any SessionStore
     private let sessionID: SessionID
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
     private let contextEngine: L1ContextEngine
     private let toolRuntime: ToolRuntime
+    private let questions: QuestionRuntime
+    private let permissions: PermissionEngine
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
@@ -25,8 +67,10 @@ public actor SessionRuntime {
     private let executionProfile: SubagentExecutionProfile?
     private let maximumAgentSteps: Int
     private let deadlinePolicy: ExecutionDeadlinePolicy
+    private let restoreScheduler: SessionRestoreScheduler?
     private var turnRunning = false
-    private var turnTask: Task<Void, Never>?
+    private var activeExecution: ActiveExecution?
+    private var shuttingDown = false
     private var toolBatches: [ToolExchangeBatch] = []
     private var compactionGeneration = 0
     private var latestModelRequestID: ModelRequestID?
@@ -38,6 +82,8 @@ public actor SessionRuntime {
         dataPlane: DataPlane,
         contextEngine: L1ContextEngine,
         toolRuntime: ToolRuntime,
+        questions: QuestionRuntime,
+        permissions: PermissionEngine,
         performanceStore: PerformanceStore,
         contextPager: ContextPager,
         projectScanner: ProjectScanner,
@@ -52,7 +98,8 @@ public actor SessionRuntime {
         parentSessionID: SessionID? = nil,
         executionProfile: SubagentExecutionProfile? = nil,
         runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil
-        , deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()
+        , deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
+        restoreScheduler: SessionRestoreScheduler? = nil
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -60,6 +107,8 @@ public actor SessionRuntime {
         self.dataPlane = dataPlane
         self.contextEngine = contextEngine
         self.toolRuntime = toolRuntime
+        self.questions = questions
+        self.permissions = permissions
         self.performanceStore = performanceStore
         self.contextPager = contextPager
         self.projectScanner = projectScanner
@@ -76,6 +125,7 @@ public actor SessionRuntime {
         maximumAgentSteps = max(1, executionProfile?.maxSteps ?? 8)
         self.runObserver = runObserver
         self.deadlinePolicy = deadlinePolicy
+        self.restoreScheduler = restoreScheduler
     }
 
     public func restore() async throws {
@@ -85,11 +135,64 @@ public actor SessionRuntime {
             compactionGeneration = compacted.generation
             await compactor.restoreResidencies(sessionID: sessionID, values: compacted.residencies)
         }
+        for call in toolBatches.flatMap(\.toolCallStates) where call.reply == nil {
+            switch call.request {
+            case let .permission(request):
+                await permissions.register(request, onAsk: { [eventSink] in
+                    await eventSink(.permissionAsked(request))
+                }, onReply: { [weak self] reply in
+                    await self?.humanReply(batchID: call.provenance.batchID, callID: call.call.callID, request: .permission(request), reply: .permission(reply))
+                    await self?.resumeDurableTurn()
+                })
+            case let .question(request):
+                await questions.register(request) { [weak self] _, reply in
+                    await self?.humanReply(batchID: call.provenance.batchID, callID: call.call.callID, request: .question(request), reply: .question(reply))
+                    await self?.resumeDurableTurn()
+                }
+            case nil:
+                break
+            }
+        }
+        if toolBatches.contains(where: { $0.state == .pending || $0.state == .recoveryRequired }) && !toolBatches.flatMap(\.toolCallStates).contains(where: { $0.request != nil && $0.reply == nil }) {
+            await resumeDurableTurn()
+        }
+    }
+
+    /// Continue a persisted Tool batch before making the next provider request.
+    private func resumeDurableTurn() async {
+        guard !shuttingDown, !turnRunning else { return }
+        turnRunning = true
+        let profiler = TurnProfiler(sessionID: sessionID, enabled: performanceStore.enabled)
+        let opened = await dataPlane.openAgentStream()
+        let handle = TurnHandle(sessionID: sessionID, streamID: opened.stream.id)
+        let task = (try? await store.session(sessionID).messages.last { $0.role == .user }?.content) ?? ""
+        let runID = self.runID
+        let rootSessionID = self.rootSessionID
+        let parentSessionID = self.parentSessionID
+        let sessionID = self.sessionID
+        let deadline = deadlinePolicy.deadline(for: runID == nil ? .agentRun : .subagent, requested: executionProfile?.timeoutSeconds.map { .seconds($0) })
+        let executionID = UUID()
+        let turnTask = Task {
+            do {
+                try await ExecutionWatchdog.run(deadline) {
+                    await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
+                        await self.runTurn(handle: handle, sink: opened.sink, task: task, profiler: profiler, deadline: deadline, executionID: executionID, resume: true)
+                    }
+                }
+            } catch let error as CoreError {
+                await self.failTurn(handle: handle, sink: opened.sink, error: error, profiler: profiler, executionID: executionID)
+            } catch {
+                await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .transportLost, message: "恢复执行中断"), profiler: profiler, executionID: executionID)
+            }
+        }
+        activeExecution = ActiveExecution(id: executionID, task: turnTask, streamID: opened.stream.id, isRestore: true)
+        await restoreScheduler?.markReady()
+        await dataPlane.trackAgent(turnTask, streamID: opened.stream.id)
     }
 
     /// 启动一轮对话并立即返回 DMA 通道；同一 Session 只允许一个活动 turn。
     public func startTurn(_ content: String) async throws -> OpenedStream {
-        guard !turnRunning else {
+        guard !shuttingDown, !turnRunning else {
             throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次")
         }
         turnRunning = true
@@ -112,22 +215,23 @@ public actor SessionRuntime {
             let parentSessionID = self.parentSessionID
             let sessionID = self.sessionID
             let deadline = deadlinePolicy.deadline(for: runID == nil ? .agentRun : .subagent, requested: executionProfile?.timeoutSeconds.map { .seconds($0) })
+            let executionID = UUID()
             let turnTask = Task {
                 do {
                     try await ExecutionWatchdog.run(deadline) {
                         await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
-                            await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler, deadline: deadline)
+                            await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler, deadline: deadline, executionID: executionID)
                         }
                     }
                 } catch let error as CoreError {
-                    await self.failTurn(handle: handle, sink: opened.sink, error: error, profiler: profiler)
+                    await self.failTurn(handle: handle, sink: opened.sink, error: error, profiler: profiler, executionID: executionID)
                 } catch is CancellationError {
-                    await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler)
+                    await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler, executionID: executionID)
                 } catch {
-                    await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .transportLost, message: "AgentRun 执行中断"), profiler: profiler)
+                    await self.failTurn(handle: handle, sink: opened.sink, error: CoreError(code: .transportLost, message: "AgentRun 执行中断"), profiler: profiler, executionID: executionID)
                 }
             }
-            self.turnTask = turnTask
+            activeExecution = ActiveExecution(id: executionID, task: turnTask, streamID: opened.stream.id, isRestore: false)
             await dataPlane.trackAgent(turnTask, streamID: opened.stream.id)
             return opened.stream
         } catch {
@@ -141,7 +245,9 @@ public actor SessionRuntime {
         sink: AsyncThrowingStream<StreamChunk, Error>.Continuation,
         task: String,
         profiler: TurnProfiler,
-        deadline: ExecutionDeadline
+        deadline: ExecutionDeadline,
+        executionID: UUID,
+        resume: Bool = false
     ) async {
         var index = 0
         var finalUsage: ModelUsage?
@@ -150,6 +256,12 @@ public actor SessionRuntime {
         let executionProfile = self.executionProfile
 
         do {
+            try ensureExecuting(executionID)
+            if resume {
+                let session = try await store.session(sessionID)
+                try await settleDurableBatches(session: session, deadline: deadline, profiler: profiler)
+                try ensureExecuting(executionID)
+            }
             for step in 0..<maximumAgentSteps {
                 trace("agent.step.begin", step: step + 1)
                 let session = try await store.session(sessionID)
@@ -257,6 +369,7 @@ public actor SessionRuntime {
                         throw error
                     }
                 }
+                try ensureExecuting(executionID)
                 trace("provider.stream.end", step: step + 1)
                 try await consumeSettledBatches(submittedBatchIDs)
                 profiler.recordModel(dispatch: dispatch, stream: streamStarted.duration(to: clock.now))
@@ -269,7 +382,8 @@ public actor SessionRuntime {
                         content: text,
                         finishReason: finalReason,
                         usage: finalUsage,
-                        profiler: profiler
+                        profiler: profiler,
+                        executionID: executionID
                     )
                     return
                 }
@@ -286,7 +400,8 @@ public actor SessionRuntime {
                 let assistantMessage: Message
                 if persistence != nil { assistantMessage = Message(id: MessageID(UUID().uuidString), role: .assistant, parts: assistantParts, createdAt: .now) }
                 else { assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts) }
-                let batch = ToolExchangeBatch(batchID: UUID().uuidString, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, continuationRequestID: request.requestID, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }))
+                let batchID = UUID().uuidString
+                let batch = ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, toolCallStates: calls.map { DurableToolCall(call: $0, provenance: ToolCallProvenance(batchID: batchID, sessionID: sessionID, agentRunID: runID, providerRequestID: request.requestID, providerStep: step + 1)) }, continuationRequestID: request.requestID, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }))
                 if let persistence { try await persistence.appendAssistantMessageAndBatch(sessionID: sessionID, message: assistantMessage, batch: batch) }
                 toolBatches.append(batch)
                 trace("session.parts.append.end", step: step + 1, toolCount: calls.count)
@@ -312,15 +427,23 @@ public actor SessionRuntime {
 
                 await withTaskGroup(of: (Int, ToolRuntime.ExecutionOutcome).self) { group in
                     for (offset, call) in calls.enumerated() where outcomes[offset] == nil && primaryByIndex[offset] == offset {
+                        let observer = ToolExecutionObserver(
+                            permissionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .permission(request)) },
+                            permissionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .permission(request), reply: .permission(reply)) },
+                            executionClaimed: { claim in await self.executionClaimed(batchID: batchID, callID: call.callID, claim: claim) },
+                            questionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .question(request)) },
+                            questionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .question(request), reply: .question(reply)) }
+                        )
                         group.addTask { [toolRuntime, sessionID, eventSink] in
                             let outcome = await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile, onPermissionAsked: { request in
                                 await eventSink(.permissionAsked(request))
-                            }, parentDeadline: deadline)
+                            }, observer: observer, parentDeadline: deadline)
                             return (offset, outcome)
                         }
                     }
                     for await (offset, outcome) in group { outcomes[offset] = outcome }
                 }
+                try Task.checkCancellation()
 
                 for (offset, call) in calls.enumerated() where outcomes[offset] == nil {
                     guard let primary = primaryByIndex[offset], let previous = outcomes[primary] else {
@@ -338,6 +461,7 @@ public actor SessionRuntime {
                     trace("tool.execute.end", step: step + 1, toolCallID: call.callID)
                     profiler.recordTool(outcome)
                     let result = outcome.result
+                    await completedToolCall(batchID: batchID, result: result)
                     if let signature = signatures[offset], result.success || result.error?.code == "duplicateToolCall" {
                         lastSuccessfulRead = (signature, result.content)
                     } else {
@@ -349,7 +473,7 @@ public actor SessionRuntime {
                 let resultMessage: Message
                 if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: settled.map { .toolResult($0.result) }, createdAt: .now) }
                 else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }) }
-                try await settleLatestBatch(resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage)
+                try await settleBatch(batchID: batchID, resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage)
                 await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
                 await runObserver?(.running, nil, finalUsage, nil)
                 trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
@@ -358,14 +482,18 @@ public actor SessionRuntime {
             throw CoreError(code: .agentStepLimitReached, message: "Agent Tool Loop 超过 \(maximumAgentSteps) steps")
         } catch let error as CoreError {
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
-            await failTurn(handle: handle, sink: sink, error: error, profiler: profiler)
+            await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
+        } catch is CancellationError {
+            await toolRuntime.abortMCPTurn(sessionID: sessionID)
+            await failTurn(handle: handle, sink: sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler, executionID: executionID)
         } catch {
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(
                 handle: handle,
                 sink: sink,
                 error: CoreError(code: .provider, message: String(describing: error)),
-                profiler: profiler
+                profiler: profiler,
+                executionID: executionID
             )
         }
     }
@@ -418,11 +546,13 @@ public actor SessionRuntime {
     }
 
     public func shutdown() async {
-        guard let task = turnTask else { turnRunning = false; return }
-        task.cancel()
+        shuttingDown = true
+        guard let execution = activeExecution else { turnRunning = false; return }
+        execution.task.cancel()
         lifecycle("cancellationRequested", waitingOn: "turnTask")
-        turnTask = nil
-        turnRunning = false
+        await dataPlane.finishAgentStream(execution.streamID)
+        await execution.task.value
+        _ = await finishExecution(execution.id)
         lifecycle("cleanupCompleted", waitingOn: "turnTask")
     }
 
@@ -434,10 +564,85 @@ public actor SessionRuntime {
         await compactor.unitStates(sessionID: sessionID)
     }
 
-    private func settleLatestBatch(resultMessageID: MessageID, results: [ToolResult], resultMessage: Message) async throws {
-        guard let index = toolBatches.lastIndex(where: { $0.state == .pending }) else { return }
+    private func settleDurableBatches(session: Session, deadline: ExecutionDeadline, profiler: TurnProfiler) async throws {
+        for batchID in toolBatches.filter({ $0.state == .pending || $0.state == .recoveryRequired }).map(\.batchID) {
+            guard let batch = toolBatches.first(where: { $0.batchID == batchID }), batch.resultMessageID == nil else { continue }
+            for call in batch.toolCallStates where call.state == .recoveryRequired {
+                await completedToolCall(batchID: batchID, result: ToolResult(callID: call.call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.executionStateUnknown.rawValue, message: "重启时 mutation Tool 的执行状态未知，需要验证"), toolName: call.call.toolID.rawValue, metadata: ["executionState": "unknown", "verificationRequired": "true"]))
+            }
+            for call in batch.toolCallStates {
+                guard call.state == .requested, case let .question(request)? = call.request, case let .question(reply)? = call.reply else { continue }
+                let selected = reply.selectedOptionIndices.map { request.options[$0] }
+                let payload: [String: Any] = ["questionID": request.questionID.rawValue, "cancelled": reply.cancelled, "selectedOptions": selected, "text": reply.text ?? NSNull()]
+                let content = String(decoding: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), as: UTF8.self)
+                await completedToolCall(batchID: batchID, result: ToolResult(callID: call.call.callID, success: true, content: content, toolName: call.call.toolID.rawValue))
+            }
+
+            let executable = toolBatches.first(where: { $0.batchID == batchID })?.toolCallStates.filter {
+                guard $0.state == .requested else { return false }
+                if case .question? = $0.request { return false }
+                return true
+            } ?? []
+            await withTaskGroup(of: ToolRuntime.ExecutionOutcome.self) { group in
+                for durable in executable {
+                    let call = durable.call
+                    let observer = ToolExecutionObserver(
+                        permissionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .permission(request)) },
+                        permissionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .permission(request), reply: .permission(reply)) },
+                        executionClaimed: { claim in await self.executionClaimed(batchID: batchID, callID: call.callID, claim: claim) },
+                        questionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .question(request)) },
+                        questionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .question(request), reply: .question(reply)) }
+                    )
+                    group.addTask { [toolRuntime, sessionID, eventSink, executionProfile] in
+                        await toolRuntime.executeWithMetrics(call, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile, onPermissionAsked: { request in
+                            await eventSink(.permissionAsked(request))
+                        }, observer: observer, parentDeadline: deadline)
+                    }
+                }
+                for await outcome in group {
+                    profiler.recordTool(outcome)
+                    await completedToolCall(batchID: batchID, result: outcome.result)
+                    await eventSink(.toolResult(outcome.result))
+                }
+            }
+
+            guard let settled = toolBatches.first(where: { $0.batchID == batchID }), settled.toolCallStates.allSatisfy({ $0.state == .completed && $0.result != nil }) else { continue }
+            let results = settled.toolCalls.compactMap { call in settled.toolCallStates.first { $0.call.callID == call.callID }?.result }
+            guard results.count == settled.toolCalls.count else { continue }
+            let message = Message(id: MessageID(UUID().uuidString), role: .tool, parts: results.map(SessionMessagePart.toolResult), createdAt: .now)
+            try await settleBatch(batchID: batchID, resultMessageID: message.id, results: results, resultMessage: message)
+            await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
+        }
+    }
+
+    private func settleBatch(batchID: String, resultMessageID: MessageID, results: [ToolResult], resultMessage: Message) async throws {
+        guard let index = toolBatches.firstIndex(where: { $0.batchID == batchID }), toolBatches[index].resultMessageID == nil, toolBatches[index].state == .pending || toolBatches[index].state == .recoveryRequired else { return }
         toolBatches[index] = toolBatches[index].with(state: .settledAwaitingConsumption, resultMessageID: resultMessageID, toolResults: results)
         if let persistence { try await persistence.appendToolResultMessageAndSettle(sessionID: sessionID, message: resultMessage, batch: toolBatches[index]) }
+    }
+
+    private func waitingForHuman(batchID: String, callID: ToolCallID, request: ToolCallHumanRequest) async {
+        await updateToolCall(batchID: batchID, callID: callID) { $0.with(state: .waitingForHuman, request: request, replaceHumanExchange: true) }
+    }
+
+    private func humanReply(batchID: String, callID: ToolCallID, request: ToolCallHumanRequest, reply: ToolCallHumanReply) async {
+        await updateToolCall(batchID: batchID, callID: callID) { $0.with(state: .requested, request: request, reply: reply, replaceHumanExchange: true) }
+    }
+
+    private func executionClaimed(batchID: String, callID: ToolCallID, claim: ToolExecutionClaim) async {
+        await updateToolCall(batchID: batchID, callID: callID) { $0.with(state: .executing, executionClaim: claim) }
+    }
+
+    private func completedToolCall(batchID: String, result: ToolResult) async {
+        await updateToolCall(batchID: batchID, callID: result.callID) { $0.with(state: .completed, result: result) }
+    }
+
+    private func updateToolCall(batchID: String, callID: ToolCallID, _ update: (DurableToolCall) -> DurableToolCall) async {
+        guard let batchIndex = toolBatches.firstIndex(where: { $0.batchID == batchID }), let callIndex = toolBatches[batchIndex].toolCallStates.firstIndex(where: { $0.call.callID == callID }) else { return }
+        var states = toolBatches[batchIndex].toolCallStates
+        states[callIndex] = update(states[callIndex])
+        toolBatches[batchIndex] = toolBatches[batchIndex].with(state: toolBatches[batchIndex].state, toolCallStates: states)
+        try? await persistence?.saveToolBatch(toolBatches[batchIndex])
     }
 
     private func consumeSettledBatches(_ batchIDs: Set<String>) async throws {
@@ -465,13 +670,14 @@ public actor SessionRuntime {
         content: String,
         finishReason: ModelFinishReason?,
         usage: ModelUsage?,
-        profiler: TurnProfiler
+        profiler: TurnProfiler,
+        executionID: UUID
     ) async {
         defer { Task { await dataPlane.finishAgentStream(handle.streamID) } }
         do {
+            guard isExecuting(executionID) else { return }
             let message = try await store.appendMessage(handle.sessionID, role: .assistant, content: content)
-            turnRunning = false
-            turnTask = nil
+            guard await finishExecution(executionID) else { return }
             if let report = profiler.report() { await performanceStore.save(report) }
             await runObserver?(.completed, content, usage, nil)
             await eventSink(.turnCompleted(TurnResult(
@@ -482,9 +688,9 @@ public actor SessionRuntime {
                 usage: usage
             )))
         } catch let error as CoreError {
-            await failTurn(handle: handle, sink: sink, error: error, profiler: profiler)
+            await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
         } catch {
-            await failTurn(handle: handle, sink: sink, error: CoreError(code: .transport, message: String(describing: error)), profiler: profiler)
+            await failTurn(handle: handle, sink: sink, error: CoreError(code: .transport, message: String(describing: error)), profiler: profiler, executionID: executionID)
         }
     }
 
@@ -492,19 +698,44 @@ public actor SessionRuntime {
         handle: TurnHandle,
         sink: AsyncThrowingStream<StreamChunk, Error>.Continuation,
         error: CoreError,
-        profiler: TurnProfiler
+        profiler: TurnProfiler,
+        executionID: UUID
     ) async {
+        guard isExecuting(executionID) else { return }
         if diagnosticsEnabled {
             FileHandle.standardError.write(Data("[agent-trace] event=turn.failed sessionID=\(sessionID.rawValue) code=\(error.code.rawValue)\n".utf8))
         }
+        let preservesDurableBatch = toolBatches.contains { ($0.state == .pending || $0.state == .recoveryRequired) && $0.resultMessageID == nil }
+        if Task.isCancelled && preservesDurableBatch {
+            sink.finish()
+            await dataPlane.finishAgentStream(handle.streamID)
+            guard await finishExecution(executionID) else { return }
+            if let report = profiler.report() { await performanceStore.save(report) }
+            return
+        }
         sink.finish(throwing: error)
         await dataPlane.finishAgentStream(handle.streamID)
-        turnRunning = false
-        turnTask = nil
+        guard await finishExecution(executionID) else { return }
         if let report = profiler.report() { await performanceStore.save(report) }
         let status: AgentRunStatus = Task.isCancelled ? .cancelled : [.commandTimedOut, .idleTimedOut].contains(error.code) ? .timedOut : .failed
         await runObserver?(status, nil, nil, error)
         await eventSink(.turnFailed(TurnFailure(sessionID: handle.sessionID, streamID: handle.streamID, error: error)))
+    }
+
+    private func finishExecution(_ id: UUID) async -> Bool {
+        guard let execution = activeExecution, execution.id == id else { return false }
+        activeExecution = nil
+        turnRunning = false
+        if execution.isRestore { await restoreScheduler?.markCompleted() }
+        return true
+    }
+
+    private func isExecuting(_ id: UUID) -> Bool {
+        !shuttingDown && activeExecution?.id == id
+    }
+
+    private func ensureExecuting(_ id: UUID) throws {
+        guard isExecuting(id) else { throw CancellationError() }
     }
 
     private static func durationSeconds(_ duration: Duration) -> Double {

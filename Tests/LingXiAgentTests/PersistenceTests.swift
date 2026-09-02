@@ -221,12 +221,12 @@ struct PersistenceTests {
         let session = try await PersistentSessionStore(persistence: first).create()
         let call = ToolCall(callID: ToolCallID("call"), toolID: ToolID("readFile"), arguments: "{}")
         let assistant = Message(id: MessageID("assistant"), role: .assistant, parts: [.toolCall(call)], createdAt: .now)
-        let pending = ToolExchangeBatch(batchID: "pending", sessionID: session.id, assistantMessageID: assistant.id, toolCalls: [call], providerStep: 1, state: .pending, estimatedTokens: 1)
+        let pending = ToolExchangeBatch(batchID: "pending", sessionID: session.id, assistantMessageID: assistant.id, toolCalls: [call], toolCallStates: [], providerStep: 1, state: .pending, estimatedTokens: 1)
         try await first.appendAssistantMessageAndBatch(sessionID: session.id, message: assistant, batch: pending)
         let settledCall = ToolCall(callID: ToolCallID("settled-call"), toolID: ToolID("readFile"), arguments: "{}")
         let settledAssistant = Message(id: MessageID("settled-assistant"), role: .assistant, parts: [.toolCall(settledCall)], createdAt: .now)
         let continuationRequestID = ModelRequestID("provider-request")
-        let unsettled = ToolExchangeBatch(batchID: "settled", sessionID: session.id, assistantMessageID: settledAssistant.id, toolCalls: [settledCall], continuationRequestID: continuationRequestID, providerStep: 2, state: .pending, estimatedTokens: 1)
+        let unsettled = ToolExchangeBatch(batchID: "settled", sessionID: session.id, assistantMessageID: settledAssistant.id, toolCalls: [settledCall], toolCallStates: [], continuationRequestID: continuationRequestID, providerStep: 2, state: .pending, estimatedTokens: 1)
         try await first.appendAssistantMessageAndBatch(sessionID: session.id, message: settledAssistant, batch: unsettled)
         let result = ToolResult(callID: settledCall.callID, success: true, content: "settled")
         let tool = Message(id: MessageID("tool"), role: .tool, parts: [.toolResult(result)], createdAt: .now)
@@ -241,6 +241,40 @@ struct PersistenceTests {
         #expect(recovered.first { $0.batchID == "settled" }?.state == .settledAwaitingConsumption)
         #expect(recovered.first { $0.batchID == "settled" }?.toolResults == [result])
         #expect(recovered.first { $0.batchID == "settled" }?.continuationRequestID == continuationRequestID)
+    }
+
+    @Test func durableToolCallsPreserveCompletedAndHITLStateWhileOnlyMutationClaimsRequireRecovery() async throws {
+        let fixture = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let root = fixture.appendingPathComponent("Root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let data = fixture.appendingPathComponent("data", isDirectory: true)
+        let first = try SQLitePersistenceStore(dataRoot: data, mainRoot: root)
+        let session = try await PersistentSessionStore(persistence: first).create()
+        let calls = ["completed", "waiting", "read", "mutation"].map { ToolCall(callID: ToolCallID($0), toolID: ToolID($0), arguments: "{}") }
+        let provenance = { (_: ToolCall) in ToolCallProvenance(batchID: "durable", sessionID: session.id, agentRunID: AgentRunID("child-run"), providerRequestID: ModelRequestID("request"), providerStep: 1) }
+        let permission = PermissionRequest(permissionID: PermissionID("permission"), sessionID: session.id, toolCallID: calls[1].callID, toolID: calls[1].toolID, resource: "README.md", description: "read")
+        let result = ToolResult(callID: calls[0].callID, success: true, content: "done")
+        let states = [
+            DurableToolCall(call: calls[0], state: .completed, provenance: provenance(calls[0]), result: result),
+            DurableToolCall(call: calls[1], state: .waitingForHuman, request: .permission(permission), reply: .permission(PermissionReply(permissionID: permission.permissionID, decision: .allow)), provenance: provenance(calls[1])),
+            DurableToolCall(call: calls[2], state: .executing, executionClaim: ToolExecutionClaim(claimID: "read-claim", mutatesProject: false), provenance: provenance(calls[2])),
+            DurableToolCall(call: calls[3], state: .executing, executionClaim: ToolExecutionClaim(claimID: "mutation-claim", mutatesProject: true), provenance: provenance(calls[3])),
+        ]
+        let batch = ToolExchangeBatch(batchID: "durable", sessionID: session.id, assistantMessageID: MessageID("assistant"), toolCalls: calls, toolCallStates: states, continuationRequestID: ModelRequestID("request"), providerStep: 1, state: .pending, estimatedTokens: 1)
+        try await first.saveToolBatch(batch)
+
+        let second = try SQLitePersistenceStore(dataRoot: data, mainRoot: root, projectID: first.projectID)
+        let recovered = try #require(try await second.toolBatches(sessionID: session.id).first)
+        let recoveredState = { id in recovered.toolCallStates.first { $0.call.callID == ToolCallID(id) } }
+        #expect(recoveredState("completed")?.state == .completed)
+        #expect(recoveredState("completed")?.result == result)
+        #expect(recoveredState("waiting")?.state == .waitingForHuman)
+        #expect(recoveredState("waiting")?.request == .permission(permission))
+        #expect(recoveredState("waiting")?.reply == .permission(PermissionReply(permissionID: permission.permissionID, decision: .allow)))
+        #expect(recoveredState("read")?.state == .requested)
+        #expect(recoveredState("mutation")?.state == .recoveryRequired)
+        #expect(recovered.state == .recoveryRequired)
     }
 
     @Test func childRunAndTerminalResultCommitAtomically() async throws {

@@ -37,10 +37,13 @@ public actor CoreHost: CoreEndpoint {
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private let behaviorProfile: AgentBehaviorProfile
+    private let restoreScheduler: SessionRestoreScheduler?
     private var agent: AgentRuntime?
+    private var workflows: WorkflowRuntime?
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
+    package var workflowRuntimeRef: WorkflowRuntime? { workflows }
 
     /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
     public init(
@@ -57,13 +60,15 @@ public actor CoreHost: CoreEndpoint {
         mcpPager: MCPToolPager? = nil,
         interactive: Bool? = nil
         , configurationStore: ConfigurationStore? = nil
-        , credentialStore: (any CredentialStore)? = nil
+        , credentialStore: (any CredentialStore)? = nil,
+        restoreScheduler: SessionRestoreScheduler? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
         let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
         self.interactive = supportsInteraction
         self.configurationStore = configurationStore
         self.credentialStore = credentialStore
+        self.restoreScheduler = restoreScheduler
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
         self.processes = processes
@@ -136,6 +141,7 @@ public actor CoreHost: CoreEndpoint {
         guard state == .starting else { return }
         await questions.setEventSink { [weak self] request in
             await self?.agent?.markWaitingForQuestion(request, waiting: true)
+            await self?.routeWorkflowQuestion(request)
             await self?.broadcast(request.originSessionID == request.rootSessionID ? .questionAsked(request) : .questionEscalated(request))
         }
         await bus.add(.ping) { _ in .pong }
@@ -284,6 +290,8 @@ public actor CoreHost: CoreEndpoint {
             modelBus: ModelBus(gateway: gateway),
             dataPlane: dataPlane,
             toolRuntime: toolRuntime,
+            questions: questions,
+            permissions: permissionEngine,
             performanceStore: performanceStore,
             contextPager: contextPager,
             projectScanner: projectScanner,
@@ -298,9 +306,12 @@ public actor CoreHost: CoreEndpoint {
             modelResolver: modelResolver,
             limits: subagentLimits,
             behaviorProfile: behaviorProfile,
-            deadlinePolicy: executionDeadlinePolicy
+            deadlinePolicy: executionDeadlinePolicy,
+            restoreScheduler: restoreScheduler
         )
         self.agent = agent
+        let workflows = await agent.makeWorkflowRuntime()
+        self.workflows = workflows
         await subagentService.bind(
             spawn: { [weak agent] sessionID, runID, task, title, selection, profile, toolCallID in try await agent?.spawn(parentSessionID: sessionID, parentRunID: runID, task: task, title: title, modelSelection: selection, profile: profile, toolCallID: toolCallID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
             status: { [weak agent] runID, requester in try await agent?.agentRun(runID, requester: requester) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
@@ -310,6 +321,7 @@ public actor CoreHost: CoreEndpoint {
         )
         do {
             try await agent.restore()
+            try await workflows.restore()
         } catch {
             self.agent = nil
             setState(.stopped)
@@ -333,6 +345,7 @@ public actor CoreHost: CoreEndpoint {
         await processes.stopAll()
         lifecycle("cleanupCompleted", waitingOn: "processes")
         agent = nil
+        workflows = nil
         eventContinuations.values.forEach { $0.finish() }
         eventContinuations.removeAll()
         setState(.stopped)
@@ -393,6 +406,9 @@ public actor CoreHost: CoreEndpoint {
 
     /// Agent 等模块经此把语义事件送入所有控制面订阅者。
     public func broadcast(_ event: CoreEvent) {
+        if case let .permissionAsked(request) = event {
+            Task { [weak self] in try? await self?.workflows?.suspendForOrigin(sessionID: request.sessionID, input: .permission(request)) }
+        }
         eventContinuations.values.forEach { $0.yield(event) }
     }
 
@@ -403,6 +419,11 @@ public actor CoreHost: CoreEndpoint {
             throw CoreError(code: .notReady, message: "Agent 尚未启动")
         }
         return agent
+    }
+
+    private func routeWorkflowQuestion(_ request: QuestionRequest) async {
+        guard let runID = request.originRunID else { return }
+        try? await workflows?.suspendForOrigin(runID: runID, input: .question(request))
     }
 
     private var providerStatus: ProviderStatus {

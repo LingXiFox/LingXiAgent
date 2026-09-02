@@ -9,18 +9,18 @@ public struct PersistenceMigrationError: Error, Sendable, Equatable {
 /// SQLite migration 的唯一入口。调用者负责提供 SQLite transaction；失败时绝不允许以空库替代旧数据。
 public enum MigrationRunner {
     public static func migrate(from version: Int, applyV0ToV1: () throws -> Void) throws {
-        try migrate(from: version, applyV0ToV1: applyV0ToV1, applyV1ToV2: {}, applyV2ToV3: {}, applyV3ToV4: {})
+        try migrate(from: version, applyV0ToV1: applyV0ToV1, applyV1ToV2: {}, applyV2ToV3: {}, applyV3ToV4: {}, applyV4ToV5: {}, applyV5ToV6: {})
     }
 
     public static func migrate(from version: Int, applyV0ToV1: () throws -> Void, applyV1ToV2: () throws -> Void) throws {
-        try migrate(from: version, applyV0ToV1: applyV0ToV1, applyV1ToV2: applyV1ToV2, applyV2ToV3: {}, applyV3ToV4: {})
+        try migrate(from: version, applyV0ToV1: applyV0ToV1, applyV1ToV2: applyV1ToV2, applyV2ToV3: {}, applyV3ToV4: {}, applyV4ToV5: {}, applyV5ToV6: {})
     }
 
     public static func migrate(from version: Int, applyV0ToV1: () throws -> Void, applyV1ToV2: () throws -> Void, applyV2ToV3: () throws -> Void) throws {
-        try migrate(from: version, applyV0ToV1: applyV0ToV1, applyV1ToV2: applyV1ToV2, applyV2ToV3: applyV2ToV3, applyV3ToV4: {})
+        try migrate(from: version, applyV0ToV1: applyV0ToV1, applyV1ToV2: applyV1ToV2, applyV2ToV3: applyV2ToV3, applyV3ToV4: {}, applyV4ToV5: {}, applyV5ToV6: {})
     }
 
-    public static func migrate(from version: Int, applyV0ToV1: () throws -> Void, applyV1ToV2: () throws -> Void, applyV2ToV3: () throws -> Void, applyV3ToV4: () throws -> Void) throws {
+    public static func migrate(from version: Int, applyV0ToV1: () throws -> Void, applyV1ToV2: () throws -> Void, applyV2ToV3: () throws -> Void, applyV3ToV4: () throws -> Void, applyV4ToV5: () throws -> Void, applyV5ToV6: () throws -> Void) throws {
         guard version <= SQLitePersistenceStore.databaseSchemaVersion else {
             throw PersistenceMigrationError(version: version)
         }
@@ -35,6 +35,12 @@ public enum MigrationRunner {
         }
         if version <= 3 {
             try applyV3ToV4()
+        }
+        if version <= 4 {
+            try applyV4ToV5()
+        }
+        if version <= 5 {
+            try applyV5ToV6()
         }
     }
 }

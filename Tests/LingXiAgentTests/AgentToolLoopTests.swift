@@ -259,4 +259,180 @@ struct AgentToolLoopTests {
         } })
         #expect(snapshot.messages.last?.content == "已继续。")
     }
+
+    @Test func durableQuestionCallRecordsHITLReplyClaimProvenanceAndResult() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let question = ToolCall(callID: ToolCallID("durable-question"), toolID: ToolID("question"), arguments: #"{"question":"继续吗？","options":["继续"]}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(question), .completed(.toolCalls)],
+            [.textDelta("已继续。"), .completed(.stop)],
+        ])
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: root.appendingPathComponent("data", isDirectory: true), permissionDecision: .allow, interactive: true)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let replyTask = Task {
+            for await event in await client.events() {
+                if case let .questionAsked(request) = event {
+                    try? await client.replyQuestion(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
+                    return
+                }
+            }
+        }
+        defer { replyTask.cancel() }
+        await Task.yield()
+
+        let sessionID = try await client.createSession()
+        for try await _ in try await client.sendMessage(sessionID: sessionID, content: "需要确认") {}
+        _ = await replyTask.value
+
+        let batch = try #require(try await host.persistence?.toolBatches(sessionID: sessionID).first)
+        let state = try #require(batch.toolCallStates.first)
+        #expect(provider.recorder.requests.count == 2)
+        #expect(state.state == .completed)
+        #expect(state.provenance.sessionID == sessionID)
+        #expect(state.provenance.providerStep == 1)
+        #expect(state.executionClaim?.mutatesProject == false)
+        #expect({ if case .question = state.request { return true }; return false }())
+        #expect({ if case .question = state.reply { return true }; return false }())
+        #expect(state.result?.callID == question.callID)
+    }
+
+    @Test func restartRepliesToDurableQuestionAndContinuesExactlyOnce() async throws {
+        let root = try fixture()
+        let data = root.appendingPathComponent("data", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let question = ToolCall(callID: ToolCallID("restart-question"), toolID: ToolID("question"), arguments: #"{"question":"继续吗？","options":["继续"]}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(question), .completed(.toolCalls)],
+            [.textDelta("恢复完成。"), .completed(.stop)],
+        ])
+        let first = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .allow, interactive: true)
+        await first.start()
+        let firstClient = LingXiClient.inProcess(endpoint: first)
+        let questionTask = Task { () -> QuestionRequest? in
+            for await event in await firstClient.events() {
+                if case let .questionAsked(request) = event { return request }
+            }
+            return nil
+        }
+        await Task.yield()
+        let sessionID = try await firstClient.createSession()
+        let streamTask = Task { for try await _ in try await firstClient.sendMessage(sessionID: sessionID, content: "确认") {} }
+        let request = try #require(await questionTask.value)
+        await first.shutdown()
+        streamTask.cancel()
+        let persistedCall = try #require(try await first.persistence?.toolBatches(sessionID: sessionID).first?.toolCallStates.first)
+        #expect(persistedCall.state == .waitingForHuman)
+        #expect(persistedCall.reply == nil)
+        #expect({ if case .question = persistedCall.request { return true }; return false }())
+        #expect({ if case let .question(value)? = persistedCall.request { return value == request }; return false }())
+        let firstRuns = try await first.persistence!.loadAgentRuns(sessionID: sessionID)
+        #expect(firstRuns.first?.status == .waitingForUser)
+
+        let second = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .allow, interactive: true)
+        await second.start()
+        defer { Task { await second.shutdown() } }
+        let secondClient = LingXiClient.inProcess(endpoint: second)
+        #expect(try await secondClient.listAgentRuns(sessionID).first?.status == .waitingForUser)
+        #expect(await second.questions.request(request.questionID) == request)
+        try await secondClient.replyQuestion(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
+
+        let deadline = Date().addingTimeInterval(2)
+        var snapshot = try await secondClient.session(sessionID)
+        while snapshot.messages.last?.content != "恢复完成。", Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+            snapshot = try await secondClient.session(sessionID)
+        }
+        #expect(provider.recorder.requests.count == 2)
+        #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
+        #expect(snapshot.messages.last?.content == "恢复完成。")
+    }
+
+    @Test func restartPermissionReplyResumesAllowAndDenyWithoutReplayingTheBatch() async throws {
+        for decision in [PermissionDecision.allow, .deny] {
+            let root = try fixture()
+            let data = root.appendingPathComponent("data", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try "restart".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+            let read = ToolCall(callID: ToolCallID("restart-\(decision.rawValue)"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
+            let provider = ScriptedFakeProvider(script: [
+                [.toolCallCompleted(read), .completed(.toolCalls)],
+                [.textDelta("恢复完成。"), .completed(.stop)],
+            ])
+            let first = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .ask)
+            await first.start()
+            let firstClient = LingXiClient.inProcess(endpoint: first)
+            let permissionTask = Task { () -> PermissionRequest? in
+                for await event in await firstClient.events() {
+                    if case let .permissionAsked(request) = event { return request }
+                }
+                return nil
+            }
+            await Task.yield()
+            let sessionID = try await firstClient.createSession()
+            let streamTask = Task { for try await _ in try await firstClient.sendMessage(sessionID: sessionID, content: "读取") {} }
+            let request = try #require(await permissionTask.value)
+            await first.shutdown()
+            streamTask.cancel()
+
+            let second = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .ask)
+            await second.start()
+            let secondClient = LingXiClient.inProcess(endpoint: second)
+            try await secondClient.replyPermission(PermissionReply(permissionID: request.permissionID, decision: decision))
+
+            let deadline = Date().addingTimeInterval(2)
+            var snapshot = try await secondClient.session(sessionID)
+            while snapshot.messages.last?.content != "恢复完成。", Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+                snapshot = try await secondClient.session(sessionID)
+            }
+            let result = snapshot.messages.flatMap(\.parts).compactMap { if case let .toolResult(result) = $0 { result } else { nil } }.first
+            #expect(provider.recorder.requests.count == 2)
+            #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
+            #expect(result?.success == (decision == .allow))
+            #expect(snapshot.messages.last?.content == "恢复完成。")
+            await second.shutdown()
+        }
+    }
+
+    @Test func restartSchedulesReadOnlyRemainderAndSettlesMutationClaimAsUnknown() async throws {
+        let root = try fixture()
+        let data = root.appendingPathComponent("data", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SQLitePersistenceStore(dataRoot: data, mainRoot: root)
+        let session = try await PersistentSessionStore(persistence: store).create()
+        let run = AgentRunInfo(runID: AgentRunID("restart-run"), sessionID: session.id, projectID: store.projectID, rootRunID: AgentRunID("restart-run"), agentKind: .primary, status: .waitingForTool, modelSelection: ModelSelection(modelID: "fake-model"))
+        try await store.saveAgentRun(run)
+        let read = ToolCall(callID: ToolCallID("read"), toolID: ToolID("delayed_read"), arguments: #"{"path":"fast"}"#)
+        let mutation = ToolCall(callID: ToolCallID("mutation"), toolID: ToolID("write_file"), arguments: #"{"path":"never.txt","content":"must not run"}"#)
+        let assistant = Message(id: MessageID("restart-assistant"), role: .assistant, parts: [.toolCall(read), .toolCall(mutation)], createdAt: .now)
+        let batch = ToolExchangeBatch(
+            batchID: "restart-batch", sessionID: session.id, assistantMessageID: assistant.id, toolCalls: [read, mutation],
+            toolCallStates: [
+                DurableToolCall(call: read, state: .executing, executionClaim: ToolExecutionClaim(claimID: "read-claim", mutatesProject: false), provenance: ToolCallProvenance(batchID: "restart-batch", sessionID: session.id, agentRunID: run.runID, providerRequestID: ModelRequestID("restart-request"), providerStep: 1)),
+                DurableToolCall(call: mutation, state: .executing, executionClaim: ToolExecutionClaim(claimID: "mutation-claim", mutatesProject: true), provenance: ToolCallProvenance(batchID: "restart-batch", sessionID: session.id, agentRunID: run.runID, providerRequestID: ModelRequestID("restart-request"), providerStep: 1)),
+            ], continuationRequestID: ModelRequestID("restart-request"), providerStep: 1, state: .pending, estimatedTokens: 1
+        )
+        try await store.appendAssistantMessageAndBatch(sessionID: session.id, message: assistant, batch: batch)
+
+        let recorder = ToolCompletionRecorder()
+        let provider = ScriptedFakeProvider(script: [[.textDelta("恢复完成。"), .completed(.stop)]])
+        let restoreScheduler = SessionRestoreScheduler()
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .allow, toolRegistry: ToolRegistry([DelayedReadTool(recorder: recorder)]), restoreScheduler: restoreScheduler)
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        await restoreScheduler.waitUntilReady()
+        await restoreScheduler.waitUntilCompleted()
+        let snapshot = try await client.session(session.id)
+        let results = snapshot.messages.flatMap(\.parts).compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
+        #expect(await recorder.snapshot() == ["fast"])
+        #expect(results.first { $0.callID == read.callID }?.success == true)
+        #expect(results.first { $0.callID == mutation.callID }?.error?.code == CoreError.Code.executionStateUnknown.rawValue)
+        #expect(results.first { $0.callID == mutation.callID }?.metadata["verificationRequired"] == "true")
+        #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
+        #expect(provider.recorder.requests.count == 1)
+    }
 }

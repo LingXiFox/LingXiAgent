@@ -22,7 +22,7 @@ public struct StructuredPathAuditViolation: Sendable, Equatable {
 
 /// 单 actor 持有两个 SQLite handle；所有写入均经过此序列化事务边界。
 public actor SQLitePersistenceStore {
-    public static let databaseSchemaVersion = 4
+    public static let databaseSchemaVersion = 6
     public static let contextFormatVersion = 1
     public static let indexFormatVersion = 1
 
@@ -39,7 +39,7 @@ public actor SQLitePersistenceStore {
         let catalogDB = try Self.open(dataRoot.appendingPathComponent("catalog.sqlite"))
         catalog = catalogDB
         try Self.configure(catalogDB)
-        try Self.migrate(catalogDB, create: { try Self.createCatalogSchema(catalogDB) }, upgrade: { try Self.execute(catalogDB, "PRAGMA user_version = 2", []) }, upgradeV3: { try Self.execute(catalogDB, "PRAGMA user_version = 3", []) }, upgradeV4: { try Self.execute(catalogDB, "PRAGMA user_version = 4", []) })
+        try Self.migrate(catalogDB, create: { try Self.createCatalogSchema(catalogDB) }, upgrade: { try Self.execute(catalogDB, "PRAGMA user_version = 2", []) }, upgradeV3: { try Self.execute(catalogDB, "PRAGMA user_version = 3", []) }, upgradeV4: { try Self.execute(catalogDB, "PRAGMA user_version = 4", []) }, upgradeV5: { try Self.execute(catalogDB, "PRAGMA user_version = 5", []) }, upgradeV6: { try Self.execute(catalogDB, "PRAGMA user_version = 6", []) })
         let canonicalRoot = mainRoot.standardizedFileURL.resolvingSymlinksInPath()
         if let projectID {
             self.projectID = projectID
@@ -53,7 +53,7 @@ public actor SQLitePersistenceStore {
         let stateDB = try Self.open(projectDirectory.appendingPathComponent("state.sqlite"))
         state = stateDB
         try Self.configure(stateDB)
-        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) })
+        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) })
         try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS persistence_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
         blobs = try FileBlobStore(directory: projectDirectory.appendingPathComponent("blobs", isDirectory: true))
         try Self.transaction(catalogDB) {
@@ -279,6 +279,39 @@ public actor SQLitePersistenceStore {
         return SubagentResult(childSessionID: SessionID(row[0]), runID: runID, status: status, finalText: row[2].isEmpty ? nil : row[2], touchedResources: (try? JSONDecoder().decode([ToolTouchedResource].self, from: Data(row[3].utf8))) ?? [], artifactReferences: (try? JSONDecoder().decode([String].self, from: Data(row[4].utf8))) ?? [], usage: (try? JSONDecoder().decode(AgentRunUsage.self, from: Data(row[5].utf8))) ?? AgentRunUsage(), error: row[6].isEmpty ? nil : try? JSONDecoder().decode(CoreError.self, from: Data(row[6].utf8)), timestamp: Self.parseDate(row[7]))
     }
 
+    /// Snapshot and normalized task rows are committed together; recovery reads the snapshot only.
+    public func saveWorkflow(_ workflow: WorkflowSnapshot) throws {
+        let encoder = JSONEncoder()
+        let snapshot = String(decoding: try encoder.encode(workflow), as: UTF8.self)
+        try Self.transaction(state) {
+            try Self.execute(state, "INSERT OR REPLACE INTO workflows(workflow_id, project_id, root_session_id, root_run_id, status, checkpoint_json, snapshot_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [workflow.id.rawValue, projectID.rawValue, workflow.rootSessionID.rawValue, workflow.rootRunID.rawValue, workflow.status.rawValue, String(decoding: try encoder.encode(workflow.checkpoint), as: UTF8.self), snapshot, Self.date(workflow.createdAt), Self.date(workflow.updatedAt)])
+            try Self.execute(state, "DELETE FROM workflow_pending_inputs WHERE workflow_id = ?", [workflow.id.rawValue])
+            try Self.execute(state, "DELETE FROM workflow_dependencies WHERE workflow_id = ?", [workflow.id.rawValue])
+            try Self.execute(state, "DELETE FROM workflow_tasks WHERE workflow_id = ?", [workflow.id.rawValue])
+            for task in workflow.tasks {
+                let definition = String(decoding: try encoder.encode(task.definition), as: UTF8.self)
+                let provenance = try task.provenance.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+                let result = try task.result.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+                let error = try task.error.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+                try Self.execute(state, "INSERT INTO workflow_tasks(workflow_id, task_id, status, definition_json, provenance_json, result_json, error_json) VALUES(?, ?, ?, ?, ?, ?, ?)", [workflow.id.rawValue, task.definition.id.rawValue, task.status.rawValue, definition, provenance ?? NSNull(), result ?? NSNull(), error ?? NSNull()])
+                for dependency in task.definition.dependencies {
+                    try Self.execute(state, "INSERT INTO workflow_dependencies(workflow_id, task_id, dependency_task_id) VALUES(?, ?, ?)", [workflow.id.rawValue, task.definition.id.rawValue, dependency.rawValue])
+                }
+                if let pending = task.pendingInput {
+                    let kind: String
+                    switch pending { case .question: kind = "question"; case .permission: kind = "permission"; case .decision: kind = "decision" }
+                    try Self.execute(state, "INSERT INTO workflow_pending_inputs(workflow_id, task_id, kind, payload_json) VALUES(?, ?, ?, ?)", [workflow.id.rawValue, task.definition.id.rawValue, kind, String(decoding: try encoder.encode(pending), as: UTF8.self)])
+                }
+            }
+        }
+    }
+
+    public func loadWorkflows() throws -> [WorkflowSnapshot] {
+        try Self.rows(state, "SELECT snapshot_json FROM workflows WHERE project_id = ? ORDER BY created_at", [projectID.rawValue]).compactMap { row in
+            try? JSONDecoder().decode(WorkflowSnapshot.self, from: Data(row[0].utf8))
+        }
+    }
+
     public func saveDerived(_ page: DerivedContextPage) throws {
         try writeDerived(page)
     }
@@ -373,10 +406,17 @@ public actor SQLitePersistenceStore {
     }
 
     public func toolBatches(sessionID: SessionID) throws -> [ToolExchangeBatch] {
-        try Self.rows(state, "SELECT batch_id, assistant_message_id, result_message_id, provider_step, state, estimated_tokens, tool_calls_json, tool_results_json, continuation_request_id FROM tool_exchange_batches WHERE session_id = ? ORDER BY provider_step", [sessionID.rawValue]).compactMap { row in
+        try Self.rows(state, "SELECT batch_id, assistant_message_id, result_message_id, provider_step, state, estimated_tokens, tool_calls_json, tool_results_json, continuation_request_id, tool_call_states_json FROM tool_exchange_batches WHERE session_id = ? ORDER BY provider_step", [sessionID.rawValue]).compactMap { row -> ToolExchangeBatch? in
             guard let persisted = ToolExchangeBatchState(rawValue: row[4]) else { return nil }
-            let recovered: ToolExchangeBatchState = persisted == .pending ? .recoveryRequired : persisted
-            return ToolExchangeBatch(batchID: row[0], sessionID: sessionID, assistantMessageID: MessageID(row[1]), resultMessageID: row[2].isEmpty ? nil : MessageID(row[2]), toolCalls: (try? JSONDecoder().decode([ToolCall].self, from: Data(row[6].utf8))) ?? [], toolResults: (try? JSONDecoder().decode([ToolResult].self, from: Data(row[7].utf8))) ?? [], continuationRequestID: row[8].isEmpty ? nil : ModelRequestID(row[8]), providerStep: Int(row[3]) ?? 0, state: recovered, estimatedTokens: Int(row[5]) ?? 0)
+            let calls = (try? JSONDecoder().decode([ToolCall].self, from: Data(row[6].utf8))) ?? []
+            let results = (try? JSONDecoder().decode([ToolResult].self, from: Data(row[7].utf8))) ?? []
+            let states = try? JSONDecoder().decode([DurableToolCall].self, from: Data(row[9].utf8))
+            let recoveredStates = ((states?.isEmpty == false ? states : nil) ?? calls.map { call in
+                let result = results.first { $0.callID == call.callID }
+                return DurableToolCall(call: call, state: result == nil ? .recoveryRequired : .completed, provenance: ToolCallProvenance(batchID: row[0], sessionID: sessionID, agentRunID: nil, providerRequestID: row[8].isEmpty ? nil : ModelRequestID(row[8]), providerStep: Int(row[3]) ?? 0), result: result)
+            }).map(Self.recoverToolCall)
+            let recovered: ToolExchangeBatchState = recoveredStates.contains(where: { $0.state == .recoveryRequired }) ? .recoveryRequired : persisted
+            return ToolExchangeBatch(batchID: row[0], sessionID: sessionID, assistantMessageID: MessageID(row[1]), resultMessageID: row[2].isEmpty ? nil : MessageID(row[2]), toolCalls: calls, toolResults: results, toolCallStates: recoveredStates, continuationRequestID: row[8].isEmpty ? nil : ModelRequestID(row[8]), providerStep: Int(row[3]) ?? 0, state: recovered, estimatedTokens: Int(row[5]) ?? 0)
         }
     }
 
@@ -421,9 +461,9 @@ public actor SQLitePersistenceStore {
         var db: OpaquePointer?; guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else { throw PersistenceError.sqlite("open \(url.lastPathComponent)") }; return db
     }
     private static func configure(_ db: OpaquePointer) throws { try script(db, "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000") }
-    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void) throws {
+    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void) throws {
         let version = Int(try scalar(db, "PRAGMA user_version", []) ?? "0") ?? 0
-        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4) }
+        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6) }
     }
     private static func transaction(_ db: OpaquePointer, _ body: () throws -> Void) throws { try execute(db, "BEGIN IMMEDIATE", []); do { try body(); try execute(db, "COMMIT", []) } catch { try? execute(db, "ROLLBACK", []); throw error } }
     private static func nextMessageOrdinal(_ db: OpaquePointer, _ sessionID: SessionID) throws -> Int { try scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0 }
@@ -433,7 +473,15 @@ public actor SQLitePersistenceStore {
         try execute(db, "UPDATE sessions SET updated_at = ? WHERE session_id = ?", [date(message.createdAt), sessionID.rawValue])
     }
     private static func writeBatch(_ db: OpaquePointer, _ batch: ToolExchangeBatch) throws {
-        try execute(db, "INSERT OR REPLACE INTO tool_exchange_batches(batch_id, session_id, assistant_message_id, result_message_id, provider_step, state, estimated_tokens, tool_calls_json, tool_results_json, continuation_request_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [batch.batchID, batch.sessionID.rawValue, batch.assistantMessageID.rawValue, batch.resultMessageID?.rawValue ?? NSNull(), String(batch.providerStep), batch.state.rawValue, String(batch.estimatedTokens), String(decoding: try JSONEncoder().encode(batch.toolCalls), as: UTF8.self), String(decoding: try JSONEncoder().encode(batch.toolResults), as: UTF8.self), batch.continuationRequestID?.rawValue ?? NSNull()])
+        try execute(db, "INSERT OR REPLACE INTO tool_exchange_batches(batch_id, session_id, assistant_message_id, result_message_id, provider_step, state, estimated_tokens, tool_calls_json, tool_results_json, continuation_request_id, tool_call_states_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [batch.batchID, batch.sessionID.rawValue, batch.assistantMessageID.rawValue, batch.resultMessageID?.rawValue ?? NSNull(), String(batch.providerStep), batch.state.rawValue, String(batch.estimatedTokens), String(decoding: try JSONEncoder().encode(batch.toolCalls), as: UTF8.self), String(decoding: try JSONEncoder().encode(batch.toolResults), as: UTF8.self), batch.continuationRequestID?.rawValue ?? NSNull(), String(decoding: try JSONEncoder().encode(batch.toolCallStates), as: UTF8.self)])
+    }
+    private static func recoverToolCall(_ call: DurableToolCall) -> DurableToolCall {
+        switch call.state {
+        case .completed, .waitingForHuman, .requested, .recoveryRequired:
+            return call
+        case .executing:
+            return call.executionClaim?.mutatesProject == true ? call.with(state: .recoveryRequired) : call.with(state: .requested)
+        }
     }
     private func writeDerived(_ page: DerivedContextPage, database: OpaquePointer? = nil) throws {
         let contentRef: String?
@@ -460,6 +508,8 @@ public actor SQLitePersistenceStore {
         try script(db, "ALTER TABLE agent_runs ADD COLUMN account_id TEXT; ALTER TABLE agent_runs ADD COLUMN profile_id TEXT; PRAGMA user_version = 3")
     }
     private static func upgradeStateSchemaV4(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE agent_runs ADD COLUMN profile_json TEXT; ALTER TABLE tool_exchange_batches ADD COLUMN continuation_request_id TEXT; PRAGMA user_version = 4") }
+    private static func upgradeStateSchemaV5(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS workflows(workflow_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_session_id TEXT NOT NULL REFERENCES sessions(session_id), root_run_id TEXT NOT NULL REFERENCES agent_runs(run_id), status TEXT NOT NULL, checkpoint_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_tasks(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, status TEXT NOT NULL, definition_json TEXT NOT NULL, provenance_json TEXT, result_json TEXT, error_json TEXT, PRIMARY KEY(workflow_id, task_id)); CREATE TABLE IF NOT EXISTS workflow_dependencies(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, dependency_task_id TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id, dependency_task_id)); CREATE TABLE IF NOT EXISTS workflow_pending_inputs(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id)); CREATE INDEX IF NOT EXISTS workflow_status_idx ON workflows(project_id, status); PRAGMA user_version = 5") }
+    private static func upgradeStateSchemaV6(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE tool_exchange_batches ADD COLUMN tool_call_states_json TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 6") }
     private static func createStateSchema(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd_root_binding_id TEXT NOT NULL, cwd_relative_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), ordinal INTEGER NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, ordinal)); CREATE TABLE IF NOT EXISTS message_parts(message_id TEXT NOT NULL REFERENCES messages(message_id), ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(message_id, ordinal)); CREATE TABLE IF NOT EXISTS tool_exchange_batches(batch_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), assistant_message_id TEXT NOT NULL, result_message_id TEXT, provider_step INTEGER NOT NULL, state TEXT NOT NULL, estimated_tokens INTEGER NOT NULL, tool_calls_json TEXT NOT NULL, tool_results_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS derived_context(derived_page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(session_id), source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, inline_content TEXT, blob_ref TEXT, message_id TEXT, token_estimate INTEGER NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL, provenance_json TEXT NOT NULL, metadata_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS compaction_state(session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), generation INTEGER NOT NULL, residency_json TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS project_files(file_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_binding_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL, time_created TEXT NOT NULL, time_updated TEXT NOT NULL, time_last_seen TEXT, UNIQUE(root_binding_id, relative_path)); CREATE TABLE IF NOT EXISTS project_pages(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, characters INTEGER NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_symbols(symbol_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL, page_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_references(reference_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, source_line INTEGER NOT NULL, target_name TEXT NOT NULL, kind TEXT NOT NULL, resolution TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_dependencies(project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, kind TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(project_id, source_file_id, evidence_id)); CREATE TABLE IF NOT EXISTS project_l2(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, score REAL NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS session_l2(derived_page_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version INTEGER NOT NULL); PRAGMA user_version = 1") }
     private static func decodeRoot(_ row: [String]) -> RootBinding? { guard row.count == 10, let kind = RootBindingKind(rawValue: row[2]), let state = RootBindingLifecycleState(rawValue: row[6]) else { return nil }; return RootBinding(id: RootBindingID(row[0]), projectID: ProjectID(row[1]), kind: kind, absoluteRoot: URL(fileURLWithPath: row[3]), parentBindingID: row[4].isEmpty ? nil : RootBindingID(row[4]), bindingRevision: Int(row[5]) ?? 0, lifecycleState: state, createdAt: parseDate(row[7]), updatedAt: parseDate(row[8]), lastSeenAt: row[9].isEmpty ? nil : parseDate(row[9])) }
     private static func decodeFile(_ row: [String]) -> ProjectFileBinding? { guard row.count == 10 else { return nil }; return ProjectFileBinding(id: ProjectFileID(row[0]), projectID: ProjectID(row[1]), rootBindingID: RootBindingID(row[2]), relativePath: ProjectRelativePath(rawValue: row[3]), contentHash: row[4], version: row[5], state: row[6], createdAt: parseDate(row[7]), updatedAt: parseDate(row[8]), lastSeenAt: row[9].isEmpty ? nil : parseDate(row[9])) }

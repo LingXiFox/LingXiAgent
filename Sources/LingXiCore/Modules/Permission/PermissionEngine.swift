@@ -8,11 +8,18 @@ public struct PermissionResolution: Sendable, Equatable {
 
 /// 内存权限状态：ask 时暂停本轮 Tool，收到一次性答复后即释放。
 public actor PermissionEngine {
+    private struct Pending {
+        let request: PermissionRequest
+        let continuation: CheckedContinuation<PermissionDecision, Never>?
+        let onReply: (@Sendable (PermissionReply) async -> Void)?
+    }
+
     private var rules: [PermissionRule]
     private var resourceRules: [PermissionResourceRule]
     private var configuration: PermissionConfiguration
     private var legacyDefaultDecision: PermissionDecision?
-    private var pending: [PermissionID: CheckedContinuation<PermissionDecision, Never>] = [:]
+    private var pending: [PermissionID: Pending] = [:]
+    private var restoredReplies: [ToolCallID: PermissionDecision] = [:]
 
     public init(rules: [PermissionRule] = [], resourceRules: [PermissionResourceRule] = [], configuration: PermissionConfiguration = .strict) {
         self.rules = rules
@@ -49,6 +56,9 @@ public actor PermissionEngine {
         if matching.contains(where: { $0.decision == .deny }) || resourceMatching.contains(where: { $0.decision == .deny }) { decision = .deny }
         else { decision = resourceMatching.last?.decision ?? matching.first?.decision ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask) }
         guard decision == .ask else { return PermissionResolution(decision: decision, asked: false) }
+        if let restored = restoredReplies.removeValue(forKey: request.toolCallID) {
+            return PermissionResolution(decision: restored, asked: true)
+        }
 
         let resolved = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -56,7 +66,7 @@ public actor PermissionEngine {
                     continuation.resume(returning: PermissionDecision.deny)
                     return
                 }
-                pending[request.permissionID] = continuation
+                pending[request.permissionID] = Pending(request: request, continuation: continuation, onReply: nil)
                 Task { await onAsk() }
             }
         } onCancel: {
@@ -65,14 +75,26 @@ public actor PermissionEngine {
         return PermissionResolution(decision: resolved, asked: true)
     }
 
-    public func reply(_ reply: PermissionReply) throws {
+    /// Re-register a durable ask after restart. Its reply resumes the owning scheduler, not a lost continuation.
+    public func register(_ request: PermissionRequest, onAsk: @escaping @Sendable () async -> Void, onReply: @escaping @Sendable (PermissionReply) async -> Void) {
+        guard pending[request.permissionID] == nil else { return }
+        pending[request.permissionID] = Pending(request: request, continuation: nil, onReply: onReply)
+        Task { await onAsk() }
+    }
+
+    public func reply(_ reply: PermissionReply) async throws {
         guard reply.decision != .ask else {
             throw CoreError(code: .permissionCancelled, message: "权限答复不能为 ask")
         }
-        guard let continuation = pending.removeValue(forKey: reply.permissionID) else {
+        guard let waiting = pending.removeValue(forKey: reply.permissionID) else {
             throw CoreError(code: .permissionCancelled, message: "权限请求已失效: \(reply.permissionID.rawValue)")
         }
-        continuation.resume(returning: reply.decision)
+        restoredReplies[waiting.request.toolCallID] = reply.decision
+        if let continuation = waiting.continuation {
+            continuation.resume(returning: reply.decision)
+        } else {
+            await waiting.onReply?(reply)
+        }
     }
 
     public func currentConfiguration() -> PermissionConfiguration { configuration }
@@ -85,7 +107,7 @@ public actor PermissionEngine {
     public func setResourceRules(_ rules: [PermissionResourceRule]) { resourceRules = rules }
 
     private func cancel(_ permissionID: PermissionID) {
-        pending.removeValue(forKey: permissionID)?.resume(returning: .deny)
+        pending.removeValue(forKey: permissionID)?.continuation?.resume(returning: .deny)
     }
 
     private static func matches(_ pattern: String, _ value: String) -> Bool {

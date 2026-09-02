@@ -4,7 +4,8 @@ import LingXiProtocol
 public actor QuestionRuntime {
     private struct Pending {
         let request: QuestionRequest
-        let continuation: CheckedContinuation<QuestionReply, Error>
+        let continuation: CheckedContinuation<QuestionReply, Error>?
+        let onReply: (@Sendable (QuestionRequest, QuestionReply) async -> Void)?
     }
 
     public let interactive: Bool
@@ -29,41 +30,53 @@ public actor QuestionRuntime {
         let contextual = if let context = AgentExecutionContext.current {
             QuestionRequest(questionID: request.questionID, question: request.question, options: request.options, allowsMultiple: request.allowsMultiple, allowsFreeText: request.allowsFreeText, originSessionID: context.sessionID, originRunID: context.runID, rootSessionID: context.rootSessionID, parentSessionID: context.parentSessionID)
         } else { request }
+        let observer = ToolExecutionContext.observer
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard !Task.isCancelled else {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                pending[contextual.questionID] = Pending(request: contextual, continuation: continuation)
-                Task { await onQuestionAsked?(contextual) }
+                pending[contextual.questionID] = Pending(request: contextual, continuation: continuation, onReply: observer?.questionResolved)
+                Task {
+                    await observer?.questionAsked(contextual)
+                    await onQuestionAsked?(contextual)
+                }
             }
         } onCancel: {
             Task { await self.cancel(contextual.questionID) }
         }
     }
 
-    public func reply(_ reply: QuestionReply) throws {
+    /// Re-register a durable question after restart. Its reply resumes the owning scheduler, not a lost continuation.
+    public func register(_ request: QuestionRequest, onReply: @escaping @Sendable (QuestionRequest, QuestionReply) async -> Void) {
+        guard pending[request.questionID] == nil else { return }
+        pending[request.questionID] = Pending(request: request, continuation: nil, onReply: onReply)
+        Task { await onQuestionAsked?(request) }
+    }
+
+    public func reply(_ reply: QuestionReply) async throws {
         guard let waiting = pending[reply.questionID] else {
             throw CoreError(code: .questionUnavailable, message: "问题不存在或已结束: \(reply.questionID.rawValue)")
         }
         try validate(reply, for: waiting.request)
         pending.removeValue(forKey: reply.questionID)
-        waiting.continuation.resume(returning: reply)
+        await waiting.onReply?(waiting.request, reply)
+        waiting.continuation?.resume(returning: reply)
     }
 
     public func request(_ questionID: QuestionID) -> QuestionRequest? { pending[questionID]?.request }
 
     public func close() {
         for waiting in pending.values {
-            waiting.continuation.resume(throwing: CoreError(code: .questionUnavailable, message: "Core 已关闭"))
+            waiting.continuation?.resume(throwing: CoreError(code: .questionUnavailable, message: "Core 已关闭"))
         }
         pending.removeAll()
     }
 
     private func cancel(_ questionID: QuestionID) {
         guard let waiting = pending.removeValue(forKey: questionID) else { return }
-        waiting.continuation.resume(throwing: CancellationError())
+        waiting.continuation?.resume(throwing: CancellationError())
     }
 
     private func validate(_ reply: QuestionReply, for request: QuestionRequest) throws {

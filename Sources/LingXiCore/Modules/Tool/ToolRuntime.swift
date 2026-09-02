@@ -20,6 +20,26 @@ public protocol ToolProvider: Sendable {
     func register(into registry: inout ToolRegistry) throws
 }
 
+public struct ToolExecutionObserver: Sendable {
+    public let permissionAsked: @Sendable (PermissionRequest) async -> Void
+    public let permissionResolved: @Sendable (PermissionRequest, PermissionReply) async -> Void
+    public let executionClaimed: @Sendable (ToolExecutionClaim) async -> Void
+    public let questionAsked: @Sendable (QuestionRequest) async -> Void
+    public let questionResolved: @Sendable (QuestionRequest, QuestionReply) async -> Void
+
+    public init(permissionAsked: @escaping @Sendable (PermissionRequest) async -> Void, permissionResolved: @escaping @Sendable (PermissionRequest, PermissionReply) async -> Void, executionClaimed: @escaping @Sendable (ToolExecutionClaim) async -> Void, questionAsked: @escaping @Sendable (QuestionRequest) async -> Void, questionResolved: @escaping @Sendable (QuestionRequest, QuestionReply) async -> Void) {
+        self.permissionAsked = permissionAsked
+        self.permissionResolved = permissionResolved
+        self.executionClaimed = executionClaimed
+        self.questionAsked = questionAsked
+        self.questionResolved = questionResolved
+    }
+}
+
+enum ToolExecutionContext {
+    @TaskLocal static var observer: ToolExecutionObserver?
+}
+
 public struct BuiltInToolProvider: ToolProvider {
     public let tools: [any ToolExecutor]
     public init(tools: [any ToolExecutor]) { self.tools = tools }
@@ -154,12 +174,13 @@ public struct ToolRuntime: Sendable {
         projectID: ProjectID = ProjectID("ephemeral"),
         executionProfile: SubagentExecutionProfile? = nil,
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void,
+        observer: ToolExecutionObserver? = nil,
         parentDeadline: ExecutionDeadline? = nil
     ) async -> ExecutionOutcome {
         let deadline = deadlinePolicy.deadline(for: category(for: call), requested: executionProfile?.timeoutSeconds.map { .seconds($0) }, parent: parentDeadline)
         do {
             let outcome = try await ExecutionWatchdog.run(deadline) {
-                try await self.executeWithMetricsUnbounded(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, onPermissionAsked: onPermissionAsked)
+                try await self.executeWithMetricsUnbounded(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, onPermissionAsked: onPermissionAsked, observer: observer)
             }
             return outcome
         } catch let error as CoreError {
@@ -181,7 +202,8 @@ public struct ToolRuntime: Sendable {
         sessionID: SessionID,
         projectID: ProjectID,
         executionProfile: SubagentExecutionProfile?,
-        onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void
+        onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void,
+        observer: ToolExecutionObserver?
     ) async throws -> ExecutionOutcome {
         let clock = ContinuousClock()
         var permissionWait: Duration = .zero
@@ -206,13 +228,21 @@ public struct ToolRuntime: Sendable {
                     description: "允许创建或控制 Child Agent"
                 )
                 let permissionStart = clock.now
-                let resolution = await permissions.resolve(request) { await onPermissionAsked(request) }
+                let resolution = await permissions.resolve(request) {
+                    await observer?.permissionAsked(request)
+                    await onPermissionAsked(request)
+                }
                 permissionWait = permissionStart.duration(to: clock.now)
                 permissionAsked = resolution.asked
+                try Task.checkCancellation()
+                await observer?.permissionResolved(request, PermissionReply(permissionID: request.permissionID, decision: resolution.decision))
                 guard resolution.decision == .allow else { throw CoreError(code: .permissionDenied, message: "已拒绝 subagent") }
                 try Task.checkCancellation()
                 let executionStart = clock.now
-                let content = try await subagents.execute(arguments: call.arguments, sessionID: sessionID, callID: call.callID)
+                await observer?.executionClaimed(ToolExecutionClaim(mutatesProject: true))
+                let content = try await ToolExecutionContext.$observer.withValue(observer) {
+                    try await subagents.execute(arguments: call.arguments, sessionID: sessionID, callID: call.callID)
+                }
                 execution = executionStart.duration(to: clock.now)
                 return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: permissionWait, permissionAsked: permissionAsked, execution: execution, toolName: call.toolID.rawValue, resource: request.resource)
             }
@@ -225,7 +255,7 @@ public struct ToolRuntime: Sendable {
                 return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
             }
             if registry.tool(for: call.toolID) == nil, let mcpPager {
-                return await executeMCP(call, sessionID: sessionID, projectID: projectID, profile: effectiveProfile, pager: mcpPager, onPermissionAsked: onPermissionAsked)
+                return await executeMCP(call, sessionID: sessionID, projectID: projectID, profile: effectiveProfile, pager: mcpPager, onPermissionAsked: onPermissionAsked, observer: observer)
             }
             guard let tool = registry.tool(for: call.toolID) else {
                 throw CoreError(code: .toolNotFound, message: "未注册 Tool: \(call.toolID.rawValue)")
@@ -256,26 +286,37 @@ public struct ToolRuntime: Sendable {
                     description: "允许 \(call.toolID.rawValue) 访问 Workspace 外目录"
                 )
                 let externalResolution = await permissions.resolve(externalRequest, action: .externalDirectory) {
+                    await observer?.permissionAsked(externalRequest)
                     await onPermissionAsked(externalRequest)
                 }
                 permissionAsked = permissionAsked || externalResolution.asked
+                try Task.checkCancellation()
+                await observer?.permissionResolved(externalRequest, PermissionReply(permissionID: externalRequest.permissionID, decision: externalResolution.decision))
                 guard externalResolution.decision == .allow else {
                     throw CoreError(code: .permissionDenied, message: "已拒绝 Workspace 外目录: \(resource)")
                 }
             }
             let permissionStart = clock.now
             let resolution = await permissions.resolve(request, action: Self.permissionAction(for: tool.definition.id)) {
+                await observer?.permissionAsked(request)
                 await onPermissionAsked(request)
             }
             permissionWait = permissionStart.duration(to: clock.now)
             permissionAsked = resolution.asked
+            try Task.checkCancellation()
+            await observer?.permissionResolved(request, PermissionReply(permissionID: request.permissionID, decision: resolution.decision))
             guard resolution.decision == .allow else {
                 throw CoreError(code: .permissionDenied, message: "已拒绝 \(call.toolID.rawValue): \(resource)")
             }
             try Task.checkCancellation()
             let executionStart = clock.now
-            let mutates = capabilities.contains(.projectWrite) || capabilities.contains(.repositoryWrite)
-            let operation: @Sendable () async throws -> String = { try await tool.execute(arguments: call.arguments, profile: effectiveProfile) }
+            let mutates = !ToolCapability(capabilities).readOnly
+            await observer?.executionClaimed(ToolExecutionClaim(mutatesProject: mutates))
+            let operation: @Sendable () async throws -> String = {
+                try await ToolExecutionContext.$observer.withValue(observer) {
+                    try await tool.execute(arguments: call.arguments, profile: effectiveProfile)
+                }
+            }
             let rawContent = mutates ? try await mutations.execute(operation) : try await operation()
             if !rawContent.isEmpty {
                 await outputSink?(ToolOutputChunk(toolCallID: call.callID, stream: .stdout, sequence: 0, payload: rawContent))
@@ -346,17 +387,23 @@ public struct ToolRuntime: Sendable {
     public func finishMCPProviderStep(sessionID: SessionID) async { await mcpPager?.finishProviderStep(sessionID: sessionID) }
     public func abortMCPTurn(sessionID: SessionID) async { await mcpPager?.abortTurn(sessionID: sessionID) }
 
-    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, profile: ExecutionProfile, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void) async -> ExecutionOutcome {
+    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, profile: ExecutionProfile, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void, observer: ToolExecutionObserver?) async -> ExecutionOutcome {
         let clock = ContinuousClock()
         do {
             let lease = try await pager.resolve(sessionID: sessionID, providerToolID: call.toolID)
             let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, toolCallID: call.callID, toolID: lease.toolID, capabilities: [.externalService, .networkAccess, .destructive], resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
             guard profile != .readOnly || ToolCapability(request.capabilities).readOnly else { throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 MCP Tool") }
             let permissionStarted = clock.now
-            let resolution = await permissions.resolve(request) { await onPermissionAsked(request) }
+            let resolution = await permissions.resolve(request) {
+                await observer?.permissionAsked(request)
+                await onPermissionAsked(request)
+            }
             let permissionWait = permissionStarted.duration(to: clock.now)
+            try Task.checkCancellation()
+            await observer?.permissionResolved(request, PermissionReply(permissionID: request.permissionID, decision: resolution.decision))
             guard resolution.decision == .allow else { throw CoreError(code: .permissionDenied, message: "已拒绝 \(lease.toolID.rawValue)") }
             let executionStarted = clock.now
+            await observer?.executionClaimed(ToolExecutionClaim(mutatesProject: true))
             let response = try await pager.execute(sessionID: sessionID, projectID: projectID, providerToolID: call.toolID, arguments: call.arguments)
             if !response.content.isEmpty { await outputSink?(ToolOutputChunk(toolCallID: call.callID, stream: .stdout, sequence: 0, payload: response.content)) }
             let bounded = outputPolicy.excerpt(response.content)

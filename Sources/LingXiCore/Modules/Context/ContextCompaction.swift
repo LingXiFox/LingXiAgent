@@ -100,6 +100,78 @@ public enum ToolExchangeBatchState: String, Sendable, Equatable, Codable {
     /// 崩溃时 pending batch 从不自动重放，必须由上层显式恢复。
     case recoveryRequired
 }
+
+public enum DurableToolCallState: String, Sendable, Equatable, Codable {
+    case requested
+    case waitingForHuman
+    case executing
+    case completed
+    case recoveryRequired
+}
+
+public struct ToolCallProvenance: Sendable, Equatable, Codable {
+    public let batchID: String
+    public let sessionID: SessionID
+    public let agentRunID: AgentRunID?
+    public let providerRequestID: ModelRequestID?
+    public let providerStep: Int
+
+    public init(batchID: String, sessionID: SessionID, agentRunID: AgentRunID?, providerRequestID: ModelRequestID?, providerStep: Int) {
+        self.batchID = batchID
+        self.sessionID = sessionID
+        self.agentRunID = agentRunID
+        self.providerRequestID = providerRequestID
+        self.providerStep = providerStep
+    }
+}
+
+public struct ToolExecutionClaim: Sendable, Equatable, Codable {
+    public let claimID: String
+    public let mutatesProject: Bool
+    public let claimedAt: Date
+
+    public init(claimID: String = UUID().uuidString, mutatesProject: Bool, claimedAt: Date = .now) {
+        self.claimID = claimID
+        self.mutatesProject = mutatesProject
+        self.claimedAt = claimedAt
+    }
+}
+
+public enum ToolCallHumanRequest: Sendable, Equatable, Codable {
+    case permission(PermissionRequest)
+    case question(QuestionRequest)
+}
+
+public enum ToolCallHumanReply: Sendable, Equatable, Codable {
+    case permission(PermissionReply)
+    case question(QuestionReply)
+}
+
+/// One durable state machine per provider ToolCall. A completed result is authoritative after restart.
+public struct DurableToolCall: Sendable, Equatable, Codable {
+    public let call: ToolCall
+    public let state: DurableToolCallState
+    public let request: ToolCallHumanRequest?
+    public let reply: ToolCallHumanReply?
+    public let executionClaim: ToolExecutionClaim?
+    public let provenance: ToolCallProvenance
+    public let result: ToolResult?
+
+    public init(call: ToolCall, state: DurableToolCallState = .requested, request: ToolCallHumanRequest? = nil, reply: ToolCallHumanReply? = nil, executionClaim: ToolExecutionClaim? = nil, provenance: ToolCallProvenance, result: ToolResult? = nil) {
+        self.call = call
+        self.state = state
+        self.request = request
+        self.reply = reply
+        self.executionClaim = executionClaim
+        self.provenance = provenance
+        self.result = result
+    }
+
+    public func with(state: DurableToolCallState? = nil, request: ToolCallHumanRequest? = nil, reply: ToolCallHumanReply? = nil, replaceHumanExchange: Bool = false, executionClaim: ToolExecutionClaim? = nil, result: ToolResult? = nil) -> DurableToolCall {
+        DurableToolCall(call: call, state: state ?? self.state, request: replaceHumanExchange ? request : request ?? self.request, reply: replaceHumanExchange ? reply : reply ?? self.reply, executionClaim: executionClaim ?? self.executionClaim, provenance: provenance, result: result ?? self.result)
+    }
+}
+
 public struct ToolExchangeBatch: Sendable, Equatable {
     public let batchID: String
     public let sessionID: SessionID
@@ -107,27 +179,29 @@ public struct ToolExchangeBatch: Sendable, Equatable {
     public let resultMessageID: MessageID?
     public let toolCalls: [ToolCall]
     public let toolResults: [ToolResult]
+    public let toolCallStates: [DurableToolCall]
     public let continuationRequestID: ModelRequestID?
     public let providerStep: Int
     public let state: ToolExchangeBatchState
     public let estimatedTokens: Int
     public var isComplete: Bool { Set(toolCalls.map(\.callID)) == Set(toolResults.map(\.callID)) && toolCalls.count == toolResults.count }
 
-    public init(batchID: String, sessionID: SessionID, assistantMessageID: MessageID, resultMessageID: MessageID? = nil, toolCalls: [ToolCall], toolResults: [ToolResult] = [], continuationRequestID: ModelRequestID? = nil, providerStep: Int, state: ToolExchangeBatchState, estimatedTokens: Int) {
+    public init(batchID: String, sessionID: SessionID, assistantMessageID: MessageID, resultMessageID: MessageID? = nil, toolCalls: [ToolCall], toolResults: [ToolResult] = [], toolCallStates: [DurableToolCall]? = nil, continuationRequestID: ModelRequestID? = nil, providerStep: Int, state: ToolExchangeBatchState, estimatedTokens: Int) {
         self.batchID = batchID
         self.sessionID = sessionID
         self.assistantMessageID = assistantMessageID
         self.resultMessageID = resultMessageID
         self.toolCalls = toolCalls
         self.toolResults = toolResults
+        self.toolCallStates = toolCallStates ?? toolCalls.map { DurableToolCall(call: $0, provenance: ToolCallProvenance(batchID: batchID, sessionID: sessionID, agentRunID: nil, providerRequestID: continuationRequestID, providerStep: providerStep)) }
         self.continuationRequestID = continuationRequestID
         self.providerStep = providerStep
         self.state = state
         self.estimatedTokens = estimatedTokens
     }
 
-    public func with(state: ToolExchangeBatchState, resultMessageID: MessageID? = nil, toolResults: [ToolResult]? = nil, estimatedTokens: Int? = nil) -> ToolExchangeBatch {
-        ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessageID, resultMessageID: resultMessageID ?? self.resultMessageID, toolCalls: toolCalls, toolResults: toolResults ?? self.toolResults, continuationRequestID: continuationRequestID, providerStep: providerStep, state: state, estimatedTokens: estimatedTokens ?? self.estimatedTokens)
+    public func with(state: ToolExchangeBatchState, resultMessageID: MessageID? = nil, toolResults: [ToolResult]? = nil, toolCallStates: [DurableToolCall]? = nil, estimatedTokens: Int? = nil) -> ToolExchangeBatch {
+        ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessageID, resultMessageID: resultMessageID ?? self.resultMessageID, toolCalls: toolCalls, toolResults: toolResults ?? self.toolResults, toolCallStates: toolCallStates ?? self.toolCallStates, continuationRequestID: continuationRequestID, providerStep: providerStep, state: state, estimatedTokens: estimatedTokens ?? self.estimatedTokens)
     }
 }
 

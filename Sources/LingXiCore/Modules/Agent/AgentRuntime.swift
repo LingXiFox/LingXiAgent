@@ -12,6 +12,8 @@ public actor AgentRuntime {
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
     private let toolRuntime: ToolRuntime
+    private let questions: QuestionRuntime
+    private let permissions: PermissionEngine
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
@@ -27,11 +29,14 @@ public actor AgentRuntime {
     private let limits: SubagentRuntimeLimits
     private let behaviorProfile: AgentBehaviorProfile
     private let deadlinePolicy: ExecutionDeadlinePolicy
+    private let restoreScheduler: SessionRestoreScheduler?
     private var runs: [AgentRunID: AgentRunInfo] = [:]
     private var results: [AgentRunID: SubagentResult] = [:]
     private var executionProfiles: [AgentRunID: SubagentExecutionProfile] = [:]
     private var activeSessions: Set<SessionID> = []
     private var runDeadlines: [AgentRunID: ExecutionDeadline] = [:]
+    private var resultWaiters: [AgentRunID: [CheckedContinuation<SubagentResult, Error>]] = [:]
+    private var shuttingDown = false
 
     init(
         store: any SessionStore,
@@ -39,6 +44,8 @@ public actor AgentRuntime {
         modelBus: ModelBus,
         dataPlane: DataPlane,
         toolRuntime: ToolRuntime,
+        questions: QuestionRuntime,
+        permissions: PermissionEngine,
         performanceStore: PerformanceStore,
         contextPager: ContextPager,
         projectScanner: ProjectScanner,
@@ -52,13 +59,16 @@ public actor AgentRuntime {
         limits: SubagentRuntimeLimits = SubagentRuntimeLimits(),
         scheduler: AgentRunScheduler? = nil,
         behaviorProfile: AgentBehaviorProfile = .build,
-        deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()
+        deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
+        restoreScheduler: SessionRestoreScheduler? = nil
     ) {
         self.store = store
         self.contextEngine = contextEngine
         self.modelBus = modelBus
         self.dataPlane = dataPlane
         self.toolRuntime = toolRuntime
+        self.questions = questions
+        self.permissions = permissions
         self.performanceStore = performanceStore
         self.contextPager = contextPager
         self.projectScanner = projectScanner
@@ -73,6 +83,7 @@ public actor AgentRuntime {
         self.scheduler = scheduler ?? AgentRunScheduler(limits: limits)
         self.behaviorProfile = behaviorProfile
         self.deadlinePolicy = deadlinePolicy
+        self.restoreScheduler = restoreScheduler
     }
 
     // MARK: - Session 生命周期
@@ -85,21 +96,37 @@ public actor AgentRuntime {
     }
 
     public func restore() async throws {
+        guard !shuttingDown else { return }
         try await compactor.restoreDerived()
+        guard !shuttingDown else { return }
         guard let persistence else { return }
-        for persisted in try await persistence.loadAgentRuns() {
+        let persistedRuns = try await persistence.loadAgentRuns()
+        for persisted in persistedRuns {
             var run = persisted
             if !run.status.isTerminal {
-                run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: .recoveryRequired, modelSelection: run.modelSelection, startedAt: run.startedAt, finishedAt: .now, latestActivityAt: .now, error: CoreError(code: .toolCancelled, message: "Core 重启，运行需要恢复"), usage: run.usage, title: run.title)
-                try await persistence.saveAgentRun(run)
+                let calls = try await persistence.toolBatches(sessionID: run.sessionID).flatMap(\.toolCallStates).filter { $0.provenance.agentRunID == run.runID }
+                if !calls.isEmpty {
+                    let waiting = calls.contains { $0.state == .waitingForHuman || ($0.request != nil && $0.reply == nil) }
+                    run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: waiting ? .waitingForUser : .waitingForTool, modelSelection: run.modelSelection, startedAt: run.startedAt, latestActivityAt: .now, usage: run.usage, title: run.title)
+                    activeSessions.insert(run.sessionID)
+                    try await persistence.saveAgentRun(run)
+                } else {
+                    run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: .recoveryRequired, modelSelection: run.modelSelection, startedAt: run.startedAt, finishedAt: .now, latestActivityAt: .now, error: CoreError(code: .toolCancelled, message: "Core 重启，运行需要恢复"), usage: run.usage, title: run.title)
+                    try await persistence.saveAgentRun(run)
+                }
             }
             runs[run.runID] = run
             if let profile = try await persistence.agentRunProfile(run.runID) { executionProfiles[run.runID] = profile }
             if let result = try await persistence.agentRunResult(run.runID) { results[run.runID] = result }
         }
+        for run in runs.values where !run.status.isTerminal {
+            guard !shuttingDown else { return }
+            _ = try await runtime(for: run.sessionID, run: run)
+        }
     }
 
     public func shutdown() async {
+        shuttingDown = true
         for runtime in runtimes.values { await runtime.shutdown() }
     }
 
@@ -135,6 +162,31 @@ public actor AgentRuntime {
         let run = try agentRun(runID)
         try requireSameTree(run, requester: requester)
         return try agentRunResult(runID)
+    }
+
+    public func waitForAgentRunResult(_ runID: AgentRunID) async throws -> SubagentResult {
+        if let result = results[runID] { return result }
+        _ = try agentRun(runID)
+        return try await withCheckedThrowingContinuation { continuation in
+            resultWaiters[runID, default: []].append(continuation)
+        }
+    }
+
+    /// Workflows share spawn, deadline, model/profile resolution, and the canonical child Run scheduler.
+    public func makeWorkflowRuntime() -> WorkflowRuntime {
+        WorkflowRuntime(persistence: persistence) { [weak self] _, task, parent, started in
+            guard let self else { return WorkflowTaskCompletion(error: CoreError(code: .notReady, message: "Agent 未就绪")) }
+            do {
+                let rendered = [task.role.map { "Role: \($0)" }, task.instructions.map { "Instructions: \($0)" }, task.context.map { "Context: \($0)" }, task.task].compactMap { $0 }.joined(separator: "\n\n")
+                let (childSessionID, run) = try await self.spawn(parentSessionID: parent.parentSessionID, parentRunID: parent.parentRunID, task: rendered, title: task.title, modelSelection: task.modelSelection, profile: task.executionProfile)
+                await started(WorkflowTaskProvenance(parentSessionID: parent.parentSessionID, parentRunID: parent.parentRunID, childSessionID: childSessionID, childRunID: run.runID))
+                return WorkflowTaskCompletion(result: try await self.waitForAgentRunResult(run.runID))
+            } catch let error as CoreError {
+                return WorkflowTaskCompletion(error: error)
+            } catch {
+                return WorkflowTaskCompletion(error: CoreError(code: .provider, message: String(describing: error)))
+            }
+        }
     }
 
     public func agentTree(_ rootSessionID: SessionID) async throws -> AgentTreeNode {
@@ -360,6 +412,8 @@ public actor AgentRuntime {
             dataPlane: dataPlane,
             contextEngine: contextEngine,
             toolRuntime: toolRuntime,
+            questions: questions,
+            permissions: permissions,
             performanceStore: performanceStore,
             contextPager: contextPager,
             projectScanner: projectScanner,
@@ -377,25 +431,27 @@ public actor AgentRuntime {
                 guard let run else { return }
                 await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error)
             },
-            deadlinePolicy: deadlinePolicy
+            deadlinePolicy: deadlinePolicy,
+            restoreScheduler: restoreScheduler
         )
     }
 
     private func runtime(for sessionID: SessionID, run: AgentRunInfo? = nil) async throws -> SessionRuntime {
+        guard !shuttingDown else { throw CoreError(code: .notReady, message: "Agent 已关闭") }
         if let run {
             let resolved = try await modelResolver.resolve(run.modelSelection, subagent: run.agentKind == .subagent)
             let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning, deadlinePolicy: deadlinePolicy))
             let session = try await store.session(sessionID)
             let runtime = makeRuntime(for: sessionID, run: run, modelBus: bus, rootSessionID: session.rootSessionID)
-            try await runtime.restore()
             runtimes[sessionID] = runtime
+            try await runtime.restore()
             return runtime
         }
         if let runtime = runtimes[sessionID] { return runtime }
         _ = try await store.session(sessionID)
         let runtime = makeRuntime(for: sessionID)
-        try await runtime.restore()
         runtimes[sessionID] = runtime
+        try await runtime.restore()
         return runtime
     }
 
@@ -457,6 +513,7 @@ public actor AgentRuntime {
             activeSessions.remove(failed.sessionID)
             let failedResult = SubagentResult(childSessionID: failed.sessionID, runID: runID, status: .failed, usage: usage, error: persistenceError)
             results[runID] = failedResult
+            resumeWaiters(for: runID, result: failedResult)
             await scheduler.complete(runID)
             await eventSink(.agentRunFailed(failed))
             await eventSink(.subagentResultAvailable(failedResult))
@@ -468,6 +525,7 @@ public actor AgentRuntime {
         if status.isTerminal { runDeadlines.removeValue(forKey: runID) }
         if let result {
             results[runID] = result
+            resumeWaiters(for: runID, result: result)
             await scheduler.complete(runID)
             await eventSink(status == .completed ? .agentRunCompleted(run) : status == .cancelled ? .agentRunCancelled(run) : .agentRunFailed(run))
             await eventSink(.subagentResultAvailable(result))
@@ -492,6 +550,10 @@ public actor AgentRuntime {
         guard let requesterRun = runs[requester], requesterRun.rootRunID == target.rootRunID else {
             throw CoreError(code: .permissionDenied, message: "AgentRun 不属于当前 Agent 树")
         }
+    }
+
+    private func resumeWaiters(for runID: AgentRunID, result: SubagentResult) {
+        for waiter in resultWaiters.removeValue(forKey: runID) ?? [] { waiter.resume(returning: result) }
     }
 
     private func updated(_ run: AgentRunInfo, status: AgentRunStatus) -> AgentRunInfo {

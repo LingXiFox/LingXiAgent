@@ -486,8 +486,19 @@ struct SubagentRuntimeTests {
         let rootSession = try await secondClient.session(primary)
         #expect(rootSession.messages.allSatisfy { !$0.content.contains("Continue child?") })
 
-        let childRuns = try await secondClient.listAgentRuns(try #require(req.originSessionID))
-        #expect(childRuns.first?.status == .recoveryRequired)
+        let childSessionID = try #require(req.originSessionID)
+        let childRuns = try await secondClient.listAgentRuns(childSessionID)
+        #expect(childRuns.first?.status == .waitingForUser)
+        #expect(childRuns.first?.runID == childRunID)
+        try await secondClient.replyQuestion(QuestionReply(questionID: req.questionID, selectedOptionIndices: [0]))
+        let resumedDeadline = Date().addingTimeInterval(2)
+        var resumed = try await secondClient.getAgentRun(childRunID)
+        while resumed.status != .completed, Date() < resumedDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            resumed = try await secondClient.getAgentRun(childRunID)
+        }
+        #expect(resumed.sessionID == childSessionID)
+        #expect(resumed.status == .completed)
     }
 
     @Test func contextProfileOmittedInheritsEndpointAndPasses() async throws {
