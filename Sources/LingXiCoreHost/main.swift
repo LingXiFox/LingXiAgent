@@ -15,7 +15,8 @@ let providers = try await RuntimeConfigurationResolver.resolveProviders(
     credentials: credentials,
     provenanceDirectory: dataRoot.appendingPathComponent("provider-provenance", isDirectory: true),
     diagnosticsEnabled: environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1",
-    performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1"
+    performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1",
+    environment: environment
 )
 let mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true))
 let host = try CoreHost(

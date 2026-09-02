@@ -44,7 +44,7 @@ public enum AgentRunStatus: String, Sendable, Equatable, Codable {
 
     public var isTerminal: Bool {
         switch self {
-        case .completed, .failed, .cancelled, .timedOut, .recoveryRequired: true
+        case .completed, .failed, .cancelled, .timedOut: true
         default: false
         }
     }

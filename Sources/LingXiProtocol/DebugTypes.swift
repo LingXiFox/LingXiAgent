@@ -1,3 +1,115 @@
+import Foundation
+
+public enum RuntimeTraceKind: String, Sendable, Equatable, Codable {
+    case core
+    case session
+    case agentRun
+    case workflow
+    case provider
+    case tool
+    case mcp
+    case subagent
+    case hitl
+    case watchdog
+    case recovery
+    case cancellation
+    case error
+}
+
+public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
+    public let traceID: String
+    public let timestamp: Date
+    public let kind: RuntimeTraceKind
+    public let event: String
+    public let sessionID: SessionID?
+    public let runID: AgentRunID?
+    public let rootRunID: AgentRunID?
+    public let parentRunID: AgentRunID?
+    public let workflowID: WorkflowID?
+    public let taskID: WorkflowTaskID?
+    public let executionID: String?
+    public let providerRequestID: String?
+    public let toolCallID: ToolCallID?
+    public let metadata: [String: String]
+    public let errorCode: String?
+
+    public init(traceID: String = UUID().uuidString, timestamp: Date = .now, kind: RuntimeTraceKind, event: String, sessionID: SessionID? = nil, runID: AgentRunID? = nil, rootRunID: AgentRunID? = nil, parentRunID: AgentRunID? = nil, workflowID: WorkflowID? = nil, taskID: WorkflowTaskID? = nil, executionID: String? = nil, providerRequestID: String? = nil, toolCallID: ToolCallID? = nil, metadata: [String: String] = [:], errorCode: String? = nil) {
+        self.traceID = traceID
+        self.timestamp = timestamp
+        self.kind = kind
+        self.event = event
+        self.sessionID = sessionID
+        self.runID = runID
+        self.rootRunID = rootRunID
+        self.parentRunID = parentRunID
+        self.workflowID = workflowID
+        self.taskID = taskID
+        self.executionID = executionID
+        self.providerRequestID = providerRequestID
+        self.toolCallID = toolCallID
+        self.metadata = metadata
+        self.errorCode = errorCode
+    }
+}
+
+public struct RuntimeDiagnosticProviderStatus: Sendable, Equatable, Codable {
+    public let configured: Bool
+    public let model: String?
+    public let missingRequirements: [String]
+
+    public init(configured: Bool, model: String?, missingRequirements: [String]) {
+        self.configured = configured
+        self.model = model
+        self.missingRequirements = missingRequirements
+    }
+}
+
+public struct RuntimeDiagnosticMCPStatus: Sendable, Equatable, Codable {
+    public let catalogTools: Int
+    public let schemaFiles: Int
+    public let schemaBytes: Int
+    public let pageFaults: Int
+    public let activeLeases: Int
+
+    public init(catalogTools: Int, schemaFiles: Int, schemaBytes: Int, pageFaults: Int, activeLeases: Int) {
+        self.catalogTools = catalogTools
+        self.schemaFiles = schemaFiles
+        self.schemaBytes = schemaBytes
+        self.pageFaults = pageFaults
+        self.activeLeases = activeLeases
+    }
+}
+
+public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
+    public let generatedAt: Date
+    public let runtimeVersion: String
+    public let protocolVersion: String
+    public let configurationSummary: [String: String]
+    public let trace: [RuntimeTraceEvent]
+    public let recentErrors: [RuntimeTraceEvent]
+    public let provider: RuntimeDiagnosticProviderStatus
+    public let mcp: RuntimeDiagnosticMCPStatus
+    public let runs: [AgentRunInfo]
+    public let workflows: [WorkflowSnapshot]
+    public let recoveryRequiredRunIDs: [AgentRunID]
+    public let orphanRunIDs: [AgentRunID]
+
+    public init(generatedAt: Date = .now, runtimeVersion: String, protocolVersion: String, configurationSummary: [String: String], trace: [RuntimeTraceEvent], recentErrors: [RuntimeTraceEvent], provider: RuntimeDiagnosticProviderStatus, mcp: RuntimeDiagnosticMCPStatus, runs: [AgentRunInfo], workflows: [WorkflowSnapshot], recoveryRequiredRunIDs: [AgentRunID], orphanRunIDs: [AgentRunID]) {
+        self.generatedAt = generatedAt
+        self.runtimeVersion = runtimeVersion
+        self.protocolVersion = protocolVersion
+        self.configurationSummary = configurationSummary
+        self.trace = trace
+        self.recentErrors = recentErrors
+        self.provider = provider
+        self.mcp = mcp
+        self.runs = runs
+        self.workflows = workflows
+        self.recoveryRequiredRunIDs = recoveryRequiredRunIDs
+        self.orphanRunIDs = orphanRunIDs
+    }
+}
+
 /// 面向 Client 的 L1 摘要，不携带完整上下文内容。
 public enum ContextUnitResidency: String, Sendable, Equatable, Codable {
     case active
@@ -62,6 +174,62 @@ public struct ContextDebugSnapshot: Sendable, Equatable, Codable {
         self.compactionGeneration = compactionGeneration
         self.units = units
         self.materializedDerivedPageIDs = materializedDerivedPageIDs
+    }
+}
+
+public enum ContextLayer: String, Sendable, Equatable, Codable {
+    case l1, l2, l3
+}
+
+public enum ContextLayerState: String, Sendable, Equatable, Codable {
+    case available, empty, paging, compacting, unavailable
+}
+
+public enum ContextPagingActivity: String, Sendable, Equatable, Codable {
+    case idle, paging, compacting
+}
+
+public struct ContextLayerStatus: Sendable, Equatable, Codable {
+    public let layer: ContextLayer
+    public let usage: Int?
+    public let capacity: Int?
+    public let unit: String
+    public let percent: Int?
+    public let state: ContextLayerState
+    public let residentPages: Int?
+    public let totalPages: Int?
+    public let pageInCount: Int
+    public let pageOutCount: Int
+
+    public init(layer: ContextLayer, usage: Int?, capacity: Int?, unit: String, percent: Int?, state: ContextLayerState, residentPages: Int? = nil, totalPages: Int? = nil, pageInCount: Int = 0, pageOutCount: Int = 0) {
+        self.layer = layer
+        self.usage = usage
+        self.capacity = capacity
+        self.unit = unit
+        self.percent = percent
+        self.state = state
+        self.residentPages = residentPages
+        self.totalPages = totalPages
+        self.pageInCount = pageInCount
+        self.pageOutCount = pageOutCount
+    }
+}
+
+public struct ContextCacheProjection: Sendable, Equatable, Codable {
+    public let sessionID: SessionID
+    public let l1: ContextLayerStatus
+    public let l2: ContextLayerStatus
+    public let l3: ContextLayerStatus
+    public let pagingActivity: ContextPagingActivity
+    public let compactionGeneration: Int
+
+    public init(sessionID: SessionID, l1: ContextLayerStatus, l2: ContextLayerStatus, l3: ContextLayerStatus, pagingActivity: ContextPagingActivity = .idle, compactionGeneration: Int = 0) {
+        self.sessionID = sessionID
+        self.l1 = l1
+        self.l2 = l2
+        self.l3 = l3
+        self.pagingActivity = pagingActivity
+        self.compactionGeneration = compactionGeneration
     }
 }
 

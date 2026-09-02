@@ -88,7 +88,7 @@ public actor ConfigurationStore {
         try bootstrap()
         return ConfigurationSnapshot(
             core: try load(.core, as: CoreConfiguration.self),
-            providers: try load(.providers, as: ProvidersConfiguration.self),
+            providers: try loadProviders(),
             mcp: try load(.mcp, as: MCPConfiguration.self),
             plugins: try load(.plugins, as: PluginsConfiguration.self)
         )
@@ -125,6 +125,25 @@ public actor ConfigurationStore {
         return try ConfigurationDecoder.decode(type, from: data)
     }
 
+    private func loadProviders() throws -> ProvidersConfiguration {
+        let url = dataRoot.appendingPathComponent(ConfigurationDocument.providers.filename)
+        let data = try Data(contentsOf: url)
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["accounts"] != nil || object["customProviders"] != nil || object["modelProfiles"] != nil {
+            let legacy = try ConfigurationDecoder.decode(LegacyProvidersConfiguration.self, from: data)
+            return ProvidersConfiguration(
+                schema: legacy.schema,
+                version: legacy.version,
+                customProviders: legacy.customProviders,
+                accounts: legacy.accounts,
+                modelProfiles: legacy.modelProfiles,
+                defaultSelection: legacy.defaultSelection
+            )
+        }
+        try JSONSchemaValidator.validate(documentData: data, schemaData: ConfigurationResources.schemaData(for: .providers))
+        return try ConfigurationDecoder.decode(ProvidersConfiguration.self, from: data)
+    }
+
     private func save<T: Encodable>(_ value: T, as document: ConfigurationDocument) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -137,5 +156,16 @@ public actor ConfigurationStore {
     private func atomicWrite(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: .atomic)
         try permissions.secureFile(at: url)
+    }
+
+    private struct LegacyProvidersConfiguration: Codable {
+        let schema: String
+        let version: Int
+        let customProviders: [CustomProviderConfiguration]
+        let accounts: [ProviderAccountConfiguration]
+        let modelProfiles: [ModelProfileConfiguration]
+        let defaultSelection: StoredModelSelection?
+
+        enum CodingKeys: String, CodingKey { case schema = "$schema", version, customProviders, accounts, modelProfiles, defaultSelection }
     }
 }

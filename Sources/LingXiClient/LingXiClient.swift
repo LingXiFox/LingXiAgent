@@ -53,6 +53,13 @@ public struct LingXiClient: Sendable {
         return status
     }
 
+    public func diagnostics() async throws -> RuntimeDiagnosticsBundle {
+        guard case let .diagnostics(bundle) = try await send(.getDiagnostics) else {
+            throw CoreError(code: .transport, message: "getDiagnostics 收到非预期响应")
+        }
+        return bundle
+    }
+
     public func listProviderProducts() async throws -> [ProviderProductSummary] {
         guard case let .providerProducts(products) = try await send(.listProviderProducts) else { throw CoreError(code: .transport, message: "listProviderProducts 收到非预期响应") }
         return products
@@ -61,6 +68,26 @@ public struct LingXiClient: Sendable {
     public func listProviderAccounts() async throws -> [ProviderAccountInfo] {
         guard case let .providerAccounts(accounts) = try await send(.listProviderAccounts) else { throw CoreError(code: .transport, message: "listProviderAccounts 收到非预期响应") }
         return accounts
+    }
+
+    public func listProviderModels() async throws -> [ProviderModelInfo] {
+        guard case let .providerModels(models) = try await send(.listProviderModels) else { throw CoreError(code: .transport, message: "listProviderModels 收到非预期响应") }
+        return models
+    }
+
+    public func listExtensions(kind: ExtensionKind? = nil) async throws -> [ExtensionInfo] {
+        guard case let .extensions(values) = try await send(.listExtensions(kind: kind)) else { throw CoreError(code: .transport, message: "listExtensions 收到非预期响应") }
+        return values
+    }
+
+    public func workspaceDiff() async throws -> String {
+        guard case let .workspaceDiff(diff) = try await send(.getWorkspaceDiff) else { throw CoreError(code: .transport, message: "getWorkspaceDiff 收到非预期响应") }
+        return diff
+    }
+
+    public func selectProviderModel(_ model: String) async throws -> ProviderStatus {
+        guard case let .providerModelSelected(status) = try await send(.selectProviderModel(model: model)) else { throw CoreError(code: .transport, message: "selectProviderModel 收到非预期响应") }
+        return status
     }
 
     public func storeProviderCredential(_ secret: String) async throws -> CredentialRef {
@@ -123,6 +150,11 @@ public struct LingXiClient: Sendable {
         return snapshot
     }
 
+    public func renameSession(_ id: SessionID, title: String?) async throws -> SessionInfo {
+        guard case let .sessionRenamed(info) = try await send(.renameSession(sessionID: id, title: title)) else { throw CoreError(code: .transport, message: "renameSession 收到非预期响应") }
+        return info
+    }
+
     /// 对当前一次 Permission Request 作出 allow once 或 deny 答复。
     public func replyPermission(_ reply: PermissionReply) async throws {
         guard case .permissionReplyAccepted = try await send(.replyPermission(reply)) else {
@@ -141,6 +173,11 @@ public struct LingXiClient: Sendable {
             throw CoreError(code: .transport, message: "getContext 收到非预期响应")
         }
         return snapshot
+    }
+
+    public func contextProjection(_ sessionID: SessionID) async throws -> ContextCacheProjection? {
+        guard case let .contextProjection(projection) = try await send(.getContextProjection(sessionID: sessionID)) else { throw CoreError(code: .transport, message: "getContextProjection 收到非预期响应") }
+        return projection
     }
 
     public func performance(_ sessionID: SessionID) async throws -> TurnPerformanceReport? {

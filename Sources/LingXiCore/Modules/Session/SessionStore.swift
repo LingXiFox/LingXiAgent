@@ -8,6 +8,7 @@ public protocol SessionStore: Actor, Sendable {
     func create(kind: SessionKind, parentSessionID: SessionID?, rootSessionID: SessionID?, spawnedByRunID: AgentRunID?, spawnedByToolCallID: ToolCallID?, title: String?) async throws -> Session
     func session(_ id: SessionID) async throws -> Session
     func listSessions() async throws -> [Session]
+    func updateTitle(_ id: SessionID, title: String?) async throws -> Session
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message
     @discardableResult
@@ -46,6 +47,13 @@ public actor InMemorySessionStore: SessionStore {
 
     public func listSessions() async throws -> [Session] {
         order.compactMap { sessions[$0] }
+    }
+
+    public func updateTitle(_ id: SessionID, title: String?) async throws -> Session {
+        guard let current = sessions[id] else { throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(id.rawValue)") }
+        let updated = Session(id: current.id, createdAt: current.createdAt, kind: current.kind, parentSessionID: current.parentSessionID, rootSessionID: current.rootSessionID, spawnedByRunID: current.spawnedByRunID, spawnedByToolCallID: current.spawnedByToolCallID, title: title, projectID: current.projectID, cwdRootBindingID: current.cwdRootBindingID, cwdRelativePath: current.cwdRelativePath, updatedAt: current.updatedAt, messages: current.messages)
+        sessions[id] = updated
+        return updated
     }
 
     @discardableResult
@@ -113,6 +121,12 @@ public actor PersistentSessionStore: SessionStore {
     }
 
     public func listSessions() async throws -> [Session] { try await persistence.loadSessions() }
+
+    public func updateTitle(_ id: SessionID, title: String?) async throws -> Session {
+        let current = try await session(id)
+        try await persistence.updateSessionTitle(id, title: title)
+        return Session(id: current.id, createdAt: current.createdAt, kind: current.kind, parentSessionID: current.parentSessionID, rootSessionID: current.rootSessionID, spawnedByRunID: current.spawnedByRunID, spawnedByToolCallID: current.spawnedByToolCallID, title: title, projectID: current.projectID, cwdRootBindingID: current.cwdRootBindingID, cwdRelativePath: current.cwdRelativePath, updatedAt: .now, messages: current.messages)
+    }
 
     @discardableResult
     public func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message {

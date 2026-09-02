@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "run_date": "2026-09-02",
+  "repository_snapshot": "working tree snapshot at evaluation time",
+  "test_oracle": "manifest oracle per task",
+  "agents": {
+    "LingXiAgent": {"status":"NOT RUN","availability":"no LingXiAgent data root or real Provider credential is configured","success_rate":null,"tool_calls":null,"tokens":null,"wall_time_seconds":null,"retries":null,"unrelated_regressions":null,"root_cause_found":null,"verified_change":null},
+    "Codex": {"status":"NOT RUN","availability":"cli authenticated; held back because the same-condition LingXiAgent run is unavailable","success_rate":null},
+    "OpenCode": {"status":"NOT RUN","availability":"cli configured; held back because the same-condition LingXiAgent run is unavailable","success_rate":null},
+    "Claude Code": {"status":"NOT RUN","availability":"unavailable / unauthenticated","success_rate":null}
+  },
+  "reason": "LingXiAgent cannot start a real Provider run in this workspace. Codex and OpenCode were not run alone because doing so would violate the same-condition benchmark requirement. Claude Code is unavailable / unauthenticated. No scores are inferred."
+}

@@ -18,6 +18,9 @@ struct WireCodableTests {
             .replyPermission(PermissionReply(permissionID: PermissionID("p-1"), decision: .allow)),
             .getPermissionConfiguration,
             .setPermissionConfiguration(.agent),
+            .getContextProjection(sessionID: SessionID("s-1")),
+            .listExtensions(kind: .skill),
+            .getWorkspaceDiff,
         ]
         for command in commands {
             let decoded = try roundtrip(.request(id: "7", command: command))
@@ -45,6 +48,16 @@ struct WireCodableTests {
             .sessionCreated(sessionInfo),
             .sessionList([sessionInfo]),
             .sessionDetail(snapshot),
+            .contextProjection(ContextCacheProjection(
+                sessionID: SessionID("s-1"),
+                l1: ContextLayerStatus(layer: .l1, usage: 10, capacity: 100, unit: "tokens", percent: 10, state: .available),
+                l2: ContextLayerStatus(layer: .l2, usage: 20, capacity: 200, unit: "characters", percent: 10, state: .available),
+                l3: ContextLayerStatus(layer: .l3, usage: 1, capacity: 10, unit: "pages", percent: 10, state: .available),
+                pagingActivity: .idle,
+                compactionGeneration: 1
+            )),
+            .extensions([ExtensionInfo(id: "fixture", version: "1.0.0", kind: .skill, scope: "project", enabled: true, lifecycleState: "discovered")]),
+            .workspaceDiff("diff"),
             .permissionReplyAccepted(PermissionID("p-1")),
             .permissionConfiguration(.agent),
             .error(CoreError(code: .turnAlreadyRunning, message: "已有进行中的轮次")),

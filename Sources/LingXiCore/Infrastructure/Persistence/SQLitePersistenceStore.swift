@@ -192,6 +192,10 @@ public actor SQLitePersistenceStore {
         }
     }
 
+    public func updateSessionTitle(_ id: SessionID, title: String?) throws {
+        try Self.execute(state, "UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?", [title ?? NSNull(), Self.date(.now), id.rawValue])
+    }
+
     public func deleteAgentRun(_ id: AgentRunID) throws {
         try Self.transaction(state) {
             try Self.execute(state, "DELETE FROM agent_run_results WHERE run_id = ?", [id.rawValue])

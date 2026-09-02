@@ -35,6 +35,28 @@ struct ConfigurationStoreTests {
         }
     }
 
+    @Test func legacyProviderConfigurationLoadsThroughPublicProjection() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ConfigurationStore(dataRoot: root)
+        _ = try await store.load()
+        let legacy = #"""
+        {
+          "$schema": "https://schemas.example.invalid/lingxiagent/providers.schema.json",
+          "version": 1,
+          "customProviders": [{"id":"legacy","displayName":"Legacy","baseURL":"https://legacy.example.com/v1"}],
+          "accounts": [{"id":"legacy-account","providerID":"legacy","displayName":"Legacy","enabled":true,"authentication":"none","configOverrides":{},"accountType":"apiKey","createdAt":0,"updatedAt":0}],
+          "modelProfiles": [{"id":"legacy-profile","providerID":"legacy","modelID":"legacy-model","displayName":"Legacy Model","wireProtocol":"chatCompletions","contextWindow":32768,"capabilities":{"toolCalling":true,"parallelToolCalling":false,"reasoning":false,"vision":false,"structuredOutput":false},"remoteStateEnabled":false}],
+          "defaultSelection": {"accountID":"legacy-account","profileID":"legacy-profile"}
+        }
+        """#
+        try Data(legacy.utf8).write(to: root.appendingPathComponent("providers.json"), options: .atomic)
+
+        let snapshot = try await store.load()
+        #expect(snapshot.providers.model == "legacy/legacy-model")
+        #expect(snapshot.providers.providers["legacy"]?.models["legacy-model"]?.name == "Legacy Model")
+    }
+
     @Test func strictValidationReportsUnknownTypeAndVersionPaths() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

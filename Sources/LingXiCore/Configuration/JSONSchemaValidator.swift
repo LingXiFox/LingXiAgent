@@ -35,6 +35,9 @@ enum JSONSchemaValidator {
         if let expectedType = schema["type"] as? String, !matches(value, type: expectedType) {
             throw ConfigurationValidationError(path: path, reason: "expected \(expectedType), found \(jsonType(of: value))")
         }
+        if let expectedTypes = schema["type"] as? [String], !expectedTypes.contains(where: { matches(value, type: $0) }) {
+            throw ConfigurationValidationError(path: path, reason: "expected one of \(expectedTypes.joined(separator: ", ")), found \(jsonType(of: value))")
+        }
 
         if let allowed = schema["enum"] as? [Any], !allowed.contains(where: { jsonEqual($0, value) }) {
             throw ConfigurationValidationError(path: path, reason: "value is not in the allowed enum")
@@ -42,6 +45,16 @@ enum JSONSchemaValidator {
 
         if let minimum = schema["minimum"] as? NSNumber, let number = numericValue(value), number < minimum.doubleValue {
             throw ConfigurationValidationError(path: path, reason: "must be at least \(minimum)")
+        }
+
+        if let minimumLength = schema["minLength"] as? NSNumber, let string = value as? String, string.count < minimumLength.intValue {
+            throw ConfigurationValidationError(path: path, reason: "must not be empty")
+        }
+
+        if let pattern = schema["pattern"] as? String, let string = value as? String {
+            guard string.range(of: pattern, options: .regularExpression) != nil else {
+                throw ConfigurationValidationError(path: path, reason: "does not match required format")
+            }
         }
 
         if let object = value as? [String: Any] {
@@ -54,6 +67,9 @@ enum JSONSchemaValidator {
                 for key in object.keys where properties[key] == nil {
                     throw ConfigurationValidationError(path: childPath(path, key), reason: "unknown property")
                 }
+            }
+            if let minimumProperties = schema["minProperties"] as? NSNumber, object.count < minimumProperties.intValue {
+                throw ConfigurationValidationError(path: path, reason: "must contain at least \(minimumProperties.intValue) properties")
             }
             for (key, child) in object {
                 if let childSchema = properties[key] as? [String: Any] {
@@ -75,6 +91,7 @@ enum JSONSchemaValidator {
         case "array": return value is [Any]
         case "string": return value is String
         case "boolean": return isBoolean(value)
+        case "null": return value is NSNull
         case "integer":
             guard let number = numericValue(value) else { return false }
             return number.rounded(.towardZero) == number

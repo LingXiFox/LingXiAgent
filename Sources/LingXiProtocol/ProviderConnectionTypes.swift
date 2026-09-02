@@ -53,6 +53,28 @@ public struct ProviderAccountInfo: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let providerID: String
+    public let modelID: String
+    public let displayName: String
+    public let contextWindow: Int
+    public let maxOutputTokens: Int
+    public let reasoning: Bool
+    public let configured: Bool
+
+    public init(id: String, providerID: String, modelID: String, displayName: String, contextWindow: Int, maxOutputTokens: Int, reasoning: Bool, configured: Bool) {
+        self.id = id
+        self.providerID = providerID
+        self.modelID = modelID
+        self.displayName = displayName
+        self.contextWindow = contextWindow
+        self.maxOutputTokens = maxOutputTokens
+        self.reasoning = reasoning
+        self.configured = configured
+    }
+}
+
 public struct ProviderAccountCreateRequest: Codable, Sendable, Equatable {
     public let id: String
     public let productID: String

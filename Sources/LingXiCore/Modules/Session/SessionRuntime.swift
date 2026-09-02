@@ -61,6 +61,8 @@ public actor SessionRuntime {
     private let interactive: Bool
     private let diagnosticsEnabled: Bool
     private let runID: AgentRunID?
+    private let rootRunID: AgentRunID?
+    private let parentRunID: AgentRunID?
     private let rootSessionID: SessionID
     private let parentSessionID: SessionID?
     private let runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)?
@@ -68,6 +70,7 @@ public actor SessionRuntime {
     private let maximumAgentSteps: Int
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let restoreScheduler: SessionRestoreScheduler?
+    private let diagnostics: RuntimeDiagnosticsStore?
     private var turnRunning = false
     private var activeExecution: ActiveExecution?
     private var shuttingDown = false
@@ -94,12 +97,15 @@ public actor SessionRuntime {
         interactive: Bool = false,
         diagnosticsEnabled: Bool = false,
         runID: AgentRunID? = nil,
+        rootRunID: AgentRunID? = nil,
+        parentRunID: AgentRunID? = nil,
         rootSessionID: SessionID? = nil,
         parentSessionID: SessionID? = nil,
         executionProfile: SubagentExecutionProfile? = nil,
-        runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil
-        , deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
-        restoreScheduler: SessionRestoreScheduler? = nil
+        runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?) async -> Void)? = nil,
+        deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
+        restoreScheduler: SessionRestoreScheduler? = nil,
+        diagnostics: RuntimeDiagnosticsStore? = nil
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -119,6 +125,8 @@ public actor SessionRuntime {
         self.interactive = interactive
         self.diagnosticsEnabled = diagnosticsEnabled
         self.runID = runID
+        self.rootRunID = rootRunID
+        self.parentRunID = parentRunID
         self.rootSessionID = rootSessionID ?? sessionID
         self.parentSessionID = parentSessionID
         self.executionProfile = executionProfile
@@ -126,6 +134,7 @@ public actor SessionRuntime {
         self.runObserver = runObserver
         self.deadlinePolicy = deadlinePolicy
         self.restoreScheduler = restoreScheduler
+        self.diagnostics = diagnostics
     }
 
     public func restore() async throws {
@@ -506,11 +515,15 @@ public actor SessionRuntime {
     }
 
     private func trace(_ event: String, step: Int, toolCallID: ToolCallID? = nil, toolCount: Int? = nil) {
-        guard diagnosticsEnabled else { return }
+        guard diagnosticsEnabled || diagnostics != nil else { return }
         var fields = ["[agent-trace]", "event=\(event)", "sessionID=\(sessionID.rawValue)", "step=\(step)"]
         if let toolCallID { fields.append("toolCallID=\(toolCallID.rawValue)") }
         if let toolCount { fields.append("toolCount=\(toolCount)") }
-        FileHandle.standardError.write(Data((fields.joined(separator: " ") + "\n").utf8))
+        if diagnosticsEnabled { FileHandle.standardError.write(Data((fields.joined(separator: " ") + "\n").utf8)) }
+        let kind: RuntimeTraceKind = event.hasPrefix("provider.") ? .provider : event.hasPrefix("tool.") || event.hasPrefix("session.parts") ? .tool : event.hasPrefix("context.") ? .session : .agentRun
+        let executionID = activeExecution?.id.uuidString
+        let providerRequestID = latestModelRequestID?.rawValue
+        Task { await diagnostics?.record(kind: kind, event: event, sessionID: sessionID, runID: runID, rootRunID: rootRunID, parentRunID: parentRunID, executionID: executionID, providerRequestID: providerRequestID, toolCallID: toolCallID, metadata: ["step": String(step), "toolCount": String(toolCount ?? 0)]) }
     }
 
     private func duplicateOutcome(for call: ToolCall, signature: ToolRuntime.ReadOnlySignature, content: String) -> ToolRuntime.ExecutionOutcome {
@@ -705,6 +718,7 @@ public actor SessionRuntime {
         if diagnosticsEnabled {
             FileHandle.standardError.write(Data("[agent-trace] event=turn.failed sessionID=\(sessionID.rawValue) code=\(error.code.rawValue)\n".utf8))
         }
+        await diagnostics?.record(kind: .error, event: "turn.failed", sessionID: sessionID, runID: runID, rootRunID: rootRunID, parentRunID: parentRunID, executionID: executionID.uuidString, providerRequestID: latestModelRequestID?.rawValue, errorCode: error.code.rawValue)
         let preservesDurableBatch = toolBatches.contains { ($0.state == .pending || $0.state == .recoveryRequired) && $0.resultMessageID == nil }
         if Task.isCancelled && preservesDurableBatch {
             sink.finish()

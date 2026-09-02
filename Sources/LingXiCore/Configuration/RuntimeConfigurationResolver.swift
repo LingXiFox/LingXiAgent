@@ -29,7 +29,8 @@ public enum RuntimeConfigurationResolver {
         credentials: any CredentialStore,
         provenanceDirectory: URL? = nil,
         diagnosticsEnabled: Bool = false,
-        performanceDiagnosticsEnabled: Bool = false
+        performanceDiagnosticsEnabled: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws -> ProviderRuntimeResolution {
         try requireUnique(configuration.customProviders.map(\.id), path: "$.customProviders")
         try requireUnique(configuration.accounts.map(\.id), path: "$.accounts")
@@ -58,7 +59,7 @@ public enum RuntimeConfigurationResolver {
             if builtin != nil, builtinEndpoint == nil {
                 throw ProviderResolutionError.providerEndpointUnverified(ProviderEndpointID(rawValue: profiles.first?.endpointID ?? ""))
             }
-            let authentication = try await authentication(for: account, credentials: credentials)
+            let authentication = try await authentication(for: account, credentials: credentials, environment: environment)
             for profile in profiles {
                 let productEndpoint = builtin.flatMap { product in
                     let requestedWire = Self.providerWire(for: profile.wireProtocol)
@@ -97,6 +98,7 @@ public enum RuntimeConfigurationResolver {
                     baseURL: profileBaseURL,
                     authentication: authentication,
                     endpoint: profileEndpoint,
+                    requiredHeaders: custom?.requiredHeaders ?? [:],
                     provenance: provenance,
                     diagnosticsEnabled: diagnosticsEnabled,
                     performanceDiagnosticsEnabled: performanceDiagnosticsEnabled
@@ -139,6 +141,7 @@ public enum RuntimeConfigurationResolver {
         baseURL: URL,
         authentication: ProviderAuthentication,
         endpoint: ProviderProductEndpoint?,
+        requiredHeaders: [String: String],
         provenance: ProviderProvenanceStore,
         diagnosticsEnabled: Bool,
         performanceDiagnosticsEnabled: Bool
@@ -162,7 +165,7 @@ public enum RuntimeConfigurationResolver {
             performanceDiagnosticsEnabled: performanceDiagnosticsEnabled,
             remoteStateEnabled: profile.remoteStateEnabled,
             maxOutputTokens: profile.maxOutputTokens,
-            requiredHeaders: endpoint?.requiredHeaders ?? [:]
+            requiredHeaders: endpoint?.requiredHeaders ?? requiredHeaders
         )
         let provider: any ModelProvider
         switch wireProtocol {
@@ -320,7 +323,7 @@ public enum RuntimeConfigurationResolver {
         return MCPRuntimeResolution(pager: pager, configurations: resolved)
     }
 
-    private static func authentication(for account: ProviderAccountConfiguration, credentials: any CredentialStore) async throws -> ProviderAuthentication {
+    private static func authentication(for account: ProviderAccountConfiguration, credentials: any CredentialStore, environment: [String: String]) async throws -> ProviderAuthentication {
         switch account.authentication {
         case .none:
             return .none
@@ -328,7 +331,8 @@ public enum RuntimeConfigurationResolver {
             guard let reference = account.credential else {
                 throw ConfigurationValidationError(path: "$.accounts.\(account.id).credential", reason: "credential reference is required")
             }
-            guard let secret = try await credentials.secret(for: reference), validHeaderValue(secret) else {
+            let secret = try await credentialValue(reference, credentials: credentials, environment: environment)
+            guard let secret, validHeaderValue(secret) else {
                 throw ConfigurationValidationError(path: "$.accounts.\(account.id).credential", reason: "credential is missing or invalid")
             }
             if account.authentication == .bearer { return .bearer(secret) }
@@ -337,6 +341,15 @@ public enum RuntimeConfigurationResolver {
             }
             return .header(name: name, value: secret)
         }
+    }
+
+    private static func credentialValue(_ reference: CredentialRef, credentials: any CredentialStore, environment: [String: String]) async throws -> String? {
+        if reference.rawValue.hasPrefix("env:") {
+            let name = String(reference.rawValue.dropFirst(4))
+            guard !name.isEmpty else { return nil }
+            return environment[name]
+        }
+        return try await credentials.secret(for: reference)
     }
 
     private static func protocolPreference(_ value: StoredMCPProtocolPreference) -> MCPProtocolPreference {

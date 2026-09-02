@@ -16,7 +16,7 @@ public struct SubagentRuntimeLimits: Sendable, Equatable {
 public actor SubagentModelResolver {
     private let runtimes: [String: ModelRuntimeAssembly]
     private let allowedModels: Set<String>?
-    private let defaultSelection: ModelSelection?
+    private var defaultSelection: ModelSelection?
     private let defaultSubagentSelection: ModelSelection?
 
     public init(defaultRuntime: ModelRuntimeAssembly, runtimes: [String: ModelRuntimeAssembly] = [:], allowedModels: Set<String>? = nil, defaultSelection: ModelSelection? = nil, defaultSubagentSelection: ModelSelection? = nil) {
@@ -43,6 +43,13 @@ public actor SubagentModelResolver {
         guard allowedModels?.contains(selection.modelID) ?? true else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Model 未获用户许可: \(selection.modelID)") }
         return (selection, assembly)
     }
+
+    public func setDefaultSelection(_ selection: ModelSelection) throws {
+        _ = try resolve(selection)
+        defaultSelection = selection
+    }
+
+    public func currentDefaultSelection() -> ModelSelection? { defaultSelection }
 }
 
 /// One scheduler owns queuing, limits, and cancellation for every descendant run.
@@ -79,6 +86,10 @@ public actor AgentRunScheduler {
         guard active.count < limits.maxConcurrentSubagents, !queued.isEmpty else { return }
         let next = queued.removeFirst()
         start(next.0, next.1)
+    }
+
+    public func snapshot() -> (active: [AgentRunID], queued: [AgentRunID]) {
+        (Array(active.keys), queued.map(\.0))
     }
 
     private func start(_ runID: AgentRunID, _ operation: @escaping @Sendable () async -> Void) {

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "snapshot_policy": "same repository snapshot and task oracle for every agent",
+  "tasks": [
+    {"id":"bug-fix-001","category":"bug fix","oracle":"targeted regression test passes and unrelated tests pass"},
+    {"id":"feature-001","category":"feature implementation","oracle":"feature acceptance test passes"},
+    {"id":"multi-file-001","category":"multi-file modification","oracle":"all changed-file tests pass and diff is scoped"},
+    {"id":"refactor-001","category":"refactor","oracle":"behavioral tests pass and public contract is unchanged"},
+    {"id":"test-repair-001","category":"failing test repair","oracle":"original failing test passes without weakening the oracle"},
+    {"id":"migration-001","category":"config / API migration","oracle":"migration fixture and compatibility tests pass"},
+    {"id":"exploration-001","category":"codebase exploration","oracle":"report identifies requested symbols, callers, and verification path"},
+    {"id":"git-001","category":"Git investigation","oracle":"report identifies root cause from history and current diff"},
+    {"id":"recovery-001","category":"timeout / tool failure recovery","oracle":"agent reaches terminal state, retries only when justified, and verifies result"}
+  ]
+}

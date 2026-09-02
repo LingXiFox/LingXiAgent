@@ -17,12 +17,14 @@ public actor WorkflowRuntime {
 
     private let persistence: SQLitePersistenceStore?
     private let executor: Executor?
+    private let diagnostics: RuntimeDiagnosticsStore?
     private var workflows: [WorkflowID: WorkflowSnapshot] = [:]
     private var active: [String: Task<Void, Never>] = [:]
 
-    public init(persistence: SQLitePersistenceStore? = nil, executor: Executor? = nil) {
+    public init(persistence: SQLitePersistenceStore? = nil, executor: Executor? = nil, diagnostics: RuntimeDiagnosticsStore? = nil) {
         self.persistence = persistence
         self.executor = executor
+        self.diagnostics = diagnostics
     }
 
     public func restore() async throws {
@@ -37,6 +39,7 @@ public actor WorkflowRuntime {
         try validate(tasks)
         let snapshot = WorkflowSnapshot(id: id, rootSessionID: rootSessionID, rootRunID: rootRunID, tasks: tasks.map { WorkflowTaskState(definition: $0) })
         workflows[id] = snapshot
+        await diagnostics?.record(kind: .workflow, event: "workflow.created", sessionID: rootSessionID, runID: rootRunID, workflowID: id, metadata: ["taskCount": String(tasks.count)])
         try await persist(snapshot)
         await schedule(id)
         return workflows[id]!
@@ -66,6 +69,7 @@ public actor WorkflowRuntime {
         }
         workflow = replacing(workflow, task: replace(workflow.tasks[index], status: status, pendingInput: input), status: .waitingForUser, checkpoint: checkpoint(workflow, taskID, "input-pending"))
         workflows[workflowID] = workflow
+        await diagnostics?.record(kind: .hitl, event: "workflow.input.pending", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, taskID: taskID)
         try await persist(workflow)
     }
 
@@ -75,6 +79,7 @@ public actor WorkflowRuntime {
         guard let index = workflow.tasks.firstIndex(where: { $0.definition.id == taskID }), workflow.tasks[index].pendingInput != nil else { throw CoreError(code: .resourceNotFound, message: "Workflow Task 没有挂起输入") }
         workflow = replacing(workflow, task: replace(workflow.tasks[index], status: workflow.tasks[index].status), status: .waitingForUser, checkpoint: checkpoint(workflow, taskID, "input-reattached"))
         workflows[workflowID] = workflow
+        await diagnostics?.record(kind: .recovery, event: "workflow.recovery.acknowledged", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, taskID: taskID)
         try await persist(workflow)
     }
 

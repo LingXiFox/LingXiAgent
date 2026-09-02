@@ -37,10 +37,18 @@ public actor CoreHost: CoreEndpoint {
     private let credentialStore: (any CredentialStore)?
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
+    private let diagnosticsStore: RuntimeDiagnosticsStore
+    private let mcpPager: MCPToolPager
+    private let l2CharacterCapacity: Int
+    private let l1ProjectCharacterCapacity: Int
     private let behaviorProfile: AgentBehaviorProfile
     private let restoreScheduler: SessionRestoreScheduler?
     private var agent: AgentRuntime?
     private var workflows: WorkflowRuntime?
+    private var runtimeProviderAccounts: [String: ProviderAccountInfo] = [:]
+    private var selectedModelOverride: String?
+    private var selectedModelContextWindow: Int?
+    private var contextActivity: ContextPagingActivity = .idle
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
@@ -94,6 +102,8 @@ public actor CoreHost: CoreEndpoint {
             ? AgentBehaviorInstructions.render(profile: behaviorProfile, configured: agentSettings.systemContext, repository: instructions)
             : agentSettings.systemContext
         let effectiveMCPPager = mcpPager ?? MCPToolPager()
+        self.mcpPager = effectiveMCPPager
+        diagnosticsStore = RuntimeDiagnosticsStore()
         let persistent = try persistentRoot.map {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
         }
@@ -112,6 +122,8 @@ public actor CoreHost: CoreEndpoint {
         )
         let l2Budget = agentSettings.l2MaxCharacters
         let l1ProjectBudget = agentSettings.l1ProjectMaxCharacters
+        l2CharacterCapacity = l2Budget
+        l1ProjectCharacterCapacity = l1ProjectBudget
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
@@ -147,6 +159,7 @@ public actor CoreHost: CoreEndpoint {
     /// 注册控制面路由并进入 ready。
     public func start() async {
         guard state == .starting else { return }
+        await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
         await extensionPlatform.restore()
         await questions.setEventSink { [weak self] request in
             await self?.agent?.markWaitingForQuestion(request, waiting: true)
@@ -159,8 +172,21 @@ public actor CoreHost: CoreEndpoint {
         await bus.add(.getProviderStatus) { [self] _ in
             .providerStatus(await providerStatus)
         }
+        await bus.add(.getDiagnostics) { [self] _ in
+            .diagnostics(await diagnosticsBundle())
+        }
         await bus.add(.listProviderProducts) { _ in .providerProducts(BuiltinProviderCatalog.connectableProducts()) }
         await bus.add(.listProviderAccounts) { [self] _ in .providerAccounts(try await providerAccounts()) }
+        await bus.add(.listProviderModels) { [self] _ in .providerModels(try await providerModels()) }
+        await bus.add(.selectProviderModel) { [self] command in
+            guard case let .selectProviderModel(model) = command else { return .error(CoreError(code: .unsupportedCommand, message: "selectProviderModel 参数缺失")) }
+            let agent = try await requireAgent()
+            let selection = try await modelSelection(for: model)
+            try await agent.selectModel(selection)
+            await setSelectedModelOverride(selection.modelID)
+            if let contextWindow = try await modelContextWindow(for: model) { await setSelectedModelContextWindow(contextWindow) }
+            return .providerModelSelected(await providerStatus)
+        }
         await bus.add(.storeProviderCredential) { [self] command in
             guard case let .storeProviderCredential(request) = command else { return .error(CoreError(code: .unsupportedCommand, message: "storeProviderCredential 参数缺失")) }
             return .providerCredential(try await storeProviderCredential(request))
@@ -194,6 +220,11 @@ public actor CoreHost: CoreEndpoint {
                 return .error(CoreError(code: .unsupportedCommand, message: "getSession 参数缺失"))
             }
             return .sessionDetail(try await agent.sessionSnapshot(sessionID))
+        }
+        await bus.add(.renameSession) { [self] command in
+            guard case let .renameSession(sessionID, title) = command else { return .error(CoreError(code: .unsupportedCommand, message: "renameSession 参数缺失")) }
+            let agent = try await requireAgent()
+            return .sessionRenamed(try await agent.renameSession(sessionID, title: title))
         }
         await bus.add(.replyPermission) { [self] command in
             guard case let .replyPermission(reply) = command else {
@@ -238,6 +269,10 @@ public actor CoreHost: CoreEndpoint {
                 materializedDerivedPageIDs: snapshot.entries.compactMap { $0.source == .derivedPage ? $0.messageID?.rawValue : nil }
             ))
         }
+        await bus.add(.getContextProjection) { [self] command in
+            guard case let .getContextProjection(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getContextProjection 参数缺失")) }
+            return .contextProjection(try await contextProjection(sessionID))
+        }
         await bus.add(.getPerformance) { [self] command in
             guard case let .getPerformance(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "getPerformance 参数缺失")) }
             let agent = try await requireAgent()
@@ -258,7 +293,15 @@ public actor CoreHost: CoreEndpoint {
         await bus.add(.compactSession) { [self] command in
             guard case let .compactSession(sessionID) = command else { return .error(CoreError(code: .unsupportedCommand, message: "compactSession 参数缺失")) }
             let agent = try await requireAgent()
-            return .compactSession(try await agent.compact(sessionID))
+            await setContextActivity(.compacting)
+            do {
+                let result = try await agent.compact(sessionID)
+                await setContextActivity(.idle)
+                return .compactSession(result)
+            } catch {
+                await setContextActivity(.idle)
+                throw error
+            }
         }
         await bus.add(.listChildSessions) { [self] command in
             guard case let .listChildSessions(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "listChildSessions 参数缺失")) }
@@ -291,6 +334,13 @@ public actor CoreHost: CoreEndpoint {
             try await agent.cancelAgentRun(id)
             return .agentRunCancelled(id)
         }
+        await bus.add(.listExtensions) { [self] command in
+            guard case let .listExtensions(kind) = command else { return .error(CoreError(code: .unsupportedCommand, message: "listExtensions 参数缺失")) }
+            return .extensions(await extensionInfos(kind: kind))
+        }
+        await bus.add(.getWorkspaceDiff) { [self] _ in
+            .workspaceDiff(try await workspaceDiff())
+        }
         // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
 
         let agent = AgentRuntime(
@@ -316,7 +366,8 @@ public actor CoreHost: CoreEndpoint {
             limits: subagentLimits,
             behaviorProfile: behaviorProfile,
             deadlinePolicy: executionDeadlinePolicy,
-            restoreScheduler: restoreScheduler
+            restoreScheduler: restoreScheduler,
+            diagnostics: diagnosticsStore
         )
         self.agent = agent
         let workflows = await agent.makeWorkflowRuntime()
@@ -332,14 +383,17 @@ public actor CoreHost: CoreEndpoint {
             try await agent.restore()
             try await workflows.restore()
         } catch {
+            await diagnosticsStore.record(kind: .error, event: "core.start.failed", metadata: ["errorType": String(describing: type(of: error))], errorCode: (error as? CoreError)?.code.rawValue)
             self.agent = nil
             setState(.stopped)
             return
         }
         setState(.ready)
+        await diagnosticsStore.record(kind: .core, event: "core.start.completed")
     }
 
     public func shutdown() async {
+        await diagnosticsStore.record(kind: .core, event: "core.shutdown.begin")
         setState(.shuttingDown)
         lifecycle("cleanupStarted", waitingOn: "agent")
         await agent?.shutdown()
@@ -358,6 +412,7 @@ public actor CoreHost: CoreEndpoint {
         eventContinuations.values.forEach { $0.finish() }
         eventContinuations.removeAll()
         setState(.stopped)
+        await diagnosticsStore.record(kind: .core, event: "core.shutdown.completed")
     }
 
     private func lifecycle(_ event: String, waitingOn: String) {
@@ -369,7 +424,7 @@ public actor CoreHost: CoreEndpoint {
 
     public func handle(_ command: ClientCommand) async throws -> CoreResponse {
         switch command {
-        case .ping, .getInfo, .getState, .getProviderStatus:
+        case .ping, .getInfo, .getState, .getProviderStatus, .getDiagnostics:
             break
         default:
             guard state == .ready else { throw CoreError(code: .notReady, message: "Core 未就绪") }
@@ -438,9 +493,102 @@ public actor CoreHost: CoreEndpoint {
     private var providerStatus: ProviderStatus {
         ProviderStatus(
             configured: gateway.isConfigured,
-            model: gateway.modelID?.rawValue,
+            model: selectedModelOverride ?? gateway.modelID?.rawValue,
             baseURL: nil,
             missingRequirements: gateway.missingRequirements
+        )
+    }
+
+    private func setSelectedModelOverride(_ model: String) {
+        selectedModelOverride = model
+    }
+
+    private func setSelectedModelContextWindow(_ value: Int) {
+        selectedModelContextWindow = value
+    }
+
+    private func setContextActivity(_ value: ContextPagingActivity) {
+        contextActivity = value
+    }
+
+    private func contextProjection(_ sessionID: SessionID) async throws -> ContextCacheProjection? {
+        let agent = try requireAgent()
+        let snapshot = try await agent.ensureContextSnapshot(sessionID)
+        let cache = await agent.projectCache()
+        let l1Capacity = selectedModelContextWindow ?? gateway.contextProfile.contextWindowTokens
+        return ContextCacheProjection(
+            sessionID: sessionID,
+            l1: layerStatus(layer: .l1, usage: snapshot.metrics.estimatedTokens, capacity: l1Capacity, unit: "tokens", state: snapshot.metrics.messageCount == 0 ? .empty : .available, residentPages: snapshot.entries.count),
+            l2: layerStatus(layer: .l2, usage: cache.l2Characters, capacity: l2CharacterCapacity, unit: "characters", state: cache.l2Pages == 0 ? .empty : .available, residentPages: cache.l2Pages),
+            l3: layerStatus(layer: .l3, usage: cache.derivedL3Pages, capacity: max(cache.l3Pages, cache.derivedL3Pages), unit: "pages", state: cache.l3Pages == 0 && cache.derivedL3Pages == 0 ? .empty : .available, residentPages: cache.derivedL3Pages, totalPages: cache.l3Pages, pageInCount: cache.derivedPageInCount, pageOutCount: cache.derivedPageOutCount),
+            pagingActivity: contextActivity,
+            compactionGeneration: snapshot.metrics.compactionGeneration
+        )
+    }
+
+    private func layerStatus(layer: ContextLayer, usage: Int, capacity: Int, unit: String, state: ContextLayerState, residentPages: Int? = nil, totalPages: Int? = nil, pageInCount: Int = 0, pageOutCount: Int = 0) -> ContextLayerStatus {
+        ContextLayerStatus(layer: layer, usage: usage, capacity: capacity, unit: unit, percent: capacity > 0 ? min(100, max(0, usage * 100 / capacity)) : nil, state: state, residentPages: residentPages, totalPages: totalPages, pageInCount: pageInCount, pageOutCount: pageOutCount)
+    }
+
+    private func extensionInfos(kind: ExtensionKind?) async -> [ExtensionInfo] {
+        if kind == .skill || kind == .command { _ = await extensionPlatform.discover() }
+        let coreKind = kind.flatMap { ExtensionType(rawValue: $0.rawValue) }
+        return await extensionPlatform.list(type: coreKind).map { descriptor in
+            ExtensionInfo(id: descriptor.id, version: descriptor.version, kind: ExtensionKind(rawValue: descriptor.type.rawValue) ?? .plugin, scope: descriptor.scope.rawValue, enabled: descriptor.enabled, lifecycleState: descriptor.lifecycleState.rawValue)
+        }
+    }
+
+    private func modelContextWindow(for value: String) async throws -> Int? {
+        guard let separator = value.firstIndex(of: "/") else { return nil }
+        let providerID = String(value[..<separator])
+        let modelID = String(value[value.index(after: separator)...])
+        return try await requireConfigurationStore().load().providers.providers[providerID]?.models[modelID]?.limit.context
+    }
+
+    private func workspaceDiff() async throws -> String {
+        let process = Process()
+        let output = Pipe()
+        let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", extensionPlatform.projectRoot.path, "diff", "--"]
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let message = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "git diff failed"
+            throw CoreError(code: .gitError, message: message.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return String(text.prefix(20_000))
+    }
+
+    private func diagnosticsBundle() async -> RuntimeDiagnosticsBundle {
+        await Task.yield()
+        let runs = await agent?.allAgentRuns() ?? []
+        let orphanRunIDs = await agent?.orphanRunIDs() ?? []
+        let workflows = await workflows?.allWorkflows() ?? []
+        let mcpMetrics = await mcpPager.schemaStoreMetrics()
+        let trace = await diagnosticsStore.snapshot()
+        return RuntimeDiagnosticsBundle(
+            runtimeVersion: Self.coreVersion,
+            protocolVersion: Self.protocolVersion,
+            configurationSummary: [
+                "interactive": String(interactive),
+                "diagnosticsEnabled": String(diagnosticsEnabled),
+                "behaviorProfile": behaviorProfile.rawValue,
+                "persistence": persistence == nil ? "ephemeral" : "durable",
+                "subagentMaxConcurrent": String(subagentLimits.maxConcurrentSubagents),
+                "subagentMaxDepth": String(subagentLimits.maxSubagentDepth)
+            ],
+            trace: trace,
+            recentErrors: await diagnosticsStore.recentErrors(),
+            provider: RuntimeDiagnosticProviderStatus(configured: gateway.isConfigured, model: gateway.modelID?.rawValue, missingRequirements: gateway.missingRequirements),
+            mcp: RuntimeDiagnosticMCPStatus(catalogTools: await mcpPager.catalogCount(), schemaFiles: mcpMetrics.count, schemaBytes: mcpMetrics.bytes, pageFaults: await mcpPager.pageFaults, activeLeases: await mcpPager.activeLeaseCount()),
+            runs: runs,
+            workflows: workflows,
+            recoveryRequiredRunIDs: runs.filter { $0.status == .recoveryRequired }.map(\.runID),
+            orphanRunIDs: orphanRunIDs
         )
     }
 
@@ -456,7 +604,39 @@ public actor CoreHost: CoreEndpoint {
 
     private func providerAccounts() async throws -> [ProviderAccountInfo] {
         let snapshot = try await requireConfigurationStore().load()
-        return snapshot.providers.accounts.map(accountInfo)
+        let persisted = snapshot.providers.accounts.map(accountInfo)
+        let runtimeProviderIDs = Set(runtimeProviderAccounts.values.map(\ .productID))
+        return persisted.filter { !runtimeProviderIDs.contains($0.productID) } + runtimeProviderAccounts.values.sorted { $0.id < $1.id }
+    }
+
+    private func providerModels() async throws -> [ProviderModelInfo] {
+        let snapshot = try await requireConfigurationStore().load()
+        let configuredProviders = Set(snapshot.providers.providers.keys)
+        return snapshot.providers.providers.keys.sorted().flatMap { providerID in
+            guard let provider = snapshot.providers.providers[providerID] else { return [ProviderModelInfo]() }
+            return provider.models.keys.sorted().map { modelID in
+                let model = provider.models[modelID]!
+                return ProviderModelInfo(
+                    id: "\(providerID)/\(modelID)",
+                    providerID: providerID,
+                    modelID: modelID,
+                    displayName: model.name,
+                    contextWindow: model.limit.context,
+                    maxOutputTokens: model.limit.output,
+                    reasoning: model.reasoning,
+                    configured: configuredProviders.contains(providerID)
+                )
+            }
+        }
+    }
+
+    private func modelSelection(for value: String) async throws -> ModelSelection {
+        guard let separator = value.firstIndex(of: "/") else { throw CoreError(code: .toolArgumentInvalid, message: "模型格式必须是 provider/model") }
+        let providerID = String(value[..<separator])
+        let modelID = String(value[value.index(after: separator)...])
+        let snapshot = try await requireConfigurationStore().load()
+        guard snapshot.providers.providers[providerID]?.models[modelID] != nil else { throw CoreError(code: .provider, message: "模型不可用: \(value)") }
+        return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
     }
 
     private func storeProviderCredential(_ request: ProviderCredentialWriteRequest) async throws -> ProviderCredentialResult {
@@ -497,20 +677,26 @@ public actor CoreHost: CoreEndpoint {
         let account = ProviderAccountConfiguration(id: request.id, providerID: request.productID, displayName: request.displayName, authentication: authentication.kind, headerName: authentication.headerName, credential: request.credentialRef, endpointOverride: request.endpoint, configOverrides: request.fields, accountType: request.accountType, createdAt: .now, updatedAt: .now)
         snapshot.providers.accounts.append(account)
         try await store.saveProviders(snapshot.providers)
-        return accountInfo(account)
+        let info = accountInfo(account)
+        runtimeProviderAccounts[request.id] = info
+        return info
     }
 
     private func deleteProviderAccount(id: String, deleteUnusedCredential: Bool) async throws -> ProviderDisconnectResult {
         let store = try requireConfigurationStore()
         var snapshot = try await store.load()
-        guard let account = snapshot.providers.accounts.first(where: { $0.id == id }) else { throw CoreError(code: .provider, message: "Provider Account 不存在") }
-        snapshot.providers.accounts.removeAll { $0.id == id }
-        if snapshot.providers.defaultSelection?.accountID == id {
+        let runtimeAccount = runtimeProviderAccounts.removeValue(forKey: id)
+        let storedAccount = snapshot.providers.accounts.first(where: { $0.id == id })
+        guard runtimeAccount != nil || storedAccount != nil else { throw CoreError(code: .provider, message: "Provider Account 不存在") }
+        let accountProviderID = storedAccount?.providerID ?? runtimeAccount?.productID
+        let accountCredential = storedAccount?.credential ?? runtimeAccount?.credentialRef
+        snapshot.providers.accounts.removeAll { $0.id == id || (runtimeAccount != nil && $0.providerID == accountProviderID) }
+        if snapshot.providers.defaultSelection?.accountID == id || (runtimeAccount != nil && snapshot.providers.defaultSelection?.accountID == accountProviderID) {
             snapshot.providers.defaultSelection = nil
         }
         try await store.saveProviders(snapshot.providers)
         var deleted = false
-        if deleteUnusedCredential, let reference = account.credential, !snapshot.providers.accounts.contains(where: { $0.credential == reference }) {
+        if deleteUnusedCredential, let reference = accountCredential, !snapshot.providers.accounts.contains(where: { $0.credential == reference }) && !runtimeProviderAccounts.values.contains(where: { $0.credentialRef == reference }) {
             try await requireCredentialStore().removeSecret(for: reference)
             deleted = true
         }

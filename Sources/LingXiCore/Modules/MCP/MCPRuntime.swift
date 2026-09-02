@@ -291,6 +291,7 @@ public actor MCPToolPager {
     public func catalogCount() -> Int { catalog.count }
     public func schemaStoreMetrics() async -> (count: Int, bytes: Int) { (await schemas.count(), await schemas.bytes()) }
     public func fullSchemaResidencyCount() -> Int { sessions.values.reduce(0) { $0 + $1.presented.count } }
+    public func activeLeaseCount() -> Int { sessions.values.reduce(0) { $0 + $1.leases.values.filter { $0.state == .armed && $0.expiresAt > .now }.count } }
 
     private func removeReferences(_ toolID: ToolID) {
         for sessionID in sessions.keys { sessions[sessionID]?.l1.removeValue(forKey: toolID); sessions[sessionID]?.candidates.remove(toolID); sessions[sessionID]?.leases = sessions[sessionID]!.leases.filter { $0.value.toolID != toolID } }

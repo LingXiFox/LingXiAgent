@@ -30,6 +30,7 @@ public actor AgentRuntime {
     private let behaviorProfile: AgentBehaviorProfile
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let restoreScheduler: SessionRestoreScheduler?
+    private let diagnostics: RuntimeDiagnosticsStore?
     private var runs: [AgentRunID: AgentRunInfo] = [:]
     private var results: [AgentRunID: SubagentResult] = [:]
     private var executionProfiles: [AgentRunID: SubagentExecutionProfile] = [:]
@@ -60,7 +61,8 @@ public actor AgentRuntime {
         scheduler: AgentRunScheduler? = nil,
         behaviorProfile: AgentBehaviorProfile = .build,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
-        restoreScheduler: SessionRestoreScheduler? = nil
+        restoreScheduler: SessionRestoreScheduler? = nil,
+        diagnostics: RuntimeDiagnosticsStore? = nil
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -84,6 +86,7 @@ public actor AgentRuntime {
         self.behaviorProfile = behaviorProfile
         self.deadlinePolicy = deadlinePolicy
         self.restoreScheduler = restoreScheduler
+        self.diagnostics = diagnostics
     }
 
     // MARK: - Session 生命周期
@@ -142,6 +145,18 @@ public actor AgentRuntime {
         runs.values.filter { $0.sessionID == sessionID }.sorted { $0.latestActivityAt < $1.latestActivityAt }
     }
 
+    public func allAgentRuns() -> [AgentRunInfo] {
+        runs.values.sorted { $0.latestActivityAt < $1.latestActivityAt }
+    }
+
+    public func orphanRunIDs() async -> [AgentRunID] {
+        let schedulerState = await scheduler.snapshot()
+        let active = Set(schedulerState.active + schedulerState.queued)
+        return runs.values.filter {
+            !$0.status.isTerminal && $0.status != .waitingForUser && $0.status != .waitingForTool && !active.contains($0.runID)
+        }.map(\.runID).sorted { $0.rawValue < $1.rawValue }
+    }
+
     public func agentRun(_ runID: AgentRunID) throws -> AgentRunInfo {
         guard let run = runs[runID] else { throw CoreError(code: .agentRunNotFound, message: "AgentRun 不存在: \(runID.rawValue)") }
         return run
@@ -174,7 +189,7 @@ public actor AgentRuntime {
 
     /// Workflows share spawn, deadline, model/profile resolution, and the canonical child Run scheduler.
     public func makeWorkflowRuntime() -> WorkflowRuntime {
-        WorkflowRuntime(persistence: persistence) { [weak self] _, task, parent, started in
+        WorkflowRuntime(persistence: persistence, executor: { [weak self] _, task, parent, started in
             guard let self else { return WorkflowTaskCompletion(error: CoreError(code: .notReady, message: "Agent 未就绪")) }
             do {
                 let rendered = [task.role.map { "Role: \($0)" }, task.instructions.map { "Instructions: \($0)" }, task.context.map { "Context: \($0)" }, task.task].compactMap { $0 }.joined(separator: "\n\n")
@@ -186,7 +201,7 @@ public actor AgentRuntime {
             } catch {
                 return WorkflowTaskCompletion(error: CoreError(code: .provider, message: String(describing: error)))
             }
-        }
+        }, diagnostics: diagnostics)
     }
 
     public func agentTree(_ rootSessionID: SessionID) async throws -> AgentTreeNode {
@@ -203,8 +218,25 @@ public actor AgentRuntime {
         try await store.session(id).toSnapshot()
     }
 
+    public func renameSession(_ id: SessionID, title: String?) async throws -> SessionInfo {
+        let normalized = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await store.updateTitle(id, title: normalized?.isEmpty == true ? nil : normalized).toInfo()
+    }
+
+    public func selectModel(_ selection: ModelSelection) async throws {
+        try await modelResolver.setDefaultSelection(selection)
+    }
+
     public func contextSnapshot(_ id: SessionID) async -> L1ContextSnapshot? {
         await contextEngine.latestSnapshot(for: id)
+    }
+
+    public func ensureContextSnapshot(_ id: SessionID) async throws -> L1ContextSnapshot {
+        if let snapshot = await contextEngine.latestSnapshot(for: id) { return snapshot }
+        let session = try await store.session(id)
+        let entries = await contextEngine.entries(for: session)
+        let estimatedTokens = ConservativeTokenEstimator().estimate(entries: entries)
+        return await contextEngine.snapshot(for: session, activeEntries: entries, estimatedTokens: estimatedTokens)
     }
 
     public func performance(_ id: SessionID) async -> TurnPerformanceReport? {
@@ -391,6 +423,7 @@ public actor AgentRuntime {
         let status = await scheduler.submit(runID: runID) { [weak self] in await self?.runChild(runID: runID, task: content) }
         if status == .queued { run = updated(run, status: .queued); runs[runID] = run; try await persistence?.saveAgentRun(run) }
         if status == .queued { await eventSink(.agentRunQueued(run)) }
+        await diagnostics?.record(kind: .subagent, event: status == .queued ? "agentRun.queued" : "agentRun.started", sessionID: run.sessionID, runID: run.runID, rootRunID: run.rootRunID, parentRunID: run.parentRunID, metadata: ["agentKind": run.agentKind.rawValue])
         return run
     }
 
@@ -424,6 +457,8 @@ public actor AgentRuntime {
             interactive: interactive,
             diagnosticsEnabled: diagnosticsEnabled,
             runID: run?.runID,
+            rootRunID: run?.rootRunID,
+            parentRunID: run?.parentRunID,
             rootSessionID: rootSessionID ?? sessionID,
             parentSessionID: run?.parentRunID.flatMap { runs[$0]?.sessionID },
             executionProfile: run.flatMap { executionProfiles[$0.runID] },
@@ -432,7 +467,8 @@ public actor AgentRuntime {
                 await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error)
             },
             deadlinePolicy: deadlinePolicy,
-            restoreScheduler: restoreScheduler
+            restoreScheduler: restoreScheduler,
+            diagnostics: diagnostics
         )
     }
 
@@ -521,6 +557,7 @@ public actor AgentRuntime {
             return
         }
         runs[runID] = run
+        Task { await diagnostics?.record(kind: status == .completed ? .agentRun : .error, event: "agentRun.\(status.rawValue)", sessionID: run.sessionID, runID: run.runID, rootRunID: run.rootRunID, parentRunID: run.parentRunID, errorCode: error?.code.rawValue) }
         if status.isTerminal { activeSessions.remove(run.sessionID) }
         if status.isTerminal { runDeadlines.removeValue(forKey: runID) }
         if let result {

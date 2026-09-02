@@ -7,10 +7,13 @@ public enum ClientCommand: Sendable, Equatable {
     case createSession
     case listSessions
     case getSession(sessionID: SessionID)
+    case renameSession(sessionID: SessionID, title: String?)
     case getProviderStatus
+    case getDiagnostics
     case replyPermission(PermissionReply)
     case replyQuestion(QuestionReply)
     case getContext(sessionID: SessionID)
+    case getContextProjection(sessionID: SessionID)
     case getPerformance(sessionID: SessionID)
     case getPermissionConfiguration
     case setPermissionConfiguration(PermissionConfiguration)
@@ -22,10 +25,14 @@ public enum ClientCommand: Sendable, Equatable {
     case getAgentTree(rootSessionID: SessionID)
     case getSubagentResult(runID: AgentRunID)
     case cancelAgentRun(runID: AgentRunID)
+    case listExtensions(kind: ExtensionKind?)
+    case getWorkspaceDiff
     /// 数据面命令：在 Session 中发起一轮对话。
     case sendMessage(sessionID: SessionID, content: String)
     case listProviderProducts
     case listProviderAccounts
+    case listProviderModels
+    case selectProviderModel(model: String)
     case storeProviderCredential(ProviderCredentialWriteRequest)
     case createProviderAccount(ProviderAccountCreateRequest)
     case deleteProviderAccount(accountID: String, deleteUnusedCredential: Bool)
@@ -42,10 +49,13 @@ extension ClientCommand {
         case createSession
         case listSessions
         case getSession
+        case renameSession
         case getProviderStatus
+        case getDiagnostics
         case replyPermission
         case replyQuestion
         case getContext
+        case getContextProjection
         case getPerformance
         case getPermissionConfiguration
         case setPermissionConfiguration
@@ -57,8 +67,10 @@ extension ClientCommand {
         case getAgentTree
         case getSubagentResult
         case cancelAgentRun
+        case listExtensions
+        case getWorkspaceDiff
         case sendMessage
-        case listProviderProducts, listProviderAccounts, storeProviderCredential, createProviderAccount, deleteProviderAccount, deleteProviderCredential
+        case listProviderProducts, listProviderAccounts, listProviderModels, selectProviderModel, storeProviderCredential, createProviderAccount, deleteProviderAccount, deleteProviderCredential
     }
 
     public var kind: Kind {
@@ -70,10 +82,13 @@ extension ClientCommand {
         case .createSession: .createSession
         case .listSessions: .listSessions
         case .getSession: .getSession
+        case .renameSession: .renameSession
         case .getProviderStatus: .getProviderStatus
+        case .getDiagnostics: .getDiagnostics
         case .replyPermission: .replyPermission
         case .replyQuestion: .replyQuestion
         case .getContext: .getContext
+        case .getContextProjection: .getContextProjection
         case .getPerformance: .getPerformance
         case .getPermissionConfiguration: .getPermissionConfiguration
         case .setPermissionConfiguration: .setPermissionConfiguration
@@ -85,9 +100,13 @@ extension ClientCommand {
         case .getAgentTree: .getAgentTree
         case .getSubagentResult: .getSubagentResult
         case .cancelAgentRun: .cancelAgentRun
+        case .listExtensions: .listExtensions
+        case .getWorkspaceDiff: .getWorkspaceDiff
         case .sendMessage: .sendMessage
         case .listProviderProducts: .listProviderProducts
         case .listProviderAccounts: .listProviderAccounts
+        case .listProviderModels: .listProviderModels
+        case .selectProviderModel: .selectProviderModel
         case .storeProviderCredential: .storeProviderCredential
         case .createProviderAccount: .createProviderAccount
         case .deleteProviderAccount: .deleteProviderAccount

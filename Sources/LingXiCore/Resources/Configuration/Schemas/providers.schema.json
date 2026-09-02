@@ -5,134 +5,60 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "enum": [
-        "https://schemas.example.invalid/lingxiagent/providers.schema.json"
-      ]
+      "enum": ["https://schemas.example.invalid/lingxiagent/providers.schema.json"]
     },
-    "version": {
-      "type": "integer",
-      "enum": [
-        1
-      ],
-      "minimum": 1
-    },
-    "customProviders": {
-      "type": "array",
-      "items": {
+    "version": { "type": "integer", "enum": [1], "minimum": 1 },
+    "model": { "type": ["string", "null"], "minLength": 1 },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string"
-          },
-          "displayName": {
-            "type": "string"
-          },
-          "baseURL": {
-            "type": "string"
-          }
-        },
-        "required": [
-           "id",
-           "displayName",
-           "baseURL"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "accounts": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string" },
-          "providerID": { "type": "string" },
-          "displayName": { "type": "string" },
-          "enabled": { "type": "boolean" },
-          "authentication": {
-            "type": "string",
-            "enum": ["none", "bearer", "header"]
-          },
-          "headerName": { "type": "string" },
-          "credential": { "type": "string" },
-          "endpointOverride": { "type": "string" },
-          "configOverrides": {
-            "type": "object"
-          },
-          "accountType": {
-            "type": "string",
-            "enum": ["apiKey", "oauthUser", "workloadIdentity", "subscription", "localInstance", "gateway", "anonymousLocal"]
-          },
-          "createdAt": { "type": "number" },
-          "updatedAt": { "type": "number" }
-        },
-        "required": [
-           "id", "providerID", "displayName", "enabled", "authentication",
-          "configOverrides", "createdAt", "updatedAt"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "modelProfiles": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string" },
-          "providerID": { "type": "string" },
-          "modelID": { "type": "string" },
-          "displayName": { "type": "string" },
-          "wireProtocol": {
-            "type": "string",
-            "enum": ["chatCompletions", "responses", "anthropicMessages"]
-          },
-          "endpointID": { "type": "string" },
-          "catalogSource": {
-            "type": "string",
-            "enum": ["officialAPI", "officialStaticCatalog", "gatewayCatalog", "localRuntime", "userConfiguration", "unavailable"]
-          },
-          "verificationStatus": {
-            "type": "string",
-            "enum": ["verified", "partial", "nonOfficialRunnableEvidence", "unverified", "unsupported"]
-          },
-          "contextWindow": { "type": "integer", "minimum": 1 },
-          "maxOutputTokens": { "type": "integer", "minimum": 1 },
-          "capabilities": {
+          "name": { "type": "string", "minLength": 1 },
+          "adapter": { "type": "string", "enum": ["openai-compatible", "openai-responses", "anthropic-messages"] },
+          "options": {
             "type": "object",
             "properties": {
-              "toolCalling": { "type": "boolean" },
-              "parallelToolCalling": { "type": "boolean" },
-              "reasoning": { "type": "boolean" },
-              "vision": { "type": "boolean" },
-              "structuredOutput": { "type": "boolean" }
+              "baseURL": { "type": "string", "minLength": 1 },
+              "apiKey": { "type": ["string", "null"], "minLength": 1, "pattern": "^\\{(env|vault):[^{}]+\\}$" },
+              "apiKeyHeader": { "type": ["string", "null"], "minLength": 1 },
+              "headers": { "type": "object", "additionalProperties": { "type": "string" } }
             },
-            "required": ["toolCalling", "parallelToolCalling", "reasoning", "vision", "structuredOutput"],
+            "required": ["baseURL"],
             "additionalProperties": false
           },
-          "remoteStateEnabled": { "type": "boolean" }
+          "models": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "reasoning": { "type": "boolean" },
+                "limit": {
+                  "type": "object",
+                  "properties": {
+                    "context": { "type": "integer", "minimum": 1 },
+                    "output": { "type": "integer", "minimum": 1 }
+                  },
+                  "required": ["context", "output"],
+                  "additionalProperties": false
+                },
+                "toolCalling": { "type": "boolean" },
+                "parallelToolCalling": { "type": "boolean" },
+                "vision": { "type": "boolean" },
+                "structuredOutput": { "type": "boolean" }
+              },
+              "required": ["name", "limit"],
+              "additionalProperties": false
+            }
+          }
         },
-        "required": [
-          "id", "providerID", "modelID", "displayName", "wireProtocol",
-           "contextWindow", "capabilities", "remoteStateEnabled"
-        ],
+        "required": ["name", "adapter", "options", "models"],
         "additionalProperties": false
       }
-    },
-    "defaultSelection": {
-      "type": "object",
-      "properties": {
-        "accountID": { "type": "string" },
-        "profileID": { "type": "string" }
-      },
-      "required": ["accountID", "profileID"],
-      "additionalProperties": false
     }
   },
-  "required": [
-    "$schema",
-    "version",
-    "customProviders",
-    "accounts",
-    "modelProfiles"
-  ],
+  "required": ["$schema", "version", "providers"],
   "additionalProperties": false
 }
