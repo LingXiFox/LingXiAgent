@@ -342,6 +342,44 @@ struct ProviderHTTPTests {
         #expect(completed.map(\.callID.rawValue) == ["lingxi:chat-parallel:0", "lingxi:chat-parallel:1"])
     }
 
+    @Test func recordedChatCompletionsTracePreservesReasoningToolAndContentSteps() async throws {
+        let fixtureRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Docs/agent-record-20260905-233636", isDirectory: true)
+        let payloads = try (1...4).map { step in
+            let name = String(format: "step-%02d.sse", step)
+            return try Data(contentsOf: fixtureRoot.appendingPathComponent(name))
+        }
+        StubURLProtocol.handler = nil
+        StubURLProtocol.queuedResponses = payloads.map { StubURLProtocol.StubResponse(status: 200, body: $0) }
+        defer { StubURLProtocol.queuedResponses = [] }
+
+        let provider = makeProvider()
+        var steps: [[ModelEvent]] = []
+        for step in 1...4 {
+            steps.append(try await collect(provider.stream(ModelRequest(
+                requestID: ModelRequestID("recorded-step-\(step)"),
+                model: ModelID("stub-model"),
+                messages: [ModelMessage(role: .user, content: "fixture")],
+                debugStep: step
+            ))))
+        }
+
+        #expect(steps.count == 4)
+        for step in steps.prefix(3) {
+            #expect(step.contains { if case .reasoningDelta = $0 { true } else { false } })
+            #expect(!step.contains { if case .textDelta = $0 { true } else { false } })
+            #expect(step.contains { if case .toolCallCompleted = $0 { true } else { false } })
+            #expect(step.contains { if case .completed(.toolCalls) = $0 { true } else { false } })
+        }
+        #expect(!steps[3].contains { if case .reasoningDelta = $0 { true } else { false } })
+        #expect(steps[3].contains { if case .textDelta = $0 { true } else { false } })
+        #expect(!steps[3].contains { if case .toolCallCompleted = $0 { true } else { false } })
+        #expect(steps[3].contains { if case .completed(.stop) = $0 { true } else { false } })
+    }
+
     @Test func responsesProviderRunsParallelToolLoopThroughDomainRuntime() async throws {
         StubURLProtocol.queuedResponses = [
             StubURLProtocol.StubResponse(status: 200, body: StubURLProtocol.sseBody([
@@ -531,6 +569,45 @@ struct ProviderHTTPTests {
         #expect(result["is_error"] as? Bool == true)
     }
 
+    @Test func webSearchThenFetchReturnsBoundedStructuredProjection() async throws {
+        StubURLProtocol.handler = { request in
+            if request.url?.host == "stub.test" {
+                return StubURLProtocol.StubResponse(
+                    status: 200,
+                    body: Data(#"{"results":[{"title":"Fixture","snippet":"Use the linked page","url":"https://example.test/page"}]}"#.utf8),
+                    headers: ["Content-Type": "application/json"]
+                )
+            }
+            return StubURLProtocol.StubResponse(
+                status: 200,
+                body: Data("bounded-content".utf8),
+                headers: ["Content-Type": "text/plain"]
+            )
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let session = StubURLProtocol.makeSession()
+        let search = WebSearchTool(session: session, endpoint: URL(string: "https://stub.test/search")!)
+        let fetch = WebFetchTool(session: session)
+        let profile = ExecutionProfile.workspace
+        let searchOutput = try await search.execute(arguments: #"{"query":"fixture","max_results":1}"#, profile: profile)
+        let searchObject = try #require(JSONSerialization.jsonObject(with: Data(searchOutput.utf8)) as? [String: Any])
+        let results = try #require(searchObject["results"] as? [[String: Any]])
+        let resultURL = try #require(results.first?["url"] as? String)
+        #expect(results.first?["title"] as? String == "Fixture")
+        #expect(results.first?["snippet"] as? String == "Use the linked page")
+
+        let fetchArguments = String(
+            decoding: try JSONSerialization.data(withJSONObject: ["url": resultURL, "max_bytes": 8]),
+            as: UTF8.self
+        )
+        let fetchOutput = try await fetch.execute(arguments: fetchArguments, profile: profile)
+        let fetchObject = try #require(JSONSerialization.jsonObject(with: Data(fetchOutput.utf8)) as? [String: Any])
+        #expect(resultURL == fetchObject["url"] as? String)
+        #expect(fetchObject["content"] as? String == "bounded-")
+        #expect(fetchObject["truncated"] as? Bool == true)
+    }
+
     private func runToolLoop(provider: any ModelProvider, responses: [StubURLProtocol.StubResponse]) async throws -> ([SessionMessageRole], String) {
         StubURLProtocol.handler = nil
         StubURLProtocol.queuedResponses = responses
@@ -551,7 +628,7 @@ struct ProviderHTTPTests {
         return (try await client.session(sessionID).messages.map(\.role), text)
     }
 
-    private func runCapturedToolLoop(provider: any ModelProvider, reasoning: String? = nil) async throws -> SessionSnapshot {
+    private func runCapturedToolLoop(provider: any ModelProvider, reasoning: String? = nil) async throws -> LegacySessionSnapshot {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -134,7 +134,7 @@ struct OpenAIAdapterTests {
         #expect(events == [.textDelta("你好")])
     }
 
-    @Test func reasoningDelta() throws {
+    @Test func reasoningContentBecomesVisibleReasoningDelta() throws {
         let deepseek = #"{"choices":[{"delta":{"reasoning_content":"think"}}]}"#
         #expect(try OpenAICompatibleProvider.events(forSSEPayload: deepseek) == [.reasoningDelta("think")])
 

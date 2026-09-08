@@ -1,0 +1,25 @@
+OpenTUI native artifact manifest
+
+Package: @opentui/core-darwin-arm64@0.5.10
+gitHead: f6673a04ccb671b9207da358c57152bfd27c781f
+Architecture: arm64
+Minimum macOS: 13
+Library: libopentui.dylib
+SHA-256: 78b3cfd15c842ca207dd1d1bf49b133730e9ea00f807cfe03c3f4b51ba991449
+Package SHA-512 integrity: sha512-Vyb+nTbhab8ZcRy5gg1loEEGwRcIbjAeVRIBfHBcbFDqmGRHkNbBc/s7sukV0JgwcxFcV3uMFrXxo+E+BQtvuOiw==
+Package shasum: 92bd295def26849d1ebcade1e78b69c9a48a4358
+
+Loading policy: local development and tests only. The library is ad-hoc signed,
+not notarized, and must not be published or distributed. Do not bypass macOS
+security controls if loading is blocked.
+
+Validated symbols used by OpenTUIShim:
+createRenderer, destroyRenderer, render, resizeRenderer,
+getNextBuffer, getCurrentBuffer, bufferClear, bufferDrawText,
+getBufferWidth, getBufferHeight, setCursorPosition,
+setupTerminal, enableMouse, disableMouse, restoreTerminalModes
+
+Intentional host-owned operations:
+stdin reading and key/mouse/paste/resize event decoding remain in
+LingXiTUI's POSIXTerminalBackend because this artifact exports no input
+event dispatcher or stdin parser. embeddedTerminal* symbols are not used.

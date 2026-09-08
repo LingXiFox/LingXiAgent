@@ -37,14 +37,37 @@ public struct OpenAICompatibleProvider: ModelProvider {
         let requestID = response.header("x-request-id")
             ?? response.header("openai-request-id")
             ?? response.header("cf-ray")
-        Self.log("http step=\(request.debugStep ?? 0) status=\(response.statusCode)", enabled: config.diagnosticsEnabled)
         guard (200..<300).contains(response.statusCode) else {
-            _ = try? await Self.collectText(response.body)
-            throw Self.httpError(status: response.statusCode, requestID: requestID)
+            let errorBody = (try? await Self.collectText(response.body)) ?? ""
+            let requestFields: [String]
+            if let body = urlRequest.httpBody, let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] {
+                requestFields = json.keys.sorted()
+            } else {
+                requestFields = []
+            }
+            let toolSchemas = request.tools.map { "\($0.name)(\($0.inputSchema.required.joined(separator: ", ")))" }
+            let capabilityProjection = "toolsRequested=\(!request.tools.isEmpty) (count=\(request.tools.count)), reasoningRequested=\(request.reasoning != nil)"
+            let diagnostics = Self.makeWireDiagnostics(
+                provider: config.baseURL.host ?? "custom",
+                model: request.model.rawValue,
+                wireAdapter: config.wireProtocol.rawValue,
+                url: urlRequest.url?.absoluteString ?? config.chatCompletionsURL.absoluteString,
+                httpMethod: urlRequest.httpMethod ?? "POST",
+                requestFields: requestFields,
+                toolSchemas: toolSchemas,
+                capabilityProjection: capabilityProjection,
+                responseBody: errorBody
+            )
+            Self.log("http error step=\(request.debugStep ?? 0) status=\(response.statusCode) diagnostics:\n\(diagnostics)", enabled: config.diagnosticsEnabled)
+            let error = Self.httpError(status: response.statusCode, requestID: requestID, diagnostics: diagnostics)
+            throw ProviderRateLimitError.from(statusCode: response.statusCode, headers: response.headers, body: errorBody, underlying: error)
         }
 
         // 数据面 pump：连接已建立，事件从独立任务流出。
         let events = AsyncThrowingStream<ModelEvent, Error> { continuation in
+            if let requestID = ProviderTraceSanitizer.requestID(requestID) {
+                continuation.yield(.providerRequestID(requestID))
+            }
             let pump = Task {
                 await Pump(
                     source: response.body,
@@ -118,15 +141,23 @@ public struct OpenAICompatibleProvider: ModelProvider {
         }
         switch message.role {
         case .tool:
-            return results.map { result in
+            return results.compactMap { result in
                 let projected = ModelToolResultProjection.project(result)
-                return Message(role: "tool", content: projected.content, toolCallID: continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue)
+                let callID = continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue
+                guard !callID.isEmpty else { return nil }
+                return Message(role: "tool", content: projected.content, toolCallID: callID)
             }
         case .assistant:
+            let validCalls = calls.compactMap { call -> ProviderToolCall? in
+                let name = call.toolID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { return nil }
+                let id = continuation?.externalCallID(for: call.callID) ?? call.callID.rawValue
+                return ProviderToolCall(id: id, function: ProviderToolCall.Function(name: name, arguments: call.arguments))
+            }
             return [Message(
                 role: "assistant",
-                content: message.content.isEmpty && !calls.isEmpty ? nil : message.content,
-                toolCalls: calls.isEmpty ? nil : calls.map { ProviderToolCall(id: continuation?.externalCallID(for: $0.callID) ?? $0.callID.rawValue, function: ProviderToolCall.Function(name: $0.toolID.rawValue, arguments: $0.arguments)) }
+                content: message.content.isEmpty && !validCalls.isEmpty ? nil : message.content,
+                toolCalls: validCalls.isEmpty ? nil : validCalls
             )]
         case .system, .user:
             return [Message(role: message.role.rawValue, content: message.content)]
@@ -135,12 +166,50 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
     // MARK: - 错误转换
 
-    public static func httpError(status: Int, requestID: String? = nil) -> CoreError {
+    public static func httpError(status: Int, requestID: String? = nil, diagnostics: String? = nil) -> CoreError {
         let safeRequestID = requestID.map { String($0.prefix(128)) }.flatMap { value in
             value.isEmpty || !value.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) ? nil : value
         }
         let suffix = safeRequestID.map { " requestID=\($0)" } ?? ""
-        return CoreError(code: .provider, message: "Provider HTTP 请求失败: status=\(status)\(suffix)")
+        var msg = "Provider HTTP 请求失败: status=\(status)\(suffix)"
+        if let diagnostics, !diagnostics.isEmpty {
+            msg += "\n[Wire Diagnostics]\n" + diagnostics
+        }
+        return CoreError(code: .provider, message: msg)
+    }
+
+    public static func makeWireDiagnostics(
+        provider: String,
+        model: String,
+        wireAdapter: String,
+        url: String,
+        httpMethod: String,
+        requestFields: [String],
+        toolSchemas: [String],
+        capabilityProjection: String,
+        responseBody: String
+    ) -> String {
+        var lines: [String] = []
+        lines.append("resolved provider: \(provider)")
+        lines.append("resolved model: \(model)")
+        lines.append("wire adapter: \(wireAdapter)")
+        lines.append("final URL/path: \(url)")
+        lines.append("HTTP method: \(httpMethod)")
+        lines.append("request fields: [\(requestFields.joined(separator: ", "))]")
+        lines.append("tool schemas: [\(toolSchemas.joined(separator: ", "))]")
+        lines.append("reasoning/tool capability projection: \(capabilityProjection)")
+        lines.append("response/error body: \(sanitizeResponseBody(responseBody))")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func sanitizeResponseBody(_ raw: String) -> String {
+        var cleaned = raw.replacingOccurrences(of: "Bearer [A-Za-z0-9_\\-\\.]+", with: "Bearer [redacted]", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\"([a-zA-Z0-9_-]*(?:api[_-]?key|token|secret|password)[a-zA-Z0-9_-]*)\"\\s*:\\s*\"[^\"]+\"", with: "\"$1\": \"[redacted]\"", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "[A-Za-z0-9_]*(?:SECRET|API_KEY|APIKEY|ACCESS_KEY)[A-Za-z0-9_]*", with: "[redacted]", options: .regularExpression)
+        if cleaned.count > 2048 {
+            cleaned = String(cleaned.prefix(2048)) + "... (truncated)"
+        }
+        return cleaned.isEmpty ? "(empty)" : cleaned
     }
 
     /// 可测试：SSE data 行 payload → 0..n 个 ModelEvent。
@@ -166,15 +235,18 @@ public struct OpenAICompatibleProvider: ModelProvider {
             events.append(.usage(usage))
         }
         if let choice = chunk.choices?.first {
+            if let reason = choice.delta?.reasoning, !reason.isEmpty {
+                events.append(.reasoningDelta(reason))
+            }
             if let text = choice.delta?.content, !text.isEmpty {
                 events.append(.textDelta(text))
-            }
-            if let reasoning = choice.delta?.reasoning, !reasoning.isEmpty {
-                events.append(.reasoningDelta(reasoning))
             }
             if let reason = choice.finishReason {
                 events.append(.completed(reason))
             }
+        }
+        if chunk.choices?.first?.finishReason == nil, let reason = chunk.finishReason {
+            events.append(.completed(reason))
         }
         return events
     }
@@ -273,7 +345,10 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 }
                 if !sawDone {
                     for line in decoder.flushPending() {
-                        _ = try handle(line: line, into: &completed, toolCalls: &toolCalls, textChunks: &textChunks, reasoningChunks: &reasoningChunks, toolChunks: &toolChunks)
+                        if try handle(line: line, into: &completed, toolCalls: &toolCalls, textChunks: &textChunks, reasoningChunks: &reasoningChunks, toolChunks: &toolChunks) {
+                            sawDone = true
+                            break
+                        }
                     }
                 }
             } catch let error as CoreError {
@@ -333,7 +408,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
             guard trimmed.hasPrefix("data:") else { return false } // event:/retry:/id: 忽略
             let payload = trimmed.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
 
-            if payload == "[DONE]" { return true }
+            let unquotedPayload = payload.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\t "))
+            if unquotedPayload.caseInsensitiveCompare("[done]") == .orderedSame || unquotedPayload.caseInsensitiveCompare("done") == .orderedSame { return true }
 
             let chunk = try OpenAICompatibleProvider.decodeSSEChunk(String(payload))
             if let delta = chunk.choices?.first?.delta {
@@ -443,7 +519,7 @@ private extension OpenAICompatibleProvider {
         struct Choice: Decodable {
             struct Delta: Decodable {
                 let content: String?
-                // reasoning_content（DeepSeek 风格）与 reasoning（OpenRouter 风格）取其一。
+                // Compatible providers use both names for streamed reasoning.
                 let reasoning: String?
                 let toolCalls: [SSEToolCall]?
 
@@ -469,19 +545,42 @@ private extension OpenAICompatibleProvider {
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 delta = try container.decodeIfPresent(Delta.self, forKey: .delta)
-                finishReason = try OpenAICompatibleProvider.finishReason(
-                    fromOpenAI: container.decodeIfPresent(String.self, forKey: .finishReason)
+                let raw = try container.decodeIfPresent(String.self, forKey: .finishReason)
+                    ?? container.decodeIfPresent(String.self, forKey: .camelFinishReason)
+                    ?? container.decodeIfPresent(String.self, forKey: .stopReason)
+                finishReason = OpenAICompatibleProvider.finishReason(
+                    fromOpenAI: raw
                 )
             }
 
             enum CodingKeys: String, CodingKey {
                 case delta
                 case finishReason = "finish_reason"
+                case camelFinishReason = "finishReason"
+                case stopReason = "stop_reason"
             }
         }
 
         let choices: [Choice]?
         let usage: SSEUsage?
+        let finishReason: ModelFinishReason?
+
+        enum CodingKeys: String, CodingKey {
+            case choices, usage
+            case finishReason = "finish_reason"
+            case camelFinishReason = "finishReason"
+            case stopReason = "stop_reason"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            choices = try container.decodeIfPresent([Choice].self, forKey: .choices)
+            usage = try container.decodeIfPresent(SSEUsage.self, forKey: .usage)
+            let raw = try container.decodeIfPresent(String.self, forKey: .finishReason)
+                ?? container.decodeIfPresent(String.self, forKey: .camelFinishReason)
+                ?? container.decodeIfPresent(String.self, forKey: .stopReason)
+            finishReason = OpenAICompatibleProvider.finishReason(fromOpenAI: raw)
+        }
     }
 
     struct SSEUsage: Decodable {
@@ -549,12 +648,20 @@ private extension OpenAICompatibleProvider {
             var events: [ModelEvent] = []
             for delta in deltas {
                 var partial = calls[delta.index] ?? Partial()
-                partial.id = delta.id ?? partial.id
-                partial.name = delta.function?.name ?? partial.name
+                if let id = delta.id, !id.isEmpty {
+                    partial.id = id
+                }
+                if let name = delta.function?.name, !name.isEmpty {
+                    if partial.name == nil {
+                        partial.name = name
+                    } else {
+                        partial.name? += name
+                    }
+                }
                 if let arguments = delta.function?.arguments, !arguments.isEmpty {
                     partial.arguments += arguments
                 }
-                if let id = partial.id, let name = partial.name, !partial.started {
+                if let id = partial.id, !id.isEmpty, let name = partial.name, !name.isEmpty, !partial.started {
                     let domainID = ToolCallID("lingxi:\(requestID.rawValue):\(delta.index)")
                     domainIDs[delta.index] = domainID
                     references.append(ProviderToolCallReference(wire: .chatCompletions, domainCallID: domainID, externalCallID: id))
@@ -574,8 +681,15 @@ private extension OpenAICompatibleProvider {
         mutating func complete() throws -> [ModelEvent] {
             defer { calls.removeAll() }
             return try calls.keys.sorted().map { index in
-                guard let call = calls[index], let domainID = domainIDs[index], let name = call.name, call.started else {
-                    throw CoreError(code: .modelStream, message: "Tool Call 信息不完整")
+                var call = calls[index] ?? Partial()
+                if let id = call.id, !id.isEmpty, let name = call.name, !name.isEmpty, !call.started {
+                    let domainID = ToolCallID("lingxi:\(requestID.rawValue):\(index)")
+                    domainIDs[index] = domainID
+                    references.append(ProviderToolCallReference(wire: .chatCompletions, domainCallID: domainID, externalCallID: id))
+                    call.started = true
+                }
+                guard let domainID = domainIDs[index], let name = call.name, !name.isEmpty, call.started else {
+                    throw CoreError(code: .modelStream, message: "Tool Call 信息不完整: tool name 为空")
                 }
                 guard let data = call.arguments.data(using: .utf8),
                       (try? JSONSerialization.jsonObject(with: data)) is [String: Any]

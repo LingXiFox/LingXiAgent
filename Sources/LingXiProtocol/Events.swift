@@ -7,6 +7,7 @@ public enum CoreEvent: Sendable, Equatable {
     case turnCompleted(TurnResult)
     case turnFailed(TurnFailure)
     case toolCallCompleted(ToolCall)
+    case toolExecutionClaimed(ToolCall)
     case toolResult(ToolResult)
     case permissionAsked(PermissionRequest)
     case questionAsked(QuestionRequest)
@@ -20,4 +21,5 @@ public enum CoreEvent: Sendable, Equatable {
     case agentRunCancelled(AgentRunInfo)
     case subagentResultAvailable(SubagentResult)
     case questionEscalated(QuestionRequest)
+    case providerActivityChanged(ProviderActivitySnapshot)
 }

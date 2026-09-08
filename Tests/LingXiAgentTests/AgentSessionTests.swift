@@ -79,7 +79,10 @@ final class ScriptedFakeProvider: ModelProvider {
 
     func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         recorder.record(request)
-        let turnEvents = script[min(recorder.requests.count - 1, script.count - 1)]
+        guard !script.isEmpty else {
+            return AsyncThrowingStream { $0.finish() }
+        }
+        let turnEvents = script[max(0, min(recorder.requests.count - 1, script.count - 1))]
         return AsyncThrowingStream { continuation in
             for event in turnEvents {
                 continuation.yield(event)
@@ -127,6 +130,7 @@ actor ControllableFakeProvider: ModelProvider {
     }
 }
 
+@Suite(.serialized)
 struct AgentSessionTests {
     private func makeHost(_ provider: any ModelProvider) async -> CoreHost {
         let host = try! CoreHost(providerAssembly: ModelRuntimeAssembly(
@@ -416,6 +420,7 @@ struct AgentSessionTests {
 
     @Test func turnCompletedReportsUsageAndMessageID() async throws {
         let provider = ScriptedFakeProvider(script: [[
+            .reasoningDelta("思考"),
             .textDelta("答案"),
             .usage(ModelUsage(inputTokens: 3, outputTokens: 7, reasoningTokens: 2)),
             .completed(.stop),

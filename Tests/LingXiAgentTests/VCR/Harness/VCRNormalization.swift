@@ -118,7 +118,8 @@ struct VCRNormalizer {
     func renormalizeRequest(_ value: String, wire: ModelWireProtocol) throws -> (String, String) {
         let object = try JSONSerialization.jsonObject(with: Data(value.utf8))
         var questionIDs: [String: String] = [:]
-        let normalized = try canonicalJSON(normalizeStoredIdentifiers(object, key: nil, questionIDs: &questionIDs))
+        let stored = try normalizeStoredIdentifiers(object, key: nil, questionIDs: &questionIDs)
+        let normalized = try canonicalJSON(environmentCompatibility(stored))
         return (normalized, sha256Hex("\(wire.rawValue)|\(modelAlias)|\(normalized)"))
     }
 
@@ -183,12 +184,27 @@ struct VCRNormalizer {
         if let object = value as? [String: Any] {
             var result: [String: Any] = [:]
             for name in object.keys.sorted() where !isCredentialKey(name) {
+                if name == "tools" {
+                    result[name] = "<tools>"
+                    continue
+                }
                 result[name] = try normalize(object[name]!, key: name, parentKey: key, parent: object)
             }
             return result
         }
         if let array = value as? [Any] {
-            return try array.map { try normalize($0, key: key, parentKey: parentKey, parent: parent) }
+            let items: [Any]
+            if key == "input" || key == "messages" {
+                items = array.filter { item in
+                    if let dict = item as? [String: Any], let content = dict["content"] as? String, content.hasPrefix("[Project context:") {
+                        return false
+                    }
+                    return true
+                }
+            } else {
+                items = array
+            }
+            return try items.map { try normalize($0, key: key, parentKey: parentKey, parent: parent) }
         }
         let effectiveKey = (key?.lowercased() == "rawvalue" || key?.lowercased() == "raw_value") ? (parentKey ?? key) : key
         if value is NSNumber, let effectiveKey, isTimestamp(effectiveKey) {
@@ -213,10 +229,34 @@ struct VCRNormalizer {
             return try canonicalJSON(normalize(json, key: nil, parent: nil))
         }
         let sanitized = try sanitizer.sanitize(string)
-        let identifiersApplied = identifiers.values.flatMap { $0 }.sorted { $0.key.count > $1.key.count }.reduce(sanitized) { partial, pair in
+        let compatibilityNormalized = environmentCompatibilityNormalized(sanitized)
+        let identifiersApplied = identifiers.values.flatMap { $0 }.sorted { $0.key.count > $1.key.count }.reduce(compatibilityNormalized) { partial, pair in
             partial.replacingOccurrences(of: pair.key, with: pair.value)
         }
         return replaceUUIDs(identifiersApplied)
+    }
+
+    private func environmentCompatibilityNormalized(_ value: String) -> String {
+        guard value.contains("Environment facts:") else { return value }
+        return value.split(separator: "\n", omittingEmptySubsequences: false).filter {
+            let line = $0.trimmingCharacters(in: .whitespaces)
+            return !line.hasPrefix("- currentDirectory:") && !line.hasPrefix("- cwd:")
+                && !line.hasPrefix("- homeDirectory:") && !line.hasPrefix("- userHome:")
+                && !line.hasPrefix("- shell:") && !line.hasPrefix("- gitRepository:")
+        }.joined(separator: "\n")
+    }
+
+    private func environmentCompatibility(_ value: Any) -> Any {
+        if let object = value as? [String: Any] {
+            return object.mapValues(environmentCompatibility)
+        }
+        if let array = value as? [Any] {
+            return array.map(environmentCompatibility)
+        }
+        if let string = value as? String {
+            return environmentCompatibilityNormalized(string)
+        }
+        return value
     }
 
     private mutating func replaceUUIDs(_ value: String) -> String {
@@ -273,12 +313,29 @@ struct VCRNormalizer {
     private func normalizeStoredIdentifiers(_ value: Any, key: String?, questionIDs: inout [String: String]) throws -> Any {
         if let object = value as? [String: Any] {
             var result: [String: Any] = [:]
-            for name in object.keys.sorted() { result[name] = try normalizeStoredIdentifiers(object[name]!, key: name, questionIDs: &questionIDs) }
+            for name in object.keys.sorted() {
+                if name == "tools" {
+                    result[name] = "<tools>"
+                    continue
+                }
+                result[name] = try normalizeStoredIdentifiers(object[name]!, key: name, questionIDs: &questionIDs)
+            }
             return result
         }
         if let array = value as? [Any] {
+            let items: [Any]
+            if key == "input" || key == "messages" {
+                items = array.filter { item in
+                    if let dict = item as? [String: Any], let content = dict["content"] as? String, content.hasPrefix("[Project context:") {
+                        return false
+                    }
+                    return true
+                }
+            } else {
+                items = array
+            }
             var result: [Any] = []
-            for item in array { result.append(try normalizeStoredIdentifiers(item, key: key, questionIDs: &questionIDs)) }
+            for item in items { result.append(try normalizeStoredIdentifiers(item, key: key, questionIDs: &questionIDs)) }
             return result
         }
         guard let string = value as? String else { return value }

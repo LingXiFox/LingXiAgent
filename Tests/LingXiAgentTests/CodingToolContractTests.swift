@@ -118,4 +118,39 @@ struct CodingToolContractTests {
         let denied = await tools.execute(call("deny", "shell", #"{"command":"printf blocked"}"#), sessionID: SessionID("s")) { _ in }
         #expect(denied.error?.code == CoreError.Code.permissionDenied.rawValue)
     }
+
+    @Test func fullAccessPathResolutionSupportsTildeAndExternalPaths() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try WorkspaceRoot(path: root.path)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+        // 1. Workspace mode restricts to workspace root
+        #expect(throws: CoreError.self) {
+            _ = try workspace.resolve("~", profile: .workspace)
+        }
+        #expect(throws: CoreError.self) {
+            _ = try workspace.resolve("~/Desktop", profile: .workspace)
+        }
+
+        // 2. FullAccess mode expands ~ and ~/Desktop
+        let resolvedHome = try workspace.resolve("~", profile: .fullAccess)
+        #expect(resolvedHome.path == URL(fileURLWithPath: home).standardizedFileURL.resolvingSymlinksInPath().path)
+
+        let resolvedDesktop = try workspace.resolve("~/Desktop", profile: .fullAccess)
+        let expectedDesktop = URL(fileURLWithPath: home + "/Desktop").standardizedFileURL.resolvingSymlinksInPath().path
+        #expect(resolvedDesktop.path == expectedDesktop)
+    }
+
+    @Test func environmentFactsRenderTruePlatformAndScope() {
+        let facts = AgentEnvironmentFacts(
+            workspaceRoot: "/path/to/project",
+            accessScope: "fullAccess"
+        )
+        let rendered = facts.render()
+        #expect(rendered.contains("platform:"))
+        #expect(rendered.contains("workspaceRoot: /path/to/project"))
+        #expect(rendered.contains("userHome:"))
+        #expect(rendered.contains("accessScope: fullAccess"))
+    }
 }

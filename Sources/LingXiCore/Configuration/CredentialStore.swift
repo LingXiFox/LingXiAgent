@@ -18,31 +18,58 @@ public actor FileCredentialStore: CredentialStore {
     private let passphrase: String?
     private var cachedKey: (salt: Data, key: SymmetricKey)?
 
-    public init(dataRoot: URL, passphrase: String? = nil, permissions: any FilePermissionAdapter = PlatformFilePermissionAdapter()) throws {
+    public let isMemoryOnly: Bool
+    private var memoryStore: [String: String] = [:]
+
+    public init(
+        dataRoot: URL,
+        passphrase: String? = nil,
+        isMemoryOnly: Bool = false,
+        permissions: any FilePermissionAdapter = PlatformFilePermissionAdapter()
+    ) throws {
         self.dataRoot = dataRoot.standardizedFileURL
-        vaultURL = self.dataRoot.appendingPathComponent("credentials.vault")
-        backupURL = self.dataRoot.appendingPathComponent("credentials.vault.v1-migration-backup")
+        self.vaultURL = self.dataRoot.appendingPathComponent("credentials.vault")
+        self.backupURL = self.dataRoot.appendingPathComponent("credentials.vault.v1-migration-backup")
         self.permissions = permissions
         self.passphrase = passphrase?.isEmpty == false ? passphrase : nil
-        try FileManager.default.createDirectory(at: self.dataRoot, withIntermediateDirectories: true)
-        try permissions.secureDirectory(at: self.dataRoot)
-        if FileManager.default.fileExists(atPath: vaultURL.path) {
-            try permissions.secureFile(at: vaultURL)
+        self.isMemoryOnly = isMemoryOnly
+        if !isMemoryOnly {
+            try FileManager.default.createDirectory(at: self.dataRoot, withIntermediateDirectories: true)
+            try permissions.secureDirectory(at: self.dataRoot)
+            // Purge any insecure legacy .master_key files
+            let legacyKeyFile = self.dataRoot.appendingPathComponent(".master_key")
+            if FileManager.default.fileExists(atPath: legacyKeyFile.path) {
+                try? FileManager.default.removeItem(at: legacyKeyFile)
+            }
+            if FileManager.default.fileExists(atPath: vaultURL.path) {
+                try permissions.secureFile(at: vaultURL)
+            }
         }
     }
 
     public func secret(for reference: CredentialRef) throws -> String? {
-        try load()[reference.rawValue]
+        if isMemoryOnly {
+            return memoryStore[reference.rawValue]
+        }
+        return try load()[reference.rawValue]
     }
 
     public func setSecret(_ secret: String, for reference: CredentialRef) throws {
         try requireReference(reference)
+        if isMemoryOnly {
+            memoryStore[reference.rawValue] = secret
+            return
+        }
         var values = try load()
         values[reference.rawValue] = secret
         try write(values, to: vaultURL)
     }
 
     public func removeSecret(for reference: CredentialRef) throws {
+        if isMemoryOnly {
+            memoryStore.removeValue(forKey: reference.rawValue)
+            return
+        }
         var values = try load()
         values.removeValue(forKey: reference.rawValue)
         try write(values, to: vaultURL)
@@ -169,11 +196,16 @@ public actor FileCredentialStore: CredentialStore {
     }
 
     private func encryptionKey(salt: Data, iterations: Int) throws -> SymmetricKey {
-        guard let passphrase else {
-            throw ConfigurationValidationError(path: "$", reason: "LINGXI_CREDENTIALS_PASSPHRASE is required for credentials.vault")
+        let secretPassphrase: String
+        if let passphrase {
+            secretPassphrase = passphrase
+        } else if let envPass = ProcessInfo.processInfo.environment["LINGXI_CREDENTIALS_PASSPHRASE"], !envPass.isEmpty {
+            secretPassphrase = envPass
+        } else {
+            throw ConfigurationValidationError(path: "$", reason: "Passphrase is required for FileCredentialStore (set via parameter or LINGXI_CREDENTIALS_PASSPHRASE). Pseudo-encryption with local key file is strictly prohibited.")
         }
         if let cachedKey, cachedKey.salt == salt { return cachedKey.key }
-        let password = SymmetricKey(data: Data(passphrase.utf8))
+        let password = SymmetricKey(data: Data(secretPassphrase.utf8))
         var input = salt
         input.append(contentsOf: [0, 0, 0, 1])
         var block = Data(HMAC<SHA256>.authenticationCode(for: input, using: password))

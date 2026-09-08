@@ -27,9 +27,15 @@ struct ToolResultProjectionTests {
         let projected = ModelToolResultProjection.project(rich(success: false))
         #expect(projected.callID == ToolCallID("call-1"))
         #expect(projected.success == false)
-        let error = try JSONSerialization.jsonObject(with: Data(projected.content.utf8)) as? [String: String]
-        #expect(error == ["code": "commandFailed", "message": "Command failed"])
-        #expect(!projected.content.contains("internal stderr"))
+        let error = try #require(JSONSerialization.jsonObject(with: Data(projected.content.utf8)) as? [String: Any])
+        #expect((error["error"] as? [String: String]) == ["code": "commandFailed", "message": "Command failed"])
+        #expect(error["errorKind"] as? String == "commandFailed")
+        #expect(error["retryability"] as? String == "none")
+        #expect(error["durationMilliseconds"] as? Int == 0)
+        #expect(error["exitCode"] as? Int == 1)
+        #expect(error["stderrSummary"] as? String == "internal stderr")
+        #expect(error["permissionDenied"] as? Bool == false)
+        #expect(error["scopeDenied"] as? Bool == false)
         #expect(!projected.content.contains("blob://"))
     }
 
@@ -56,5 +62,102 @@ struct ToolResultProjectionTests {
         #expect(decoded.diagnostics == nil)
         #expect(decoded.continuation == nil)
         #expect(ModelToolResultProjection.project(decoded).content == "done")
+    }
+
+    @Test func globProjectionEnforcesBudgetWithSummaryAndPagination() throws {
+        let matches = (1...426).map { "Sources/File\($0).swift" }
+        let jsonMatches = String(decoding: try JSONEncoder().encode(matches), as: UTF8.self)
+        let rawResult = ToolResult(
+            callID: ToolCallID("glob-1"),
+            success: true,
+            content: jsonMatches,
+            toolName: "glob"
+        )
+
+        let projected = ModelToolResultProjection.project(rawResult)
+        #expect(projected.summary == "Glob · 426 matches · showing 30")
+        #expect(projected.totalCount == 426)
+        #expect(projected.shownCount == 30)
+        #expect(projected.truncated == true)
+        #expect(projected.page == 1)
+        #expect(projected.items?.count == 30)
+
+        // Wire representation does not resend entire repo paths
+        let dict = try JSONSerialization.jsonObject(with: Data(projected.content.utf8)) as! [String: Any]
+        #expect((dict["totalCount"] as? Int) == 426)
+        #expect((dict["shownCount"] as? Int) == 30)
+        #expect((dict["truncated"] as? Bool) == true)
+        let projectedMatches = dict["matches"] as! [String]
+        #expect(projectedMatches.count == 30)
+        #expect(projectedMatches.first == "Sources/File1.swift")
+        #expect(projectedMatches.last == "Sources/File30.swift")
+    }
+
+    @Test func listDirectoryProjectionEnforcesBudget() throws {
+        let entries = (1...100).map { "file\($0).txt\tfile\t123" }.joined(separator: "\n")
+        let rawResult = ToolResult(
+            callID: ToolCallID("list-1"),
+            success: true,
+            content: entries,
+            toolName: "list_directory"
+        )
+
+        let projected = ModelToolResultProjection.project(rawResult)
+        #expect(projected.summary == "ListDirectory · 100 entries · showing 30")
+        #expect(projected.totalCount == 100)
+        #expect(projected.shownCount == 30)
+        #expect(projected.truncated == true)
+        #expect(projected.items?.count == 30)
+    }
+
+    @Test func smallGlobIsNotTruncated() throws {
+        let matches = ["A.swift", "B.swift", "C.swift"]
+        let jsonMatches = String(decoding: try JSONEncoder().encode(matches), as: UTF8.self)
+        let rawResult = ToolResult(
+            callID: ToolCallID("glob-small"),
+            success: true,
+            content: jsonMatches,
+            toolName: "glob"
+        )
+
+        let projected = ModelToolResultProjection.project(rawResult)
+        #expect(projected.summary == "Glob · 3 matches")
+        #expect(projected.totalCount == 3)
+        #expect(projected.shownCount == 3)
+        #expect(projected.truncated == false)
+    }
+
+    @Test func largeReadFileProjectionEnforcesBudget() throws {
+        let lines = (1...200).map { "line \($0): content" }.joined(separator: "\n")
+        let rawResult = ToolResult(
+            callID: ToolCallID("read-large"),
+            success: true,
+            content: lines,
+            toolName: "read_file"
+        )
+
+        let projected = ModelToolResultProjection.project(rawResult)
+        #expect(projected.summary == "ReadFile · 200 lines · showing 60")
+        #expect(projected.totalCount == 200)
+        #expect(projected.shownCount == 60)
+        #expect(projected.truncated == true)
+        #expect(projected.items?.count == 60)
+    }
+
+    @Test func smallReadFileIsNotTruncated() throws {
+        let lines = "line 1\nline 2\nline 3"
+        let rawResult = ToolResult(
+            callID: ToolCallID("read-small"),
+            success: true,
+            content: lines,
+            toolName: "read_file"
+        )
+
+        let projected = ModelToolResultProjection.project(rawResult)
+        #expect(projected.summary == "")
+        #expect(projected.totalCount == 3)
+        #expect(projected.shownCount == 3)
+        #expect(projected.truncated == false)
+        #expect(projected.content == lines)
     }
 }

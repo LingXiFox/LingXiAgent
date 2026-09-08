@@ -1,3 +1,4 @@
 import Foundation
+import LingXiApplication
 
-await RetainedTUI().run()
+await ApplicationTUI().run()

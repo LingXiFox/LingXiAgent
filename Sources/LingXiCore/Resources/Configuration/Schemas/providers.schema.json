@@ -47,7 +47,26 @@
                 "toolCalling": { "type": "boolean" },
                 "parallelToolCalling": { "type": "boolean" },
                 "vision": { "type": "boolean" },
-                "structuredOutput": { "type": "boolean" }
+                "structuredOutput": { "type": "boolean" },
+                "rateLimits": {
+                  "type": "object",
+                  "properties": {
+                    "tpm": { "type": ["integer", "null"], "minimum": 1 },
+                    "rpm": { "type": ["integer", "null"], "minimum": 1 },
+                    "maxConcurrentRequests": { "type": ["integer", "null"], "minimum": 1 },
+                    "retryPolicy": {
+                      "type": "object",
+                      "properties": {
+                        "maxRetries": { "type": "integer", "minimum": 0 },
+                        "initialDelayMilliseconds": { "type": "integer", "minimum": 0 },
+                        "maxDelayMilliseconds": { "type": "integer", "minimum": 0 },
+                        "jitterRatio": { "type": "number", "minimum": 0, "maximum": 1 }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
               },
               "required": ["name", "limit"],
               "additionalProperties": false

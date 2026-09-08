@@ -1,72 +1,14 @@
-import Darwin
 import Foundation
 import LingXiApplication
 import LingXiClient
 import LingXiProtocol
-
-private final class Terminal: @unchecked Sendable {
-    private var original: termios?
-    private(set) var width = 80
-    private(set) var height = 24
-
-    func start() throws {
-        var state = termios()
-        guard tcgetattr(STDIN_FILENO, &state) == 0 else { throw POSIXError(.EIO) }
-        original = state
-        cfmakeraw(&state)
-        guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &state) == 0 else { throw POSIXError(.EIO) }
-        emit("\u{1B}[?1049h\u{1B}[?25l\u{1B}[2J\u{1B}[H")
-        refreshSize()
-    }
-
-    func stop() {
-        if let original { var state = original; _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &state) }
-        emit("\u{1B}[?25h\u{1B}[?1049l")
-    }
-
-    func refreshSize() {
-        var size = winsize()
-        guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 else { return }
-        width = max(40, Int(size.ws_col))
-        height = max(12, Int(size.ws_row))
-    }
-
-    func readEvent() -> InputEvent? {
-        guard let first = FileHandle.standardInput.readData(ofLength: 1).first else { return nil }
-        switch first {
-        case 3: return .interrupt
-        case 4: return .quit
-        case 9: return .tab
-        case 10, 13: return .enter
-        case 27:
-            guard let second = FileHandle.standardInput.readData(ofLength: 1).first else { return .escape }
-            guard second == 91, let third = FileHandle.standardInput.readData(ofLength: 1).first else { return .escape }
-            switch third {
-            case 65: return .up
-            case 66: return .down
-            case 67: return .right
-            case 68: return .left
-            case 72: return .home
-            case 70: return .end
-            default: return .escape
-            }
-        case 127, 8: return .backspace
-        default: return .character(Character(UnicodeScalar(first)))
-        }
-    }
-
-    private func emit(_ text: String) { print(text, terminator: ""); fflush(stdout) }
-}
-
-private enum InputEvent: Sendable {
-    case character(Character)
-    case enter, backspace, escape, up, down, left, right, home, end, tab, interrupt, quit
-}
+import LingXiTUIComponents
 
 private enum UIEvent: Sendable {
-    case input(InputEvent)
+    case input(TUIInputEvent)
     case core(CoreEvent)
     case chunk(StreamChunk)
+    case toolOutput(ToolOutputChunk)
     case streamFailed(String)
     case tick
 }
@@ -102,7 +44,8 @@ private struct CommandDescriptor: Sendable {
     }
 
     func matches(_ value: String) -> Bool {
-        name.hasPrefix(value) || aliases.contains { $0.hasPrefix(value) }
+        let normalized = value.lowercased()
+        return name.lowercased().contains(normalized) || aliases.contains { $0.lowercased().contains(normalized) } || description.lowercased().contains(normalized)
     }
 
     func isAvailable(hasSession: Bool) -> Bool {
@@ -115,6 +58,8 @@ private struct CommandDescriptor: Sendable {
 
 private enum Overlay: Sendable {
     case command
+    case commandPalette
+    case completion(items: [TUICompletionItem], selected: Int, tokenStart: Int)
     case picker(title: String, items: [String], selected: Int, action: PickerAction)
     case permission(PermissionRequest)
     case question(QuestionRequest, selected: Int)
@@ -127,12 +72,22 @@ private enum PickerAction: Sendable {
     case session
     case provider
     case mode
+    case permissions
+    case recovery(runID: AgentRunID)
 }
 
 private enum TranscriptKind: String, Sendable {
     case user = "User"
     case assistant = "Assistant"
     case thinking = "Thinking"
+    case read = "Read"
+    case search = "Search"
+    case edit = "Edit"
+    case patch = "Patch"
+    case write = "Write"
+    case shell = "Shell"
+    case git = "Git"
+    case mcp = "MCP"
     case toolCall = "ToolCall"
     case toolResult = "ToolResult"
     case subagent = "Subagent"
@@ -143,13 +98,37 @@ private enum TranscriptKind: String, Sendable {
     case result = "Result"
 }
 
-private struct TranscriptEntry: Sendable {
-    let kind: TranscriptKind
-    var text: String
+
+public enum TUIWorkingPhase: Sendable, Equatable {
+    case ready
+    case thinking
+    case runningTool(name: String)
+    case waitingForProvider
+    case runningSubagents(count: Int)
+    case paging
+    case actionRequired(prompt: String)
+    case error(message: String)
+    case disconnected
+
+    public var isAnimated: Bool {
+        switch self {
+        case .thinking, .runningTool, .waitingForProvider, .runningSubagents, .paging:
+            return true
+        case .ready, .actionRequired, .error, .disconnected:
+            return false
+        }
+    }
 }
 
 final class RetainedTUI: @unchecked Sendable {
-    private let terminal = Terminal()
+    private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private var spinnerFrameIndex = 0
+    private var workingPhase: TUIWorkingPhase = .ready
+    private var runningSubagentIDs: Set<AgentRunID> = []
+
+    private let terminal: any TerminalBackend = POSIXTerminalBackend()
+    private let app = TUIApp()
+    private let slashCompletion = SlashCompletionView()
     private let registry: [CommandDescriptor] = [
         CommandDescriptor(name: "model", aliases: [], description: "选择模型", category: "Provider", argumentSchema: "[provider/model]", action: .model),
         CommandDescriptor(name: "connect", aliases: [], description: "连接 Provider", category: "Provider", argumentSchema: "", action: .connect),
@@ -162,8 +141,8 @@ final class RetainedTUI: @unchecked Sendable {
         CommandDescriptor(name: "context", aliases: [], description: "查看 L1/L2/L3 context", category: "Runtime", argumentSchema: "", action: .context, availability: .requiresSession),
         CommandDescriptor(name: "compact", aliases: [], description: "压缩当前 context", category: "Runtime", argumentSchema: "", action: .compact, availability: .requiresSession),
         CommandDescriptor(name: "perf", aliases: [], description: "查看性能报告", category: "Runtime", argumentSchema: "", action: .perf, availability: .requiresSession),
-        CommandDescriptor(name: "mode", aliases: [], description: "切换执行模式", category: "Runtime", argumentSchema: "strict|agent|yolo", action: .mode),
-        CommandDescriptor(name: "permissions", aliases: ["permission"], description: "查看权限配置", category: "Runtime", argumentSchema: "", action: .permissions),
+        CommandDescriptor(name: "mode", aliases: [], description: "切换 Agent 行为模式", category: "Runtime", argumentSchema: "build|plan|explore", action: .mode),
+        CommandDescriptor(name: "permissions", aliases: ["permission"], description: "切换权限配置", category: "Runtime", argumentSchema: "ask|auto|yolo", action: .permissions),
         CommandDescriptor(name: "subagents", aliases: [], description: "查看 Subagent 树", category: "Execution", argumentSchema: "", action: .subagents, availability: .requiresSession),
         CommandDescriptor(name: "mcp", aliases: [], description: "查看 MCP 状态", category: "Execution", argumentSchema: "", action: .mcp),
         CommandDescriptor(name: "skills", aliases: [], description: "查看可用 Skills", category: "Extensions", argumentSchema: "", action: .skills),
@@ -177,7 +156,7 @@ final class RetainedTUI: @unchecked Sendable {
         CommandDescriptor(name: "quit", aliases: ["exit"], description: "退出 TUI", category: "UI", argumentSchema: "", action: .quit),
     ]
 
-    private var transcript: [TranscriptEntry] = []
+    private let projector = TUITimelineProjector()
     private var composer = ""
     private var overlay: Overlay?
     private var commandSelection = 0
@@ -188,12 +167,17 @@ final class RetainedTUI: @unchecked Sendable {
     private var working = false
     private var shouldQuit = false
     private var permissionConfiguration = PermissionConfiguration.strict
+    private var behaviorProfile = AgentBehaviorProfile.build
     private var contextProjection: ContextCacheProjection?
     private var gitBranchName = "-"
     private var secretInput = false
     private var client: LingXiClient?
     private var providerService: ProviderConnectionService?
     private var eventContinuation: AsyncStream<UIEvent>.Continuation?
+    private var visibleRunIDs: Set<AgentRunID> = []
+    private var previousFocus: TUIFocus = .composer
+    private var referenceCandidates: [String] = []
+    private var providerActivities: [String: ProviderActivitySnapshot] = [:]
 
     func run() async {
         do {
@@ -205,21 +189,33 @@ final class RetainedTUI: @unchecked Sendable {
             let stream = AsyncStream<UIEvent>.makeStream()
             eventContinuation = stream.continuation
             let inputTask = Task { [terminal] in
-                while !Task.isCancelled, let input = terminal.readEvent() { stream.continuation.yield(.input(input)) }
+                while !Task.isCancelled, let input = terminal.nextInput() { stream.continuation.yield(.input(input)) }
             }
             let coreTask = Task {
                 for await event in await client.events() { stream.continuation.yield(.core(event)) }
+            }
+            let toolOutputTask = Task {
+                for await chunk in await client.toolOutputEvents() { stream.continuation.yield(.toolOutput(chunk)) }
             }
             await bootstrap(client)
             render()
             for await event in stream.stream {
                 await handle(event)
                 if shouldQuit { break }
-                terminal.refreshSize()
+                if case .input(.tick) = event {
+                    if workingPhase.isAnimated {
+                        spinnerFrameIndex = (spinnerFrameIndex + 1) % Self.spinnerFrames.count
+                        let scrollHint = app.transcript.showsBackToCurrent ? " · ↓ Back to current" : ""
+                        app.statusLine.text = statusLineText(scrollHint: scrollHint)
+                        terminal.render(app.render(size: terminal.size, overlay: overlay.map(overlayModel)))
+                    }
+                    continue
+                }
                 render()
             }
             inputTask.cancel()
             coreTask.cancel()
+            toolOutputTask.cancel()
             await client.close()
         } catch {
             print("LingXiTUI 启动失败: \(error)")
@@ -231,10 +227,20 @@ final class RetainedTUI: @unchecked Sendable {
             let status = try await client.providerStatus()
             providerConfigured = status.configured
             runtimeState = status.configured ? "Ready" : "Disconnected"
+            workingPhase = status.configured ? .ready : .disconnected
             activeModel = status.model ?? activeModel
             gitBranchName = detectGitBranch()
             permissionConfiguration = try await client.permissionConfiguration()
-            if let id = try await client.sessions().last?.id { sessionID = id; await loadTranscript(client, id: id) } else { sessionID = try await client.createSession() }
+            behaviorProfile = try await client.agentBehaviorProfile()
+            sessionID = try await client.createSession()
+            let sessions = try await client.sessions()
+            var resumable: [AgentRunInfo] = []
+            for session in sessions {
+                resumable.append(contentsOf: try await client.listAgentRuns(session.id).filter { !$0.status.isTerminal })
+            }
+            if let run = resumable.sorted(by: { $0.latestActivityAt > $1.latestActivityAt }).first {
+                overlay = .picker(title: "发现未完成运行", items: ["Resume \(run.runID.rawValue)", "Abandon \(run.runID.rawValue)"], selected: 0, action: .recovery(runID: run.runID))
+            }
             await refreshContext(client)
         } catch { append(.error, "启动状态读取失败: \(error)") }
     }
@@ -244,33 +250,131 @@ final class RetainedTUI: @unchecked Sendable {
         case let .input(input): await handleInput(input)
         case let .core(event): await handleCore(event)
         case let .chunk(chunk):
+            guard working else { return }
+            guard let sessionID, (chunk.sessionID == nil || chunk.sessionID == sessionID) else { return }
             runtimeState = "Working"
-            if let last = transcript.last, last.kind == .assistant { transcript[transcript.count - 1].text += chunk.text } else { transcript.append(TranscriptEntry(kind: chunk.kind == .reasoning ? .thinking : .assistant, text: chunk.text)) }
+            if chunk.kind == .reasoning {
+                workingPhase = .thinking
+            } else if workingPhase == .thinking {
+                workingPhase = .waitingForProvider
+            }
+            projector.consume(chunk: chunk)
+        case let .toolOutput(chunk):
+            guard let sessionID, (chunk.sessionID == nil || chunk.sessionID == sessionID) else { return }
+            projector.consume(toolOutput: chunk)
         case let .streamFailed(message):
-            working = false; runtimeState = "Error"; append(.error, message)
+            working = false; runtimeState = "Error"; workingPhase = .error(message: message); projector.consume(streamFailed: message)
         case .tick: break
         }
     }
 
     private func handleCore(_ event: CoreEvent) async {
         switch event {
-        case .turnStarted: runtimeState = "Working"
+        case let .providerActivityChanged(snapshot):
+            guard snapshot.sessionID == sessionID else { return }
+            if snapshot.state.isTerminal {
+                providerActivities.removeValue(forKey: snapshot.providerRequestID)
+            } else {
+                providerActivities[snapshot.providerRequestID] = snapshot
+            }
+            if !working {
+                workingPhase = .ready
+            } else if !runningSubagentIDs.isEmpty {
+                workingPhase = .runningSubagents(count: runningSubagentIDs.count)
+            } else if snapshot.state == .waitingForRateBudget {
+                workingPhase = .waitingForProvider
+            } else if snapshot.state == .requesting {
+                workingPhase = .waitingForProvider
+            } else if snapshot.state == .streaming {
+                workingPhase = .thinking
+            }
+        case let .turnStarted(handle):
+            guard sessionID == handle.sessionID else { return }
+            working = true
+            runtimeState = "Working"
+            workingPhase = .waitingForProvider
         case let .turnCompleted(result):
+            guard sessionID == result.sessionID else { return }
             working = false; runtimeState = "Ready"
-            let usage = result.usage.map { " · input \($0.inputTokens.map(String.init) ?? "-") · output \($0.outputTokens.map(String.init) ?? "-")" } ?? ""
-            append(.result, "完成\(usage)")
+            workingPhase = .ready
+            runningSubagentIDs.removeAll()
+            providerActivities.removeAll()
+            projector.consume(turnCompleted: result)
             if let client { await refreshContext(client) }
-        case let .turnFailed(failure): working = false; runtimeState = "Error"; append(.error, failure.error.message)
-        case let .toolCallCompleted(call): append(.toolCall, "\(call.toolID.rawValue)")
-        case let .toolResult(result): append(.toolResult, result.success ? "成功" : result.error?.message ?? "失败")
-        case let .permissionAsked(request): runtimeState = "Action Required"; overlay = .permission(request)
-        case let .questionAsked(request), let .questionEscalated(request): runtimeState = "Action Required"; overlay = .question(request, selected: 0)
-        case let .subagentSpawned(run), let .agentRunQueued(run), let .agentRunStarted(run), let .agentRunStatusChanged(run), let .agentRunCompleted(run), let .agentRunFailed(run), let .agentRunCancelled(run): append(.subagent, "\(run.title ?? run.runID.rawValue) · \(run.status.rawValue)")
+        case let .turnFailed(failure):
+            guard sessionID == failure.sessionID else { return }
+            working = false
+            runningSubagentIDs.removeAll()
+            providerActivities.removeAll()
+            if failure.error.code == .toolCancelled {
+                runtimeState = "Ready"
+                workingPhase = .ready
+                appendCancelledItemOnce()
+            } else {
+                runtimeState = "Error"
+                workingPhase = .error(message: failure.error.message)
+                projector.consume(turnFailed: failure)
+            }
+        case let .toolCallCompleted(call):
+            guard call.sessionID == nil || call.sessionID == sessionID else { return }
+            workingPhase = .runningTool(name: call.toolID.rawValue)
+            projector.consume(toolCall: call)
+        case let .toolResult(result):
+            guard result.sessionID == nil || result.sessionID == sessionID else { return }
+            if !runningSubagentIDs.isEmpty {
+                workingPhase = .runningSubagents(count: runningSubagentIDs.count)
+            } else {
+                workingPhase = .waitingForProvider
+            }
+            projector.consume(toolResult: result)
+        case let .permissionAsked(request):
+            guard sessionID == request.sessionID else { return }
+            runtimeState = "Action Required"
+            workingPhase = .actionRequired(prompt: "Permission required · \(request.toolID.rawValue)")
+            openPermission(request)
+        case let .questionAsked(request), let .questionEscalated(request):
+            guard request.originSessionID == nil || request.originSessionID == sessionID else { return }
+            runtimeState = "Action Required"
+            workingPhase = .actionRequired(prompt: "Question: \(request.question)")
+            openQuestion(request)
+        case let .subagentSpawned(run), let .agentRunQueued(run), let .agentRunStarted(run), let .agentRunStatusChanged(run), let .agentRunCompleted(run), let .agentRunFailed(run), let .agentRunCancelled(run):
+            if run.parentRunID == nil {
+                guard run.sessionID == sessionID else { return }
+                visibleRunIDs.insert(run.runID)
+                if run.status == .cancelled {
+                    working = false
+                    runtimeState = "Ready"
+                    workingPhase = .ready
+                    runningSubagentIDs.removeAll()
+                    providerActivities.removeAll()
+                    appendCancelledItemOnce()
+                }
+            } else {
+                guard let parentRunID = run.parentRunID, visibleRunIDs.contains(parentRunID) else { return }
+                visibleRunIDs.insert(run.runID)
+                projector.consume(agentRun: run)
+                if run.status == .running || run.status == .queued {
+                    runningSubagentIDs.insert(run.runID)
+                } else {
+                    runningSubagentIDs.remove(run.runID)
+                }
+            }
+            if !runningSubagentIDs.isEmpty {
+                workingPhase = .runningSubagents(count: runningSubagentIDs.count)
+            } else if working {
+                workingPhase = .waitingForProvider
+            } else {
+                workingPhase = .ready
+            }
         case .stateChanged, .childSessionCreated, .subagentResultAvailable, .sessionCreated: break
         }
     }
 
-    private func handleInput(_ input: InputEvent) async {
+    private func handleInput(_ input: TUIInputEvent) async {
+        if input == .escape, working {
+            await stopCommand([])
+            return
+        }
         if case .permission = overlay {
             await handlePermissionInput(input)
             return
@@ -291,17 +395,31 @@ final class RetainedTUI: @unchecked Sendable {
             await handleEndpointInput(input, flowID: flowID)
             return
         }
+        if case let .completion(items, selected, tokenStart) = overlay {
+            await handleCompletionInput(input, items: items, selected: selected, tokenStart: tokenStart)
+            return
+        }
+        if case .commandPalette = overlay {
+            await handleCommandPaletteInput(input)
+            return
+        }
         if case .command = overlay {
             let candidates = commandCandidates()
             switch input {
             case .backspace:
-                if !composer.isEmpty { composer.removeLast() }
+                _ = app.composer.handle(input)
+                syncComposer()
                 if composer.isEmpty { overlay = nil }
-            case let .character(character):
-                composer.append(character)
-            case .up: commandSelection = max(0, commandSelection - 1)
-            case .down: commandSelection = min(max(0, candidates.count - 1), commandSelection + 1)
+            case .character, .paste:
+                _ = app.composer.handle(input)
+                syncComposer()
+            case .up, .down:
+                slashCompletion.handle(input)
+                commandSelection = slashCompletion.selectedIndex
             case .escape: overlay = nil
+            case .tab:
+                guard candidates.indices.contains(commandSelection) else { return }
+                completeCommand(candidates[commandSelection])
             case .enter:
                 guard candidates.indices.contains(commandSelection) else { overlay = nil; return }
                 let typed = composer.dropFirst().split(whereSeparator: \ .isWhitespace).map(String.init)
@@ -313,14 +431,60 @@ final class RetainedTUI: @unchecked Sendable {
             return
         }
         switch input {
+        case .enter where app.focus == .transcript:
+            app.transcript.toggleSelectedCollapse()
         case .enter: await submit()
-        case .backspace: if !composer.isEmpty { composer.removeLast() }
-        case let .character(character):
-            composer.append(character)
-            if composer.first == "/" { overlay = .command; commandSelection = 0 } else { overlay = nil }
-        case .escape: composer.removeAll(); overlay = nil
+        case .character(" ") where app.focus == .transcript:
+            app.transcript.toggleSelectedCollapse()
+        case .left where app.focus == .transcript:
+            app.transcript.collapseSelected()
+        case .right where app.focus == .transcript:
+            app.transcript.expandSelected()
+        case .escape where app.focus == .transcript:
+            app.transcript.clearSelection()
+            app.setFocus(.composer)
+        case .character, .paste, .backspace, .delete, .deleteWordBackward, .left, .right, .home, .end, .shiftEnter:
+            app.setFocus(.composer)
+            let action = app.composer.handle(input)
+            syncComposer()
+            if action == .submit { await submit() }
+            updateCompletion()
+        case .escape: composer.removeAll(); app.composer.clear(); overlay = nil
+        case .pageUp, .pageDown, .scrollUp, .scrollDown: app.handleTranscriptInput(input, viewportHeight: max(1, terminal.size.height - 8))
+        case .up where app.composer.isEmpty:
+            app.setFocus(.transcript)
+            app.transcript.selectPrevious()
+            app.handleTranscriptInput(input, viewportHeight: max(1, terminal.size.height - 8))
+        case .down where app.composer.isEmpty:
+            app.setFocus(.transcript)
+            app.transcript.selectNext()
+            app.handleTranscriptInput(input, viewportHeight: max(1, terminal.size.height - 8))
+        case .up:
+            if app.focus == .transcript {
+                app.transcript.selectPrevious()
+            } else {
+                app.setFocus(.composer)
+                let action = app.composer.handle(input)
+                syncComposer()
+                if action == .submit { await submit() }
+                updateCompletion()
+            }
+        case .down:
+            if app.focus == .transcript {
+                app.transcript.selectNext()
+            } else {
+                app.setFocus(.composer)
+                let action = app.composer.handle(input)
+                syncComposer()
+                if action == .submit { await submit() }
+                updateCompletion()
+            }
         case .interrupt, .quit: shouldQuit = true
-        case .up, .down, .left, .right, .home, .end, .tab: break
+        case .resize, .tick, .mouseClick: break
+        case .shiftTab: await cycleBehaviorProfile()
+        case .tab: completeActiveCompletion()
+        case .commandPalette: openCommandPalette()
+        case .cycleReasoningEffort: break
         }
     }
 
@@ -362,7 +526,7 @@ final class RetainedTUI: @unchecked Sendable {
         case .compact: await compactCommand()
         case .perf: await perfCommand()
         case .mode: await modeCommand(args)
-        case .permissions: await permissionsCommand()
+        case .permissions: await permissionsCommand(args)
         case .subagents: await subagentsCommand()
         case .mcp: await mcpCommand()
         case .skills: await extensionCommand(.skill)
@@ -371,7 +535,7 @@ final class RetainedTUI: @unchecked Sendable {
         case .diff: await diffCommand()
         case .ps: await psCommand()
         case .stop: await stopCommand(args)
-        case .clear: transcript.removeAll()
+        case .clear: projector.reset()
         case .help: append(.result, registry.map { "/\($0.name)  \($0.description)" }.joined(separator: "\n"))
         case .quit: shouldQuit = true
         }
@@ -381,7 +545,7 @@ final class RetainedTUI: @unchecked Sendable {
         guard let client else { return }
         do {
             let models = try await client.listProviderModels()
-            if let value = args.first { _ = try await client.selectProviderModel(value); activeModel = value; providerConfigured = true; append(.decision, "模型已选择: \(value)"); return }
+            if let value = args.first { _ = try await client.selectProviderModel(value); activeModel = value; providerConfigured = true; append(.result, "模型已选择: \(value)"); return }
             guard !models.isEmpty else { append(.error, "没有可用模型；先配置 providers.json 或执行 /connect"); return }
             overlay = .picker(title: "Select model", items: models.map { "\($0.providerID)/\($0.modelID) · \($0.displayName)" }, selected: max(0, models.firstIndex { "\($0.providerID)/\($0.modelID)" == activeModel } ?? 0), action: .model)
         } catch { append(.error, String(describing: error)) }
@@ -406,7 +570,7 @@ final class RetainedTUI: @unchecked Sendable {
 
     private func newSession() async {
         guard let client else { return }
-        do { sessionID = try await client.createSession(); transcript.removeAll(); append(.result, "新 Session 已创建") }
+        do { sessionID = try await client.createSession(); resetPresentation(); append(.result, "新 Session 已创建") }
         catch { append(.error, String(describing: error)) }
     }
 
@@ -421,13 +585,13 @@ final class RetainedTUI: @unchecked Sendable {
 
     private func renameCommand(_ args: [String]) async {
         guard let client, let sessionID, !args.isEmpty else { append(.error, "用法: /rename <title>"); return }
-        do { _ = try await client.renameSession(sessionID, title: args.joined(separator: " ")); append(.decision, "Session 已重命名") }
+        do { _ = try await client.renameSession(sessionID, title: args.joined(separator: " ")); append(.result, "Session 已重命名") }
         catch { append(.error, String(describing: error)) }
     }
 
     private func refreshStatus() async {
         guard let client else { return }
-        do { let status = try await client.providerStatus(); providerConfigured = status.configured; activeModel = status.model ?? activeModel; permissionConfiguration = try await client.permissionConfiguration(); await refreshContext(client); append(.result, "Provider \(status.configured ? "configured" : "disconnected") · \(status.model ?? "未选择模型")") }
+        do { let status = try await client.providerStatus(); providerConfigured = status.configured; activeModel = status.model ?? activeModel; permissionConfiguration = try await client.permissionConfiguration(); behaviorProfile = try await client.agentBehaviorProfile(); await refreshContext(client); append(.result, "Provider \(status.configured ? "configured" : "disconnected") · \(status.model ?? "未选择模型")") }
         catch { append(.error, String(describing: error)) }
     }
 
@@ -443,30 +607,74 @@ final class RetainedTUI: @unchecked Sendable {
     private func compactCommand() async { guard let client, let sessionID else { return }; do { let result = try await client.compact(sessionID); append(.result, "Compaction \(result.beforeEstimatedTokens) -> \(result.afterEstimatedTokens) tokens"); await refreshContext(client) } catch { append(.error, String(describing: error)) } }
     private func perfCommand() async { guard let client, let sessionID else { return }; do { let result = try await client.performance(sessionID); append(.result, result.map { "Turn \(String(format: "%.1f", $0.totalMilliseconds)) ms · steps \($0.stepCount)" } ?? "性能报告不可用") } catch { append(.error, String(describing: error)) } }
 
-    private func permissionsCommand() async { guard let client else { return }; do { permissionConfiguration = try await client.permissionConfiguration(); append(.result, "policy \(permissionConfiguration.policy.rawValue) · profile \(permissionConfiguration.profile.rawValue)") } catch { append(.error, String(describing: error)) } }
+    private func permissionsCommand(_ args: [String]) async {
+        guard let client else { return }
+        let configuration: PermissionConfiguration?
+        switch args.first?.lowercased() {
+        case "ask": configuration = .strict
+        case "auto": configuration = .agent
+        case "yolo": configuration = .yolo
+        case nil: configuration = nil
+        default: append(.error, "用法: /permissions ask|auto|yolo"); return
+        }
+        guard let configuration else { overlay = .picker(title: "Permissions", items: ["Ask", "Auto", "YOLO"], selected: permissionPickerIndex, action: .permissions); return }
+        do { try await client.setPermissionConfiguration(configuration); permissionConfiguration = configuration; append(.result, "permissions: \(permissionSummary)") } catch { append(.error, String(describing: error)) }
+    }
 
     private func modeCommand(_ args: [String]) async {
         guard let client else { return }
-        let configuration: PermissionConfiguration?
-        switch args.first {
-        case "strict": configuration = .strict
-        case "agent": configuration = .agent
-        case "yolo": configuration = .yolo
-        default: configuration = nil
+        let profile: AgentBehaviorProfile?
+        switch args.first?.lowercased() {
+        case "build": profile = .build
+        case "plan": profile = .plan
+        case "explore": profile = .explore
+        case nil: profile = nil
+        default: append(.error, "用法: /mode build|plan|explore"); return
         }
-        guard let configuration else { overlay = .picker(title: "Execution mode", items: ["strict", "agent", "yolo"], selected: 0, action: .mode); return }
-        do { try await client.setPermissionConfiguration(configuration); permissionConfiguration = configuration; append(.decision, "mode: \(args[0])") } catch { append(.error, String(describing: error)) }
+        guard let profile else { overlay = .picker(title: "Agent mode", items: ["Build", "Plan", "Explore"], selected: modePickerIndex, action: .mode); return }
+        do { try await client.setAgentBehaviorProfile(profile); behaviorProfile = profile; append(.result, "mode: \(profile.displayName)") } catch { append(.error, String(describing: error)) }
     }
 
     private func subagentsCommand() async { guard let client, let sessionID else { return }; do { let tree = try await client.getAgentTree((try await client.session(sessionID)).rootSessionID); append(.subagent, renderTree(tree)) } catch { append(.error, String(describing: error)) } }
     private func psCommand() async { guard let client, let sessionID else { return }; do { append(.result, try await client.listAgentRuns(sessionID).map { "\($0.runID.rawValue) · \($0.status.rawValue) · \($0.modelSelection.modelID)" }.joined(separator: "\n").ifEmpty("没有 AgentRun")) } catch { append(.error, String(describing: error)) } }
-    private func stopCommand(_ args: [String]) async { guard let client, let sessionID else { return }; do { let runs = try await client.listAgentRuns(sessionID); guard let run = args.first.flatMap({ value in runs.first { $0.runID.rawValue == value } }) ?? runs.last(where: { !$0.status.isTerminal }) else { append(.result, "没有可停止的运行"); return }; try await client.cancelAgentRun(run.runID); append(.decision, "已停止 \(run.runID.rawValue)") } catch { append(.error, String(describing: error)) } }
+    private func appendCancelledItemOnce() {
+        if !projector.items.contains(where: { $0.state == .cancelled && $0.title == "Cancelled by user" }) {
+            projector.appendItem(TUITimelineItem(
+                id: "cancelled-\(UUID().uuidString.prefix(8))",
+                kind: .result,
+                title: "Cancelled by user",
+                summary: "Cancelled by user",
+                details: [],
+                state: .cancelled,
+                collapsed: false
+            ))
+        }
+    }
+
+    private func stopCommand(_ args: [String]) async {
+        guard let client, let sessionID else { return }
+        working = false
+        runtimeState = "Ready"
+        workingPhase = .ready
+        runningSubagentIDs.removeAll()
+        providerActivities.removeAll()
+        appendCancelledItemOnce()
+        do {
+            let runs = try await client.listAgentRuns(sessionID)
+            guard let run = args.first.flatMap({ value in runs.first { $0.runID.rawValue == value } }) ?? runs.last(where: { !$0.status.isTerminal }) else {
+                return
+            }
+            try await client.cancelAgentRun(run.runID)
+        } catch {
+            // Cancel requested
+        }
+    }
 
     private func mcpCommand() async { guard let client else { return }; do { let bundle = try await client.diagnostics(); append(.result, "MCP tools \(bundle.mcp.catalogTools) · schemas \(bundle.mcp.schemaFiles) · leases \(bundle.mcp.activeLeases) · page faults \(bundle.mcp.pageFaults)") } catch { append(.error, String(describing: error)) } }
     private func extensionCommand(_ kind: ExtensionKind) async { guard let client else { return }; do { let values = try await client.listExtensions(kind: kind); append(.result, values.map { "\($0.id) · \($0.scope) · \($0.lifecycleState)\($0.enabled ? "" : " · disabled")" }.joined(separator: "\n").ifEmpty("没有可用 \(kind.rawValue)")) } catch { append(.error, String(describing: error)) } }
     private func diffCommand() async { guard let client else { return }; do { append(.result, try await client.workspaceDiff().ifEmpty("工作区无未提交 diff")) } catch { append(.error, String(describing: error)) } }
 
-    private func handlePickerInput(_ input: InputEvent, title: String, items: [String], selected: Int, action: PickerAction) async {
+    private func handlePickerInput(_ input: TUIInputEvent, title: String, items: [String], selected: Int, action: PickerAction) async {
         var index = selected
         switch input {
         case .up: index = max(0, index - 1)
@@ -483,11 +691,25 @@ final class RetainedTUI: @unchecked Sendable {
         overlay = nil
         switch action {
         case .model:
-            do { let models = try await client.listProviderModels(); guard models.indices.contains(index) else { return }; let value = "\(models[index].providerID)/\(models[index].modelID)"; _ = try await client.selectProviderModel(value); activeModel = value; providerConfigured = true; append(.decision, "模型已选择: \(value)") } catch { append(.error, String(describing: error)) }
+            do { let models = try await client.listProviderModels(); guard models.indices.contains(index) else { return }; let value = "\(models[index].providerID)/\(models[index].modelID)"; _ = try await client.selectProviderModel(value); activeModel = value; providerConfigured = true; append(.result, "模型已选择: \(value)") } catch { append(.error, String(describing: error)) }
         case .session:
-            do { let sessions = try await client.sessions(); guard sessions.indices.contains(index) else { return }; sessionID = sessions[index].id; await loadTranscript(client, id: sessions[index].id) } catch { append(.error, String(describing: error)) }
-        case .mode: await modeCommand([["strict", "agent", "yolo"][index]])
+            do { let sessions = try await client.sessions(); guard sessions.indices.contains(index) else { return }; sessionID = sessions[index].id; resetPresentation(); await loadTranscript(client, id: sessions[index].id); await promptRecoveryIfNeeded(client, sessionID: sessions[index].id) } catch { append(.error, String(describing: error)) }
+        case .mode: await modeCommand([["build", "plan", "explore"][index]])
+        case .permissions: await permissionsCommand([["ask", "auto", "yolo"][index]])
         case .provider: await beginProvider(index)
+        case let .recovery(runID):
+            do {
+                if index == 0 {
+                    let run = try await client.resumeAgentRun(runID)
+                    sessionID = run.sessionID
+                    resetPresentation()
+                    await loadTranscript(client, id: run.sessionID)
+                    append(.result, "已恢复运行: \(runID.rawValue)")
+                } else {
+                    try await client.cancelAgentRun(runID)
+                    append(.result, "已放弃运行: \(runID.rawValue)")
+                }
+            } catch { append(.error, String(describing: error)) }
         }
     }
 
@@ -499,15 +721,15 @@ final class RetainedTUI: @unchecked Sendable {
         } catch { append(.error, String(describing: error)) }
     }
 
-    private func handleCredentialInput(_ input: InputEvent, flowID: String) async {
+    private func handleCredentialInput(_ input: TUIInputEvent, flowID: String) async {
         switch input { case .backspace: if !composer.isEmpty { composer.removeLast() }; case let .character(c): composer.append(c); case .escape: overlay = nil; secretInput = false; composer.removeAll(); case .enter: do { _ = try await providerService?.submitCredential(flowID: flowID, credential: composer); composer.removeAll(); overlay = nil; secretInput = false; providerConfigured = true; runtimeState = "Ready"; append(.result, "Provider credential 已保存并连接") } catch { append(.error, String(describing: error)) }; default: break }
     }
 
-    private func handleEndpointInput(_ input: InputEvent, flowID: String) async {
+    private func handleEndpointInput(_ input: TUIInputEvent, flowID: String) async {
         switch input { case .backspace: if !composer.isEmpty { composer.removeLast() }; case let .character(c): composer.append(c); case .escape: overlay = nil; composer.removeAll(); case .enter: do { _ = try await providerService?.submitLocalEndpoint(flowID: flowID, endpoint: composer); composer.removeAll(); overlay = nil; append(.result, "Provider endpoint 已连接") } catch { append(.error, String(describing: error)) }; default: break }
     }
 
-    private func handlePermissionInput(_ input: InputEvent) async {
+    private func handlePermissionInput(_ input: TUIInputEvent) async {
         guard case let .permission(request) = overlay else { return }
         switch input { case .up, .left: await replyPermission(request, decision: .deny); case .down, .right, .enter: await replyPermission(request, decision: .allow); case .escape: await replyPermission(request, decision: .deny); default: break }
     }
@@ -516,7 +738,7 @@ final class RetainedTUI: @unchecked Sendable {
         do { try await client?.replyPermission(PermissionReply(permissionID: request.permissionID, decision: decision)); overlay = nil; runtimeState = "Working" } catch { append(.error, String(describing: error)) }
     }
 
-    private func handleQuestionInput(_ input: InputEvent, request: QuestionRequest, selected: Int) async {
+    private func handleQuestionInput(_ input: TUIInputEvent, request: QuestionRequest, selected: Int) async {
         var index = selected
         switch input {
         case .up: index = max(0, index - 1)
@@ -535,7 +757,27 @@ final class RetainedTUI: @unchecked Sendable {
     }
 
     private func loadTranscript(_ client: LingXiClient, id: SessionID) async {
-            do { let snapshot = try await client.session(id); transcript = snapshot.messages.map { message in TranscriptEntry(kind: message.role == .user ? .user : message.role == .assistant ? .assistant : .toolResult, text: message.content) } } catch { append(.error, String(describing: error)) }
+        do {
+            let snapshot = try await client.session(id)
+            projector.consume(persistedMessages: snapshot.messages)
+        } catch { append(.error, String(describing: error), state: .failed) }
+    }
+
+    private func promptRecoveryIfNeeded(_ client: LingXiClient, sessionID: SessionID) async {
+        do {
+            guard let run = try await client.listAgentRuns(sessionID).filter({ !$0.status.isTerminal }).sorted(by: { $0.latestActivityAt > $1.latestActivityAt }).first else { return }
+            overlay = .picker(title: "发现未完成运行", items: ["Resume \(run.runID.rawValue)", "Abandon \(run.runID.rawValue)"], selected: 0, action: .recovery(runID: run.runID))
+        } catch { append(.error, String(describing: error)) }
+    }
+
+    private func resetPresentation() {
+        projector.reset()
+        visibleRunIDs.removeAll()
+        overlay = nil
+        composer.removeAll()
+        app.composer.clear()
+        app.transcript.replace([])
+        app.setFocus(.composer)
     }
 
     private func refreshContext(_ client: LingXiClient) async {
@@ -546,39 +788,234 @@ final class RetainedTUI: @unchecked Sendable {
     }
 
     private func contextDetails(_ projection: ContextCacheProjection) -> String {
-        [layerDetails(projection.l1), layerDetails(projection.l2), layerDetails(projection.l3), "Paging: \(projection.pagingActivity.rawValue)", "Compaction generation: \(projection.compactionGeneration)"].joined(separator: "\n")
-    }
+        let p = projection.policy
+        let l1 = projection.l1
+        let l2 = projection.l2
+        let l3 = projection.l3
+        let pg = projection.paging
 
-    private func layerDetails(_ layer: ContextLayerStatus) -> String {
-        let usage = layer.usage.map(String.init) ?? "-"
-        let capacity = layer.capacity.map(String.init) ?? "-"
-        let percent = layer.percent.map { "\($0)%" } ?? "-"
-        let pages = layer.residentPages.map(String.init) ?? "-"
-        let totalPages = layer.totalPages.map(String.init) ?? "-"
-        return "\(layer.layer.rawValue.uppercased()) · \(usage)/\(capacity) \(layer.unit) · \(percent) · \(layer.state.rawValue) · pages \(pages)/\(totalPages) · in \(layer.pageInCount) · out \(layer.pageOutCount)"
+        var lines: [String] = []
+        lines.append("Context")
+        lines.append("")
+        lines.append(String(format: "%-22@ %@", "Addressable Budget", TokenFormatter.format(p.addressableBudget)))
+        lines.append(String(format: "%-22@ %@", "Model Window", TokenFormatter.format(p.modelWindow)))
+        if let economic = p.economicThreshold {
+            lines.append(String(format: "%-22@ %@", "Economic Threshold", TokenFormatter.format(economic)))
+        }
+        lines.append(String(format: "%-22@ %@", "Reserve", TokenFormatter.format(p.reserve)))
+        lines.append("")
+        lines.append("L1 · Hot Working Set")
+        let l1Usage = l1.usageTokens == 0 ? "0" : TokenFormatter.format(l1.usageTokens)
+        lines.append(String(format: "  %-20@ %@", "Usage", l1Usage))
+        if let lastInput = projection.lastProviderInputTokens {
+            lines.append(String(format: "  %-20@ %@", "Last Provider Input", TokenFormatter.format(lastInput)))
+        }
+        lines.append(String(format: "  %-20@ %@", "Target", TokenFormatter.format(p.l1Target)))
+        lines.append(String(format: "  %-20@ %@", "Soft Limit", TokenFormatter.format(p.l1SoftLimit)))
+        lines.append(String(format: "  %-20@ %@", "Hard Limit", TokenFormatter.format(p.l1HardLimit)))
+        lines.append(String(format: "  %-20@ %d", "Entries", l1.entryCount))
+        lines.append("")
+        lines.append("L2 · Warm Cache")
+        let l2Usage = l2.usageTokens == 0 ? "0" : TokenFormatter.format(l2.usageTokens)
+        lines.append(String(format: "  %-20@ %@ / %@", "Usage", l2Usage, TokenFormatter.format(l2.capacityTokens)))
+        lines.append(String(format: "  %-20@ %d", "Entries", l2.entryCount))
+        lines.append("")
+        lines.append("L3 · Cold Cache")
+        if l3.state == .unavailable {
+            lines.append("  State                off")
+        } else {
+            let l3Usage = l3.usageTokens == 0 ? "0" : TokenFormatter.format(l3.usageTokens)
+            lines.append(String(format: "  %-20@ %@ / %@", "Usage", l3Usage, TokenFormatter.format(l3.capacityTokens)))
+            lines.append(String(format: "  %-20@ %d", "Entries", l3.entryCount))
+        }
+        lines.append("")
+        lines.append("Paging")
+        lines.append(String(format: "  %-20@ %d", "Page-ins", pg.pageIns))
+        lines.append(String(format: "  %-20@ %d", "Page-outs", pg.pageOuts))
+        lines.append(String(format: "  %-20@ %d", "Promotions", pg.promotions))
+        lines.append(String(format: "  %-20@ %d", "Demotions", pg.demotions))
+
+        return lines.joined(separator: "\n")
     }
 
     private func renderTree(_ node: AgentTreeNode, _ indent: String = "") -> String { let head = indent + (node.session.title ?? node.session.id.rawValue) + (node.latestRun.map { " · \($0.status.rawValue)" } ?? ""); return ([head] + node.children.map { renderTree($0, indent + "  ") }).joined(separator: "\n") }
 
-    private func append(_ kind: TranscriptKind, _ text: String) { transcript.append(TranscriptEntry(kind: kind, text: text)) }
+    private func timelineKind(for kind: TranscriptKind) -> TUITimelineKind {
+        switch kind {
+        case .user: .user
+        case .assistant: .assistant
+        case .thinking: .thinking
+        case .read: .read
+        case .search: .search
+        case .edit: .edit
+        case .patch: .patch
+        case .write: .write
+        case .shell: .shell
+        case .git: .git
+        case .mcp: .mcp
+        case .toolCall: .tool
+        case .toolResult: .toolResult
+        case .subagent: .subagent
+        case .question: .question
+        case .permission: .permission
+        case .decision: .decision
+        case .error: .error
+        case .result: .result
+        }
+    }
+
+    private func timelineKind(for tool: String) -> TranscriptKind {
+        let normalized = tool.lowercased()
+        if normalized.contains("mcp") { return .mcp }
+        if normalized.contains("git") { return .git }
+        if normalized.contains("shell") || normalized.contains("exec") || normalized.contains("command") { return .shell }
+        if normalized.contains("patch") { return .patch }
+        if normalized.contains("edit") || normalized.contains("modify") { return .edit }
+        if normalized.contains("write") || normalized.contains("create") { return .write }
+        if normalized.contains("search") || normalized.contains("find") || normalized.contains("list") || normalized.contains("grep") { return .search }
+        if normalized.contains("read") || normalized.contains("cat") || normalized.contains("file") { return .read }
+        return .toolCall
+    }
+
+    private func append(_ kind: TranscriptKind, _ text: String, summary: String = "", details: [String] = [], state: TUITimelineState = .completed, collapsed: Bool = false, parentID: String? = nil) {
+        if kind == .error {
+            projector.recordError(message: text)
+        } else {
+            projector.appendItem(TUITimelineItem(id: UUID().uuidString.prefix(8).description, kind: timelineKind(for: kind), title: summary.ifEmpty(kind.rawValue), summary: text, details: details, state: state, collapsed: collapsed, parentID: parentID))
+        }
+    }
+
+    private func openPermission(_ request: PermissionRequest) {
+        previousFocus = app.focus
+        overlay = .permission(request)
+        append(.permission, request.description, summary: "Permission Required · \(request.toolID.rawValue)", details: [request.resource], state: .warning)
+    }
+
+    private func openQuestion(_ request: QuestionRequest) {
+        previousFocus = app.focus
+        overlay = .question(request, selected: 0)
+        append(.question, request.question, summary: "Question", details: request.options, state: .warning)
+    }
+
+    private func timelineState(for outcome: ToolOutcome) -> TUITimelineState {
+        switch outcome {
+        case .success: .completed
+        case .denied: .denied
+        case .cancelled: .cancelled
+        case .timedOut, .idleTimedOut: .timedOut
+        case .failure: .failed
+        }
+    }
+
+    private func toolSummary(_ call: ToolCall) -> String {
+        call.arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? call.toolID.rawValue : "\(call.toolID.rawValue) · arguments received"
+    }
+
+    private func toolDetails(_ result: ToolResult) -> [String] {
+        var details: [String] = []
+        if let exitCode = result.exitCode { details.append("exit \(exitCode)") }
+        if result.timing.milliseconds > 0 { details.append(String(format: "duration %.1fs", result.timing.milliseconds / 1000)) }
+        if result.timing.queueMilliseconds > 0 { details.append(String(format: "queue %.1fs", result.timing.queueMilliseconds / 1000)) }
+        if result.timing.permissionMilliseconds > 0 { details.append(String(format: "permission %.1fs", result.timing.permissionMilliseconds / 1000)) }
+        details.append(contentsOf: result.changedFiles.map { "file: \($0)" })
+        if !result.content.isEmpty { details.append(contentsOf: result.content.split(separator: "\n", omittingEmptySubsequences: false).prefix(80).map(String.init)) }
+        if let error = result.error { details.append("\(error.code): \(error.message)") }
+        return details
+    }
+
+    private var workingStatusText: String {
+        guard working else { return "✓ Ready" }
+        switch workingPhase {
+        case .ready:
+            return "✓ Ready"
+        case .thinking:
+            let glyph = Self.spinnerFrames[spinnerFrameIndex % Self.spinnerFrames.count]
+            return "\(glyph) Thinking"
+        case let .runningTool(name):
+            let glyph = Self.spinnerFrames[spinnerFrameIndex % Self.spinnerFrames.count]
+            return "\(glyph) Running \(name)"
+        case .waitingForProvider:
+            let glyph = Self.spinnerFrames[spinnerFrameIndex % Self.spinnerFrames.count]
+            if let activeActivity = providerActivities.values.first(where: { !$0.state.isTerminal }) {
+                if activeActivity.state == .waitingForRateBudget {
+                    return "\(glyph) Waiting for Rate Budget"
+                }
+            }
+            return "\(glyph) Waiting for Provider"
+        case let .runningSubagents(count):
+            let glyph = Self.spinnerFrames[spinnerFrameIndex % Self.spinnerFrames.count]
+            return "\(glyph) \(count) subagent\(count > 1 ? "s" : "")"
+        case .paging:
+            let glyph = Self.spinnerFrames[spinnerFrameIndex % Self.spinnerFrames.count]
+            return "\(glyph) Compacting"
+        case let .actionRequired(prompt):
+            return "? \(prompt)"
+        case let .error(message):
+            return "! Error\(message.isEmpty ? "" : ": " + message)"
+        case .disconnected:
+            return "○ Disconnected"
+        }
+    }
 
     private func render() {
-        var lines: [String] = ["\u{1B}[2J\u{1B}[H", "LingXiAgent  ·  Session \(sessionID?.rawValue.prefix(8) ?? "-")"]
-        let maxTranscript = max(1, terminal.height - 5)
-        let visible = transcript.flatMap { entry in entry.text.split(separator: "\n", omittingEmptySubsequences: false).map { "\(entry.kind.rawValue.padding(toLength: 11, withPad: " ", startingAt: 0)) │ \($0)" } }.suffix(maxTranscript)
-        lines.append(contentsOf: visible)
-        while lines.count < terminal.height - 3 { lines.append("") }
-        if let overlay { lines.append(contentsOf: overlayLines(overlay)) }
-        lines.append("─".repeating(terminal.width))
-        lines.append("\(composerPrefix())\(secretInput ? String(repeating: "•", count: composer.count) : composer)")
-        lines.append("\(activeModel) · \(FileManager.default.currentDirectoryPath.split(separator: "/").last ?? "project") · \(gitBranchName) · \(permissionConfiguration.profile.rawValue) · \(runtimeState) · L1 \(layerCompact(contextProjection?.l1)) · L2 \(layerCompact(contextProjection?.l2)) · L3 \(layerCompact(contextProjection?.l3))")
-        print(lines.map { truncate($0, width: terminal.width) }.joined(separator: "\n"), terminator: "")
-        fflush(stdout)
+        let size = terminal.size
+        app.header.subtitle = "Session \(sessionID?.rawValue.prefix(8) ?? "-")"
+        app.transcript.replaceTimeline(projector.items)
+        if app.composer.text != composer { app.composer.setText(composer) }
+        app.composer.masksInput = secretInput
+        let scrollHint = app.transcript.showsBackToCurrent ? " · ↓ Back to current" : ""
+        app.statusLine.text = statusLineText(scrollHint: scrollHint)
+        terminal.render(app.render(size: size, overlay: overlay.map(overlayModel)))
+    }
+
+    private func syncComposer() { composer = app.composer.text }
+
+    private var modePickerIndex: Int { [.build, .plan, .explore].firstIndex(of: behaviorProfile) ?? 0 }
+    private var permissionPickerIndex: Int { permissionConfiguration == .strict ? 0 : permissionConfiguration == .agent ? 1 : 2 }
+    private var permissionSummary: String {
+        if permissionConfiguration == .yolo { return "YOLO" }
+        return "\(permissionConfiguration.policy == .ask ? "Ask" : "Auto")/\(permissionConfiguration.profile == .workspace ? "Workspace" : "FullAccess")"
+    }
+
+    private func cycleBehaviorProfile() async {
+        await modeCommand([behaviorProfile.next.rawValue])
+    }
+
+    private func statusLineText(scrollHint: String) -> String {
+        "\(workingStatusText) · \(activeModel) · \(gitBranchName) · Mode \(behaviorProfile.displayName) · \(permissionSummary)\(scrollHint)"
+    }
+
+    private func overlayModel(_ overlay: Overlay) -> TUIOverlayModel {
+        if case .command = overlay {
+            slashCompletion.update(items: commandCandidates().map { TUICommandItem(name: $0.name, description: $0.description) }, selectedIndex: commandSelection)
+            return TUIOverlayModel(lines: slashCompletion.render(width: terminal.size.width), focus: .completion)
+        }
+        if case .commandPalette = overlay {
+            slashCompletion.update(items: availableCommands().map { TUICommandItem(name: $0.name, description: "\($0.category) · \($0.description)") }, selectedIndex: commandSelection)
+            return TUIOverlayModel(lines: [TUIStyledLine("Command Palette", style: .accent)] + slashCompletion.render(width: terminal.size.width), focus: .picker)
+        }
+        if case let .completion(items, selected, _) = overlay {
+            let view = CompletionView()
+            view.update(items: items, selectedIndex: selected)
+            return TUIOverlayModel(lines: [TUIStyledLine("Completion", style: .accent)] + view.render(), focus: .completion)
+        }
+        let focus: TUIFocus = switch overlay {
+        case .picker: .picker
+        case .permission: .permission
+        case .question: .permission
+        case .credential, .endpoint: .overlay
+        default: .overlay
+        }
+        return TUIOverlayModel(lines: overlayLines(overlay).enumerated().map { index, line in
+            TUIStyledLine(line, style: index == 0 ? .accent : .normal)
+        }, focus: focus)
     }
 
     private func overlayLines(_ overlay: Overlay) -> [String] {
         switch overlay {
         case .command: return (["", "Commands"] + commandCandidates().enumerated().map { "\($0.offset == commandSelection ? "›" : " ") /\($0.element.name)  \($0.element.description)" } + ["↑↓ navigate   Enter select   Esc cancel"])
+        case .commandPalette: return ["", "Command Palette", "↑↓ navigate   Enter select   Esc cancel"]
+        case .completion: return ["", "↑↓ navigate   Tab complete   Enter select   Esc cancel"]
         case let .picker(title, items, selected, _): return (["", title] + items.enumerated().map { "\($0.offset == selected ? "›" : " ") \($0.element)" } + ["↑↓ navigate   Enter select   Esc cancel"])
         case let .permission(request): return ["", "Permission Required", request.toolID.rawValue, request.resource, "← deny   Enter/→ allow   Esc deny"]
         case let .question(request, selected): return (["", "Question", request.question] + request.options.enumerated().map { "\($0.offset == selected ? "›" : " ") \($0.element)" } + [request.allowsFreeText ? "输入文本后 Enter" : "↑↓ navigate   Enter select", "Esc cancel"])
@@ -587,13 +1024,106 @@ final class RetainedTUI: @unchecked Sendable {
         }
     }
 
-    private func composerPrefix() -> String { composer.first == "/" ? "> " : "  " }
     private func commandCandidates() -> [CommandDescriptor] {
         let query = composer.dropFirst().split(whereSeparator: \ .isWhitespace).first.map(String.init) ?? ""
-        return registry.filter { $0.isAvailable(hasSession: sessionID != nil) && (query.isEmpty || $0.matches(query)) }
+        return availableCommands().filter { query.isEmpty || $0.matches(query) }
     }
-    private func layerCompact(_ layer: ContextLayerStatus?) -> String { guard let layer else { return "n/a" }; return layer.percent.map { "\($0)%" } ?? layer.state.rawValue }
-    private func truncate(_ value: String, width: Int) -> String { String(value.prefix(max(0, width))) }
+    private func availableCommands() -> [CommandDescriptor] { registry.filter { $0.isAvailable(hasSession: sessionID != nil) } }
+
+    private func updateCompletion() {
+        guard !composer.isEmpty else { overlay = nil; return }
+        if composer.first == "/" {
+            overlay = .command
+            commandSelection = 0
+            return
+        }
+        let characters = Array(composer)
+        let cursor = min(app.composer.cursor, characters.count)
+        guard let start = characters[..<cursor].lastIndex(where: { $0 == "@" }) else { overlay = nil; return }
+        let query = String(characters[(start + 1)..<cursor])
+        let items = workspaceCompletionItems(query: query)
+        guard !items.isEmpty else { overlay = nil; return }
+        previousFocus = app.focus
+        overlay = .completion(items: items, selected: 0, tokenStart: start)
+    }
+
+    private func workspaceCompletionItems(query: String) -> [TUICompletionItem] {
+        if referenceCandidates.isEmpty {
+            let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+                referenceCandidates = enumerator.compactMap { value -> String? in
+                    guard let url = value as? URL else { return nil }
+                    let path = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                    guard !path.isEmpty, !path.hasPrefix(".build/") else { return nil }
+                    return path
+                }.prefix(500).map { $0 }
+            }
+        }
+        let normalized = query.lowercased()
+        return referenceCandidates.filter { normalized.isEmpty || $0.lowercased().contains(normalized) }.prefix(12).map { path in
+            TUICompletionItem(value: path, label: "@\(path)", detail: "workspace", kind: .reference)
+        }
+    }
+
+    private func completeCommand(_ descriptor: CommandDescriptor) {
+        let parts = composer.dropFirst().split(whereSeparator: \ .isWhitespace).map(String.init)
+        composer = "/\(descriptor.name)" + (parts.dropFirst().isEmpty ? "" : " \(parts.dropFirst().joined(separator: " "))")
+        app.composer.setText(composer)
+        overlay = nil
+    }
+
+    private func completeActiveCompletion() {
+        guard case let .completion(items, selected, tokenStart) = overlay, items.indices.contains(selected) else { return }
+        let end = app.composer.cursor
+        app.composer.replaceRange(start: tokenStart, end: end, with: "@\(items[selected].value)")
+        syncComposer()
+        overlay = nil
+    }
+
+    private func handleCompletionInput(_ input: TUIInputEvent, items: [TUICompletionItem], selected: Int, tokenStart: Int) async {
+        var index = selected
+        switch input {
+        case .up: index = max(0, index - 1)
+        case .down: index = min(items.count - 1, index + 1)
+        case .escape: overlay = nil; return
+        case .tab: completeActiveCompletion(); return
+        case .enter: completeActiveCompletion(); return
+        default:
+            let action = app.composer.handle(input)
+            syncComposer()
+            if action == .submit { overlay = nil; await submit(); return }
+            updateCompletion()
+            return
+        }
+        overlay = .completion(items: items, selected: index, tokenStart: tokenStart)
+    }
+
+    private func openCommandPalette() {
+        previousFocus = app.focus
+        commandSelection = 0
+        overlay = .commandPalette
+    }
+
+    private func handleCommandPaletteInput(_ input: TUIInputEvent) async {
+        let candidates = availableCommands()
+        switch input {
+        case .up: commandSelection = max(0, commandSelection - 1)
+        case .down: commandSelection = min(max(0, candidates.count - 1), commandSelection + 1)
+        case .escape: overlay = nil
+        case .enter:
+            guard candidates.indices.contains(commandSelection) else { overlay = nil; return }
+            overlay = nil
+            await routeCommand("/\(candidates[commandSelection].name)")
+        default: break
+        }
+    }
+    private func layerCompact(name: String, _ layer: ContextLayerStatus?) -> String {
+        guard let layer else {
+            let cap = name == "L1" ? 220_000 : (name == "L2" ? 350_000 : 456_576)
+            return "\(name) 0/\(TokenFormatter.format(cap))"
+        }
+        return TokenFormatter.formatLayer(layer: name, usage: layer.usageTokens, capacity: layer.capacityTokens, state: layer.state)
+    }
     private func detectGitBranch() -> String {
         let process = Process()
         let output = Pipe()

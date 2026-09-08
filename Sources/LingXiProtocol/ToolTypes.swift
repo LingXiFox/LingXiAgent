@@ -31,7 +31,6 @@ public indirect enum JSONValue: Sendable, Equatable, Codable {
         }
     }
 }
-
 /// LingXi 的 Tool 领域类型；不包含任何 Provider 原生 schema 或 DTO。
 public struct ToolID: Sendable, Equatable, Hashable, Codable {
     public let rawValue: String
@@ -144,13 +143,53 @@ public struct ToolCall: Sendable, Equatable, Codable {
     public let toolID: ToolID
     /// Provider Adapter 已聚合的完整 JSON object，Tool Runtime 负责解码并校验。
     public let arguments: String
+    public let sessionID: SessionID?
+    public let agentRunID: AgentRunID?
+    public let modelStepID: ModelStepID?
 
     public var toolName: String { toolID.rawValue }
 
-    public init(callID: ToolCallID, toolID: ToolID, arguments: String) {
+    public init(
+        callID: ToolCallID,
+        toolID: ToolID,
+        arguments: String,
+        sessionID: SessionID? = nil,
+        agentRunID: AgentRunID? = nil,
+        modelStepID: ModelStepID? = nil
+    ) {
         self.callID = callID
         self.toolID = toolID
         self.arguments = arguments
+        self.sessionID = sessionID
+        self.agentRunID = agentRunID
+        self.modelStepID = modelStepID
+    }
+
+    public func withProvenance(sessionID: SessionID, agentRunID: AgentRunID?, modelStepID: ModelStepID? = nil) -> ToolCall {
+        ToolCall(
+            callID: callID,
+            toolID: toolID,
+            arguments: arguments,
+            sessionID: sessionID,
+            agentRunID: agentRunID,
+            modelStepID: modelStepID ?? self.modelStepID
+        )
+    }
+
+    public static func == (lhs: ToolCall, rhs: ToolCall) -> Bool {
+        guard lhs.callID == rhs.callID && lhs.toolID == rhs.toolID && lhs.arguments == rhs.arguments else {
+            return false
+        }
+        if let lSession = lhs.sessionID, let rSession = rhs.sessionID, lSession != rSession {
+            return false
+        }
+        if let lRun = lhs.agentRunID, let rRun = rhs.agentRunID, lRun != rRun {
+            return false
+        }
+        if let lStep = lhs.modelStepID, let rStep = rhs.modelStepID, lStep != rStep {
+            return false
+        }
+        return true
     }
 }
 
@@ -203,8 +242,40 @@ public struct ToolTouchedResource: Sendable, Equatable, Codable {
 
 public struct ToolTiming: Sendable, Equatable, Codable {
     public let milliseconds: Double
+    public let queueMilliseconds: Double
+    public let executionMilliseconds: Double
+    public let permissionMilliseconds: Double
 
-    public init(milliseconds: Double = 0) { self.milliseconds = milliseconds }
+    public init(
+        milliseconds: Double = 0,
+        queueMilliseconds: Double = 0,
+        executionMilliseconds: Double? = nil,
+        permissionMilliseconds: Double = 0
+    ) {
+        let exec = executionMilliseconds ?? max(0, milliseconds - queueMilliseconds)
+        self.milliseconds = exec
+        self.queueMilliseconds = queueMilliseconds
+        self.executionMilliseconds = exec
+        self.permissionMilliseconds = permissionMilliseconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case milliseconds, queueMilliseconds, executionMilliseconds, permissionMilliseconds
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let milliseconds = try values.decodeIfPresent(Double.self, forKey: .milliseconds) ?? 0
+        let queue = try values.decodeIfPresent(Double.self, forKey: .queueMilliseconds) ?? 0
+        let exec = try values.decodeIfPresent(Double.self, forKey: .executionMilliseconds)
+        let perm = try values.decodeIfPresent(Double.self, forKey: .permissionMilliseconds) ?? 0
+        self.init(
+            milliseconds: exec ?? milliseconds,
+            queueMilliseconds: queue,
+            executionMilliseconds: exec,
+            permissionMilliseconds: perm
+        )
+    }
 }
 
 public struct ToolOutputMetadata: Sendable, Equatable, Codable {
@@ -256,12 +327,15 @@ public struct ToolResult: Sendable, Equatable, Codable {
     public let changedFiles: [String]
     /// 完整输出在持久化 archive 中时，供调用方继续读取的引用。
     public let continuation: String?
+    public let sessionID: SessionID?
+    public let agentRunID: AgentRunID?
+    public let modelStepID: ModelStepID?
 
     private enum CodingKeys: String, CodingKey {
-        case callID, success, content, error, toolName, outcome, summary, metadata, provenance, touchedResources, timing, output, exitCode, diagnostics, changedFiles, continuation
+        case callID, success, content, error, toolName, outcome, summary, metadata, provenance, touchedResources, timing, output, exitCode, diagnostics, changedFiles, continuation, sessionID, agentRunID, modelStepID
     }
 
-    public init(callID: ToolCallID, success: Bool, content: String, error: ToolError? = nil, toolName: String? = nil, outcome: ToolOutcome? = nil, summary: String = "", metadata: [String: String] = [:], provenance: ToolProvenance? = nil, touchedResources: [ToolTouchedResource] = [], timing: ToolTiming = ToolTiming(), output: ToolOutputMetadata? = nil, exitCode: Int? = nil, diagnostics: ToolDiagnostics? = nil, changedFiles: [String] = [], continuation: String? = nil) {
+    public init(callID: ToolCallID, success: Bool, content: String, error: ToolError? = nil, toolName: String? = nil, outcome: ToolOutcome? = nil, summary: String = "", metadata: [String: String] = [:], provenance: ToolProvenance? = nil, touchedResources: [ToolTouchedResource] = [], timing: ToolTiming = ToolTiming(), output: ToolOutputMetadata? = nil, exitCode: Int? = nil, diagnostics: ToolDiagnostics? = nil, changedFiles: [String] = [], continuation: String? = nil, sessionID: SessionID? = nil, agentRunID: AgentRunID? = nil, modelStepID: ModelStepID? = nil) {
         self.callID = callID
         self.success = success
         self.content = content
@@ -278,6 +352,13 @@ public struct ToolResult: Sendable, Equatable, Codable {
         self.diagnostics = diagnostics
         self.changedFiles = changedFiles
         self.continuation = continuation
+        self.sessionID = sessionID
+        self.agentRunID = agentRunID
+        self.modelStepID = modelStepID
+    }
+
+    public func withProvenance(sessionID: SessionID, agentRunID: AgentRunID?, modelStepID: ModelStepID? = nil) -> ToolResult {
+        ToolResult(callID: callID, success: success, content: content, error: error, toolName: toolName, outcome: outcome, summary: summary, metadata: metadata, provenance: provenance, touchedResources: touchedResources, timing: timing, output: output, exitCode: exitCode, diagnostics: diagnostics, changedFiles: changedFiles, continuation: continuation, sessionID: sessionID, agentRunID: agentRunID, modelStepID: modelStepID ?? self.modelStepID)
     }
 
     public init(from decoder: Decoder) throws {
@@ -298,5 +379,198 @@ public struct ToolResult: Sendable, Equatable, Codable {
         diagnostics = try values.decodeIfPresent(ToolDiagnostics.self, forKey: .diagnostics)
         changedFiles = try values.decodeIfPresent([String].self, forKey: .changedFiles) ?? []
         continuation = try values.decodeIfPresent(String.self, forKey: .continuation)
+        sessionID = try values.decodeIfPresent(SessionID.self, forKey: .sessionID)
+        agentRunID = try values.decodeIfPresent(AgentRunID.self, forKey: .agentRunID)
+        modelStepID = try values.decodeIfPresent(ModelStepID.self, forKey: .modelStepID)
+    }
+
+    public func withContent(_ newContent: String, summary newSummary: String? = nil, output newOutput: ToolOutputMetadata? = nil) -> ToolResult {
+        ToolResult(
+            callID: callID,
+            success: success,
+            content: newContent,
+            error: error,
+            toolName: toolName,
+            outcome: outcome,
+            summary: newSummary ?? summary,
+            metadata: metadata,
+            provenance: provenance,
+            touchedResources: touchedResources,
+            timing: timing,
+            output: newOutput ?? output,
+            exitCode: exitCode,
+            diagnostics: diagnostics,
+            changedFiles: changedFiles,
+            continuation: continuation,
+            sessionID: sessionID,
+            agentRunID: agentRunID
+        )
+    }
+
+    public func withTiming(_ newTiming: ToolTiming) -> ToolResult {
+        ToolResult(
+            callID: callID,
+            success: success,
+            content: content,
+            error: error,
+            toolName: toolName,
+            outcome: outcome,
+            summary: summary,
+            metadata: metadata,
+            provenance: provenance,
+            touchedResources: touchedResources,
+            timing: newTiming,
+            output: output,
+            exitCode: exitCode,
+            diagnostics: diagnostics,
+            changedFiles: changedFiles,
+            continuation: continuation,
+            sessionID: sessionID,
+            agentRunID: agentRunID
+        )
     }
 }
+
+public struct ToolResultBudget: Sendable, Equatable, Codable {
+    public var maxShown: Int
+    public var maxCharacters: Int
+
+    public init(maxShown: Int = 30, maxCharacters: Int = 4_000) {
+        self.maxShown = maxShown
+        self.maxCharacters = maxCharacters
+    }
+
+    public static let `default` = ToolResultBudget()
+}
+
+public enum ToolLifecyclePhase: String, Codable, Sendable, Equatable, CaseIterable {
+    case requested
+    case permissionStart
+    case permissionEnd
+    case admitted
+    case executorStart
+    case processSpawned
+    case stdoutEOF
+    case stderrEOF
+    case processExited
+    case toolResultBuilt
+    case resultCommitted
+    case applicationProjectionReceived
+    case nextModelStepStarted
+}
+
+public struct ToolLifecycleEvent: Codable, Sendable, Equatable {
+    public let phase: ToolLifecyclePhase
+    public let timestampNanoseconds: UInt64
+    public let deltaMilliseconds: Double
+    public let toolCallID: ToolCallID
+    public let processPID: Int32?
+    public let exitCode: Int32?
+
+    public init(
+        phase: ToolLifecyclePhase,
+        timestampNanoseconds: UInt64,
+        deltaMilliseconds: Double,
+        toolCallID: ToolCallID,
+        processPID: Int32? = nil,
+        exitCode: Int32? = nil
+    ) {
+        self.phase = phase
+        self.timestampNanoseconds = timestampNanoseconds
+        self.deltaMilliseconds = deltaMilliseconds
+        self.toolCallID = toolCallID
+        self.processPID = processPID
+        self.exitCode = exitCode
+    }
+}
+
+public final class ToolLifecycleTrace: @unchecked Sendable {
+    public let toolCallID: ToolCallID
+    private let lock = NSLock()
+    private let startedAt: UInt64
+    private var events: [ToolLifecycleEvent] = []
+    private var activePID: Int32?
+    private var finalExitCode: Int32?
+
+    public init(toolCallID: ToolCallID) {
+        self.toolCallID = toolCallID
+        self.startedAt = DispatchTime.now().uptimeNanoseconds
+        Self.register(self)
+    }
+
+    deinit {
+        Self.unregister(callID: toolCallID)
+    }
+
+    @discardableResult
+    public func record(_ phase: ToolLifecyclePhase, processPID: Int32? = nil, exitCode: Int32? = nil) -> ToolLifecycleEvent {
+        let timestamp = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let processPID { activePID = processPID }
+        if let exitCode { finalExitCode = exitCode }
+        let resolvedPID = processPID ?? activePID
+        let resolvedExit = exitCode ?? finalExitCode
+
+        if let existing = events.first(where: { $0.phase == phase && phase != .permissionStart && phase != .permissionEnd }) {
+            return existing
+        }
+
+        let deltaMs = Double(timestamp - startedAt) / 1_000_000.0
+        let event = ToolLifecycleEvent(
+            phase: phase,
+            timestampNanoseconds: timestamp,
+            deltaMilliseconds: deltaMs,
+            toolCallID: toolCallID,
+            processPID: resolvedPID,
+            exitCode: resolvedExit
+        )
+        events.append(event)
+        return event
+    }
+
+    public func snapshot() -> [ToolLifecycleEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+
+    public func formattedTrace() -> String {
+        snapshot().map { event in
+            let pid = event.processPID.map { String($0) } ?? "-"
+            let exit = event.exitCode.map { String($0) } ?? "-"
+            return "\(event.phase.rawValue) +\(String(format: "%.1f", event.deltaMilliseconds))ms pid=\(pid) exit=\(exit) id=\(event.toolCallID.rawValue)"
+        }.joined(separator: "\n")
+    }
+
+    private static let registryLock = NSRecursiveLock()
+    nonisolated(unsafe) private static var activeRegistry: [ToolCallID: ToolLifecycleTrace] = [:]
+
+    public static func register(_ trace: ToolLifecycleTrace) {
+        registryLock.lock()
+        let old = activeRegistry.updateValue(trace, forKey: trace.toolCallID)
+        registryLock.unlock()
+        _ = old
+    }
+
+    public static func active(for callID: ToolCallID) -> ToolLifecycleTrace? {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        return activeRegistry[callID]
+    }
+
+    @discardableResult
+    public static func record(callID: ToolCallID, _ phase: ToolLifecyclePhase, processPID: Int32? = nil, exitCode: Int32? = nil) -> ToolLifecycleEvent? {
+        guard let trace = active(for: callID) else { return nil }
+        return trace.record(phase, processPID: processPID, exitCode: exitCode)
+    }
+
+    public static func unregister(callID: ToolCallID) {
+        registryLock.lock()
+        let old = activeRegistry.removeValue(forKey: callID)
+        registryLock.unlock()
+        _ = old
+    }
+}
+

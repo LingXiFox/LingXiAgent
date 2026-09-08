@@ -1,0 +1,1 @@
+g++ /Users/lingxifox/Desktop/primes.cpp -o /Users/lingxifox/Desktop/primes

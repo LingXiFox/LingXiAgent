@@ -189,47 +189,413 @@ public enum ContextPagingActivity: String, Sendable, Equatable, Codable {
     case idle, paging, compacting
 }
 
+public enum TokenFormatter {
+    public static func format(_ tokens: Int) -> String {
+        if tokens < 1_000 {
+            return "\(tokens)"
+        } else if tokens < 10_000 {
+            let k = Double(tokens) / 1_000.0
+            let rounded = (k * 10).rounded() / 10
+            return rounded.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(rounded))K" : String(format: "%.1fK", rounded)
+        } else if tokens < 100_000 {
+            let k = Double(tokens) / 1_000.0
+            let rounded = (k * 10).rounded() / 10
+            return rounded.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(rounded))K" : String(format: "%.1fK", rounded)
+        } else if tokens < 1_000_000 {
+            let k = (Double(tokens) / 1_000.0).rounded()
+            return "\(Int(k))K"
+        } else {
+            let m = Double(tokens) / 1_000_000.0
+            let rounded = (m * 100).rounded() / 100
+            return rounded.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(rounded))M" : String(format: "%.2fM", rounded)
+        }
+    }
+
+    public static func formatLayer(layer: String, usage: Int, capacity: Int, state: ContextLayerState) -> String {
+        if state == .unavailable {
+            return "\(layer) off"
+        }
+        let usageStr = usage == 0 ? "0" : format(usage)
+        let capacityStr = format(capacity)
+        return "\(layer) \(usageStr)/\(capacityStr)"
+    }
+}
+
+public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
+    public let addressableBudget: Int
+    public let modelWindow: Int
+    public let economicThreshold: Int?
+    public let reserve: Int
+    public let l1Target: Int
+    public let l1SoftLimit: Int
+    public let l1HardLimit: Int
+    public let l2Max: Int
+    public let l3Capacity: Int
+    public let l3Enabled: Bool
+
+    public init(
+        addressableBudget: Int = 1_048_576,
+        modelWindow: Int = 1_048_576,
+        economicThreshold: Int? = 272_000,
+        reserve: Int = 22_000,
+        l1Target: Int = 220_000,
+        l1SoftLimit: Int = 235_000,
+        l1HardLimit: Int = 250_000,
+        l2Max: Int = 350_000,
+        l3Capacity: Int = 456_576,
+        l3Enabled: Bool = true
+    ) {
+        self.addressableBudget = addressableBudget
+        self.modelWindow = modelWindow
+        self.economicThreshold = economicThreshold
+        self.reserve = reserve
+        self.l1Target = l1Target
+        self.l1SoftLimit = l1SoftLimit
+        self.l1HardLimit = l1HardLimit
+        self.l2Max = l2Max
+        self.l3Capacity = l3Capacity
+        self.l3Enabled = l3Enabled
+    }
+}
+
+public struct ContextCachePolicySnapshot: Sendable, Equatable, Codable {
+    public let addressableBudget: Int
+    public let modelWindow: Int
+    public let economicThreshold: Int?
+    public let reserve: Int
+    public let l1Target: Int
+    public let l1SoftLimit: Int
+    public let l1HardLimit: Int
+    public let l2Max: Int
+    public let l3Capacity: Int
+
+    public init(
+        addressableBudget: Int = 1_048_576,
+        modelWindow: Int = 1_048_576,
+        economicThreshold: Int? = 272_000,
+        reserve: Int = 22_000,
+        l1Target: Int = 220_000,
+        l1SoftLimit: Int = 235_000,
+        l1HardLimit: Int = 250_000,
+        l2Max: Int = 350_000,
+        l3Capacity: Int = 456_576
+    ) {
+        self.addressableBudget = addressableBudget
+        self.modelWindow = modelWindow
+        self.economicThreshold = economicThreshold
+        self.reserve = reserve
+        self.l1Target = l1Target
+        self.l1SoftLimit = l1SoftLimit
+        self.l1HardLimit = l1HardLimit
+        self.l2Max = l2Max
+        self.l3Capacity = l3Capacity
+    }
+
+    public init(policy: EffectiveContextPolicy) {
+        self.init(
+            addressableBudget: policy.addressableBudget,
+            modelWindow: policy.modelWindow,
+            economicThreshold: policy.economicThreshold,
+            reserve: policy.reserve,
+            l1Target: policy.l1Target,
+            l1SoftLimit: policy.l1SoftLimit,
+            l1HardLimit: policy.l1HardLimit,
+            l2Max: policy.l2Max,
+            l3Capacity: policy.l3Capacity
+        )
+    }
+}
+
+public struct ContextPagingStats: Sendable, Equatable, Codable {
+    public let pageIns: Int
+    public let pageOuts: Int
+    public let promotions: Int
+    public let demotions: Int
+
+    public init(pageIns: Int = 0, pageOuts: Int = 0, promotions: Int = 0, demotions: Int = 0) {
+        self.pageIns = pageIns
+        self.pageOuts = pageOuts
+        self.promotions = promotions
+        self.demotions = demotions
+    }
+}
+
 public struct ContextLayerStatus: Sendable, Equatable, Codable {
     public let layer: ContextLayer
-    public let usage: Int?
-    public let capacity: Int?
-    public let unit: String
-    public let percent: Int?
+    public let usageTokens: Int
+    public let capacityTokens: Int
+    public let entryCount: Int
     public let state: ContextLayerState
-    public let residentPages: Int?
-    public let totalPages: Int?
     public let pageInCount: Int
     public let pageOutCount: Int
 
-    public init(layer: ContextLayer, usage: Int?, capacity: Int?, unit: String, percent: Int?, state: ContextLayerState, residentPages: Int? = nil, totalPages: Int? = nil, pageInCount: Int = 0, pageOutCount: Int = 0) {
+    // Diagnostics / backward compatibility accessors
+    public var usage: Int? { usageTokens }
+    public var capacity: Int? { capacityTokens }
+    public var unit: String { "tokens" }
+    public var percent: Int? {
+        guard capacityTokens > 0 else { return nil }
+        return min(100, max(0, Int((Double(usageTokens) / Double(capacityTokens)) * 100.0)))
+    }
+    public var residentPages: Int? { entryCount }
+    public var totalPages: Int? { entryCount }
+
+    public init(
+        layer: ContextLayer,
+        usageTokens: Int,
+        capacityTokens: Int,
+        entryCount: Int = 0,
+        state: ContextLayerState,
+        pageInCount: Int = 0,
+        pageOutCount: Int = 0
+    ) {
         self.layer = layer
-        self.usage = usage
-        self.capacity = capacity
-        self.unit = unit
-        self.percent = percent
+        self.usageTokens = usageTokens
+        self.capacityTokens = capacityTokens
+        self.entryCount = entryCount
         self.state = state
-        self.residentPages = residentPages
-        self.totalPages = totalPages
         self.pageInCount = pageInCount
         self.pageOutCount = pageOutCount
+    }
+
+    public init(
+        layer: ContextLayer,
+        usage: Int?,
+        capacity: Int?,
+        unit: String? = nil,
+        percent: Int? = nil,
+        state: ContextLayerState,
+        residentPages: Int? = nil,
+        totalPages: Int? = nil,
+        pageInCount: Int = 0,
+        pageOutCount: Int = 0
+    ) {
+        self.layer = layer
+        self.usageTokens = usage ?? 0
+        self.capacityTokens = capacity ?? 0
+        self.entryCount = residentPages ?? totalPages ?? 0
+        self.state = state
+        self.pageInCount = pageInCount
+        self.pageOutCount = pageOutCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case layer, usageTokens, capacityTokens, entryCount, state, pageInCount, pageOutCount, usage, capacity, unit, percent, residentPages, totalPages
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        layer = try container.decode(ContextLayer.self, forKey: .layer)
+        state = try container.decode(ContextLayerState.self, forKey: .state)
+        pageInCount = try container.decodeIfPresent(Int.self, forKey: .pageInCount) ?? 0
+        pageOutCount = try container.decodeIfPresent(Int.self, forKey: .pageOutCount) ?? 0
+
+        if let u = try container.decodeIfPresent(Int.self, forKey: .usageTokens) {
+            usageTokens = u
+        } else {
+            usageTokens = try container.decodeIfPresent(Int.self, forKey: .usage) ?? 0
+        }
+
+        if let c = try container.decodeIfPresent(Int.self, forKey: .capacityTokens) {
+            capacityTokens = c
+        } else {
+            capacityTokens = try container.decodeIfPresent(Int.self, forKey: .capacity) ?? 0
+        }
+
+        if let e = try container.decodeIfPresent(Int.self, forKey: .entryCount) {
+            entryCount = e
+        } else {
+            entryCount = try container.decodeIfPresent(Int.self, forKey: .residentPages) ?? container.decodeIfPresent(Int.self, forKey: .totalPages) ?? 0
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(layer, forKey: .layer)
+        try container.encode(usageTokens, forKey: .usageTokens)
+        try container.encode(capacityTokens, forKey: .capacityTokens)
+        try container.encode(entryCount, forKey: .entryCount)
+        try container.encode(state, forKey: .state)
+        try container.encode(pageInCount, forKey: .pageInCount)
+        try container.encode(pageOutCount, forKey: .pageOutCount)
+        try container.encode(usageTokens, forKey: .usage)
+        try container.encode(capacityTokens, forKey: .capacity)
+        try container.encode("tokens", forKey: .unit)
+        try container.encode(percent, forKey: .percent)
+        try container.encode(entryCount, forKey: .residentPages)
+        try container.encode(entryCount, forKey: .totalPages)
     }
 }
 
 public struct ContextCacheProjection: Sendable, Equatable, Codable {
     public let sessionID: SessionID
+    public let policy: ContextCachePolicySnapshot
     public let l1: ContextLayerStatus
     public let l2: ContextLayerStatus
     public let l3: ContextLayerStatus
+    public let paging: ContextPagingStats
     public let pagingActivity: ContextPagingActivity
     public let compactionGeneration: Int
+    public let latestManifest: ProviderContextManifest?
+    public let lastProviderInputTokens: Int?
+    public let cacheTelemetry: ProviderCacheTelemetry?
 
-    public init(sessionID: SessionID, l1: ContextLayerStatus, l2: ContextLayerStatus, l3: ContextLayerStatus, pagingActivity: ContextPagingActivity = .idle, compactionGeneration: Int = 0) {
+    public init(
+        sessionID: SessionID,
+        policy: ContextCachePolicySnapshot = ContextCachePolicySnapshot(),
+        l1: ContextLayerStatus,
+        l2: ContextLayerStatus,
+        l3: ContextLayerStatus,
+        paging: ContextPagingStats = ContextPagingStats(),
+        pagingActivity: ContextPagingActivity = .idle,
+        compactionGeneration: Int = 0,
+        latestManifest: ProviderContextManifest? = nil,
+        lastProviderInputTokens: Int? = nil,
+        cacheTelemetry: ProviderCacheTelemetry? = nil
+    ) {
         self.sessionID = sessionID
+        self.policy = policy
         self.l1 = l1
         self.l2 = l2
         self.l3 = l3
+        self.paging = paging
         self.pagingActivity = pagingActivity
         self.compactionGeneration = compactionGeneration
+        self.latestManifest = latestManifest
+        self.lastProviderInputTokens = lastProviderInputTokens
+        self.cacheTelemetry = cacheTelemetry
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, policy, l1, l2, l3, paging, pagingActivity, compactionGeneration, latestManifest, lastProviderInputTokens, cacheTelemetry
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        policy = try container.decodeIfPresent(ContextCachePolicySnapshot.self, forKey: .policy) ?? ContextCachePolicySnapshot()
+        l1 = try container.decode(ContextLayerStatus.self, forKey: .l1)
+        l2 = try container.decode(ContextLayerStatus.self, forKey: .l2)
+        l3 = try container.decode(ContextLayerStatus.self, forKey: .l3)
+        paging = try container.decodeIfPresent(ContextPagingStats.self, forKey: .paging) ?? ContextPagingStats()
+        pagingActivity = try container.decodeIfPresent(ContextPagingActivity.self, forKey: .pagingActivity) ?? .idle
+        compactionGeneration = try container.decodeIfPresent(Int.self, forKey: .compactionGeneration) ?? 0
+        latestManifest = try container.decodeIfPresent(ProviderContextManifest.self, forKey: .latestManifest)
+        lastProviderInputTokens = try container.decodeIfPresent(Int.self, forKey: .lastProviderInputTokens)
+        cacheTelemetry = try container.decodeIfPresent(ProviderCacheTelemetry.self, forKey: .cacheTelemetry)
+    }
+}
+
+/// Provider prompt-cache 时代与本次请求的可观测 token 账本。
+/// 新字段均通过 optional 兼容旧的持久化与 VCR 数据。
+public struct ProviderCacheEpoch: Sendable, Equatable, Codable {
+    public let epoch: UInt64
+    public let hash: String
+
+    public init(epoch: UInt64, hash: String) {
+        self.epoch = epoch
+        self.hash = hash
+    }
+}
+
+public struct ProviderCacheTelemetry: Sendable, Equatable, Codable {
+    public let stablePrefixTokens: Int
+    public let reusableHistoryTokens: Int
+    public let volatileTailTokens: Int
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
+    public let cacheMissTokens: Int?
+    public let cacheHitRatio: Double?
+    public let epoch: ProviderCacheEpoch?
+
+    public init(
+        stablePrefixTokens: Int,
+        reusableHistoryTokens: Int = 0,
+        volatileTailTokens: Int = 0,
+        cacheReadTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
+        cacheMissTokens: Int? = nil,
+        cacheHitRatio: Double? = nil,
+        epoch: ProviderCacheEpoch? = nil
+    ) {
+        self.stablePrefixTokens = stablePrefixTokens
+        self.reusableHistoryTokens = reusableHistoryTokens
+        self.volatileTailTokens = volatileTailTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.cacheMissTokens = cacheMissTokens
+        self.cacheHitRatio = cacheHitRatio
+        self.epoch = epoch
+    }
+
+    public func withProviderUsage(_ usage: ModelUsage?) -> Self {
+        let read = usage?.cacheReadTokens
+        let write = usage?.cacheWriteTokens
+        let miss = read.map { max(0, stablePrefixTokens - min(stablePrefixTokens, $0)) }
+        let hitRatio = read.flatMap { stablePrefixTokens > 0 ? Double(min(stablePrefixTokens, max(0, $0))) / Double(stablePrefixTokens) : nil }
+        return Self(
+            stablePrefixTokens: stablePrefixTokens,
+            reusableHistoryTokens: reusableHistoryTokens,
+            volatileTailTokens: volatileTailTokens,
+            cacheReadTokens: read,
+            cacheWriteTokens: write,
+            cacheMissTokens: miss,
+            cacheHitRatio: hitRatio,
+            epoch: epoch
+        )
+    }
+
+    public static func aggregate(_ values: [ProviderCacheTelemetry]) -> Self? {
+        guard let first = values.first else { return nil }
+        let stable = values.reduce(0) { $0 + $1.stablePrefixTokens }
+        let history = values.reduce(0) { $0 + $1.reusableHistoryTokens }
+        let volatile = values.reduce(0) { $0 + $1.volatileTailTokens }
+        let read = values.allSatisfy { $0.cacheReadTokens != nil } ? values.reduce(0) { $0 + ($1.cacheReadTokens ?? 0) } : nil
+        let write = values.allSatisfy { $0.cacheWriteTokens != nil } ? values.reduce(0) { $0 + ($1.cacheWriteTokens ?? 0) } : nil
+        let miss = read.map { max(0, stable - min(stable, $0)) }
+        let ratio = read.flatMap { stable > 0 ? Double(min(stable, max(0, $0))) / Double(stable) : nil }
+        return Self(stablePrefixTokens: stable, reusableHistoryTokens: history, volatileTailTokens: volatile, cacheReadTokens: read, cacheWriteTokens: write, cacheMissTokens: miss, cacheHitRatio: ratio, epoch: first.epoch)
+    }
+}
+
+/// Sanitized Provider Context Manifest
+/// 记录进入本次 Provider 推理的全部动态与静态上下文条目。
+public struct ContextManifestEntry: Sendable, Equatable, Codable {
+    public let sourceKind: String        // "Pinned", "L1", "Dynamic Page-in", "Current Turn"
+    public let sourceID: String          // page ID or message ID
+    public let origin: String            // file path, turn ID, system prompt
+    public let tokenCount: Int
+    public let inclusionReason: String   // e.g. "Active user prompt", "Pinned system context", "Retrieved by query"
+    public let cacheProvenance: String   // e.g. "pinned", "l1WorkingSet", "l2Promotion", "l3PageFault"
+
+    public init(sourceKind: String, sourceID: String, origin: String, tokenCount: Int, inclusionReason: String, cacheProvenance: String) {
+        self.sourceKind = sourceKind
+        self.sourceID = sourceID
+        self.origin = origin
+        self.tokenCount = tokenCount
+        self.inclusionReason = inclusionReason
+        self.cacheProvenance = cacheProvenance
+    }
+}
+
+public struct ProviderContextManifest: Sendable, Equatable, Codable {
+    public let sessionID: SessionID
+    public let step: Int
+    public let entries: [ContextManifestEntry]
+    public let totalTokens: Int
+
+    public init(sessionID: SessionID, step: Int, entries: [ContextManifestEntry], totalTokens: Int) {
+        self.sessionID = sessionID
+        self.step = step
+        self.entries = entries
+        self.totalTokens = totalTokens
+    }
+
+    public var summary: String {
+        let lines = entries.map { entry in
+            "  [\(entry.sourceKind)] \(entry.origin) · \(entry.tokenCount) tok · reason: \(entry.inclusionReason) (\(entry.cacheProvenance))"
+        }
+        return "Context Manifest (step \(step), \(totalTokens) tok, \(entries.count) entries):\n" + lines.joined(separator: "\n")
     }
 }
 
@@ -504,8 +870,15 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
     public let sessionL2DerivedHits: Int
     public let sessionL2DerivedPromotions: Int
     public let derivedPageIns: Int
+    public let providerCalls: [ProviderCallTrace]
+    public let cacheTelemetry: ProviderCacheTelemetry?
 
-    public init(sessionID: SessionID, totalMilliseconds: Double, stepCount: Int, context: ContextDebugSnapshot?, steps: [StepPerformance], firstTextMilliseconds: Double?, firstReasoningMilliseconds: Double?, textChunks: Int, reasoningChunks: Int, textCharacters: Int, reasoningCharacters: Int, tools: [ToolPerformance], usage: ModelUsage?, outputTokensPerSecond: Double?, textCharactersPerSecond: Double?, coreOverheadMilliseconds: Double = 0, contextPaging: ContextPagingPerformance? = nil, permissions: PermissionPerformance = PermissionPerformance(autoApproved: 0, asked: 0, denied: 0, waitMilliseconds: 0), contextBudget: ContextBudgetDebug? = nil, compactions: [CompactionTurnPerformance] = [], protocolValidatorPassed: Int = 0, liveToolBatchCount: Int = 0, estimatedPromptTokens: Int? = nil, actualPromptTokens: Int? = nil, estimatorErrorPercent: Double? = nil, derivedL3Hits: Int = 0, sessionL2DerivedHits: Int = 0, sessionL2DerivedPromotions: Int = 0, derivedPageIns: Int = 0) {
+    public var providerRequestCount: Int { providerCalls.count }
+    public var totalPromptTokens: Int {
+        providerCalls.reduce(0) { $0 + ($1.actualUsage?.inputTokens ?? $1.estimatedPromptTokens) }
+    }
+
+    public init(sessionID: SessionID, totalMilliseconds: Double, stepCount: Int, context: ContextDebugSnapshot?, steps: [StepPerformance], firstTextMilliseconds: Double?, firstReasoningMilliseconds: Double?, textChunks: Int, reasoningChunks: Int, textCharacters: Int, reasoningCharacters: Int, tools: [ToolPerformance], usage: ModelUsage?, outputTokensPerSecond: Double?, textCharactersPerSecond: Double?, coreOverheadMilliseconds: Double = 0, contextPaging: ContextPagingPerformance? = nil, permissions: PermissionPerformance = PermissionPerformance(autoApproved: 0, asked: 0, denied: 0, waitMilliseconds: 0), contextBudget: ContextBudgetDebug? = nil, compactions: [CompactionTurnPerformance] = [], protocolValidatorPassed: Int = 0, liveToolBatchCount: Int = 0, estimatedPromptTokens: Int? = nil, actualPromptTokens: Int? = nil, estimatorErrorPercent: Double? = nil, derivedL3Hits: Int = 0, sessionL2DerivedHits: Int = 0, sessionL2DerivedPromotions: Int = 0, derivedPageIns: Int = 0, providerCalls: [ProviderCallTrace] = [], cacheTelemetry: ProviderCacheTelemetry? = nil) {
         self.sessionID = sessionID
         self.totalMilliseconds = totalMilliseconds
         self.stepCount = stepCount
@@ -535,5 +908,94 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
         self.sessionL2DerivedHits = sessionL2DerivedHits
         self.sessionL2DerivedPromotions = sessionL2DerivedPromotions
         self.derivedPageIns = derivedPageIns
+        self.providerCalls = providerCalls
+        self.cacheTelemetry = cacheTelemetry
+    }
+}
+
+public struct ProviderCallTrace: Sendable, Equatable, Codable {
+    public let sessionID: SessionID
+    public let userTurnID: MessageID
+    public let runID: AgentRunID?
+    public let parentRunID: AgentRunID?
+    public let providerRequestID: String
+    public let sequence: Int
+    public let reason: String
+    public let model: String
+    public let estimatedPromptTokens: Int
+    public let actualUsage: ModelUsage?
+    public let toolSchemaTokens: Int
+    public let toolCount: Int
+    public let l1Tokens: Int
+    public let systemPinnedTokens: Int
+    public let currentTurnTokens: Int
+    public let providerFramingTokens: Int
+    public let retryAttempt: Int
+    public let retryCount: Int
+    public let rateWaitMilliseconds: Int
+    public let rateLimit429Count: Int
+    public let timestamp: Date
+    public let cacheTelemetry: ProviderCacheTelemetry?
+
+    public init(
+        sessionID: SessionID,
+        userTurnID: MessageID,
+        runID: AgentRunID? = nil,
+        parentRunID: AgentRunID? = nil,
+        providerRequestID: String,
+        sequence: Int,
+        reason: String,
+        model: String,
+        estimatedPromptTokens: Int,
+        actualUsage: ModelUsage? = nil,
+        toolSchemaTokens: Int,
+        toolCount: Int,
+        l1Tokens: Int,
+        systemPinnedTokens: Int,
+        currentTurnTokens: Int,
+        providerFramingTokens: Int,
+        retryAttempt: Int = 0,
+        retryCount: Int = 0,
+        rateWaitMilliseconds: Int = 0,
+        rateLimit429Count: Int = 0,
+        timestamp: Date = .now,
+        cacheTelemetry: ProviderCacheTelemetry? = nil
+    ) {
+        self.sessionID = sessionID
+        self.userTurnID = userTurnID
+        self.runID = runID
+        self.parentRunID = parentRunID
+        self.providerRequestID = providerRequestID
+        self.sequence = sequence
+        self.reason = reason
+        self.model = model
+        self.estimatedPromptTokens = estimatedPromptTokens
+        self.actualUsage = actualUsage
+        self.toolSchemaTokens = toolSchemaTokens
+        self.toolCount = toolCount
+        self.l1Tokens = l1Tokens
+        self.systemPinnedTokens = systemPinnedTokens
+        self.currentTurnTokens = currentTurnTokens
+        self.providerFramingTokens = providerFramingTokens
+        self.retryAttempt = retryAttempt
+        self.retryCount = retryCount
+        self.rateWaitMilliseconds = rateWaitMilliseconds
+        self.rateLimit429Count = rateLimit429Count
+        self.timestamp = timestamp
+        self.cacheTelemetry = cacheTelemetry
+    }
+
+    public func updating(actualUsage: ModelUsage?) -> Self {
+        Self(
+            sessionID: sessionID, userTurnID: userTurnID, runID: runID, parentRunID: parentRunID,
+            providerRequestID: providerRequestID, sequence: sequence, reason: reason, model: model,
+            estimatedPromptTokens: estimatedPromptTokens, actualUsage: actualUsage,
+            toolSchemaTokens: toolSchemaTokens, toolCount: toolCount, l1Tokens: l1Tokens,
+            systemPinnedTokens: systemPinnedTokens, currentTurnTokens: currentTurnTokens,
+            providerFramingTokens: providerFramingTokens, retryAttempt: retryAttempt,
+            retryCount: retryCount, rateWaitMilliseconds: rateWaitMilliseconds,
+            rateLimit429Count: rateLimit429Count, timestamp: timestamp,
+            cacheTelemetry: cacheTelemetry?.withProviderUsage(actualUsage)
+        )
     }
 }

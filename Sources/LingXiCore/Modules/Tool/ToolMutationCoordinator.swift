@@ -43,9 +43,11 @@ public actor ToolMutationCoordinator {
     }
 
     public func execute(_ operation: @escaping @Sendable () async throws -> String) async throws -> String {
-        try await Self.gate.execute {
+        try await Self.gate.execute { [self] in
             let result = try await operation()
-            try await self.reconcile()
+            Task { [weak self] in
+                try? await self?.reconcile()
+            }
             return result
         }
     }

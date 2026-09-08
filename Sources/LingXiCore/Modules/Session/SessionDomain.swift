@@ -42,6 +42,7 @@ public struct Session: Sendable, Equatable {
     public let spawnedByRunID: AgentRunID?
     public let spawnedByToolCallID: ToolCallID?
     public let title: String?
+    public var reasoningEffort: ReasoningEffort
     /// Durable cwd 只保存 binding 和相对路径，绝不复制 absolute path。
     public let projectID: ProjectID?
     public let cwdRootBindingID: RootBindingID?
@@ -59,6 +60,7 @@ public struct Session: Sendable, Equatable {
         spawnedByRunID: AgentRunID? = nil,
         spawnedByToolCallID: ToolCallID? = nil,
         title: String? = nil,
+        reasoningEffort: ReasoningEffort = .auto,
         projectID: ProjectID? = nil,
         cwdRootBindingID: RootBindingID? = nil,
         cwdRelativePath: ProjectRelativePath = .root,
@@ -72,6 +74,7 @@ public struct Session: Sendable, Equatable {
         self.spawnedByRunID = spawnedByRunID
         self.spawnedByToolCallID = spawnedByToolCallID
         self.title = title
+        self.reasoningEffort = reasoningEffort
         self.projectID = projectID
         self.cwdRootBindingID = cwdRootBindingID
         self.cwdRelativePath = cwdRelativePath
@@ -84,18 +87,24 @@ public struct Session: Sendable, Equatable {
         messages.append(message)
         updatedAt = message.createdAt
     }
+
+    public mutating func setReasoningEffort(_ effort: ReasoningEffort) {
+        self.reasoningEffort = effort
+        self.updatedAt = Date()
+    }
 }
 
 // MARK: - 协议层 DTO 转换（Session Domain → Protocol DTO）
 
 extension Session {
     public func toInfo() -> SessionInfo {
-        SessionInfo(id: id, projectID: projectID, kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title, createdAt: createdAt, updatedAt: updatedAt, messageCount: messages.count)
+        SessionInfo(id: id, projectID: projectID, kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title, reasoningEffort: reasoningEffort, createdAt: createdAt, updatedAt: updatedAt, messageCount: messages.count)
     }
 
-    public func toSnapshot() -> SessionSnapshot {
-        SessionSnapshot(
+    public func toSnapshot() -> LegacySessionSnapshot {
+        LegacySessionSnapshot(
             id: id, projectID: projectID, kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title,
+            reasoningEffort: reasoningEffort,
             createdAt: createdAt,
             updatedAt: updatedAt,
             messages: messages.map(\.toSnapshot)

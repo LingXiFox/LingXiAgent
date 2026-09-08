@@ -26,11 +26,35 @@ public struct AnthropicMessagesProvider: ModelProvider {
         let prior = try await provenance.resolveContinuation(for: request.continuationOf, wire: .anthropicMessages)
         let urlRequest = try makeURLRequest(request, continuation: prior)
         let response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .anthropicMessages, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+        let requestID = response.header("request-id")
         guard (200..<300).contains(response.statusCode) else {
-            _ = try? await OpenAICompatibleProvider.collectText(response.body)
-            throw OpenAICompatibleProvider.httpError(status: response.statusCode, requestID: response.header("request-id"))
+            let body = (try? await OpenAICompatibleProvider.collectText(response.body)) ?? ""
+            let requestFields: [String]
+            if let reqBody = urlRequest.httpBody, let json = (try? JSONSerialization.jsonObject(with: reqBody)) as? [String: Any] {
+                requestFields = json.keys.sorted()
+            } else {
+                requestFields = []
+            }
+            let toolSchemas = request.tools.map { "\($0.name)(\($0.inputSchema.required.joined(separator: ", ")))" }
+            let capabilityProjection = "toolsRequested=\(!request.tools.isEmpty) (count=\(request.tools.count)), reasoningRequested=\(request.reasoning != nil)"
+            let diagnostics = OpenAICompatibleProvider.makeWireDiagnostics(
+                provider: config.baseURL.host ?? "anthropic",
+                model: request.model.rawValue,
+                wireAdapter: config.wireProtocol.rawValue,
+                url: urlRequest.url?.absoluteString ?? config.anthropicMessagesURL.absoluteString,
+                httpMethod: urlRequest.httpMethod ?? "POST",
+                requestFields: requestFields,
+                toolSchemas: toolSchemas,
+                capabilityProjection: capabilityProjection,
+                responseBody: body
+            )
+            let error = OpenAICompatibleProvider.httpError(status: response.statusCode, requestID: requestID, diagnostics: diagnostics)
+            throw ProviderRateLimitError.from(statusCode: response.statusCode, headers: response.headers, body: body, underlying: error)
         }
         return AsyncThrowingStream { continuation in
+            if let requestID = ProviderTraceSanitizer.requestID(requestID) {
+                continuation.yield(.providerRequestID(requestID))
+            }
             let pump = Task { await Pump(source: response.body, continuation: continuation, request: request, prior: prior, provenance: provenance).run() }
             continuation.onTermination = { @Sendable _ in
                 pump.cancel()
@@ -214,7 +238,7 @@ public struct AnthropicSSEDecoder {
             guard let index = object["index"] as? Int, let block = object["content_block"] as? [String: Any] else { return [] }
             switch block["type"] as? String {
             case "text": return (block["text"] as? String).flatMap { $0.isEmpty ? nil : [.textDelta($0)] } ?? []
-            case "thinking": return (block["thinking"] as? String).flatMap { $0.isEmpty ? nil : [.reasoningDelta($0)] } ?? []
+            case "thinking": return []
             case "tool_use":
                 guard let id = block["id"] as? String, let name = block["name"] as? String else {
                     throw CoreError(code: .modelStream, message: "Anthropic tool use is missing identity")
@@ -228,7 +252,7 @@ public struct AnthropicSSEDecoder {
             guard let index = object["index"] as? Int, let delta = object["delta"] as? [String: Any] else { return [] }
             switch delta["type"] as? String {
             case "text_delta": return (delta["text"] as? String).map { [.textDelta($0)] } ?? []
-            case "thinking_delta": return (delta["thinking"] as? String).map { [.reasoningDelta($0)] } ?? []
+            case "thinking_delta": return []
             case "input_json_delta":
                 guard var tool = tools[index], let fragment = delta["partial_json"] as? String else { return [] }
                 tool.arguments += fragment

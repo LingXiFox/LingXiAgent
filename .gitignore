@@ -10,3 +10,5 @@ DerivedData/
 .env.*
 !.env.example
 Tests/develop.env
+.lingxi/
+scratch/

@@ -1,0 +1,6 @@
+{
+  "id": "fc_20f7bb4e-44bd-9733-bac1-f5b5440062ab_0",
+  "call_id": "call-c6ab3c86-70e3-488a-b039-3b6b3d5966e0-1",
+  "name": "shell",
+  "arguments": "{\"command\":\"g++ /Users/lingxifox/Desktop/primes.cpp -o /Users/lingxifox/Desktop/primes\"}"
+}

@@ -2,7 +2,44 @@ import Foundation
 import LingXiCore
 import LingXiProtocol
 
+if let idx = CommandLine.arguments.firstIndex(of: "--crash-test"), CommandLine.arguments.count > idx + 3 {
+    let stage = CommandLine.arguments[idx + 1]
+    let path = CommandLine.arguments[idx + 2]
+    let commandID = CommandID(CommandLine.arguments[idx + 3])
+    let testDataRoot = URL(fileURLWithPath: path)
+    setenv("LINGXI_CRASH_TEST_STAGE", stage, 1)
+    let testHost = try CoreHost(dataRoot: testDataRoot)
+    await testHost.start()
+    let envelope = CommandEnvelope(
+        commandID: commandID,
+        payload: CreateSessionRequest(workspace: path)
+    )
+    _ = try await testHost.createSession(envelope: envelope)
+    exit(0)
+}
+
+AuthCLI.installSignalHandlers()
+
+if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "auth" {
+    let args = Array(CommandLine.arguments.dropFirst())
+    do {
+        let output = try await AuthCLI.run(arguments: args)
+        print(output)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
+}
+
 let environment = ProcessInfo.processInfo.environment
+func debug(_ message: String) {
+    guard environment["LINGXI_TUI_DEBUG"] == "1" else { return }
+    let timestamp = String(format: "%.3f", ProcessInfo.processInfo.systemUptime)
+    FileHandle.standardError.write(Data("[\(timestamp)] [LingXiCoreHost] \(message)\n".utf8))
+}
+
+debug("configuration.begin")
 let dataRoot = LingXiDataRootResolver.resolve(
     environment: environment,
     homeDirectory: FileManager.default.homeDirectoryForCurrentUser
@@ -31,7 +68,14 @@ let host = try CoreHost(
     configurationStore: configurations,
     credentialStore: credentials
 )
+debug("configuration.end")
 await host.start()
-let server = StdioCoreServer(endpoint: host)
-try await server.run()
+debug("host.start.end")
+if CommandLine.arguments.contains("--vnext") {
+    debug("vnext.server.begin")
+    try await VNextStdioCoreServer(service: host).run()
+} else {
+    let server = StdioCoreServer(endpoint: host)
+    try await server.run()
+}
 await host.shutdown()

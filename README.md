@@ -89,12 +89,12 @@ flowchart TD
 ## 快速开始
 
 ```sh
-swift build
+swift build --product LingXiCoreHost
 swift test
 swift run LingXiTUI
 ```
 
-`LingXiTUI` 会启动同目录中的 `LingXiCoreHost` 子进程。默认配置没有可用 Provider，因此 TUI 可用于检查 Core 与协议通路，但发送对话前必须先配置 Provider、Account、ModelProfile 与对应凭据。
+`LingXiTUI` 会启动同目录中的 `LingXiCoreHost` 子进程。单独执行 `swift build --product LingXiTUI` 或首次直接执行 `swift run LingXiTUI` 不会构建这个独立 Host，需先执行上述 CoreHost 构建命令。默认配置没有可用 Provider，因此 TUI 可用于检查 Core 与协议通路，但发送对话前必须先配置 Provider、Account、ModelProfile 与对应凭据。
 
 参考 TUI 支持以下命令：
 

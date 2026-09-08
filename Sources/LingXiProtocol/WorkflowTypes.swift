@@ -163,3 +163,56 @@ public struct WorkflowSnapshot: Sendable, Equatable, Codable {
         self.updatedAt = updatedAt
     }
 }
+
+public struct TodoItemData: Codable, Sendable, Equatable {
+    public let id: String
+    public let title: String
+    public let status: String // pending, in_progress, completed, failed
+    public init(id: String, title: String, status: String = "pending") {
+        self.id = id
+        self.title = title
+        self.status = status
+    }
+}
+
+public final class TodoStore: @unchecked Sendable {
+    public static let shared = TodoStore()
+    private let lock = NSLock()
+    private var todosBySession: [String: [TodoItemData]] = [:]
+
+    public func getTodos(for sessionID: String) -> [TodoItemData] {
+        lock.lock()
+        defer { lock.unlock() }
+        return todosBySession[sessionID] ?? []
+    }
+
+    public func addTodo(_ item: TodoItemData, for sessionID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        var list = todosBySession[sessionID] ?? []
+        if let idx = list.firstIndex(where: { $0.id == item.id }) {
+            list[idx] = item
+        } else {
+            list.append(item)
+        }
+        todosBySession[sessionID] = list
+    }
+
+    public func updateTodo(id: String, status: String, title: String?, for sessionID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        var list = todosBySession[sessionID] ?? []
+        guard let idx = list.firstIndex(where: { $0.id == id }) else { return false }
+        let current = list[idx]
+        list[idx] = TodoItemData(id: current.id, title: title ?? current.title, status: status)
+        todosBySession[sessionID] = list
+        return true
+    }
+
+    public func clear(for sessionID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        todosBySession.removeValue(forKey: sessionID)
+    }
+}
+

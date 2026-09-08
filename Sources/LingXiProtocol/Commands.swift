@@ -17,6 +17,8 @@ public enum ClientCommand: Sendable, Equatable {
     case getPerformance(sessionID: SessionID)
     case getPermissionConfiguration
     case setPermissionConfiguration(PermissionConfiguration)
+    case getAgentBehaviorProfile
+    case setAgentBehaviorProfile(AgentBehaviorProfile)
     case getProjectCache
     case compactSession(sessionID: SessionID)
     case listChildSessions(parentSessionID: SessionID)
@@ -25,6 +27,7 @@ public enum ClientCommand: Sendable, Equatable {
     case getAgentTree(rootSessionID: SessionID)
     case getSubagentResult(runID: AgentRunID)
     case cancelAgentRun(runID: AgentRunID)
+    case resumeAgentRun(runID: AgentRunID)
     case listExtensions(kind: ExtensionKind?)
     case getWorkspaceDiff
     /// 数据面命令：在 Session 中发起一轮对话。
@@ -59,6 +62,8 @@ extension ClientCommand {
         case getPerformance
         case getPermissionConfiguration
         case setPermissionConfiguration
+        case getAgentBehaviorProfile
+        case setAgentBehaviorProfile
         case getProjectCache
         case compactSession
         case listChildSessions
@@ -67,6 +72,7 @@ extension ClientCommand {
         case getAgentTree
         case getSubagentResult
         case cancelAgentRun
+        case resumeAgentRun
         case listExtensions
         case getWorkspaceDiff
         case sendMessage
@@ -92,6 +98,8 @@ extension ClientCommand {
         case .getPerformance: .getPerformance
         case .getPermissionConfiguration: .getPermissionConfiguration
         case .setPermissionConfiguration: .setPermissionConfiguration
+        case .getAgentBehaviorProfile: .getAgentBehaviorProfile
+        case .setAgentBehaviorProfile: .setAgentBehaviorProfile
         case .getProjectCache: .getProjectCache
         case .compactSession: .compactSession
         case .listChildSessions: .listChildSessions
@@ -100,6 +108,7 @@ extension ClientCommand {
         case .getAgentTree: .getAgentTree
         case .getSubagentResult: .getSubagentResult
         case .cancelAgentRun: .cancelAgentRun
+        case .resumeAgentRun: .resumeAgentRun
         case .listExtensions: .listExtensions
         case .getWorkspaceDiff: .getWorkspaceDiff
         case .sendMessage: .sendMessage

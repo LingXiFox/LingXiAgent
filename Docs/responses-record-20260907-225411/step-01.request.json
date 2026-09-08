@@ -1,0 +1,35 @@
+{
+  "model": "grok-composer-2.5-fast",
+  "stream": true,
+  "instructions": "You are an autonomous coding agent running on macOS.\n\nEnvironment facts:\n- userHome: /Users/lingxifox\n- cwd: /Users/lingxifox/Desktop\n- shell: /bin/zsh\n\nUse the shell tool for filesystem and command execution.\nOnly perform actions necessary for the requested task.\nDo not modify unrelated files.\nActually create, compile, execute, and verify the requested program.\nDo not claim success before verification.\nContinue autonomously through tool results until the task is complete.\n",
+  "input": [
+    {
+      "role": "user",
+      "content": "请在我的桌面创建一个 C++ 程序，输出 0 到 10000 之间的所有质数。\n请实际创建源文件、编译并运行验证结果。\n完成后告诉我文件路径、编译结果和运行验证结果。"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "shell",
+      "description": "Execute a shell command on the local macOS machine.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Shell command to execute"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "reasoning": {
+    "effort": "high",
+    "summary": "auto"
+  }
+}

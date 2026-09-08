@@ -1,0 +1,609 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "anthropic-api",
+      "vendor": "anthropic",
+      "displayName": "Anthropic API",
+      "protocolFamily": "anthropic_messages",
+      "endpoint": "https://api.anthropic.com",
+      "authMethods": ["apiKey", "workloadIdentity"],
+      "concurrencyLimit": 10,
+      "quirks": ["requiresAnthropicVersionHeader"],
+      "models": [
+        {
+          "id": "claude-3-7-sonnet",
+          "displayName": "Claude 3.7 Sonnet",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000,
+          "reasoningCapability": {
+            "mode": "budget",
+            "supportedEfforts": ["minimal", "low", "medium", "high", "max"],
+            "defaultEffort": "medium",
+            "emitsVisibleReasoning": true,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {
+              "minimal": "low",
+              "max": "high"
+            }
+          }
+        },
+        {
+          "id": "claude-3-5-sonnet-latest",
+          "displayName": "Claude 3.5 Sonnet",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "claude-3-5-haiku-latest",
+          "displayName": "Claude 3.5 Haiku",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "openai-api",
+      "vendor": "openai",
+      "displayName": "OpenAI API",
+      "protocolFamily": "openai_responses",
+      "endpoint": "https://api.openai.com/v1",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 10,
+      "quirks": [],
+      "models": [
+        {
+          "id": "gpt-4o",
+          "displayName": "GPT-4o",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 128000,
+          "maxOutputTokens": 16384,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "gpt-4o-mini",
+          "displayName": "GPT-4o mini",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 128000,
+          "maxOutputTokens": 16384,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "o1",
+          "displayName": "o1",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 200000,
+          "maxOutputTokens": 100000,
+          "reasoningCapability": {
+            "mode": "effort",
+            "supportedEfforts": ["low", "medium", "high"],
+            "defaultEffort": "medium",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": true,
+            "coarseMappings": {
+              "minimal": "low",
+              "max": "high"
+            }
+          }
+        },
+        {
+          "id": "o3-mini",
+          "displayName": "o3-mini",
+          "toolCall": true,
+          "vision": false,
+          "cache": true,
+          "contextWindow": 200000,
+          "maxOutputTokens": 100000,
+          "reasoningCapability": {
+            "mode": "effort",
+            "supportedEfforts": ["low", "medium", "high"],
+            "defaultEffort": "medium",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": true,
+            "coarseMappings": {
+              "minimal": "low",
+              "max": "high"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "deepseek-api",
+      "vendor": "deepseek",
+      "displayName": "DeepSeek API",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://api.deepseek.com",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 10,
+      "quirks": ["statelessContinuationOnly"],
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "displayName": "DeepSeek V3",
+          "toolCall": true,
+          "vision": false,
+          "cache": true,
+          "contextWindow": 64000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "deepseek-reasoner",
+          "displayName": "DeepSeek R1",
+          "toolCall": true,
+          "vision": false,
+          "cache": true,
+          "contextWindow": 64000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "adaptive",
+            "supportedEfforts": ["auto"],
+            "defaultEffort": "auto",
+            "emitsVisibleReasoning": true,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {
+              "low": "auto",
+              "medium": "auto",
+              "high": "auto"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "gemini-api",
+      "vendor": "google",
+      "displayName": "Gemini API",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 5,
+      "quirks": [],
+      "models": [
+        {
+          "id": "gemini-2.0-flash",
+          "displayName": "Gemini 2.0 Flash",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 1048576,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "effort",
+            "supportedEfforts": ["auto", "low", "medium", "high"],
+            "defaultEffort": "auto",
+            "emitsVisibleReasoning": true,
+            "emitsReasoningSummary": true,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "gemini-2.0-flash-thinking-exp",
+          "displayName": "Gemini 2.0 Flash Thinking",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "reasoningCapability": {
+            "mode": "adaptive",
+            "supportedEfforts": ["high"],
+            "defaultEffort": "high",
+            "emitsVisibleReasoning": true,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {
+              "medium": "high",
+              "low": "high"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "xai-api",
+      "vendor": "xai",
+      "displayName": "xAI API",
+      "protocolFamily": "openai_responses",
+      "endpoint": "https://api.x.ai/v1",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 5,
+      "quirks": ["statelessContinuationOnly", "reasoningSummaryAuto"],
+      "models": [
+        {
+          "id": "grok-2",
+          "displayName": "Grok 2",
+          "toolCall": true,
+          "vision": true,
+          "cache": false,
+          "contextWindow": 131072,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "grok-composer-2.5-fast",
+          "displayName": "Grok Composer 2.5 Fast",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 131072,
+          "maxOutputTokens": 32768,
+          "reasoningCapability": {
+            "mode": "effort",
+            "supportedEfforts": ["low", "medium", "high"],
+            "defaultEffort": "high",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": true,
+            "coarseMappings": {
+              "minimal": "low",
+              "max": "high"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "openrouter",
+      "vendor": "openrouter",
+      "displayName": "OpenRouter",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 10,
+      "quirks": [],
+      "models": [
+        {
+          "id": "anthropic/claude-3.5-sonnet",
+          "displayName": "Claude 3.5 Sonnet (via OpenRouter)",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "openai/gpt-4o",
+          "displayName": "GPT-4o (via OpenRouter)",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 128000,
+          "maxOutputTokens": 16384,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "ollama-local",
+      "vendor": "ollama",
+      "displayName": "Ollama",
+      "protocolFamily": "openai_chat",
+      "endpoint": "http://localhost:11434/v1",
+      "authMethods": ["none", "apiKey"],
+      "concurrencyLimit": 2,
+      "quirks": ["localRuntime", "noAuthDefault"],
+      "models": [
+        {
+          "id": "llama3.3",
+          "displayName": "Llama 3.3",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 128000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "qwen2.5-coder",
+          "displayName": "Qwen 2.5 Coder",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 128000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "lm-studio-local",
+      "vendor": "lm-studio",
+      "displayName": "LM Studio",
+      "protocolFamily": "openai_chat",
+      "endpoint": "http://localhost:1234/v1",
+      "authMethods": ["none", "apiKey"],
+      "concurrencyLimit": 2,
+      "quirks": ["localRuntime", "noAuthDefault"],
+      "models": [
+        {
+          "id": "local-model",
+          "displayName": "Local Model",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 32768,
+          "maxOutputTokens": 4096,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "llama-cpp-local",
+      "vendor": "llama-cpp",
+      "displayName": "llama.cpp",
+      "protocolFamily": "openai_chat",
+      "endpoint": "http://localhost:8080/v1",
+      "authMethods": ["none", "apiKey"],
+      "concurrencyLimit": 2,
+      "quirks": ["localRuntime", "noAuthDefault"],
+      "models": [
+        {
+          "id": "default",
+          "displayName": "Default Model",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 32768,
+          "maxOutputTokens": 4096,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "alibaba-bailian-api",
+      "vendor": "alibaba",
+      "displayName": "Alibaba Bailian API",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 10,
+      "quirks": ["dashScopeHeaders"],
+      "models": [
+        {
+          "id": "qwen-max",
+          "displayName": "Qwen Max",
+          "toolCall": true,
+          "vision": true,
+          "cache": true,
+          "contextWindow": 131072,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "qwq-32b-preview",
+          "displayName": "QwQ 32B Preview",
+          "toolCall": true,
+          "vision": false,
+          "cache": true,
+          "contextWindow": 131072,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "adaptive",
+            "supportedEfforts": ["auto"],
+            "defaultEffort": "auto",
+            "emitsVisibleReasoning": true,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {
+              "low": "auto",
+              "medium": "auto",
+              "high": "auto"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "minimax-api",
+      "vendor": "minimax",
+      "displayName": "MiniMax API",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://api.minimax.io/v1",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 5,
+      "quirks": [],
+      "models": [
+        {
+          "id": "MiniMax-Text-01",
+          "displayName": "MiniMax-Text-01",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 8192,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "zai-api",
+      "vendor": "zai",
+      "displayName": "Z.AI API",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://api.z.ai/api/paas/v4",
+      "authMethods": ["bearerToken", "apiKey"],
+      "concurrencyLimit": 5,
+      "quirks": [],
+      "models": [
+        {
+          "id": "glm-4-plus",
+          "displayName": "GLM-4 Plus",
+          "toolCall": true,
+          "vision": true,
+          "cache": false,
+          "contextWindow": 128000,
+          "maxOutputTokens": 4096,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        },
+        {
+          "id": "glm-4-flash",
+          "displayName": "GLM-4 Flash",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 128000,
+          "maxOutputTokens": 4096,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": "mimo-api",
+      "vendor": "xiaomi",
+      "displayName": "MiMo API",
+      "protocolFamily": "openai_chat",
+      "endpoint": "https://api.xiaomimimo.com/v1",
+      "authMethods": ["apiKeyHeader", "apiKey"],
+      "concurrencyLimit": 5,
+      "quirks": ["customApiKeyHeader"],
+      "models": [
+        {
+          "id": "mimo-v1",
+          "displayName": "MiMo v1",
+          "toolCall": true,
+          "vision": false,
+          "cache": false,
+          "contextWindow": 32768,
+          "maxOutputTokens": 4096,
+          "reasoningCapability": {
+            "mode": "none",
+            "supportedEfforts": [],
+            "defaultEffort": "off",
+            "emitsVisibleReasoning": false,
+            "emitsReasoningSummary": false,
+            "coarseMappings": {}
+          }
+        }
+      ]
+    }
+  ]
+}

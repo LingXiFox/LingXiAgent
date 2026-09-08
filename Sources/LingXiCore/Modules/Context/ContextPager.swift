@@ -175,7 +175,7 @@ public actor ContextPager {
     }
 
     public func query(projectRoot: URL, query: ContextQuery, limit: Int = 20) async -> ContextPagerResult {
-        guard limit > 0 else { return ContextPagerResult(pages: [], metrics: metrics()) }
+        guard limit > 0, (!query.terms.isEmpty || !query.symbolHints.isEmpty) else { return ContextPagerResult(pages: [], metrics: metrics()) }
         let clock = ContinuousClock()
         let retrievalStart = clock.now
         let l2Candidates = await workingSet.search(projectRoot: projectRoot, query: query, limit: limit)

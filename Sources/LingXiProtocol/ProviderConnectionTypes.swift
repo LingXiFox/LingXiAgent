@@ -6,6 +6,13 @@ public struct ProviderEndpointID: RawRepresentable, Codable, Sendable, Equatable
 public enum RequestAuthentication: Sendable, Equatable { case none, bearerToken, apiKeyHeader(name: String), oauthAccessToken, workloadIdentityToken, gatewayToken, customHeaderSet, providerNative }
 public enum ProviderWire: String, Codable, Sendable, Equatable { case openAIChatCompletions, openAIResponses, anthropicMessages, openAICompatible, providerNative }
 public enum ModelCatalogSource: String, Codable, Sendable, Equatable { case officialAPI, officialStaticCatalog, gatewayCatalog, localRuntime, userConfiguration, unavailable }
+public enum ModelDiscoveryStrategy: String, Codable, Sendable, Equatable {
+    case staticCatalog = "static"
+    case endpoint = "endpoint"
+    case authenticatedRemote = "authenticatedRemote"
+    case local = "local"
+    case custom = "custom"
+}
 public enum ProviderAvailability: String, Codable, Sendable, Equatable { case configured, credentialPresent, endpointResolvable, modelResolvable, available, unavailable, unverified }
 
 public struct CredentialRef: RawRepresentable, Codable, Sendable, Equatable, Hashable {
@@ -62,8 +69,9 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
     public let maxOutputTokens: Int
     public let reasoning: Bool
     public let configured: Bool
+    public let metadataIncomplete: Bool
 
-    public init(id: String, providerID: String, modelID: String, displayName: String, contextWindow: Int, maxOutputTokens: Int, reasoning: Bool, configured: Bool) {
+    public init(id: String, providerID: String, modelID: String, displayName: String, contextWindow: Int, maxOutputTokens: Int, reasoning: Bool, configured: Bool, metadataIncomplete: Bool = false) {
         self.id = id
         self.providerID = providerID
         self.modelID = modelID
@@ -72,6 +80,7 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         self.maxOutputTokens = maxOutputTokens
         self.reasoning = reasoning
         self.configured = configured
+        self.metadataIncomplete = metadataIncomplete
     }
 }
 

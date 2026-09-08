@@ -18,6 +18,8 @@ struct WireCodableTests {
             .replyPermission(PermissionReply(permissionID: PermissionID("p-1"), decision: .allow)),
             .getPermissionConfiguration,
             .setPermissionConfiguration(.agent),
+            .getAgentBehaviorProfile,
+            .setAgentBehaviorProfile(.plan),
             .getContextProjection(sessionID: SessionID("s-1")),
             .listExtensions(kind: .skill),
             .getWorkspaceDiff,
@@ -33,7 +35,7 @@ struct WireCodableTests {
         let status = ProviderStatus(configured: true, model: "m", baseURL: "https://x/v1", missingRequirements: [])
         let now = Date()
         let sessionInfo = SessionInfo(id: SessionID("s-1"), createdAt: now, updatedAt: now, messageCount: 2)
-        let snapshot = SessionSnapshot(
+        let snapshot = LegacySessionSnapshot(
             id: SessionID("s-1"),
             createdAt: now,
             updatedAt: now,
@@ -60,6 +62,7 @@ struct WireCodableTests {
             .workspaceDiff("diff"),
             .permissionReplyAccepted(PermissionID("p-1")),
             .permissionConfiguration(.agent),
+            .agentBehaviorProfile(.plan),
             .error(CoreError(code: .turnAlreadyRunning, message: "已有进行中的轮次")),
         ]
         for response in cases {

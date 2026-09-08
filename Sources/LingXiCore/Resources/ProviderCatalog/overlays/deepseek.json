@@ -1,0 +1,46 @@
+{
+  "products": [
+    {
+      "authMethods": [
+        "bearerToken"
+      ],
+      "concurrencyLimit": 10,
+      "displayName": "DeepSeek API",
+      "endpoint": "https://api.deepseek.com",
+      "id": "deepseek-api",
+      "models": [
+        {
+          "displayName": "DeepSeek Chat (V3)",
+          "id": "deepseek-chat",
+          "upstreamID": "deepseek-chat"
+        },
+        {
+          "displayName": "DeepSeek Reasoner (R1)",
+          "id": "deepseek-reasoner",
+          "reasoningCapability": {
+            "coarseMappings": {
+              "high": "auto",
+              "low": "auto",
+              "medium": "auto"
+            },
+            "defaultEffort": "auto",
+            "emitsReasoningSummary": false,
+            "emitsVisibleReasoning": true,
+            "mode": "adaptive",
+            "supportedEfforts": [
+              "auto"
+            ]
+          },
+          "upstreamID": "deepseek-reasoner"
+        }
+      ],
+      "protocolFamily": "openai_chat",
+      "quirks": [
+        "statelessContinuationOnly"
+      ],
+      "type": "cloudAPI",
+      "verificationStatus": "verified"
+    }
+  ],
+  "vendor": "deepseek"
+}

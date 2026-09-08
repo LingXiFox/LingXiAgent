@@ -40,6 +40,10 @@ public struct ContextQuery: Sendable, Equatable {
         relationHints = ["关系", "关联", "依赖", "调用", "relation", "dependency", "depend"].filter { queryText.localizedCaseInsensitiveContains($0) }
     }
 
+    public var isTrivial: Bool {
+        terms.isEmpty && symbolHints.isEmpty
+    }
+
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.terms == rhs.terms && lhs.symbolHints == rhs.symbolHints
     }

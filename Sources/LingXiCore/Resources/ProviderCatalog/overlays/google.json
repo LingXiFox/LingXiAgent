@@ -1,0 +1,195 @@
+{
+  "products": [
+    {
+      "authMethods": [
+        "bearerToken",
+        "apiKey",
+        "workloadIdentity"
+      ],
+      "concurrencyLimit": 10,
+      "displayName": "Gemini API",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "id": "gemini-api",
+      "models": [
+        {
+          "displayName": "Gemini 2.5 Pro",
+          "id": "gemini-2.5-pro",
+          "reasoningCapability": {
+            "coarseMappings": {
+              "max": "high",
+              "minimal": "low"
+            },
+            "defaultEffort": "medium",
+            "emitsReasoningSummary": false,
+            "emitsVisibleReasoning": true,
+            "mode": "budget",
+            "supportedEfforts": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "upstreamID": "gemini-2.5-pro"
+        },
+        {
+          "displayName": "Gemini 2.0 Flash",
+          "id": "gemini-2.0-flash",
+          "reasoningCapability": {
+            "coarseMappings": {
+              "max": "high",
+              "minimal": "low"
+            },
+            "defaultEffort": "medium",
+            "emitsReasoningSummary": false,
+            "emitsVisibleReasoning": true,
+            "mode": "budget",
+            "supportedEfforts": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "upstreamID": "gemini-2.0-flash"
+        },
+        {
+          "displayName": "Gemini 1.5 Pro",
+          "id": "gemini-1.5-pro",
+          "upstreamID": "gemini-1.5-pro"
+        },
+        {
+          "displayName": "Gemini 1.5 Flash",
+          "id": "gemini-1.5-flash",
+          "upstreamID": "gemini-1.5-flash"
+        }
+      ],
+      "protocolFamily": "openai_chat",
+      "quirks": [],
+      "type": "cloudAPI",
+      "verificationStatus": "verified"
+    },
+    {
+      "authMethods": [
+        "oauth"
+      ],
+      "displayName": "Gemini Code Assist",
+      "endpoint": "https://cloudaicompanion.googleapis.com/v1",
+      "id": "gemini-code-assist",
+      "models": [
+        {
+          "displayName": "Gemini 2.5 Pro",
+          "id": "gemini-2.5-pro",
+          "upstreamID": "gemini-2.5-pro"
+        },
+        {
+          "displayName": "Gemini 2.0 Flash",
+          "id": "gemini-2.0-flash",
+          "upstreamID": "gemini-2.0-flash"
+        }
+      ],
+      "oauth": {
+        "authURL": "https://accounts.google.com/o/oauth2/v2/auth",
+        "clientID": "lingxiagent-gca-client",
+        "provider": "google",
+        "requestProfileID": "gemini-code-assist@2026-09",
+        "scopes": [
+          "https://www.googleapis.com/auth/cloud-platform"
+        ],
+        "tokenURL": "https://oauth2.googleapis.com/token",
+        "usePKCE": true
+      },
+      "protocolFamily": "openai_chat",
+      "requestProfiles": {
+        "gemini-code-assist@2026-09": {
+          "compatibilityMode": "conservative",
+          "id": "gemini-code-assist@2026-09",
+          "provenance": {
+            "compatibilityStatus": "compatibleNonOfficial",
+            "evidenceSources": [
+              "https://cloud.google.com/gemini/docs/codeassist/overview",
+              "Google Cloud Code OAuth REST endpoints with scope https://www.googleapis.com/auth/cloud-platform"
+            ],
+            "knownRequiredHeaders": {
+              "Authorization": "Bearer <token>",
+              "Content-Type": "application/json",
+              "X-Goog-Api-Client": "lingxiagent/2.0"
+            },
+            "optionalOfficialLikeHeaders": {
+              "User-Agent": "LingXiAgent-GCA/2.0 (macOS)"
+            },
+            "profileVersion": "2026-09",
+            "verifiedAt": "2026-09-08T00:00:00Z"
+          },
+          "requiredHeaders": {
+            "X-Goog-Api-Client": "lingxiagent/2.0"
+          },
+          "userAgentProfile": "LingXiAgent-GCA/2.0 (macOS)",
+          "version": "2026-09"
+        }
+      },
+      "type": "subscription",
+      "verificationStatus": "compatibleNonOfficial"
+    },
+    {
+      "authMethods": [
+        "oauth"
+      ],
+      "displayName": "Antigravity",
+      "endpoint": "https://antigravity.googleapis.com/v1",
+      "id": "antigravity",
+      "models": [
+        {
+          "displayName": "Gemini 2.5 Pro",
+          "id": "gemini-2.5-pro",
+          "upstreamID": "gemini-2.5-pro"
+        }
+      ],
+      "oauth": {
+        "authURL": "https://accounts.google.com/o/oauth2/v2/auth",
+        "clientID": "lingxiagent-antigravity-client",
+        "provider": "google",
+        "requestProfileID": "antigravity@2026-09",
+        "scopes": [
+          "https://www.googleapis.com/auth/cloud-platform"
+        ],
+        "tokenURL": "https://oauth2.googleapis.com/token",
+        "usePKCE": true
+      },
+      "protocolFamily": "openai_chat",
+      "requestProfiles": {
+        "antigravity@2026-09": {
+          "compatibilityMode": "conservative",
+          "id": "antigravity@2026-09",
+          "provenance": {
+            "compatibilityStatus": "compatibleNonOfficial",
+            "evidenceSources": [
+              "Google Antigravity CLI protocol specification & OAuth scope https://www.googleapis.com/auth/cloud-platform",
+              "Antigravity IDE local sidecar proxy contract"
+            ],
+            "knownRequiredHeaders": {
+              "Authorization": "Bearer <token>",
+              "Content-Type": "application/json",
+              "X-Antigravity-Client": "lingxiagent/2.0"
+            },
+            "optionalOfficialLikeHeaders": {
+              "User-Agent": "LingXiAgent-Antigravity/2.0 (macOS)"
+            },
+            "profileVersion": "2026-09",
+            "verifiedAt": "2026-09-08T00:00:00Z"
+          },
+          "requiredHeaders": {
+            "X-Antigravity-Client": "lingxiagent/2.0"
+          },
+          "userAgentProfile": "LingXiAgent-Antigravity/2.0 (macOS)",
+          "version": "2026-09"
+        }
+      },
+      "type": "subscription",
+      "verificationStatus": "compatibleNonOfficial"
+    }
+  ],
+  "vendor": "google"
+}

@@ -1,12 +1,18 @@
 import Foundation
 
 /// 一条 Streaming 通道的标识。
-public struct StreamID: Sendable, Equatable, Hashable, Codable {
+public struct StreamID: Sendable, Equatable, Hashable, Codable, CustomStringConvertible, ExpressibleByStringLiteral {
     public let rawValue: String
 
-    public init(_ rawValue: String) {
+    public init(_ rawValue: String = UUID().uuidString) {
         self.rawValue = rawValue
     }
+
+    public init(stringLiteral value: String) {
+        self.rawValue = value
+    }
+
+    public var description: String { rawValue }
 }
 
 /// Streaming chunk 的内容类别。
@@ -20,16 +26,30 @@ public struct StreamChunk: Sendable, Equatable, Codable {
     public let streamID: StreamID
     public let sessionID: SessionID?
     public let agentRunID: AgentRunID?
+    public let modelStepID: ModelStepID?
+    public let stepNumber: Int?
     /// 单调递增序号，用于顺序校验。
     public let index: Int
     public let text: String
     public let kind: StreamChunkKind
     public let timestamp: Date
 
-    public init(streamID: StreamID, sessionID: SessionID? = nil, agentRunID: AgentRunID? = nil, index: Int, text: String, kind: StreamChunkKind = .text, timestamp: Date = .now) {
+    public init(
+        streamID: StreamID,
+        sessionID: SessionID? = nil,
+        agentRunID: AgentRunID? = nil,
+        modelStepID: ModelStepID? = nil,
+        stepNumber: Int? = nil,
+        index: Int,
+        text: String,
+        kind: StreamChunkKind = .text,
+        timestamp: Date = .now
+    ) {
         self.streamID = streamID
         self.sessionID = sessionID
         self.agentRunID = agentRunID
+        self.modelStepID = modelStepID
+        self.stepNumber = stepNumber
         self.index = index
         self.text = text
         self.kind = kind

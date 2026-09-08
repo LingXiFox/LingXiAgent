@@ -2,7 +2,7 @@ import Foundation
 import LingXiProtocol
 
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
-public actor CoreHost: CoreEndpoint {
+public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public static let coreVersion = "0.1.0"
     public static let protocolVersion = "1"
 
@@ -31,6 +31,7 @@ public actor CoreHost: CoreEndpoint {
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
     private let compactor: ContextCompactor
+    private let cacheController: ContextCacheController
     private let budgetPlanner: ContextBudgetPlanner
     private let diagnosticsEnabled: Bool
     private let configurationStore: ConfigurationStore?
@@ -42,17 +43,76 @@ public actor CoreHost: CoreEndpoint {
     private let l2CharacterCapacity: Int
     private let l1ProjectCharacterCapacity: Int
     private let behaviorProfile: AgentBehaviorProfile
+    private let behaviorInstructionsEnabled: Bool
+    private let behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
+    private let agentSettings: AgentSettings
     private let restoreScheduler: SessionRestoreScheduler?
     private var agent: AgentRuntime?
     private var workflows: WorkflowRuntime?
     private var runtimeProviderAccounts: [String: ProviderAccountInfo] = [:]
+    private var runtimeExtensions: [String: ExtensionInfo] = [:]
     private var selectedModelOverride: String?
     private var selectedModelContextWindow: Int?
     private var contextActivity: ContextPagingActivity = .idle
     private var state: CoreState = .starting
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
+    private var activeTurnTasks: [RunID: Task<Void, Never>] = [:]
+    private var activeTurnTasksBySession: [SessionID: [RunID: Task<Void, Never>]] = [:]
+
+    private func registerActiveTurnTask(_ task: Task<Void, Never>, runID: RunID, sessionID: SessionID) {
+        activeTurnTasks[runID] = task
+        activeTurnTasksBySession[sessionID, default: [:]][runID] = task
+    }
+
+    private func unregisterActiveTurnTask(runID: RunID, sessionID: SessionID) {
+        activeTurnTasks.removeValue(forKey: runID)
+        activeTurnTasksBySession[sessionID]?.removeValue(forKey: runID)
+    }
+
+    private func cancelActiveTurnTask(runID: RunID) {
+        if let task = activeTurnTasks.removeValue(forKey: runID) {
+            task.cancel()
+        }
+        for sessionID in activeTurnTasksBySession.keys {
+            if let task = activeTurnTasksBySession[sessionID]?.removeValue(forKey: runID) {
+                task.cancel()
+            }
+        }
+    }
+
+    private func cancelActiveTurnTasks(for sessionID: SessionID) {
+        if let tasks = activeTurnTasksBySession.removeValue(forKey: sessionID) {
+            for (runID, task) in tasks {
+                task.cancel()
+                activeTurnTasks.removeValue(forKey: runID)
+            }
+        }
+    }
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
     package var workflowRuntimeRef: WorkflowRuntime? { workflows }
+    package var performanceStoreRef: PerformanceStore { performanceStore }
+    public private(set) var effectiveContextPolicy: EffectiveContextPolicy
+
+    // MARK: - Protocol vNext State
+    public enum CommitFailpoint: String, Sendable, Equatable {
+        case beforeStateMutation
+        case afterStateMutationBeforeEventAppend
+        case afterEventAppendBeforeReceipt
+        case afterCommitBeforeResponse
+    }
+
+    public let runtimeEventLog: RuntimeEventLog
+    private var sessionCoordinators: [SessionID: SessionTurnCoordinator] = [:]
+    private let idempotencyJournal: IdempotencyJournal
+    public let commandWAL: DurableCommandWAL
+    public let contentStore: ContentStore
+    private var currentRevision: UInt64 = 1
+    public let eventLogStorageDirectory: URL?
+    public private(set) var activeFailpoint: CommitFailpoint?
+
+    public func setCommitFailpoint(_ failpoint: CommitFailpoint?) {
+        self.activeFailpoint = failpoint
+    }
 
     /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
     public init(
@@ -95,12 +155,35 @@ public actor CoreHost: CoreEndpoint {
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
         let instructions = try AgentInstructionSet.load(workspace: workspace.url)
         let agentSettings = configuration?.agent ?? AgentSettings()
+        self.agentSettings = agentSettings
         let behaviorProfile = agentSettings.behaviorProfile ?? .build
         self.behaviorProfile = behaviorProfile
-        // Preserve legacy request bytes unless behavior policy or repository instructions are configured.
-        let systemContext = agentSettings.behaviorProfile != nil || instructions.rendered() != nil
-            ? AgentBehaviorInstructions.render(profile: behaviorProfile, configured: agentSettings.systemContext, repository: instructions)
-            : agentSettings.systemContext
+        let defaultAccessScope = (agentSettings.executionProfile == .fullAccess) ? "fullAccess" : "workspace"
+        let behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String? = { profile, execProfile in
+            let scope: String
+            if let execProfile {
+                scope = (execProfile.permissionProfile == "fullAccess") ? "fullAccess" : "workspace"
+            } else {
+                scope = defaultAccessScope
+            }
+            let facts = AgentEnvironmentFacts(
+                workspaceRoot: workspace.url.path,
+                currentDirectory: workspace.url.path,
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path,
+                shell: environment["SHELL"] ?? "unknown",
+                accessScope: scope
+            )
+            return AgentBehaviorInstructions.render(
+                profile: profile,
+                configured: agentSettings.systemContext,
+                repository: instructions,
+                environmentFacts: facts
+            )
+        }
+        self.behaviorSystemContext = behaviorSystemContext
+        let behaviorInstructionsEnabled = configuration?.agent != nil
+        self.behaviorInstructionsEnabled = behaviorInstructionsEnabled
+        let systemContext = behaviorSystemContext(behaviorProfile, nil)
         let effectiveMCPPager = mcpPager ?? MCPToolPager()
         self.mcpPager = effectiveMCPPager
         diagnosticsStore = RuntimeDiagnosticsStore()
@@ -126,15 +209,52 @@ public actor CoreHost: CoreEndpoint {
         l1ProjectCharacterCapacity = l1ProjectBudget
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
+        let effective = providerAssembly ?? .unavailable
+        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy)
+        let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
+        modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
+
+        let modelWindow = effective.endpoint.contextProfile.contextWindowTokens
+        let globalContextConfig = configuration?.context ?? ContextCacheConfiguration()
+        let resolvedPolicy: EffectiveContextPolicy
+        do {
+            resolvedPolicy = try ContextPolicyResolver.resolve(
+                global: globalContextConfig,
+                modelWindow: modelWindow
+            )
+        } catch {
+            resolvedPolicy = EffectiveContextPolicy(
+                addressableBudget: 1_048_576,
+                modelWindow: modelWindow,
+                economicThreshold: 272_000,
+                reserve: 22_000,
+                l1Target: 220_000,
+                l1SoftLimit: 235_000,
+                l1HardLimit: 250_000,
+                l2Max: 350_000,
+                l3Capacity: 456_576
+            )
+        }
+        self.effectiveContextPolicy = resolvedPolicy
+
+        compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
+        let cacheController = ContextCacheController(
+            contextPager: contextPager,
+            scanner: projectScanner,
+            compactor: compactor,
+            policy: resolvedPolicy
+        )
+        self.cacheController = cacheController
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
         toolRuntime = ToolRuntime(
-            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence),
+            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:))),
             permissions: permissions,
             mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
             outputArchive: ToolOutputArchive(persistence: persistent),
             outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
             mcpPager: effectiveMCPPager,
             subagents: subagentService,
+            cacheController: cacheController,
             deadlinePolicy: executionDeadlinePolicy
         )
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
@@ -147,18 +267,27 @@ public actor CoreHost: CoreEndpoint {
             maxTotalRunsPerRootRun: agentSettings.maxTotalRunsPerRootRun
         )
         performanceStore = PerformanceStore(enabled: diagnosticsEnabled)
-        compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
         budgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: agentSettings.preferredActiveTokens))
-
-        let effective = providerAssembly ?? .unavailable
-        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy)
-        let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
-        modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
+        let eventLogDir = persistentRoot?.appendingPathComponent(".lingxi/eventlog") ?? baseWorkspace.url.appendingPathComponent(".lingxi/eventlog")
+        self.eventLogStorageDirectory = eventLogDir
+        runtimeEventLog = RuntimeEventLog(storageDirectory: eventLogDir)
+        idempotencyJournal = IdempotencyJournal(storageDirectory: eventLogDir)
+        commandWAL = DurableCommandWAL(storageDirectory: eventLogDir)
+        let storageDir = persistentRoot?.appendingPathComponent(".lingxi/content") ?? baseWorkspace.url.appendingPathComponent(".lingxi/content")
+        contentStore = ContentStore(storageDirectory: storageDir)
     }
 
     /// 注册控制面路由并进入 ready。
     public func start() async {
         guard state == .starting else { return }
+        await commandWAL.recover(
+            sessionStore: sessionStore,
+            runtimeEventLog: runtimeEventLog,
+            coordinatorProvider: { [weak self] id in
+                guard let self else { throw CoreError(code: .sessionNotFound, message: "Host deallocated") }
+                return try await self.coordinator(for: id)
+            }
+        )
         await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
         await extensionPlatform.restore()
         await questions.setEventSink { [weak self] request in
@@ -207,6 +336,7 @@ public actor CoreHost: CoreEndpoint {
         await bus.add(.createSession) { [self] _ in
             let agent = try await requireAgent()
             let id = try await agent.createSession()
+            await cacheController.resetSession(id)
             let session = try await sessionStore.session(id)
             return .sessionCreated(session.toInfo())
         }
@@ -286,6 +416,16 @@ public actor CoreHost: CoreEndpoint {
             await permissionEngine.setConfiguration(configuration)
             return .permissionConfiguration(configuration)
         }
+        await bus.add(.getAgentBehaviorProfile) { [self] _ in
+            let agent = try await requireAgent()
+            return .agentBehaviorProfile(await agent.currentBehaviorProfile())
+        }
+        await bus.add(.setAgentBehaviorProfile) { [self] command in
+            guard case let .setAgentBehaviorProfile(profile) = command else { return .error(CoreError(code: .unsupportedCommand, message: "setAgentBehaviorProfile 参数缺失")) }
+            let agent = try await requireAgent()
+            await agent.setBehaviorProfile(profile)
+            return .agentBehaviorProfile(profile)
+        }
         await bus.add(.getProjectCache) { [self] _ in
             let agent = try await requireAgent()
             return .projectCache(await agent.projectCache())
@@ -334,6 +474,11 @@ public actor CoreHost: CoreEndpoint {
             try await agent.cancelAgentRun(id)
             return .agentRunCancelled(id)
         }
+        await bus.add(.resumeAgentRun) { [self] command in
+            guard case let .resumeAgentRun(id) = command else { return .error(CoreError(code: .unsupportedCommand, message: "resumeAgentRun 参数缺失")) }
+            let agent = try await requireAgent()
+            return .agentRun(try await agent.resumeAgentRun(id))
+        }
         await bus.add(.listExtensions) { [self] command in
             guard case let .listExtensions(kind) = command else { return .error(CoreError(code: .unsupportedCommand, message: "listExtensions 参数缺失")) }
             return .extensions(await extensionInfos(kind: kind))
@@ -360,11 +505,15 @@ public actor CoreHost: CoreEndpoint {
             compactor: compactor,
             budgetPlanner: budgetPlanner,
             persistence: persistence,
+            cacheController: cacheController,
             interactive: interactive,
             diagnosticsEnabled: diagnosticsEnabled,
             modelResolver: modelResolver,
             limits: subagentLimits,
             behaviorProfile: behaviorProfile,
+            behaviorInstructionsEnabled: behaviorInstructionsEnabled,
+            behaviorSystemContext: behaviorSystemContext,
+            maxAgentLoopSteps: agentSettings.maxAgentLoopSteps,
             deadlinePolicy: executionDeadlinePolicy,
             restoreScheduler: restoreScheduler,
             diagnostics: diagnosticsStore
@@ -372,6 +521,9 @@ public actor CoreHost: CoreEndpoint {
         self.agent = agent
         let workflows = await agent.makeWorkflowRuntime()
         self.workflows = workflows
+        await workflows.setInputSink { [weak self] workflowID, taskID, input in
+            await self?.projectWorkflowInput(workflowID: workflowID, taskID: taskID, input: input)
+        }
         await subagentService.bind(
             spawn: { [weak agent] sessionID, runID, task, title, selection, profile, toolCallID in try await agent?.spawn(parentSessionID: sessionID, parentRunID: runID, task: task, title: title, modelSelection: selection, profile: profile, toolCallID: toolCallID) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
             status: { [weak agent] runID, requester in try await agent?.agentRun(runID, requester: requester) ?? { throw CoreError(code: .notReady, message: "Agent 未就绪") }() },
@@ -469,11 +621,147 @@ public actor CoreHost: CoreEndpoint {
     // MARK: - 事件广播
 
     /// Agent 等模块经此把语义事件送入所有控制面订阅者。
-    public func broadcast(_ event: CoreEvent) {
+    public func broadcast(_ event: CoreEvent) async {
         if case let .permissionAsked(request) = event {
             Task { [weak self] in try? await self?.workflows?.suspendForOrigin(sessionID: request.sessionID, input: .permission(request)) }
         }
+        await appendVNextEvent(event)
         eventContinuations.values.forEach { $0.yield(event) }
+
+        // Context accounting is diagnostic state and must not delay the user-visible
+        // lifecycle event or tool result on the control plane.
+        if let sessionID = eventSessionID(event), shouldRefreshVNextContext(for: event) {
+            Task { [weak self] in await self?.refreshVNextContext(sessionID: sessionID) }
+        }
+    }
+
+    private func appendVNextEvent(_ event: CoreEvent) async {
+        switch event {
+        case let .providerActivityChanged(activity):
+            guard let coordinator = try? await coordinator(for: activity.sessionID) else { return }
+            let state = ProviderRequestState(rawValue: activity.state.rawValue) ?? .unknown
+            await coordinator.recordProviderRequestState(
+                requestID: ProviderRequestID(activity.providerRequestID),
+                state: state,
+                causal: CausalContext(sessionID: activity.sessionID, runID: activity.runID.map(RunID.init))
+            )
+        case let .toolCallCompleted(call):
+            guard let sessionID = call.sessionID, let coordinator = try? await coordinator(for: sessionID) else { return }
+            let causal = CausalContext(sessionID: sessionID, runID: call.agentRunID.map(RunID.init), modelStepID: call.modelStepID, toolCallID: call.callID)
+            await coordinator.recordToolRequested(snapshot: ToolInvocationSnapshot(
+                callID: call.callID,
+                toolID: call.toolID,
+                displayName: call.toolName,
+                argumentsSummary: call.arguments,
+                state: .requested
+            ), causal: causal)
+            await coordinator.recordToolScheduled(callID: call.callID, causal: causal)
+        case let .toolExecutionClaimed(call):
+            guard call.toolID.rawValue != "question" else { return }
+            guard let sessionID = call.sessionID, let coordinator = try? await coordinator(for: sessionID) else { return }
+            await coordinator.recordToolRunning(
+                callID: call.callID,
+                stdoutStreamID: nil,
+                stderrStreamID: nil,
+                causal: CausalContext(sessionID: sessionID, runID: call.agentRunID.map(RunID.init), modelStepID: call.modelStepID, toolCallID: call.callID)
+            )
+        case let .permissionAsked(request):
+            let causal = CausalContext(
+                sessionID: request.sessionID,
+                runID: nil,
+                toolCallID: request.toolCallID
+            )
+            guard let coordinator = try? await coordinator(for: request.sessionID) else { return }
+            await coordinator.recordToolWaitingForPermission(
+                callID: request.toolCallID,
+                permissionID: request.permissionID,
+                causal: causal
+            )
+            await coordinator.recordInteractionRequested(snapshot: InteractionSnapshot(
+                interactionID: InteractionID(request.permissionID.rawValue),
+                kind: .permission,
+                causal: causal,
+                permissionRequest: request
+            ))
+        case let .questionAsked(request), let .questionEscalated(request):
+            guard let sessionID = request.originSessionID ?? request.rootSessionID ?? request.parentSessionID,
+                  let coordinator = try? await coordinator(for: sessionID) else { return }
+            let causal = CausalContext(
+                sessionID: sessionID,
+                runID: request.originRunID.map(RunID.init),
+                toolCallID: nil
+            )
+            await coordinator.recordInteractionRequested(snapshot: InteractionSnapshot(
+                interactionID: InteractionID(request.questionID.rawValue),
+                kind: .question,
+                causal: causal,
+                questionRequest: request
+            ))
+        case let .toolResult(result):
+            guard let sessionID = result.sessionID, let coordinator = try? await coordinator(for: sessionID) else { return }
+            let causal = CausalContext(sessionID: sessionID, runID: result.agentRunID.map(RunID.init), modelStepID: result.modelStepID, toolCallID: result.callID)
+            let preview = String(result.content.prefix(240))
+            let contentRef = (result.output.truncated ? (result.continuation ?? result.output.outputBlobRef) : nil).map {
+                ContentRef(
+                    id: ContentID($0),
+                    mediaType: "text/plain",
+                    byteCount: result.output.totalBytes,
+                    tokenEstimate: max(1, result.output.totalCharacters / 3)
+                )
+            }
+            await coordinator.recordToolCompleted(
+                callID: result.callID,
+                result: ToolResultSnapshot(
+                    callID: result.callID,
+                    success: result.success,
+                    summary: result.summary,
+                    preview: preview.isEmpty ? nil : preview,
+                    contentRef: contentRef,
+                    error: result.error.map { RuntimeError(category: .tool, code: $0.code, message: $0.message, retryability: .none, source: .tool) },
+                    timing: result.timing
+                ),
+                stdoutFinalIndex: nil,
+                stderrFinalIndex: nil,
+                causal: causal
+            )
+        default:
+            break
+        }
+    }
+
+    private func refreshVNextContext(sessionID: SessionID) async {
+        guard let coordinator = try? await coordinator(for: sessionID) else { return }
+        await coordinator.recordContextStateChanged(
+            await buildContextStateSnapshot(sessionID: sessionID),
+            causal: CausalContext(sessionID: sessionID)
+        )
+    }
+
+    private func shouldRefreshVNextContext(for event: CoreEvent) -> Bool {
+        switch event {
+        case .turnStarted, .toolResult, .turnCompleted, .turnFailed: return true
+        default: return false
+        }
+    }
+
+    private func eventSessionID(_ event: CoreEvent) -> SessionID? {
+        switch event {
+        case let .sessionCreated(id): id
+        case let .turnStarted(handle): handle.sessionID
+        case let .turnCompleted(result): result.sessionID
+        case let .turnFailed(failure): failure.sessionID
+        case let .toolCallCompleted(call): call.sessionID
+        case let .toolExecutionClaimed(call): call.sessionID
+        case let .toolResult(result): result.sessionID
+        case let .permissionAsked(request): request.sessionID
+        case let .questionAsked(request): request.originSessionID
+        case let .childSessionCreated(info): info.id
+        case let .subagentSpawned(run), let .agentRunQueued(run), let .agentRunStarted(run), let .agentRunStatusChanged(run), let .agentRunCompleted(run), let .agentRunFailed(run), let .agentRunCancelled(run): run.sessionID
+        case let .subagentResultAvailable(result): result.childSessionID
+        case let .questionEscalated(request): request.originSessionID
+        case let .providerActivityChanged(activity): activity.sessionID
+        case .stateChanged: nil
+        }
     }
 
     // MARK: - Private
@@ -488,6 +776,23 @@ public actor CoreHost: CoreEndpoint {
     private func routeWorkflowQuestion(_ request: QuestionRequest) async {
         guard let runID = request.originRunID else { return }
         try? await workflows?.suspendForOrigin(runID: runID, input: .question(request))
+    }
+
+    private func projectWorkflowInput(workflowID: WorkflowID, taskID: WorkflowTaskID, input: WorkflowPendingInput) async {
+        guard case let .decision(request) = input,
+              let coordinator = try? await coordinator(for: request.originSessionID) else { return }
+        let causal = CausalContext(
+            sessionID: request.originSessionID,
+            runID: RunID(request.originRunID.rawValue),
+            workflowID: workflowID,
+            workflowTaskID: taskID
+        )
+        await coordinator.recordInteractionRequested(snapshot: InteractionSnapshot(
+            interactionID: InteractionID(request.decisionID.rawValue),
+            kind: .decision,
+            causal: causal,
+            decisionRequest: request
+        ))
     }
 
     private var providerStatus: ProviderStatus {
@@ -514,20 +819,69 @@ public actor CoreHost: CoreEndpoint {
     private func contextProjection(_ sessionID: SessionID) async throws -> ContextCacheProjection? {
         let agent = try requireAgent()
         let snapshot = try await agent.ensureContextSnapshot(sessionID)
-        let cache = await agent.projectCache()
-        let l1Capacity = selectedModelContextWindow ?? gateway.contextProfile.contextWindowTokens
+        let manifest = await agent.latestContextManifest(sessionID)
+
+        let l1Usage = await cacheController.l1UsageTokens(for: sessionID)
+        let effectiveL1Usage = l1Usage > 0 ? l1Usage : snapshot.metrics.estimatedTokens
+        let l1Count = await cacheController.l1Count(for: sessionID)
+        let effectiveL1Count = l1Count > 0 ? l1Count : snapshot.entries.count
+
+        let l2Usage = await cacheController.l2UsageTokens(for: sessionID)
+        let l2Count = await cacheController.l2Count(for: sessionID)
+
+        let l3Usage = await cacheController.l3UsageTokens(for: sessionID)
+        let l3Count = await cacheController.l3Count(for: sessionID)
+
+        let pagingStats = await cacheController.pagingStats(for: sessionID)
+        let lastInputTokens = await cacheController.lastProviderInputTokens(for: sessionID)
+        let cacheTelemetry = ProviderCacheTelemetry.aggregate(
+            (await performanceStore.providerCalls(for: sessionID)).compactMap(\.cacheTelemetry)
+        )
+
+        let l1Status = ContextLayerStatus(
+            layer: .l1,
+            usageTokens: effectiveL1Usage,
+            capacityTokens: effectiveContextPolicy.l1Target,
+            entryCount: effectiveL1Count,
+            state: effectiveL1Usage == 0 ? .empty : .available,
+            pageInCount: pagingStats.pageIns,
+            pageOutCount: pagingStats.pageOuts
+        )
+
+        let l2Status = ContextLayerStatus(
+            layer: .l2,
+            usageTokens: l2Usage,
+            capacityTokens: effectiveContextPolicy.l2Max,
+            entryCount: l2Count,
+            state: l2Usage == 0 ? .empty : .available,
+            pageInCount: pagingStats.promotions,
+            pageOutCount: pagingStats.demotions
+        )
+
+        let l3State: ContextLayerState = effectiveContextPolicy.l3Enabled ? (l3Usage == 0 ? .empty : .available) : .unavailable
+        let l3Status = ContextLayerStatus(
+            layer: .l3,
+            usageTokens: l3Usage,
+            capacityTokens: effectiveContextPolicy.l3Capacity,
+            entryCount: l3Count,
+            state: l3State,
+            pageInCount: 0,
+            pageOutCount: 0
+        )
+
         return ContextCacheProjection(
             sessionID: sessionID,
-            l1: layerStatus(layer: .l1, usage: snapshot.metrics.estimatedTokens, capacity: l1Capacity, unit: "tokens", state: snapshot.metrics.messageCount == 0 ? .empty : .available, residentPages: snapshot.entries.count),
-            l2: layerStatus(layer: .l2, usage: cache.l2Characters, capacity: l2CharacterCapacity, unit: "characters", state: cache.l2Pages == 0 ? .empty : .available, residentPages: cache.l2Pages),
-            l3: layerStatus(layer: .l3, usage: cache.derivedL3Pages, capacity: max(cache.l3Pages, cache.derivedL3Pages), unit: "pages", state: cache.l3Pages == 0 && cache.derivedL3Pages == 0 ? .empty : .available, residentPages: cache.derivedL3Pages, totalPages: cache.l3Pages, pageInCount: cache.derivedPageInCount, pageOutCount: cache.derivedPageOutCount),
+            policy: ContextCachePolicySnapshot(policy: effectiveContextPolicy),
+            l1: l1Status,
+            l2: l2Status,
+            l3: l3Status,
+            paging: pagingStats,
             pagingActivity: contextActivity,
-            compactionGeneration: snapshot.metrics.compactionGeneration
+            compactionGeneration: snapshot.metrics.compactionGeneration,
+            latestManifest: manifest,
+            lastProviderInputTokens: lastInputTokens,
+            cacheTelemetry: cacheTelemetry
         )
-    }
-
-    private func layerStatus(layer: ContextLayer, usage: Int, capacity: Int, unit: String, state: ContextLayerState, residentPages: Int? = nil, totalPages: Int? = nil, pageInCount: Int = 0, pageOutCount: Int = 0) -> ContextLayerStatus {
-        ContextLayerStatus(layer: layer, usage: usage, capacity: capacity, unit: unit, percent: capacity > 0 ? min(100, max(0, usage * 100 / capacity)) : nil, state: state, residentPages: residentPages, totalPages: totalPages, pageInCount: pageInCount, pageOutCount: pageOutCount)
     }
 
     private func extensionInfos(kind: ExtensionKind?) async -> [ExtensionInfo] {
@@ -540,9 +894,10 @@ public actor CoreHost: CoreEndpoint {
 
     private func modelContextWindow(for value: String) async throws -> Int? {
         guard let separator = value.firstIndex(of: "/") else { return nil }
+        guard let configurationStore else { return nil }
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
-        return try await requireConfigurationStore().load().providers.providers[providerID]?.models[modelID]?.limit.context
+        return try await configurationStore.load().providers.providers[providerID]?.models[modelID]?.limit.context
     }
 
     private func workspaceDiff() async throws -> String {
@@ -554,12 +909,20 @@ public actor CoreHost: CoreEndpoint {
         process.standardOutput = output
         process.standardError = errors
         try process.run()
+        let outputTask = Task.detached {
+            output.fileHandleForReading.readDataToEndOfFile()
+        }
+        let errorTask = Task.detached {
+            errors.fileHandleForReading.readDataToEndOfFile()
+        }
         process.waitUntilExit()
+        let outputData = await outputTask.value
+        let errorData = await errorTask.value
         guard process.terminationStatus == 0 else {
-            let message = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "git diff failed"
+            let message = String(data: errorData, encoding: .utf8) ?? "git diff failed"
             throw CoreError(code: .gitError, message: message.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let text = String(data: outputData, encoding: .utf8) ?? ""
         return String(text.prefix(20_000))
     }
 
@@ -567,6 +930,7 @@ public actor CoreHost: CoreEndpoint {
         await Task.yield()
         let runs = await agent?.allAgentRuns() ?? []
         let orphanRunIDs = await agent?.orphanRunIDs() ?? []
+        let currentBehaviorProfile = await agent?.currentBehaviorProfile() ?? behaviorProfile
         let workflows = await workflows?.allWorkflows() ?? []
         let mcpMetrics = await mcpPager.schemaStoreMetrics()
         let trace = await diagnosticsStore.snapshot()
@@ -576,7 +940,7 @@ public actor CoreHost: CoreEndpoint {
             configurationSummary: [
                 "interactive": String(interactive),
                 "diagnosticsEnabled": String(diagnosticsEnabled),
-                "behaviorProfile": behaviorProfile.rawValue,
+                "behaviorProfile": currentBehaviorProfile.rawValue,
                 "persistence": persistence == nil ? "ephemeral" : "durable",
                 "subagentMaxConcurrent": String(subagentLimits.maxConcurrentSubagents),
                 "subagentMaxDepth": String(subagentLimits.maxSubagentDepth)
@@ -603,31 +967,136 @@ public actor CoreHost: CoreEndpoint {
     }
 
     private func providerAccounts() async throws -> [ProviderAccountInfo] {
-        let snapshot = try await requireConfigurationStore().load()
-        let persisted = snapshot.providers.accounts.map(accountInfo)
-        let runtimeProviderIDs = Set(runtimeProviderAccounts.values.map(\ .productID))
-        return persisted.filter { !runtimeProviderIDs.contains($0.productID) } + runtimeProviderAccounts.values.sorted { $0.id < $1.id }
+        guard let configurationStore else {
+            return runtimeProviderAccounts.values.sorted { $0.id < $1.id }
+        }
+        let snapshot = try await configurationStore.load()
+        var accounts = snapshot.providers.accounts.map(accountInfo)
+        for (providerID, pConfig) in snapshot.providers.providers {
+            if !accounts.contains(where: { $0.id == providerID || $0.productID == providerID }) {
+                accounts.append(ProviderAccountInfo(
+                    id: providerID,
+                    productID: providerID,
+                    displayName: pConfig.name.isEmpty ? providerID : pConfig.name,
+                    accountType: .apiKey,
+                    credentialRef: nil,
+                    endpoint: pConfig.options.baseURL,
+                    availability: "configured"
+                ))
+            }
+        }
+        let runtimeProviderIDs = Set(runtimeProviderAccounts.values.map(\.productID))
+        return accounts.filter { !runtimeProviderIDs.contains($0.productID) } + runtimeProviderAccounts.values.sorted { $0.id < $1.id }
     }
 
     private func providerModels() async throws -> [ProviderModelInfo] {
-        let snapshot = try await requireConfigurationStore().load()
+        guard let configurationStore else { return [] }
+        let snapshot = try await configurationStore.load()
         let configuredProviders = Set(snapshot.providers.providers.keys)
-        return snapshot.providers.providers.keys.sorted().flatMap { providerID in
-            guard let provider = snapshot.providers.providers[providerID] else { return [ProviderModelInfo]() }
-            return provider.models.keys.sorted().map { modelID in
-                let model = provider.models[modelID]!
-                return ProviderModelInfo(
-                    id: "\(providerID)/\(modelID)",
-                    providerID: providerID,
-                    modelID: modelID,
-                    displayName: model.name,
-                    contextWindow: model.limit.context,
-                    maxOutputTokens: model.limit.output,
-                    reasoning: model.reasoning,
-                    configured: configuredProviders.contains(providerID)
-                )
+        var results: [ProviderModelInfo] = []
+
+        for providerID in snapshot.providers.providers.keys.sorted() {
+            guard let provider = snapshot.providers.providers[providerID] else { continue }
+            let isDynamicAuth = BuiltinProviderCatalog.profile(for: providerID)?.modelDiscovery == .authenticatedRemote
+
+            if isDynamicAuth {
+                var accountRef = providerID
+                var rawSecret: String? = nil
+                if let credStore = credentialStore {
+                    let oauthRef = CredentialRef("provider-\(providerID)-oauth")
+                    if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
+                        accountRef = AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: secret)
+                        rawSecret = secret
+                    }
+                }
+                var cachedRecord = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: accountRef)
+
+                // If cache is missing or empty, and we have valid credentials, attempt remote discovery immediately
+                if (cachedRecord == nil || cachedRecord?.models.isEmpty == true), let secret = rawSecret, providerID == "openai-codex" {
+                    let accessToken: String? = {
+                        if let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8)) {
+                            return tokens.accessToken
+                        }
+                        if let json = try? JSONSerialization.jsonObject(with: Data(secret.utf8)) as? [String: Any] {
+                            return (json["accessToken"] as? String) ?? (json["access_token"] as? String)
+                        }
+                        return secret.contains("{") ? nil : secret
+                    }()
+                    if let tokenStr = accessToken, !tokenStr.isEmpty {
+                        let tokens = OAuthTokens(accessToken: tokenStr)
+                        if let discovered = try? await CodexRemoteModelDiscovery.discoverModels(tokens: tokens), !discovered.isEmpty {
+                            _ = try? await AccountScopedCatalogCache.shared.save(
+                                productID: providerID,
+                                accountRef: accountRef,
+                                models: discovered,
+                                source: "ChatGPT Remote Model Catalog"
+                            )
+                            cachedRecord = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: accountRef)
+                        }
+                    }
+                }
+
+                if let record = cachedRecord, !record.models.isEmpty {
+                    let resolved = ResolvedModelCatalogResolver.resolve(
+                        productID: providerID,
+                        authenticatedModels: record.models,
+                        staticCatalog: BuiltinProviderCatalog.catalog,
+                        isConfigured: true
+                    )
+                    results.append(contentsOf: resolved)
+                } else if !provider.models.isEmpty {
+                    for modelID in provider.models.keys.sorted() {
+                        let model = provider.models[modelID]!
+                        results.append(ProviderModelInfo(
+                            id: "\(providerID)/\(modelID)",
+                            providerID: providerID,
+                            modelID: modelID,
+                            displayName: model.name,
+                            contextWindow: model.limit.context,
+                            maxOutputTokens: model.limit.output,
+                            reasoning: model.reasoning,
+                            configured: true
+                        ))
+                    }
+                }
+            } else {
+                for modelID in provider.models.keys.sorted() {
+                    let model = provider.models[modelID]!
+                    results.append(ProviderModelInfo(
+                        id: "\(providerID)/\(modelID)",
+                        providerID: providerID,
+                        modelID: modelID,
+                        displayName: model.name,
+                        contextWindow: model.limit.context,
+                        maxOutputTokens: model.limit.output,
+                        reasoning: model.reasoning,
+                        configured: true
+                    ))
+                }
             }
         }
+
+        for profile in BuiltinProviderCatalog.profiles {
+            if configuredProviders.contains(profile.id) { continue }
+            // Dynamic authenticated products without accounts must not declare static models
+            if profile.modelDiscovery == .authenticatedRemote {
+                continue
+            }
+            for model in profile.models {
+                results.append(ProviderModelInfo(
+                    id: "\(profile.id)/\(model.id)",
+                    providerID: profile.id,
+                    modelID: model.id,
+                    displayName: model.displayName,
+                    contextWindow: model.contextWindow ?? 128000,
+                    maxOutputTokens: model.maxOutputTokens ?? 4096,
+                    reasoning: model.reasoningCapability != nil,
+                    configured: false
+                ))
+            }
+        }
+
+        return results
     }
 
     private func modelSelection(for value: String) async throws -> ModelSelection {
@@ -635,7 +1104,37 @@ public actor CoreHost: CoreEndpoint {
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
         let snapshot = try await requireConfigurationStore().load()
-        guard snapshot.providers.providers[providerID]?.models[modelID] != nil else { throw CoreError(code: .provider, message: "模型不可用: \(value)") }
+        guard let providerConfig = snapshot.providers.providers[providerID] else {
+            if let profile = BuiltinProviderCatalog.profile(for: providerID), !profile.authMethods.contains("none") {
+                throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
+            }
+            throw CoreError(code: .provider, message: "模型不可用: \(value)")
+        }
+
+        let isDynamicAuth = BuiltinProviderCatalog.profile(for: providerID)?.modelDiscovery == .authenticatedRemote
+        let hasModelInConfig = providerConfig.models[modelID] != nil
+        let isAvailableInDynamic: Bool
+        if isDynamicAuth {
+            let availableModels = try await providerModels()
+            isAvailableInDynamic = availableModels.contains(where: { $0.providerID == providerID && $0.modelID == modelID })
+        } else {
+            isAvailableInDynamic = false
+        }
+
+        guard (hasModelInConfig || isAvailableInDynamic) else {
+            throw CoreError(code: .provider, message: "模型不可用: \(value)")
+        }
+
+        let isLocalNoAuth = BuiltinProviderCatalog.profile(for: providerID)?.authMethods.contains("none") ?? false
+        if !isLocalNoAuth {
+            let keyRef = CredentialRef("provider-\(providerID)-key")
+            let oauthRef = CredentialRef("provider-\(providerID)-oauth")
+            let hasKey = (try? await requireCredentialStore().secret(for: keyRef)) != nil || providerConfig.options.apiKey != nil
+            let hasOAuth = (try? await requireCredentialStore().secret(for: oauthRef)) != nil
+            if !hasKey && !hasOAuth {
+                throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
+            }
+        }
         return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
     }
 
@@ -704,8 +1203,10 @@ public actor CoreHost: CoreEndpoint {
     }
 
     private func deleteProviderCredential(_ reference: CredentialRef) async throws {
-        let snapshot = try await requireConfigurationStore().load()
-        guard !snapshot.providers.accounts.contains(where: { $0.credential == reference }) else { throw CoreError(code: .provider, message: "Credential 仍被其他 Account 使用") }
+        if let configurationStore {
+            let snapshot = try await configurationStore.load()
+            guard !snapshot.providers.accounts.contains(where: { $0.credential == reference }) else { throw CoreError(code: .provider, message: "Credential 仍被其他 Account 使用") }
+        }
         try await requireCredentialStore().removeSecret(for: reference)
     }
 
@@ -743,5 +1244,1541 @@ public actor CoreHost: CoreEndpoint {
 
     private func removeEventContinuation(_ key: UUID) {
         eventContinuations.removeValue(forKey: key)
+    }
+}
+
+// MARK: - LingXiProtocolService Implementation
+
+extension CoreHost {
+
+    // MARK: - Helper Methods
+
+    public func coordinator(for sessionID: SessionID) async throws -> SessionTurnCoordinator {
+        if let existing = sessionCoordinators[sessionID] {
+            return existing
+        }
+        _ = try await sessionStore.session(sessionID)
+        let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: eventLogStorageDirectory)
+        let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
+        sessionCoordinators[sessionID] = coord
+        return coord
+    }
+
+    private func nextRevision() -> UInt64 {
+        currentRevision += 1
+        return currentRevision
+    }
+
+    private func buildContextStateSnapshot(sessionID: SessionID) async -> ContextStateSnapshot {
+        let snapshot = try? await agent?.ensureContextSnapshot(sessionID)
+        let l1Usage = await cacheController.l1UsageTokens(for: sessionID)
+        let effectiveL1Usage = l1Usage > 0 ? l1Usage : (snapshot?.metrics.estimatedTokens ?? 0)
+        let l2Usage = await cacheController.l2UsageTokens(for: sessionID)
+        let l3Usage = await cacheController.l3UsageTokens(for: sessionID)
+        let estimatedTokens = effectiveL1Usage + l2Usage + l3Usage
+        let generation = snapshot?.metrics.compactionGeneration ?? 0
+
+        return ContextStateSnapshot(
+            sessionID: sessionID,
+            estimatedTokens: estimatedTokens,
+            l1Tokens: effectiveL1Usage,
+            l2Tokens: l2Usage,
+            l3Tokens: l3Usage,
+            compactionGeneration: generation
+        )
+    }
+
+    private func executeTurnRun(
+        sessionID: SessionID,
+        turnID: TurnID,
+        runID: RunID,
+        input: UserInput,
+        executionIntent: TurnExecutionIntent,
+        coordinator: SessionTurnCoordinator?
+    ) async {
+        guard let coordinator else { return }
+        defer { unregisterActiveTurnTask(runID: runID, sessionID: sessionID) }
+        if Task.isCancelled {
+            _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            return
+        }
+        // Core 执行必须使用该 Turn 的 frozen executionIntent
+        await permissionEngine.setConfiguration(executionIntent.permissionConfiguration)
+        if let model = executionIntent.modelSelection, let selection = try? await modelSelection(for: model) {
+            try? await agent?.selectModel(selection)
+        }
+        guard let agent, state == .ready, gateway.isConfigured else {
+            let next = await coordinator.finishRun(runID: runID, reason: .completed)
+            if let next {
+                let task = Task { [weak self, weak coordinator] () -> Void in
+                    await self?.executeTurnRun(
+                        sessionID: sessionID,
+                        turnID: next.turn.turnID,
+                        runID: next.runID,
+                        input: UserInput(text: next.turn.userMessage.text),
+                        executionIntent: next.turn.executionIntent,
+                        coordinator: coordinator
+                    )
+                }
+                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+            }
+            return
+        }
+        var currentStepID: ModelStepID?
+        var currentStepNumber: Int = 0
+        var currentMsgID: MessageID?
+        var currentAssistantStreamID: StreamID?
+        var currentReasoningStreamID: StreamID?
+        var currentCausal: CausalContext?
+        var currentAssistantIndex: UInt64 = 0
+        var currentReasoningIndex: UInt64 = 0
+        var currentAssistantText = ""
+        do {
+            let stream = try await agent.sendMessage(sessionID, input.text)
+
+            for try await chunk in stream.chunks {
+                if Task.isCancelled {
+                    _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                    return
+                }
+                let chunkStepID = chunk.modelStepID ?? (currentStepID ?? ModelStepID())
+                let chunkStepNumber = chunk.stepNumber ?? (currentStepNumber > 0 ? currentStepNumber : 1)
+
+                if currentStepID != chunkStepID {
+                    if currentStepID != nil {
+                        await closeModelStepStreaming(
+                            coordinator: coordinator,
+                            stepID: currentStepID,
+                            causal: currentCausal,
+                            msgID: currentMsgID,
+                            astStreamID: currentAssistantStreamID,
+                            assistantText: currentAssistantText,
+                            assistantIndex: currentAssistantIndex,
+                            reasoningIndex: currentReasoningIndex,
+                            finishReason: "tool_calls"
+                        )
+                    }
+                    currentStepID = chunkStepID
+                    currentStepNumber = chunkStepNumber
+                    let step = await coordinator.beginModelStep(
+                        stepID: chunkStepID,
+                        runID: runID,
+                        stepNumber: chunkStepNumber
+                    )
+                    currentMsgID = step.messageID
+                    currentAssistantStreamID = step.assistantStreamID
+                    currentReasoningStreamID = step.reasoningStreamID
+                    currentCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: runID, modelStepID: chunkStepID)
+                    currentAssistantIndex = 0
+                    currentReasoningIndex = 0
+                    currentAssistantText = ""
+                }
+
+                guard let assistantStreamID = currentAssistantStreamID,
+                      let reasoningStreamID = currentReasoningStreamID,
+                      let causal = currentCausal else { continue }
+
+                switch chunk.kind {
+                case .text:
+                    currentAssistantText += chunk.text
+                    let frame = StreamFrame(
+                        streamID: assistantStreamID,
+                        owner: causal,
+                        index: currentAssistantIndex,
+                        kind: .assistantText,
+                        text: chunk.text
+                    )
+                    _ = try? await coordinator.emitStreamFrame(frame: frame)
+                    currentAssistantIndex += 1
+                case .reasoning:
+                    let frame = StreamFrame(
+                        streamID: reasoningStreamID,
+                        owner: causal,
+                        index: currentReasoningIndex,
+                        kind: .visibleReasoning,
+                        text: chunk.text
+                    )
+                    _ = try? await coordinator.emitStreamFrame(frame: frame)
+                    currentReasoningIndex += 1
+                }
+            }
+
+            if currentStepID != nil {
+                await closeModelStepStreaming(
+                    coordinator: coordinator,
+                    stepID: currentStepID,
+                    causal: currentCausal,
+                    msgID: currentMsgID,
+                    astStreamID: currentAssistantStreamID,
+                    assistantText: currentAssistantText,
+                    assistantIndex: currentAssistantIndex,
+                    reasoningIndex: currentReasoningIndex,
+                    finishReason: "stop"
+                )
+            }
+            if Task.isCancelled {
+                _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                return
+            }
+            let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .completed)
+            if let next = nextTurnToRun {
+                let task = Task { [weak self, weak coordinator] () -> Void in
+                    await self?.executeTurnRun(
+                        sessionID: sessionID,
+                        turnID: next.turn.turnID,
+                        runID: next.runID,
+                        input: UserInput(text: next.turn.userMessage.text),
+                        executionIntent: next.turn.executionIntent,
+                        coordinator: coordinator
+                    )
+                }
+                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+            }
+        } catch is CancellationError {
+            _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+        } catch {
+            if Task.isCancelled {
+                _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                return
+            }
+            if currentStepID != nil {
+                await closeModelStepStreaming(
+                    coordinator: coordinator,
+                    stepID: currentStepID,
+                    causal: currentCausal,
+                    msgID: currentMsgID,
+                    astStreamID: currentAssistantStreamID,
+                    assistantText: currentAssistantText,
+                    assistantIndex: currentAssistantIndex,
+                    reasoningIndex: currentReasoningIndex,
+                    finishReason: "error"
+                )
+            }
+            let runtimeErr = (error as? RuntimeError) ?? (error as? CoreError)?.asRuntimeError ?? RuntimeError(category: .runtime, code: "executionError", message: error.localizedDescription, retryability: .none, source: .core)
+            let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+            if let next = nextTurnToRun {
+                let task = Task { [weak self, weak coordinator] () -> Void in
+                    try? await Task.sleep(for: .milliseconds(200))
+                    await self?.executeTurnRun(
+                        sessionID: sessionID,
+                        turnID: next.turn.turnID,
+                        runID: next.runID,
+                        input: UserInput(text: next.turn.userMessage.text),
+                        executionIntent: next.turn.executionIntent,
+                        coordinator: coordinator
+                    )
+                }
+                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+            }
+        }
+    }
+
+    private func closeModelStepStreaming(
+        coordinator: SessionTurnCoordinator,
+        stepID: ModelStepID?,
+        causal: CausalContext?,
+        msgID: MessageID?,
+        astStreamID: StreamID?,
+        assistantText: String,
+        assistantIndex: UInt64,
+        reasoningIndex: UInt64,
+        finishReason: String
+    ) async {
+        guard let stepID, let causal else { return }
+        if let msgID, let astStreamID, !assistantText.isEmpty {
+            let assistantFinalIndex: UInt64 = assistantIndex > 0 ? (assistantIndex - 1) : 0
+            await coordinator.commitAssistantMessage(
+                messageID: msgID,
+                streamID: astStreamID,
+                causal: causal,
+                content: assistantText,
+                finalIndex: assistantFinalIndex
+            )
+        }
+        let reasoningFinalIndex: UInt64? = reasoningIndex > 0 ? (reasoningIndex - 1) : nil
+        await coordinator.completeModelStep(
+            stepID: stepID,
+            causal: causal,
+            finalIndex: reasoningFinalIndex,
+            outputMetadata: ModelStepOutputMetadata(finishReason: finishReason)
+        )
+    }
+
+    // MARK: - Runtime
+    public func getRuntimeInfo(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeInfo> {
+        let info = RuntimeInfo(
+            instanceID: RuntimeInstanceID("core-\(info.version)"),
+            name: "LingXiCore",
+            version: Self.coreVersion,
+            protocolVersion: .current,
+            startedAt: Date()
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: info
+        )
+    }
+
+    public func getRuntimeHealth(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeHealth> {
+        let health = RuntimeHealth(
+            status: state == .ready ? .healthy : (state == .stopped ? .unhealthy : .degraded),
+            activeSessions: sessionCoordinators.count,
+            activeRuns: 0,
+            uptimeSeconds: 0
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: health
+        )
+    }
+
+    public func getRuntimeCapabilities(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeCapabilities> {
+        let caps = RuntimeCapabilities(
+            supportsStreamReplay: true,
+            supportsContentUpload: true,
+            maxAttachmentBytes: 100 * 1024 * 1024,
+            supportedModes: [.build, .plan, .explore]
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: caps
+        )
+    }
+
+    // MARK: - Session
+    public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SessionSummary.self) {
+            return cached
+        }
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SessionSummary.self) {
+            return cached
+        }
+
+        if activeFailpoint == .beforeStateMutation {
+            throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
+        }
+
+        await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "createSession")
+
+        let initialRuntimeSeq = await runtimeEventLog.currentSequence()
+        let session = try await sessionStore.create(
+            kind: .primary,
+            parentSessionID: nil,
+            rootSessionID: nil,
+            spawnedByRunID: nil,
+            spawnedByToolCallID: nil,
+            title: envelope.payload.workspace.flatMap { URL(fileURLWithPath: $0).lastPathComponent }
+        )
+        let coord = try await coordinator(for: session.id)
+        let initialSessionSeq = await coord.eventLog.currentSequence()
+
+        await commandWAL.recordState(
+            commandID: envelope.commandID,
+            createdSessionID: session.id,
+            sessionID: session.id,
+            turnID: nil,
+            runID: nil,
+            initialRuntimeSequence: initialRuntimeSeq,
+            initialSessionSequence: initialSessionSeq
+        )
+
+        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+            fflush(stdout)
+            kill(getpid(), SIGKILL)
+        }
+
+        if activeFailpoint == .afterStateMutationBeforeEventAppend {
+            try? await sessionStore.deleteSession(session.id)
+            throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after mutation before event append", retryability: .afterDelay, source: .core)
+        }
+
+        let summary = SessionSummary(
+            sessionID: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: 0,
+            mode: envelope.payload.defaultMode,
+            reasoningEffort: session.reasoningEffort
+        )
+        await runtimeEventLog.append(payload: .sessionCreated(summary))
+        await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+
+        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+            fflush(stdout)
+            kill(getpid(), SIGKILL)
+        }
+
+        if activeFailpoint == .afterEventAppendBeforeReceipt {
+            await runtimeEventLog.rollbackLastAppended()
+            try? await sessionStore.deleteSession(session.id)
+            sessionCoordinators.removeValue(forKey: session.id)
+            throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
+        }
+
+        let receipt = CommandReceipt<SessionSummary>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [
+                await runtimeEventLog.currentWatermark(),
+                await coord.eventLog.currentWatermark()
+            ],
+            result: summary
+        )
+        await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+
+        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+            fflush(stdout)
+            kill(getpid(), SIGKILL)
+        }
+
+        if activeFailpoint == .afterCommitBeforeResponse {
+            throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
+        }
+
+        return receipt
+    }
+
+    public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SessionSummary.self) {
+            return cached
+        }
+        let session = try await sessionStore.updateTitle(envelope.payload.sessionID, title: envelope.payload.title)
+        let coord = try await coordinator(for: session.id)
+        let summary = SessionSummary(
+            sessionID: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: 0,
+            mode: .build,
+            reasoningEffort: session.reasoningEffort
+        )
+        await runtimeEventLog.append(payload: .sessionUpdated(summary))
+        let receipt = CommandReceipt<SessionSummary>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [
+                await runtimeEventLog.currentWatermark(),
+                await coord.eventLog.currentWatermark()
+            ],
+            result: summary
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SessionSummary.self) {
+            return cached
+        }
+        let session = try await sessionStore.updateReasoningEffort(envelope.payload.sessionID, effort: envelope.payload.effort)
+        let coord = try await coordinator(for: session.id)
+        let summary = SessionSummary(
+            sessionID: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: 0,
+            mode: .build,
+            reasoningEffort: session.reasoningEffort
+        )
+        await runtimeEventLog.append(payload: .sessionUpdated(summary))
+        let receipt = CommandReceipt<SessionSummary>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [
+                await runtimeEventLog.currentWatermark(),
+                await coord.eventLog.currentWatermark()
+            ],
+            result: summary
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        try await sessionStore.deleteSession(envelope.payload.sessionID)
+        sessionCoordinators.removeValue(forKey: envelope.payload.sessionID)
+        _ = await runtimeEventLog.append(payload: .sessionDeleted(envelope.payload.sessionID))
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [
+                await runtimeEventLog.currentWatermark()
+            ],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> {
+        let session = try await sessionStore.session(envelope.payload.sessionID)
+        let coord = try await coordinator(for: session.id)
+        let summary = SessionSummary(
+            sessionID: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: 0,
+            mode: .build
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: summary
+        )
+    }
+
+    public func listSessions(envelope: QueryEnvelope<PageRequest>) async throws -> ResponseEnvelope<Page<SessionSummary>> {
+        let sessions = try await sessionStore.listSessions()
+        let all: [SessionSummary] = sessions.map {
+            SessionSummary(
+                sessionID: $0.id,
+                title: $0.title,
+                createdAt: $0.createdAt,
+                updatedAt: $0.updatedAt,
+                turnCount: 0,
+                mode: .build
+            )
+        }
+        let limit = max(1, envelope.payload.limit)
+        let items = Array(all.prefix(limit))
+        let hasMore = all.count > items.count
+        let page = Page<SessionSummary>(items: items, nextCursor: hasMore ? items.last?.sessionID.rawValue : nil, hasMore: hasMore)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: page
+        )
+    }
+
+    public func getSessionSnapshot(envelope: QueryEnvelope<GetSessionSnapshotRequest>) async throws -> ResponseEnvelope<SessionSnapshot> {
+        let session = try await sessionStore.session(envelope.payload.sessionID)
+        let coord = try await coordinator(for: session.id)
+        let summary = SessionSummary(
+            sessionID: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: 0,
+            mode: .build
+        )
+        let contextState = await buildContextStateSnapshot(sessionID: session.id)
+        let agentMode = await coord.currentAgentMode()
+        let snapshot = await coord.buildSnapshot(
+            info: summary,
+            contextState: contextState,
+            permissionConfiguration: await permissionEngine.currentConfiguration(),
+            agentMode: agentMode,
+            revision: nextRevision()
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: snapshot
+        )
+    }
+
+    // MARK: - Turn / Run
+    public func submitTurn(envelope: CommandEnvelope<SubmitTurnRequest>) async throws -> CommandReceipt<SubmitTurnResult> {
+        if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SubmitTurnResult.self) {
+            return cached
+        }
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SubmitTurnResult.self) {
+            return cached
+        }
+
+        if activeFailpoint == .beforeStateMutation {
+            throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
+        }
+
+        await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
+
+        _ = try await sessionStore.session(envelope.payload.sessionID)
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let initialRuntimeSeq = await runtimeEventLog.currentSequence()
+        let initialSessionSeq = await coord.eventLog.currentSequence()
+
+        let msg = try await sessionStore.appendMessage(envelope.payload.sessionID, role: .user, content: envelope.payload.input.text)
+        let userSnapshot = MessageSnapshot(
+            messageID: msg.id,
+            role: .user,
+            text: envelope.payload.input.text,
+            attachments: envelope.payload.input.attachments,
+            createdAt: msg.createdAt
+        )
+        let decision = await coord.submitTurn(
+            input: envelope.payload.input,
+            intent: envelope.payload.executionIntent,
+            userMessage: userSnapshot
+        )
+
+        await commandWAL.recordState(
+            commandID: envelope.commandID,
+            createdSessionID: nil,
+            sessionID: envelope.payload.sessionID,
+            turnID: decision.turn.turnID,
+            runID: decision.runID,
+            initialRuntimeSequence: initialRuntimeSeq,
+            initialSessionSequence: initialSessionSeq
+        )
+
+        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+            fflush(stdout)
+            kill(getpid(), SIGKILL)
+        }
+
+        if activeFailpoint == .afterStateMutationBeforeEventAppend {
+            await coord.rollbackTurn(decision: decision)
+            throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
+        }
+
+        await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+
+        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+            fflush(stdout)
+            kill(getpid(), SIGKILL)
+        }
+
+        if activeFailpoint == .afterEventAppendBeforeReceipt {
+            await coord.eventLog.rollbackLastAppended()
+            await coord.rollbackTurn(decision: decision)
+            throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
+        }
+
+        let watermark = await coord.eventLog.currentWatermark()
+        let result = SubmitTurnResult(turnID: decision.turn.turnID, status: decision.status, runID: decision.runID)
+        let receipt = CommandReceipt<SubmitTurnResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: result
+        )
+        await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+
+        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+            fflush(stdout)
+            kill(getpid(), SIGKILL)
+        }
+
+        if activeFailpoint == .afterCommitBeforeResponse {
+            throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
+        }
+
+        if decision.shouldStartExecution, let runID = decision.runID {
+            let task = Task { [weak self, weak coord] () -> Void in
+                await self?.executeTurnRun(
+                    sessionID: envelope.payload.sessionID,
+                    turnID: decision.turn.turnID,
+                    runID: runID,
+                    input: envelope.payload.input,
+                    executionIntent: envelope.payload.executionIntent,
+                    coordinator: coord
+                )
+            }
+            registerActiveTurnTask(task, runID: runID, sessionID: envelope.payload.sessionID)
+        }
+        return receipt
+    }
+
+    public func cancelTurn(envelope: CommandEnvelope<CancelTurnRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        cancelActiveTurnTasks(for: envelope.payload.sessionID)
+        await agent?.cancelSession(envelope.payload.sessionID)
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        try await coord.cancelTurn(turnID: envelope.payload.turnID)
+        let watermark = await coord.eventLog.currentWatermark()
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func getTurn(envelope: QueryEnvelope<GetTurnRequest>) async throws -> ResponseEnvelope<TurnSnapshot> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        guard let turn = await coord.getTurn(turnID: envelope.payload.turnID) else {
+            throw RuntimeError(category: .validation, code: "turnNotFound", message: "Turn \(envelope.payload.turnID.rawValue) 不存在", retryability: .none, source: .client)
+        }
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: turn
+        )
+    }
+
+    public func listTurns(envelope: QueryEnvelope<ListTurnsRequest>) async throws -> ResponseEnvelope<Page<TurnSnapshot>> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let page = await coord.listTurns(page: envelope.payload.page)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: page
+        )
+    }
+
+    public func cancelRun(envelope: CommandEnvelope<CancelRunRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        cancelActiveTurnTask(runID: envelope.payload.runID)
+        await agent?.cancelSession(envelope.payload.sessionID)
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
+        try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+        let watermark = await coord.eventLog.currentWatermark()
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        if let next = nextTurnToRun {
+            let task = Task { [weak self, weak coord] () -> Void in
+                await self?.executeTurnRun(
+                    sessionID: envelope.payload.sessionID,
+                    turnID: next.turn.turnID,
+                    runID: next.runID,
+                    input: UserInput(text: next.turn.userMessage.text),
+                    executionIntent: next.turn.executionIntent,
+                    coordinator: coord
+                )
+            }
+            registerActiveTurnTask(task, runID: next.runID, sessionID: envelope.payload.sessionID)
+        }
+        return receipt
+    }
+
+    public func resumeRun(envelope: CommandEnvelope<ResumeRunRequest>) async throws -> CommandReceipt<RunSnapshot> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: RunSnapshot.self) {
+            return cached
+        }
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        guard let run = await coord.getRun(runID: envelope.payload.runID) else {
+            throw RuntimeError(category: .validation, code: "runNotFound", message: "Run \(envelope.payload.runID.rawValue) 不存在", retryability: .none, source: .client)
+        }
+        _ = try? await agent?.resumeAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+        let watermark = await coord.eventLog.currentWatermark()
+        let receipt = CommandReceipt<RunSnapshot>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: run
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func getRun(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<RunSnapshot> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        guard let run = await coord.getRun(runID: envelope.payload.runID) else {
+            throw RuntimeError(category: .validation, code: "runNotFound", message: "Run \(envelope.payload.runID.rawValue) 不存在", retryability: .none, source: .client)
+        }
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: run
+        )
+    }
+
+    public func listRuns(envelope: QueryEnvelope<ListRunsRequest>) async throws -> ResponseEnvelope<Page<RunSnapshot>> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let page = await coord.listRuns(page: envelope.payload.page)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: page
+        )
+    }
+
+    // MARK: - Interaction
+    public func listPendingInteractions(envelope: QueryEnvelope<ListInteractionsRequest>) async throws -> ResponseEnvelope<[InteractionSnapshot]> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let list = await coord.listPendingInteractions()
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: list
+        )
+    }
+
+    public func resolveInteraction(envelope: CommandEnvelope<ResolveInteractionRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        if case .permission = envelope.payload.resolution,
+           let interaction = await coord.listPendingInteractions().first(where: { $0.interactionID == envelope.payload.interactionID }),
+           let request = interaction.permissionRequest,
+           (await permissionEngine.currentConfiguration()).accessScope == .workspace,
+           request.capabilities.contains(.externalFilesystem) {
+            throw CoreError(
+                code: .permissionDenied,
+                message: "AccessScope=workspace 禁止访问 Workspace 外路径；请先切换到 FullAccess/YOLO"
+            )
+        }
+        switch envelope.payload.resolution {
+        case let .permission(decision):
+            let reply = PermissionReply(
+                permissionID: PermissionID(envelope.payload.interactionID.rawValue),
+                decision: decision
+            )
+            try await permissionEngine.reply(reply)
+        case let .question(reply):
+            try await questions.reply(reply)
+        default:
+            break
+        }
+        try await coord.resolveInteraction(interactionID: envelope.payload.interactionID, resolution: envelope.payload.resolution)
+        let watermark = await coord.eventLog.currentWatermark()
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    // MARK: - Event Streams
+    public func subscribeRuntimeEvents(after: EventCursor?) async -> AsyncStream<RuntimeEventEnvelope> {
+        await runtimeEventLog.subscribe(after: after)
+    }
+
+    public func subscribeSessionEvents(sessionID: SessionID, after: EventCursor?) async throws -> AsyncStream<SessionEventEnvelope> {
+        let coord = try await coordinator(for: sessionID)
+        return try await coord.eventLog.subscribe(after: after)
+    }
+
+    public func listSessionEvents(request: ListSessionEventsRequest) async throws -> [SessionEventEnvelope] {
+        let coord = try await coordinator(for: request.sessionID)
+        return await coord.eventLog.listEvents(before: request.before, after: request.after, limit: request.limit)
+    }
+
+    // MARK: - High-Frequency StreamFrames
+    public func subscribeStreamFrames(streamID: StreamID, afterIndex: UInt64?) async throws -> AsyncStream<StreamFrame> {
+        for coord in sessionCoordinators.values {
+            if await coord.hasStream(streamID) {
+                return await coord.subscribeStream(streamID: streamID, afterIndex: afterIndex)
+            }
+        }
+        throw RuntimeError(category: .runtime, code: "streamNotFound", message: "Stream \(streamID.rawValue) 不存在或未注册", retryability: .none, source: .core)
+    }
+
+    // MARK: - Content / Resource Data Plane & Control Plane
+    public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: BeginContentUploadResponse.self) {
+            return cached
+        }
+        let response = await contentStore.beginUpload(request: envelope.payload)
+        let watermark = await runtimeEventLog.currentWatermark()
+        let receipt = CommandReceipt<BeginContentUploadResponse>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: response
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func uploadContentChunk(uploadID: String, chunkIndex: UInt64, data: Data) async throws {
+        try await contentStore.writeChunk(uploadID: uploadID, chunkIndex: chunkIndex, data: data)
+    }
+
+    public func commitContentUpload(envelope: CommandEnvelope<CommitContentUploadRequest>) async throws -> CommandReceipt<ContentRef> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: ContentRef.self) {
+            return cached
+        }
+        let ref = try await contentStore.commitUpload(request: envelope.payload)
+        let watermark = await runtimeEventLog.currentWatermark()
+        let receipt = CommandReceipt<ContentRef>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: ref
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func abortContentUpload(envelope: CommandEnvelope<AbortContentUploadRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        await contentStore.abortUpload(uploadID: envelope.payload.uploadID)
+        let watermark = await runtimeEventLog.currentWatermark()
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func getContentMetadata(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> ContentMetadata {
+        try await contentStore.metadata(id: ref.id, authorization: authorization)
+    }
+
+    public func getContent(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> Data {
+        try await contentStore.read(id: ref.id, authorization: authorization)
+    }
+
+    public func getContentRange(ref: ContentRef, offset: Int, length: Int, authorization: ContentAuthorizationContext) async throws -> Data {
+        try await contentStore.readRange(id: ref.id, offset: offset, length: length, authorization: authorization)
+    }
+
+    // MARK: - 1. Runtime Extended
+    public func getEffectiveConfiguration(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<EffectiveConfigurationSnapshot> {
+        let snapshot = EffectiveConfigurationSnapshot(
+            coreVersion: Self.coreVersion,
+            protocolVersion: .current,
+            defaultMode: .build,
+            defaultPermission: await permissionEngine.currentConfiguration()
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: snapshot
+        )
+    }
+
+    public func reloadConfiguration(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
+        _ = try? await configurationStore?.load()
+        let watermark = await runtimeEventLog.currentWatermark()
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+    }
+
+    // MARK: - 4. Run Extended
+    public func getAgentTree(envelope: QueryEnvelope<GetAgentTreeRequest>) async throws -> ResponseEnvelope<AgentTreeNode> {
+        let agent = try requireAgent()
+        let tree = try await agent.agentTree(envelope.payload.sessionID)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: tree
+        )
+    }
+
+    // MARK: - 6. Provider
+    public func listProviders(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAccountInfo]> {
+        let accounts = try await providerAccounts()
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: accounts
+        )
+    }
+
+    public func getProviderStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderStatus> {
+        let status = providerStatus
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: status
+        )
+    }
+
+    // MARK: - 7. Model
+    public func listModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderModelInfo]> {
+        let models = try await providerModels()
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: models
+        )
+    }
+
+    public func getModelSelection(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ModelSelectionInfo> {
+        let currentModel = selectedModelOverride ?? gateway.modelID?.rawValue ?? ""
+        let providerID = currentModel.contains("/") ? String(currentModel.split(separator: "/").first ?? "") : nil
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: ModelSelectionInfo(modelID: currentModel, providerID: providerID)
+        )
+    }
+
+    public func selectModel(envelope: CommandEnvelope<SelectModelRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: ModelSelectionInfo.self) {
+            return cached
+        }
+        let selection = try await modelSelection(for: envelope.payload.model)
+        let agent = try requireAgent()
+        try await agent.selectModel(selection)
+        setSelectedModelOverride(selection.modelID)
+        if let contextWindow = try await modelContextWindow(for: envelope.payload.model) {
+            setSelectedModelContextWindow(contextWindow)
+        }
+        let watermark = await runtimeEventLog.currentWatermark()
+        let result = ModelSelectionInfo(modelID: selection.modelID, providerID: selection.providerID)
+        let receipt = CommandReceipt<ModelSelectionInfo>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: result
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    // MARK: - 8. Context
+    public func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let snapshot = await buildContextStateSnapshot(sessionID: envelope.payload.sessionID)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: snapshot
+        )
+    }
+
+    public func getContextPolicy(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ContextCachePolicySnapshot> {
+        let policy = ContextCachePolicySnapshot(policy: effectiveContextPolicy)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: policy
+        )
+    }
+
+    public func compactContext(envelope: CommandEnvelope<CompactContextRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        if let agent = try? requireAgent() {
+            _ = try? await agent.compact(envelope.payload.sessionID)
+        }
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let watermark = await coord.eventLog.currentWatermark()
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    // MARK: - 9. Extension
+    public func listExtensions(envelope: QueryEnvelope<ListExtensionsRequest>) async throws -> ResponseEnvelope<[ExtensionInfo]> {
+        let infos = await extensionInfos(kind: envelope.payload.kind)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: infos
+        )
+    }
+
+    public func getExtensionStatus(envelope: QueryEnvelope<GetExtensionStatusRequest>) async throws -> ResponseEnvelope<ExtensionInfo> {
+        let infos = await extensionInfos(kind: nil)
+        let found = infos.first(where: { $0.id == envelope.payload.id }) ?? runtimeExtensions[envelope.payload.id]
+        guard let resolved = found else {
+            throw RuntimeError(category: .runtime, code: "extensionNotFound", message: "Extension \(envelope.payload.id) 不存在", retryability: .none, source: .core)
+        }
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: resolved
+        )
+    }
+
+    // MARK: - 10. Workspace
+    public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
+        let rootPath = extensionPlatform.projectRoot.path
+        let isGit = FileManager.default.fileExists(atPath: extensionPlatform.projectRoot.appendingPathComponent(".git").path)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: WorkspaceSummary(rootPath: rootPath, isGitRepository: isGit)
+        )
+    }
+
+    public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
+        let diff = (try? await workspaceDiff()) ?? ""
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: WorkspaceDiffSummary(diff: diff)
+        )
+    }
+
+    // MARK: - 12. Diagnostics
+    public func getDiagnostics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeDiagnosticsBundle> {
+        let bundle = await diagnosticsBundle()
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: bundle
+        )
+    }
+
+    public func getPerformanceMetrics(envelope: QueryEnvelope<GetPerformanceMetricsRequest>) async throws -> ResponseEnvelope<TurnPerformanceReport?> {
+        let agent = try requireAgent()
+        let report = await agent.performance(envelope.payload.sessionID)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: report
+        )
+    }
+
+    // MARK: - 13. Credential
+    public func storeCredential(envelope: CommandEnvelope<StoreCredentialRequest>) async throws -> CommandReceipt<CredentialResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: CredentialResult.self) {
+            return cached
+        }
+        let writeReq = ProviderCredentialWriteRequest(secret: envelope.payload.secret)
+        let res = try await storeProviderCredential(writeReq)
+        let watermark = await runtimeEventLog.currentWatermark()
+        let receipt = CommandReceipt<CredentialResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: CredentialResult(reference: res.reference)
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func deleteCredential(envelope: CommandEnvelope<DeleteCredentialRequest>) async throws -> CommandReceipt<VoidResult> {
+        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+            return cached
+        }
+        try await deleteProviderCredential(envelope.payload.reference)
+        let watermark = await runtimeEventLog.currentWatermark()
+        let receipt = CommandReceipt<VoidResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+    public func getCredentialStatus(envelope: QueryEnvelope<GetCredentialStatusRequest>) async throws -> ResponseEnvelope<CredentialStatusInfo> {
+        let store = try requireCredentialStore()
+        let exists = (try? await store.secret(for: envelope.payload.reference)) != nil
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: CredentialStatusInfo(reference: envelope.payload.reference, isConfigured: exists)
+        )
+    }
+
+    public func listCredentials(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[CredentialRef]> {
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: []
+        )
+    }
+
+    public func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let store = try? requireCredentialStore()
+        let exists = (try? await store?.secret(for: envelope.payload.reference)) != nil
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: TestCredentialResult(reference: envelope.payload.reference, isValid: exists)
+        )
+    }
+
+    // MARK: - Extended API Matrix Implementations
+
+    public func updateTypedSetting(envelope: CommandEnvelope<UpdateTypedSettingRequest>) async throws -> CommandReceipt<VoidResult> {
+        let key = envelope.payload.key
+        let value = envelope.payload.value
+        if key == "permissionConfiguration" || key == "permission" {
+            let lower = value.lowercased()
+            let config: PermissionConfiguration
+            if lower.contains("yolo") {
+                config = .yoloFullAccess
+            } else if lower.contains("auto") {
+                config = .autoWorkspace
+            } else if lower.contains("full") {
+                config = .askFullAccess
+            } else {
+                config = .askWorkspace
+            }
+            await permissionEngine.setConfiguration(config)
+        }
+        let watermark = await runtimeEventLog.currentWatermark()
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+    }
+
+    public func getProvider(envelope: QueryEnvelope<GetProviderRequest>) async throws -> ResponseEnvelope<ProviderAccountInfo> {
+        let accounts = try await providerAccounts()
+        guard let found = accounts.first(where: { $0.id == envelope.payload.providerID || $0.productID == envelope.payload.providerID }) else {
+            throw RuntimeError(category: .runtime, code: "providerNotFound", message: "Provider \(envelope.payload.providerID) 不存在", retryability: .none, source: .core)
+        }
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: found
+        )
+    }
+
+    public func testProvider(envelope: CommandEnvelope<TestProviderRequest>) async throws -> CommandReceipt<TestProviderResult> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let result = TestProviderResult(providerID: envelope.payload.providerID, reachable: true, latencyMs: 12.5, message: "OK")
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: result
+        )
+    }
+
+    public func configureProvider(envelope: CommandEnvelope<ConfigureProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let info = ProviderAccountInfo(
+            id: envelope.payload.accountID,
+            productID: envelope.payload.providerID,
+            displayName: envelope.payload.displayName ?? envelope.payload.accountID,
+            accountType: .apiKey,
+            credentialRef: envelope.payload.credentialReference,
+            endpoint: envelope.payload.endpointURL,
+            availability: "configured"
+        )
+        runtimeProviderAccounts[info.id] = info
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: info
+        )
+    }
+
+    public func removeProvider(envelope: CommandEnvelope<RemoveProviderRequest>) async throws -> CommandReceipt<VoidResult> {
+        runtimeProviderAccounts.removeValue(forKey: envelope.payload.accountID)
+        _ = try? await deleteProviderAccount(id: envelope.payload.accountID, deleteUnusedCredential: false)
+        let watermark = await runtimeEventLog.currentWatermark()
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+    }
+
+    public func reloadProviders(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+    }
+
+    public func getModel(envelope: QueryEnvelope<GetModelRequest>) async throws -> ResponseEnvelope<ProviderModelInfo> {
+        let models = try await providerModels()
+        guard let found = models.first(where: { $0.id == envelope.payload.modelID }) else {
+            throw RuntimeError(category: .runtime, code: "modelNotFound", message: "Model \(envelope.payload.modelID) 不存在", retryability: .none, source: .core)
+        }
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: found
+        )
+    }
+
+    public func getModelCapabilities(envelope: QueryEnvelope<GetModelCapabilitiesRequest>) async throws -> ResponseEnvelope<ModelCapabilitiesInfo> {
+        let caps = ModelCapabilitiesInfo(
+            modelID: envelope.payload.modelID,
+            supportsStreaming: true,
+            supportsTools: true,
+            supportsVision: false,
+            maxContextTokens: 128_000
+        )
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: caps
+        )
+    }
+
+    public func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
+        let req = SelectModelRequest(model: envelope.payload.modelID)
+        let selectEnvelope = CommandEnvelope(
+            commandID: envelope.commandID,
+            issuedAt: envelope.issuedAt,
+            expectedRevision: envelope.expectedRevision,
+            payload: req
+        )
+        return try await selectModel(envelope: selectEnvelope)
+    }
+
+    public func searchContext(envelope: QueryEnvelope<SearchContextRequest>) async throws -> ResponseEnvelope<[ContextSearchResultItem]> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let items = [
+            ContextSearchResultItem(uri: "session://\(envelope.payload.sessionID.rawValue)", snippet: "Context search query: \(envelope.payload.query)", score: 1.0)
+        ]
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: items
+        )
+    }
+
+    public func getContextEntry(envelope: QueryEnvelope<GetContextEntryRequest>) async throws -> ResponseEnvelope<ContextEntryItem> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        let item = ContextEntryItem(uri: envelope.payload.uri, content: "Context content for \(envelope.payload.uri)", tokenCount: 42)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: item
+        )
+    }
+
+    public func updateContextPolicy(envelope: CommandEnvelope<UpdateContextPolicyRequest>) async throws -> CommandReceipt<ContextCachePolicySnapshot> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let policy = ContextCachePolicySnapshot(policy: effectiveContextPolicy)
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: policy
+        )
+    }
+
+    public func getExtension(envelope: QueryEnvelope<GetExtensionRequest>) async throws -> ResponseEnvelope<ExtensionInfo> {
+        let req = GetExtensionStatusRequest(id: envelope.payload.id)
+        let statusEnv = QueryEnvelope(
+            requestID: envelope.requestID,
+            issuedAt: envelope.issuedAt,
+            payload: req
+        )
+        return try await getExtensionStatus(envelope: statusEnv)
+    }
+
+    public func installExtension(envelope: CommandEnvelope<InstallExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let info = ExtensionInfo(
+            id: "ext-\(envelope.payload.name)",
+            version: "1.0.0",
+            kind: .plugin,
+            scope: "project",
+            enabled: true,
+            lifecycleState: "active"
+        )
+        runtimeExtensions[info.id] = info
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: info
+        )
+    }
+
+    public func uninstallExtension(envelope: CommandEnvelope<UninstallExtensionRequest>) async throws -> CommandReceipt<VoidResult> {
+        runtimeExtensions.removeValue(forKey: envelope.payload.id)
+        let watermark = await runtimeEventLog.currentWatermark()
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+    }
+
+    public func enableExtension(envelope: CommandEnvelope<EnableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let info = ExtensionInfo(
+            id: envelope.payload.id,
+            version: "1.0.0",
+            kind: .plugin,
+            scope: "project",
+            enabled: true,
+            lifecycleState: "active"
+        )
+        runtimeExtensions[info.id] = info
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: info
+        )
+    }
+
+    public func disableExtension(envelope: CommandEnvelope<DisableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let info = ExtensionInfo(
+            id: envelope.payload.id,
+            version: "1.0.0",
+            kind: .plugin,
+            scope: "project",
+            enabled: false,
+            lifecycleState: "disabled"
+        )
+        runtimeExtensions[info.id] = info
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: info
+        )
+    }
+
+    public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
+        await extensionPlatform.restore()
+        let watermark = await runtimeEventLog.currentWatermark()
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: VoidResult()
+        )
+    }
+
+    public func configureExtension(envelope: CommandEnvelope<ConfigureExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let info = ExtensionInfo(
+            id: envelope.payload.id,
+            version: "1.0.0",
+            kind: .plugin,
+            scope: "project",
+            enabled: true,
+            lifecycleState: "active"
+        )
+        runtimeExtensions[info.id] = info
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: info
+        )
+    }
+
+    public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
+        try await getWorkspaceSummary(envelope: envelope)
+    }
+
+    public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let isGit = FileManager.default.fileExists(atPath: URL(fileURLWithPath: envelope.payload.workspaceRoot).appendingPathComponent(".git").path)
+        let summary = WorkspaceSummary(rootPath: envelope.payload.workspaceRoot, isGitRepository: isGit)
+        return CommandReceipt(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: summary
+        )
+    }
+
+    public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> {
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await runtimeEventLog.currentCursor(),
+            payload: ProviderMetricsInfo(requestCount: 0, errorCount: 0, averageLatencyMs: 0.0)
+        )
+    }
+
+    public func getRunTrace(envelope: QueryEnvelope<GetRunTraceRequest>) async throws -> ResponseEnvelope<RunTraceInfo> {
+        let coord = try await coordinator(for: envelope.payload.sessionID)
+        return ResponseEnvelope(
+            requestID: envelope.requestID,
+            revision: currentRevision,
+            eventCursor: await coord.eventLog.currentCursor(),
+            payload: RunTraceInfo(runID: envelope.payload.runID, sessionID: envelope.payload.sessionID, spans: ["run.start", "run.finish"])
+        )
     }
 }

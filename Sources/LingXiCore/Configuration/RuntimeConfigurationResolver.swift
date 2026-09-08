@@ -177,7 +177,7 @@ public enum RuntimeConfigurationResolver {
             provider: provider,
             modelID: ModelID(profile.modelID),
             contextProfile: context,
-            endpoint: ResolvedModelEndpoint(providerID: account.providerID, productID: account.providerID, endpointID: endpoint?.id.rawValue, accountID: account.id, profileID: profile.id, modelID: ModelID(profile.modelID), baseURL: baseURL, wireProtocol: wireProtocol, contextProfile: context, capabilities: ModelCapabilities(toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, reasoning: profile.capabilities.reasoning, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput))
+            endpoint: ResolvedModelEndpoint(providerID: account.providerID, productID: account.providerID, endpointID: endpoint?.id.rawValue, accountID: account.id, profileID: profile.id, modelID: ModelID(profile.modelID), baseURL: baseURL, wireProtocol: wireProtocol, contextProfile: context, capabilities: ModelCapabilities(toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, reasoning: profile.capabilities.reasoning, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput, reasoningCapability: profile.capabilities.reasoningCapability), rateLimits: profile.rateLimits)
         )
     }
 

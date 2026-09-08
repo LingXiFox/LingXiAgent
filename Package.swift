@@ -13,23 +13,34 @@ let package = Package(
         .target(
             name: "LingXiCore",
             dependencies: ["LingXiProtocol"],
-            resources: [.copy("Resources/Configuration")]
+            resources: [
+                .copy("Resources/Configuration"),
+                .copy("Resources/ProviderCatalog")
+            ]
         ),
         // Client：所有客户端访问 Core 的正式入口。仅依赖 Protocol。
         .target(name: "LingXiClient", dependencies: ["LingXiProtocol"]),
+        .target(name: "OpenTUIShim"),
+        .target(name: "LingXiTUIComponents", dependencies: ["LingXiProtocol", "OpenTUIShim"]),
         // Core Host executable：独立启动 Core 进程。
         .executableTarget(
             name: "LingXiCoreHost",
             dependencies: ["LingXiCore", "LingXiProtocol"]
         ),
+        // Unified CLI tool: lingxiagent auth ...
+        .executableTarget(
+            name: "lingxiagent",
+            dependencies: ["LingXiCore", "LingXiProtocol"]
+        ),
         // TUI：Reference Client。禁止依赖 LingXiCore。
         .executableTarget(
             name: "LingXiTUI",
-            dependencies: ["LingXiClient", "LingXiApplication", "LingXiProtocol"]
+            dependencies: ["LingXiApplication", "LingXiTUIComponents"],
+            exclude: ["RetainedTUI.swift"]
         ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication"],
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents"],
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),

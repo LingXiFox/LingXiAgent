@@ -27,7 +27,8 @@ struct ProductionProjectionTests {
 
         let projection = try #require(try await client.contextProjection(sessionID))
         #expect(projection.l1.layer == .l1)
-        #expect(projection.l1.capacity == 10_000)
+        #expect(projection.policy.modelWindow == 10_000)
+        #expect(projection.l1.capacityTokens > 0)
         #expect(projection.l1.percent != nil)
         #expect(projection.l2.layer == .l2)
         #expect(projection.l3.layer == .l3)

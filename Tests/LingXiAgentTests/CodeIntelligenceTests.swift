@@ -87,10 +87,14 @@ struct CodeIntelligenceTests {
         let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768)
         let intelligence = CodeIntelligence(workspace: workspace, scanner: scanner, pager: pager, lsp: LSPClient(transport: nil))
         let registry = ToolRegistry.builtin(workspace: workspace, contextPager: pager, scanner: scanner, codeIntelligence: intelligence)
+        let loadContextCall = ToolCall(callID: ToolCallID("load-context"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"code_intelligence"}"#)
         let contextCall = ToolCall(callID: ToolCallID("context"), toolID: ToolID("code_intelligence"), arguments: #"{"action":"context","query":"Existing","maximum_characters":512}"#)
+        let loadWriteCall = ToolCall(callID: ToolCallID("load-write"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"write_file"}"#)
         let writeCall = ToolCall(callID: ToolCallID("write"), toolID: ToolID("write_file"), arguments: #"{"path":"Sources/Result.swift","content":"struct Result {}"}"#)
         let provider = ScriptedFakeProvider(script: [
+            [.toolCallStarted(callID: loadContextCall.callID, toolID: loadContextCall.toolID), .toolCallCompleted(loadContextCall), .completed(.toolCalls)],
             [.toolCallStarted(callID: contextCall.callID, toolID: contextCall.toolID), .toolCallCompleted(contextCall), .completed(.toolCalls)],
+            [.toolCallStarted(callID: loadWriteCall.callID, toolID: loadWriteCall.toolID), .toolCallCompleted(loadWriteCall), .completed(.toolCalls)],
             [.toolCallStarted(callID: writeCall.callID, toolID: writeCall.toolID), .toolCallCompleted(writeCall), .completed(.toolCalls)],
             [.textDelta("completed"), .completed(.stop)],
         ])
@@ -102,7 +106,9 @@ struct CodeIntelligenceTests {
         let stream = try await client.sendMessage(sessionID: session, content: "Add Result")
         for try await _ in stream {}
 
-        #expect(provider.recorder.requests.first?.tools.contains { $0.id == ToolID("code_intelligence") } == true)
+        #expect(provider.recorder.requests.first?.tools.contains { $0.id == ToolID("code_intelligence") } == false)
+        #expect(provider.recorder.requests[1].tools.contains { $0.id == ToolID("code_intelligence") })
+        #expect(provider.recorder.requests[3].tools.contains { $0.id == ToolID("write_file") })
         #expect(FileManager.default.fileExists(atPath: root.appending(path: "Sources/Result.swift").path))
     }
 

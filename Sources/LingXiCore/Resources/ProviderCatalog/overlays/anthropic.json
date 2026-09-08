@@ -1,0 +1,74 @@
+{
+  "products": [
+    {
+      "authMethods": [
+        "apiKey",
+        "workloadIdentity"
+      ],
+      "concurrencyLimit": 10,
+      "displayName": "Anthropic API",
+      "endpoint": "https://api.anthropic.com",
+      "id": "anthropic-api",
+      "models": [
+        {
+          "displayName": "Claude 3.7 Sonnet",
+          "id": "claude-3-7-sonnet",
+          "reasoningCapability": {
+            "coarseMappings": {
+              "max": "high",
+              "minimal": "low"
+            },
+            "defaultEffort": "medium",
+            "emitsReasoningSummary": false,
+            "emitsVisibleReasoning": true,
+            "mode": "budget",
+            "supportedEfforts": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "upstreamID": "claude-3-7-sonnet"
+        },
+        {
+          "displayName": "Claude 3.5 Sonnet",
+          "id": "claude-3-5-sonnet-latest",
+          "upstreamID": "claude-3-5-sonnet-latest"
+        },
+        {
+          "displayName": "Claude 3.5 Haiku",
+          "id": "claude-3-5-haiku-latest",
+          "upstreamID": "claude-3-5-haiku-latest"
+        }
+      ],
+      "protocolFamily": "anthropic_messages",
+      "quirks": [
+        "requiresAnthropicVersionHeader"
+      ],
+      "type": "cloudAPI",
+      "verificationStatus": "verified"
+    },
+    {
+      "authMethods": [
+        "oauth",
+        "subscription"
+      ],
+      "displayName": "Claude Subscription",
+      "endpoint": "https://api.anthropic.com",
+      "id": "anthropic-claude-subscription",
+      "models": [
+        {
+          "displayName": "Claude 3.7 Sonnet",
+          "id": "claude-3-7-sonnet",
+          "upstreamID": "claude-3-7-sonnet"
+        }
+      ],
+      "protocolFamily": "anthropic_messages",
+      "type": "subscription",
+      "verificationStatus": "compatibleNonOfficial"
+    }
+  ],
+  "vendor": "anthropic"
+}

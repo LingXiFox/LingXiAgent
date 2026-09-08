@@ -153,6 +153,16 @@ public actor MCPToolPager {
         self.schemas = schemaStore; self.invoker = invoker; self.maxSchemaBytes = maxSchemaBytes; self.maxSchemaDepth = maxSchemaDepth; self.maxCatalogTools = maxCatalogTools
     }
 
+    public var hasAvailableTools: Bool { !catalog.isEmpty }
+
+    public func canHandle(sessionID: SessionID, providerToolID: ToolID) -> Bool {
+        guard !providerToolID.rawValue.isEmpty else { return false }
+        if let session = sessions[sessionID], session.leases.values.contains(where: { $0.providerName == providerToolID.rawValue }) {
+            return true
+        }
+        return catalog.keys.contains(providerToolID)
+    }
+
     /// Catalog update is all-or-nothing at the caller boundary: callers pass only a completed tools/list generation.
     public func replaceCatalog(serverID: MCPServerID, tools: [MCPDiscoveredTool]) async throws {
         let old = catalog.values.filter { $0.serverID == serverID }.map(\.toolID)
@@ -196,12 +206,20 @@ public actor MCPToolPager {
 
     public func load(sessionID: SessionID, toolID: ToolID, schemaTokenBudget: Int) async throws -> MCPToolSchemaLease {
         purgeExpired(sessionID)
-        guard sessions[sessionID]?.candidates.contains(toolID) == true else { throw MCPToolPagerError.missingTool }
+        let effectiveID: ToolID
+        if catalog[toolID] != nil {
+            effectiveID = toolID
+        } else if let found = catalog.first(where: { "\($0.value.serverAlias).\($0.value.upstreamName)" == toolID.rawValue }) {
+            effectiveID = found.key
+        } else {
+            effectiveID = toolID
+        }
+        guard sessions[sessionID]?.candidates.contains(effectiveID) == true || catalog[effectiveID] != nil else { throw MCPToolPagerError.missingTool }
         if let current = sessions[sessionID]?.leases.values.first(where: { $0.state == .armed && $0.expiresAt > .now }) {
-            guard current.toolID == toolID else { throw MCPToolPagerError.taskUnsupported }
+            guard current.toolID == effectiveID else { throw MCPToolPagerError.taskUnsupported }
             return current
         }
-        guard let entry = catalog[toolID], entry.available else { throw MCPToolPagerError.unavailable }
+        guard let entry = catalog[effectiveID], entry.available else { throw MCPToolPagerError.unavailable }
         guard let schema = await schemas.schema(toolID: toolID, hash: entry.schemaHash) else { throw MCPToolPagerError.schemaMissing }
         let bytes = try JSONEncoder().encode(schema).count
         guard bytes <= maxSchemaBytes, depth(schema) <= maxSchemaDepth else { throw MCPToolPagerError.schemaTooLarge }

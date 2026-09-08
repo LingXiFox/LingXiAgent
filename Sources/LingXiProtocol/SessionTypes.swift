@@ -11,12 +11,18 @@ public struct SessionID: Sendable, Equatable, Hashable, Codable {
     }
 }
 
-public struct MessageID: Sendable, Equatable, Hashable, Codable {
+public struct MessageID: Sendable, Equatable, Hashable, Codable, CustomStringConvertible, ExpressibleByStringLiteral {
     public let rawValue: String
 
-    public init(_ rawValue: String) {
+    public init(_ rawValue: String = UUID().uuidString) {
         self.rawValue = rawValue
     }
+
+    public init(stringLiteral value: String) {
+        self.rawValue = value
+    }
+
+    public var description: String { rawValue }
 }
 
 public enum SessionMessageRole: String, Sendable, Equatable, Codable {
@@ -93,11 +99,12 @@ public struct SessionInfo: Sendable, Equatable, Codable {
     public let spawnedByRunID: AgentRunID?
     public let spawnedByToolCallID: ToolCallID?
     public let title: String?
+    public let reasoningEffort: ReasoningEffort
     public let createdAt: Date
     public let updatedAt: Date
     public let messageCount: Int
 
-    public init(id: SessionID, projectID: ProjectID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil, createdAt: Date, updatedAt: Date, messageCount: Int) {
+    public init(id: SessionID, projectID: ProjectID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil, reasoningEffort: ReasoningEffort = .auto, createdAt: Date, updatedAt: Date, messageCount: Int) {
         self.id = id
         self.projectID = projectID
         self.kind = kind
@@ -106,14 +113,15 @@ public struct SessionInfo: Sendable, Equatable, Codable {
         self.spawnedByRunID = spawnedByRunID
         self.spawnedByToolCallID = spawnedByToolCallID
         self.title = title
+        self.reasoningEffort = reasoningEffort
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messageCount = messageCount
     }
 }
 
-/// Session 完整查询结果。
-public struct SessionSnapshot: Sendable, Equatable, Codable {
+/// 旧版 Session 完整查询结果（保留兼容）。
+public struct LegacySessionSnapshot: Sendable, Equatable, Codable {
     public let id: SessionID
     public let projectID: ProjectID?
     public let kind: SessionKind
@@ -122,11 +130,12 @@ public struct SessionSnapshot: Sendable, Equatable, Codable {
     public let spawnedByRunID: AgentRunID?
     public let spawnedByToolCallID: ToolCallID?
     public let title: String?
+    public let reasoningEffort: ReasoningEffort
     public let createdAt: Date
     public let updatedAt: Date
     public let messages: [SessionMessageSnapshot]
 
-    public init(id: SessionID, projectID: ProjectID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil, createdAt: Date, updatedAt: Date, messages: [SessionMessageSnapshot]) {
+    public init(id: SessionID, projectID: ProjectID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil, reasoningEffort: ReasoningEffort = .auto, createdAt: Date, updatedAt: Date, messages: [SessionMessageSnapshot]) {
         self.id = id
         self.projectID = projectID
         self.kind = kind
@@ -135,6 +144,7 @@ public struct SessionSnapshot: Sendable, Equatable, Codable {
         self.spawnedByRunID = spawnedByRunID
         self.spawnedByToolCallID = spawnedByToolCallID
         self.title = title
+        self.reasoningEffort = reasoningEffort
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messages = messages

@@ -42,23 +42,313 @@ public struct ModelToolResultProjection: Sendable, Equatable {
     public let toolName: String?
     public let success: Bool
     public let content: String
+    public let summary: String?
+    public let totalCount: Int?
+    public let shownCount: Int?
+    public let truncated: Bool?
+    public let page: Int?
+    public let cursor: String?
+    public let items: [String]?
 
-    public init(callID: ToolCallID, toolName: String?, success: Bool, content: String) {
+    public init(
+        callID: ToolCallID,
+        toolName: String?,
+        success: Bool,
+        content: String,
+        summary: String? = nil,
+        totalCount: Int? = nil,
+        shownCount: Int? = nil,
+        truncated: Bool? = nil,
+        page: Int? = nil,
+        cursor: String? = nil,
+        items: [String]? = nil
+    ) {
         self.callID = callID
         self.toolName = toolName
         self.success = success
         self.content = content
+        self.summary = summary
+        self.totalCount = totalCount
+        self.shownCount = shownCount
+        self.truncated = truncated
+        self.page = page
+        self.cursor = cursor
+        self.items = items
     }
 
-    public static func project(_ result: ToolResult) -> Self {
-        let content: String
-        if result.success {
-            content = result.content
-        } else {
+    public static func project(_ result: ToolResult, budget: ToolResultBudget = .default) -> Self {
+        guard result.success else {
             let error = result.error ?? ToolError(code: "toolExecutionFailed", message: "Tool 执行失败")
-            content = (try? String(decoding: JSONEncoder().encode(error), as: UTF8.self)) ?? error.message
+            let retryability: Retryability = {
+                if result.outcome == .denied { return .afterUserAction }
+                if result.outcome == .timedOut || result.outcome == .idleTimedOut { return .transient }
+                if result.metadata["retryability"] == Retryability.transient.rawValue { return .transient }
+                if result.metadata["retryability"] == Retryability.afterDelay.rawValue { return .afterDelay }
+                return .none
+            }()
+            let errorKind = result.metadata["errorKind"] ?? error.code
+            let summary: (String) -> String = { String($0.replacingOccurrences(of: "\n", with: " ").prefix(240)) }
+            let projection: [String: Any] = [
+                "error": ["code": error.code, "message": error.message],
+                "errorKind": errorKind,
+                "retryability": retryability.rawValue,
+                "durationMilliseconds": result.timing.milliseconds,
+                "exitCode": result.exitCode.map { $0 as Any } ?? NSNull(),
+                "stdoutSummary": summary(result.diagnostics?.stdout ?? ""),
+                "stderrSummary": summary(result.diagnostics?.stderr ?? ""),
+                "permissionDenied": result.outcome == .denied,
+                "scopeDenied": result.metadata["scopeDenied"] == "true"
+            ]
+            let content = (try? String(decoding: JSONSerialization.data(withJSONObject: projection, options: [.sortedKeys]), as: UTF8.self)) ?? error.message
+            return Self(callID: result.callID, toolName: result.toolName, success: false, content: content, summary: error.message)
         }
-        return Self(callID: result.callID, toolName: result.toolName, success: result.success, content: content)
+
+        let tool = (result.toolName ?? "").lowercased()
+
+        // 1. Glob
+        if tool == "glob" {
+            var paths: [String] = []
+            if let data = result.content.data(using: .utf8),
+               let list = try? JSONDecoder().decode([String].self, from: data) {
+                paths = list
+            } else {
+                paths = result.content.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+            }
+            let total = paths.count
+            let shown = min(total, budget.maxShown)
+            let truncated = total > shown || result.content.count > budget.maxCharacters
+            let summary = "Glob · \(total) matches\(truncated ? " · showing \(shown)" : "")"
+            let shownPaths = Array(paths.prefix(shown))
+            let projectedJSON: String
+            if truncated {
+                let dict: [String: Any] = [
+                    "summary": summary,
+                    "totalCount": total,
+                    "shownCount": shown,
+                    "truncated": true,
+                    "page": 1,
+                    "matches": shownPaths
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                   let str = String(data: data, encoding: .utf8) {
+                    projectedJSON = str
+                } else {
+                    projectedJSON = summary + "\n" + shownPaths.joined(separator: "\n")
+                }
+            } else {
+                projectedJSON = result.content
+            }
+            return Self(
+                callID: result.callID,
+                toolName: result.toolName,
+                success: true,
+                content: projectedJSON,
+                summary: summary,
+                totalCount: total,
+                shownCount: shown,
+                truncated: truncated,
+                page: 1,
+                cursor: truncated ? String(shown) : nil,
+                items: shownPaths
+            )
+        }
+
+        // 2. ListDirectory
+        if tool == "list_directory" {
+            let lines = result.content.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+            let total = lines.count
+            let shown = min(total, budget.maxShown)
+            let truncated = total > shown || result.content.count > budget.maxCharacters
+            let summary = "ListDirectory · \(total) entries\(truncated ? " · showing \(shown)" : "")"
+            let shownEntries = Array(lines.prefix(shown))
+            let projectedJSON: String
+            if truncated {
+                let dict: [String: Any] = [
+                    "summary": summary,
+                    "totalCount": total,
+                    "shownCount": shown,
+                    "truncated": true,
+                    "page": 1,
+                    "entries": shownEntries
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                   let str = String(data: data, encoding: .utf8) {
+                    projectedJSON = str
+                } else {
+                    projectedJSON = summary + "\n" + shownEntries.joined(separator: "\n")
+                }
+            } else {
+                projectedJSON = result.content
+            }
+            return Self(
+                callID: result.callID,
+                toolName: result.toolName,
+                success: true,
+                content: projectedJSON,
+                summary: summary,
+                totalCount: total,
+                shownCount: shown,
+                truncated: truncated,
+                page: 1,
+                cursor: truncated ? String(shown) : nil,
+                items: shownEntries
+            )
+        }
+
+        // 3. Grep
+        if tool == "grep" {
+            if let data = result.content.data(using: .utf8),
+               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                let total = list.count
+                let shown = min(total, budget.maxShown)
+                let truncated = total > shown || result.content.count > budget.maxCharacters
+                let summary = "Grep · \(total) matches\(truncated ? " · showing \(shown)" : "")"
+                let shownMatches = Array(list.prefix(shown))
+                let projectedJSON: String
+                if truncated {
+                    let dict: [String: Any] = [
+                        "summary": summary,
+                        "totalCount": total,
+                        "shownCount": shown,
+                        "truncated": true,
+                        "page": 1,
+                        "matches": shownMatches
+                    ]
+                    if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                       let str = String(data: data, encoding: .utf8) {
+                        projectedJSON = str
+                    } else {
+                        projectedJSON = summary
+                    }
+                } else {
+                    projectedJSON = result.content
+                }
+                return Self(
+                    callID: result.callID,
+                    toolName: result.toolName,
+                    success: true,
+                    content: projectedJSON,
+                    summary: summary,
+                    totalCount: total,
+                    shownCount: shown,
+                    truncated: truncated,
+                    page: 1,
+                    cursor: truncated ? String(shown) : nil
+                )
+            }
+        }
+
+        // 4. Read (read_file / read)
+        if tool == "read_file" || tool == "read" {
+            let lines = result.content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let total = lines.count
+            let maxLines = max(budget.maxShown, 60)
+            let shown = min(total, maxLines)
+            let truncated = total > shown || result.content.count > budget.maxCharacters
+            let summary = truncated ? "ReadFile · \(total) lines · showing \(shown)" : result.summary
+            let shownLines = Array(lines.prefix(shown))
+            let projectedContent: String
+            if truncated {
+                let dict: [String: Any] = [
+                    "summary": summary,
+                    "totalCount": total,
+                    "shownCount": shown,
+                    "truncated": true,
+                    "page": 1,
+                    "lines": shownLines
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                   let str = String(data: data, encoding: .utf8) {
+                    projectedContent = str
+                } else {
+                    projectedContent = summary + "\n" + shownLines.joined(separator: "\n")
+                }
+            } else {
+                projectedContent = result.content
+            }
+            return Self(
+                callID: result.callID,
+                toolName: result.toolName,
+                success: true,
+                content: projectedContent,
+                summary: summary,
+                totalCount: total,
+                shownCount: shown,
+                truncated: truncated,
+                page: 1,
+                cursor: truncated ? String(shown) : nil,
+                items: shownLines
+            )
+        }
+
+        // 5. Search (search_tools / search)
+        if tool == "search_tools" || tool == "search" {
+            if let data = result.content.data(using: .utf8),
+               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                let total = list.count
+                let shown = min(total, budget.maxShown)
+                let truncated = total > shown || result.content.count > budget.maxCharacters
+                let summary = truncated ? "Search · \(total) results · showing \(shown)" : result.summary
+                let shownItems = Array(list.prefix(shown))
+                let projectedJSON: String
+                if truncated {
+                    let dict: [String: Any] = [
+                        "summary": summary,
+                        "totalCount": total,
+                        "shownCount": shown,
+                        "truncated": true,
+                        "page": 1,
+                        "results": shownItems
+                    ]
+                    if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                       let str = String(data: data, encoding: .utf8) {
+                        projectedJSON = str
+                    } else {
+                        projectedJSON = summary
+                    }
+                } else {
+                    projectedJSON = result.content
+                }
+                return Self(
+                    callID: result.callID,
+                    toolName: result.toolName,
+                    success: true,
+                    content: projectedJSON,
+                    summary: summary,
+                    totalCount: total,
+                    shownCount: shown,
+                    truncated: truncated,
+                    page: 1,
+                    cursor: truncated ? String(shown) : nil
+                )
+            }
+        }
+
+        // 6. Generic bounded character budget
+        if result.content.count > budget.maxCharacters {
+            let truncatedContent = String(result.content.prefix(budget.maxCharacters)) + "\n[Output truncated from \(result.content.count) characters to budget of \(budget.maxCharacters)]"
+            return Self(
+                callID: result.callID,
+                toolName: result.toolName,
+                success: true,
+                content: truncatedContent,
+                summary: result.summary,
+                truncated: true
+            )
+        }
+
+        return Self(callID: result.callID, toolName: result.toolName, success: true, content: result.content, summary: result.summary)
+    }
+
+    public static func projectToolResult(_ result: ToolResult, budget: ToolResultBudget = .default) -> ToolResult {
+        guard result.success else { return result }
+        let projected = project(result, budget: budget)
+        let outMeta = ToolOutputMetadata(
+            truncated: projected.truncated ?? false,
+            totalCharacters: result.content.count,
+            visibleCharacters: projected.content.count
+        )
+        return result.withContent(projected.content, summary: projected.summary, output: outMeta)
     }
 }
 
@@ -108,8 +398,21 @@ public struct ModelRequest: Sendable, Equatable {
     }
 }
 
+public enum ProviderTraceSanitizer {
+    public static func requestID(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = String(value.prefix(128))
+        guard !trimmed.isEmpty,
+              trimmed.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) })
+        else { return nil }
+        return trimmed
+    }
+}
+
 /// 模型推理事件流。高频 delta 走 DMA，started/usage/completed/failed 由 Agent 分流到控制面。
 public enum ModelEvent: Sendable, Equatable {
+    /// Provider HTTP 响应提供的可审计请求 ID，已在 adapter 边界完成清洗。
+    case providerRequestID(String)
     /// Provider 连接建立、推理即将开始。
     case started
     case textDelta(String)

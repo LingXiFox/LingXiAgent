@@ -17,11 +17,20 @@ public struct WorkspaceRoot: Sendable {
     }
 
     public func resolve(_ path: String, profile: ExecutionProfile = .workspace) throws -> URL {
-        let input = URL(fileURLWithPath: path, relativeTo: path.hasPrefix("/") ? nil : url)
+        let expandedPath: String
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == "~" {
+            expandedPath = home
+        } else if path.hasPrefix("~/") {
+            expandedPath = home + "/" + String(path.dropFirst(2))
+        } else {
+            expandedPath = path
+        }
+        let input = URL(fileURLWithPath: expandedPath, relativeTo: expandedPath.hasPrefix("/") ? nil : url)
         let candidate = input.standardizedFileURL.resolvingSymlinksInPath()
         let root = url.path.hasSuffix("/") ? url.path : url.path + "/"
         guard profile == .fullAccess || candidate.path == url.path || candidate.path.hasPrefix(root) else {
-            throw CoreError(code: .workspaceViolation, message: "路径超出 Workspace Root")
+            throw CoreError(code: .workspaceViolation, message: "AccessScope=workspace 禁止访问 Workspace 外路径；请先切换到 FullAccess/YOLO")
         }
         guard !sensitivePathPolicy.isSensitive(candidate) else {
             throw CoreError(code: .workspaceViolation, message: "不允许访问敏感路径")
@@ -483,7 +492,7 @@ private func ripgrepArguments(_ input: GrepArguments, root: URL) -> [String] {
 private func runRipgrep(arguments: [String], root: URL, workspace: WorkspaceRoot, profile: ExecutionProfile) async throws -> CommandResult {
     let executable = try ripgrepExecutable()
     let setup = try processSetup(executable: executable, arguments: arguments, workspace: workspace, cwd: root, profile: profile)
-    let result = try await runToolProcess(invocation: setup.0, cwd: root, environment: setup.1, timeoutMilliseconds: 30_000)
+    let result = try await runToolProcess(invocation: setup.0, cwd: root, environment: setup.1, timeoutMilliseconds: 30_000, lifecycleTrace: ToolExecutionContext.lifecycleTrace)
     guard result.exitCode == 0 || result.exitCode == 1 else {
         throw CoreError(code: .commandFailed, message: try json(result))
     }
@@ -841,17 +850,16 @@ private func processSetup(executable: String, arguments: [String], workspace: Wo
         throw CoreError(code: .toolArgumentInvalid, message: "executable 必须是可执行的绝对路径")
     }
     var environment = EnvironmentSanitizer.sanitized()
-    let home = workspace.url.appendingPathComponent(".lingxi-home", isDirectory: true)
     let temporary = workspace.url.appendingPathComponent(".lingxi-tmp", isDirectory: true)
-    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-    environment["HOME"] = home.path
     environment["TMPDIR"] = temporary.path
     // /usr/bin/git is a system tool; inherited Xcode selection can force xcrun to write host-global caches outside policy.
     if executable.hasSuffix("/git") {
         environment.removeValue(forKey: "DEVELOPER_DIR")
         environment.removeValue(forKey: "SDKROOT")
         environment.removeValue(forKey: "TOOLCHAINS")
+        environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"
     }
     if profile == .workspace {
         let developerDirectory = environment["DEVELOPER_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -859,6 +867,23 @@ private func processSetup(executable: String, arguments: [String], workspace: Wo
         return (try ShellSandboxBackend.workspace().invocation(executable: executable, arguments: arguments, policy: policy), environment)
     }
     return (ToolProcessInvocation(executable: executable, arguments: arguments), environment)
+}
+
+private func isReadOnlyShellCommand(_ cmd: String) -> Bool {
+    var trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return false }
+    trimmed = trimmed.replacingOccurrences(of: "2>/dev/null", with: "")
+        .replacingOccurrences(of: ">/dev/null", with: "")
+        .replacingOccurrences(of: "1>/dev/null", with: "")
+        .replacingOccurrences(of: "2>&1", with: "")
+        .replacingOccurrences(of: "&>/dev/null", with: "")
+    if trimmed.contains(">") || trimmed.contains("rm ") || trimmed.contains("mv ") || trimmed.contains("cp ") || trimmed.contains("mkdir ") || trimmed.contains("touch ") || trimmed.contains("chmod ") || trimmed.contains("chown ") || trimmed.contains("tee ") {
+        return false
+    }
+    let readOnlyTokens: Set<String> = ["ls", "pwd", "which", "echo", "cat", "head", "tail", "grep", "find", "diff", "file", "stat", "true", "false", "wc", "readlink", "whoami", "uname", "id", "hostname", "date"]
+    let firstToken = trimmed.components(separatedBy: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "|;&"))).first { !$0.isEmpty } ?? ""
+    let base = URL(fileURLWithPath: firstToken).lastPathComponent
+    return readOnlyTokens.contains(base)
 }
 
 public struct ShellTool: ToolExecutor {
@@ -885,7 +910,8 @@ public struct ShellTool: ToolExecutor {
     }
     public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
         let input: ShellArguments = try decodeArguments(arguments)
-        return Set([.processExecute]).union(filesystemCapabilities(try cwd(input.cwd, workspace: workspace, profile: profile), workspace: workspace, write: true))
+        let isWrite = !isReadOnlyShellCommand(input.command ?? input.executable ?? "")
+        return Set([.processExecute]).union(filesystemCapabilities(try cwd(input.cwd, workspace: workspace, profile: profile), workspace: workspace, write: isWrite))
     }
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: ShellArguments = try decodeArguments(arguments)
@@ -899,7 +925,7 @@ public struct ShellTool: ToolExecutor {
         }
         let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
         let setup = try processSetup(executable: command.0, arguments: command.1, workspace: workspace, cwd: directory, profile: profile)
-        let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: input.timeoutMs ?? 60_000)
+        let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: input.timeoutMs ?? 60_000, lifecycleTrace: ToolExecutionContext.lifecycleTrace)
         guard result.exitCode == 0 else { throw CoreError(code: .commandFailed, message: try json(result)) }
         return try json(result)
     }
@@ -968,7 +994,7 @@ public struct GitTool: ToolExecutor {
         let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
         let gitExecutable = ["/Library/Developer/CommandLineTools/usr/bin/git", "/usr/bin/git"].first(where: FileManager.default.isExecutableFile(atPath:))!
         let setup = try processSetup(executable: gitExecutable, arguments: command, workspace: workspace, cwd: directory, profile: profile)
-        let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: 60_000)
+        let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: 60_000, lifecycleTrace: ToolExecutionContext.lifecycleTrace)
         guard result.exitCode == 0 else { throw CoreError(code: .gitError, message: try json(result)) }
         return try json(result)
     }
@@ -979,9 +1005,9 @@ public actor ToolProcessStore {
 
     public init() {}
 
-    func start(id: String, invocation: ToolProcessInvocation, cwd: URL, environment: [String: String]) throws -> ProcessStatus {
+    func start(id: String, invocation: ToolProcessInvocation, cwd: URL, environment: [String: String], lifecycleTrace: ToolLifecycleTrace? = nil) throws -> ProcessStatus {
         guard processes[id] == nil else { throw CoreError(code: .toolArgumentInvalid, message: "进程 ID 已存在: \(id)") }
-        let process = ManagedToolProcess(invocation: invocation, cwd: cwd, environment: environment)
+        let process = ManagedToolProcess(invocation: invocation, cwd: cwd, environment: environment, lifecycleTrace: lifecycleTrace)
         try process.launch()
         processes[id] = process
         return process.snapshot(id: id, stdoutCursor: nil, stderrCursor: nil)
@@ -1044,7 +1070,7 @@ public struct ProcessTool: ToolExecutor {
             guard let executable = input.executable else { throw CoreError(code: .toolArgumentInvalid, message: "start 需要 executable") }
             let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
             let setup = try processSetup(executable: executable, arguments: input.arguments ?? [], workspace: workspace, cwd: directory, profile: profile)
-            status = try await store.start(id: id, invocation: setup.0, cwd: directory, environment: setup.1)
+            status = try await store.start(id: id, invocation: setup.0, cwd: directory, environment: setup.1, lifecycleTrace: ToolExecutionContext.lifecycleTrace)
         case "poll", "status": status = try await store.poll(id: id, stdoutCursor: input.stdoutCursor, stderrCursor: input.stderrCursor)
         case "input":
             guard let text = input.input else { throw CoreError(code: .toolArgumentInvalid, message: "input 需要 input") }
@@ -1222,8 +1248,134 @@ private struct CodeIntelligenceTool: ToolExecutor {
     }
 }
 
+private struct ContextRetrieveArguments: Codable {
+    let query: String
+    let limit: Int?
+}
+
+package struct ContextRetrieveTool: ToolExecutor {
+    package let definition: ToolDefinition
+    let cacheController: ContextCacheController
+
+    package init(id: String = "context_search", cacheController: ContextCacheController) {
+        self.cacheController = cacheController
+        self.definition = ToolDefinition(
+            id: ToolID(id),
+            description: "Search and retrieve relevant context from the project codebase index or compacted session history. The runtime cache controller evaluates weighted priority and pages the highest relevance entries into the L1 working set.",
+            inputSchema: ToolInputSchema(
+                properties: [
+                    "query": ToolInputProperty(type: .string, description: "Search query describing what context to retrieve"),
+                    "limit": ToolInputProperty(type: .integer, description: "Maximum items to retrieve (default: 5)", minimum: 1, maximum: 20)
+                ],
+                required: ["query"]
+            ),
+            capability: ToolCapability(readOnly: true)
+        )
+    }
+
+    package func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: ContextRetrieveArguments = try decodeArguments(arguments)
+        return input.query
+    }
+
+    package func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: ContextRetrieveArguments = try decodeArguments(arguments)
+        let limit = min(max(1, input.limit ?? 5), 20)
+        let sessionID = ToolExecutionContext.sessionID ?? SessionID("default")
+        return try await cacheController.handleSearch(
+            sessionID: sessionID,
+            query: input.query,
+            activeTask: "",
+            activeFiles: [],
+            limit: limit
+        )
+    }
+}
+
+private struct TodoArguments: Codable {
+    let action: String
+    let id: String?
+    let title: String?
+    let status: String?
+}
+
+private struct TodoMutationResponse: Codable {
+    let status: String
+    let task: TodoItemData?
+    let id: String?
+    let newStatus: String?
+    let message: String?
+    init(status: String, task: TodoItemData? = nil, id: String? = nil, newStatus: String? = nil, message: String? = nil) {
+        self.status = status
+        self.task = task
+        self.id = id
+        self.newStatus = newStatus
+        self.message = message
+    }
+}
+
+private struct TodoListResponse: Codable {
+    let status: String
+    let tasks: [TodoItemData]
+}
+
+public struct TodoTool: ToolExecutor {
+    public let definition = ToolDefinition(
+        id: ToolID("todo"),
+        description: "Manage task and to-do items for the current session. Use this tool to track multi-step progress, plan tasks, update status (pending, in_progress, completed, failed), and keep the user informed in real time.",
+        inputSchema: ToolInputSchema(
+            properties: [
+                "action": ToolInputProperty(type: .string, description: "Action to perform: add, update, list, clear", enumValues: ["add", "update", "list", "clear"]),
+                "id": ToolInputProperty(type: .string, description: "Unique task ID, e.g. task-1"),
+                "title": ToolInputProperty(type: .string, description: "Task title or description"),
+                "status": ToolInputProperty(type: .string, description: "Task status", enumValues: ["pending", "in_progress", "completed", "failed"])
+            ],
+            required: ["action"]
+        ),
+        capability: ToolCapability(readOnly: false)
+    )
+
+    public init() {}
+
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: TodoArguments = try decodeArguments(arguments)
+        return "\(input.action): \(input.title ?? input.id ?? "")"
+    }
+
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: TodoArguments = try decodeArguments(arguments)
+        let sessionKey = ToolExecutionContext.sessionID?.rawValue ?? "default"
+        switch input.action {
+        case "add":
+            guard let title = input.title, !title.isEmpty else {
+                throw CoreError(code: .toolArgumentInvalid, message: "add 需要 title")
+            }
+            let taskID = input.id ?? UUID().uuidString.prefix(6).lowercased()
+            let status = input.status ?? "pending"
+            let item = TodoItemData(id: String(taskID), title: title, status: status)
+            TodoStore.shared.addTodo(item, for: sessionKey)
+            return try json(TodoMutationResponse(status: "ok", task: item))
+        case "update":
+            guard let id = input.id, !id.isEmpty else {
+                throw CoreError(code: .toolArgumentInvalid, message: "update 需要 id")
+            }
+            let status = input.status ?? "in_progress"
+            let ok = TodoStore.shared.updateTodo(id: id, status: status, title: input.title, for: sessionKey)
+            return try json(TodoMutationResponse(status: ok ? "ok" : "not_found", id: id, newStatus: status))
+        case "list":
+            let items = TodoStore.shared.getTodos(for: sessionKey)
+            return try json(TodoListResponse(status: "ok", tasks: items))
+        case "clear":
+            TodoStore.shared.clear(for: sessionKey)
+            return try json(TodoMutationResponse(status: "ok", message: "Todos cleared"))
+        default:
+            throw CoreError(code: .toolArgumentInvalid, message: "不支持的 action: \(input.action)")
+        }
+    }
+}
+
 public extension BuiltInToolProvider {
-    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil) {
+    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) {
         let indexTools: [any ToolExecutor]
         if let contextPager, let scanner {
             indexTools = [
@@ -1246,16 +1398,19 @@ public extension BuiltInToolProvider {
             EditFileTool(workspace: workspace),
             ApplyPatchTool(workspace: workspace),
             ShellTool(workspace: workspace),
+            WebSearchTool(endpoint: webSearchEndpoint),
+            WebFetchTool(),
             ProcessTool(workspace: workspace, store: processes ?? ToolProcessStore()),
             GitTool(workspace: workspace),
             SkillTool(workspace: workspace),
-            QuestionTool(questions: questions)
+            QuestionTool(questions: questions),
+            TodoTool()
         ] + indexTools + intelligenceTools)
     }
 }
 
 public extension ToolRegistry {
-    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil) -> ToolRegistry {
-        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence).tools)
+    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) -> ToolRegistry {
+        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint).tools)
     }
 }

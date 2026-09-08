@@ -62,10 +62,15 @@ struct AgentToolLoopTests {
         provider: any ModelProvider,
         permission: PermissionDecision,
         registry: ToolRegistry? = nil,
-        interactive: Bool = false
+        interactive: Bool = false,
+        maxAgentLoopSteps: Int? = nil
     ) async throws -> LingXiClient {
+        let configuration = maxAgentLoopSteps.map {
+            CoreConfiguration(agent: AgentSettings(maxAgentLoopSteps: $0))
+        }
         let host = try CoreHost(
             providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
+            configuration: configuration,
             workspaceRoot: try WorkspaceRoot(path: root.path),
             permissionDecision: permission,
             toolRegistry: registry,
@@ -102,10 +107,18 @@ struct AgentToolLoopTests {
 
         let requests = provider.recorder.requests
         #expect(requests.count == 2)
-        #expect(requests[0].tools.map(\.id.rawValue) == ["apply_patch", "dependency_query", "edit_file", "find_references", "git", "glob", "grep", "list_directory", "load_tool", "process", "read_file", "search_tools", "shell", "subagent", "symbol_lookup", "write_file"])
-        #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool])
+        #expect(requests[0].tools.map(\.id.rawValue) == ["shell", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "glob", "grep", "web_search", "web_fetch", "search_tools", "load_tool"])
+        #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool, .system])
         #expect(requests[1].messages[1].parts.contains(.toolCall(call())))
-        #expect(requests[1].messages[2].parts == [.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project", toolName: "read_file"))])
+        let toolResult = try #require(requests[1].messages[2].parts.compactMap { part in
+            if case let .toolResult(value) = part { return value }
+            return nil
+        }.first)
+        #expect(toolResult.callID == call().callID)
+        #expect(toolResult.success)
+        #expect(toolResult.content == "LingXiAgent project")
+        #expect(toolResult.toolName == "read_file")
+        #expect(toolResult.timing.executionMilliseconds > 0)
 
         let snapshot = try await client.session(sessionID)
         #expect(snapshot.messages.map(\.role) == [.user, .assistant, .tool, .assistant])
@@ -114,8 +127,51 @@ struct AgentToolLoopTests {
         #expect(snapshot.messages[2].content.isEmpty)
         #expect(snapshot.messages[3].content == "这个项目叫 LingXiAgent。")
         #expect(!snapshot.messages[3].content.contains("need file"))
-        #expect(events.contains(.toolCallCompleted(call())))
-        #expect(events.contains(.toolResult(ToolResult(callID: call().callID, success: true, content: "LingXiAgent project", toolName: "read_file"))))
+        let completedCall = try #require(events.compactMap { event in
+            if case let .toolCallCompleted(value) = event, value.callID == call().callID { return value }
+            return nil
+        }.first)
+        #expect(completedCall.toolID == call().toolID)
+        #expect(completedCall.arguments == call().arguments)
+        #expect(completedCall.sessionID == sessionID)
+        #expect(completedCall.agentRunID != nil)
+        let completedResult = try #require(events.compactMap { event in
+            if case let .toolResult(value) = event, value.callID == call().callID { return value }
+            return nil
+        }.first)
+        #expect(completedResult.success)
+        #expect(completedResult.content == "LingXiAgent project")
+        #expect(completedResult.toolName == "read_file")
+        #expect(completedResult.sessionID == sessionID)
+        #expect(completedResult.agentRunID == completedCall.agentRunID)
+    }
+
+    @Test func trivialPromptOnCleanSessionProducesOnlyAssistantReply() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = ScriptedFakeProvider(script: [
+            [.textDelta("你好，我是 LingXiAgent。"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let (capture, eventTask) = await collectEvents(client)
+        defer { eventTask.cancel() }
+
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "你好")
+        for try await _ in stream {}
+        let events = await capture.waitForTerminal()
+        let snapshot = try await client.session(sessionID)
+
+        #expect(events.contains { event in
+            if case .toolCallCompleted = event { return true }
+            return false
+        } == false)
+        #expect(events.contains { event in
+            if case .subagentSpawned = event { return true }
+            return false
+        } == false)
+        #expect(snapshot.messages.map(\.role) == [.user, .assistant])
+        #expect(snapshot.messages.last?.content == "你好，我是 LingXiAgent。")
     }
 
     @Test func deniedToolIsRecordedAndModelCanFinish() async throws {
@@ -167,7 +223,46 @@ struct AgentToolLoopTests {
             return
         }
         #expect(failure.error.code == .agentStepLimitReached)
-        #expect(provider.recorder.requests.count == 8)
+        #expect(provider.recorder.requests.count == 4)
+        #expect(failure.error.message.contains("检测到无进展死循环"))
+    }
+
+    @Test func maxStepsReachedProvidesDetailedExplanationWithStepLastCallAndObservation() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for i in 1...5 {
+            try "file \(i)".write(to: root.appendingPathComponent("file\(i).txt"), atomically: true, encoding: .utf8)
+        }
+        let provider = ScriptedFakeProvider(script: (1...10).map { i in
+            let c = ToolCall(callID: ToolCallID("call-\(i)"), toolID: ToolID("read_file"), arguments: #"{"path":"file\#(i).txt"}"#)
+            return [
+                .toolCallStarted(callID: c.callID, toolID: c.toolID),
+                .toolCallCompleted(c),
+                .completed(.toolCalls)
+            ]
+        })
+        let client = try await makeClient(root: root, provider: provider, permission: .allow, maxAgentLoopSteps: 3)
+        let (capture, eventTask) = await collectEvents(client)
+        defer { eventTask.cancel() }
+
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "loop through files")
+        do {
+            for try await _ in stream {}
+            Issue.record("step limit 必须终止数据流")
+        } catch let error as CoreError {
+            #expect(error.code == .agentStepLimitReached)
+        }
+        let events = await capture.waitForTerminal()
+        guard case let .turnFailed(failure)? = events.last else {
+            Issue.record("step limit 必须触发 turnFailed: \(events)")
+            return
+        }
+        #expect(failure.error.code == .agentStepLimitReached)
+        #expect(failure.error.message.contains("超过上限 (3 steps)"))
+        #expect(failure.error.message.contains("当前 step: 3"))
+        #expect(failure.error.message.contains("最后 ToolCall: read_file"))
+        #expect(failure.error.message.contains("最后 observation:"))
     }
 
     @Test func consecutiveIdenticalReadIsRecordedOnceAndSecondCallIsBlocked() async throws {
@@ -397,6 +492,50 @@ struct AgentToolLoopTests {
         }
     }
 
+    @Test func permissionWaitKeepsRunDurablePastAgentAndToolDeadlines() async throws {
+        let root = try fixture()
+        let data = root.appendingPathComponent("data", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "restart".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        let read = ToolCall(callID: ToolCallID("wait-past-deadline"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(read), .completed(.toolCalls)],
+            [.textDelta("授权后完成。"), .completed(.stop)],
+        ])
+        let timeouts = ExecutionTimeoutSettings(quickFilesystemSeconds: 0.01, agentRunSeconds: 0.01, maximumSeconds: 1)
+        let host = try CoreHost(
+            providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
+            configuration: CoreConfiguration(runtime: RuntimeSettings(interactive: true, execution: timeouts)),
+            workspaceRoot: try WorkspaceRoot(path: root.path),
+            dataRoot: data,
+            permissionDecision: .ask,
+            interactive: true
+        )
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let permissionTask = Task { () -> PermissionRequest? in
+            for await event in await client.events() {
+                if case let .permissionAsked(request) = event { return request }
+            }
+            return nil
+        }
+        await Task.yield()
+
+        let sessionID = try await client.createSession()
+        let streamTask = Task { for try await _ in try await client.sendMessage(sessionID: sessionID, content: "读取") {} }
+        let request = try #require(await permissionTask.value)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(try await client.listAgentRuns(sessionID).first?.status == .waitingForUser)
+        try await client.replyPermission(PermissionReply(permissionID: request.permissionID, decision: .allow))
+        _ = try await streamTask.value
+
+        let snapshot = try await client.session(sessionID)
+        let result = snapshot.messages.flatMap(\.parts).compactMap { if case let .toolResult(result) = $0 { result } else { nil } }.first
+        #expect(result?.success == true)
+        #expect(snapshot.messages.last?.content == "授权后完成。")
+    }
+
     @Test func restartSchedulesReadOnlyRemainderAndSettlesMutationClaimAsUnknown() async throws {
         let root = try fixture()
         let data = root.appendingPathComponent("data", isDirectory: true)
@@ -425,6 +564,9 @@ struct AgentToolLoopTests {
         defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         await restoreScheduler.waitUntilReady()
+        #expect(await recorder.snapshot().isEmpty)
+        #expect(provider.recorder.requests.isEmpty)
+        _ = try await client.resumeAgentRun(run.runID)
         await restoreScheduler.waitUntilCompleted()
         let snapshot = try await client.session(session.id)
         let results = snapshot.messages.flatMap(\.parts).compactMap { if case let .toolResult(result) = $0 { result } else { nil } }

@@ -143,7 +143,7 @@ public struct LingXiClient: Sendable {
     }
 
     /// 查询 Session 完整消息历史（权威数据在 Core）。
-    public func session(_ id: SessionID) async throws -> SessionSnapshot {
+    public func session(_ id: SessionID) async throws -> LegacySessionSnapshot {
         guard case let .sessionDetail(snapshot) = try await send(.getSession(sessionID: id)) else {
             throw CoreError(code: .transport, message: "getSession 收到非预期响应")
         }
@@ -200,6 +200,19 @@ public struct LingXiClient: Sendable {
         }
     }
 
+    public func agentBehaviorProfile() async throws -> AgentBehaviorProfile {
+        guard case let .agentBehaviorProfile(profile) = try await send(.getAgentBehaviorProfile) else {
+            throw CoreError(code: .transport, message: "getAgentBehaviorProfile 收到非预期响应")
+        }
+        return profile
+    }
+
+    public func setAgentBehaviorProfile(_ profile: AgentBehaviorProfile) async throws {
+        guard case .agentBehaviorProfile = try await send(.setAgentBehaviorProfile(profile)) else {
+            throw CoreError(code: .transport, message: "setAgentBehaviorProfile 收到非预期响应")
+        }
+    }
+
     public func projectCache() async throws -> ProjectCacheDebugSnapshot {
         guard case let .projectCache(snapshot) = try await send(.getProjectCache) else {
             throw CoreError(code: .transport, message: "getProjectCache 收到非预期响应")
@@ -243,6 +256,11 @@ public struct LingXiClient: Sendable {
         guard case let .agentRunCancelled(id) = try await send(.cancelAgentRun(runID: runID)), id == runID else { throw CoreError(code: .transport, message: "cancelAgentRun 收到非预期响应") }
     }
 
+    public func resumeAgentRun(_ runID: AgentRunID) async throws -> AgentRunInfo {
+        guard case let .agentRun(run) = try await send(.resumeAgentRun(runID: runID)), run.runID == runID else { throw CoreError(code: .transport, message: "resumeAgentRun 收到非预期响应") }
+        return run
+    }
+
     /// 在 Session 中发起一轮对话，返回 Streaming DMA 通道。
     /// text/reasoning delta 从通道逐块流出（kind 区分）；
     /// turnCompleted / turnFailed 经 events() 交付。
@@ -273,5 +291,15 @@ public struct LingXiClient: Sendable {
         let executableDir = URL(fileURLWithPath: CommandLine.arguments[0])
             .deletingLastPathComponent()
         return executableDir.appendingPathComponent("LingXiCoreHost").path
+    }
+}
+
+public extension LingXiClient {
+    /// 转换为 Protocol vNext 强类型客户端（若支持 LingXiProtocolService）
+    static func vNextInProcess(
+        service: any LingXiProtocolService,
+        authorizationContext: ContentAuthorizationContext = .system
+    ) async throws -> LingXiClientVNext {
+        try await LingXiClientVNext.bootstrapTrustedInProcess(service: service, trustedAuthorization: authorizationContext)
     }
 }

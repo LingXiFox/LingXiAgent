@@ -56,24 +56,31 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
             throw CancellationError()
         } catch let error as URLError where error.code == .timedOut {
             throw CoreError(code: .commandTimedOut, message: "Provider request timed out")
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
-            throw CoreError(code: .transportLost, message: "Provider transport failed")
+            if Task.isCancelled { throw CancellationError() }
+            let detail = (error as? URLError)?.localizedDescription ?? error.localizedDescription
+            throw CoreError(code: .transportLost, message: "Provider transport failed: \(detail)")
         }
         guard let http = response as? HTTPURLResponse else {
             throw CoreError(code: .provider, message: "Provider 返回非 HTTP 响应")
         }
-        let body = AsyncThrowingStream<Data, Error>(bufferingPolicy: .bufferingOldest(16)) { continuation in
+        let body = AsyncThrowingStream<Data, Error> { continuation in
             let pump = Task {
                 do {
                     var chunk = Data()
                     for try await byte in bytes {
+                        if Task.isCancelled { throw CancellationError() }
                         chunk.append(byte)
                         if byte == 0x0A || chunk.count >= 4_096 {
-                            guard try await Self.enqueue(chunk, to: continuation) else { return }
+                            continuation.yield(chunk)
                             chunk.removeAll(keepingCapacity: true)
                         }
                     }
-                    if !chunk.isEmpty { guard try await Self.enqueue(chunk, to: continuation) else { return } }
+                    if !chunk.isEmpty {
+                        continuation.yield(chunk)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -92,16 +99,5 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
             }),
             body: body
         )
-    }
-
-    private static func enqueue(_ data: Data, to continuation: AsyncThrowingStream<Data, Error>.Continuation) async throws -> Bool {
-        while true {
-            switch continuation.yield(data) {
-            case .enqueued: return true
-            case .dropped: try await Task.sleep(for: .milliseconds(1))
-            case .terminated: return false
-            @unknown default: return false
-            }
-        }
     }
 }

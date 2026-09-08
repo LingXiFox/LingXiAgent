@@ -36,10 +36,33 @@ public struct OpenAIResponsesProvider: ModelProvider {
         guard (200..<300).contains(response.statusCode) else {
             let body = (try? await OpenAICompatibleProvider.collectText(response.body)) ?? ""
             Self.logHTTPError(body, step: request.debugStep, status: response.statusCode, requestID: requestID, enabled: config.diagnosticsEnabled)
-            throw OpenAICompatibleProvider.httpError(status: response.statusCode, requestID: requestID)
+            let requestFields: [String]
+            if let reqBody = urlRequest.httpBody, let json = (try? JSONSerialization.jsonObject(with: reqBody)) as? [String: Any] {
+                requestFields = json.keys.sorted()
+            } else {
+                requestFields = []
+            }
+            let toolSchemas = request.tools.map { "\($0.name)(\($0.inputSchema.required.joined(separator: ", ")))" }
+            let capabilityProjection = "toolsRequested=\(!request.tools.isEmpty) (count=\(request.tools.count)), reasoningRequested=\(request.reasoning != nil)"
+            let diagnostics = OpenAICompatibleProvider.makeWireDiagnostics(
+                provider: config.baseURL.host ?? "openai",
+                model: request.model.rawValue,
+                wireAdapter: config.wireProtocol.rawValue,
+                url: urlRequest.url?.absoluteString ?? config.responsesURL.absoluteString,
+                httpMethod: urlRequest.httpMethod ?? "POST",
+                requestFields: requestFields,
+                toolSchemas: toolSchemas,
+                capabilityProjection: capabilityProjection,
+                responseBody: body
+            )
+            let error = OpenAICompatibleProvider.httpError(status: response.statusCode, requestID: requestID, diagnostics: diagnostics)
+            throw ProviderRateLimitError.from(statusCode: response.statusCode, headers: response.headers, body: body, underlying: error)
         }
 
         let events = AsyncThrowingStream<ModelEvent, Error> { continuation in
+            if let requestID = ProviderTraceSanitizer.requestID(requestID) {
+                continuation.yield(.providerRequestID(requestID))
+            }
             let pump = Task {
                 await Pump(source: response.body, continuation: continuation, request: request, prior: prior, step: request.debugStep, providerRequestID: requestID, startedAt: startedAt, provenance: provenance, sensitiveValues: Self.sensitiveValues(config.authentication), diagnosticsEnabled: config.diagnosticsEnabled).run()
             }
@@ -127,7 +150,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
             instructions: request.system,
             input: input,
             tools: request.tools.isEmpty ? nil : request.tools.map(ResponseRequestBody.Tool.init),
-            reasoning: request.reasoning.map(ResponseRequestBody.Reasoning.init),
+            reasoning: request.reasoning.map { ResponseRequestBody.Reasoning(effort: $0) },
             include: !store && request.reasoning != nil ? ["reasoning.encrypted_content"] : nil,
             previousResponseID: previousResponseID
         ))
@@ -272,9 +295,24 @@ public struct OpenAIResponsesProvider: ModelProvider {
     }
 }
 
-/// Stateful Responses API decoder. All item/call IDs remain adapter-local provenance.
-public struct ResponsesSSEDecoder {
-    private struct Partial {
+/// Explicit stream state machine for OpenAI Responses protocol.
+public enum ResponsesStreamState: Sendable, Equatable {
+    case idle
+    case inProgress(responseID: String?)
+    case inOutputItem(outputIndex: Int, itemType: String, itemID: String?)
+    case streamingText(outputIndex: Int, contentIndex: Int)
+    case streamingToolArguments(outputIndex: Int, callID: String)
+    case completed(status: String)
+    case failed(error: String)
+}
+
+public struct ResponsesStreamStateMachine: Sendable {
+    public private(set) var state: ResponsesStreamState = .idle
+    public private(set) var responseID: String?
+    public private(set) var completedCallIDs: [String] = []
+    public private(set) var references: [ProviderToolCallReference] = []
+
+    private struct PartialCall {
         var name: String?
         var arguments = ""
         var started = false
@@ -282,7 +320,7 @@ public struct ResponsesSSEDecoder {
         var completed = false
     }
 
-    private var calls: [String: Partial] = [:]
+    private var calls: [String: PartialCall] = [:]
     private var itemToCallID: [String: String] = [:]
     private var callToItemID: [String: String] = [:]
     private var orderedKeys: [String] = []
@@ -290,8 +328,6 @@ public struct ResponsesSSEDecoder {
     private var domainIDs: [String: ToolCallID] = [:]
     private let requestID: ModelRequestID
     private let sensitiveValues: [String]
-    public private(set) var completedCallIDs: [String] = []
-    public private(set) var references: [ProviderToolCallReference] = []
 
     public var orderedItems: [ProviderContinuationItem] {
         orderedKeys.compactMap { key in
@@ -301,50 +337,130 @@ public struct ResponsesSSEDecoder {
         }
     }
 
-    public init(requestID: ModelRequestID = ModelRequestID(), sensitiveValues: [String] = []) { self.requestID = requestID; self.sensitiveValues = sensitiveValues }
+    public init(requestID: ModelRequestID = ModelRequestID(), sensitiveValues: [String] = []) {
+        self.requestID = requestID
+        self.sensitiveValues = sensitiveValues
+    }
 
-    public mutating func consume(_ payload: String) throws -> [ModelEvent] {
-        guard let data = payload.data(using: .utf8),
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = object["type"] as? String
-        else { throw CoreError(code: .modelStream, message: "Responses SSE JSON 解析失败") }
-        switch type {
-        case "response.output_text.delta":
-            return (object["delta"] as? String).map { [.textDelta($0)] } ?? []
-        case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
-            return (object["delta"] as? String).map { [.reasoningDelta($0)] } ?? []
-        case "response.function_call_arguments.delta":
-            return try updateCall(callID: callID(in: object), name: string(object, "name"), arguments: object["delta"] as? String, finish: false)
-        case "response.function_call_arguments.done":
-            return try updateCall(callID: callID(in: object), name: string(object, "name"), arguments: object["arguments"] as? String, finish: true)
-        case "response.output_item.added", "response.output_item.done":
+    public mutating func feedEvent(type: String, object: [String: Any]) throws -> [ModelEvent] {
+        switch (state, type) {
+        // 1. response.created & response.in_progress
+        case (_, "response.created"), (_, "response.in_progress"):
+            if let response = object["response"] as? [String: Any], let id = response["id"] as? String {
+                self.responseID = id
+            }
+            state = .inProgress(responseID: self.responseID)
+            return []
+
+        // 2. output_item.added
+        case (_, "response.output_item.added"):
+            let outputIndex = object["output_index"] as? Int ?? 0
             guard let item = object["item"] as? [String: Any], let itemType = item["type"] as? String else { return [] }
-            if itemType == "reasoning", let itemID = string(item, "id") {
+            let itemID = item["id"] as? String
+            state = .inOutputItem(outputIndex: outputIndex, itemType: itemType, itemID: itemID)
+            if itemType == "reasoning", let itemID {
                 let key = "opaque:\(itemID)"
                 if !orderedKeys.contains(key) { orderedKeys.append(key) }
                 opaqueItems[key] = try JSONSerialization.data(withJSONObject: item, options: [.sortedKeys])
                 return []
             }
-            guard itemType == "function_call" else { return [] }
-            if let itemID = string(item, "id"), let callID = string(item, "call_id") {
-                itemToCallID[itemID] = callID
-                callToItemID[callID] = itemID
+            if itemType == "function_call" {
+                if let itemID, let callID = item["call_id"] as? String {
+                    itemToCallID[itemID] = callID
+                    callToItemID[callID] = itemID
+                }
+                return try updateCall(callID: extractCallID(in: item), name: item["name"] as? String, arguments: item["arguments"] as? String, finish: false)
             }
-            return try updateCall(callID: callID(in: item), name: string(item, "name"), arguments: item["arguments"] as? String, finish: type.hasSuffix("done"))
-        case "response.completed":
+            return []
+
+        // 3. content_part.added
+        case (_, "response.content_part.added"):
+            let outputIndex = object["output_index"] as? Int ?? 0
+            let contentIndex = object["content_index"] as? Int ?? 0
+            state = .streamingText(outputIndex: outputIndex, contentIndex: contentIndex)
+            return []
+
+        // 4. output_text.delta
+        case (_, "response.output_text.delta"):
+            let outputIndex = object["output_index"] as? Int ?? 0
+            let contentIndex = object["content_index"] as? Int ?? 0
+            state = .streamingText(outputIndex: outputIndex, contentIndex: contentIndex)
+            if let delta = object["delta"] as? String {
+                return [.textDelta(delta)]
+            }
+            return []
+
+        // 5. output_text.done & content_part.done
+        case (_, "response.output_text.done"), (_, "response.content_part.done"):
+            state = .inProgress(responseID: self.responseID)
+            return []
+
+        // 6. reasoning / reasoning_summary delta
+        case (_, "response.reasoning_summary_text.delta"), (_, "response.reasoning.delta"):
+            if let delta = object["delta"] as? String {
+                return [.reasoningDelta(delta)]
+            }
+            return []
+
+        // 7. function_call_arguments.delta
+        case (_, "response.function_call_arguments.delta"):
+            let outputIndex = object["output_index"] as? Int ?? 0
+            let callID = extractCallID(in: object)
+            if let callID {
+                state = .streamingToolArguments(outputIndex: outputIndex, callID: callID)
+            }
+            return try updateCall(callID: callID, name: object["name"] as? String, arguments: object["delta"] as? String, finish: false)
+
+        // 8. function_call_arguments.done
+        case (_, "response.function_call_arguments.done"):
+            let callID = extractCallID(in: object)
+            return try updateCall(callID: callID, name: object["name"] as? String, arguments: object["arguments"] as? String, finish: true)
+
+        // 9. output_item.done
+        case (_, "response.output_item.done"):
+            state = .inProgress(responseID: self.responseID)
+            guard let item = object["item"] as? [String: Any], let itemType = item["type"] as? String else { return [] }
+            if itemType == "function_call" {
+                if let itemID = item["id"] as? String, let callID = item["call_id"] as? String {
+                    itemToCallID[itemID] = callID
+                    callToItemID[callID] = itemID
+                }
+                return try updateCall(callID: extractCallID(in: item), name: item["name"] as? String, arguments: item["arguments"] as? String, finish: true)
+            }
+            return []
+
+        // 10. response.completed
+        case (_, "response.completed"):
+            state = .completed(status: "completed")
             var events: [ModelEvent] = []
             if let response = object["response"] as? [String: Any] {
-                if let usage = response["usage"] as? [String: Any] { events.append(.usage(Self.usage(usage))) }
-                events.append(.completed(finish(response["status"] as? String)))
-            } else { events.append(.completed(.unknown)) }
-            return events
-        case "response.incomplete":
-            if let response = object["response"] as? [String: Any], let usage = response["usage"] as? [String: Any] {
-                return [.usage(Self.usage(usage)), .completed(.maxTokens)]
+                if let usage = response["usage"] as? [String: Any] {
+                    events.append(.usage(Self.parseUsage(usage)))
+                }
+                let finishReason: ModelFinishReason = completedCallIDs.isEmpty ? .stop : .toolCalls
+                events.append(.completed(finishReason))
+            } else {
+                events.append(.completed(.unknown))
             }
-            return [.completed(.maxTokens)]
-        case "response.failed", "error":
-            return [.failed(ResponsesProviderFailure(eventType: type, object: object, sensitiveValues: sensitiveValues)?.coreError ?? CoreError(code: .modelStream, message: "Responses provider error event=\(type)"))]
+            return events
+
+        // 11. response.incomplete
+        case (_, "response.incomplete"):
+            state = .completed(status: "incomplete")
+            var events: [ModelEvent] = []
+            if let response = object["response"] as? [String: Any], let usage = response["usage"] as? [String: Any] {
+                events.append(.usage(Self.parseUsage(usage)))
+            }
+            events.append(.completed(.maxTokens))
+            return events
+
+        // 12. response.failed / error
+        case (_, "response.failed"), (_, "error"):
+            let failure = ResponsesProviderFailure(eventType: type, object: object, sensitiveValues: sensitiveValues)
+            let errorMsg = failure?.diagnosticMessage ?? "Responses error event=\(type)"
+            state = .failed(error: errorMsg)
+            return [.failed(failure?.coreError ?? CoreError(code: .modelStream, message: errorMsg))]
+
         default:
             return []
         }
@@ -356,7 +472,7 @@ public struct ResponsesSSEDecoder {
         domainIDs[callID] = domainID
         let orderKey = "call:\(callID)"
         if !orderedKeys.contains(orderKey) { orderedKeys.append(orderKey) }
-        var call = calls[callID] ?? Partial()
+        var call = calls[callID] ?? PartialCall()
         call.name = name ?? call.name
         if let arguments, !arguments.isEmpty {
             if finish || arguments.hasPrefix(call.arguments) { call.arguments = arguments }
@@ -382,21 +498,11 @@ public struct ResponsesSSEDecoder {
         return events
     }
 
-    private func string(_ object: [String: Any], _ key: String) -> String? { object[key] as? String }
-
-    private func callID(in object: [String: Any]) -> String? {
-        string(object, "call_id") ?? string(object, "item_id").flatMap { itemToCallID[$0] }
+    private func extractCallID(in object: [String: Any]) -> String? {
+        (object["call_id"] as? String) ?? (object["item_id"] as? String).flatMap { itemToCallID[$0] }
     }
 
-    private func finish(_ status: String?) -> ModelFinishReason {
-        switch status {
-        case "completed": completedCallIDs.isEmpty ? .stop : .toolCalls
-        case "incomplete": .maxTokens
-        default: .unknown
-        }
-    }
-
-    private static func usage(_ value: [String: Any]) -> ModelUsage {
+    private static func parseUsage(_ value: [String: Any]) -> ModelUsage {
         let outputDetails = value["output_tokens_details"] as? [String: Any]
         let inputDetails = value["input_tokens_details"] as? [String: Any]
         return ModelUsage(
@@ -405,6 +511,50 @@ public struct ResponsesSSEDecoder {
             reasoningTokens: outputDetails?["reasoning_tokens"] as? Int,
             cacheReadTokens: inputDetails?["cached_tokens"] as? Int
         )
+    }
+}
+
+/// Stateful Responses API decoder wrapper. Backed by ResponsesStreamStateMachine.
+public struct ResponsesSSEDecoder {
+    public var stateMachine: ResponsesStreamStateMachine
+
+    public var completedCallIDs: [String] { stateMachine.completedCallIDs }
+    public var references: [ProviderToolCallReference] { stateMachine.references }
+    public var orderedItems: [ProviderContinuationItem] { stateMachine.orderedItems }
+    public var responseID: String? { stateMachine.responseID }
+
+    public init(requestID: ModelRequestID = ModelRequestID(), sensitiveValues: [String] = []) {
+        stateMachine = ResponsesStreamStateMachine(requestID: requestID, sensitiveValues: sensitiveValues)
+    }
+
+    public mutating func consume(_ payload: String) throws -> [ModelEvent] {
+        guard let data = payload.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = object["type"] as? String
+        else { throw CoreError(code: .modelStream, message: "Responses SSE JSON 解析失败") }
+        return try stateMachine.feedEvent(type: type, object: object)
+    }
+
+    public mutating func feedSSEText(_ text: String) throws -> [ModelEvent] {
+        var events: [ModelEvent] = []
+        var lines = SSEDecoder()
+        if let data = text.data(using: .utf8) {
+            for line in lines.feed(data) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("data:") else { continue }
+                let payload = String(trimmed.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
+                guard payload != "[DONE]" else { break }
+                events.append(contentsOf: try consume(payload))
+            }
+            for line in lines.flushPending() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("data:") else { continue }
+                let payload = String(trimmed.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
+                guard payload != "[DONE]" else { break }
+                events.append(contentsOf: try consume(payload))
+            }
+        }
+        return events
     }
 }
 
@@ -489,23 +639,35 @@ private struct ResponseRequestBody: Encodable {
         }
     }
 
-    struct Reasoning: Encodable { let effort: String; init(_ effort: String) { self.effort = effort } }
+    struct Reasoning: Encodable {
+        let effort: String?
+        let summary: String?
+        init(effort: String? = nil, summary: String? = nil) {
+            self.effort = effort
+            self.summary = summary
+        }
+    }
 
     enum Input: Encodable {
         case message(role: String, content: String)
-        case functionCall(callID: String, name: String, arguments: String)
+        case functionCall(callID: String, name: String, arguments: String, itemID: String? = nil)
         case functionOutput(callID: String, output: String)
         case opaque(Data)
 
-        enum Keys: String, CodingKey { case type, role, content, callID = "call_id", name, arguments, output }
+        enum Keys: String, CodingKey { case type, role, content, callID = "call_id", name, arguments, output, id, status }
 
         func encode(to encoder: Encoder) throws {
             var values = encoder.container(keyedBy: Keys.self)
             switch self {
             case let .message(role, content):
                 try values.encode(role, forKey: .role); try values.encode(content, forKey: .content)
-            case let .functionCall(callID, name, arguments):
-                try values.encode("function_call", forKey: .type); try values.encode(callID, forKey: .callID); try values.encode(name, forKey: .name); try values.encode(arguments, forKey: .arguments)
+            case let .functionCall(callID, name, arguments, itemID):
+                try values.encode("function_call", forKey: .type)
+                try values.encode(callID, forKey: .callID)
+                try values.encode(name, forKey: .name)
+                try values.encode(arguments, forKey: .arguments)
+                if let itemID { try values.encode(itemID, forKey: .id) }
+                try values.encode("completed", forKey: .status)
             case let .functionOutput(callID, output):
                 try values.encode("function_call_output", forKey: .type); try values.encode(callID, forKey: .callID); try values.encode(output, forKey: .output)
             case let .opaque(data):

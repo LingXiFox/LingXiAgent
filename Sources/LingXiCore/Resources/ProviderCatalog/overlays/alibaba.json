@@ -1,0 +1,57 @@
+{
+  "products": [
+    {
+      "authMethods": [
+        "bearerToken"
+      ],
+      "concurrencyLimit": 10,
+      "displayName": "Alibaba Bailian API",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "id": "alibaba-bailian-api",
+      "models": [
+        {
+          "displayName": "Qwen Max",
+          "id": "qwen-max",
+          "upstreamID": "qwen-max"
+        },
+        {
+          "displayName": "Qwen Plus",
+          "id": "qwen-plus",
+          "upstreamID": "qwen-plus"
+        },
+        {
+          "displayName": "Qwen Turbo",
+          "id": "qwen-turbo",
+          "upstreamID": "qwen-turbo"
+        }
+      ],
+      "protocolFamily": "openai_responses",
+      "quirks": [],
+      "requiredAccountFields": [
+        "region",
+        "workspace"
+      ],
+      "type": "cloudAPI",
+      "verificationStatus": "verified"
+    },
+    {
+      "authMethods": [
+        "subscription"
+      ],
+      "displayName": "Qwen Coding Plan",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "id": "qwen-coding-plan",
+      "models": [
+        {
+          "displayName": "Qwen Plus",
+          "id": "qwen-plus",
+          "upstreamID": "qwen-plus"
+        }
+      ],
+      "protocolFamily": "openai_chat",
+      "type": "subscription",
+      "verificationStatus": "unverified"
+    }
+  ],
+  "vendor": "alibaba"
+}

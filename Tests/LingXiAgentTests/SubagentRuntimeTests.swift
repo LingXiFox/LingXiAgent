@@ -549,7 +549,6 @@ struct SubagentRuntimeTests {
         let estimator = ConservativeTokenEstimator()
         let policy = ContextBudgetPolicy()
         let task = "inspect exact"
-        let mandatoryTokens = await L1ContextEngine().initialMandatoryTokens(task: task, estimator: estimator)
         let workspace = try WorkspaceRoot(path: root.path)
         let reserve = 4_096
         let provider = ExactMinimumViableContextProvider(task: task)
@@ -560,6 +559,8 @@ struct SubagentRuntimeTests {
         defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
+        let initialProjection = try #require(await client.contextProjection(primary))
+        let mandatoryTokens = initialProjection.l1.usageTokens + estimator.estimate(text: task) + 4
 
         let childTools = await host.toolRuntimeRef.availableDefinitions(sessionID: primary, interactive: false, executionProfile: nil)
         let toolTokens = estimator.estimate(tools: childTools)

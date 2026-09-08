@@ -197,8 +197,16 @@ struct ContextCompactionTests {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let provider = ScriptedFakeProvider(script: [[.textDelta("ack"), .completed(.stop)]])
-        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: ModelContextProfile(contextWindowTokens: 10_000)), workspaceRoot: try WorkspaceRoot(path: root.path))
+        let provider = ScriptedFakeProvider(script: [
+            [.textDelta("ack"), .completed(.stop)],
+            [.textDelta("ack"), .completed(.stop)],
+            [.textDelta("ack"), .completed(.stop)],
+            [.textDelta("ack"), .completed(.stop)],
+            [.toolCallStarted(callID: ToolCallID("load-context-search"), toolID: ToolID("load_tool")), .toolCallDelta(callID: ToolCallID("load-context-search"), arguments: "{\"tool_id\":\"context_search\"}"), .toolCallCompleted(ToolCall(callID: ToolCallID("load-context-search"), toolID: ToolID("load_tool"), arguments: "{\"tool_id\":\"context_search\"}")), .completed(.toolCalls)],
+            [.reasoningDelta("need context"), .toolCallStarted(callID: ToolCallID("call-1"), toolID: ToolID("context_search")), .toolCallDelta(callID: ToolCallID("call-1"), arguments: "{\"query\":\"FoxAnchor-A\"}"), .toolCallCompleted(ToolCall(callID: ToolCallID("call-1"), toolID: ToolID("context_search"), arguments: "{\"query\":\"FoxAnchor-A\"}")), .completed(.toolCalls)],
+            [.textDelta("FoxAnchor-A"), .completed(.stop)]
+        ])
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: ModelContextProfile(contextWindowTokens: 12_000)), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
         defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)

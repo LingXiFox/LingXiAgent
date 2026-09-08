@@ -30,6 +30,7 @@ public struct ContextPageRankingPolicy: Sendable {
 
     public func rank(pages: [ContextPage], query: ContextQuery, symbolScoresByPageID: [String: Int], referenceScoresByPageID: [String: Int] = [:]) -> [PageCandidate] {
         let lexicalTokens = query.terms
+        guard !lexicalTokens.isEmpty || !query.symbolHints.isEmpty else { return [] }
         return pages.compactMap { page in
             let symbolScore = min(maximumSymbolContribution, symbolScoresByPageID[page.id, default: 0])
             let referenceScore = min(maximumReferenceContribution, referenceScoresByPageID[page.id, default: 0])
@@ -37,9 +38,13 @@ public struct ContextPageRankingPolicy: Sendable {
             let headingScore = headingScore(page, tokens: lexicalTokens)
             let lexicalScore = lexicalScore(page, tokens: lexicalTokens)
             let textScore = pathScore + headingScore + lexicalScore
+
+            // Relevance floor: require at least one match before applying authority
+            guard symbolScore > 0 || referenceScore > 0 || textScore > 0 else { return nil }
+
             let authorityScore = sourceAuthority(for: page.sourceType)
             let score = symbolScore + referenceScore + textScore + authorityScore
-            return symbolScore == 0 && referenceScore == 0 && textScore == 0 ? nil : PageCandidate(page: page, score: score, symbolScore: symbolScore, referenceScore: referenceScore, textScore: textScore, authorityScore: authorityScore)
+            return PageCandidate(page: page, score: score, symbolScore: symbolScore, referenceScore: referenceScore, textScore: textScore, authorityScore: authorityScore)
         }.sorted {
             if $0.score != $1.score { return $0.score > $1.score }
             if $0.page.path != $1.page.path { return $0.page.path < $1.page.path }

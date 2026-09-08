@@ -76,7 +76,7 @@ extension WireMessage: Codable {
 
 extension ClientCommand: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type, sessionID, content, title, model, permissionReply, questionReply, permissionConfiguration, runID, providerCredential, providerAccount, accountID, deleteUnusedCredential, credential, extensionKind
+        case type, sessionID, content, title, model, permissionReply, questionReply, permissionConfiguration, behaviorProfile, runID, providerCredential, providerAccount, accountID, deleteUnusedCredential, credential, extensionKind
     }
 
     public init(from decoder: Decoder) throws {
@@ -103,6 +103,9 @@ extension ClientCommand: Codable {
         case .getPermissionConfiguration: self = .getPermissionConfiguration
         case .setPermissionConfiguration:
             self = .setPermissionConfiguration(try container.decode(PermissionConfiguration.self, forKey: .permissionConfiguration))
+        case .getAgentBehaviorProfile: self = .getAgentBehaviorProfile
+        case .setAgentBehaviorProfile:
+            self = .setAgentBehaviorProfile(try container.decode(AgentBehaviorProfile.self, forKey: .behaviorProfile))
         case .getProjectCache: self = .getProjectCache
         case .compactSession: self = .compactSession(sessionID: try container.decode(SessionID.self, forKey: .sessionID))
         case .listChildSessions: self = .listChildSessions(parentSessionID: try container.decode(SessionID.self, forKey: .sessionID))
@@ -111,6 +114,7 @@ extension ClientCommand: Codable {
         case .getAgentTree: self = .getAgentTree(rootSessionID: try container.decode(SessionID.self, forKey: .sessionID))
         case .getSubagentResult: self = .getSubagentResult(runID: try container.decode(AgentRunID.self, forKey: .runID))
         case .cancelAgentRun: self = .cancelAgentRun(runID: try container.decode(AgentRunID.self, forKey: .runID))
+        case .resumeAgentRun: self = .resumeAgentRun(runID: try container.decode(AgentRunID.self, forKey: .runID))
         case .listExtensions:
             self = .listExtensions(kind: try container.decodeIfPresent(ExtensionKind.self, forKey: .extensionKind))
         case .getWorkspaceDiff: self = .getWorkspaceDiff
@@ -149,7 +153,7 @@ extension ClientCommand: Codable {
             try container.encode(sessionID, forKey: .sessionID)
         case let .listChildSessions(sessionID), let .listAgentRuns(sessionID), let .getAgentTree(sessionID):
             try container.encode(sessionID, forKey: .sessionID)
-        case let .getAgentRun(runID), let .getSubagentResult(runID), let .cancelAgentRun(runID):
+        case let .getAgentRun(runID), let .getSubagentResult(runID), let .cancelAgentRun(runID), let .resumeAgentRun(runID):
             try container.encode(runID, forKey: .runID)
         case let .sendMessage(sessionID, content):
             try container.encode(sessionID, forKey: .sessionID)
@@ -164,6 +168,8 @@ extension ClientCommand: Codable {
             try container.encode(reply, forKey: .questionReply)
         case let .setPermissionConfiguration(configuration):
             try container.encode(configuration, forKey: .permissionConfiguration)
+        case let .setAgentBehaviorProfile(profile):
+            try container.encode(profile, forKey: .behaviorProfile)
         case let .storeProviderCredential(request): try container.encode(request, forKey: .providerCredential)
         case let .createProviderAccount(request): try container.encode(request, forKey: .providerAccount)
         case let .deleteProviderAccount(accountID, deleteUnusedCredential):
@@ -179,11 +185,11 @@ extension ClientCommand: Codable {
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
         case pong, info, state, streamOpened, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff
-        case sessionCreated, sessionList, sessionDetail, sessionRenamed, permissionReplyAccepted, questionReplyAccepted, context, contextProjection, performance, permissionConfiguration, projectCache, compactSession, childSessionList, agentRunList, agentRun, agentTree, subagentResult, agentRunCancelled, error
+        case sessionCreated, sessionList, sessionDetail, sessionRenamed, permissionReplyAccepted, questionReplyAccepted, context, contextProjection, performance, permissionConfiguration, agentBehaviorProfile, projectCache, compactSession, childSessionList, agentRunList, agentRun, agentTree, subagentResult, agentRunCancelled, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff, session, sessions, permissionID, questionID, context, contextProjection, performance, permissionConfiguration, projectCache, compactSession, agentRuns, agentRun, agentTree, subagentResult, runID, title, error
+        case type, info, state, streamID, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff, session, sessions, permissionID, questionID, context, contextProjection, performance, permissionConfiguration, behaviorProfile, projectCache, compactSession, agentRuns, agentRun, agentTree, subagentResult, runID, title, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -224,7 +230,7 @@ extension CoreResponse: Codable {
         case .sessionList:
             self = .sessionList(try container.decode([SessionInfo].self, forKey: .sessions))
         case .sessionDetail:
-            self = .sessionDetail(try container.decode(SessionSnapshot.self, forKey: .session))
+            self = .sessionDetail(try container.decode(LegacySessionSnapshot.self, forKey: .session))
         case .sessionRenamed:
             self = .sessionRenamed(try container.decode(SessionInfo.self, forKey: .session))
         case .permissionReplyAccepted:
@@ -239,6 +245,8 @@ extension CoreResponse: Codable {
             self = .performance(try container.decodeIfPresent(TurnPerformanceReport.self, forKey: .performance))
         case .permissionConfiguration:
             self = .permissionConfiguration(try container.decode(PermissionConfiguration.self, forKey: .permissionConfiguration))
+        case .agentBehaviorProfile:
+            self = .agentBehaviorProfile(try container.decode(AgentBehaviorProfile.self, forKey: .behaviorProfile))
         case .projectCache:
             self = .projectCache(try container.decode(ProjectCacheDebugSnapshot.self, forKey: .projectCache))
         case .compactSession:
@@ -305,6 +313,8 @@ extension CoreResponse: Codable {
             try container.encodeIfPresent(report, forKey: .performance)
         case let .permissionConfiguration(configuration):
             try container.encode(configuration, forKey: .permissionConfiguration)
+        case let .agentBehaviorProfile(profile):
+            try container.encode(profile, forKey: .behaviorProfile)
         case let .projectCache(snapshot):
             try container.encode(snapshot, forKey: .projectCache)
         case let .compactSession(response):
@@ -353,6 +363,7 @@ extension CoreResponse: Codable {
         case .contextProjection: .contextProjection
         case .performance: .performance
         case .permissionConfiguration: .permissionConfiguration
+        case .agentBehaviorProfile: .agentBehaviorProfile
         case .projectCache: .projectCache
         case .compactSession: .compactSession
         case .childSessionList: .childSessionList
@@ -387,11 +398,11 @@ extension CoreError: Codable {
 extension CoreEvent: Codable {
     private enum TypeKey: String, Codable {
         case stateChanged, sessionCreated, turnStarted, turnCompleted, turnFailed
-        case toolCallCompleted, toolResult, permissionAsked, questionAsked, childSessionCreated, subagentSpawned, agentRunQueued, agentRunStarted, agentRunStatusChanged, agentRunCompleted, agentRunFailed, agentRunCancelled, subagentResultAvailable, questionEscalated
+        case toolCallCompleted, toolExecutionClaimed, toolResult, permissionAsked, questionAsked, childSessionCreated, subagentSpawned, agentRunQueued, agentRunStarted, agentRunStatusChanged, agentRunCompleted, agentRunFailed, agentRunCancelled, subagentResultAvailable, questionEscalated, providerActivityChanged
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, state, sessionID, handle, result, failure, toolCall, toolResult, permissionRequest, questionRequest, session, agentRun, subagentResult
+        case type, state, sessionID, handle, result, failure, toolCall, toolResult, permissionRequest, questionRequest, session, agentRun, subagentResult, providerActivity
     }
 
     public init(from decoder: Decoder) throws {
@@ -409,6 +420,8 @@ extension CoreEvent: Codable {
             self = .turnFailed(try container.decode(TurnFailure.self, forKey: .failure))
         case .toolCallCompleted:
             self = .toolCallCompleted(try container.decode(ToolCall.self, forKey: .toolCall))
+        case .toolExecutionClaimed:
+            self = .toolExecutionClaimed(try container.decode(ToolCall.self, forKey: .toolCall))
         case .toolResult:
             self = .toolResult(try container.decode(ToolResult.self, forKey: .toolResult))
         case .permissionAsked:
@@ -435,6 +448,8 @@ extension CoreEvent: Codable {
             self = .subagentResultAvailable(try container.decode(SubagentResult.self, forKey: .subagentResult))
         case .questionEscalated:
             self = .questionEscalated(try container.decode(QuestionRequest.self, forKey: .questionRequest))
+        case .providerActivityChanged:
+            self = .providerActivityChanged(try container.decode(ProviderActivitySnapshot.self, forKey: .providerActivity))
         }
     }
 
@@ -458,6 +473,9 @@ extension CoreEvent: Codable {
             try container.encode(failure, forKey: .failure)
         case let .toolCallCompleted(call):
             try container.encode(TypeKey.toolCallCompleted, forKey: .type)
+            try container.encode(call, forKey: .toolCall)
+        case let .toolExecutionClaimed(call):
+            try container.encode(TypeKey.toolExecutionClaimed, forKey: .type)
             try container.encode(call, forKey: .toolCall)
         case let .toolResult(result):
             try container.encode(TypeKey.toolResult, forKey: .type)
@@ -498,6 +516,9 @@ extension CoreEvent: Codable {
         case let .questionEscalated(request):
             try container.encode(TypeKey.questionEscalated, forKey: .type)
             try container.encode(request, forKey: .questionRequest)
+        case let .providerActivityChanged(activity):
+            try container.encode(TypeKey.providerActivityChanged, forKey: .type)
+            try container.encode(activity, forKey: .providerActivity)
         }
     }
 }

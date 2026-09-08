@@ -153,6 +153,7 @@ struct CommandResult: Codable, Sendable {
     let stdout: String
 }
 
+
 struct PipeCursor: Codable, Sendable {
     let cursor: Int
     let text: String
@@ -208,12 +209,18 @@ final class ManagedToolProcess: @unchecked Sendable {
     private let error = Pipe()
     private let stdout = ByteRingBuffer(capacity: 64 * 1_024)
     private let stderr = ByteRingBuffer(capacity: 64 * 1_024)
+    private let lifecycleTrace: ToolLifecycleTrace?
     private let lock = NSLock()
     private var didFinish = false
     private var didTimeOut = false
+    private var stdoutDidReachEOF = false
+    private var stderrDidReachEOF = false
+    private var processDidExit = false
+    private var exitStatus: Int32?
     private var waiter: CheckedContinuation<Void, Never>?
 
-    init(invocation: ToolProcessInvocation, cwd: URL, environment: [String: String]) {
+    init(invocation: ToolProcessInvocation, cwd: URL, environment: [String: String], lifecycleTrace: ToolLifecycleTrace? = nil) {
+        self.lifecycleTrace = lifecycleTrace
         process.executableURL = URL(fileURLWithPath: invocation.executable)
         process.arguments = invocation.arguments
         process.currentDirectoryURL = cwd
@@ -221,13 +228,14 @@ final class ManagedToolProcess: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = error
-        output.fileHandleForReading.readabilityHandler = { [stdout] handle in stdout.append(handle.availableData) }
-        error.fileHandleForReading.readabilityHandler = { [stderr] handle in stderr.append(handle.availableData) }
-        process.terminationHandler = { [weak self] _ in self?.finish() }
+        output.fileHandleForReading.readabilityHandler = { [weak self, stdout] handle in self?.read(handle, into: stdout, phase: .stdoutEOF) }
+        error.fileHandleForReading.readabilityHandler = { [weak self, stderr] handle in self?.read(handle, into: stderr, phase: .stderrEOF) }
+        process.terminationHandler = { [weak self] process in self?.handleTermination(status: process.terminationStatus) }
     }
 
     func launch() throws {
         try process.run()
+        lifecycleTrace?.record(.processSpawned, processPID: process.processIdentifier)
         try output.fileHandleForWriting.close()
         try error.fileHandleForWriting.close()
         Task { [weak self] in
@@ -282,15 +290,18 @@ final class ManagedToolProcess: @unchecked Sendable {
     }
 
     func commandResult() -> CommandResult {
-        CommandResult(exitCode: process.terminationStatus, stderr: stderr.value(after: nil).text, stdout: stdout.value(after: nil).text)
+        let code = exitStatus ?? (process.isRunning ? 0 : process.terminationStatus)
+        return CommandResult(exitCode: code, stderr: stderr.value(after: nil).text, stdout: stdout.value(after: nil).text)
     }
 
     func snapshot(id: String, stdoutCursor: Int?, stderrCursor: Int?) -> ProcessStatus {
-        ProcessStatus(
+        let running = !didFinish && process.isRunning
+        let code = running ? nil : (exitStatus ?? process.terminationStatus)
+        return ProcessStatus(
             id: id,
-            pid: process.isRunning ? process.processIdentifier : nil,
-            running: process.isRunning,
-            exitCode: process.isRunning ? nil : process.terminationStatus,
+            pid: running ? process.processIdentifier : nil,
+            running: running,
+            exitCode: code,
             stdout: stdout.value(after: stdoutCursor),
             stderr: stderr.value(after: stderrCursor)
         )
@@ -302,17 +313,91 @@ final class ManagedToolProcess: @unchecked Sendable {
         return didTimeOut
     }
 
+    private func nonblockingDrain(handle: FileHandle, into buffer: ByteRingBuffer) {
+        handle.readabilityHandler = nil
+        let fd = handle.fileDescriptor
+        guard fd >= 0 else { return }
+        let flags = fcntl(fd, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            #if os(macOS)
+            let bytesRead = Darwin.read(fd, &chunk, chunk.count)
+            #else
+            let bytesRead = Glibc.read(fd, &chunk, chunk.count)
+            #endif
+            if bytesRead > 0 {
+                buffer.append(Data(chunk[0..<bytesRead]))
+            } else {
+                break
+            }
+        }
+    }
+
+    private func read(_ handle: FileHandle, into buffer: ByteRingBuffer, phase: ToolLifecyclePhase) {
+        let data = handle.availableData
+        if !data.isEmpty {
+            buffer.append(data)
+            return
+        }
+        handle.readabilityHandler = nil
+        let shouldRecord: Bool
+        let pid = process.processIdentifier
+        let exitCode = exitStatus
+        lock.lock()
+        switch phase {
+        case .stdoutEOF:
+            shouldRecord = !stdoutDidReachEOF
+            stdoutDidReachEOF = true
+        case .stderrEOF:
+            shouldRecord = !stderrDidReachEOF
+            stderrDidReachEOF = true
+        default:
+            shouldRecord = false
+        }
+        let canFinish = processDidExit && stdoutDidReachEOF && stderrDidReachEOF
+        lock.unlock()
+
+        if shouldRecord { lifecycleTrace?.record(phase, processPID: pid, exitCode: exitCode) }
+        if canFinish { finish() }
+    }
+
+    private func handleTermination(status: Int32) {
+        let pid = process.processIdentifier
+        
+        // Concurrent bounded drain: immediately drain any remaining output non-blockingly.
+        nonblockingDrain(handle: output.fileHandleForReading, into: stdout)
+        nonblockingDrain(handle: error.fileHandleForReading, into: stderr)
+
+        lock.lock()
+        processDidExit = true
+        exitStatus = status
+        let needStdoutEOF = !stdoutDidReachEOF
+        stdoutDidReachEOF = true
+        let needStderrEOF = !stderrDidReachEOF
+        stderrDidReachEOF = true
+        lock.unlock()
+
+        if needStdoutEOF { lifecycleTrace?.record(.stdoutEOF, processPID: pid, exitCode: status) }
+        if needStderrEOF { lifecycleTrace?.record(.stderrEOF, processPID: pid, exitCode: status) }
+
+        finish()
+    }
+
     private func finish() {
-        output.fileHandleForReading.readabilityHandler = nil
-        error.fileHandleForReading.readabilityHandler = nil
-        stdout.append(output.fileHandleForReading.readDataToEndOfFile())
-        stderr.append(error.fileHandleForReading.readDataToEndOfFile())
         lock.lock()
         guard !didFinish else { lock.unlock(); return }
+        guard processDidExit, stdoutDidReachEOF, stderrDidReachEOF else { lock.unlock(); return }
         didFinish = true
+        let pid = process.processIdentifier
+        let status = exitStatus ?? process.terminationStatus
         let continuation = waiter
         waiter = nil
         lock.unlock()
+
+        lifecycleTrace?.record(.processExited, processPID: pid, exitCode: status)
         continuation?.resume()
     }
 }
@@ -322,9 +407,10 @@ func runToolProcess(
     cwd: URL,
     environment: [String: String],
     timeoutMilliseconds: Int?,
-    standardInput: String? = nil
+    standardInput: String? = nil,
+    lifecycleTrace: ToolLifecycleTrace? = nil
 ) async throws -> CommandResult {
-    let managed = ManagedToolProcess(invocation: invocation, cwd: cwd, environment: environment)
+    let managed = ManagedToolProcess(invocation: invocation, cwd: cwd, environment: environment, lifecycleTrace: lifecycleTrace)
     try managed.launch()
     if let standardInput { try managed.write(standardInput) }
     try managed.closeInput()

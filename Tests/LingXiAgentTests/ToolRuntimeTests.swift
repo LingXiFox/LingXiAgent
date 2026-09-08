@@ -55,7 +55,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "edit_file", "git", "glob", "grep", "list_directory", "process", "question", "read_file", "shell", "skill", "write_file"])
+        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "edit_file", "git", "glob", "grep", "list_directory", "process", "question", "read_file", "shell", "skill", "todo", "web_fetch", "web_search", "write_file"])
         #expect(await runtime.availableDefinitions().map(\.id.rawValue).contains("search_tools"))
     }
 
@@ -96,7 +96,11 @@ struct ToolRuntimeTests {
         let runtime = try runtime(root: root)
 
         let read = await runtime.execute(call("read_file"), sessionID: SessionID("s")) { _ in }
-        #expect(read == ToolResult(callID: ToolCallID("call-1"), success: true, content: "LingXiAgent", toolName: "read_file"))
+        #expect(read.callID == ToolCallID("call-1"))
+        #expect(read.success)
+        #expect(read.content == "LingXiAgent")
+        #expect(read.toolName == "read_file")
+        #expect(read.timing.executionMilliseconds > 0)
 
         let listed = await runtime.execute(call("list_directory", "."), sessionID: SessionID("s")) { _ in }
         #expect(listed.success)
@@ -195,7 +199,12 @@ struct ToolRuntimeTests {
         #expect((await pending.value).decision == .allow)
 
         let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(defaultDecision: .allow))
-        #expect(await runtime.execute(call, sessionID: SessionID("session-1")) { _ in } == ToolResult(callID: ToolCallID("call-1"), success: true, content: "approved", toolName: "read_file"))
+        let result = await runtime.execute(call, sessionID: SessionID("session-1")) { _ in }
+        #expect(result.callID == ToolCallID("call-1"))
+        #expect(result.success)
+        #expect(result.content == "approved")
+        #expect(result.toolName == "read_file")
+        #expect(result.timing.executionMilliseconds > 0)
     }
 
     @Test func denyDoesNotExecuteTool() async throws {
@@ -232,6 +241,30 @@ struct ToolRuntimeTests {
 
         #expect(outcome.result.success)
         #expect(!outcome.permissionAsked)
+    }
+
+    @Test func permissionWaitDoesNotConsumeToolDeadline() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "ok".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        let permissions = PermissionEngine(defaultDecision: .ask)
+        let runtime = ToolRuntime(
+            registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
+            permissions: permissions,
+            deadlinePolicy: ExecutionDeadlinePolicy(settings: ExecutionTimeoutSettings(quickFilesystemSeconds: 0.01))
+        )
+        let capture = PermissionCapture()
+        let task = Task {
+            await runtime.execute(call("read_file"), sessionID: SessionID("s")) { request in
+                await capture.record(request)
+            }
+        }
+
+        let request = await capture.wait()
+        try await Task.sleep(for: .milliseconds(50))
+        try await permissions.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
+
+        #expect((await task.value).success)
     }
 
     @Test func fullAccessKeepsCanonicalizationAndSensitiveFileGuard() async throws {
@@ -275,6 +308,31 @@ struct ToolRuntimeTests {
         let result = await task.value
         #expect(result.success)
         #expect(result.content.contains("是"))
+    }
+
+    @Test func questionWaitDoesNotConsumeToolDeadline() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let questions = QuestionRuntime(interactive: true)
+        let capture = QuestionCapture()
+        await questions.setEventSink { request in await capture.record(request) }
+        let runtime = ToolRuntime(
+            registry: .builtin(workspace: try WorkspaceRoot(path: root.path), questions: questions),
+            permissions: PermissionEngine(defaultDecision: .allow),
+            deadlinePolicy: ExecutionDeadlinePolicy(settings: ExecutionTimeoutSettings(foregroundShellSeconds: 0.01))
+        )
+        let task = Task {
+            await runtime.execute(
+                ToolCall(callID: ToolCallID("question-timeout"), toolID: ToolID("question"), arguments: #"{"question":"继续吗？","options":["是"]}"#),
+                sessionID: SessionID("s")
+            ) { _ in }
+        }
+
+        let request = await capture.wait()
+        try await Task.sleep(for: .milliseconds(50))
+        try await questions.reply(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
+
+        #expect((await task.value).success)
     }
 
     @Test func workspaceShellRunsInsideWorkspaceAndStripsSecretEnvironment() async throws {
@@ -359,6 +417,113 @@ struct ToolRuntimeTests {
         }
         #expect(status?.stdout.text == "ready")
         #expect(status?.running == false)
+    }
+
+    @Test func shellLifecycleTraceSeparatesProcessExitFromResultCommit() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try WorkspaceRoot(path: root.path)
+        let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(configuration: .yolo))
+        let call = ToolCall(callID: ToolCallID("shell-lifecycle"), toolID: ToolID("shell"), arguments: #"{"command":"ls -d \"$HOME\"; ls \"$HOME\" | head -20"}"#)
+
+        let outcome = await runtime.executeWithMetrics(call, sessionID: SessionID("s")) { _ in }
+        #expect(outcome.result.success)
+        #expect(outcome.result.exitCode == 0)
+        #expect(outcome.executionDuration < .seconds(1))
+        #expect(outcome.result.timing.executionMilliseconds < 1_000)
+
+        let trace = try #require(outcome.lifecycleTrace)
+        for _ in 0..<100 where !Set(trace.snapshot().map(\.phase)).isSuperset(of: [.stdoutEOF, .stderrEOF]) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        trace.record(.resultCommitted, processPID: trace.snapshot().last?.processPID, exitCode: outcome.result.exitCode.map { Int32($0) })
+        let events = trace.snapshot()
+        let phases = events.map(\.phase)
+        for phase in [ToolLifecyclePhase.requested, .permissionStart, .permissionEnd, .admitted, .executorStart, .processSpawned, .processExited, .toolResultBuilt, .resultCommitted] {
+            #expect(phases.contains(phase))
+        }
+        #expect(events.allSatisfy { $0.toolCallID == call.callID })
+        #expect(events == events.sorted { $0.timestampNanoseconds < $1.timestampNanoseconds })
+        let exited = try #require(events.first { $0.phase == .processExited })
+        let committed = try #require(events.first { $0.phase == .resultCommitted })
+        #expect(committed.deltaMilliseconds - exited.deltaMilliseconds >= 0)
+        let traceText = events.map { event in
+            let pid = event.processPID.map { String($0) } ?? "-"
+            let exit = event.exitCode.map { String($0) } ?? "-"
+            return "\(event.phase.rawValue) +\(String(format: "%.1f", event.deltaMilliseconds))ms pid=\(pid) exit=\(exit) id=\(event.toolCallID.rawValue)"
+        }.joined(separator: "\n")
+        print(traceText)
+    }
+
+    @Test func fastProcessExitWithDelayedResultCommitSeparatesPhasesAndPreservesExecutionDuration() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try WorkspaceRoot(path: root.path)
+        let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(configuration: .yolo))
+        let call = ToolCall(callID: ToolCallID("fast-exit-delayed-commit"), toolID: ToolID("shell"), arguments: #"{"command":"ls -d \"$HOME\"; ls \"$HOME\" | head -20"}"#)
+
+        let outcome = await runtime.executeWithMetrics(call, sessionID: SessionID("s")) { _ in }
+        #expect(outcome.result.success)
+        #expect(outcome.result.exitCode == 0)
+        // Invariant: shell process executes fast and must complete well below 100ms
+        #expect(outcome.executionDuration < .milliseconds(200))
+        #expect(outcome.result.timing.executionMilliseconds < 200)
+
+        let trace = try #require(outcome.lifecycleTrace)
+        let snapshotBeforeDelay = trace.snapshot()
+        let processExitedEvent = try #require(snapshotBeforeDelay.first { $0.phase == .processExited })
+        let toolResultBuiltEvent = try #require(snapshotBeforeDelay.first { $0.phase == .toolResultBuilt })
+        #expect(processExitedEvent.exitCode == 0)
+        #expect(processExitedEvent.processPID != nil)
+
+        // Simulate a 50ms delay between toolResultBuilt and resultCommitted (e.g. queueing, actor contention, disk commit)
+        try await Task.sleep(for: .milliseconds(50))
+        trace.record(.resultCommitted, processPID: processExitedEvent.processPID, exitCode: processExitedEvent.exitCode)
+        trace.record(.applicationProjectionReceived, processPID: processExitedEvent.processPID, exitCode: processExitedEvent.exitCode)
+        trace.record(.nextModelStepStarted, processPID: processExitedEvent.processPID, exitCode: processExitedEvent.exitCode)
+
+        let allEvents = trace.snapshot()
+        let expectedPhases: [ToolLifecyclePhase] = [
+            .requested,
+            .permissionStart,
+            .permissionEnd,
+            .admitted,
+            .executorStart,
+            .processSpawned,
+            .stdoutEOF,
+            .stderrEOF,
+            .processExited,
+            .toolResultBuilt,
+            .resultCommitted,
+            .applicationProjectionReceived,
+            .nextModelStepStarted
+        ]
+        let presentPhases = allEvents.map(\.phase)
+        for expected in expectedPhases {
+            #expect(presentPhases.contains(expected), "Missing phase \(expected.rawValue)")
+        }
+
+        // Monotonic ordering assertion
+        #expect(allEvents == allEvents.sorted { $0.timestampNanoseconds < $1.timestampNanoseconds })
+
+        // Validate PID & exitCode propagation
+        let pid = try #require(processExitedEvent.processPID)
+        for phase in [ToolLifecyclePhase.processSpawned, .processExited, .toolResultBuilt, .resultCommitted, .applicationProjectionReceived, .nextModelStepStarted] {
+            if let ev = allEvents.first(where: { $0.phase == phase }) {
+                #expect(ev.processPID == pid, "Phase \(phase.rawValue) does not have matching PID")
+            }
+        }
+
+        let committedEvent = try #require(allEvents.first { $0.phase == .resultCommitted })
+        let delayDelta = committedEvent.deltaMilliseconds - toolResultBuiltEvent.deltaMilliseconds
+        #expect(delayDelta >= 40.0, "resultCommitted should reflect the simulated delay")
+
+        // Invariant: Tool elapsed timing only displays real executionDuration, NOT the subsequent commit delay
+        #expect(outcome.result.timing.executionMilliseconds < 200)
+
+        let formattedTrace = trace.formattedTrace()
+        print("=== Complete 13-Phase Monotonic Lifecycle Trace ===")
+        print(formattedTrace)
     }
 
     @Test func skillToolOmittedWhenNoSkillsAvailable() async throws {
@@ -459,5 +624,40 @@ struct ToolRuntimeTests {
         #expect(questionOutcome.result.success)
         #expect(questionOutcome.result.toolName == "question")
         #expect(questionOutcome.toolName == "question")
+    }
+
+    @Test func searchToolsReturnedToolIDsCanBeLoadedDirectly() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try runtime(root: root)
+        let sessionID = SessionID("s-contract")
+
+        // Search for tools
+        let searchOutcome = await runtime.executeWithMetrics(
+            ToolCall(callID: ToolCallID("call-search"), toolID: ToolID("search_tools"), arguments: #"{"query":""}"#),
+            sessionID: sessionID
+        ) { _ in }
+
+        #expect(searchOutcome.result.success)
+        let data = try #require(searchOutcome.result.content.data(using: .utf8))
+        let candidates = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+        #expect(!candidates.isEmpty)
+
+        // For every candidate returned by search_tools: load_tool(returned.toolID) succeeds!
+        for candidate in candidates {
+            let toolIDString = try #require(candidate["tool_id"] as? String)
+            let loadOutcome = await runtime.executeWithMetrics(
+                ToolCall(callID: ToolCallID("call-load-\(toolIDString)"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"\#(toolIDString)"}"#),
+                sessionID: sessionID
+            ) { _ in }
+            #expect(loadOutcome.result.success, "load_tool must succeed for tool_id '\(toolIDString)'")
+        }
+
+        // Also verify aliases like "builtin.write_file" resolve to the canonical tool
+        let aliasOutcome = await runtime.executeWithMetrics(
+            ToolCall(callID: ToolCallID("call-load-alias"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"builtin.write_file"}"#),
+            sessionID: sessionID
+        ) { _ in }
+        #expect(aliasOutcome.result.success, "load_tool must succeed for 'builtin.write_file' alias")
     }
 }

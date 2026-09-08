@@ -27,7 +27,9 @@ public actor AgentRuntime {
     private let modelResolver: SubagentModelResolver
     private let scheduler: AgentRunScheduler
     private let limits: SubagentRuntimeLimits
-    private let behaviorProfile: AgentBehaviorProfile
+    private var behaviorProfile: AgentBehaviorProfile
+    private var behaviorInstructionsEnabled: Bool
+    private let behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let restoreScheduler: SessionRestoreScheduler?
     private let diagnostics: RuntimeDiagnosticsStore?
@@ -38,6 +40,8 @@ public actor AgentRuntime {
     private var runDeadlines: [AgentRunID: ExecutionDeadline] = [:]
     private var resultWaiters: [AgentRunID: [CheckedContinuation<SubagentResult, Error>]] = [:]
     private var shuttingDown = false
+    private let cacheController: ContextCacheController
+    private let maxAgentLoopSteps: Int
 
     init(
         store: any SessionStore,
@@ -54,12 +58,16 @@ public actor AgentRuntime {
         compactor: ContextCompactor = ContextCompactor(),
         budgetPlanner: ContextBudgetPlanner = ContextBudgetPlanner(),
         persistence: SQLitePersistenceStore? = nil,
+        cacheController: ContextCacheController? = nil,
         interactive: Bool = false,
         diagnosticsEnabled: Bool = false,
         modelResolver: SubagentModelResolver,
         limits: SubagentRuntimeLimits = SubagentRuntimeLimits(),
         scheduler: AgentRunScheduler? = nil,
         behaviorProfile: AgentBehaviorProfile = .build,
+        behaviorInstructionsEnabled: Bool = false,
+        behaviorSystemContext: @escaping @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String? = { _, _ in nil },
+        maxAgentLoopSteps: Int = 32,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
         diagnostics: RuntimeDiagnosticsStore? = nil
@@ -76,6 +84,7 @@ public actor AgentRuntime {
         self.projectScanner = projectScanner
         self.eventSink = eventSink
         self.compactor = compactor
+        self.cacheController = cacheController ?? ContextCacheController(contextPager: contextPager, scanner: projectScanner, compactor: compactor)
         self.budgetPlanner = budgetPlanner
         self.persistence = persistence
         self.interactive = interactive
@@ -84,6 +93,9 @@ public actor AgentRuntime {
         self.limits = limits
         self.scheduler = scheduler ?? AgentRunScheduler(limits: limits)
         self.behaviorProfile = behaviorProfile
+        self.behaviorInstructionsEnabled = behaviorInstructionsEnabled
+        self.behaviorSystemContext = behaviorSystemContext
+        self.maxAgentLoopSteps = maxAgentLoopSteps
         self.deadlinePolicy = deadlinePolicy
         self.restoreScheduler = restoreScheduler
         self.diagnostics = diagnostics
@@ -93,6 +105,7 @@ public actor AgentRuntime {
 
     public func createSession() async throws -> SessionID {
         let session = try await store.create(kind: .primary, parentSessionID: nil, rootSessionID: nil, spawnedByRunID: nil, spawnedByToolCallID: nil, title: nil)
+        await cacheController.resetSession(session.id)
         runtimes[session.id] = makeRuntime(for: session.id)
         await eventSink(.sessionCreated(session.id))
         return session.id
@@ -122,10 +135,11 @@ public actor AgentRuntime {
             if let profile = try await persistence.agentRunProfile(run.runID) { executionProfiles[run.runID] = profile }
             if let result = try await persistence.agentRunResult(run.runID) { results[run.runID] = result }
         }
-        for run in runs.values where !run.status.isTerminal {
+        for run in runs.values where run.status == .waitingForUser {
             guard !shuttingDown else { return }
             _ = try await runtime(for: run.sessionID, run: run)
         }
+        await restoreScheduler?.markReady()
     }
 
     public func shutdown() async {
@@ -166,6 +180,14 @@ public actor AgentRuntime {
         let run = try agentRun(runID)
         try requireSameTree(run, requester: requester)
         return run
+    }
+
+    public func resumeAgentRun(_ runID: AgentRunID) async throws -> AgentRunInfo {
+        let run = try agentRun(runID)
+        guard !run.status.isTerminal else { return run }
+        guard !shuttingDown else { throw CoreError(code: .notReady, message: "Agent Runtime 正在关闭") }
+        _ = try await runtime(for: run.sessionID, run: run)
+        return try agentRun(runID)
     }
 
     public func agentRunResult(_ runID: AgentRunID) throws -> SubagentResult {
@@ -214,7 +236,7 @@ public actor AgentRuntime {
         return node(root)
     }
 
-    public func sessionSnapshot(_ id: SessionID) async throws -> SessionSnapshot {
+    public func sessionSnapshot(_ id: SessionID) async throws -> LegacySessionSnapshot {
         try await store.session(id).toSnapshot()
     }
 
@@ -243,12 +265,33 @@ public actor AgentRuntime {
         await performanceStore.report(for: id)
     }
 
-    public func projectCache() async -> ProjectCacheDebugSnapshot {
+    public func currentBehaviorProfile() -> AgentBehaviorProfile { behaviorProfile }
+
+    public func setBehaviorProfile(_ profile: AgentBehaviorProfile) {
+        behaviorProfile = profile
+        behaviorInstructionsEnabled = true
+    }
+
+    public func projectCache(sessionID: SessionID? = nil) async -> ProjectCacheDebugSnapshot {
         let metrics = await contextPager.debugMetrics(projectRoot: projectScanner.root)
-        let derived = await compactor.cacheMetrics()
+        let derived = if let sessionID {
+            await compactor.cacheMetrics(sessionID: sessionID)
+        } else {
+            await compactor.cacheMetrics()
+        }
+        let sessionL2Pages = if let sessionID {
+            (await contextEngine.latestSnapshot(for: sessionID))?.metrics.projectPageCount ?? 0
+        } else {
+            metrics.l2Pages
+        }
+        let sessionL2Characters = if let sessionID {
+            (await contextEngine.latestSnapshot(for: sessionID))?.metrics.projectCharacterCount ?? 0
+        } else {
+            metrics.l2Characters
+        }
         return ProjectCacheDebugSnapshot(
-            l2Pages: metrics.l2Pages,
-            l2Characters: metrics.l2Characters,
+            l2Pages: sessionL2Pages,
+            l2Characters: sessionL2Characters,
             l2HitRate: metrics.l2Lookups == 0 ? nil : Double(metrics.l2Hits) / Double(metrics.l2Lookups),
             l3Pages: metrics.l3Pages,
             staleRebuilds: metrics.staleRebuilds,
@@ -265,6 +308,10 @@ public actor AgentRuntime {
             sessionL2DerivedHits: derived.l2Hits,
             sessionL2DerivedPromotions: derived.l2Promotions
         )
+    }
+
+    public func latestContextManifest(_ sessionID: SessionID) async -> ProviderContextManifest? {
+        await runtimes[sessionID]?.latestContextManifest
     }
 
     public func compact(_ sessionID: SessionID) async throws -> CompactSessionResponse {
@@ -328,18 +375,6 @@ public actor AgentRuntime {
         let prospectiveBudget = planner.plan(profile: prospectiveProfile, toolTokens: toolTokens)
         let initialMandatoryTokens = await contextEngine.initialMandatoryTokens(task: task, estimator: estimator)
 
-        logBudgetDiagnostic(
-            requestedContextWindow: requestedWindow,
-            endpointWindow: endpointProfile.contextWindowTokens,
-            effectiveWindow: effectiveWindow,
-            toolTokens: toolTokens,
-            outputReserve: prospectiveBudget.reservedOutputTokens,
-            fixedOverhead: budgetPlanner.policy.fixedOverheadTokens,
-            safetyMargin: budgetPlanner.policy.safetyMarginTokens,
-            hardInputLimit: prospectiveBudget.hardInputLimit,
-            initialMandatoryTokens: initialMandatoryTokens
-        )
-
         guard prospectiveBudget.hardInputLimit >= initialMandatoryTokens, prospectiveBudget.hardInputLimit > 0 else {
             throw CoreError(
                 code: .contextProfileNotViable,
@@ -394,8 +429,19 @@ public actor AgentRuntime {
         let targets = descendants ? runs.values.filter { isDescendant($0, of: runID) || $0.runID == runID }.map(\.runID) : [runID]
         for id in targets {
             await scheduler.cancel(id)
+            let cancelled = await ProviderActivityRegistry.shared.cancelRun(id)
+            for snapshot in cancelled {
+                await eventSink(.providerActivityChanged(snapshot))
+            }
             if let runtime = runtimes[runs[id]?.sessionID ?? SessionID("")] { await runtime.shutdown() }
             await finishRun(id, status: .cancelled, text: nil, usage: nil, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"))
+        }
+    }
+
+    public func cancelSession(_ sessionID: SessionID) async {
+        activeSessions.remove(sessionID)
+        if let runtime = runtimes[sessionID] {
+            await runtime.cancelCurrentTurn()
         }
     }
 
@@ -454,6 +500,7 @@ public actor AgentRuntime {
             compactor: compactor,
             budgetPlanner: budgetPlanner,
             persistence: persistence,
+            cacheController: cacheController,
             interactive: interactive,
             diagnosticsEnabled: diagnosticsEnabled,
             runID: run?.runID,
@@ -462,9 +509,17 @@ public actor AgentRuntime {
             rootSessionID: rootSessionID ?? sessionID,
             parentSessionID: run?.parentRunID.flatMap { runs[$0]?.sessionID },
             executionProfile: run.flatMap { executionProfiles[$0.runID] },
-            runObserver: { [weak self] status, text, usage, error in
+            systemContext: {
+                let profile = run.flatMap { executionProfiles[$0.runID]?.behaviorProfile } ?? .build
+                let exec = run.flatMap { executionProfiles[$0.runID] }
+                let isFullAccess = exec?.permissionProfile == "fullAccess"
+                return (behaviorInstructionsEnabled || profile != .build || isFullAccess) ? behaviorSystemContext(profile, exec) : behaviorSystemContext(.build, nil)
+            }(),
+            systemContextAtBeginning: behaviorInstructionsEnabled || run.flatMap { executionProfiles[$0.runID]?.behaviorProfile }.map { $0 != .build } ?? false,
+            maxAgentLoopSteps: maxAgentLoopSteps,
+            runObserver: { [weak self] status, text, usage, error, terminalTrace in
                 guard let run else { return }
-                await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error)
+                await self?.finishRun(run.runID, status: status, text: text, usage: usage, error: error, terminalTrace: terminalTrace)
             },
             deadlinePolicy: deadlinePolicy,
             restoreScheduler: restoreScheduler,
@@ -517,8 +572,7 @@ public actor AgentRuntime {
     private func runChild(runID: AgentRunID, task: String) async {
         guard let run = runs[runID] else { return }
         do {
-            guard let deadline = runDeadlines[runID] else { throw CoreError(code: .commandTimedOut, message: "Subagent deadline missing") }
-            try await ExecutionWatchdog.run(deadline) { [weak self] in try await self?.consumeChildTurn(run: run, task: task) }
+            try await consumeChildTurn(run: run, task: task)
         } catch let error as CoreError {
             await finishRun(runID, status: [.commandTimedOut, .idleTimedOut].contains(error.code) ? .timedOut : .failed, text: nil, usage: nil, error: error)
         } catch {
@@ -531,11 +585,51 @@ public actor AgentRuntime {
         for try await _ in stream.chunks {}
     }
 
-    private func finishRun(_ runID: AgentRunID, status: AgentRunStatus, text: String?, usage: ModelUsage?, error: CoreError?) async {
+    private func finishRun(_ runID: AgentRunID, status: AgentRunStatus, text: String?, usage: ModelUsage?, error: CoreError?, terminalTrace: AgentTerminalTrace? = nil) async {
         guard let old = runs[runID], !old.status.isTerminal else { return }
+        if status.isTerminal {
+            await toolRuntime.resetRun(runID)
+        }
         let usage = AgentRunUsage(model: usage, elapsedMilliseconds: old.startedAt.map { Date().timeIntervalSince($0) * 1_000 })
-        let run = AgentRunInfo(runID: old.runID, sessionID: old.sessionID, projectID: old.projectID, parentRunID: old.parentRunID, rootRunID: old.rootRunID, agentKind: old.agentKind, status: status, modelSelection: old.modelSelection, startedAt: old.startedAt, finishedAt: status.isTerminal ? .now : nil, latestActivityAt: .now, error: error, usage: usage, title: old.title)
-        let result = status.isTerminal ? SubagentResult(childSessionID: run.sessionID, runID: runID, status: status, finalText: text, usage: usage, error: error) : nil
+        let trace = terminalTrace ?? AgentTerminalTrace(
+            runID: old.runID,
+            sessionID: old.sessionID,
+            lastProviderRequestID: nil,
+            finishReason: nil,
+            lastToolCallID: nil,
+            terminalTransition: "\(old.status.rawValue) -> \(status.rawValue)",
+            terminalReason: status == .completed ? .completed : status == .cancelled ? .userCancelled : status == .timedOut ? .deadlineExceeded : .runtimeFailure,
+            transitionSource: "AgentRuntime.finishRun",
+            explanation: error?.message ?? (status == .completed ? "运行完成" : "运行终止")
+        )
+        let run = AgentRunInfo(
+            runID: old.runID,
+            sessionID: old.sessionID,
+            projectID: old.projectID,
+            parentRunID: old.parentRunID,
+            rootRunID: old.rootRunID,
+            agentKind: old.agentKind,
+            status: status,
+            modelSelection: old.modelSelection,
+            startedAt: old.startedAt,
+            finishedAt: status.isTerminal ? .now : nil,
+            latestActivityAt: .now,
+            error: error,
+            usage: usage,
+            title: old.title,
+            terminalReason: status.isTerminal ? trace.terminalReason : nil,
+            terminalTrace: status.isTerminal ? trace : nil
+        )
+        let result = status.isTerminal ? SubagentResult(
+            childSessionID: run.sessionID,
+            runID: runID,
+            status: status,
+            finalText: text,
+            usage: usage,
+            error: error,
+            terminalReason: trace.terminalReason,
+            terminalTrace: trace
+        ) : nil
         do {
             if let result {
                 try await persistence?.saveTerminalAgentRun(run, result: result, profile: executionProfiles[runID])
@@ -654,34 +748,7 @@ public actor AgentRuntime {
         return SubagentExecutionProfile(modelSelection: profile.modelSelection, permissionProfile: permission?.rawValue, toolProfile: tools, budgetProfile: budget ?? parent?.budgetProfile, contextProfile: context ?? parent?.contextProfile, maxSteps: profile.maxSteps, timeoutSeconds: profile.timeoutSeconds)
     }
 
-    private func logBudgetDiagnostic(
-        requestedContextWindow: Int?,
-        endpointWindow: Int,
-        effectiveWindow: Int,
-        toolTokens: Int,
-        outputReserve: Int,
-        fixedOverhead: Int,
-        safetyMargin: Int,
-        hardInputLimit: Int,
-        initialMandatoryTokens: Int
-    ) {
-        guard diagnosticsEnabled else { return }
-        let fields = [
-            "requestedContextWindow=\(requestedContextWindow.map(String.init) ?? "omitted")",
-            "endpointWindow=\(endpointWindow)",
-            "effectiveWindow=\(effectiveWindow)",
-            "toolTokens=\(toolTokens)",
-            "outputReserve=\(outputReserve)",
-            "fixedOverhead=\(fixedOverhead)",
-            "safetyMargin=\(safetyMargin)",
-            "hardInputLimit=\(hardInputLimit)",
-            "initialMandatoryTokens=\(initialMandatoryTokens)"
-        ]
-        FileHandle.standardError.write(Data(("[AgentRuntime] spawn context budget: " + fields.joined(separator: " ") + "\n").utf8))
-    }
-
     private func logDiagnostic(_ message: String) {
         guard diagnosticsEnabled else { return }
-        FileHandle.standardError.write(Data("[AgentRuntime] \(message)\n".utf8))
     }
 }

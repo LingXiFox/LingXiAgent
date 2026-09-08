@@ -125,8 +125,9 @@ public struct ResolvedModelEndpoint: Sendable, Equatable {
     public let wireProtocol: ModelWireProtocol
     public let contextProfile: ModelContextProfile
     public let capabilities: ModelCapabilities
+    public let rateLimits: ProviderRateLimits
 
-    public init(providerID: String, productID: String? = nil, endpointID: String? = nil, accountID: String? = nil, profileID: String? = nil, modelID: ModelID, baseURL: URL?, wireProtocol: ModelWireProtocol, contextProfile: ModelContextProfile = ModelContextProfile(), capabilities: ModelCapabilities = ModelCapabilities()) {
+    public init(providerID: String, productID: String? = nil, endpointID: String? = nil, accountID: String? = nil, profileID: String? = nil, modelID: ModelID, baseURL: URL?, wireProtocol: ModelWireProtocol, contextProfile: ModelContextProfile = ModelContextProfile(), capabilities: ModelCapabilities = ModelCapabilities(), rateLimits: ProviderRateLimits = ProviderRateLimits()) {
         self.providerID = providerID
         self.productID = productID ?? providerID
         self.endpointID = endpointID
@@ -137,6 +138,7 @@ public struct ResolvedModelEndpoint: Sendable, Equatable {
         self.wireProtocol = wireProtocol
         self.contextProfile = contextProfile
         self.capabilities = capabilities
+        self.rateLimits = rateLimits
     }
 }
 
@@ -146,12 +148,14 @@ public struct ModelCapabilities: Codable, Sendable, Equatable {
     public let reasoning: Bool?
     public let vision: Bool?
     public let structuredOutput: Bool?
+    public let reasoningCapability: ReasoningCapability?
 
-    public init(toolCalling: Bool? = nil, parallelToolCalling: Bool? = nil, reasoning: Bool? = nil, vision: Bool? = nil, structuredOutput: Bool? = nil) {
+    public init(toolCalling: Bool? = nil, parallelToolCalling: Bool? = nil, reasoning: Bool? = nil, vision: Bool? = nil, structuredOutput: Bool? = nil, reasoningCapability: ReasoningCapability? = nil) {
         self.toolCalling = toolCalling
         self.parallelToolCalling = parallelToolCalling
         self.reasoning = reasoning
         self.vision = vision
         self.structuredOutput = structuredOutput
+        self.reasoningCapability = reasoningCapability
     }
 }

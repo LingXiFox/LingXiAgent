@@ -230,6 +230,52 @@ struct ConfigurationStoreTests {
             #expect(try permissions(at: root.appendingPathComponent(filename)) == 0o600)
         }
     }
+
+    @Test func vaultRefusesInsecurePersistenceWithoutPassphraseAndNeverWritesMasterKey() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try FileCredentialStore(dataRoot: root, passphrase: nil)
+
+        // Attempting to persist without passphrase must fail-closed
+        await #expect(throws: ConfigurationValidationError.self) {
+            try await store.setSecret("super-secret", for: CredentialRef("test-ref"))
+        }
+
+        // Must never create a plaintext .master_key in dataRoot
+        let masterKeyPath = root.appendingPathComponent(".master_key")
+        #expect(!FileManager.default.fileExists(atPath: masterKeyPath.path))
+
+        // Must not leave an unencrypted vault
+        let vaultPath = root.appendingPathComponent("credentials.vault")
+        #expect(!FileManager.default.fileExists(atPath: vaultPath.path))
+    }
+
+    @Test func platformSecureCredentialStoreRejectsInsecurePersistenceWithoutPassphrase() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        _ = try PlatformSecureCredentialStore(dataRoot: root, passphrase: nil, allowMemoryOnlyFallback: false)
+
+        // Must never create a plaintext .master_key in dataRoot
+        let masterKeyPath = root.appendingPathComponent(".master_key")
+        #expect(!FileManager.default.fileExists(atPath: masterKeyPath.path))
+    }
+
+    @Test func memoryOnlyStorePreservesSecretsWithoutTouchingDisk() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try FileCredentialStore(dataRoot: root, isMemoryOnly: true)
+        try await store.setSecret("transient-secret", for: CredentialRef("temp-token"))
+
+        let read = try await store.secret(for: CredentialRef("temp-token"))
+        #expect(read == "transient-secret")
+
+        // No files written to disk
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        #expect(files.isEmpty)
+    }
     #endif
 
     private func temporaryRoot() -> URL {

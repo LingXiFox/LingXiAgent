@@ -34,12 +34,82 @@ final class TurnProfiler: @unchecked Sendable {
     private var sessionL2DerivedHits = 0
     private var sessionL2DerivedPromotions = 0
     private var derivedPageIns = 0
+    private var providerCalls: [ProviderCallTrace] = []
 
     init(sessionID: SessionID, enabled: Bool) {
         self.sessionID = sessionID
         self.enabled = enabled
         started = clock.now
     }
+
+    func recordProviderCall(_ trace: ProviderCallTrace) {
+        providerCalls.append(trace)
+    }
+
+    func updateLastProviderCallUsage(_ usage: ModelUsage) {
+        guard !providerCalls.isEmpty else { return }
+        providerCalls[providerCalls.count - 1] = providerCalls[providerCalls.count - 1].updating(actualUsage: usage)
+    }
+
+    func updateLastProviderCallRequestID(_ providerRequestID: String) {
+        guard !providerCalls.isEmpty else { return }
+        let last = providerCalls[providerCalls.count - 1]
+        providerCalls[providerCalls.count - 1] = ProviderCallTrace(
+            sessionID: last.sessionID,
+            userTurnID: last.userTurnID,
+            runID: last.runID,
+            parentRunID: last.parentRunID,
+            providerRequestID: providerRequestID,
+            sequence: last.sequence,
+            reason: last.reason,
+            model: last.model,
+            estimatedPromptTokens: last.estimatedPromptTokens,
+            actualUsage: last.actualUsage,
+            toolSchemaTokens: last.toolSchemaTokens,
+            toolCount: last.toolCount,
+            l1Tokens: last.l1Tokens,
+            systemPinnedTokens: last.systemPinnedTokens,
+            currentTurnTokens: last.currentTurnTokens,
+            providerFramingTokens: last.providerFramingTokens,
+            retryAttempt: last.retryAttempt,
+            retryCount: last.retryCount,
+            rateWaitMilliseconds: last.rateWaitMilliseconds,
+            rateLimit429Count: last.rateLimit429Count,
+            timestamp: last.timestamp,
+            cacheTelemetry: last.cacheTelemetry
+        )
+    }
+
+    func updateLastProviderCallRateMetrics(_ metrics: ProviderRateMetrics) {
+        guard !providerCalls.isEmpty else { return }
+        let last = providerCalls[providerCalls.count - 1]
+        providerCalls[providerCalls.count - 1] = ProviderCallTrace(
+            sessionID: last.sessionID,
+            userTurnID: last.userTurnID,
+            runID: last.runID,
+            parentRunID: last.parentRunID,
+            providerRequestID: last.providerRequestID,
+            sequence: last.sequence,
+            reason: last.reason,
+            model: last.model,
+            estimatedPromptTokens: last.estimatedPromptTokens,
+            actualUsage: last.actualUsage,
+            toolSchemaTokens: last.toolSchemaTokens,
+            toolCount: last.toolCount,
+            l1Tokens: last.l1Tokens,
+            systemPinnedTokens: last.systemPinnedTokens,
+            currentTurnTokens: last.currentTurnTokens,
+            providerFramingTokens: last.providerFramingTokens,
+            retryAttempt: metrics.retryCount,
+            retryCount: metrics.retryCount,
+            rateWaitMilliseconds: metrics.rateWaitMilliseconds,
+            rateLimit429Count: metrics.rateLimit429Count,
+            timestamp: last.timestamp,
+            cacheTelemetry: last.cacheTelemetry
+        )
+    }
+
+    var recordedProviderCalls: [ProviderCallTrace] { providerCalls }
 
     func recordContext(_ snapshot: L1ContextSnapshot, build: Duration) {
         guard enabled else { return }
@@ -239,7 +309,9 @@ final class TurnProfiler: @unchecked Sendable {
             derivedL3Hits: derivedL3Hits,
             sessionL2DerivedHits: sessionL2DerivedHits,
             sessionL2DerivedPromotions: sessionL2DerivedPromotions,
-            derivedPageIns: derivedPageIns
+            derivedPageIns: derivedPageIns,
+            providerCalls: providerCalls,
+            cacheTelemetry: ProviderCacheTelemetry.aggregate(providerCalls.compactMap(\.cacheTelemetry))
         )
     }
 }
@@ -247,11 +319,24 @@ final class TurnProfiler: @unchecked Sendable {
 public actor PerformanceStore {
     public let enabled: Bool
     private var reports: [SessionID: TurnPerformanceReport] = [:]
+    private var providerCallsBySession: [SessionID: [ProviderCallTrace]] = [:]
 
     public init(enabled: Bool = false) {
         self.enabled = enabled
     }
 
-    public func save(_ report: TurnPerformanceReport) { reports[report.sessionID] = report }
+    public func save(_ report: TurnPerformanceReport) {
+        reports[report.sessionID] = report
+        providerCallsBySession[report.sessionID] = report.providerCalls
+    }
+
     public func report(for sessionID: SessionID) -> TurnPerformanceReport? { reports[sessionID] }
+
+    public func recordProviderCalls(sessionID: SessionID, calls: [ProviderCallTrace]) {
+        providerCallsBySession[sessionID] = calls
+    }
+
+    public func providerCalls(for sessionID: SessionID) -> [ProviderCallTrace] {
+        providerCallsBySession[sessionID] ?? reports[sessionID]?.providerCalls ?? []
+    }
 }

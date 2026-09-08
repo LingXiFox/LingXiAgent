@@ -32,5 +32,21 @@
     },
     "interactive": false
   },
+  "context": {
+    "addressableBudget": 1048576,
+    "l1": {
+      "target": 220000,
+      "softLimit": 235000,
+      "hardLimit": 250000
+    },
+    "l2": {
+      "max": 350000
+    },
+    "l3": {
+      "useRemainingBudget": true
+    },
+    "reserve": 22000,
+    "economicThreshold": 272000
+  },
   "version": 1
 }

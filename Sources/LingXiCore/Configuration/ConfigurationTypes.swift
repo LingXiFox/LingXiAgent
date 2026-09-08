@@ -40,8 +40,9 @@ public struct AgentSettings: Codable, Sendable, Equatable {
     public var l1ProjectMaxCharacters: Int
     public var preferredActiveTokens: Int?
     public var codeIntelligenceEnabled: Bool
+    public var maxAgentLoopSteps: Int
 
-    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false) {
+    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false, maxAgentLoopSteps: Int = 32) {
         self.maxConcurrentSubagents = maxConcurrentSubagents
         self.maxSubagentDepth = maxSubagentDepth
         self.maxTotalRunsPerRootRun = maxTotalRunsPerRootRun
@@ -53,9 +54,10 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         self.l1ProjectMaxCharacters = l1ProjectMaxCharacters
         self.preferredActiveTokens = preferredActiveTokens
         self.codeIntelligenceEnabled = codeIntelligenceEnabled
+        self.maxAgentLoopSteps = maxAgentLoopSteps
     }
 
-    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens, codeIntelligenceEnabled }
+    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens, codeIntelligenceEnabled, maxAgentLoopSteps }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -70,6 +72,7 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         l1ProjectMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l1ProjectMaxCharacters) ?? 32 * 1024
         preferredActiveTokens = try values.decodeIfPresent(Int.self, forKey: .preferredActiveTokens)
         codeIntelligenceEnabled = try values.decodeIfPresent(Bool.self, forKey: .codeIntelligenceEnabled) ?? false
+        maxAgentLoopSteps = try values.decodeIfPresent(Int.self, forKey: .maxAgentLoopSteps) ?? 32
     }
 }
 
@@ -94,30 +97,205 @@ public struct RuntimeSettings: Codable, Sendable, Equatable {
     }
 }
 
+public struct ContextCacheL1Configuration: Codable, Sendable, Equatable {
+    public var target: Int
+    public var softLimit: Int
+    public var hardLimit: Int
+
+    public init(target: Int = 220_000, softLimit: Int = 235_000, hardLimit: Int = 250_000) {
+        self.target = target
+        self.softLimit = softLimit
+        self.hardLimit = hardLimit
+    }
+
+    private enum CodingKeys: String, CodingKey { case target, softLimit, hardLimit }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        target = try values.decodeIfPresent(Int.self, forKey: .target) ?? 220_000
+        softLimit = try values.decodeIfPresent(Int.self, forKey: .softLimit) ?? 235_000
+        hardLimit = try values.decodeIfPresent(Int.self, forKey: .hardLimit) ?? 250_000
+    }
+}
+
+public struct ContextCacheL2Configuration: Codable, Sendable, Equatable {
+    public var max: Int
+
+    public init(max: Int = 350_000) {
+        self.max = max
+    }
+
+    private enum CodingKeys: String, CodingKey { case max }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        max = try values.decodeIfPresent(Int.self, forKey: .max) ?? 350_000
+    }
+}
+
+public struct ContextCacheL3Configuration: Codable, Sendable, Equatable {
+    public var max: Int?
+    public var useRemainingBudget: Bool
+
+    public init(max: Int? = nil, useRemainingBudget: Bool = true) {
+        self.max = max
+        self.useRemainingBudget = useRemainingBudget
+    }
+
+    private enum CodingKeys: String, CodingKey { case max, useRemainingBudget }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        max = try values.decodeIfPresent(Int.self, forKey: .max)
+        useRemainingBudget = try values.decodeIfPresent(Bool.self, forKey: .useRemainingBudget) ?? true
+    }
+}
+
+public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
+    public var addressableBudget: Int
+    public var l1: ContextCacheL1Configuration
+    public var l2: ContextCacheL2Configuration
+    public var l3: ContextCacheL3Configuration
+    public var reserve: Int
+    public var economicThreshold: Int?
+
+    public init(
+        addressableBudget: Int = 1_048_576,
+        l1: ContextCacheL1Configuration = ContextCacheL1Configuration(),
+        l2: ContextCacheL2Configuration = ContextCacheL2Configuration(),
+        l3: ContextCacheL3Configuration = ContextCacheL3Configuration(),
+        reserve: Int = 22_000,
+        economicThreshold: Int? = 272_000
+    ) {
+        self.addressableBudget = addressableBudget
+        self.l1 = l1
+        self.l2 = l2
+        self.l3 = l3
+        self.reserve = reserve
+        self.economicThreshold = economicThreshold
+    }
+
+    private enum CodingKeys: String, CodingKey { case addressableBudget, l1, l2, l3, reserve, economicThreshold }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        addressableBudget = try values.decodeIfPresent(Int.self, forKey: .addressableBudget) ?? 1_048_576
+        l1 = try values.decodeIfPresent(ContextCacheL1Configuration.self, forKey: .l1) ?? ContextCacheL1Configuration()
+        l2 = try values.decodeIfPresent(ContextCacheL2Configuration.self, forKey: .l2) ?? ContextCacheL2Configuration()
+        l3 = try values.decodeIfPresent(ContextCacheL3Configuration.self, forKey: .l3) ?? ContextCacheL3Configuration()
+        reserve = try values.decodeIfPresent(Int.self, forKey: .reserve) ?? 22_000
+        economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold) ?? 272_000
+    }
+}
+
+public enum ContextPolicyResolver {
+    public static func resolve(
+        global: ContextCacheConfiguration = ContextCacheConfiguration(),
+        modelWindow: Int,
+        providerOverride: ContextCacheConfiguration? = nil,
+        modelOverride: ContextCacheConfiguration? = nil,
+        modelEconomicThreshold: Int? = nil
+    ) throws -> EffectiveContextPolicy {
+        let effectiveBudget = modelOverride?.addressableBudget ?? providerOverride?.addressableBudget ?? global.addressableBudget
+        let rawReserve = modelOverride?.reserve ?? providerOverride?.reserve ?? global.reserve
+        let effectiveReserve = min(rawReserve, max(128, modelWindow / 10))
+        let effectiveEconomicThreshold = modelEconomicThreshold ?? modelOverride?.economicThreshold ?? providerOverride?.economicThreshold ?? global.economicThreshold
+
+        let rawL1Target = modelOverride?.l1.target ?? providerOverride?.l1.target ?? global.l1.target
+        let rawL1Soft = modelOverride?.l1.softLimit ?? providerOverride?.l1.softLimit ?? global.l1.softLimit
+        let rawL1Hard = modelOverride?.l1.hardLimit ?? providerOverride?.l1.hardLimit ?? global.l1.hardLimit
+        let rawL2Max = modelOverride?.l2.max ?? providerOverride?.l2.max ?? global.l2.max
+
+        guard rawL1Target <= rawL1Soft else {
+            throw ConfigurationValidationError(path: "$.context.l1", reason: "L1 target (\(rawL1Target)) must be <= softLimit (\(rawL1Soft))")
+        }
+        guard rawL1Soft <= rawL1Hard else {
+            throw ConfigurationValidationError(path: "$.context.l1", reason: "L1 softLimit (\(rawL1Soft)) must be <= hardLimit (\(rawL1Hard))")
+        }
+        guard rawL2Max >= 0 else {
+            throw ConfigurationValidationError(path: "$.context.l2.max", reason: "L2 max (\(rawL2Max)) must be >= 0")
+        }
+        guard effectiveBudget >= rawL1Target + rawL2Max else {
+            throw ConfigurationValidationError(path: "$.context.addressableBudget", reason: "Addressable budget (\(effectiveBudget)) is insufficient for L1 target (\(rawL1Target)) and L2 max (\(rawL2Max))")
+        }
+
+        if modelOverride != nil && rawL1Hard + effectiveReserve > modelWindow {
+            throw ConfigurationValidationError(path: "$.context.l1.hardLimit", reason: "L1 hardLimit + reserve (\(rawL1Hard + effectiveReserve)) exceeds model physical window (\(modelWindow))")
+        }
+
+        let adaptedHard = min(rawL1Hard, max(512, modelWindow - effectiveReserve))
+        let adaptedSoft = min(rawL1Soft, max(256, Int(Double(adaptedHard) * 0.94)))
+        let adaptedTarget = min(rawL1Target, max(128, Int(Double(adaptedHard) * 0.88)))
+        let adaptedBudget = effectiveBudget
+
+        let useRemaining = modelOverride?.l3.useRemainingBudget ?? providerOverride?.l3.useRemainingBudget ?? global.l3.useRemainingBudget
+        let explicitL3Max = modelOverride?.l3.max ?? providerOverride?.l3.max ?? global.l3.max
+
+        let l3Capacity: Int
+        if let explicitL3Max {
+            l3Capacity = max(0, explicitL3Max)
+        } else if useRemaining {
+            l3Capacity = max(0, adaptedBudget - adaptedTarget - rawL2Max)
+        } else {
+            l3Capacity = 0
+        }
+
+        guard adaptedBudget >= adaptedTarget + rawL2Max else {
+            throw ConfigurationValidationError(path: "$.context.addressableBudget", reason: "Addressable budget (\(adaptedBudget)) is insufficient for L1 target (\(adaptedTarget)) and L2 max (\(rawL2Max))")
+        }
+
+        return EffectiveContextPolicy(
+            addressableBudget: adaptedBudget,
+            modelWindow: modelWindow,
+            economicThreshold: effectiveEconomicThreshold,
+            reserve: effectiveReserve,
+            l1Target: adaptedTarget,
+            l1SoftLimit: adaptedSoft,
+            l1HardLimit: adaptedHard,
+            l2Max: rawL2Max,
+            l3Capacity: l3Capacity,
+            l3Enabled: l3Capacity > 0
+        )
+    }
+}
+
 public struct CoreConfiguration: Codable, Sendable, Equatable {
     public var schema: String
     public var version: Int
     public var core: CoreSettings
     public var agent: AgentSettings
     public var runtime: RuntimeSettings
+    public var context: ContextCacheConfiguration
 
     public init(
         schema: String = ConfigurationSchemaURI.core,
         version: Int = ConfigurationFormat.currentVersion,
         core: CoreSettings = CoreSettings(),
         agent: AgentSettings = AgentSettings(),
-        runtime: RuntimeSettings = RuntimeSettings()
+        runtime: RuntimeSettings = RuntimeSettings(),
+        context: ContextCacheConfiguration = ContextCacheConfiguration()
     ) {
         self.schema = schema
         self.version = version
         self.core = core
         self.agent = agent
         self.runtime = runtime
+        self.context = context
     }
 
     enum CodingKeys: String, CodingKey {
         case schema = "$schema"
-        case version, core, agent, runtime
+        case version, core, agent, runtime, context
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try values.decodeIfPresent(String.self, forKey: .schema) ?? ConfigurationSchemaURI.core
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? ConfigurationFormat.currentVersion
+        core = try values.decodeIfPresent(CoreSettings.self, forKey: .core) ?? CoreSettings()
+        agent = try values.decodeIfPresent(AgentSettings.self, forKey: .agent) ?? AgentSettings()
+        runtime = try values.decodeIfPresent(RuntimeSettings.self, forKey: .runtime) ?? RuntimeSettings()
+        context = try values.decodeIfPresent(ContextCacheConfiguration.self, forKey: .context) ?? ContextCacheConfiguration()
     }
 }
 
@@ -174,8 +352,12 @@ public struct PublicModelConfiguration: Codable, Sendable, Equatable {
     public var parallelToolCalling: Bool
     public var vision: Bool
     public var structuredOutput: Bool
+    public var economicThreshold: Int?
+    public var context: ContextCacheConfiguration?
+    public var rateLimits: ProviderRateLimits
+    public var reasoningCapability: ReasoningCapability?
 
-    public init(name: String, reasoning: Bool = false, limit: PublicModelLimit, toolCalling: Bool = true, parallelToolCalling: Bool = true, vision: Bool = false, structuredOutput: Bool = false) {
+    public init(name: String, reasoning: Bool = false, limit: PublicModelLimit, toolCalling: Bool = true, parallelToolCalling: Bool = true, vision: Bool = false, structuredOutput: Bool = false, economicThreshold: Int? = nil, context: ContextCacheConfiguration? = nil, rateLimits: ProviderRateLimits = ProviderRateLimits(), reasoningCapability: ReasoningCapability? = nil) {
         self.name = name
         self.reasoning = reasoning
         self.limit = limit
@@ -183,9 +365,13 @@ public struct PublicModelConfiguration: Codable, Sendable, Equatable {
         self.parallelToolCalling = parallelToolCalling
         self.vision = vision
         self.structuredOutput = structuredOutput
+        self.economicThreshold = economicThreshold
+        self.context = context
+        self.rateLimits = rateLimits
+        self.reasoningCapability = reasoningCapability
     }
 
-    private enum CodingKeys: String, CodingKey { case name, reasoning, limit, toolCalling, parallelToolCalling, vision, structuredOutput }
+    private enum CodingKeys: String, CodingKey { case name, reasoning, limit, toolCalling, parallelToolCalling, vision, structuredOutput, economicThreshold, context, rateLimits, reasoningCapability }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -196,6 +382,10 @@ public struct PublicModelConfiguration: Codable, Sendable, Equatable {
         parallelToolCalling = try values.decodeIfPresent(Bool.self, forKey: .parallelToolCalling) ?? true
         vision = try values.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         structuredOutput = try values.decodeIfPresent(Bool.self, forKey: .structuredOutput) ?? false
+        economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold)
+        context = try values.decodeIfPresent(ContextCacheConfiguration.self, forKey: .context)
+        rateLimits = try values.decodeIfPresent(ProviderRateLimits.self, forKey: .rateLimits) ?? ProviderRateLimits()
+        reasoningCapability = try values.decodeIfPresent(ReasoningCapability.self, forKey: .reasoningCapability)
     }
 }
 
@@ -224,13 +414,14 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
     public var endpointOverride: String?
     public var configOverrides: [String: String]
     public var accountType: ProviderAccountType
+    public var context: ContextCacheConfiguration?
     public var createdAt: Date
     public var updatedAt: Date
 
     public var productID: String { providerID }
 
     private enum CodingKeys: String, CodingKey {
-        case id, providerID, displayName, enabled, authentication, headerName, credential, endpointOverride, configOverrides, accountType, createdAt, updatedAt
+        case id, providerID, displayName, enabled, authentication, headerName, credential, endpointOverride, configOverrides, accountType, context, createdAt, updatedAt
     }
 
     public init(
@@ -244,6 +435,7 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
         endpointOverride: String? = nil,
         configOverrides: [String: String] = [:],
         accountType: ProviderAccountType = .apiKey,
+        context: ContextCacheConfiguration? = nil,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -257,6 +449,7 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
         self.endpointOverride = endpointOverride
         self.configOverrides = configOverrides
         self.accountType = accountType
+        self.context = context
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -273,6 +466,7 @@ public struct ProviderAccountConfiguration: Codable, Sendable, Equatable {
         endpointOverride = try values.decodeIfPresent(String.self, forKey: .endpointOverride)
         configOverrides = try values.decodeIfPresent([String: String].self, forKey: .configOverrides) ?? [:]
         accountType = try values.decodeIfPresent(ProviderAccountType.self, forKey: .accountType) ?? .apiKey
+        context = try values.decodeIfPresent(ContextCacheConfiguration.self, forKey: .context)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         updatedAt = try values.decode(Date.self, forKey: .updatedAt)
     }
@@ -284,13 +478,15 @@ public struct ModelCapabilitiesConfiguration: Codable, Sendable, Equatable {
     public var reasoning: Bool
     public var vision: Bool
     public var structuredOutput: Bool
+    public var reasoningCapability: ReasoningCapability?
 
-    public init(toolCalling: Bool = false, parallelToolCalling: Bool = false, reasoning: Bool = false, vision: Bool = false, structuredOutput: Bool = false) {
+    public init(toolCalling: Bool = false, parallelToolCalling: Bool = false, reasoning: Bool = false, vision: Bool = false, structuredOutput: Bool = false, reasoningCapability: ReasoningCapability? = nil) {
         self.toolCalling = toolCalling
         self.parallelToolCalling = parallelToolCalling
         self.reasoning = reasoning
         self.vision = vision
         self.structuredOutput = structuredOutput
+        self.reasoningCapability = reasoningCapability
     }
 }
 
@@ -307,6 +503,9 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
     public var endpointID: String?
     public var catalogSource: ModelCatalogSource
     public var verificationStatus: ProviderVerificationStatus
+    public var economicThreshold: Int?
+    public var context: ContextCacheConfiguration?
+    public var rateLimits: ProviderRateLimits
 
     public init(
         id: String,
@@ -320,7 +519,10 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
         remoteStateEnabled: Bool = false,
         endpointID: String? = nil,
         catalogSource: ModelCatalogSource = .userConfiguration,
-        verificationStatus: ProviderVerificationStatus = .unverified
+        verificationStatus: ProviderVerificationStatus = .unverified,
+        economicThreshold: Int? = nil,
+        context: ContextCacheConfiguration? = nil,
+        rateLimits: ProviderRateLimits = ProviderRateLimits()
     ) {
         self.id = id
         self.providerID = providerID
@@ -334,10 +536,13 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
         self.endpointID = endpointID
         self.catalogSource = catalogSource
         self.verificationStatus = verificationStatus
+        self.economicThreshold = economicThreshold
+        self.context = context
+        self.rateLimits = rateLimits
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, providerID, modelID, displayName, wireProtocol, contextWindow, maxOutputTokens, capabilities, remoteStateEnabled, endpointID, catalogSource, verificationStatus
+        case id, providerID, modelID, displayName, wireProtocol, contextWindow, maxOutputTokens, capabilities, remoteStateEnabled, endpointID, catalogSource, verificationStatus, economicThreshold, context, rateLimits
     }
 
     public init(from decoder: Decoder) throws {
@@ -354,6 +559,9 @@ public struct ModelProfileConfiguration: Codable, Sendable, Equatable {
         endpointID = try values.decodeIfPresent(String.self, forKey: .endpointID)
         catalogSource = try values.decodeIfPresent(ModelCatalogSource.self, forKey: .catalogSource) ?? .userConfiguration
         verificationStatus = try values.decodeIfPresent(ProviderVerificationStatus.self, forKey: .verificationStatus) ?? .unverified
+        economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold)
+        context = try values.decodeIfPresent(ContextCacheConfiguration.self, forKey: .context)
+        rateLimits = try values.decodeIfPresent(ProviderRateLimits.self, forKey: .rateLimits) ?? ProviderRateLimits()
     }
 }
 
@@ -549,8 +757,9 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
                     wireProtocol: wire,
                     contextWindow: definition.limit.context,
                     maxOutputTokens: definition.limit.output,
-                    capabilities: ModelCapabilitiesConfiguration(toolCalling: definition.toolCalling, parallelToolCalling: definition.parallelToolCalling, reasoning: definition.reasoning, vision: definition.vision, structuredOutput: definition.structuredOutput),
-                    endpointID: nil
+                    capabilities: ModelCapabilitiesConfiguration(toolCalling: definition.toolCalling, parallelToolCalling: definition.parallelToolCalling, reasoning: definition.reasoning, vision: definition.vision, structuredOutput: definition.structuredOutput, reasoningCapability: definition.reasoningCapability),
+                    endpointID: nil,
+                    rateLimits: definition.rateLimits
                 ))
             }
         }
@@ -580,7 +789,8 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
                     toolCalling: profile.capabilities.toolCalling,
                     parallelToolCalling: profile.capabilities.parallelToolCalling,
                     vision: profile.capabilities.vision,
-                    structuredOutput: profile.capabilities.structuredOutput
+                    structuredOutput: profile.capabilities.structuredOutput,
+                    rateLimits: profile.rateLimits
                 ))
             })
             result[custom.id] = PublicProviderConfiguration(
@@ -598,7 +808,7 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
                 adapter: providerProfiles.first.map(adapterName) ?? "openai-compatible",
                 options: PublicProviderOptions(baseURL: baseURL, apiKey: credentialSource(account.credential), apiKeyHeader: account.headerName, headers: account.configOverrides),
                 models: Dictionary(uniqueKeysWithValues: providerProfiles.map { profile in
-                    (profile.modelID, PublicModelConfiguration(name: profile.displayName, reasoning: profile.capabilities.reasoning, limit: PublicModelLimit(context: profile.contextWindow, output: profile.maxOutputTokens ?? 4_096), toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput))
+                    (profile.modelID, PublicModelConfiguration(name: profile.displayName, reasoning: profile.capabilities.reasoning, limit: PublicModelLimit(context: profile.contextWindow, output: profile.maxOutputTokens ?? 4_096), toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput, rateLimits: profile.rateLimits))
                 })
             )
         }

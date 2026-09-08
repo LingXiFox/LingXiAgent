@@ -78,6 +78,54 @@ struct AgentBehaviorTests {
         }
     }
 
+    @Test func modeIsSnapshottedPerRunAndRemainsReadOnlyWithYOLO() async throws {
+        #expect(AgentBehaviorProfile.build.next == .plan)
+        #expect(AgentBehaviorProfile.plan.next == .explore)
+        #expect(AgentBehaviorProfile.explore.next == .build)
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let write = call("write", "write_file", #"{"path":"mode.txt","content":"written"}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(write), .completed(.toolCalls)],
+            [.textDelta("Build 完成。"), .completed(.stop)],
+            [.toolCallCompleted(write), .completed(.toolCalls)],
+            [.textDelta("Plan 完成。"), .completed(.stop)],
+        ])
+        let configuration = CoreConfiguration(agent: AgentSettings(permissionPolicy: .ask, executionProfile: .workspace, behaviorProfile: .build))
+        let host = try CoreHost(
+            providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
+            configuration: configuration,
+            workspaceRoot: try WorkspaceRoot(path: root.path)
+        )
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let permissionTask = Task { () -> PermissionRequest? in
+            for await event in await client.events() {
+                if case let .permissionAsked(request) = event { return request }
+            }
+            return nil
+        }
+        await Task.yield()
+        let session = try await client.createSession()
+        let firstTurn = Task { for try await _ in try await client.sendMessage(sessionID: session, content: "写入") {} }
+        let request = try #require(await permissionTask.value)
+
+        try await client.setAgentBehaviorProfile(.plan)
+        try await client.setPermissionConfiguration(.yolo)
+        #expect(try await client.agentBehaviorProfile() == .plan)
+        try await client.replyPermission(PermissionReply(permissionID: request.permissionID, decision: .allow))
+        try await firstTurn.value
+        #expect(try String(contentsOf: root.appendingPathComponent("mode.txt"), encoding: .utf8) == "written")
+
+        for try await _ in try await client.sendMessage(sessionID: session, content: "再次写入") {}
+        let snapshot = try await client.session(session)
+        let results = snapshot.messages.flatMap(\.parts).compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
+        #expect(results.map(\.success) == [true, false])
+        #expect(provider.recorder.requests[0].messages.first?.content.contains("Build profile") == true)
+        #expect(provider.recorder.requests[2].messages.first?.content.contains("Plan profile") == true)
+    }
+
     @Test func nestedAgentInstructionsHaveScopedPrecedenceAndProvenance() throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

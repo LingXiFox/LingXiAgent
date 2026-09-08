@@ -1,0 +1,3 @@
+The user wants me to create a C++ program on their desktop that outputs all prime numbers between 0 and 10000. Let me create the source file, compile it, and run it to verify.
+
+Let me create the file, compile, and run.

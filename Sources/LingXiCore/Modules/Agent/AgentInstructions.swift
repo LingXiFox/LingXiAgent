@@ -94,9 +94,78 @@ struct AgentInstructionSet: Sendable {
     }
 }
 
+public struct AgentEnvironmentFacts: Sendable, Equatable {
+    public let platform: String
+    public let workspaceRoot: String
+    public let currentDirectory: String
+    public let homeDirectory: String
+    public let shell: String
+    public let isGitRepository: Bool
+    public let gitBranch: String?
+    public let accessScope: String
+
+    public init(
+        platform: String = {
+            #if os(macOS)
+            return "macOS"
+            #elseif os(Linux)
+            return "Linux"
+            #elseif os(Windows)
+            return "Windows"
+            #else
+            return "unknown"
+            #endif
+        }(),
+        workspaceRoot: String,
+        currentDirectory: String = FileManager.default.currentDirectoryPath,
+        homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        shell: String = "unknown",
+        isGitRepository: Bool? = nil,
+        gitBranch: String? = nil,
+        accessScope: String = "workspace"
+    ) {
+        self.platform = platform
+        self.workspaceRoot = workspaceRoot
+        self.currentDirectory = currentDirectory
+        self.homeDirectory = homeDirectory
+        self.shell = shell
+        let gitRoot = URL(fileURLWithPath: workspaceRoot).appendingPathComponent(".git")
+        self.isGitRepository = isGitRepository ?? FileManager.default.fileExists(atPath: gitRoot.path)
+        if let gitBranch {
+            self.gitBranch = gitBranch
+        } else if let head = try? String(contentsOf: gitRoot.appendingPathComponent("HEAD"), encoding: .utf8), head.hasPrefix("ref: refs/heads/") {
+            self.gitBranch = String(head.dropFirst("ref: refs/heads/".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            self.gitBranch = nil
+        }
+        self.accessScope = accessScope
+    }
+
+    public func render() -> String {
+        """
+        Environment facts:
+        - platform: \(platform)
+        - workspaceRoot: \(workspaceRoot)
+        - cwd: \(currentDirectory)
+        - userHome: \(homeDirectory)
+        - shell: \(shell)
+        - gitRepository: \(isGitRepository ? "yes" : "no")\(gitBranch.map { " · branch: \($0)" } ?? "")
+        - accessScope: \(accessScope)
+        """
+    }
+}
+
 enum AgentBehaviorInstructions {
-    static func render(profile: AgentBehaviorProfile, configured: String?, repository: AgentInstructionSet) -> String? {
+    static func render(
+        profile: AgentBehaviorProfile,
+        configured: String?,
+        repository: AgentInstructionSet,
+        environmentFacts: AgentEnvironmentFacts? = nil
+    ) -> String? {
         var entries: [String] = []
+        if let facts = environmentFacts {
+            entries.append(facts.render())
+        }
         switch profile {
         case .build:
             entries.append("Build profile: inspect before editing; after every mutation, run the narrowest relevant verification. On tool failure or timeout, use returned diagnostics to change strategy or report the blocker. Before completion, inspect the diff and verification result. Do not repeat an identical failed action.")

@@ -83,6 +83,24 @@ struct ProductionConfigurationResolutionTests {
         #expect(selected.selection.profileID == "responses-profile")
     }
 
+    @Test func profileRateLimitsReachResolvedEndpoint() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var stored = configuration(wire: .chatCompletions)
+        stored.modelProfiles[0].rateLimits = ProviderRateLimits(
+            tpm: 12_000,
+            rpm: 60,
+            maxConcurrentRequests: 2,
+            retryPolicy: ProviderRetryPolicy(maxRetries: 3, initialDelayMilliseconds: 25, maxDelayMilliseconds: 100, jitterRatio: 0)
+        )
+
+        let resolution = try await RuntimeConfigurationResolver.resolveProviders(stored, credentials: try FileCredentialStore(dataRoot: root))
+        #expect(resolution.assembly.endpoint.rateLimits.tpm == 12_000)
+        #expect(resolution.assembly.endpoint.rateLimits.rpm == 60)
+        #expect(resolution.assembly.endpoint.rateLimits.maxConcurrentRequests == 2)
+        #expect(resolution.assembly.endpoint.rateLimits.retryPolicy.maxRetries == 3)
+    }
+
     @Test func credentialAndEndpointValidationFailBeforeRuntime() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

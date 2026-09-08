@@ -64,7 +64,182 @@ public enum BuiltinProviderCatalog {
         ProviderProductDefinition(id: ProviderProductID(rawValue: id), vendorID: VendorID(rawValue: vendor), displayName: name, type: type, accountTypes: accounts, endpoints: endpoints, verificationStatus: status, requiredAccountFields: requiredFields)
     }
 
-    private static func endpoint(_ id: String, _ baseURL: String, _ wire: ProviderWire, _ authentication: RequestAuthentication, headers: [String: String] = [:], override: Bool = true) -> ProviderProductEndpoint {
+    public static func endpoint(_ id: String, _ baseURL: String, _ wire: ProviderWire, _ authentication: RequestAuthentication, headers: [String: String] = [:], override: Bool = true) -> ProviderProductEndpoint {
         ProviderProductEndpoint(id: ProviderEndpointID(rawValue: id), baseURL: URL(string: baseURL), wire: wire, requestAuthentication: authentication, requiredHeaders: headers, allowsEndpointOverride: override, verificationStatus: .verified)
+    }
+
+    // MARK: - Preconfigured Provider Profiles
+
+    public struct ProviderProfile: Codable, Sendable, Equatable {
+        public let id: String
+        public let vendor: String
+        public let displayName: String
+        public let protocolFamily: String // openai_chat | openai_responses | anthropic_messages
+        public let endpoint: String
+        public let authMethods: [String]
+        public let concurrencyLimit: Int?
+        public let quirks: [String]
+        public let modelDiscovery: ModelDiscoveryStrategy
+        public let models: [ProviderModelProfile]
+
+        public init(
+            id: String,
+            vendor: String,
+            displayName: String,
+            protocolFamily: String,
+            endpoint: String,
+            authMethods: [String],
+            concurrencyLimit: Int? = nil,
+            quirks: [String] = [],
+            modelDiscovery: ModelDiscoveryStrategy = .staticCatalog,
+            models: [ProviderModelProfile] = []
+        ) {
+            self.id = id
+            self.vendor = vendor
+            self.displayName = displayName
+            self.protocolFamily = protocolFamily
+            self.endpoint = endpoint
+            self.authMethods = authMethods
+            self.concurrencyLimit = concurrencyLimit
+            self.quirks = quirks
+            self.modelDiscovery = modelDiscovery
+            self.models = models
+        }
+    }
+
+    public struct ProviderModelProfile: Codable, Sendable, Equatable {
+        public let id: String
+        public let displayName: String
+        public let toolCall: Bool
+        public let vision: Bool
+        public let cache: Bool
+        public let contextWindow: Int?
+        public let maxOutputTokens: Int?
+        public let reasoningCapability: ReasoningCapability?
+
+        public init(
+            id: String,
+            displayName: String,
+            toolCall: Bool = true,
+            vision: Bool = false,
+            cache: Bool = false,
+            contextWindow: Int? = nil,
+            maxOutputTokens: Int? = nil,
+            reasoningCapability: ReasoningCapability? = nil
+        ) {
+            self.id = id
+            self.displayName = displayName
+            self.toolCall = toolCall
+            self.vision = vision
+            self.cache = cache
+            self.contextWindow = contextWindow
+            self.maxOutputTokens = maxOutputTokens
+            self.reasoningCapability = reasoningCapability
+        }
+    }
+
+    public static let catalog: GeneratedProviderCatalog? = loadGeneratedCatalog()
+
+    public static var generatedProductsFallback: [GeneratedProduct] {
+        catalog?.products ?? []
+    }
+
+    public static let profiles: [ProviderProfile] = loadProfiles()
+
+    public static func profile(for providerID: String) -> ProviderProfile? {
+        profiles.first { $0.id == providerID }
+    }
+
+    public static func modelProfile(providerID: String, modelID: String) -> ProviderModelProfile? {
+        guard let p = profile(for: providerID) else { return nil }
+        return p.models.first { $0.id == modelID }
+    }
+
+    public static func quirks(providerID: String) -> Set<String> {
+        guard let p = profile(for: providerID) else { return [] }
+        return Set(p.quirks)
+    }
+
+    public static func hasQuirk(providerID: String, quirk: String) -> Bool {
+        quirks(providerID: providerID).contains(quirk)
+    }
+
+    public static func concurrencyLimit(providerID: String) -> Int? {
+        profile(for: providerID)?.concurrencyLimit
+    }
+
+    private static func loadGeneratedCatalog() -> GeneratedProviderCatalog? {
+        let decoder = JSONDecoder()
+
+        #if SWIFT_MODULE_RESOURCE_BUNDLE_AVAILABLE
+        if let url = Bundle.module.url(forResource: "builtin-provider-catalog", withExtension: "json", subdirectory: "Resources/ProviderCatalog/generated") ??
+                     Bundle.module.url(forResource: "builtin-provider-catalog", withExtension: "json"),
+           let data = try? Data(contentsOf: url),
+           let cat = try? decoder.decode(GeneratedProviderCatalog.self, from: data) {
+            return cat
+        }
+        #endif
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Configuration
+            .deletingLastPathComponent() // LingXiCore
+            .appendingPathComponent("Resources/ProviderCatalog/generated/builtin-provider-catalog.json")
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            return try decoder.decode(GeneratedProviderCatalog.self, from: data)
+        } catch {
+            print("[BuiltinProviderCatalog] Failed to load catalog from \(sourceURL.path): \(error)")
+        }
+
+        return nil
+    }
+
+    private static func loadProfiles() -> [ProviderProfile] {
+        if let cat = catalog {
+            return cat.products.map { p in
+                let models = p.models.map { m in
+                    ProviderModelProfile(
+                        id: m.id,
+                        displayName: m.displayName,
+                        toolCall: m.toolCalling,
+                        vision: m.vision,
+                        cache: m.cache,
+                        contextWindow: m.contextWindow,
+                        maxOutputTokens: m.maxOutputTokens,
+                        reasoningCapability: m.reasoningCapability
+                    )
+                }
+                return ProviderProfile(
+                    id: p.id,
+                    vendor: p.vendor,
+                    displayName: p.displayName,
+                    protocolFamily: p.protocolFamily,
+                    endpoint: p.endpoint,
+                    authMethods: p.authMethods,
+                    concurrencyLimit: p.concurrencyLimit,
+                    quirks: p.quirks,
+                    modelDiscovery: p.modelDiscovery,
+                    models: models
+                )
+            }
+        }
+
+        // Fallback to legacy profiles.json if catalog not present
+        let decoder = JSONDecoder()
+        struct LegacyProfilesContainer: Codable {
+            let version: Int
+            let profiles: [ProviderProfile]
+        }
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/Configuration/profiles.json")
+        if let data = try? Data(contentsOf: sourceURL),
+           let container = try? decoder.decode(LegacyProfilesContainer.self, from: data) {
+            return container.profiles
+        }
+
+        return []
     }
 }

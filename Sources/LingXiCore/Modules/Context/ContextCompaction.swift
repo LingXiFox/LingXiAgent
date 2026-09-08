@@ -14,15 +14,24 @@ public struct ConservativeTokenEstimator: TokenEstimator {
         entries.reduce(0) { $0 + estimate(text: ContextCompactor.content(of: $1.part)) + 4 }
     }
     public func estimate(tools: [ToolDefinition]) -> Int {
-        tools.reduce(0) { total, tool in
-            if let rawSchema = tool.rawInputSchema, let data = try? JSONEncoder().encode(rawSchema) {
-                return total + estimate(text: tool.id.rawValue + " " + tool.description + " " + String(decoding: data, as: UTF8.self)) + 12
-            }
-            let fields = tool.inputSchema.properties.keys.sorted().compactMap { name in
-                tool.inputSchema.properties[name].map { "\(name):\($0.type.rawValue)" }
-            }.joined(separator: ",")
-            return total + estimate(text: "\(tool.id.rawValue) \(tool.description) \(fields)") + 12
+        tools.reduce(0) { total, tool in total + estimate(tool: tool) }
+    }
+
+    public func estimate(tool: ToolDefinition) -> Int {
+        if let rawSchema = tool.rawInputSchema, let data = try? JSONEncoder().encode(rawSchema) {
+            return estimate(text: tool.id.rawValue + " " + tool.description + " " + String(decoding: data, as: UTF8.self)) + 22
         }
+        var text = "function: \(tool.name) \(tool.description) "
+        for (name, prop) in tool.inputSchema.properties.sorted(by: { $0.key < $1.key }) {
+            text += "\(name): \(prop.type.rawValue) \(prop.description) "
+            if let enumValues = prop.enumValues {
+                text += "enum: [\(enumValues.joined(separator: ", "))] "
+            }
+        }
+        if !tool.inputSchema.required.isEmpty {
+            text += "required: [\(tool.inputSchema.required.joined(separator: ", "))] "
+        }
+        return estimate(text: text) + 18
     }
 }
 
@@ -287,6 +296,7 @@ public actor DerivedContextStore {
         }
     }
     public func search(sessionID: SessionID, query: String, limit: Int) -> [DerivedContextPage] {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         let normalizedQuery = query.lowercased()
         let terms = Set(normalizedQuery.split { !$0.isLetter && !$0.isNumber }.map(String.init))
         let identifiers = normalizedQuery.split(whereSeparator: \.isWhitespace).filter { $0.contains("-") }
@@ -300,12 +310,10 @@ public actor DerivedContextStore {
             let l2Bonus = current.contains(page) ? 2 : 0
             return (page, lexical, identifierMatch, lexical * 10 + sourceWeight + l2Bonus + index)
         }
-        let lexicalMatches = scored.filter { terms.isEmpty || $0.1 > 0 }
+        let lexicalMatches = scored.filter { !terms.isEmpty && $0.1 > 0 }
         let identifierMatches = scored.filter { $0.2 > 0 }
         let userIdentifierMatches = identifierMatches.filter { $0.0.sourceKind == .user }
-        // Chinese prompts without a literal marker still need a bounded Session fallback.
-        let hasChinese = query.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
-        let candidatesForPageIn = !userIdentifierMatches.isEmpty ? userIdentifierMatches : (!identifierMatches.isEmpty ? identifierMatches : (lexicalMatches.isEmpty && hasChinese ? scored : lexicalMatches))
+        let candidatesForPageIn = !userIdentifierMatches.isEmpty ? userIdentifierMatches : (!identifierMatches.isEmpty ? identifierMatches : lexicalMatches)
         let matches = candidatesForPageIn.sorted { $0.3 > $1.3 }.prefix(limit).map(\.0)
         for page in matches {
             if current.contains(page) { l2Hits += 1 } else { l2Promotions += 1 }

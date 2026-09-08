@@ -82,6 +82,10 @@
         "preferredActiveTokens": {
           "type": ["integer", "null"],
           "minimum": 1
+        },
+        "maxAgentLoopSteps": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "required": [
@@ -122,6 +126,39 @@
         "interactive",
         "commandTimeoutSeconds"
       ],
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "addressableBudget": { "type": "integer", "minimum": 1 },
+        "l1": {
+          "type": "object",
+          "properties": {
+            "target": { "type": "integer", "minimum": 1 },
+            "softLimit": { "type": "integer", "minimum": 1 },
+            "hardLimit": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "l2": {
+          "type": "object",
+          "properties": {
+            "max": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "l3": {
+          "type": "object",
+          "properties": {
+            "max": { "type": "integer", "minimum": 0 },
+            "useRemainingBudget": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "reserve": { "type": "integer", "minimum": 0 },
+        "economicThreshold": { "type": ["integer", "null"] }
+      },
       "additionalProperties": false
     }
   },

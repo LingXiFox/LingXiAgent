@@ -47,17 +47,153 @@ public enum ExecutionProfile: String, Sendable, Equatable, Codable {
 }
 
 public struct PermissionConfiguration: Sendable, Equatable, Codable {
-    public let policy: PermissionPolicy
-    public let profile: ExecutionProfile
+    public let accessScope: AccessScope
+    public let approvalPolicy: OperationApprovalPolicy
 
-    public init(policy: PermissionPolicy, profile: ExecutionProfile) {
-        self.policy = policy
-        self.profile = profile
+    public var policy: PermissionPolicy {
+        approvalPolicy.workspaceMutation == .allow ? .auto : .ask
+    }
+    public var profile: ExecutionProfile {
+        accessScope == .fullAccess ? .fullAccess : .workspace
     }
 
-    public static let strict = PermissionConfiguration(policy: .ask, profile: .workspace)
-    public static let agent = PermissionConfiguration(policy: .auto, profile: .workspace)
-    public static let yolo = PermissionConfiguration(policy: .auto, profile: .fullAccess)
+    public var displayName: String {
+        if accessScope == .fullAccess {
+            let isYOLO = approvalPolicy.workspaceMutation == .allow
+                && approvalPolicy.processExecution == .allow
+                && approvalPolicy.externalRead == .allow
+                && approvalPolicy.externalMutation == .allow
+            return isYOLO ? "YOLO" : "FullAccess"
+        }
+        return approvalPolicy.workspaceMutation == .allow ? "Auto/Workspace" : "Ask/Workspace"
+    }
+
+    public init(accessScope: AccessScope, approvalPolicy: OperationApprovalPolicy) {
+        self.accessScope = accessScope
+        self.approvalPolicy = approvalPolicy
+    }
+
+    public init(policy: PermissionPolicy, profile: ExecutionProfile) {
+        let scope: AccessScope = (profile == .fullAccess) ? .fullAccess : .workspace
+        self.accessScope = scope
+        switch (policy, profile) {
+        case (.ask, .workspace), (.ask, .readOnly):
+            self.approvalPolicy = OperationApprovalPolicy(
+                safeRead: .allow,
+                workspaceMutation: .ask,
+                processExecution: .ask,
+                externalRead: .deny,
+                externalMutation: .deny,
+                sensitiveAccess: .deny
+            )
+        case (.auto, .workspace), (.auto, .readOnly):
+            self.approvalPolicy = OperationApprovalPolicy(
+                safeRead: .allow,
+                workspaceMutation: .allow,
+                processExecution: .allow,
+                externalRead: .deny,
+                externalMutation: .deny,
+                sensitiveAccess: .deny
+            )
+        case (.ask, .fullAccess):
+            self.approvalPolicy = OperationApprovalPolicy(
+                safeRead: .allow,
+                workspaceMutation: .ask,
+                processExecution: .ask,
+                externalRead: .ask,
+                externalMutation: .ask,
+                sensitiveAccess: .deny
+            )
+        case (.auto, .fullAccess):
+            self.approvalPolicy = OperationApprovalPolicy(
+                safeRead: .allow,
+                workspaceMutation: .allow,
+                processExecution: .allow,
+                externalRead: .allow,
+                externalMutation: .allow,
+                sensitiveAccess: .deny
+            )
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case accessScope, approvalPolicy, policy, profile
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let scope = try? container.decode(AccessScope.self, forKey: .accessScope),
+           let policy = try? container.decode(OperationApprovalPolicy.self, forKey: .approvalPolicy) {
+            self.init(accessScope: scope, approvalPolicy: policy)
+        } else if let legacyPolicy = try? container.decode(PermissionPolicy.self, forKey: .policy),
+                  let legacyProfile = try? container.decode(ExecutionProfile.self, forKey: .profile) {
+            self.init(policy: legacyPolicy, profile: legacyProfile)
+        } else {
+            self = .askWorkspace
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(accessScope, forKey: .accessScope)
+        try container.encode(approvalPolicy, forKey: .approvalPolicy)
+        try container.encode(policy, forKey: .policy)
+        try container.encode(profile, forKey: .profile)
+    }
+
+    // Frozen Presets
+    public static let askWorkspace = PermissionConfiguration(
+        accessScope: .workspace,
+        approvalPolicy: OperationApprovalPolicy(
+            safeRead: .allow,
+            workspaceMutation: .ask,
+            processExecution: .ask,
+            externalRead: .deny,
+            externalMutation: .deny,
+            sensitiveAccess: .deny
+        )
+    )
+
+    public static let autoWorkspace = PermissionConfiguration(
+        accessScope: .workspace,
+        approvalPolicy: OperationApprovalPolicy(
+            safeRead: .allow,
+            workspaceMutation: .allow,
+            processExecution: .allow,
+            externalRead: .deny,
+            externalMutation: .deny,
+            sensitiveAccess: .deny
+        )
+    )
+
+    public static let askFullAccess = PermissionConfiguration(
+        accessScope: .fullAccess,
+        approvalPolicy: OperationApprovalPolicy(
+            safeRead: .allow,
+            workspaceMutation: .ask,
+            processExecution: .ask,
+            externalRead: .ask,
+            externalMutation: .ask,
+            sensitiveAccess: .deny
+        )
+    )
+
+    public static let yoloFullAccess = PermissionConfiguration(
+        accessScope: .fullAccess,
+        approvalPolicy: OperationApprovalPolicy(
+            safeRead: .allow,
+            workspaceMutation: .allow,
+            processExecution: .allow,
+            externalRead: .allow,
+            externalMutation: .allow,
+            sensitiveAccess: .deny
+        )
+    )
+
+    // Legacy Aliases
+    public static let strict = askWorkspace
+    public static let agent = autoWorkspace
+    public static let yolo = yoloFullAccess
 }
 
 public struct PermissionRule: Sendable, Equatable, Codable {

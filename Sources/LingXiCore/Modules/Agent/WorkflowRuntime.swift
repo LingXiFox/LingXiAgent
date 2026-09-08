@@ -14,10 +14,12 @@ public struct WorkflowTaskCompletion: Sendable, Equatable {
 /// Durable DAG coordinator. It never replays a task after restart: interrupted work is recoveryRequired.
 public actor WorkflowRuntime {
     public typealias Executor = @Sendable (WorkflowID, WorkflowTaskDefinition, WorkflowTaskProvenance, @escaping @Sendable (WorkflowTaskProvenance) async -> Void) async -> WorkflowTaskCompletion
+    public typealias InputSink = @Sendable (WorkflowID, WorkflowTaskID, WorkflowPendingInput) async -> Void
 
     private let persistence: SQLitePersistenceStore?
     private let executor: Executor?
     private let diagnostics: RuntimeDiagnosticsStore?
+    private var inputSink: InputSink?
     private var workflows: [WorkflowID: WorkflowSnapshot] = [:]
     private var active: [String: Task<Void, Never>] = [:]
 
@@ -25,6 +27,10 @@ public actor WorkflowRuntime {
         self.persistence = persistence
         self.executor = executor
         self.diagnostics = diagnostics
+    }
+
+    public func setInputSink(_ sink: @escaping InputSink) {
+        inputSink = sink
     }
 
     public func restore() async throws {
@@ -71,6 +77,9 @@ public actor WorkflowRuntime {
         workflows[workflowID] = workflow
         await diagnostics?.record(kind: .hitl, event: "workflow.input.pending", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, taskID: taskID)
         try await persist(workflow)
+        if case .decision = input {
+            await inputSink?(workflowID, taskID, input)
+        }
     }
 
     /// Records that routing has been re-established. It does not rerun or complete the originating task.

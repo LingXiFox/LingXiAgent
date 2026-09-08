@@ -9,16 +9,30 @@ public protocol SessionStore: Actor, Sendable {
     func session(_ id: SessionID) async throws -> Session
     func listSessions() async throws -> [Session]
     func updateTitle(_ id: SessionID, title: String?) async throws -> Session
+    func updateReasoningEffort(_ id: SessionID, effort: ReasoningEffort) async throws -> Session
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message
     @discardableResult
     func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message
+    @discardableResult
+    func appendMessage(_ sessionID: SessionID, message: Message) async throws -> Message
     func deleteSession(_ id: SessionID) async throws
 }
 
 public extension SessionStore {
     func create() async throws -> Session {
         try await create(kind: .primary, parentSessionID: nil, rootSessionID: nil, spawnedByRunID: nil, spawnedByToolCallID: nil, title: nil)
+    }
+
+    @discardableResult
+    func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message {
+        try await appendMessage(sessionID, role: role, parts: [.text(content)])
+    }
+
+    @discardableResult
+    func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message {
+        let message = Message(id: MessageID(UUID().uuidString), role: role, parts: parts, createdAt: Date())
+        return try await appendMessage(sessionID, message: message)
     }
 }
 
@@ -51,27 +65,24 @@ public actor InMemorySessionStore: SessionStore {
 
     public func updateTitle(_ id: SessionID, title: String?) async throws -> Session {
         guard let current = sessions[id] else { throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(id.rawValue)") }
-        let updated = Session(id: current.id, createdAt: current.createdAt, kind: current.kind, parentSessionID: current.parentSessionID, rootSessionID: current.rootSessionID, spawnedByRunID: current.spawnedByRunID, spawnedByToolCallID: current.spawnedByToolCallID, title: title, projectID: current.projectID, cwdRootBindingID: current.cwdRootBindingID, cwdRelativePath: current.cwdRelativePath, updatedAt: current.updatedAt, messages: current.messages)
+        let updated = Session(id: current.id, createdAt: current.createdAt, kind: current.kind, parentSessionID: current.parentSessionID, rootSessionID: current.rootSessionID, spawnedByRunID: current.spawnedByRunID, spawnedByToolCallID: current.spawnedByToolCallID, title: title, reasoningEffort: current.reasoningEffort, projectID: current.projectID, cwdRootBindingID: current.cwdRootBindingID, cwdRelativePath: current.cwdRelativePath, updatedAt: current.updatedAt, messages: current.messages)
+        sessions[id] = updated
+        return updated
+    }
+
+    public func updateReasoningEffort(_ id: SessionID, effort: ReasoningEffort) async throws -> Session {
+        guard let current = sessions[id] else { throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(id.rawValue)") }
+        var updated = current
+        updated.setReasoningEffort(effort)
         sessions[id] = updated
         return updated
     }
 
     @discardableResult
-    public func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message {
-        try await appendMessage(sessionID, role: role, parts: [.text(content)])
-    }
-
-    @discardableResult
-    public func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message {
+    public func appendMessage(_ sessionID: SessionID, message: Message) async throws -> Message {
         guard sessions[sessionID] != nil else {
             throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(sessionID.rawValue)")
         }
-        let message = Message(
-            id: MessageID(UUID().uuidString),
-            role: role,
-            parts: parts,
-            createdAt: Date()
-        )
         sessions[sessionID]?.append(message)
         return message
     }
@@ -125,18 +136,18 @@ public actor PersistentSessionStore: SessionStore {
     public func updateTitle(_ id: SessionID, title: String?) async throws -> Session {
         let current = try await session(id)
         try await persistence.updateSessionTitle(id, title: title)
-        return Session(id: current.id, createdAt: current.createdAt, kind: current.kind, parentSessionID: current.parentSessionID, rootSessionID: current.rootSessionID, spawnedByRunID: current.spawnedByRunID, spawnedByToolCallID: current.spawnedByToolCallID, title: title, projectID: current.projectID, cwdRootBindingID: current.cwdRootBindingID, cwdRelativePath: current.cwdRelativePath, updatedAt: .now, messages: current.messages)
+        return Session(id: current.id, createdAt: current.createdAt, kind: current.kind, parentSessionID: current.parentSessionID, rootSessionID: current.rootSessionID, spawnedByRunID: current.spawnedByRunID, spawnedByToolCallID: current.spawnedByToolCallID, title: title, reasoningEffort: current.reasoningEffort, projectID: current.projectID, cwdRootBindingID: current.cwdRootBindingID, cwdRelativePath: current.cwdRelativePath, updatedAt: .now, messages: current.messages)
+    }
+
+    public func updateReasoningEffort(_ id: SessionID, effort: ReasoningEffort) async throws -> Session {
+        var current = try await session(id)
+        current.setReasoningEffort(effort)
+        return current
     }
 
     @discardableResult
-    public func appendMessage(_ sessionID: SessionID, role: MessageRole, content: String) async throws -> Message {
-        try await appendMessage(sessionID, role: role, parts: [.text(content)])
-    }
-
-    @discardableResult
-    public func appendMessage(_ sessionID: SessionID, role: MessageRole, parts: [SessionMessagePart]) async throws -> Message {
+    public func appendMessage(_ sessionID: SessionID, message: Message) async throws -> Message {
         _ = try await session(sessionID)
-        let message = Message(id: MessageID(UUID().uuidString), role: role, parts: parts, createdAt: .now)
         try await persistence.appendMessage(sessionID: sessionID, message: message)
         return message
     }

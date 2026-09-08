@@ -24,8 +24,18 @@ public enum AgentBehaviorProfile: String, Sendable, Equatable, Codable {
 
     public var executionProfile: SubagentExecutionProfile? {
         switch self {
-        case .build: nil
-        case .plan, .explore: SubagentExecutionProfile(permissionProfile: ExecutionProfile.readOnly.rawValue)
+        case .build: SubagentExecutionProfile(behaviorProfile: self)
+        case .plan, .explore: SubagentExecutionProfile(permissionProfile: ExecutionProfile.readOnly.rawValue, behaviorProfile: self)
+        }
+    }
+
+    public var displayName: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+
+    public var next: Self {
+        switch self {
+        case .build: .plan
+        case .plan: .explore
+        case .explore: .build
         }
     }
 }
@@ -77,8 +87,9 @@ public struct SubagentExecutionProfile: Sendable, Equatable, Codable {
     public let contextProfile: String?
     public let maxSteps: Int?
     public let timeoutSeconds: Int?
+    public let behaviorProfile: AgentBehaviorProfile?
 
-    public init(modelSelection: ModelSelection? = nil, permissionProfile: String? = nil, toolProfile: [String]? = nil, budgetProfile: String? = nil, contextProfile: String? = nil, maxSteps: Int? = nil, timeoutSeconds: Int? = nil) {
+    public init(modelSelection: ModelSelection? = nil, permissionProfile: String? = nil, toolProfile: [String]? = nil, budgetProfile: String? = nil, contextProfile: String? = nil, maxSteps: Int? = nil, timeoutSeconds: Int? = nil, behaviorProfile: AgentBehaviorProfile? = nil) {
         self.modelSelection = modelSelection
         self.permissionProfile = permissionProfile
         self.toolProfile = toolProfile
@@ -86,6 +97,7 @@ public struct SubagentExecutionProfile: Sendable, Equatable, Codable {
         self.contextProfile = contextProfile
         self.maxSteps = maxSteps
         self.timeoutSeconds = timeoutSeconds
+        self.behaviorProfile = behaviorProfile
     }
 }
 
@@ -100,6 +112,54 @@ public struct AgentRunUsage: Sendable, Equatable, Codable {
         self.toolCalls = toolCalls
         self.mcpCalls = mcpCalls
         self.elapsedMilliseconds = elapsedMilliseconds
+    }
+}
+
+public enum TerminalReason: String, Sendable, Equatable, Codable {
+    case completed
+    case blocked
+    case userCancelled
+    case providerFailure
+    case deadlineExceeded
+    case maxStepsReached
+    case emptyCompletion
+    case runtimeFailure
+}
+
+public struct AgentTerminalTrace: Sendable, Equatable, Codable {
+    public let runID: AgentRunID
+    public let sessionID: SessionID
+    public let lastProviderRequestID: String?
+    public let finishReason: String?
+    public let lastToolCallID: ToolCallID?
+    public let terminalTransition: String
+    public let terminalReason: TerminalReason
+    public let transitionSource: String
+    public let explanation: String
+    public let timestamp: Date
+
+    public init(
+        runID: AgentRunID,
+        sessionID: SessionID,
+        lastProviderRequestID: String? = nil,
+        finishReason: String? = nil,
+        lastToolCallID: ToolCallID? = nil,
+        terminalTransition: String,
+        terminalReason: TerminalReason,
+        transitionSource: String,
+        explanation: String,
+        timestamp: Date = .now
+    ) {
+        self.runID = runID
+        self.sessionID = sessionID
+        self.lastProviderRequestID = lastProviderRequestID
+        self.finishReason = finishReason
+        self.lastToolCallID = lastToolCallID
+        self.terminalTransition = terminalTransition
+        self.terminalReason = terminalReason
+        self.transitionSource = transitionSource
+        self.explanation = explanation
+        self.timestamp = timestamp
     }
 }
 
@@ -118,8 +178,10 @@ public struct AgentRunInfo: Sendable, Equatable, Codable {
     public let error: CoreError?
     public let usage: AgentRunUsage
     public let title: String?
+    public let terminalReason: TerminalReason?
+    public let terminalTrace: AgentTerminalTrace?
 
-    public init(runID: AgentRunID, sessionID: SessionID, projectID: ProjectID?, parentRunID: AgentRunID? = nil, rootRunID: AgentRunID, agentKind: SessionKind, status: AgentRunStatus, modelSelection: ModelSelection, startedAt: Date? = nil, finishedAt: Date? = nil, latestActivityAt: Date = .now, error: CoreError? = nil, usage: AgentRunUsage = AgentRunUsage(), title: String? = nil) {
+    public init(runID: AgentRunID, sessionID: SessionID, projectID: ProjectID?, parentRunID: AgentRunID? = nil, rootRunID: AgentRunID, agentKind: SessionKind, status: AgentRunStatus, modelSelection: ModelSelection, startedAt: Date? = nil, finishedAt: Date? = nil, latestActivityAt: Date = .now, error: CoreError? = nil, usage: AgentRunUsage = AgentRunUsage(), title: String? = nil, terminalReason: TerminalReason? = nil, terminalTrace: AgentTerminalTrace? = nil) {
         self.runID = runID
         self.sessionID = sessionID
         self.projectID = projectID
@@ -134,6 +196,8 @@ public struct AgentRunInfo: Sendable, Equatable, Codable {
         self.error = error
         self.usage = usage
         self.title = title
+        self.terminalReason = terminalReason
+        self.terminalTrace = terminalTrace
     }
 }
 
@@ -146,9 +210,11 @@ public struct SubagentResult: Sendable, Equatable, Codable {
     public let artifactReferences: [String]
     public let usage: AgentRunUsage
     public let error: CoreError?
+    public let terminalReason: TerminalReason?
+    public let terminalTrace: AgentTerminalTrace?
     public let timestamp: Date
 
-    public init(childSessionID: SessionID, runID: AgentRunID, status: AgentRunStatus, finalText: String? = nil, touchedResources: [ToolTouchedResource] = [], artifactReferences: [String] = [], usage: AgentRunUsage = AgentRunUsage(), error: CoreError? = nil, timestamp: Date = .now) {
+    public init(childSessionID: SessionID, runID: AgentRunID, status: AgentRunStatus, finalText: String? = nil, touchedResources: [ToolTouchedResource] = [], artifactReferences: [String] = [], usage: AgentRunUsage = AgentRunUsage(), error: CoreError? = nil, terminalReason: TerminalReason? = nil, terminalTrace: AgentTerminalTrace? = nil, timestamp: Date = .now) {
         self.childSessionID = childSessionID
         self.runID = runID
         self.status = status
@@ -157,6 +223,8 @@ public struct SubagentResult: Sendable, Equatable, Codable {
         self.artifactReferences = artifactReferences
         self.usage = usage
         self.error = error
+        self.terminalReason = terminalReason
+        self.terminalTrace = terminalTrace
         self.timestamp = timestamp
     }
 }
@@ -170,5 +238,37 @@ public struct AgentTreeNode: Sendable, Equatable, Codable {
         self.session = session
         self.latestRun = latestRun
         self.children = children
+    }
+}
+
+public enum ProviderActivityState: String, Sendable, Codable {
+    case scheduled
+    case waitingForRateBudget
+    case requesting
+    case streaming
+    case completed
+    case failed
+    case cancelled
+
+    public var isTerminal: Bool {
+        self == .completed || self == .failed || self == .cancelled
+    }
+}
+
+public struct ProviderActivitySnapshot: Sendable, Equatable, Codable {
+    public let sessionID: SessionID
+    public let runID: AgentRunID?
+    public let providerRequestID: String
+    public let state: ProviderActivityState
+    public let model: String?
+    public let updatedAt: Date
+
+    public init(sessionID: SessionID, runID: AgentRunID?, providerRequestID: String, state: ProviderActivityState, model: String? = nil, updatedAt: Date = .now) {
+        self.sessionID = sessionID
+        self.runID = runID
+        self.providerRequestID = providerRequestID
+        self.state = state
+        self.model = model
+        self.updatedAt = updatedAt
     }
 }
