@@ -4,10 +4,28 @@ import Foundation
 public struct ModelStepOutputMetadata: Codable, Sendable, Equatable {
     public let totalTokens: Int?
     public let finishReason: String?
+    public let model: String?
+    public let durationMs: Double?
+    public let firstTokenMs: Double?
+    public let tokenRate: Double?
+    public let completedAt: Date?
 
-    public init(totalTokens: Int? = nil, finishReason: String? = nil) {
+    public init(
+        totalTokens: Int? = nil,
+        finishReason: String? = nil,
+        model: String? = nil,
+        durationMs: Double? = nil,
+        firstTokenMs: Double? = nil,
+        tokenRate: Double? = nil,
+        completedAt: Date? = nil
+    ) {
         self.totalTokens = totalTokens
         self.finishReason = finishReason
+        self.model = model
+        self.durationMs = durationMs
+        self.firstTokenMs = firstTokenMs
+        self.tokenRate = tokenRate
+        self.completedAt = completedAt
     }
 }
 

@@ -213,6 +213,7 @@ public actor ApplicationStore {
 
         // MARK: 5. Provider & Model
         case let .selectModel(modelID):
+            UserPreferencesStore.shared.update(modelID: modelID)
             _ = try? await client.model.select(model: modelID)
 
         case .listProviders:
@@ -345,6 +346,7 @@ public actor ApplicationStore {
     }
 
     private func handleSetReasoningEffort(_ effort: ReasoningEffort) async {
+        UserPreferencesStore.shared.update(reasoningEffort: effort.rawValue)
         state.nextTurnReasoningEffort = effort
         if let activeSessionID = state.activeSessionID {
             state.activeSessionState?.reasoningEffort = effort
@@ -441,6 +443,13 @@ public actor ApplicationStore {
         // 1. 同步完整权威快照
         if let snapshot = try? await client.session.snapshot(sessionID: sessionID) {
             RootReducer.reduce(state: &state, action: ._snapshotResynced(snapshot))
+
+            // 若恢复的会话属于其它工作目录，自动切换当前工作文件夹
+            if let targetDir = snapshot.info.workingDirectory,
+               !targetDir.isEmpty,
+               targetDir != FileManager.default.currentDirectoryPath {
+                _ = FileManager.default.changeCurrentDirectoryPath(targetDir)
+            }
         }
 
         // 2. 建立 Session 语义事件流订阅

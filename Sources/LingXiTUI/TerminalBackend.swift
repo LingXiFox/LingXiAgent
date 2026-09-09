@@ -16,6 +16,11 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
     private(set) var size = TUISize(width: 80, height: 24)
     private var lastSize = TUISize(width: 80, height: 24)
     private var renderCount = 0
+    private let noAltScreen: Bool
+
+    init(noAltScreen: Bool = false) {
+        self.noAltScreen = noAltScreen
+    }
 
     func start() throws {
         debug("start.begin")
@@ -33,9 +38,11 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         if let bufferSize = openTUI?.nextBufferSize() {
             debug("start.buffer size=\(bufferSize.width)x\(bufferSize.height)")
         }
-        debug("start.terminal.setup.begin")
-        openTUI?.setupTerminal()
-        debug("start.terminal.setup.end")
+        if !noAltScreen {
+            debug("start.terminal.setup.begin")
+            openTUI?.setupTerminal()
+            debug("start.terminal.setup.end")
+        }
         debug("start.mouse.enable.begin")
         openTUI?.enableMouse()
         debug("start.mouse.enable.end")
@@ -48,7 +55,9 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         // 恢复终端鼠标模式与自动换行
         FileHandle.standardOutput.write(Data("\u{1B}[?1002l\u{1B}[?1000l\u{1B}[?1006l\u{1B}[?7h".utf8))
         openTUI?.disableMouse()
-        openTUI?.restoreTerminalModes()
+        if !noAltScreen {
+            openTUI?.restoreTerminalModes()
+        }
         openTUI = nil
         if let original {
             var state = original
@@ -97,8 +106,10 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
                 let cell = frame.cells[row * frame.size.width + column]
                 if cell.continuation { continue }
                 let style = color(for: cell.style)
+                let fg = cell.customForeground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.foreground
+                let bg = cell.customBackground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.background
                 renderer.draw(String(cell.character), x: column, y: row,
-                              foreground: style.foreground, background: style.background)
+                              foreground: fg, background: bg)
             }
         }
         renderer.setCursor(frame.cursor)
@@ -150,7 +161,18 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
     private func readEscapeSequence() -> TUIInputEvent {
         guard waitForInput(milliseconds: 40), let second = readByte() else { return .escape }
         switch second {
-        case 91: break // CSI
+        case 91: break // CSI '['
+        case 79: // SS3 'O' (macOS and application cursor mode: \eOA, \eOB, \eOC, \eOD, \eOH, \eOF)
+            guard waitForInput(milliseconds: 40), let third = readByte() else { return .escape }
+            switch third {
+            case 65: return .up
+            case 66: return .down
+            case 67: return .right
+            case 68: return .left
+            case 72: return .home
+            case 70: return .end
+            default: return .tick
+            }
         case 93: return readControlString(terminatesWithBell: true) // OSC
         case 80, 88, 94, 95: return readControlString(terminatesWithBell: false) // DCS/SOS/PM/APC
         default: return .escape
@@ -252,78 +274,84 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
             OpenTUIColorValue(red: red * 257, green: green * 257, blue: blue * 257)
         }
 
-        // 马卡龙暖色系美学调色板 (柔和温暖，告别死黑与深邃)
-        let pageBg = rgb(38, 34, 44)              // #26222C 舒适暖咖暮紫底板 (告别死黑)
-        let cardBg = rgb(54, 48, 62)              // #36303E 柔和抬升暖色卡片底板
-        let textWarm = rgb(248, 244, 252)         // #F8F4FC 温暖奶油白文字
-        let textDim = rgb(175, 165, 185)          // #AFA5B9 柔和暖暮紫灰
-        let macaronPeach = rgb(255, 150, 168)     // #FF96A8 甜杏水蜜桃 (圆点与活动高光)
-        let macaronMint = rgb(140, 222, 182)      // #8CDEB6 薄荷奶绿 (Build模式、连接状态、输入框边框)
-        let macaronCream = rgb(255, 226, 142)     // #FFE28E 奶油暖黄 (Tip、分组标题)
-        let macaronLavender = rgb(218, 192, 240)  // #DAC0F0 柔和香芋紫 (Logo、标题)
-        let macaronBlue = rgb(147, 197, 253)      // #93C5FD 马卡龙淡天蓝 (命令名、工具名、Read/Search高亮)
-        let macaronRose = rgb(255, 182, 193)      // #FFB6C1 马卡龙浅玫瑰粉 (参数标志、错误提示)
-        let cardBorder = rgb(88, 78, 102)         // #584E66 优雅卡片边框
-        let selectedBg = rgb(78, 68, 92)          // #4E445C 选中底色
+        // 赛博极光星夜狐美学调色板 (基于灵犀狐娘原画提炼：曜石暗夜、极光薄荷青、梦幻樱落紫、软萌樱粉)
+        let pageBg = rgb(19, 17, 28)              // #13111C 深邃纯净曜石暗夜底板 (彻底消灭灰泥浑浊感，通透高级)
+        let cardBg = rgb(30, 27, 41)              // #1E1B29 晶体曜紫卡片底板 (与底板拉开清晰对比)
+        let textWarm = rgb(248, 250, 252)         // #F8FAFC 珍珠雪夜白文字 (银白紫发灵感，极高清晰度与对比度)
+        let textDim = rgb(148, 144, 166)          // #9490A6 暮霭星云紫灰 (副文本层次分明不刺眼)
+        let auroraCyan = rgb(78, 236, 210)        // #4EECD2 极光薄荷青 (机能服荧光标、YOLO闪电、构建模式、成功状态)
+        let dreamLavender = rgb(192, 132, 252)    // #C084FC 梦幻樱落紫 (淡紫发梢与蓬松狐尾主色，Logo，思考徽章)
+        let sakuraPink = rgb(244, 114, 182)       // #F472B6 狐耳软萌粉 (狐狸耳朵内侧软粉、爱心高光、活跃圆点)
+        let cyberBlue = rgb(56, 189, 248)         // #38BDF8 赛博电光天蓝 (命令调用、工具高亮、进行中任务)
+        let amberGold = rgb(251, 191, 36)         // #FBBF24 温暖琥珀金 (Tip提示、授权分组)
+        let coralRed = rgb(248, 113, 113)         // #F87171 珊瑚赤红 (错误警报、拒绝状态)
+        let cardBorder = rgb(59, 53, 77)          // #3B354D 优雅紫晶微光边框
+        let selectedBg = rgb(49, 43, 66)          // #312B42 选中高亮底色
 
         switch style {
         case .normal: return OpenTUIStyle(foreground: textWarm, background: pageBg)
         case .dim: return OpenTUIStyle(foreground: textDim, background: pageBg)
-        case .accent: return OpenTUIStyle(foreground: macaronLavender, background: pageBg)
+        case .accent: return OpenTUIStyle(foreground: dreamLavender, background: pageBg)
         case .inverse: return OpenTUIStyle(foreground: pageBg, background: textWarm)
         case .composer: return OpenTUIStyle(foreground: textWarm, background: cardBg)
         case .composerText: return OpenTUIStyle(foreground: textWarm, background: cardBg)
         case .composerPlaceholder: return OpenTUIStyle(foreground: textDim, background: cardBg)
         case .overlay: return OpenTUIStyle(foreground: textWarm, background: cardBg)
-        case .overlayTitle: return OpenTUIStyle(foreground: macaronLavender, background: cardBg)
+        case .overlayTitle: return OpenTUIStyle(foreground: dreamLavender, background: cardBg)
         case .overlayItem: return OpenTUIStyle(foreground: textWarm, background: cardBg)
         case .overlayItemDim: return OpenTUIStyle(foreground: textDim, background: cardBg)
-        case .overlayHighlight: return OpenTUIStyle(foreground: rgb(35, 25, 40), background: macaronPeach)
-        case .warning: return OpenTUIStyle(foreground: macaronCream, background: pageBg)
-        case .error: return OpenTUIStyle(foreground: rgb(255, 130, 140), background: pageBg)
+        case .overlayHighlight: return OpenTUIStyle(foreground: rgb(19, 17, 28), background: sakuraPink)
+        case .warning: return OpenTUIStyle(foreground: amberGold, background: pageBg)
+        case .error: return OpenTUIStyle(foreground: coralRed, background: pageBg)
         case .modalTitle: return OpenTUIStyle(foreground: textWarm, background: cardBg)
-        case .modalGroup: return OpenTUIStyle(foreground: macaronCream, background: cardBg)
-        case .modalHighlight: return OpenTUIStyle(foreground: rgb(35, 25, 40), background: macaronPeach)
-        case .modalActiveDot: return OpenTUIStyle(foreground: macaronPeach, background: cardBg)
+        case .modalGroup: return OpenTUIStyle(foreground: amberGold, background: cardBg)
+        case .modalHighlight: return OpenTUIStyle(foreground: rgb(19, 17, 28), background: sakuraPink)
+        case .modalActiveDot: return OpenTUIStyle(foreground: sakuraPink, background: cardBg)
         case .modalItem: return OpenTUIStyle(foreground: textWarm, background: cardBg)
         case .modalItemDim: return OpenTUIStyle(foreground: textDim, background: cardBg)
         case .modalBackground: return OpenTUIStyle(foreground: textWarm, background: cardBg)
         case .modalBorder: return OpenTUIStyle(foreground: cardBorder, background: cardBg)
         case .modalSearchPlaceholder: return OpenTUIStyle(foreground: textDim, background: cardBg)
         case .selected: return OpenTUIStyle(foreground: textWarm, background: selectedBg)
-        case .heroLogo: return OpenTUIStyle(foreground: macaronLavender, background: pageBg)
+        case .heroLogo: return OpenTUIStyle(foreground: dreamLavender, background: pageBg)
         case .heroBoxBg: return OpenTUIStyle(foreground: textWarm, background: cardBg)
-        case .heroBoxBorder: return OpenTUIStyle(foreground: macaronMint, background: cardBg)
+        case .heroBoxBorder: return OpenTUIStyle(foreground: auroraCyan, background: cardBg)
         case .heroBoxPlaceholder: return OpenTUIStyle(foreground: textDim, background: cardBg)
         case .heroBoxText: return OpenTUIStyle(foreground: textWarm, background: cardBg)
         case .heroBoxMeta: return OpenTUIStyle(foreground: textDim, background: cardBg)
-        case .heroMode: return OpenTUIStyle(foreground: macaronMint, background: cardBg)
-        case .heroTip: return OpenTUIStyle(foreground: macaronCream, background: pageBg)
-        case .sidebarHeader: return OpenTUIStyle(foreground: macaronLavender, background: pageBg)
+        case .heroMode: return OpenTUIStyle(foreground: auroraCyan, background: cardBg)
+        case .heroTip: return OpenTUIStyle(foreground: amberGold, background: pageBg)
+        case .sidebarHeader: return OpenTUIStyle(foreground: dreamLavender, background: pageBg)
         case .sidebarLabel: return OpenTUIStyle(foreground: textDim, background: pageBg)
-        case .sidebarProgressFill: return OpenTUIStyle(foreground: macaronMint, background: pageBg)
+        case .sidebarProgressFill: return OpenTUIStyle(foreground: auroraCyan, background: pageBg)
         case .sidebarProgressTrack: return OpenTUIStyle(foreground: textDim, background: pageBg)
         case .sidebarTaskPending: return OpenTUIStyle(foreground: textDim, background: pageBg)
-        case .sidebarTaskInProgress: return OpenTUIStyle(foreground: macaronCream, background: pageBg)
-        case .sidebarTaskCompleted: return OpenTUIStyle(foreground: macaronMint, background: pageBg)
-        case .sidebarTaskFailed: return OpenTUIStyle(foreground: macaronPeach, background: pageBg)
-        case .sidebarMcpReady: return OpenTUIStyle(foreground: macaronMint, background: pageBg)
-        case .sidebarMcpAuth: return OpenTUIStyle(foreground: macaronCream, background: pageBg)
-        case .sidebarMcpError: return OpenTUIStyle(foreground: macaronPeach, background: pageBg)
-        case .toolDotSuccess: return OpenTUIStyle(foreground: macaronMint, background: pageBg)
-        case .toolDotActive: return OpenTUIStyle(foreground: macaronBlue, background: pageBg)
-        case .toolDotError: return OpenTUIStyle(foreground: macaronPeach, background: pageBg)
+        case .sidebarTaskInProgress: return OpenTUIStyle(foreground: cyberBlue, background: pageBg)
+        case .sidebarTaskCompleted: return OpenTUIStyle(foreground: auroraCyan, background: pageBg)
+        case .sidebarTaskFailed: return OpenTUIStyle(foreground: coralRed, background: pageBg)
+        case .sidebarMcpReady: return OpenTUIStyle(foreground: auroraCyan, background: pageBg)
+        case .sidebarMcpAuth: return OpenTUIStyle(foreground: amberGold, background: pageBg)
+        case .sidebarMcpError: return OpenTUIStyle(foreground: coralRed, background: pageBg)
+        case .toolDotSuccess: return OpenTUIStyle(foreground: auroraCyan, background: pageBg)
+        case .toolDotActive: return OpenTUIStyle(foreground: cyberBlue, background: pageBg)
+        case .toolDotError: return OpenTUIStyle(foreground: coralRed, background: pageBg)
         case .toolAction: return OpenTUIStyle(foreground: textWarm, background: pageBg)
-        case .toolCommand: return OpenTUIStyle(foreground: macaronBlue, background: pageBg)
-        case .toolArg: return OpenTUIStyle(foreground: macaronRose, background: pageBg)
+        case .toolCommand: return OpenTUIStyle(foreground: cyberBlue, background: pageBg)
+        case .toolArg: return OpenTUIStyle(foreground: sakuraPink, background: pageBg)
         case .toolTree: return OpenTUIStyle(foreground: textDim, background: pageBg)
         case .toolSubtext: return OpenTUIStyle(foreground: textDim, background: pageBg)
-        case .toolDiffAdd: return OpenTUIStyle(foreground: macaronMint, background: pageBg)
-        case .toolDiffRemove: return OpenTUIStyle(foreground: macaronPeach, background: pageBg)
+        case .toolDiffAdd: return OpenTUIStyle(foreground: auroraCyan, background: pageBg)
+        case .toolDiffRemove: return OpenTUIStyle(foreground: coralRed, background: pageBg)
         case .toolDiffLine: return OpenTUIStyle(foreground: textDim, background: pageBg)
-        case .thinkingHeader: return OpenTUIStyle(foreground: macaronLavender, background: pageBg)
+        case .thinkingHeader: return OpenTUIStyle(foreground: dreamLavender, background: pageBg)
         case .thinkingBody: return OpenTUIStyle(foreground: textDim, background: pageBg)
         case .assistantText: return OpenTUIStyle(foreground: textWarm, background: pageBg)
+        case .badgeYolo: return OpenTUIStyle(foreground: auroraCyan, background: cardBg)
+        case .badgeAsk: return OpenTUIStyle(foreground: dreamLavender, background: cardBg)
+        case .mascotBody: return OpenTUIStyle(foreground: textWarm, background: pageBg)
+        case .mascotEar: return OpenTUIStyle(foreground: sakuraPink, background: pageBg)
+        case .mascotSpark: return OpenTUIStyle(foreground: auroraCyan, background: pageBg)
+        case .mascotTag: return OpenTUIStyle(foreground: dreamLavender, background: pageBg)
         }
     }
 

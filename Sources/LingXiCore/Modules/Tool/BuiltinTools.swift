@@ -1322,7 +1322,7 @@ private struct TodoListResponse: Codable {
 public struct TodoTool: ToolExecutor {
     public let definition = ToolDefinition(
         id: ToolID("todo"),
-        description: "Manage task and to-do items for the current session. Use this tool to track multi-step progress, plan tasks, update status (pending, in_progress, completed, failed), and keep the user informed in real time.",
+        description: "Manage task and to-do items for the current session. For multi-step tasks, comprehensive health checks, environment diagnostics, or refactoring, ALWAYS use this tool first (action: 'add') to establish a checklist, then update status ('in_progress', 'completed', 'failed') as you proceed to maintain real-time visibility on the sidebar.",
         inputSchema: ToolInputSchema(
             properties: [
                 "action": ToolInputProperty(type: .string, description: "Action to perform: add, update, list, clear", enumValues: ["add", "update", "list", "clear"]),

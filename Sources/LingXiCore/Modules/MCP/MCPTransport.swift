@@ -42,8 +42,8 @@ public struct MCPServerConfiguration: Sendable, Equatable, Codable {
 }
 
 public enum MCPProtocolVersionNegotiator {
-    public static let modern = "2026-07-28"
-    public static let legacy = "2025-11-25"
+    public static let modern = "2024-11-05"
+    public static let legacy = "2024-10-07"
     public static func select(preference: MCPProtocolPreference, supportsModern: Bool, supportsLegacy: Bool) throws -> MCPProtocolEra {
         switch preference {
         case .modern where supportsModern: return .modern
@@ -103,13 +103,24 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
 
     /// tools/list stays outside the provider tool set; callers atomically install this completed generation into L3.
     public func listTools() async throws -> [MCPDiscoveredTool] {
+        var sessionID: String?
+        let initParams: [String: Any] = [
+            "protocolVersion": protocolVersion,
+            "capabilities": [String: Any](),
+            "clientInfo": ["name": "lingxiagent", "version": "0.1.0"]
+        ]
+        if let initResp = try? await post(method: "initialize", parameters: initParams) {
+            sessionID = initResp.sessionID
+            _ = try? await post(method: "notifications/initialized", parameters: [:], sessionID: sessionID)
+        }
+
         var cursor: String?
         var seen = Set<String>()
         var result: [MCPDiscoveredTool] = []
         for _ in 0..<100 {
             var parameters: [String: Any] = [:]
             if let cursor { parameters["cursor"] = cursor }
-            let response = try await post(method: "tools/list", parameters: parameters)
+            let response = try await post(method: "tools/list", parameters: parameters, sessionID: sessionID)
             let page = try MCPToolDiscovery.decode(response.data, contentType: response.contentType, configuration: configuration)
             for tool in page.tools {
                 guard seen.insert(tool.entry.upstreamName).inserted else { throw CoreError(code: .mcpDiscoveryLimitExceeded, message: "Duplicate MCP tool name: \(tool.entry.upstreamName)") }
@@ -133,7 +144,7 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
         return http.statusCode
     }
 
-    private func post(method: String, name: String? = nil, parameters: [String: Any]) async throws -> (data: Data, contentType: String) {
+    private func post(method: String, name: String? = nil, parameters: [String: Any], sessionID: String? = nil) async throws -> (data: Data, contentType: String, sessionID: String?) {
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
         guard let endpoint = configuration.endpoint else { throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP endpoint missing") }
         var request = URLRequest(url: endpoint); request.httpMethod = "POST"; request.timeoutInterval = configuration.timeoutSeconds
@@ -141,6 +152,7 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version")
         request.setValue(method, forHTTPHeaderField: "Mcp-Method")
+        if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
         if let name { request.setValue(name, forHTTPHeaderField: "Mcp-Name") }
         try applyAuth(to: &request)
         request.httpBody = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": UUID().uuidString, "method": method, "params": parameters], options: [.sortedKeys])
@@ -149,8 +161,26 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
          catch is CancellationError { throw CancellationError() }
          catch let error as URLError where error.code == .timedOut { throw CoreError(code: .commandTimedOut, message: "MCP HTTP \(method) timed out") }
         catch { throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP \(method) transport failed") }
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP \(method) failed") }
-        return (data, http.value(forHTTPHeaderField: "Content-Type") ?? "application/json")
+        guard let http = response as? HTTPURLResponse else {
+            throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP \(method) failed")
+        }
+        if !(200..<300).contains(http.statusCode) {
+            // debug
+            // print("MCP HTTP \(method) debug: status=\(http.statusCode), body=\(String(decoding: data, as: UTF8.self))")
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            let auth = http.value(forHTTPHeaderField: "WWW-Authenticate") ?? ""
+            if auth.lowercased().contains("oauth") || auth.lowercased().contains("bearer") {
+                throw CoreError(code: .permissionDenied, message: "OAuth authorization required (HTTP \(http.statusCode))")
+            }
+            throw CoreError(code: .permissionDenied, message: "Authentication required (HTTP \(http.statusCode))")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let bodyStr = String(decoding: data, as: UTF8.self)
+            throw CoreError(code: .mcpServerUnavailable, message: "MCP HTTP \(method) failed (HTTP \(http.statusCode)): \(bodyStr.prefix(200))")
+        }
+        let respSessionID = http.value(forHTTPHeaderField: "Mcp-Session-Id") ?? sessionID
+        return (data, http.value(forHTTPHeaderField: "Content-Type") ?? "application/json", respSessionID)
     }
     private func applyAuth(to request: inout URLRequest) throws {
         switch configuration.auth {
@@ -193,18 +223,133 @@ public struct MCPStdioTransport: MCPToolInvoker {
     private func request(method: String, parameters: [String: Any]) async throws -> Data {
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
         guard let command = configuration.command, command.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
-        let payload = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": UUID().uuidString, "method": method, "params": parameters], options: [.sortedKeys])
         var environment = EnvironmentSanitizer.sanitized()
         for (name, ref) in configuration.environment { if let value = try resolver.resolve(ref) { environment[name] = value } }
-        let result = try await runToolProcess(
-            invocation: ToolProcessInvocation(executable: command, arguments: configuration.arguments),
-            cwd: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
-            environment: environment,
-            timeoutMilliseconds: Int(configuration.timeoutSeconds * 1_000),
-            standardInput: String(decoding: payload, as: UTF8.self) + "\n"
-        )
-        guard result.exitCode == 0 else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio exited \(result.exitCode)") }
-        return Data(result.stdout.utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command)
+        process.arguments = configuration.arguments
+        process.environment = environment
+        process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            throw CoreError(code: .mcpServerUnavailable, message: "Failed to launch MCP stdio process: \(error.localizedDescription)")
+        }
+
+        let stdinHandle = stdinPipe.fileHandleForWriting
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let timeoutSeconds = configuration.timeoutSeconds > 0 ? configuration.timeoutSeconds : 30.0
+        let reqId = UUID().uuidString
+
+        let initReq: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": "init-1",
+            "method": "initialize",
+            "params": [
+                "protocolVersion": "2024-11-05",
+                "capabilities": [String: Any](),
+                "clientInfo": ["name": "lingxiagent", "version": "0.1.0"]
+            ]
+        ]
+        let initData = try JSONSerialization.data(withJSONObject: initReq)
+        let notifyReq: [String: Any] = [
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": [String: Any]()
+        ]
+        let notifyData = try JSONSerialization.data(withJSONObject: notifyReq)
+        let targetReq: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": reqId,
+            "method": method,
+            "params": parameters
+        ]
+        let targetReqData = try JSONSerialization.data(withJSONObject: targetReq)
+
+        final class TimeoutBox: @unchecked Sendable {
+            var timedOut = false
+        }
+        let timeoutBox = TimeoutBox()
+
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+            if process.isRunning {
+                timeoutBox.timedOut = true
+                process.terminate()
+            }
+        }
+        defer {
+            watchdog.cancel()
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+
+        try stdinHandle.write(contentsOf: initData)
+        try stdinHandle.write(contentsOf: Data("\n".utf8))
+
+        var buffer = Data()
+        var initCompleted = false
+        var targetResultData: Data?
+
+        while targetResultData == nil {
+            let chunk = stdoutHandle.availableData
+            if chunk.isEmpty {
+                break
+            }
+            buffer.append(chunk)
+
+            while let newlineRange = buffer.range(of: Data("\n".utf8)) {
+                let lineData = buffer.subdata(in: 0..<newlineRange.lowerBound)
+                buffer.removeSubrange(0..<newlineRange.upperBound)
+
+                guard !lineData.isEmpty else { continue }
+                guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                    continue
+                }
+
+                let msgId = json["id"] as? String
+                let numId = json["id"] as? Int
+
+                if !initCompleted && (msgId == "init-1" || numId == 1) {
+                    initCompleted = true
+                    try stdinHandle.write(contentsOf: notifyData)
+                    try stdinHandle.write(contentsOf: Data("\n".utf8))
+
+                    try stdinHandle.write(contentsOf: targetReqData)
+                    try stdinHandle.write(contentsOf: Data("\n".utf8))
+                } else if msgId == reqId {
+                    if let err = json["error"] as? [String: Any], let errMsg = err["message"] as? String {
+                        if errMsg.lowercased().contains("credential") || errMsg.lowercased().contains("accesskey") || errMsg.lowercased().contains("unauthorized") || errMsg.lowercased().contains("auth") {
+                            throw CoreError(code: .permissionDenied, message: "Authentication required: \(errMsg)")
+                        } else {
+                            throw CoreError(code: .toolExecutionFailed, message: "MCP error: \(errMsg)")
+                        }
+                    }
+                    targetResultData = lineData
+                    break
+                }
+            }
+        }
+
+        try? stdinHandle.close()
+
+        guard let finalData = targetResultData else {
+            if timeoutBox.timedOut {
+                throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
+            }
+            throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method)")
+        }
+        return finalData
     }
 }
 
@@ -217,7 +362,13 @@ private enum MCPToolDiscovery {
     }
 
     static func decode(_ data: Data, contentType: String = "application/json", configuration: MCPServerConfiguration) throws -> Page {
-        let decoded = try JSONDecoder().decode(Response.self, from: try MCPWire.jsonData(data, contentType: contentType))
+        let decoded: Response
+        do {
+            decoded = try JSONDecoder().decode(Response.self, from: try MCPWire.jsonData(data, contentType: contentType))
+        } catch {
+            let sample = String(decoding: data.prefix(500), as: UTF8.self)
+            throw CoreError(code: .mcpServerUnavailable, message: "MCP decode error: \(error), sample: \(sample)")
+        }
         return try Page(tools: decoded.result.tools.map { tool in
             let encoded = try JSONEncoder().encode(tool.inputSchema)
             let toolID = ToolID("\(configuration.serverID.rawValue)::\(tool.name)")

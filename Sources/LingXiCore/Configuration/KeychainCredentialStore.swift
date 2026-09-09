@@ -4,6 +4,7 @@ import LingXiProtocol
 import Security
 #endif
 
+/// Legacy Keychain store preserved strictly for non-interactive read migration.
 public actor KeychainCredentialStore: CredentialStore {
     public let service: String
 
@@ -13,24 +14,25 @@ public actor KeychainCredentialStore: CredentialStore {
 
     public func secret(for reference: CredentialRef) async throws -> String? {
         #if os(macOS)
+        guard ProcessInfo.processInfo.environment["LINGXI_DISABLE_KEYCHAIN"] != "1" else {
+            return nil
+        }
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: reference.rawValue,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip
         ]
-        #if os(macOS)
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-        #endif
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
+        if status == errSecItemNotFound || status == errSecInteractionNotAllowed {
             return nil
         }
         guard status == errSecSuccess, let data = item as? Data else {
-            throw CoreError(code: .provider, message: "Keychain read failed with OSStatus \(status)")
+            return nil
         }
         return String(data: data, encoding: .utf8)
         #else
@@ -39,33 +41,7 @@ public actor KeychainCredentialStore: CredentialStore {
     }
 
     public func setSecret(_ secret: String, for reference: CredentialRef) async throws {
-        #if os(macOS)
-        guard let data = secret.data(using: .utf8) else {
-            throw CoreError(code: .provider, message: "Invalid UTF-8 secret payload")
-        }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: reference.rawValue
-        ]
-
-        let updateFields: [String: Any] = [
-            kSecValueData as String: data
-        ]
-
-        let status = SecItemUpdate(query as CFDictionary, updateFields as CFDictionary)
-        if status == errSecItemNotFound {
-            var newQuery = query
-            newQuery[kSecValueData as String] = data
-            let addStatus = SecItemAdd(newQuery as CFDictionary, nil)
-            guard addStatus == errSecSuccess else {
-                throw CoreError(code: .provider, message: "Keychain add failed with OSStatus \(addStatus)")
-            }
-        } else if status != errSecSuccess {
-            throw CoreError(code: .provider, message: "Keychain update failed with OSStatus \(status)")
-        }
-        #endif
+        // No-op: writes to system keychain are deprecated and disabled in favor of UniversalCredentialStore.
     }
 
     public func removeSecret(for reference: CredentialRef) async throws {
@@ -75,20 +51,17 @@ public actor KeychainCredentialStore: CredentialStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: reference.rawValue
         ]
-        let status = SecItemDelete(query as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
-            throw CoreError(code: .provider, message: "Keychain delete failed with OSStatus \(status)")
-        }
+        SecItemDelete(query as CFDictionary)
         #endif
     }
 }
 
+/// Unified, cross-platform autonomous secure credential store.
+/// Decoupled from OS keychain; stores credentials in authenticated AES-256-GCM vault
+/// with machine-bound protection and optional passphrase derivation.
 public actor PlatformSecureCredentialStore: CredentialStore {
-    private let keychainStore: KeychainCredentialStore
-    private let fallbackFileStore: FileCredentialStore
-    private let allowMemoryOnlyFallback: Bool
-    private var memoryVault: [String: String] = [:]
-    private let hasPassphrase: Bool
+    private let universalStore: UniversalCredentialStore
+    private let legacyKeychain: KeychainCredentialStore
 
     public init(
         dataRoot: URL,
@@ -96,71 +69,42 @@ public actor PlatformSecureCredentialStore: CredentialStore {
         allowMemoryOnlyFallback: Bool = false,
         service: String = "com.lingxi.agent"
     ) throws {
-        self.keychainStore = KeychainCredentialStore(service: service)
-        self.fallbackFileStore = try FileCredentialStore(dataRoot: dataRoot, passphrase: passphrase)
-        self.allowMemoryOnlyFallback = allowMemoryOnlyFallback
-        let explicitPass = passphrase?.isEmpty == false ? passphrase : nil
-        let envPass = ProcessInfo.processInfo.environment["LINGXI_CREDENTIALS_PASSPHRASE"]
-        self.hasPassphrase = (explicitPass != nil) || (envPass != nil && !envPass!.isEmpty)
+        self.universalStore = try UniversalCredentialStore(
+            dataRoot: dataRoot,
+            passphrase: passphrase,
+            isMemoryOnly: allowMemoryOnlyFallback
+        )
+        self.legacyKeychain = KeychainCredentialStore(service: service)
     }
 
     public func secret(for reference: CredentialRef) async throws -> String? {
-        #if os(macOS)
-        do {
-            if let val = try await keychainStore.secret(for: reference) {
-                return val
-            }
-        } catch {
-            // Fallback when Keychain read fails
+        // 1. Primary: read from autonomous universal vault
+        if let val = try await universalStore.secret(for: reference) {
+            return val
         }
-        #endif
 
-        if hasPassphrase {
-            return try await fallbackFileStore.secret(for: reference)
+        // 2. Fallback: transparent one-time migration from legacy keychain if available (never prompts)
+        if let legacySecret = try? await legacyKeychain.secret(for: reference), !legacySecret.isEmpty {
+            // Automatically persist to autonomous vault so keychain is never queried again
+            try? await universalStore.setSecret(legacySecret, for: reference)
+            return legacySecret
         }
-        if allowMemoryOnlyFallback {
-            return memoryVault[reference.rawValue]
-        }
-        // If file vault doesn't exist, reading a non-existent secret can safely return nil
-        // But if file exists and cannot be decrypted without passphrase, fallbackFileStore will throw ConfigurationValidationError
-        return try await fallbackFileStore.secret(for: reference)
+
+        return nil
     }
 
     public func setSecret(_ secret: String, for reference: CredentialRef) async throws {
-        #if os(macOS)
-        do {
-            try await keychainStore.setSecret(secret, for: reference)
-            return
-        } catch {
-            // Fallback when Keychain write fails
-        }
-        #endif
-
-        if hasPassphrase {
-            try await fallbackFileStore.setSecret(secret, for: reference)
-            return
-        }
-        if allowMemoryOnlyFallback {
-            memoryVault[reference.rawValue] = secret
-            return
-        }
-        // Fail-closed: Never store secrets in an unauthenticated or pseudo-encrypted file vault
-        throw CoreError(
-            code: .provider,
-            message: "Keychain is unavailable and no LINGXI_CREDENTIALS_PASSPHRASE was configured. Insecure file persistence is rejected."
-        )
+        // Exclusively write to the autonomous universal vault
+        try await universalStore.setSecret(secret, for: reference)
     }
 
     public func removeSecret(for reference: CredentialRef) async throws {
-        #if os(macOS)
-        try? await keychainStore.removeSecret(for: reference)
-        #endif
+        try await universalStore.removeSecret(for: reference)
+        try? await legacyKeychain.removeSecret(for: reference)
+    }
 
-        if hasPassphrase {
-            try? await fallbackFileStore.removeSecret(for: reference)
-        }
-        if allowMemoryOnlyFallback {
-            memoryVault.removeValue(forKey: reference.rawValue)
-        }
+    /// Verifies store integrity and key correctness.
+    public func verifyStoreIntegrity() async throws -> Bool {
+        try await universalStore.verifyStoreIntegrity()
     }
 }

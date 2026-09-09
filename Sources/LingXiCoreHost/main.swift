@@ -46,7 +46,7 @@ let dataRoot = LingXiDataRootResolver.resolve(
 )
 let configurations = try ConfigurationStore(dataRoot: dataRoot)
 let snapshot = try await configurations.load()
-let credentials = try FileCredentialStore(dataRoot: dataRoot, passphrase: environment["LINGXI_CREDENTIALS_PASSPHRASE"])
+let credentials = try PlatformSecureCredentialStore(dataRoot: dataRoot, passphrase: environment["LINGXI_CREDENTIALS_PASSPHRASE"])
 let providers = try await RuntimeConfigurationResolver.resolveProviders(
     snapshot.providers,
     credentials: credentials,
@@ -55,7 +55,17 @@ let providers = try await RuntimeConfigurationResolver.resolveProviders(
     performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1",
     environment: environment
 )
-let mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true))
+let mcp: MCPRuntimeResolution
+do {
+    mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true), faultTolerant: true)
+} catch {
+    FileHandle.standardError.write(Data("Warning: Failed to resolve some MCP configurations: \(error.localizedDescription)\n".utf8))
+    var safeMCP = snapshot.mcp
+    for i in 0..<safeMCP.servers.count {
+        safeMCP.servers[i].enabled = false
+    }
+    mcp = try await RuntimeConfigurationResolver.resolveMCP(safeMCP, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true), discoverTools: false, faultTolerant: true)
+}
 let host = try CoreHost(
     providerAssembly: providers.assembly,
     providerMissingRequirements: providers.missingRequirements,

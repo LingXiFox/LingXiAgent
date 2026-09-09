@@ -10,6 +10,13 @@ public enum MCPProtocolEra: String, Sendable, Codable { case modern, legacy }
 public enum MCPCacheScope: String, Sendable, Codable { case `public`, `private` }
 public enum MCPLeaseState: String, Sendable, Codable { case armed, used, expired, revoked }
 
+public enum MCPServerRuntimeStatus: Sendable, Equatable, Codable {
+    case ready(toolCount: Int)
+    case empty
+    case error(reason: String)
+    case disabled
+}
+
 public struct MCPToolAnnotations: Sendable, Equatable, Codable {
     public let readOnlyHint: Bool?
     public let destructiveHint: Bool?
@@ -147,10 +154,25 @@ public actor MCPToolPager {
     private var sessions: [SessionID: SessionState] = [:]
     private var l2: [ProjectID: [ToolID: Int]] = [:]
     private var providerSchemaCounts: [SessionID: [Int]] = [:]
+    private var serverStatuses: [MCPServerID: MCPServerRuntimeStatus] = [:]
+    private var serverAliases: [MCPServerID: String] = [:]
     public private(set) var pageFaults = 0
 
     public init(schemaStore: MCPToolSchemaStore = MCPToolSchemaStore(), invoker: (any MCPToolInvoker)? = nil, maxSchemaBytes: Int = 128 * 1024, maxSchemaDepth: Int = 64, maxCatalogTools: Int = 1_000) {
         self.schemas = schemaStore; self.invoker = invoker; self.maxSchemaBytes = maxSchemaBytes; self.maxSchemaDepth = maxSchemaDepth; self.maxCatalogTools = maxCatalogTools
+    }
+
+    public func recordServerStatus(_ status: MCPServerRuntimeStatus, for serverID: MCPServerID, alias: String? = nil) {
+        serverStatuses[serverID] = status
+        if let alias { serverAliases[serverID] = alias }
+    }
+
+    public func serverStatus(for serverID: MCPServerID) -> MCPServerRuntimeStatus? {
+        serverStatuses[serverID]
+    }
+
+    public func allServerStatuses() -> [MCPServerID: MCPServerRuntimeStatus] {
+        serverStatuses
     }
 
     public var hasAvailableTools: Bool { !catalog.isEmpty }
@@ -179,37 +201,176 @@ public actor MCPToolPager {
         let incoming = Dictionary(uniqueKeysWithValues: tools.map { ($0.entry.toolID, $0.entry.schemaHash) })
         for id in old { catalog.removeValue(forKey: id); removeReferences(id); await schemas.remove(toolID: id, keepingHash: incoming[id]) }
         for tool in tools { catalog[tool.entry.toolID] = tool.entry }
+        if tools.isEmpty {
+            serverStatuses[serverID] = .empty
+        } else {
+            serverStatuses[serverID] = .ready(toolCount: tools.count)
+        }
+    }
+
+    public func markServerUnavailable(serverID: MCPServerID) {
+        serverStatuses[serverID] = .error(reason: "Server unavailable")
+        for (id, entry) in catalog where entry.serverID == serverID {
+            var updated = entry
+            updated.available = false
+            updated.stale = true
+            catalog[id] = updated
+        }
+        for sessionID in sessions.keys {
+            guard var state = sessions[sessionID] else { continue }
+            state.leases = state.leases.filter { lease in
+                if let entry = catalog[lease.value.toolID], entry.serverID == serverID {
+                    return false
+                }
+                return true
+            }
+            state.candidates = state.candidates.filter { toolID in
+                guard let entry = catalog[toolID] else { return true }
+                return entry.serverID != serverID
+            }
+            sessions[sessionID] = state
+        }
+    }
+
+    @discardableResult
+    public func markToolAndServerUnavailable(providerToolID: ToolID) -> MCPServerID? {
+        let matched = catalog.values.first(where: {
+            $0.toolID == providerToolID ||
+            codec.encode(serverAlias: $0.serverAlias, upstreamName: $0.upstreamName, toolID: $0.toolID) == providerToolID.rawValue
+        })
+        guard let entry = matched else { return nil }
+        markServerUnavailable(serverID: entry.serverID)
+        return entry.serverID
+    }
+
+    public func serverForTool(providerToolID: ToolID) -> MCPServerID? {
+        catalog.values.first(where: {
+            $0.toolID == providerToolID ||
+            codec.encode(serverAlias: $0.serverAlias, upstreamName: $0.upstreamName, toolID: $0.toolID) == providerToolID.rawValue
+        })?.serverID
+    }
+
+    public func annotations(for toolID: ToolID) -> MCPToolAnnotations? {
+        if let entry = catalog[toolID] {
+            return entry.annotations
+        }
+        return catalog.values.first(where: {
+            codec.encode(serverAlias: $0.serverAlias, upstreamName: $0.upstreamName, toolID: $0.toolID) == toolID.rawValue
+        })?.annotations
     }
 
     public func search(sessionID: SessionID, projectID: ProjectID, query: String, server: String? = nil, capability: String? = nil, maxResults: Int = 6) -> [MCPToolSearchCandidate] {
         // Models commonly pass "" for optional filters; an empty filter must mean "unfiltered", not "matches empty alias".
-        let server = server?.isEmpty == true ? nil : server
-        let capability = capability?.isEmpty == true ? nil : capability
+        let server = server?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : server?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let capability = capability?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : capability?.trimmingCharacters(in: .whitespacesAndNewlines)
         let terms = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         let session = sessions[sessionID] ?? SessionState()
         let project = l2[projectID] ?? [:]
         var matched: [(entry: MCPToolCatalogEntry, score: Int)] = []
-        for entry in catalog.values where (server == nil || entry.serverAlias == server) && (capability == nil || entry.tags.contains(capability!)) {
-            let text = "\(entry.upstreamName) \(entry.title) \(entry.shortDescription) \(entry.tags.joined(separator: " "))".lowercased()
-            let lexical = terms.reduce(0) { $0 + (text.contains($1) ? 100 : 0) }
-            let boost = (session.l1[entry.toolID] ?? 0) * 4 + (project[entry.toolID] ?? 0) * 2 + (entry.available ? 1 : -1000)
-            if terms.isEmpty || lexical >= 100 { matched.append((entry, lexical + boost)) }
+
+        for entry in catalog.values {
+            guard entry.available else {
+                // 排除已下线/不可用的 MCP 服务工具，严禁再次暴露给模型引发反复试探
+                continue
+            }
+            if let server = server {
+                let s = server.lowercased()
+                let a = entry.serverAlias.lowercased()
+                let id = entry.serverID.rawValue.lowercased()
+                guard a == s || a.contains(s) || s.contains(a) || id == s || id.contains(s) else {
+                    continue
+                }
+            }
+            if let capability = capability, !entry.tags.contains(capability) {
+                continue
+            }
+
+            let text = "\(entry.serverAlias) \(entry.serverID.rawValue) \(entry.upstreamName) \(entry.title) \(entry.shortDescription) \(entry.tags.joined(separator: " "))".lowercased()
+            var lexical = 0
+            for term in terms {
+                if text.contains(term) {
+                    lexical += 100
+                }
+                let a = entry.serverAlias.lowercased()
+                if a == term || a.contains(term) || term.contains(a) {
+                    lexical += 250
+                }
+                let name = entry.upstreamName.lowercased()
+                if name == term || name.contains(term) {
+                    lexical += 150
+                }
+            }
+
+            let boost = (session.l1[entry.toolID] ?? 0) * 4 + (project[entry.toolID] ?? 0) * 2
+            if terms.isEmpty || lexical >= 100 {
+                matched.append((entry, lexical + boost))
+            }
         }
+
         matched.sort { $0.score == $1.score ? $0.entry.toolID.rawValue < $1.entry.toolID.rawValue : $0.score > $1.score }
-        let result = matched.prefix(max(1, min(maxResults, 8))).map { item in
+        let limit = max(1, min(maxResults, 24))
+        var result = Array(matched.prefix(limit)).map { item in
             let entry = item.entry
             return MCPToolSearchCandidate(toolID: entry.toolID, displayName: "\(entry.serverAlias).\(entry.upstreamName)", serverAlias: entry.serverAlias, shortDescription: entry.shortDescription, riskHint: entry.annotations.readOnlyHint == true ? "external/read-only hint" : "external/untrusted", availability: entry.available ? (entry.stale ? "stale" : "available") : "unavailable", temperature: session.l1[entry.toolID] != nil ? "hot" : project[entry.toolID] != nil ? "warm" : "cold")
         }
+
+        // 探测诊断：若检索目标涉及空列表或错误状态的 MCP 服务，暴露明确的诊断条目，切断模型无休止的重试
+        for (sID, sStatus) in serverStatuses {
+            let alias = serverAliases[sID] ?? sID.rawValue
+            let matchesServerFilter: Bool
+            if let server {
+                let s = server.lowercased()
+                matchesServerFilter = (sID.rawValue.lowercased().contains(s) || alias.lowercased().contains(s) || s.contains(sID.rawValue.lowercased()))
+            } else {
+                matchesServerFilter = terms.contains(where: { sID.rawValue.lowercased().contains($0) || alias.lowercased().contains($0) })
+            }
+            if matchesServerFilter || (result.isEmpty && terms.isEmpty) {
+                switch sStatus {
+                case .empty:
+                    result.append(MCPToolSearchCandidate(
+                        toolID: ToolID("diagnostic::\(alias)::empty"),
+                        displayName: "\(alias) (无工具: 0 discovered)",
+                        serverAlias: alias,
+                        shortDescription: "MCP server '\(alias)' is connected and active, but registered 0 tools (empty list). Do NOT query or attempt to use tools from this server; proceed with builtin tools.",
+                        riskHint: "mcp/empty",
+                        availability: "empty",
+                        temperature: "cold"
+                    ))
+                case let .error(reason):
+                    result.append(MCPToolSearchCandidate(
+                        toolID: ToolID("diagnostic::\(alias)::error"),
+                        displayName: "\(alias) (服务错误)",
+                        serverAlias: alias,
+                        shortDescription: "MCP server '\(alias)' is unavailable or errored: \(reason). Do NOT query or attempt to use tools from this server; proceed with builtin tools.",
+                        riskHint: "mcp/error",
+                        availability: "unavailable",
+                        temperature: "cold"
+                    ))
+                default:
+                    break
+                }
+            }
+        }
+
         var updated = session; updated.candidates = Set(result.map(\.toolID)); sessions[sessionID] = updated
         return result
     }
 
     public func load(sessionID: SessionID, toolID: ToolID, schemaTokenBudget: Int) async throws -> MCPToolSchemaLease {
+        if toolID.rawValue.hasPrefix("diagnostic::") {
+            throw CoreError(code: .toolNotFound, message: "This entry is a diagnostic notification indicating the MCP server is empty or unavailable. Please do not attempt to load it. Proceed with builtin tools.")
+        }
         purgeExpired(sessionID)
         let effectiveID: ToolID
         if catalog[toolID] != nil {
             effectiveID = toolID
-        } else if let found = catalog.first(where: { "\($0.value.serverAlias).\($0.value.upstreamName)" == toolID.rawValue }) {
+        } else if let found = catalog.first(where: {
+            "\($0.value.serverAlias).\($0.value.upstreamName)" == toolID.rawValue ||
+            "\($0.value.serverAlias)::\($0.value.upstreamName)" == toolID.rawValue ||
+            "\($0.value.serverID.rawValue)::\($0.value.upstreamName)" == toolID.rawValue
+        }) {
+            effectiveID = found.key
+        } else if let found = catalog.first(where: { $0.value.upstreamName == toolID.rawValue }) {
             effectiveID = found.key
         } else {
             effectiveID = toolID
@@ -220,13 +381,13 @@ public actor MCPToolPager {
             return current
         }
         guard let entry = catalog[effectiveID], entry.available else { throw MCPToolPagerError.unavailable }
-        guard let schema = await schemas.schema(toolID: toolID, hash: entry.schemaHash) else { throw MCPToolPagerError.schemaMissing }
+        guard let schema = await schemas.schema(toolID: effectiveID, hash: entry.schemaHash) else { throw MCPToolPagerError.schemaMissing }
         let bytes = try JSONEncoder().encode(schema).count
         guard bytes <= maxSchemaBytes, depth(schema) <= maxSchemaDepth else { throw MCPToolPagerError.schemaTooLarge }
         guard (bytes + 3) / 4 <= schemaTokenBudget else { throw MCPToolPagerError.schemaBudgetExceeded }
         pageFaults += 1
-        let providerName = codec.encode(serverAlias: entry.serverAlias, upstreamName: entry.upstreamName, toolID: toolID)
-        let lease = MCPToolSchemaLease(leaseID: UUID().uuidString, sessionID: sessionID, toolID: toolID, schemaHash: entry.schemaHash, providerName: providerName, createdAt: .now, expiresAt: .now.addingTimeInterval(300), state: .armed)
+        let providerName = codec.encode(serverAlias: entry.serverAlias, upstreamName: entry.upstreamName, toolID: effectiveID)
+        let lease = MCPToolSchemaLease(leaseID: UUID().uuidString, sessionID: sessionID, toolID: effectiveID, schemaHash: entry.schemaHash, providerName: providerName, createdAt: .now, expiresAt: .now.addingTimeInterval(300), state: .armed)
         var state = sessions[sessionID] ?? SessionState(); state.leases[lease.leaseID] = lease; sessions[sessionID] = state
         return lease
     }
@@ -265,25 +426,60 @@ public actor MCPToolPager {
         return lease
     }
 
+    public func lazyReacquireLease(sessionID: SessionID, providerToolID: ToolID, projectID: ProjectID) async throws -> MCPToolSchemaLease {
+        guard let entry = catalog.values.first(where: { codec.encode(serverAlias: $0.serverAlias, upstreamName: $0.upstreamName, toolID: $0.toolID) == providerToolID.rawValue }) else {
+            throw MCPToolPagerError.missingTool
+        }
+        guard entry.available else { throw MCPToolPagerError.unavailable }
+        let lease = MCPToolSchemaLease(
+            leaseID: UUID().uuidString,
+            sessionID: sessionID,
+            toolID: entry.toolID,
+            schemaHash: entry.schemaHash,
+            providerName: providerToolID.rawValue,
+            createdAt: .now,
+            expiresAt: .now.addingTimeInterval(300),
+            state: .used
+        )
+        var state = sessions[sessionID] ?? SessionState()
+        state.leases[lease.leaseID] = lease
+        state.l1[entry.toolID, default: 0] += 1
+        trim(&state.l1)
+        sessions[sessionID] = state
+        l2[projectID, default: [:]][entry.toolID, default: 0] += 1
+        trim(&l2[projectID]!)
+        return lease
+    }
+
     public func execute(sessionID: SessionID, projectID: ProjectID, providerToolID: ToolID, arguments: String) async throws -> (lease: MCPToolSchemaLease, content: String) {
-        let lease = try markUsed(sessionID: sessionID, providerToolID: providerToolID, projectID: projectID)
+        let lease: MCPToolSchemaLease
+        do {
+            lease = try markUsed(sessionID: sessionID, providerToolID: providerToolID, projectID: projectID)
+        } catch let error as MCPToolPagerError where error == .leaseMissing || error == .leaseExpired {
+            lease = try await lazyReacquireLease(sessionID: sessionID, providerToolID: providerToolID, projectID: projectID)
+        }
         guard let entry = catalog[lease.toolID], let invoker else { throw MCPToolPagerError.unavailable }
         return (lease, try await invoker.call(serverID: entry.serverID, toolName: entry.upstreamName, arguments: arguments))
     }
 
     public func searchToolResult(sessionID: SessionID, projectID: ProjectID, arguments: String) throws -> String {
-        struct Input: Decodable { let query: String; let server: String?; let capability: String?; let maxResults: Int? }
+        struct Input: Decodable { let query: String?; let server: String?; let capability: String?; let maxResults: Int? }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let input = try decoder.decode(Input.self, from: Data(arguments.utf8))
+        let input = try? decoder.decode(Input.self, from: Data(arguments.utf8))
+        let query = input?.query ?? (arguments.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") ? "" : arguments)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return String(decoding: try encoder.encode(search(sessionID: sessionID, projectID: projectID, query: input.query, server: input.server, capability: input.capability, maxResults: input.maxResults ?? 6)), as: UTF8.self)
+        return String(decoding: try encoder.encode(search(sessionID: sessionID, projectID: projectID, query: query, server: input?.server, capability: input?.capability, maxResults: input?.maxResults ?? 12)), as: UTF8.self)
     }
 
     public func loadToolResult(sessionID: SessionID, arguments: String, schemaTokenBudget: Int) async throws -> String {
-        struct Input: Decodable { let toolId: String }
+        struct Input: Decodable { let toolId: String? }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let input = try decoder.decode(Input.self, from: Data(arguments.utf8))
-        let lease = try await load(sessionID: sessionID, toolID: ToolID(input.toolId), schemaTokenBudget: schemaTokenBudget)
+        let input = try? decoder.decode(Input.self, from: Data(arguments.utf8))
+        let rawID = input?.toolId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? (arguments.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") ? "" : arguments.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !rawID.isEmpty else {
+            throw CoreError(code: .toolArgumentInvalid, message: "load_tool 需要有效 tool_id")
+        }
+        let lease = try await load(sessionID: sessionID, toolID: ToolID(rawID), schemaTokenBudget: schemaTokenBudget)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return String(decoding: try encoder.encode(["status": "leased", "tool": lease.toolID.rawValue, "provider_name": lease.providerName]), as: UTF8.self)
     }

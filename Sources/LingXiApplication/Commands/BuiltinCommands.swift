@@ -147,23 +147,69 @@ public enum BuiltinCommands {
             ApplicationCommand(
                 name: "resume",
                 aliases: [],
-                description: "恢复或切换 Session",
+                description: "恢复历史会话 (按工作目录分类)",
                 category: "Session",
                 argumentSchema: "[sessionID]"
             ) { ctx in
+                let sessions = (try? await ctx.client.session.list())?.items ?? []
+                let currentCwd = FileManager.default.currentDirectoryPath
+
                 if let target = ctx.arguments.first {
-                    let targetID = SessionID(target)
+                    // 支持短 ID / 前缀匹配
+                    let matched = sessions.first { $0.sessionID.rawValue == target }
+                        ?? sessions.first { $0.sessionID.rawValue.lowercased().hasPrefix(target.lowercased()) }
+                    let targetID = matched?.sessionID ?? SessionID(target)
+                    let targetDir = matched?.workingDirectory ?? currentCwd
+                    var msg = "已切换到会话: \(targetID.rawValue)"
+                    if targetDir != currentCwd {
+                        msg += "\n🔄 已自动切换工作目录至: \(targetDir)"
+                    }
                     return ApplicationCommandResult(
-                        output: "已切换到会话: \(targetID.rawValue)",
+                        output: msg,
                         sessionIDToSwitch: targetID
                     )
                 } else {
-                    let sessions = (try? await ctx.client.session.list())?.items ?? []
-                    var output = "可用会话 (\(sessions.count)):"
-                    for s in sessions {
-                        output += "\n  • \(s.sessionID.rawValue)"
+                    if sessions.isEmpty {
+                        return ApplicationCommandResult(output: "暂无可恢复的历史会话。")
                     }
-                    return ApplicationCommandResult(output: output)
+
+                    // 按工作目录分组：当前目录置顶
+                    var groups: [String: [SessionSummary]] = [:]
+                    for s in sessions {
+                        let dir = s.workingDirectory ?? currentCwd
+                        groups[dir, default: []].append(s)
+                    }
+
+                    let sortedDirs = groups.keys.sorted { d1, d2 in
+                        let isCurrent1 = (d1 == currentCwd)
+                        let isCurrent2 = (d2 == currentCwd)
+                        if isCurrent1 != isCurrent2 { return isCurrent1 }
+                        let latest1 = groups[d1]?.map(\.updatedAt).max() ?? Date.distantPast
+                        let latest2 = groups[d2]?.map(\.updatedAt).max() ?? Date.distantPast
+                        return latest1 > latest2
+                    }
+
+                    let dateFormatter = DateFormatter()
+                    dateFormatter.dateFormat = "MM-dd HH:mm"
+
+                    var sections: [String] = []
+                    sections.append("可用历史会话 (按工作目录分类展示，共 \(sessions.count) 个):")
+
+                    for dir in sortedDirs {
+                        let dirSessions = (groups[dir] ?? []).sorted(by: { $0.updatedAt > $1.updatedAt })
+                        let isCurrent = (dir == currentCwd)
+                        let header = isCurrent ? "📂 [当前工作目录] \(dir)" : "📂 \(dir)"
+                        var lines: [String] = [header]
+                        for s in dirSessions.prefix(6) {
+                            let shortID = String(s.sessionID.rawValue.prefix(8))
+                            let dateStr = dateFormatter.string(from: s.updatedAt)
+                            let title = s.title ?? "未命名会话"
+                            lines.append("  • \(shortID) · \(dateStr) (\(s.messageCount)条消息) · \(title)")
+                        }
+                        sections.append(lines.joined(separator: "\n"))
+                    }
+                    sections.append("提示: 输入 /resume <sessionID> 恢复指定会话；恢复非当前目录会话将自动切换工作文件夹。")
+                    return ApplicationCommandResult(output: sections.joined(separator: "\n\n"))
                 }
             },
 

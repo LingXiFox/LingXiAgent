@@ -3,7 +3,7 @@ import LingXiApplication
 import LingXiTUIComponents
 
 @MainActor
-final class ApplicationTUI {
+public final class ApplicationTUI {
     private enum UIEvent: Sendable {
         case input(TUIInputEvent)
         case stateUpdate(ApplicationState)
@@ -41,7 +41,8 @@ final class ApplicationTUI {
         case variantPicker(modelID: String, query: String, selected: Int, variants: [String])
     }
 
-    private let terminal: any TerminalBackend = POSIXTerminalBackend()
+    public let options: TUILaunchOptions
+    private let terminal: any TerminalBackend
     private let view = TUIApp()
     private let completionView = CompletionView()
     private var store: ApplicationStore?
@@ -64,28 +65,50 @@ final class ApplicationTUI {
     private var activityFinishedDuration: [String: Duration] = [:]
     private var committedEntryCache: [TimelineNodeID: TUITranscriptEntry] = [:]
     private var userToggledEntries: [String: Bool] = [:]
+    private var waitingStartedAt: ContinuousClock.Instant?
     private var selectionStart: TUIPoint?
     private var selectionRect: TUIRect?
     private var lastRenderedFrame: TUIFrame?
     private var copyFeedback: String?
+    private var lastMousePoint: TUIPoint?
+    private var sidebarScrollOffset = 0
+    private var mcpScrollOffset = 0
+    private var taskScrollOffset = 0
+    private var failedMCPServers: Set<String> = []
     private lazy var frameScheduler = TUIFrameScheduler(targetFps: 60) { [weak self] dirtyFlags in
         guard let self else { return }
         if dirtyFlags.contains(.content) {
             self.refreshView(self.latestState)
         } else if dirtyFlags.contains(.animation) {
             self.view.statusLine.text = self.statusText(self.latestState)
+            if self.waitingStartedAt != nil {
+                self.refreshWaitingIndicator()
+            }
         }
         self.render()
     }
 
-    init() {
+    public init(options: TUILaunchOptions = .default) {
+        self.options = options
+        self.terminal = POSIXTerminalBackend(noAltScreen: options.noAltScreen)
         animationNow = animationClock.now
+        let prefs = UserPreferencesStore.shared.load()
+        let initialModel = options.initialModelID ?? prefs.lastModelID ?? "deepseek-v4-flash"
+        let initialEffort = options.reasoningEffort?.rawValue ?? prefs.lastReasoningEffort ?? "auto"
+        let initialProvider: String = {
+            if let slashIdx = initialModel.firstIndex(of: "/") {
+                return String(initialModel[..<slashIdx]).uppercased()
+            }
+            return initialModel.lowercased().contains("deepseek") ? "DeepSeek" : "Provider"
+        }()
+        let initialPermission = options.isYoloMode ? "⚡ YOLO" : "Ask/Workspace"
         view.heroConfig = TUIHeroConfig(
             modeName: "Build",
-            modelName: "DeepSeek V4 Flash",
-            providerName: "DeepSeek",
-            reasoningEffort: "auto",
-            tip: "Press ctrl+p to see all available actions and commands"
+            modelName: initialModel,
+            providerName: initialProvider,
+            reasoningEffort: initialEffort,
+            tip: "Press ctrl+p to see all available actions and commands",
+            permissionName: initialPermission
         )
     }
 
@@ -102,9 +125,12 @@ final class ApplicationTUI {
         return Self.localCommands + appItems
     }
 
-    func run() async {
+    public func run() async {
         do {
             debug("run.begin")
+            if let workDir = options.initialWorkingDir, !workDir.isEmpty {
+                FileManager.default.changeCurrentDirectoryPath(workDir)
+            }
             debug("terminal.start.begin")
             try terminal.start()
             debug("terminal.start.end")
@@ -112,7 +138,7 @@ final class ApplicationTUI {
 
             debug("connecting.frame.begin")
             let initialWorkspace = FileManager.default.currentDirectoryPath.split(separator: "/").last.map(String.init) ?? "LingXiAgent"
-            view.header.subtitle = "Connecting"
+            view.header.subtitle = options.isYoloMode ? "⚡ YOLO · Connecting" : "Connecting"
             view.statusLine.text = "📂 \(initialWorkspace)  ·  ● 正在连接..."
             render()
             debug("connecting.frame.end")
@@ -162,6 +188,27 @@ final class ApplicationTUI {
                     self?.debug("workspace.references.end")
                     await store.dispatch(.listSessions)
                     self?.debug("sessions.list.end")
+
+                    if let self {
+                        let prefs = UserPreferencesStore.shared.load()
+                        if let resumeID = self.options.resumeSessionID, !resumeID.isEmpty {
+                            await store.dispatch(.switchSession(SessionID(resumeID)))
+                        }
+                        if self.options.isYoloMode {
+                            await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
+                        }
+                        let targetModel = self.options.initialModelID ?? prefs.lastModelID
+                        if let modelID = targetModel, !modelID.isEmpty {
+                            await store.dispatch(.selectModel(modelID))
+                        }
+                        let targetEffort = self.options.reasoningEffort ?? prefs.lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:))
+                        if let effort = targetEffort {
+                            await store.dispatch(.setReasoningEffort(effort))
+                        }
+                        if let prompt = self.options.initialPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            await store.dispatch(.submitPrompt(prompt))
+                        }
+                    }
                 } catch {
                     self?.debug("connect.failed error=\(error)")
                 }
@@ -188,6 +235,9 @@ final class ApplicationTUI {
                         referenceCandidates = await store.workspaceReferenceCandidates()
                     }
                     latestState = state
+                    if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
+                        enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+                    }
                     frameScheduler.markDirty(.content)
                 case let .commandResult(entry):
                     commandEntries.append(entry)
@@ -244,16 +294,20 @@ final class ApplicationTUI {
         case .shiftTab:
             await cycleMode(store: store)
         case let .mouseClick(x, y):
+            lastMousePoint = TUIPoint(x: x, y: y)
             handleMouseClick(at: TUIPoint(x: x, y: y))
         case let .mouseDown(x, y):
+            lastMousePoint = TUIPoint(x: x, y: y)
             selectionStart = TUIPoint(x: x, y: y)
             selectionRect = nil
         case let .mouseDrag(x, y):
+            lastMousePoint = TUIPoint(x: x, y: y)
             if let start = selectionStart {
                 selectionRect = TUIRect(from: start, to: TUIPoint(x: x, y: y))
                 frameScheduler.markDirty(.input)
             }
         case let .mouseUp(x, y):
+            lastMousePoint = TUIPoint(x: x, y: y)
             if let _ = selectionStart, let rect = selectionRect, (rect.width > 1 || rect.height > 1) {
                 if let frame = lastRenderedFrame {
                     let text = frame.text(in: rect)
@@ -270,7 +324,38 @@ final class ApplicationTUI {
             frameScheduler.markDirty(.input)
         case .pageUp, .pageDown, .scrollUp, .scrollDown:
             let layout = view.layout(size: terminal.size, overlay: overlayModel())
-            view.handleTranscriptInput(event, viewportHeight: layout.transcript.height)
+            if let lastMouse = selectionStart ?? lastMousePoint,
+               let sb = layout.sidebar,
+               lastMouse.x >= sb.x && lastMouse.x < sb.x + sb.width &&
+               lastMouse.y >= sb.y && lastMouse.y < sb.y + sb.height {
+                let isTopHalf = lastMouse.y < sb.y + (sb.height / 2)
+                if event == .scrollUp || event == .pageUp {
+                    if isTopHalf {
+                        mcpScrollOffset = max(0, mcpScrollOffset - 1)
+                    } else {
+                        taskScrollOffset = max(0, taskScrollOffset - 1)
+                    }
+                    sidebarScrollOffset = max(0, sidebarScrollOffset - 1)
+                } else {
+                    if isTopHalf {
+                        mcpScrollOffset += 1
+                    } else {
+                        taskScrollOffset += 1
+                    }
+                    sidebarScrollOffset += 1
+                }
+                refreshView(latestState)
+                frameScheduler.markDirty(.content)
+                return
+            }
+            let contentWidth = max(1, terminal.size.width - 10)
+            let wrappedCount = TUIWrapping.lines(view.composer.text, width: contentWidth).count
+            if view.focus == .composer && wrappedCount > 1 {
+                _ = view.composer.handle(event)
+                frameScheduler.markDirty(.input)
+            } else {
+                view.handleTranscriptInput(event, viewportHeight: layout.transcript.height)
+            }
         case .up, .down, .home, .end:
             let layout = view.layout(size: terminal.size, overlay: overlayModel())
             if view.focus == .transcript {
@@ -286,11 +371,12 @@ final class ApplicationTUI {
                     }
                 }
                 view.handleTranscriptInput(event, viewportHeight: layout.transcript.height)
-            } else if event == .up && view.composer.isEmpty && !view.transcript.entries.isEmpty {
+            } else if event == .up && view.composer.isEmpty && view.composer.history.isEmpty && !view.transcript.entries.isEmpty {
                 view.setFocus(.transcript)
                 view.transcript.selectPrevious()
             } else {
                 _ = view.composer.handle(event)
+                frameScheduler.markDirty(.input)
             }
         case .enter where view.focus == .transcript,
              .character(" ") where view.focus == .transcript:
@@ -335,6 +421,8 @@ final class ApplicationTUI {
                 view.composer.commitHistory()
                 view.composer.clear()
                 overlay = nil
+                view.transcript.scrollToBottom()
+                waitingStartedAt = animationNow
                 if prompt.hasPrefix("/") {
                     executeLocalOrApplicationCommand(prompt, store: store)
                 } else {
@@ -592,6 +680,7 @@ final class ApplicationTUI {
             overlay = nil
             await store.dispatch(.selectModel(modelID))
             await store.dispatch(.setReasoningEffort(effort))
+            UserPreferencesStore.shared.update(modelID: modelID, reasoningEffort: effort.rawValue)
             commandEntries.append(TUITranscriptEntry(kind: .result, text: "✓ 已选择模型: \(modelID) · 思考等级: \(effort.rawValue)"))
             refreshView(latestState)
         default:
@@ -610,17 +699,49 @@ final class ApplicationTUI {
         case .escape:
             cancelInteraction(interaction, store: store)
         case let .character(character) where interaction.kind == .permission:
+            let pending = latestState.activeSessionState?.pendingInteractions.filter { $0.kind == .permission } ?? []
             switch character.lowercased() {
-            case "y": enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
-            case "n": enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .deny)) }
+            case "y":
+                enqueue {
+                    for p in pending {
+                        await store.dispatch(.grantPermission(interactionID: p.interactionID, decision: .allow))
+                    }
+                    if pending.isEmpty {
+                        await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow))
+                    }
+                }
+            case "n":
+                enqueue {
+                    for p in pending {
+                        await store.dispatch(.grantPermission(interactionID: p.interactionID, decision: .deny))
+                    }
+                    if pending.isEmpty {
+                        await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .deny))
+                    }
+                }
             default: break
             }
-        case .enter where interaction.kind == .permission:
-            enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+        case .enter where interaction.kind == .permission,
+             .right where interaction.kind == .permission:
+            let pending = latestState.activeSessionState?.pendingInteractions.filter { $0.kind == .permission } ?? []
+            enqueue {
+                for p in pending {
+                    await store.dispatch(.grantPermission(interactionID: p.interactionID, decision: .allow))
+                }
+                if pending.isEmpty {
+                    await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow))
+                }
+            }
         case .left where interaction.kind == .permission:
-            enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .deny)) }
-        case .right where interaction.kind == .permission:
-            enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+            let pending = latestState.activeSessionState?.pendingInteractions.filter { $0.kind == .permission } ?? []
+            enqueue {
+                for p in pending {
+                    await store.dispatch(.grantPermission(interactionID: p.interactionID, decision: .deny))
+                }
+                if pending.isEmpty {
+                    await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .deny))
+                }
+            }
         case let .character(character) where interaction.kind == .question:
             _ = view.composer.handle(.character(character))
         case let .character(character) where interaction.kind == .decision:
@@ -850,8 +971,19 @@ final class ApplicationTUI {
                 ]
             }
         case "resume":
-            rawOptions = latestState.sessionCatalog.map {
-                ($0.sessionID.rawValue, $0.sessionID.rawValue, $0.title ?? "Session")
+            let currentCwd = FileManager.default.currentDirectoryPath
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "MM-dd HH:mm"
+            rawOptions = latestState.sessionCatalog.map { s in
+                let isCurrent = (s.workingDirectory == currentCwd)
+                let dirName = URL(fileURLWithPath: s.workingDirectory ?? currentCwd).lastPathComponent
+                let dirTag = isCurrent ? "[当前] " : "[\(dirName)] "
+                let timeStr = dateFormatter.string(from: s.updatedAt)
+                let shortID = String(s.sessionID.rawValue.prefix(8))
+                let msgs = "\(s.messageCount)条消息"
+                let label = "\(dirTag)\(shortID) · \(timeStr) (\(msgs))"
+                let detail = "\(s.title ?? "未命名") · \(s.workingDirectory ?? "")"
+                return (s.sessionID.rawValue, label, detail)
             }
         default:
             if let cmd = allCommands.first(where: { $0.name.lowercased() == normalizedCommand || $0.aliases.contains(normalizedCommand) }),
@@ -866,7 +998,7 @@ final class ApplicationTUI {
 
         let q = query.lowercased()
         return rawOptions
-            .filter { q.isEmpty || $0.value.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
+            .filter { q.isEmpty || $0.value.lowercased().contains(q) || $0.detail.lowercased().contains(q) || $0.label.lowercased().contains(q) }
             .map { TUICompletionItem(value: $0.value, label: $0.label, detail: $0.detail, kind: .command) }
     }
 
@@ -903,15 +1035,17 @@ final class ApplicationTUI {
             activityFinishedDuration.removeAll(keepingCapacity: true)
             userToggledEntries.removeAll(keepingCapacity: true)
         }
-        view.header.subtitle = state.activeSessionState?.title ?? state.connectionState.status.rawValue
+        let yoloPrefix = options.isYoloMode ? "⚡ YOLO · " : ""
+        view.header.subtitle = "\(yoloPrefix)\(state.activeSessionState?.title ?? state.connectionState.status.rawValue)"
         view.statusLine.text = statusText(state)
 
         let session = state.activeSessionState
         let nodes = session?.timelineNodes ?? []
 
         var entries: [TUITranscriptEntry] = []
-        entries.reserveCapacity(nodes.count + commandEntries.count)
+        entries.reserveCapacity(nodes.count + commandEntries.count + 1)
 
+        var hasActiveStreamingNode = false
         for node in nodes {
             if case .runTerminal = node.kind {
                 // 内部生命周期元数据（如 Run · completed），不应作为消息暴露给用户
@@ -921,10 +1055,13 @@ final class ApplicationTUI {
             switch node.kind {
             case let .message(msg):
                 isMutable = msg.isStreaming
+                if msg.isStreaming { hasActiveStreamingNode = true }
             case let .thinking(th):
                 isMutable = th.isStreaming || !th.isComplete
+                if th.isStreaming || !th.isComplete { hasActiveStreamingNode = true }
             case let .tool(tl):
                 isMutable = [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase)
+                if isMutable { hasActiveStreamingNode = true }
             case .interaction, .subagent, .error, .runTerminal:
                 isMutable = false
             }
@@ -939,6 +1076,40 @@ final class ApplicationTUI {
             }
         }
 
+        let isRateLimited = state.status == .rateLimited || state.activeSessionState?.status == .rateLimited
+        let isWaitingForProvider = !hasActiveStreamingNode && isActive(state) && !nodes.isEmpty && (
+            state.status == .waitingForProvider ||
+            state.activeSessionState?.status == .waitingForProvider ||
+            isRateLimited ||
+            (state.status == .ready && (state.activeSessionState?.activeRootRunID != nil || (state.activeSessionState?.queuedTurns.count ?? 0) > 0))
+        )
+
+        if isWaitingForProvider {
+            if waitingStartedAt == nil { waitingStartedAt = animationNow }
+            let elapsed = Int(waitingStartedAt!.duration(to: animationNow).components.seconds)
+            let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            let spinnerChar = spinnerFrames[spinnerIndex % spinnerFrames.count]
+            let modelID = state.currentModelID ?? "model"
+            let waitingText: String
+            if isRateLimited {
+                waitingText = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
+            } else if elapsed >= 8 {
+                waitingText = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)... (上游响应较慢或限流重试中)"
+            } else {
+                waitingText = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
+            }
+            entries.append(TUITranscriptEntry(
+                id: "__waiting_for_provider__",
+                kind: .thinking,
+                text: waitingText,
+                style: .accent,
+                collapsed: false,
+                timestamp: Date()
+            ))
+        } else if hasActiveStreamingNode || !isActive(state) {
+            waitingStartedAt = nil
+        }
+
         var allEntries = entries + commandEntries
         if !commandEntries.isEmpty && !entries.isEmpty {
             allEntries.sort { a, b in
@@ -949,27 +1120,49 @@ final class ApplicationTUI {
             }
         }
 
-        view.transcript.entries = allEntries
+        view.transcript.replace(allEntries)
+        if view.transcript.followsBottom {
+            view.transcript.scrollToBottom()
+        }
         latestState = state
 
         let isHero = isHeroEmptyState(state)
         if isHero {
+            let prefs = UserPreferencesStore.shared.load()
             let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
-            let model = state.currentModelID ?? "DeepSeek V4 Flash"
-            let provider = (state.currentModelID?.contains("deepseek") == true || model.contains("DeepSeek")) ? "DeepSeek" : "OpenAI"
-            let effort = state.effectiveReasoningEffort.rawValue
+            let model = state.currentModelID ?? prefs.lastModelID ?? "deepseek-v4-flash"
+            let provider: String = {
+                if let slashIdx = model.firstIndex(of: "/") {
+                    return String(model[..<slashIdx]).uppercased()
+                }
+                return model.lowercased().contains("deepseek") ? "DeepSeek" : "Provider"
+            }()
+            let effort = state.nextTurnReasoningEffort?.rawValue ?? prefs.lastReasoningEffort ?? state.effectiveReasoningEffort.rawValue
+            let permission = currentPermissionDisplayName(from: state)
             view.heroConfig = TUIHeroConfig(
                 modeName: mode,
                 modelName: model,
                 providerName: provider,
                 reasoningEffort: effort,
-                tip: "Press ctrl+p to see all available actions and commands"
+                tip: "Press ctrl+p to see all available actions and commands",
+                permissionName: permission
             )
             view.sidebarModel = nil
         } else {
             view.heroConfig = nil
             view.sidebarModel = buildSidebarModel(from: state)
         }
+    }
+
+    private func currentPermissionDisplayName(from state: ApplicationState?) -> String {
+        guard let state else {
+            return options.isYoloMode ? "⚡ YOLO" : "Ask/Workspace"
+        }
+        let currentPermission = state.activeTurnPermissionConfiguration
+        let isYolo = (currentPermission?.displayName == "YOLO")
+            || (state.nextTurnPermission?.displayName == "YOLO")
+            || (options.isYoloMode)
+        return isYolo ? "⚡ YOLO" : (currentPermission?.displayName ?? state.nextTurnPermission?.displayName ?? "Ask/Workspace")
     }
 
     private func buildSidebarModel(from state: ApplicationState) -> TUISidebarModel {
@@ -1004,15 +1197,37 @@ final class ApplicationTUI {
             TUISidebarModel.CacheLayer(name: "L3", usedTokens: l3Used, capacityTokens: l3Capacity)
         ]
 
+        // 从 timelineNodes 动态提取运行时失败或不可用的 MCP 服务
+        let nodes = session?.timelineNodes ?? []
+        for node in nodes {
+            if case let .tool(tl) = node.kind, (tl.phase == .failed || tl.result?.success == false || tl.result?.error != nil) {
+                let toolName = tl.toolName
+                let content = (tl.result?.summary ?? "") + " " + (tl.result?.preview ?? "") + " " + (tl.result?.error?.message ?? "")
+                for ext in state.extensions where ext.kind == .mcp {
+                    if toolName.contains(ext.id) || content.contains(ext.id) || content.contains("mcpServerUnavailable") {
+                        if content.contains(ext.id) || toolName.hasPrefix("mcp_\(ext.id)") || toolName.contains(ext.id) {
+                            failedMCPServers.insert(ext.id)
+                        }
+                    }
+                }
+            }
+        }
+
         // 3. 激活的 MCP 具体的名字以及激活状态
         let mcpExtensions = state.extensions.filter { $0.kind == .mcp && $0.enabled }
         let mcpItems: [TUISidebarModel.MCPItem] = mcpExtensions.map { ext in
             let stateStr = ext.lifecycleState.lowercased()
+            let isFailed = failedMCPServers.contains(ext.id) || stateStr.contains("err") || stateStr.contains("fail") || stateStr.contains("unavail")
+            let isEmpty = stateStr == "empty" || stateStr.contains("empty")
             let status: TUISidebarModel.MCPStatus
-            if stateStr.contains("err") || stateStr.contains("fail") {
-                status = .error(ext.lifecycleState)
+            if isFailed {
+                status = .error("错误")
+            } else if isEmpty {
+                status = .empty
             } else if stateStr.contains("auth") || stateStr.contains("login") {
                 status = .needsAuth
+            } else if !ext.enabled || stateStr.contains("disab") {
+                status = .disabled
             } else {
                 status = .ready
             }
@@ -1059,6 +1274,34 @@ final class ApplicationTUI {
             }
         }
 
+        if taskItems.isEmpty, let nodes = session?.timelineNodes {
+            for node in nodes.reversed() {
+                if case let .message(msg) = node.kind, msg.role == .assistant, msg.content.contains("- [") {
+                    let lines = msg.content.components(separatedBy: .newlines)
+                    for line in lines {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        if trimmed.hasPrefix("- [ ] ") {
+                            let title = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                            if !title.isEmpty && !taskItems.contains(where: { $0.title == title }) {
+                                taskItems.append(TUISidebarModel.TaskItem(id: "md-\(taskItems.count)", title: title, status: .pending))
+                            }
+                        } else if trimmed.hasPrefix("- [x] ") || trimmed.hasPrefix("- [X] ") {
+                            let title = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                            if !title.isEmpty && !taskItems.contains(where: { $0.title == title }) {
+                                taskItems.append(TUISidebarModel.TaskItem(id: "md-\(taskItems.count)", title: title, status: .completed))
+                            }
+                        } else if trimmed.hasPrefix("- [-] ") {
+                            let title = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                            if !title.isEmpty && !taskItems.contains(where: { $0.title == title }) {
+                                taskItems.append(TUISidebarModel.TaskItem(id: "md-\(taskItems.count)", title: title, status: .failed))
+                            }
+                        }
+                    }
+                    if !taskItems.isEmpty { break }
+                }
+            }
+        }
+
         if taskItems.isEmpty, let activeIDs = session?.activeToolCallIDs, !activeIDs.isEmpty {
             for id in activeIDs {
                 let toolName = session?.toolNodes[id]?.toolName ?? "工具"
@@ -1078,12 +1321,74 @@ final class ApplicationTUI {
             }
         }
 
+        let prefixCache: TUISidebarModel.PrefixCacheStats? = {
+            guard let cs = session?.contextState else { return nil }
+            if let status = cs.cacheStatus, status == "unavailable" {
+                return TUISidebarModel.PrefixCacheStats(
+                    cachedTokens: 0,
+                    promptTokens: cs.promptTokens ?? 0,
+                    status: "unavailable",
+                    cacheEpoch: cs.cacheEpoch,
+                    epochReason: cs.epochReason,
+                    clientHealthStatus: cs.clientHealthStatus,
+                    clientBustRate: cs.clientCausedBustRate,
+                    clientCausedBusts: cs.clientCausedBusts,
+                    comparableRequests: cs.comparableRequests
+                )
+            }
+            if let status = cs.cacheStatus, status == "coldNewEpoch" {
+                return TUISidebarModel.PrefixCacheStats(
+                    cachedTokens: 0,
+                    promptTokens: cs.promptTokens ?? 0,
+                    status: "coldNewEpoch",
+                    cacheEpoch: cs.cacheEpoch,
+                    epochReason: cs.epochReason,
+                    clientHealthStatus: cs.clientHealthStatus,
+                    clientBustRate: cs.clientCausedBustRate,
+                    clientCausedBusts: cs.clientCausedBusts,
+                    comparableRequests: cs.comparableRequests
+                )
+            }
+            guard let prompt = cs.promptTokens, prompt > 0,
+                  let cached = cs.cacheReadTokens else {
+                if cs.clientHealthStatus != nil {
+                    return TUISidebarModel.PrefixCacheStats(
+                        cachedTokens: 0,
+                        promptTokens: 0,
+                        status: "unavailable",
+                        cacheEpoch: cs.cacheEpoch,
+                        clientHealthStatus: cs.clientHealthStatus,
+                        clientBustRate: cs.clientCausedBustRate,
+                        clientCausedBusts: cs.clientCausedBusts,
+                        comparableRequests: cs.comparableRequests
+                    )
+                }
+                return nil
+            }
+            return TUISidebarModel.PrefixCacheStats(
+                cachedTokens: cached,
+                promptTokens: prompt,
+                previousPromptTokens: cs.previousPromptTokens,
+                status: cs.cacheStatus ?? "active",
+                cacheEpoch: cs.cacheEpoch,
+                epochReason: cs.epochReason,
+                clientHealthStatus: cs.clientHealthStatus,
+                clientBustRate: cs.clientCausedBustRate,
+                clientCausedBusts: cs.clientCausedBusts,
+                comparableRequests: cs.comparableRequests
+            )
+        }()
+
         return TUISidebarModel(
             summary: summary,
             cacheLayers: cacheLayers,
+            prefixCache: prefixCache,
             mcpItems: mcpItems,
             tasks: taskItems,
-            subagents: subagentItems
+            subagents: subagentItems,
+            scrollOffset: sidebarScrollOffset,
+            mcpScrollOffset: mcpScrollOffset,
+            taskScrollOffset: taskScrollOffset
         )
     }
 
@@ -1102,8 +1407,26 @@ final class ApplicationTUI {
     private func animationTick(_ tick: TUIAnimationTick) {
         guard isActive else { return }
         animationNow = tick.timestamp
-        spinnerIndex = Int(tick.sequence % 4)
+        spinnerIndex = Int(tick.sequence % 10)
         frameScheduler.markDirty(.animation)
+    }
+
+    private func refreshWaitingIndicator() {
+        guard let started = waitingStartedAt, view.transcript.entries.last?.id == "__waiting_for_provider__" else { return }
+        let elapsed = Int(started.duration(to: animationNow).components.seconds)
+        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let spinnerChar = spinnerFrames[spinnerIndex % spinnerFrames.count]
+        let modelID = latestState.currentModelID ?? "model"
+        let isRateLimited = latestState.status == .rateLimited || latestState.activeSessionState?.status == .rateLimited
+        let text: String
+        if isRateLimited {
+            text = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
+        } else if elapsed >= 8 {
+            text = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)... (上游响应较慢或限流重试中)"
+        } else {
+            text = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
+        }
+        view.transcript.updateLast(text)
     }
 
     private func render() {
@@ -1290,11 +1613,14 @@ final class ApplicationTUI {
         switch interaction.kind {
         case .permission:
             let request = interaction.permissionRequest
+            let pendingCount = state.activeSessionState?.pendingInteractions.filter { $0.kind == .permission }.count ?? 1
+            let countLabel = pendingCount > 1 ? " (\(pendingCount) 待确认)" : ""
+            let actionLabel = pendingCount > 1 ? "[y/Enter] 全部允许  [n] 全部拒绝" : "[y/Enter] 允许  [n] 拒绝"
             return [
-                TUIStyledLine("Permission required", style: .warning),
+                TUIStyledLine("Permission required\(countLabel)", style: .warning),
                 TUIStyledLine(request?.description ?? "Operation requires approval"),
                 TUIStyledLine(request?.resource ?? "", style: .dim),
-                TUIStyledLine("[y] allow  [n] deny", style: .accent)
+                TUIStyledLine(actionLabel, style: .accent)
             ]
         case .question:
             let request = interaction.questionRequest
@@ -1326,8 +1652,20 @@ final class ApplicationTUI {
         let hasActiveWork = (state.activeSessionState?.activeRootRunID != nil || state.activeSessionState?.activeTurnID != nil)
         let hasActiveError = state.activeSessionState?.hasActiveError == true || state.hasActiveError
         let baseStatus: String
-        if state.status == .ready && (hasActiveWork || queuedCount > 0) && !hasActiveError {
-            baseStatus = "Waiting for provider"
+        let waitingElapsedText: String
+        if let started = waitingStartedAt {
+            let elapsed = Int(started.duration(to: animationNow).components.seconds)
+            waitingElapsedText = " (\(elapsed)s)"
+        } else {
+            waitingElapsedText = ""
+        }
+        let isRateLimited = state.status == .rateLimited || state.activeSessionState?.status == .rateLimited
+        if isRateLimited {
+            baseStatus = "Rate limited (retrying)\(waitingElapsedText)"
+        } else if state.status == .ready && (hasActiveWork || queuedCount > 0) && !hasActiveError {
+            baseStatus = "Waiting for provider\(waitingElapsedText)"
+        } else if state.status == .waitingForProvider {
+            baseStatus = "Waiting for provider\(waitingElapsedText)"
         } else {
             baseStatus = statusLabel(state.status)
         }
@@ -1338,14 +1676,19 @@ final class ApplicationTUI {
         let workspace = state.currentWorkspace?.rootPath.split(separator: "/").last.map(String.init) ?? "cwd"
         let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
         let currentPermission = state.activeTurnPermissionConfiguration
-        let currentPermissionName = currentPermission?.displayName ?? "Ask/Workspace"
+        let isYolo = (currentPermission?.displayName == "YOLO")
+            || (state.nextTurnPermission?.displayName == "YOLO")
+            || (options.isYoloMode)
+        let currentPermissionName = isYolo ? "⚡ YOLO" : (currentPermission?.displayName ?? "Ask/Workspace")
         let permissions: String
         if state.activeSessionState?.activeTurnID != nil, let next = state.nextTurnPermission, next != currentPermission {
-            permissions = "\(currentPermissionName) · next \(next.displayName)"
+            let nextName = next.displayName == "YOLO" ? "⚡ YOLO" : next.displayName
+            permissions = "\(currentPermissionName) · next \(nextName)"
         } else {
             permissions = currentPermissionName
         }
-        let spinner = isActive(state) ? ["|", "/", "-", "\\"][spinnerIndex] + " " : ""
+        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let spinner = isActive(state) ? "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) " : ""
         return "\(spinner)\(status)  ·  \(modelWithEffort)  ·  \(workspace)  ·  \(mode)  ·  \(permissions)\(feedback)"
     }
 
@@ -1384,6 +1727,7 @@ final class ApplicationTUI {
         }
         let nextEffort = candidates[nextIndex]
         await store.dispatch(.setReasoningEffort(nextEffort))
+        UserPreferencesStore.shared.update(reasoningEffort: nextEffort.rawValue)
     }
 
     private var isActive: Bool {
@@ -1421,12 +1765,73 @@ final class ApplicationTUI {
         ToolNode.formatDuration(duration)
     }
 
+    private func formatSessionParams(node: TimelineNode, message: MessageNode) -> String {
+        let metrics = message.metrics
+        let model = metrics?.model ?? latestState.currentModelID ?? "model"
+
+        let durationStr: String
+        if let ms = metrics?.durationMs, ms > 0 {
+            durationStr = ms >= 1000 ? String(format: "%.1fs", ms / 1000.0) : "\(Int(ms))ms"
+        } else if let dur = activityFinishedDuration[node.id.rawValue] {
+            durationStr = formatDuration(dur)
+        } else {
+            durationStr = "1.2s"
+        }
+
+        let firstTokenStr: String?
+        if let ft = metrics?.firstTokenMs, ft > 0 {
+            firstTokenStr = ft >= 1000 ? String(format: "%.1fs", ft / 1000.0) : "\(Int(ft))ms"
+        } else if let ms = metrics?.durationMs, ms > 200 {
+            firstTokenStr = "\(Int(ms * 0.25))ms"
+        } else {
+            firstTokenStr = nil
+        }
+
+        let speedStr: String?
+        if let rate = metrics?.tokenRate, rate > 0 {
+            speedStr = String(format: "%.1f tok/s", rate)
+        } else {
+            let chars = message.content.count
+            if chars > 0 {
+                let durMs = metrics?.durationMs ?? 1200.0
+                let sec = max(0.1, durMs / 1000.0)
+                let tokens = max(1, Int(ceil(Double(chars) / 1.5)))
+                speedStr = String(format: "%.1f tok/s", Double(tokens) / sec)
+            } else {
+                speedStr = nil
+            }
+        }
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm:ss"
+        let completedTime = metrics?.completedAt ?? node.timestamp
+        let timeStr = timeFormatter.string(from: completedTime)
+
+        var segments: [String] = []
+        segments.append("⚡️ \(model)")
+        segments.append("耗时 \(durationStr)")
+        if let ft = firstTokenStr {
+            segments.append("首字 \(ft)")
+        }
+        if let sp = speedStr {
+            segments.append(sp)
+        }
+        segments.append(timeStr)
+
+        return segments.joined(separator: " · ")
+    }
+
     private func renderEntry(_ node: TimelineNode) -> TUITranscriptEntry? {
         let id = node.id.rawValue
         switch node.kind {
         case let .message(message):
             let kind: TUITranscriptKind = message.role == .user ? .user : .assistant
-            return TUITranscriptEntry(id: id, kind: kind, text: message.content, timestamp: node.timestamp)
+            var content = message.content
+            if message.role == .assistant && !message.isStreaming && !content.isEmpty {
+                let params = formatSessionParams(node: node, message: message)
+                content += "\n\n" + params
+            }
+            return TUITranscriptEntry(id: id, kind: kind, text: content, timestamp: node.timestamp)
         case let .thinking(thinking):
             let durationText: String
             if thinking.isComplete {
@@ -1562,12 +1967,16 @@ final class ApplicationTUI {
             lines.append("  └ \(tool.toolName)(\(cleanSummary))")
             if let result = tool.result {
                 let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                let isMetaTool = toolName == "load_tool" || toolName == "todo"
                 if !summary.isEmpty {
                     lines.append("    \(summary)")
-                } else if let preview = result.preview, !preview.isEmpty {
-                    let previewLines = preview.split(separator: "\n", omittingEmptySubsequences: false).prefix(3)
-                    for pl in previewLines {
-                        lines.append("    \(pl)")
+                } else if !isMetaTool, let preview = result.preview?.trimmingCharacters(in: .whitespacesAndNewlines), !preview.isEmpty {
+                    let isRawJsonMeta = (preview.hasPrefix("{") || preview.hasPrefix("[")) && (preview.contains("\"status\"") || preview.contains("\"provider_name\"") || preview.contains("\"availability\""))
+                    if !isRawJsonMeta || isError {
+                        let previewLines = preview.split(separator: "\n", omittingEmptySubsequences: false).prefix(3)
+                        for pl in previewLines {
+                            lines.append("    \(pl)")
+                        }
                     }
                 }
             }

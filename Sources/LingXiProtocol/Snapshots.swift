@@ -415,6 +415,23 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     public let l2Tokens: Int
     public let l3Tokens: Int
     public let compactionGeneration: Int
+    public let cacheReadTokens: Int?
+    public let promptTokens: Int?
+    public let previousPromptTokens: Int?
+    public let cacheStatus: String?
+    public let cacheEpoch: Int?
+    public let epochReason: String?
+    public let stablePrefixHash: String?
+    public let missDiagnostics: String?
+    public let structuralPrefixStability: Double?
+    public let clientCausedBustRate: Double?
+    public let appendOnlyContextRatio: Double?
+    public let volatileTailBytes: Int?
+    public let clientHealthStatus: String?
+    public let observedGranularity: Int?
+    public let clientCausedBusts: Int?
+    public let comparableRequests: Int?
+    public let appendOnlyViolations: Int?
 
     public init(
         sessionID: SessionID,
@@ -422,7 +439,24 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         l1Tokens: Int = 0,
         l2Tokens: Int = 0,
         l3Tokens: Int = 0,
-        compactionGeneration: Int = 0
+        compactionGeneration: Int = 0,
+        cacheReadTokens: Int? = nil,
+        promptTokens: Int? = nil,
+        previousPromptTokens: Int? = nil,
+        cacheStatus: String? = nil,
+        cacheEpoch: Int? = nil,
+        epochReason: String? = nil,
+        stablePrefixHash: String? = nil,
+        missDiagnostics: String? = nil,
+        structuralPrefixStability: Double? = nil,
+        clientCausedBustRate: Double? = nil,
+        appendOnlyContextRatio: Double? = nil,
+        volatileTailBytes: Int? = nil,
+        clientHealthStatus: String? = nil,
+        observedGranularity: Int? = nil,
+        clientCausedBusts: Int? = nil,
+        comparableRequests: Int? = nil,
+        appendOnlyViolations: Int? = nil
     ) {
         self.sessionID = sessionID
         self.estimatedTokens = estimatedTokens
@@ -430,6 +464,71 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         self.l2Tokens = l2Tokens
         self.l3Tokens = l3Tokens
         self.compactionGeneration = compactionGeneration
+        self.cacheReadTokens = cacheReadTokens
+        self.promptTokens = promptTokens
+        self.previousPromptTokens = previousPromptTokens
+        self.cacheStatus = cacheStatus
+        self.cacheEpoch = cacheEpoch
+        self.epochReason = epochReason
+        self.stablePrefixHash = stablePrefixHash
+        self.missDiagnostics = missDiagnostics
+        self.structuralPrefixStability = structuralPrefixStability
+        self.clientCausedBustRate = clientCausedBustRate
+        self.appendOnlyContextRatio = appendOnlyContextRatio
+        self.volatileTailBytes = volatileTailBytes
+        self.clientHealthStatus = clientHealthStatus
+        self.observedGranularity = observedGranularity
+        self.clientCausedBusts = clientCausedBusts
+        self.comparableRequests = comparableRequests
+        self.appendOnlyViolations = appendOnlyViolations
+    }
+
+    /// Prefix Reuse Efficiency = 实际复用旧前缀 token (cacheRead) / 上一轮可复用前缀 token (previousPromptTokens)
+    public var prefixReuseEfficiency: Double? {
+        guard let cached = cacheReadTokens, let prev = previousPromptTokens, prev > 0 else { return nil }
+        return min(1.0, Double(cached) / Double(prev))
+    }
+
+    /// Cached Input Share = 本次输入 token 中有多少来自缓存 (cacheRead / promptTokens)
+    public var cachedInputShare: Double? {
+        guard let cached = cacheReadTokens, let total = promptTokens, total > 0 else { return nil }
+        return min(1.0, Double(cached) / Double(total))
+    }
+
+    public var isClientCacheStable: Bool {
+        clientHealthStatus == nil || clientHealthStatus == "stable" || clientHealthStatus == "newEpoch"
+    }
+}
+
+/// 前缀各稳定区域指纹信息
+public struct PrefixFingerprint: Codable, Sendable, Equatable {
+    public let systemHash: String
+    public let developerHash: String
+    public let coreToolsHash: String
+    public let skillPrefixHash: String
+    public let leasedToolsHash: String
+    public let historyStableHash: String
+    public let requestProfileHash: String
+    public let stablePrefixHash: String
+
+    public init(
+        systemHash: String,
+        developerHash: String = "",
+        coreToolsHash: String,
+        skillPrefixHash: String = "",
+        leasedToolsHash: String = "",
+        historyStableHash: String = "",
+        requestProfileHash: String,
+        stablePrefixHash: String
+    ) {
+        self.systemHash = systemHash
+        self.developerHash = developerHash
+        self.coreToolsHash = coreToolsHash
+        self.skillPrefixHash = skillPrefixHash
+        self.leasedToolsHash = leasedToolsHash
+        self.historyStableHash = historyStableHash
+        self.requestProfileHash = requestProfileHash
+        self.stablePrefixHash = stablePrefixHash
     }
 }
 

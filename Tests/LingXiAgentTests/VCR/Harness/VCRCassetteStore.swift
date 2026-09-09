@@ -147,7 +147,8 @@ actor VCRCassetteStore {
             normalized = try normalizer.normalizeRequest(request, context: context)
             candidates = exchanges.filter { exchange in
                 guard exchange.sequence == candidate.sequence, let comparable = comparableRequests[exchange.sequence] else { return false }
-                return comparable.fingerprint == normalized.1 && comparable.normalized == normalized.0
+                return (comparable.fingerprint == normalized.1 && comparable.normalized == normalized.0)
+                    || Self.matchesIgnoringUnboundRunIDs(recorded: comparable.normalized, replayed: normalized.0)
             }
         }
         guard let match = candidates.min(by: { $0.sequence < $1.sequence }) else {

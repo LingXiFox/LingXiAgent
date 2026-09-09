@@ -246,6 +246,27 @@ public enum SessionReducer {
             if state.activeThinkingStepID == stepID {
                 state.activeThinkingStepID = nil
             }
+            if let meta = metadata {
+                let metrics = MessageMetrics(
+                    model: meta.model,
+                    durationMs: meta.durationMs,
+                    firstTokenMs: meta.firstTokenMs,
+                    tokenRate: meta.tokenRate,
+                    totalTokens: meta.totalTokens,
+                    completedAt: meta.completedAt ?? event.timestamp
+                )
+                for idx in state.timelineNodes.indices.reversed() {
+                    if case var .message(m) = state.timelineNodes[idx].kind, m.role == .assistant {
+                        if state.timelineNodes[idx].modelStepID == stepID || state.timelineNodes[idx].modelStepID == nil {
+                            m.metrics = metrics
+                            m.isFinal = true
+                            m.isStreaming = false
+                            state.timelineNodes[idx].kind = .message(m)
+                            break
+                        }
+                    }
+                }
+            }
 
         case let .modelStepFailed(stepID, error):
             if var thinking = state.thinkingNodes[stepID] {

@@ -5,6 +5,10 @@ import PackageDescription
 let package = Package(
     name: "LingXiAgent",
     platforms: [.macOS(.v13)],
+    products: [
+        .executable(name: "lingxiagent", targets: ["lingxiagent"]),
+        .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
+    ],
     targets: [
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
@@ -27,20 +31,25 @@ let package = Package(
             name: "LingXiCoreHost",
             dependencies: ["LingXiCore", "LingXiProtocol"]
         ),
-        // Unified CLI tool: lingxiagent auth ...
+        // Unified CLI tool: lingxiagent
         .executableTarget(
             name: "lingxiagent",
-            dependencies: ["LingXiCore", "LingXiProtocol"]
+            dependencies: ["LingXiCore", "LingXiProtocol", "LingXiApplication", "LingXiTUI"]
         ),
-        // TUI：Reference Client。禁止依赖 LingXiCore。
-        .executableTarget(
+        // TUI：Reference Client 库。禁止依赖 LingXiCore。
+        .target(
             name: "LingXiTUI",
             dependencies: ["LingXiApplication", "LingXiTUIComponents"],
             exclude: ["RetainedTUI.swift"]
         ),
+        // TUI 可执行封装，供 swift run LingXiTUI 启动
+        .executableTarget(
+            name: "LingXiTUIApp",
+            dependencies: ["LingXiTUI"]
+        ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents"],
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI"],
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),

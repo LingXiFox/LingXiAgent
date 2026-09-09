@@ -115,6 +115,38 @@ public enum AuthCLI {
             let providerID = args.count > 1 ? args[1] : nil
             return renderModels(providerID: providerID)
 
+        case "set":
+            guard args.count > 1 else {
+                return "Error: Credential reference is required. Usage: lingxiagent auth set <key> [value]"
+            }
+            let key = args[1]
+            let val: String
+            if args.count > 2 {
+                val = args[2]
+            } else {
+                guard let input = (inputReader ?? AuthCLI.readSecretWithoutEcho)("Enter secret value for '\(key)': "), !input.isEmpty else {
+                    return "Error: Secret value cannot be empty."
+                }
+                val = input
+            }
+            try await credStore.setSecret(val, for: CredentialRef(key))
+            return "✓ Successfully stored credential for '\(key)' in encrypted vault."
+
+        case "import-env":
+            guard args.count > 1 else {
+                return "Error: Environment variable name is required. Usage: lingxiagent auth import-env <ENV_VAR_NAME> [target_key]"
+            }
+            let envName = args[1]
+            let targetKey = args.count > 2 ? args[2] : envName
+            guard let envVal = ProcessInfo.processInfo.environment[envName], !envVal.isEmpty else {
+                return "Error: Environment variable '\(envName)' is not set or empty in current process."
+            }
+            try await credStore.setSecret(envVal, for: CredentialRef(targetKey))
+            if targetKey != "env:\(envName)" {
+                try await credStore.setSecret(envVal, for: CredentialRef("env:\(envName)"))
+            }
+            return "✓ Successfully imported '\(envName)' into encrypted vault (as '\(targetKey)' and 'env:\(envName)')."
+
         case "help", "--help", "-h":
             return renderHelp()
 
@@ -680,6 +712,8 @@ Available models:
             ("auth status [product]", "查看指定 Provider / OAuth 产品详情与模型规格"),
             ("auth login <product>", "进行 OAuth 授权登录或录入 API Key"),
             ("auth <product>", "login 命令快捷方式 (如: lingxiagent auth openai-codex)"),
+            ("auth set <key> [val]", "将任意自定义凭据/Token安全写入加密保险箱"),
+            ("auth import-env <name>", "从当前环境自动导入指定环境变量至加密保险箱"),
             ("auth logout <product>", "清除凭据并解绑 Provider 配置"),
             ("matrix", "展示所有 Provider 的协议、推理等级与特性兼容矩阵"),
             ("models [provider]", "展示模型上下文窗口、输出上限及特性标志"),
@@ -691,6 +725,8 @@ Available models:
                 "  lingxiagent auth list",
                 "  lingxiagent auth openai-codex",
                 "  lingxiagent auth login gemini-code-assist",
+                "  lingxiagent auth set env:ALIBABA_CLOUD_ACCESS_KEY_ID",
+                "  lingxiagent auth import-env ALIBABA_CLOUD_ACCESS_KEY_ID",
                 "  lingxiagent auth status antigravity",
                 "  lingxiagent auth login deepseek-api",
                 "  lingxiagent matrix",

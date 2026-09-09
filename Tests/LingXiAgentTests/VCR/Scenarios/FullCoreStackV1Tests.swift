@@ -336,7 +336,10 @@ struct FullCoreStackV1Tests {
         let answer = try await send(client, session, "exercise deterministic MCP fixture")
         let stages = try await waitForMCPProgress(trace)
         #expect(answer == "MCPAnchor-729")
-        #expect(provider.recorder.requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 0])
+        // Universal Cache Freeze Contract:
+        // Provider-Visible Tool Manifest 保持冻结单调追加（[0, 0, 1, 1]），不因 Step 4 工具已调用完毕而缩水破裂缓存；
+        // 与此同时，Pager 内部的 Runtime Active Lease 确实被安全释放（leaseCount == 0）。
+        #expect(provider.recorder.requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 1])
         #expect(await pager.leaseCount(sessionID: session) == 0)
             #expect(await pager.requestSchemaCounts(sessionID: session).contains(1))
             #expect(server.callCount(toolName: "lookup_anchor", key: "full-core-stack-v1") == 1)

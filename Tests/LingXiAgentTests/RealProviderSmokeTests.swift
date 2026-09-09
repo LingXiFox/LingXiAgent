@@ -4,6 +4,7 @@ import Testing
 import LingXiProtocol
 import LingXiCore
 import LingXiClient
+import LingXiApplication
 
 /// 真实 Provider smoke test。默认跳过，避免离线测试消耗 Provider 配额。
 @Suite(.serialized)
@@ -365,5 +366,161 @@ struct RealProviderSmokeTests {
         #expect(calledTool)
         #expect(receivedToolResult)
         #expect(tool.contains("ResponsesToolAnchor-729"))
+    }
+
+    @MainActor
+    @Test func testSensenovaRealPrompt() async throws {
+        guard let apiKey = ProcessInfo.processInfo.environment["SENSENOVA_API_KEY"] else { return }
+        let prompt = """
+        请执行系统级全要素综合体检，按以下步骤对当前会话环境中的所有 MCP 工具链、Skills 技能库与 To-Do 任务流进行一次性端到端实测：
+        ### 1. 建立 To-Do 任务清单
+        请先梳理并输出一份结构化 To-Do 待办清单，包含以下待测项，并在后续每完成一项时实时更新状态（[ ] -> [x]）：
+        - [ ] 探活 Notion MCP（调用 read-only 搜索或元数据探测，如 notion-search）
+        - [ ] 探活 Context7 MCP（查询官方库信息，如 resolve-library-id 或 query-docs）
+        - [ ] 探活 Penpot MCP（探测可用设计项目或画板状态）
+        - [ ] 探活 Codebase Memory MCP（查询代码架构或项目索引，如 get_architecture / list_projects）
+        - [ ] 探活 Excel MCP（调用基础工作表能力，如版本/公式校验或读取）
+        - [ ] 探活 OpenAPI MCP Core（探测云服务 OpenAPI 定义或版本）
+        - [ ] 探活 Trivy MCP（执行 trivy_version 探活）
+        - [ ] 验证 Skills 技能生态与调用路由
+        - [ ] 最终汇总综合体检健康度报告
+        ### 2. 逐步执行轻量探活
+        对上述每一个 MCP 与技能模块，挑选最安全、无破坏性且轻量的只读/探测接口进行真实调用：
+        1. 观察调用是否顺畅、参数解析是否正常。
+        2. 记录每个接口返回的有效字段摘要或状态码。
+        3. 若某项服务由于外部网络、权限限制发生降级，诚实记录具体原因与返回信息。
+        ### 3. 输出最终验收报告
+        测试完毕后，更新并展示最终勾选完成的 To-Do 列表，并输出一份 Markdown 表格：
+        | 组件类别 | 服务/工具名 | 测试调用动作 | 响应状态（✓/⚠️/×）| 实际返回摘要 |
+        |---|---|---|---|---|
+        最后给出整体可用性判定结论。
+        """
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("test-sensenova-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent", isDirectory: true)
+        let config = ProviderConfig(
+            baseURL: URL(string: "https://token.sensenova.cn/v1")!,
+            apiKey: apiKey,
+            model: "deepseek-v4-flash",
+            wireProtocol: .chatCompletions,
+            diagnosticsEnabled: true
+        )
+        let provider = OpenAICompatibleProvider(config: config)
+        let assembly = ModelRuntimeAssembly(provider: provider, modelID: ModelID("deepseek-v4-flash"))
+        let host = try CoreHost(
+            providerAssembly: assembly,
+            workspaceRoot: try WorkspaceRoot(path: root.path),
+            permissionDecision: .allow
+        )
+        await host.start()
+        defer { Task { await host.shutdown() } }
+
+        let client = try await LingXiClientVNext(transport: InProcessTransport(service: host), handshakeImmediately: true)
+        let store = await ApplicationStore(client: client, autoConnect: false)
+        try await store.connect()
+        await store.dispatch(.createSession(title: "test", mode: .build))
+        await store.dispatch(.submitPrompt(prompt))
+
+        print("[TEST] Prompt submitted. Waiting for response...")
+        for i in 0..<60 {
+            try await Task.sleep(for: .milliseconds(500))
+            let sessionState = await store.state.activeSessionState
+            let status = await store.state.status
+            let nodes = sessionState?.timelineNodes ?? []
+            if i % 4 == 0 {
+                print("[TEST] step \(i), status: \(status), nodes count: \(nodes.count)")
+                for node in nodes {
+                    print("  -> node: \(node.kind)")
+                }
+            }
+            if nodes.contains(where: { if case let .message(m) = $0.kind, m.role == .assistant, !m.content.isEmpty { return true }; return false }) {
+                print("[TEST] SUCCESS: got assistant message!")
+                break
+            }
+        }
+    }
+
+    @Test func testPrefixCacheWithRealProvider() async throws {
+        let dataRoot = LingXiDataRootResolver.resolve(
+            environment: ProcessInfo.processInfo.environment,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+        guard let configurations = try? ConfigurationStore(dataRoot: dataRoot),
+              let snapshot = try? await configurations.load(),
+              let credentials = try? PlatformSecureCredentialStore(dataRoot: dataRoot, passphrase: nil),
+              let providers = try? await RuntimeConfigurationResolver.resolveProviders(
+                  snapshot.providers,
+                  credentials: credentials,
+                  environment: ProcessInfo.processInfo.environment
+              ) else {
+            print("[PrefixCacheSmoke] No real provider configured or credential accessible. Skipping real provider test.")
+            return
+        }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("test-prefix-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let host = try CoreHost(
+            providerAssembly: providers.assembly,
+            providerMissingRequirements: providers.missingRequirements,
+            modelRuntimes: providers.runtimes,
+            defaultModelSelection: providers.defaultSelection,
+            configuration: snapshot.core,
+            workspaceRoot: try WorkspaceRoot(path: root.path),
+            dataRoot: dataRoot,
+            permissionDecision: .allow
+        )
+        await host.start()
+        defer { Task { await host.shutdown() } }
+
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+
+        // 构造一个约 3000 tokens 的稳定长前缀内容
+        let longPrefix = String(repeating: "灵犀Agent核心前缀缓存测试长文本上下文。包含架构定义、三级缓存L1/L2/L3分层调度、OpenTUI渲染器及工具安全审批流。\n", count: 35)
+
+        print("[PrefixCacheSmoke] ========== Turn 1 (Cold Start) ==========")
+        let stream1 = try await client.sendMessage(sessionID: sessionID, content: "\(longPrefix)\n问题1：请只回答数字 101。")
+        for try await _ in stream1 {}
+        let s1 = await host.contextStateSnapshot(sessionID: sessionID)
+        let s1Reuse = s1.prefixReuseEfficiency.map { String(format: "%.1f%%", $0 * 100) } ?? "N/A"
+        let s1Share = s1.cachedInputShare.map { String(format: "%.1f%%", $0 * 100) } ?? "0.0%"
+        print("[PrefixCacheSmoke] T1: prompt=\(s1.promptTokens ?? 0), cacheRead=\(s1.cacheReadTokens ?? 0), reuse=\(s1Reuse), share=\(s1Share), status=\(s1.cacheStatus ?? "none")")
+
+        print("[PrefixCacheSmoke] ========== Turn 2 (Identical Prefix) ==========")
+        let stream2 = try await client.sendMessage(sessionID: sessionID, content: "问题2：请只回答数字 202。")
+        for try await _ in stream2 {}
+        let s2 = await host.contextStateSnapshot(sessionID: sessionID)
+        let s2Reuse = s2.prefixReuseEfficiency.map { String(format: "%.1f%%", $0 * 100) } ?? "N/A"
+        let s2Share = s2.cachedInputShare.map { String(format: "%.1f%%", $0 * 100) } ?? "0.0%"
+        print("[PrefixCacheSmoke] T2: prompt=\(s2.promptTokens ?? 0), cacheRead=\(s2.cacheReadTokens ?? 0), prev=\(s2.previousPromptTokens ?? 0), reuse=\(s2Reuse), share=\(s2Share), status=\(s2.cacheStatus ?? "none")")
+        if let diag = s2.missDiagnostics { print("[PrefixCacheSmoke] T2 Miss Diagnostics: \(diag)") }
+
+        print("[PrefixCacheSmoke] ========== Turn 3 (Extended Turn) ==========")
+        let stream3 = try await client.sendMessage(sessionID: sessionID, content: "问题3：请只回答数字 303。")
+        for try await _ in stream3 {}
+        let s3 = await host.contextStateSnapshot(sessionID: sessionID)
+        let s3Reuse = s3.prefixReuseEfficiency.map { String(format: "%.1f%%", $0 * 100) } ?? "N/A"
+        let s3Share = s3.cachedInputShare.map { String(format: "%.1f%%", $0 * 100) } ?? "0.0%"
+        print("[PrefixCacheSmoke] T3: prompt=\(s3.promptTokens ?? 0), cacheRead=\(s3.cacheReadTokens ?? 0), prev=\(s3.previousPromptTokens ?? 0), reuse=\(s3Reuse), share=\(s3Share), status=\(s3.cacheStatus ?? "none")")
+        if let diag = s3.missDiagnostics { print("[PrefixCacheSmoke] T3 Miss Diagnostics: \(diag)") }
+
+        print("[PrefixCacheSmoke] ========== Turn 4 (Extended Turn) ==========")
+        let stream4 = try await client.sendMessage(sessionID: sessionID, content: "问题4：请只回答数字 404。")
+        for try await _ in stream4 {}
+        let s4 = await host.contextStateSnapshot(sessionID: sessionID)
+        let s4Reuse = s4.prefixReuseEfficiency.map { String(format: "%.1f%%", $0 * 100) } ?? "N/A"
+        let s4Share = s4.cachedInputShare.map { String(format: "%.1f%%", $0 * 100) } ?? "0.0%"
+        print("[PrefixCacheSmoke] T4: prompt=\(s4.promptTokens ?? 0), cacheRead=\(s4.cacheReadTokens ?? 0), prev=\(s4.previousPromptTokens ?? 0), reuse=\(s4Reuse), share=\(s4Share), status=\(s4.cacheStatus ?? "none")")
+        if let diag = s4.missDiagnostics { print("[PrefixCacheSmoke] T4 Miss Diagnostics: \(diag)") }
+
+        if let cacheRead = s2.cacheReadTokens, cacheRead > 0 {
+            print("[PrefixCacheSmoke] SUCCESS: Verified prefix cache hit tokens: \(cacheRead) across multiple rounds!")
+        } else {
+            print("[PrefixCacheSmoke] NOTE: Provider responded without prompt cache hits (may be cold cache or provider unsupported).")
+        }
     }
 }

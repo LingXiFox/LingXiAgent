@@ -84,6 +84,7 @@ public actor SessionRuntime {
     private var currentActiveEntries: [ContextEntry] = []
     private var activeStreamContinuation: AsyncThrowingStream<ModelEvent, Error>.Continuation?
     private var providerCacheEpoch: ProviderCacheEpoch?
+    private var epochProviderVisibleDynamicTools: [ToolDefinition] = []
 
     private func abortActiveProviderStream() {
         activeStreamContinuation?.finish(throwing: CancellationError())
@@ -112,9 +113,55 @@ public actor SessionRuntime {
         return "\(tool.id.rawValue)|\(tool.name)|\(tool.description)|\(properties.joined(separator: ","))|\(required)|\(capabilities)|\(rawSchema)"
     }
 
-    private func cacheEpoch(for tools: [ToolDefinition]) -> ProviderCacheEpoch {
-        let toolSchema = tools.map(canonicalToolDefinition).joined(separator: "\n")
-        let canonical = "system:\(systemContext ?? "")\ntools:\(toolSchema)"
+    private func computePrefixFingerprint(
+        systemContext: String?,
+        coreTools: [ToolDefinition],
+        dynamicTools: [ToolDefinition],
+        model: ModelID,
+        reasoning: String?,
+        contextEntries: [ContextEntry],
+        userTurnID: MessageID?
+    ) -> PrefixFingerprint {
+        func fnv1a(_ string: String) -> String {
+            var hash: UInt64 = 14_695_981_039_346_656_037
+            for byte in string.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+            return String(format: "%016llx", hash)
+        }
+
+        let sys = systemContext ?? ""
+        let systemHash = fnv1a("sys:" + sys)
+        let coreToolsSchema = coreTools.map(canonicalToolDefinition).joined(separator: "\n")
+        let coreToolsHash = fnv1a("core:" + coreToolsSchema)
+        let dynamicToolsSchema = dynamicTools.map(canonicalToolDefinition).joined(separator: "\n")
+        let leasedToolsHash = fnv1a("leased:" + dynamicToolsSchema)
+        let profileStr = "\(model.rawValue)|\(reasoning ?? "none")"
+        let requestProfileHash = fnv1a("profile:" + profileStr)
+
+        let historyTexts = contextEntries.filter { $0.messageID != userTurnID && $0.source != .system }.map {
+            "\($0.role):\($0.part)"
+        }.joined(separator: "||")
+        let historyStableHash = fnv1a("history:" + historyTexts)
+
+        let stablePrefixHash = fnv1a("\(systemHash)|\(coreToolsHash)|\(requestProfileHash)")
+
+        return PrefixFingerprint(
+            systemHash: systemHash,
+            developerHash: "",
+            coreToolsHash: coreToolsHash,
+            skillPrefixHash: "",
+            leasedToolsHash: leasedToolsHash,
+            historyStableHash: historyStableHash,
+            requestProfileHash: requestProfileHash,
+            stablePrefixHash: stablePrefixHash
+        )
+    }
+
+    private func cacheEpoch(for coreTools: [ToolDefinition]) -> ProviderCacheEpoch {
+        let coreSchema = coreTools.map(canonicalToolDefinition).joined(separator: "\n")
+        let canonical = "system:\(systemContext ?? "")\ncoreTools:\(coreSchema)"
         var hashValue: UInt64 = 14_695_981_039_346_656_037
         for byte in canonical.utf8 {
             hashValue ^= UInt64(byte)
@@ -124,6 +171,7 @@ public actor SessionRuntime {
         if let providerCacheEpoch, providerCacheEpoch.hash == hash { return providerCacheEpoch }
         let epoch = ProviderCacheEpoch(epoch: (providerCacheEpoch?.epoch ?? 0) + 1, hash: hash)
         providerCacheEpoch = epoch
+        epochProviderVisibleDynamicTools = [] // 新纪元启始，重置动态工具追加缓冲
         return epoch
     }
 
@@ -329,6 +377,7 @@ public actor SessionRuntime {
             var lastCallBatchSignature: String?
             var consecutiveIdenticalBatches = 0
             var consecutiveIdenticalFailures = 0
+            var consecutiveEmptyBatches = 0
             var lastObservedFailure: String?
             var lastExecutedCall: ToolCall?
             var lastObservedContent: String?
@@ -455,9 +504,78 @@ public actor SessionRuntime {
                 trace("model.next.begin", step: step + 1)
                 let effectiveContinuationID = toolBatches.last(where: { $0.state == .settledAwaitingConsumption })?.continuationRequestID ?? latestModelRequestID
                 let supportsTools = modelBus.gateway.endpoint?.capabilities.toolCalling ?? true
-                let effectiveTools = supportsTools ? availableTools : []
+                let coreIDs = ToolRuntime.coreToolIDs
+                let coreTools = availableTools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+                let activeDynamic = availableTools.filter { !coreIDs.contains($0.id) }
+
+                // 检查是否有已有暴露工具发生了不兼容的 schema 改变
+                var schemaChanged = false
+                for tool in activeDynamic {
+                    if let existing = epochProviderVisibleDynamicTools.first(where: { $0.id == tool.id }) {
+                        if canonicalToolDefinition(existing) != canonicalToolDefinition(tool) {
+                            schemaChanged = true
+                            break
+                        }
+                    }
+                }
+                if schemaChanged {
+                    // 禁止原地篡改 schema！显式推进 CacheEpoch 并重建 manifest
+                    await cacheController.advanceEpoch(sessionID: sessionID, reason: "mcpToolSchemaChanged")
+                    self.providerCacheEpoch = nil
+                    epochProviderVisibleDynamicTools = []
+                }
+
+                // 首次在当前 Epoch 暴露给模型的动态工具，纯追加到 Provider-Visible Manifest
+                for tool in activeDynamic where !epochProviderVisibleDynamicTools.contains(where: { $0.id == tool.id }) {
+                    epochProviderVisibleDynamicTools.append(tool)
+                }
+
+                // 冻结 Epoch Tool Manifest 规范：
+                // Runtime 内部可根据租约 page-out / 释放资源，
+                // 但 Provider-Visible Tool Manifest 在当前 Epoch 内绝对冻结且单调追加，绝不删除、缩水或洗牌！
+                let effectiveTools = supportsTools ? (coreTools + epochProviderVisibleDynamicTools) : []
                 let supportsReasoning = modelBus.gateway.endpoint?.capabilities.reasoning ?? true
                 let effectiveReasoning = supportsReasoning ? modelBus.gateway.reasoning : nil
+
+                let systemPinnedTokens = context.entries.filter { $0.source == .system }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
+                let currentTurnTokens = context.entries.filter { $0.messageID == userTurnID }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
+                let l1Tokens = max(0, finalTokens - systemPinnedTokens - currentTurnTokens)
+
+                let fingerprint = computePrefixFingerprint(
+                    systemContext: systemContext,
+                    coreTools: coreTools,
+                    dynamicTools: epochProviderVisibleDynamicTools,
+                    model: try modelID(),
+                    reasoning: effectiveReasoning,
+                    contextEntries: context.entries,
+                    userTurnID: userTurnID
+                )
+                let approxPrefixBytes = (systemContext?.utf8.count ?? 0) + coreTools.reduce(0) { $0 + $1.name.utf8.count + $1.description.utf8.count + 120 }
+                let approxVolatileBytes = currentTurnTokens * 4
+                await cacheController.recordFingerprint(sessionID: sessionID, fingerprint: fingerprint, prefixBytes: approxPrefixBytes, volatileBytes: approxVolatileBytes)
+                let clientHealth = await cacheController.lastClientHealth(for: sessionID) ?? ClientStructuralCacheHealth(stablePrefixHash: fingerprint.stablePrefixHash)
+
+                let epochInfo = cacheEpoch(for: coreTools)
+                let cachePlan = CanonicalCachePlan(
+                    epochIdentity: CanonicalCachePlan.EpochIdentity(epoch: Int(epochInfo.epoch), reason: "turn_\(step + 1)"),
+                    immutableBase: CanonicalCachePlan.ImmutableBase(
+                        systemPrompt: systemContext,
+                        developerPrompt: nil,
+                        coreTools: coreTools,
+                        stablePolicy: nil
+                    ),
+                    appendOnlyContext: CanonicalCachePlan.AppendOnlyContext(
+                        dynamicTools: epochProviderVisibleDynamicTools,
+                        messages: context.modelMessages(),
+                        skillActivations: []
+                    ),
+                    volatileTail: CanonicalCachePlan.VolatileTail(
+                        currentTurnState: nil,
+                        ephemeralNotes: nil
+                    ),
+                    structuralHealth: clientHealth
+                )
+
                 let request = ModelRequest(
                     continuationOf: effectiveContinuationID,
                     model: try modelID(),
@@ -467,7 +585,8 @@ public actor SessionRuntime {
                     reasoning: effectiveReasoning,
                     debugStep: step + 1,
                     overallTimeoutSeconds: deadline.remainingSeconds(),
-                    idleTimeoutSeconds: deadlinePolicy.idleTimeout(for: .provider).map { Self.durationSeconds($0) }
+                    idleTimeoutSeconds: deadlinePolicy.idleTimeout(for: .provider).map { Self.durationSeconds($0) },
+                    cachePlan: cachePlan
                 )
                 if finalTokens > budget.hardInputLimit {
                     throw CoreError(code: .contextBudgetExceeded, message: "最终模型请求超出输入预算")
@@ -479,16 +598,13 @@ public actor SessionRuntime {
                 latestModelRequestID = request.requestID
 
                 let toolSchemaTokens = ConservativeTokenEstimator().estimate(tools: effectiveTools)
-                let systemPinnedTokens = context.entries.filter { $0.source == .system }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
-                let currentTurnTokens = context.entries.filter { $0.messageID == userTurnID }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
-                let l1Tokens = max(0, finalTokens - systemPinnedTokens - currentTurnTokens)
                 let providerFramingTokens = budgetPlanner.policy.fixedOverheadTokens
                 let estimatedPromptTokens = finalTokens + toolSchemaTokens + providerFramingTokens
                 let cacheTelemetry = ProviderCacheTelemetry(
                     stablePrefixTokens: systemPinnedTokens + toolSchemaTokens,
                     reusableHistoryTokens: l1Tokens,
                     volatileTailTokens: currentTurnTokens + providerFramingTokens,
-                    epoch: cacheEpoch(for: effectiveTools)
+                    epoch: epochInfo
                 )
                 let triggerReason = step == 0 ? "initial_turn_prompt" : "tool_result_continuation"
                 let callTrace = ProviderCallTrace(
@@ -604,6 +720,20 @@ public actor SessionRuntime {
                             finalUsage = usage
                             profiler.recordUsage(usage)
                             profiler.updateLastProviderCallUsage(usage)
+                            if let input = usage.inputTokens {
+                                let hasCacheReport = (usage.cacheReadTokens != nil)
+                                let cached = usage.cacheReadTokens ?? 0
+                                await cacheController.recordProviderCacheHit(
+                                    sessionID: sessionID,
+                                    cachedTokens: cached,
+                                    promptTokens: input,
+                                    isUnavailable: !hasCacheReport
+                                )
+                                if let record = await cacheController.lastProviderCacheRecord(for: sessionID),
+                                   let diag = record.missDiagnostics {
+                                    FileHandle.standardError.write(Data("[PREFIX_DIAG] \(diag)\n".utf8))
+                                }
+                            }
                         case let .completed(reason):
                             finalReason = reason
                         case let .failed(error):
@@ -775,8 +905,24 @@ public actor SessionRuntime {
                 if Task.isCancelled || shuttingDown || hasCancelledTool {
                     throw CoreError(code: .toolCancelled, message: "AgentRun 已取消")
                 }
-                await runObserver?(.running, nil, finalUsage, nil, nil)
-                let toolResultEntries = settled.map { ContextEntry(messageID: resultMessage.id, role: .tool, source: .toolResult, part: .toolResult($0.result)) }
+                let allEmptyResults = settled.allSatisfy { outcome in
+                    let content = outcome.result.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return content == "[]" || content == "[] (empty list)" || content.contains("0 tools found") || content.contains("No tools found") || (content.isEmpty && outcome.result.error == nil)
+                }
+                if allEmptyResults {
+                    consecutiveEmptyBatches += 1
+                } else {
+                    consecutiveEmptyBatches = 0
+                }
+
+                let toolResultEntries = settled.map { outcome -> ContextEntry in
+                    var res = outcome.result
+                    if consecutiveEmptyBatches >= 2 && outcome.result.callID == settled.last?.result.callID {
+                        let note = "\n[System note: The tool or resource query returned empty results. Do NOT repeatedly retry with slight keyword variations. If the capability or tool is unavailable, please skip this step or report directly to the user.]"
+                        res = res.withContent(res.content + note)
+                    }
+                    return ContextEntry(messageID: resultMessage.id, role: .tool, source: .toolResult, part: .toolResult(res))
+                }
                 var postToolEntries = currentActiveEntries
                 postToolEntries.append(contentsOf: toolResultEntries)
                 await syncL1ResidentAccounting(with: postToolEntries)
@@ -809,6 +955,14 @@ public actor SessionRuntime {
                     throw CoreError(
                         code: .agentStepLimitReached,
                         message: "Agent Tool Loop 检测到无进展死循环：连续 \(consecutiveIdenticalFailures) 次遇到相同的 Tool 失败: \(lastObservedFailure ?? "") · 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc)"
+                    )
+                }
+
+                if consecutiveEmptyBatches >= 4 {
+                    let callDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
+                    throw CoreError(
+                        code: .agentStepLimitReached,
+                        message: "Agent 检测到连续 \(consecutiveEmptyBatches) 次工具或搜索返回空结果，已主动停止盲目重试。建议跳过不可用能力或向用户汇报。· 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc)"
                     )
                 }
 

@@ -111,7 +111,7 @@ actor ProviderRateScheduler {
     }
 
     private var workloads: [Key: [Workload]] = [:]
-    private var active: [Key: Int] = [:]
+    private var activeRequestIDs: [Key: Set<ModelRequestID>] = [:]
     private var blockedUntil: [Key: Date] = [:]
     private var metrics: [ModelRequestID: ProviderRateMetrics] = [:]
 
@@ -120,6 +120,7 @@ actor ProviderRateScheduler {
         let limits = endpoint.rateLimits
         let clock = ContinuousClock()
         let started = clock.now
+        var iterations = 0
         while true {
             try Task.checkCancellation()
             prune(key)
@@ -128,24 +129,72 @@ actor ProviderRateScheduler {
                 continue
             }
             let current = workloads[key] ?? []
-            let concurrent = active[key, default: 0]
-            if concurrent < (limits.maxConcurrentRequests ?? .max),
-               current.count < (limits.rpm ?? .max),
-               canAdmitTokens(current, estimate: estimatedTokens, limit: limits.tpm) {
+            let concurrent = activeRequestIDs[key]?.count ?? 0
+            let hasConcurrencyCapacity = concurrent < (limits.maxConcurrentRequests ?? .max)
+            let hasRpmCapacity = current.count < (limits.rpm ?? .max)
+            let hasTpmCapacity = canAdmitTokens(current, estimate: estimatedTokens, limit: limits.tpm)
+
+            if hasConcurrencyCapacity && hasRpmCapacity && hasTpmCapacity {
                 workloads[key, default: []].append(Workload(requestID: requestID, timestamp: .now, tokens: estimatedTokens))
-                active[key, default: 0] += 1
+                activeRequestIDs[key, default: []].insert(requestID)
                 let elapsed = started.duration(to: clock.now).components
                 let waited = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
                 if waited > 0 { addWait(requestID, milliseconds: Int(waited)) }
                 return
             }
+            iterations += 1
+            // 积极放行与自愈：当有空余并发槽位且无服务端 429 锁定，但仅因本地 TPM 累加虚高被阻挡时，在轻量交错退避（<=40ms）后积极放行，绝不因本地累加虚高阻塞多轮推理
+            if hasConcurrencyCapacity && hasRpmCapacity && iterations > 2 && blockedUntil[key] == nil {
+                workloads[key, default: []].append(Workload(requestID: requestID, timestamp: .now, tokens: estimatedTokens))
+                activeRequestIDs[key, default: []].insert(requestID)
+                let elapsed = started.duration(to: clock.now).components
+                let waited = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
+                if waited > 0 { addWait(requestID, milliseconds: Int(waited)) }
+                return
+            }
+            if iterations > 30 && concurrent > 0 {
+                activeRequestIDs[key]?.removeAll()
+                continue
+            }
             try await Task.sleep(for: waitDuration(current, concurrent: concurrent, limits: limits, estimate: estimatedTokens))
         }
     }
 
-    func release(endpoint: ResolvedModelEndpoint) {
+    public func activeRequests(for endpoint: ResolvedModelEndpoint) -> Int {
         let key = Key(provider: endpoint.providerID, model: endpoint.modelID.rawValue, account: endpoint.accountID)
-        active[key] = max(0, active[key, default: 0] - 1)
+        return activeRequestIDs[key]?.count ?? 0
+    }
+
+    public func release(endpoint: ResolvedModelEndpoint) {
+        let key = Key(provider: endpoint.providerID, model: endpoint.modelID.rawValue, account: endpoint.accountID)
+        if var set = activeRequestIDs[key], !set.isEmpty {
+            set.remove(set.first!)
+            activeRequestIDs[key] = set
+        }
+    }
+
+    public func release(requestID: ModelRequestID, endpoint: ResolvedModelEndpoint) {
+        let key = Key(provider: endpoint.providerID, model: endpoint.modelID.rawValue, account: endpoint.accountID)
+        activeRequestIDs[key]?.remove(requestID)
+    }
+
+    public func cancel(requestID: ModelRequestID, endpoint: ResolvedModelEndpoint) {
+        let key = Key(provider: endpoint.providerID, model: endpoint.modelID.rawValue, account: endpoint.accountID)
+        activeRequestIDs[key]?.remove(requestID)
+        workloads[key]?.removeAll { $0.requestID == requestID }
+    }
+
+    public func reset(endpoint: ResolvedModelEndpoint? = nil) {
+        if let endpoint {
+            let key = Key(provider: endpoint.providerID, model: endpoint.modelID.rawValue, account: endpoint.accountID)
+            activeRequestIDs.removeValue(forKey: key)
+            workloads.removeValue(forKey: key)
+            blockedUntil.removeValue(forKey: key)
+        } else {
+            activeRequestIDs.removeAll()
+            workloads.removeAll()
+            blockedUntil.removeAll()
+        }
     }
 
     func recordRetry(requestID: ModelRequestID) {
@@ -200,14 +249,16 @@ actor ProviderRateScheduler {
     private func waitDuration(_ workloads: [Workload], concurrent: Int, limits: ProviderRateLimits, estimate: Int) -> Duration {
         if let maximum = limits.maxConcurrentRequests, concurrent >= maximum { return .milliseconds(10) }
         if let rpm = limits.rpm, workloads.count >= rpm, let oldest = workloads.map(\.timestamp).min() {
-            return .milliseconds(max(1, Int(oldest.addingTimeInterval(60).timeIntervalSinceNow * 1_000)))
+            let delayMs = min(20, max(1, Int(oldest.addingTimeInterval(60).timeIntervalSinceNow * 1_000)))
+            return .milliseconds(delayMs)
         }
         if let tpm = limits.tpm, estimate <= tpm {
             var total = workloads.reduce(0) { $0 + $1.tokens }
             for workload in workloads.sorted(by: { $0.timestamp < $1.timestamp }) where total + estimate > tpm {
                 total -= workload.tokens
                 if total + estimate <= tpm {
-                    return .milliseconds(max(1, Int(workload.timestamp.addingTimeInterval(60).timeIntervalSinceNow * 1_000)))
+                    let delayMs = min(20, max(1, Int(workload.timestamp.addingTimeInterval(60).timeIntervalSinceNow * 1_000)))
+                    return .milliseconds(delayMs)
                 }
             }
         }

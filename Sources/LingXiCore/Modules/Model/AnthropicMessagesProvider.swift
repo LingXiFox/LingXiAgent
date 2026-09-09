@@ -96,8 +96,20 @@ public struct AnthropicMessagesProvider: ModelProvider {
     }
 
     private static func makeRequestBody(_ request: ModelRequest, maxOutputTokens: Int, continuation: ProviderContinuation?) throws -> Data {
-        let messageSystem = request.messages.filter { $0.role == .system }.map(\.content).filter { !$0.isEmpty }
-        let system = ([request.system].compactMap { $0 } + messageSystem).joined(separator: "\n\n")
+        let orderedTools: [ToolDefinition]
+        let system: String?
+        if let plan = request.cachePlan {
+            system = plan.immutableBase.systemPrompt
+            orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
+        } else {
+            let messageSystem = request.messages.filter { $0.role == .system }.map(\.content).filter { !$0.isEmpty }
+            system = ([request.system].compactMap { $0 } + messageSystem).joined(separator: "\n\n")
+            let coreIDs = ToolRuntime.coreToolIDs
+            let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+            let dynamic = request.tools.filter { !coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+            orderedTools = core + dynamic
+        }
+
         let messages = try request.messages.compactMap { message -> RequestBody.Message? in
             switch message.role {
             case .system:
@@ -129,12 +141,21 @@ public struct AnthropicMessagesProvider: ModelProvider {
                 })
             }
         }
-        let tools = request.tools.isEmpty ? nil : request.tools.map(RequestBody.Tool.init)
-        return try JSONEncoder().encode(RequestBody(
+
+        let enableExplicitCache = request.cachePlan?.capabilities?.explicitCacheControlSupported ?? false
+        let coreCount = request.cachePlan?.immutableBase.coreTools.count ?? 0
+        let tools: [RequestBody.Tool]? = orderedTools.isEmpty ? nil : orderedTools.enumerated().map { index, def in
+            let isBreakpoint = enableExplicitCache && index == (coreCount > 0 ? coreCount - 1 : 0)
+            return RequestBody.Tool(def, cacheControl: isBreakpoint ? RequestBody.CacheControl() : nil)
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(RequestBody(
             model: request.model.rawValue,
             maxTokens: max(1, maxOutputTokens),
             stream: true,
-            system: system.isEmpty ? nil : system,
+            system: (system?.isEmpty ?? true) ? nil : system,
             messages: messages,
             tools: tools
         ))
@@ -306,13 +327,19 @@ public struct AnthropicSSEDecoder {
 }
 
 private struct RequestBody: Encodable {
+    struct CacheControl: Encodable {
+        let type: String
+        init(type: String = "ephemeral") { self.type = type }
+    }
+
     struct Message: Encodable { let role: String; let content: [Content] }
     struct Tool: Encodable {
         let name: String
         let description: String
         let inputSchema: JSONValue
+        let cacheControl: CacheControl?
 
-        init(_ definition: ToolDefinition) {
+        init(_ definition: ToolDefinition, cacheControl: CacheControl? = nil) {
             name = definition.name
             description = definition.description
             inputSchema = definition.rawInputSchema ?? .object([
@@ -321,9 +348,14 @@ private struct RequestBody: Encodable {
                 "required": .array(definition.inputSchema.required.map(JSONValue.string)),
                 "additionalProperties": .bool(false),
             ])
+            self.cacheControl = cacheControl
         }
 
-        enum CodingKeys: String, CodingKey { case name, description; case inputSchema = "input_schema" }
+        enum CodingKeys: String, CodingKey {
+            case name, description
+            case inputSchema = "input_schema"
+            case cacheControl = "cache_control"
+        }
     }
     enum Content: Encodable {
         case text(String)

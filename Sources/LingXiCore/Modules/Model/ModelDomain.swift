@@ -37,6 +37,13 @@ public enum ModelContentPart: Sendable, Equatable {
 }
 
 /// Provider wire 只能消费此稳定投影；ToolResult 的内部诊断与持久化字段不会自动外泄。
+public enum ResultMaterializationTier: String, Sendable, Codable, Equatable {
+    case inlineSmall       // < 1KB: 完全内联
+    case structuredDigest  // 1KB..<8KB: 结构化摘要 + ContentRef
+    case previewLarge      // 8KB..<32KB: 精简预览 (Head 3/4 + Tail 1/4)
+    case archiveHuge       // >= 32KB: 纯 ContentRef 引用归档
+}
+
 public struct ModelToolResultProjection: Sendable, Equatable {
     public let callID: ToolCallID
     public let toolName: String?
@@ -324,9 +331,29 @@ public struct ModelToolResultProjection: Sendable, Equatable {
             }
         }
 
-        // 6. Generic bounded character budget
-        if result.content.count > budget.maxCharacters {
-            let truncatedContent = String(result.content.prefix(budget.maxCharacters)) + "\n[Output truncated from \(result.content.count) characters to budget of \(budget.maxCharacters)]"
+        // 6. Generic bounded character budget & Multi-Tier Materialization
+        if result.content.count >= 32 * 1024 {
+            let head = result.content.prefix(512)
+            let tail = result.content.suffix(256)
+            let dropped = result.content.count - head.count - tail.count
+            let truncatedContent = "\(head)\n... [\(dropped) characters truncated for prefix-cache efficiency · tier: archiveHuge] ...\n\(tail)"
+            let summary = "ToolResult · \(result.toolName ?? "output") · Archived · \(result.content.count) chars"
+            return Self(
+                callID: result.callID,
+                toolName: result.toolName,
+                success: true,
+                content: truncatedContent,
+                summary: summary,
+                truncated: true
+            )
+        } else if result.content.count > budget.maxCharacters {
+            let maxKeep = budget.maxCharacters
+            let headSize = min(result.content.count, maxKeep * 3 / 4)
+            let tailSize = min(result.content.count - headSize, maxKeep / 4)
+            let head = result.content.prefix(headSize)
+            let tail = result.content.suffix(tailSize)
+            let dropped = result.content.count - headSize - tailSize
+            let truncatedContent = "\(head)\n... [\(dropped) characters truncated for prefix-cache efficiency] ...\n\(tail)"
             return Self(
                 callID: result.callID,
                 toolName: result.toolName,
@@ -382,8 +409,22 @@ public struct ModelRequest: Sendable, Equatable {
     public let debugStep: Int?
     public let overallTimeoutSeconds: Double?
     public let idleTimeoutSeconds: Double?
+    public let cachePlan: CanonicalCachePlan?
 
-    public init(requestID: ModelRequestID = ModelRequestID(), continuationOf: ModelRequestID? = nil, model: ModelID, executionID: AgentRunID? = nil, system: String? = nil, messages: [ModelMessage], tools: [ToolDefinition] = [], reasoning: String? = nil, debugStep: Int? = nil, overallTimeoutSeconds: Double? = nil, idleTimeoutSeconds: Double? = nil) {
+    public init(
+        requestID: ModelRequestID = ModelRequestID(),
+        continuationOf: ModelRequestID? = nil,
+        model: ModelID,
+        executionID: AgentRunID? = nil,
+        system: String? = nil,
+        messages: [ModelMessage],
+        tools: [ToolDefinition] = [],
+        reasoning: String? = nil,
+        debugStep: Int? = nil,
+        overallTimeoutSeconds: Double? = nil,
+        idleTimeoutSeconds: Double? = nil,
+        cachePlan: CanonicalCachePlan? = nil
+    ) {
         self.requestID = requestID
         self.continuationOf = continuationOf
         self.model = model
@@ -395,6 +436,7 @@ public struct ModelRequest: Sendable, Equatable {
         self.debugStep = debugStep
         self.overallTimeoutSeconds = overallTimeoutSeconds
         self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.cachePlan = cachePlan
     }
 }
 

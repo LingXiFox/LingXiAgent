@@ -40,6 +40,7 @@ public actor ProviderActivityRegistry {
 
     @discardableResult
     public func cancel(providerRequestID: String) -> ProviderActivitySnapshot? {
+        guard !providerRequestID.isEmpty else { return nil }
         cancelledRequestIDs.insert(providerRequestID)
         guard var snapshot = activities[providerRequestID] else { return nil }
         snapshot = ProviderActivitySnapshot(
@@ -59,7 +60,9 @@ public actor ProviderActivityRegistry {
         cancelledRunIDs.insert(runID)
         var updated: [ProviderActivitySnapshot] = []
         for (id, snapshot) in activities where snapshot.runID == runID && !snapshot.state.isTerminal {
-            cancelledRequestIDs.insert(id)
+            if !id.isEmpty {
+                cancelledRequestIDs.insert(id)
+            }
             let newSnapshot = ProviderActivitySnapshot(
                 sessionID: snapshot.sessionID,
                 runID: snapshot.runID,
@@ -75,7 +78,7 @@ public actor ProviderActivityRegistry {
     }
 
     public func isCancelled(providerRequestID: String, runID: AgentRunID?) -> Bool {
-        if cancelledRequestIDs.contains(providerRequestID) { return true }
+        if !providerRequestID.isEmpty && cancelledRequestIDs.contains(providerRequestID) { return true }
         if let runID, cancelledRunIDs.contains(runID) { return true }
         return false
     }

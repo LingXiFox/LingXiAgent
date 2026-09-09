@@ -1,3 +1,5 @@
+import Foundation
+
 /// 控制面命令的响应。
 public enum CoreResponse: Sendable, Equatable {
     case pong
@@ -143,4 +145,8 @@ public struct CoreError: Sendable, Equatable, Error {
         self.code = code
         self.message = message
     }
+}
+
+extension CoreError: LocalizedError {
+    public var errorDescription: String? { message }
 }

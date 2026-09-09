@@ -105,6 +105,8 @@ public actor ContextCacheController {
     private var sessionL1BaseCount: [SessionID: Int] = [:]
     // Last Provider input tokens recorded during context build for inference
     private var lastProviderInputTokensBySession: [SessionID: Int] = [:]
+    // Last Provider prompt cache hit (cachedTokens, promptTokens)
+    private var lastPromptCacheHitBySession: [SessionID: (cachedTokens: Int, promptTokens: Int)] = [:]
     // Per-session L2 warm cache entries
     private var warmL2EntriesBySession: [SessionID: [String: WarmL2Entry]] = [:]
     // Per-session paged-in derived pages
@@ -164,6 +166,208 @@ public actor ContextCacheController {
     /// 记录最近一次 Provider 推理实际构建发送的 input token 数（与当前 resident working set 明确分离）
     public func recordProviderInputTokens(sessionID: SessionID, tokens: Int) {
         lastProviderInputTokensBySession[sessionID] = tokens
+    }
+
+    public struct SessionCacheRecord: Sendable, Equatable {
+        public var cachedTokens: Int
+        public var promptTokens: Int
+        public var previousPromptTokens: Int?
+        public var status: String // "active", "coldNewEpoch", "unavailable"
+        public var epoch: Int
+        public var epochReason: String?
+        public var stablePrefixHash: String?
+        public var missDiagnostics: String?
+
+        public init(
+            cachedTokens: Int,
+            promptTokens: Int,
+            previousPromptTokens: Int? = nil,
+            status: String = "active",
+            epoch: Int = 1,
+            epochReason: String? = nil,
+            stablePrefixHash: String? = nil,
+            missDiagnostics: String? = nil
+        ) {
+            self.cachedTokens = cachedTokens
+            self.promptTokens = promptTokens
+            self.previousPromptTokens = previousPromptTokens
+            self.status = status
+            self.epoch = epoch
+            self.epochReason = epochReason
+            self.stablePrefixHash = stablePrefixHash
+            self.missDiagnostics = missDiagnostics
+        }
+    }
+
+    private var sessionCacheRecords: [SessionID: SessionCacheRecord] = [:]
+    private var sessionEpochs: [SessionID: Int] = [:]
+    private var sessionEpochReasons: [SessionID: String] = [:]
+    private var previousPromptTokensBySession: [SessionID: Int] = [:]
+    private var currentTurnFingerprintBySession: [SessionID: PrefixFingerprint] = [:]
+    private var lastTurnFingerprintBySession: [SessionID: PrefixFingerprint] = [:]
+    private var clientStructuralHealthBySession: [SessionID: ClientStructuralCacheHealth] = [:]
+    private var turnsInEpochBySession: [SessionID: Int] = [:]
+    private var clientBustsInEpochBySession: [SessionID: Int] = [:]
+
+    /// 推进 CacheEpoch（仅由实质语义变更触发，如 model switch / provider switch / context rollover）
+    public func advanceEpoch(sessionID: SessionID, reason: String) {
+        let current = sessionEpochs[sessionID] ?? 1
+        sessionEpochs[sessionID] = current + 1
+        sessionEpochReasons[sessionID] = reason
+        previousPromptTokensBySession[sessionID] = nil
+        lastTurnFingerprintBySession[sessionID] = nil
+        turnsInEpochBySession[sessionID] = 0
+        clientBustsInEpochBySession[sessionID] = 0
+    }
+
+    /// 记录当前推理前计算的 Prefix 指纹及客户端自身结构健康度
+    public func recordFingerprint(
+        sessionID: SessionID,
+        fingerprint: PrefixFingerprint,
+        prefixBytes: Int = 0,
+        volatileBytes: Int = 0
+    ) {
+        currentTurnFingerprintBySession[sessionID] = fingerprint
+        let epoch = sessionEpochs[sessionID] ?? 1
+        let turns = (turnsInEpochBySession[sessionID] ?? 0) + 1
+        turnsInEpochBySession[sessionID] = turns
+
+        let lastFP = lastTurnFingerprintBySession[sessionID]
+        let isBust: Bool
+        let isAppendOnly: Bool
+        let status: String
+
+        if let lastFP {
+            if lastFP.stablePrefixHash != fingerprint.stablePrefixHash {
+                isBust = true
+                clientBustsInEpochBySession[sessionID] = (clientBustsInEpochBySession[sessionID] ?? 0) + 1
+                status = "bustDetected"
+            } else {
+                isBust = false
+                status = "stable"
+            }
+            isAppendOnly = (lastFP.historyStableHash == fingerprint.historyStableHash || !fingerprint.historyStableHash.isEmpty)
+        } else {
+            isBust = false
+            isAppendOnly = true
+            status = "newEpoch"
+        }
+
+        let totalBusts = clientBustsInEpochBySession[sessionID] ?? 0
+        let bustRate = turns > 0 ? Double(totalBusts) / Double(turns) : 0.0
+
+        let health = ClientStructuralCacheHealth(
+            stablePrefixHash: fingerprint.stablePrefixHash,
+            stablePrefixBytes: prefixBytes,
+            stablePrefixSegments: 2,
+            appendOnlyHistory: isAppendOnly,
+            prefixMutationDetected: isBust,
+            cacheEpoch: epoch,
+            clientCausedBustRate: bustRate,
+            appendOnlyRatio: isAppendOnly ? 1.0 : 0.5,
+            volatileTailBytes: volatileBytes,
+            status: status,
+            clientCausedBusts: totalBusts,
+            comparableRequests: turns,
+            appendOnlyViolations: isAppendOnly ? 0 : 1
+        )
+        clientStructuralHealthBySession[sessionID] = health
+    }
+
+    /// 获取客户端自身结构化缓存健康指标（第一权威真相）
+    public func lastClientHealth(for sessionID: SessionID) -> ClientStructuralCacheHealth? {
+        clientStructuralHealthBySession[sessionID]
+    }
+
+    /// 记录最近一次 Provider 推理返回的真实 Prefix Cache 命中情况
+    public func recordProviderCacheHit(sessionID: SessionID, cachedTokens: Int, promptTokens: Int, isUnavailable: Bool = false) {
+        let epoch = sessionEpochs[sessionID] ?? 1
+        let reason = sessionEpochReasons[sessionID] ?? "initial_turn"
+        let prev = previousPromptTokensBySession[sessionID]
+        let currentFP = currentTurnFingerprintBySession[sessionID]
+        let lastFP = lastTurnFingerprintBySession[sessionID]
+
+        let status: String
+        var missDiagnostics: String? = nil
+
+        if isUnavailable {
+            status = "unavailable"
+            if let currentFP, let lastFP, currentFP.stablePrefixHash != lastFP.stablePrefixHash {
+                missDiagnostics = "CLIENT CACHE BUST DETECTED: stablePrefixHash changed unexpectedly within Epoch \(epoch)"
+            }
+        } else if prev == nil || prev == 0 {
+            status = "coldNewEpoch"
+        } else {
+            status = "active"
+            if let prev, prev > 0 {
+                let reuseEfficiency = Double(cachedTokens) / Double(prev)
+                if reuseEfficiency < 0.9 {
+                    missDiagnostics = generateMissDiagnostics(old: lastFP, new: currentFP, prevTokens: prev, cachedTokens: cachedTokens)
+                }
+            }
+        }
+
+        let record = SessionCacheRecord(
+            cachedTokens: cachedTokens,
+            promptTokens: promptTokens,
+            previousPromptTokens: prev,
+            status: status,
+            epoch: epoch,
+            epochReason: reason,
+            stablePrefixHash: currentFP?.stablePrefixHash,
+            missDiagnostics: missDiagnostics
+        )
+        sessionCacheRecords[sessionID] = record
+        lastPromptCacheHitBySession[sessionID] = (cachedTokens, promptTokens)
+
+        // 为下一轮更新上一轮理论可复用 token 数及上一轮指纹
+        previousPromptTokensBySession[sessionID] = promptTokens
+        if let currentFP {
+            lastTurnFingerprintBySession[sessionID] = currentFP
+        }
+    }
+
+    private func generateMissDiagnostics(old: PrefixFingerprint?, new: PrefixFingerprint?, prevTokens: Int, cachedTokens: Int) -> String {
+        guard let old, let new else {
+            let diff = max(0, prevTokens - cachedTokens)
+            return "Prefix miss: ~\(diff) tokens dropped (first tracked turn)"
+        }
+        var changes: [String] = []
+        if old.systemHash != new.systemHash {
+            changes.append("systemHash changed (\(old.systemHash.prefix(8)) -> \(new.systemHash.prefix(8)))")
+        }
+        if old.coreToolsHash != new.coreToolsHash {
+            changes.append("coreToolsHash changed (\(old.coreToolsHash.prefix(8)) -> \(new.coreToolsHash.prefix(8)))")
+        }
+        if old.leasedToolsHash != new.leasedToolsHash {
+            changes.append("leasedToolsHash changed (\(old.leasedToolsHash.prefix(8)) -> \(new.leasedToolsHash.prefix(8)))")
+        }
+        if old.skillPrefixHash != new.skillPrefixHash {
+            changes.append("skillPrefixHash changed (\(old.skillPrefixHash.prefix(8)) -> \(new.skillPrefixHash.prefix(8)))")
+        }
+        if old.requestProfileHash != new.requestProfileHash {
+            changes.append("requestProfileHash changed (\(old.requestProfileHash.prefix(8)) -> \(new.requestProfileHash.prefix(8)))")
+        }
+        if old.historyStableHash != new.historyStableHash {
+            changes.append("historyStableHash changed (\(old.historyStableHash.prefix(8)) -> \(new.historyStableHash.prefix(8)))")
+        }
+        let diff = max(0, prevTokens - cachedTokens)
+        if changes.isEmpty {
+            return "status: upstream cache variance suspected (Client structural prefix 100% stable, missed ~\(diff) tokens)"
+        } else {
+            let bustNote = changes.contains(where: { $0.contains("coreToolsHash") || $0.contains("systemHash") }) ? " [CLIENT CACHE BUST DETECTED]" : ""
+            return "Prefix miss source:\(bustNote) " + changes.joined(separator: ", ") + " (missed ~\(diff) tokens)"
+        }
+    }
+
+    /// 获取最近一次 Provider 推理返回的真实详细 Cache 记录
+    public func lastProviderCacheRecord(for sessionID: SessionID) -> SessionCacheRecord? {
+        sessionCacheRecords[sessionID]
+    }
+
+    /// 获取最近一次 Provider 推理返回的真实 Prefix Cache 命中情况（兼容旧调用）
+    public func lastProviderCacheHit(for sessionID: SessionID) -> (cachedTokens: Int, promptTokens: Int)? {
+        lastPromptCacheHitBySession[sessionID]
     }
 
     /// 最近一次 Provider 推理的 input token 数

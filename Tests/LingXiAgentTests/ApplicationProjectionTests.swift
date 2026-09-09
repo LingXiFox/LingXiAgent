@@ -266,4 +266,97 @@ struct ApplicationProjectionTests {
         _ = receipt
         #expect(first == beforeReceipt)
     }
+
+    @Test("ApplicationState active counts and UserPreferences persistence work")
+    func activeCountsAndUserPreferences() throws {
+        var appState = ApplicationState()
+        appState.extensions = [
+            ExtensionInfo(id: "skill-1", version: "1.0.0", kind: .skill, scope: "global", enabled: true, lifecycleState: "discovered"),
+            ExtensionInfo(id: "skill-2", version: "1.0.0", kind: .skill, scope: "global", enabled: false, lifecycleState: "disabled"),
+            ExtensionInfo(id: "mcp-1", version: "1.0.0", kind: .mcp, scope: "global", enabled: true, lifecycleState: "enabled"),
+            ExtensionInfo(id: "mcp-2", version: "1.0.0", kind: .mcp, scope: "global", enabled: true, lifecycleState: "enabled")
+        ]
+        #expect(appState.activeSkillCount == 1)
+        #expect(appState.activeMCPCount == 2)
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test_prefs_\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+        let store = UserPreferencesStore(fileURL: tempFile)
+        store.update(modelID: "custom-model", reasoningEffort: "high")
+        let loaded = store.load()
+        #expect(loaded.lastModelID == "custom-model")
+        #expect(loaded.lastReasoningEffort == "high")
+    }
+
+    @Test("Hydrated historical messages properly project into SessionViewState timeline nodes")
+    func historicalHydrationProjectsTimelineNodes() {
+        let userMsgID = MessageID("user-msg-1")
+        let assistantMsgID = MessageID("assistant-msg-1")
+        let toolCallID = ToolCallID("tool-call-1")
+        let tID = TurnID("turn-1")
+
+        let userMsgSnap = MessageSnapshot(messageID: userMsgID, role: .user, text: "请帮我重构网络服务", createdAt: timestamp)
+        let turnSnap = TurnSnapshot(turnID: tID, sessionID: sessionID, userMessage: userMsgSnap, executionIntent: TurnExecutionIntent(), status: .completed, createdAt: timestamp)
+        let toolInvSnap = ToolInvocationSnapshot(callID: toolCallID, toolID: ToolID("fetch"), displayName: "fetch", argumentsSummary: "{}", state: .completed)
+        let toolResSnap = ToolResultSnapshot(callID: toolCallID, success: true, summary: "200 OK")
+
+        let events = [
+            event(1, .turnCreated(turnSnap)),
+            event(2, .userMessageCommitted(userMsgSnap)),
+            event(3, .toolRequested(toolInvSnap)),
+            event(4, .toolRunning(callID: toolCallID, stdoutStreamID: nil, stderrStreamID: nil)),
+            event(5, .toolCompleted(callID: toolCallID, result: toolResSnap, stdoutFinalIndex: nil, stderrFinalIndex: nil)),
+            event(6, .assistantMessageCommitted(messageID: assistantMsgID, content: "网络服务重构已完成", assistantFinalIndex: 0)),
+            event(7, .turnCompleted(turnID: tID, terminalReason: .completed))
+        ]
+
+        let summary = SessionSummary(
+            sessionID: sessionID,
+            title: "网络服务重构",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            workingDirectory: "/Volumes/External/ProjectX",
+            messageCount: 3
+        )
+
+        let snapshot = SessionSnapshot(
+            sessionID: sessionID,
+            info: summary,
+            recentTurns: [turnSnap],
+            recentToolInvocations: [toolInvSnap],
+            contextState: ContextStateSnapshot(sessionID: sessionID),
+            recentEvents: events,
+            eventCursor: EventCursor(generationID: generationID, sequence: 7)
+        )
+
+        var viewState = SessionViewState(sessionID: sessionID)
+        SessionReducer.reduceSnapshot(state: &viewState, snapshot: snapshot, connectionState: connection)
+
+        #expect(viewState.turns[tID] != nil)
+        #expect(viewState.timelineNodes.count >= 3)
+        #expect(viewState.node(for: .message(userMsgID)) != nil)
+        #expect(viewState.node(for: .message(assistantMsgID)) != nil)
+        #expect(viewState.node(for: .tool(toolCallID, modelStepID: nil)) != nil)
+
+        if case let .message(userMsg)? = viewState.node(for: .message(userMsgID))?.kind {
+            #expect(userMsg.content == "请帮我重构网络服务")
+            #expect(userMsg.role == .user)
+        } else {
+            Issue.record("User message node missing")
+        }
+
+        if case let .message(assistantMsg)? = viewState.node(for: .message(assistantMsgID))?.kind {
+            #expect(assistantMsg.content == "网络服务重构已完成")
+            #expect(assistantMsg.role == .assistant)
+        } else {
+            Issue.record("Assistant message node missing")
+        }
+
+        if case let .tool(toolNode)? = viewState.node(for: .tool(toolCallID, modelStepID: nil))?.kind {
+            #expect(toolNode.toolName == "fetch")
+            #expect(toolNode.phase == .completed)
+        } else {
+            Issue.record("Tool node missing")
+        }
+    }
 }

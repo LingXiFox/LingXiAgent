@@ -95,7 +95,7 @@ struct MCPRuntimeTests {
         for try await _ in try await client.sendMessage(sessionID: session, content: "find marker") {}
         let requests = provider.recorder.requests
         #expect(requests.count == 4)
-        #expect(requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 0])
+        #expect(requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 1])
         #expect(requests[2].tools.first(where: { $0.rawInputSchema != nil })?.id == ToolID(alias))
         #expect((try await client.session(session)).messages.last?.content == "MCPAnchor-729")
     }
@@ -136,7 +136,7 @@ struct MCPRuntimeTests {
         let session = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: session, content: "find phase12 marker") {}
         let requests = provider.recorder.requests
-        #expect(requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 0])
+        #expect(requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 1])
         #expect((try await client.session(session)).messages.last?.content == "MCPAnchor-729")
     }
 
@@ -182,4 +182,87 @@ struct MCPRuntimeTests {
         #expect(await pager.leaseCount(sessionID: session) == 0)
         #expect(await pager.fullSchemaResidencyCount() == 0)
     }
+
+    @Test func searchByServerAliasAndFuzzyLoadResolvesProperly() async throws {
+        let pager = MCPToolPager(invoker: FixtureMCP())
+        let notionServer = MCPServerID("notion-server")
+        let notionToolID = ToolID("notion-server::search")
+        let entry = MCPToolCatalogEntry(
+            toolID: notionToolID,
+            serverID: notionServer,
+            serverAlias: "notion",
+            upstreamName: "search",
+            title: "Search Workspace",
+            shortDescription: "Find documents and pages",
+            tags: [],
+            annotations: MCPToolAnnotations(readOnlyHint: true),
+            schemaHash: "notion-hash",
+            era: .modern,
+            available: true,
+            stale: false,
+            cacheScope: .public,
+            authContextID: nil,
+            lastSeen: .now
+        )
+        try await pager.replaceCatalog(serverID: notionServer, tools: [
+            MCPDiscoveredTool(entry: entry, inputSchema: .object(["type": .string("object"), "properties": .object([:])]))
+        ])
+
+        let session = SessionID("s-notion")
+        let project = ProjectID("p-notion")
+
+        // 1. 仅传 query: "notion"，通过 serverAlias 命中！
+        let candidates1 = await pager.search(sessionID: session, projectID: project, query: "notion")
+        #expect(candidates1.map(\.toolID) == [notionToolID])
+
+        // 2. 仅传 server: "notion"，query 为空，命中！
+        let candidates2 = await pager.search(sessionID: session, projectID: project, query: "", server: "notion")
+        #expect(candidates2.map(\.toolID) == [notionToolID])
+
+        // 3. searchToolResult 支持 {"server":"notion"} 且 query 缺省
+        let resultJSON = try await pager.searchToolResult(sessionID: session, projectID: project, arguments: #"{"server":"notion"}"#)
+        #expect(resultJSON.contains("notion-server::search"))
+
+        // 4. load 支持 "notion.search" 别名格式
+        let lease = try await pager.load(sessionID: session, toolID: ToolID("notion.search"), schemaTokenBudget: 1000)
+        #expect(lease.toolID == notionToolID)
+        await pager.finishProviderStep(sessionID: session)
+    }
+
+    @Test
+    func faultTolerantMCPResolutionSkipsFailingServerAndPreservesHealthyTools() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let credentials = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase")
+        try await credentials.setSecret("valid-token", for: CredentialRef("valid-secret"))
+
+        // 一个配置正常、一个凭据缺失
+        let configuration = MCPConfiguration(servers: [
+            StoredMCPServerConfiguration(
+                id: "healthy-stdio",
+                alias: "healthy",
+                transport: .stdio,
+                command: "/usr/bin/true",
+                environment: [MCPEnvironmentCredential(name: "TOKEN", credential: CredentialRef("valid-secret"))]
+            ),
+            StoredMCPServerConfiguration(
+                id: "broken-http",
+                alias: "broken",
+                transport: .streamableHTTP,
+                endpoint: "https://mcp.example.com",
+                authentication: MCPAuthenticationConfiguration(kind: .bearer, credential: CredentialRef("missing-secret"))
+            )
+        ])
+
+        let res = try await RuntimeConfigurationResolver.resolveMCP(
+            configuration,
+            credentials: credentials,
+            discoverTools: false,
+            faultTolerant: true
+        )
+        #expect(res.configurations.count == 2)
+        #expect(res.configurations.first(where: { $0.serverID.rawValue == "healthy-stdio" })?.enabled == true)
+        #expect(res.configurations.first(where: { $0.serverID.rawValue == "broken-http" })?.enabled == false)
+    }
 }
+

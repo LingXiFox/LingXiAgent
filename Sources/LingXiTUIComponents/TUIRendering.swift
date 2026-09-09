@@ -132,17 +132,45 @@ public enum TUIStyle: Equatable, Sendable {
     case thinkingHeader
     case thinkingBody
     case assistantText
+    case badgeYolo
+    case badgeAsk
+    case mascotBody
+    case mascotEar
+    case mascotSpark
+    case mascotTag
+}
+
+public struct TUIRGB: Equatable, Sendable {
+    public var r: UInt8
+    public var g: UInt8
+    public var b: UInt8
+
+    public init(_ r: UInt8, _ g: UInt8, _ b: UInt8) {
+        self.r = r
+        self.g = g
+        self.b = b
+    }
 }
 
 public struct TUIStyleCell: Equatable, Sendable {
     public var character: Character
     public var style: TUIStyle
     public var continuation: Bool
+    public var customForeground: TUIRGB?
+    public var customBackground: TUIRGB?
 
-    public init(character: Character = " ", style: TUIStyle = .normal, continuation: Bool = false) {
+    public init(
+        character: Character = " ",
+        style: TUIStyle = .normal,
+        continuation: Bool = false,
+        customForeground: TUIRGB? = nil,
+        customBackground: TUIRGB? = nil
+    ) {
         self.character = character
         self.style = style
         self.continuation = continuation
+        self.customForeground = customForeground
+        self.customBackground = customBackground
     }
 }
 
@@ -161,6 +189,33 @@ public struct TUIFrame: Sendable {
         cursor = nil
     }
 
+    public mutating func drawBitmap(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        pixels: [(top: TUIRGB, bottom: TUIRGB)]
+    ) {
+        for row in 0..<height {
+            for col in 0..<width {
+                let cellX = x + col
+                let cellY = y + row
+                guard cellX >= 0, cellX < size.width, cellY >= 0, cellY < size.height else { continue }
+                let idx = row * width + col
+                guard idx < pixels.count else { continue }
+                let pair = pixels[idx]
+                let cellIdx = cellY * size.width + cellX
+                cells[cellIdx] = TUIStyleCell(
+                    character: "▀",
+                    style: .normal,
+                    continuation: false,
+                    customForeground: pair.top,
+                    customBackground: pair.bottom
+                )
+            }
+        }
+    }
+
     public mutating func fill(_ rect: TUIRect, style: TUIStyle) {
         let left = max(0, rect.x)
         let top = max(0, rect.y)
@@ -173,17 +228,7 @@ public struct TUIFrame: Sendable {
     }
 
     public mutating func stroke(_ rect: TUIRect, style: TUIStyle) {
-        guard rect.width > 1, rect.height > 1 else { return }
-        let right = rect.x + rect.width - 1
-        let bottom = rect.y + rect.height - 1
-        for x in rect.x...right {
-            put(x == rect.x || x == right ? "┼" : "─", at: TUIPoint(x: x, y: rect.y), style: style)
-            put(x == rect.x || x == right ? "┼" : "─", at: TUIPoint(x: x, y: bottom), style: style)
-        }
-        for y in rect.y...bottom {
-            put(y == rect.y || y == bottom ? "┼" : "│", at: TUIPoint(x: rect.x, y: y), style: style)
-            put(y == rect.y || y == bottom ? "┼" : "│", at: TUIPoint(x: right, y: y), style: style)
-        }
+        strokeBox(rect, style: style, rounded: true)
     }
 
     public mutating func strokeBox(_ rect: TUIRect, style: TUIStyle, rounded: Bool = true) {
@@ -351,10 +396,14 @@ public enum TUIDisplayWidth {
 public struct TUIWrappedLine: Sendable {
     public let text: String
     public let cursorColumn: Int?
+    public let startIndex: Int
+    public let endIndex: Int
 
-    public init(text: String, cursorColumn: Int? = nil) {
+    public init(text: String, cursorColumn: Int? = nil, startIndex: Int = 0, endIndex: Int = 0) {
         self.text = text
         self.cursorColumn = cursorColumn
+        self.startIndex = startIndex
+        self.endIndex = endIndex
     }
 }
 
@@ -368,33 +417,37 @@ public enum TUIWrapping {
         var cursorLine: Int?
         var cursorColumn: Int?
         var cursorIndex = 0
+        var lineStartIndex = 0
 
-        func flush() {
-            result.append(TUIWrappedLine(text: String(current), cursorColumn: nil))
+        func flush(lineEndIndex: Int) {
+            result.append(TUIWrappedLine(text: String(current), cursorColumn: nil, startIndex: lineStartIndex, endIndex: lineEndIndex))
             current.removeAll(keepingCapacity: true)
             currentWidth = 0
+            lineStartIndex = lineEndIndex
         }
 
         for (index, character) in characters.enumerated() {
             if character == "\n" {
                 if cursor == index { cursorLine = result.count; cursorColumn = currentWidth }
-                flush()
+                flush(lineEndIndex: index)
                 cursorIndex = index + 1
+                lineStartIndex = index + 1
                 continue
             }
             let characterWidth = max(1, TUIDisplayWidth.width(of: character))
             if currentWidth + characterWidth > limit, !current.isEmpty {
                 if let cursor, cursor >= cursorIndex, cursor <= index { cursorLine = result.count; cursorColumn = currentWidth }
-                flush()
+                flush(lineEndIndex: index)
                 cursorIndex = index
             }
             current.append(character)
             currentWidth += characterWidth
         }
         if let cursor, cursor >= cursorIndex { cursorLine = result.count; cursorColumn = currentWidth }
-        result.append(TUIWrappedLine(text: String(current), cursorColumn: nil))
+        result.append(TUIWrappedLine(text: String(current), cursorColumn: nil, startIndex: lineStartIndex, endIndex: characters.count))
         if let cursorLine, let cursorColumn, result.indices.contains(cursorLine) {
-            result[cursorLine] = TUIWrappedLine(text: result[cursorLine].text, cursorColumn: cursorColumn)
+            let existing = result[cursorLine]
+            result[cursorLine] = TUIWrappedLine(text: existing.text, cursorColumn: cursorColumn, startIndex: existing.startIndex, endIndex: existing.endIndex)
         }
         return result
     }
@@ -410,6 +463,7 @@ public final class ChatComposer {
     public var maxHeight = 6
     public var masksInput = false
     public private(set) var scrollLine = 0
+    public var lastRenderWidth: Int = 78
 
     public var isEmpty: Bool { text.isEmpty }
 
@@ -448,16 +502,44 @@ public final class ChatComposer {
         case .left: moveLeft(); return .changed
         case .right: moveRight(); return .changed
         case .up:
-            if navigateHistory(direction: -1) { return .changed }
+            let contentWidth = max(10, lastRenderWidth - 4)
+            let wrapped = TUIWrapping.lines(text, width: contentWidth, cursor: cursor)
+            let currentLine = wrapped.firstIndex(where: { $0.cursorColumn != nil }) ?? 0
+            if currentLine == 0 {
+                if navigateHistory(direction: -1) { return .changed }
+            }
             moveVertical(-1)
             return .changed
         case .down:
-            if navigateHistory(direction: 1) { return .changed }
+            let contentWidth = max(10, lastRenderWidth - 4)
+            let wrapped = TUIWrapping.lines(text, width: contentWidth, cursor: cursor)
+            let currentLine = wrapped.firstIndex(where: { $0.cursorColumn != nil }) ?? 0
+            if currentLine >= max(0, wrapped.count - 1) {
+                if navigateHistory(direction: 1) { return .changed }
+            }
             moveVertical(1)
             return .changed
         case .home: moveHome(); return .changed
         case .end: moveEnd(); return .changed
-        case .pageUp, .pageDown, .scrollUp, .scrollDown, .mouseClick, .mouseDown, .mouseDrag, .mouseUp, .escape, .interrupt, .quit, .resize, .tick, .tab, .shiftTab, .commandPalette, .cycleReasoningEffort: return .ignored
+        case .pageUp:
+            scrollLine = max(0, scrollLine - maxHeight)
+            return .changed
+        case .pageDown:
+            let contentWidth = max(10, lastRenderWidth - 4)
+            let wrappedCount = TUIWrapping.lines(text, width: contentWidth).count
+            let maxScroll = max(0, wrappedCount - maxHeight)
+            scrollLine = min(maxScroll, scrollLine + maxHeight)
+            return .changed
+        case .scrollUp:
+            scrollLine = max(0, scrollLine - 1)
+            return .changed
+        case .scrollDown:
+            let contentWidth = max(10, lastRenderWidth - 4)
+            let wrappedCount = TUIWrapping.lines(text, width: contentWidth).count
+            let maxScroll = max(0, wrappedCount - maxHeight)
+            scrollLine = min(maxScroll, scrollLine + 1)
+            return .changed
+        case .mouseClick, .mouseDown, .mouseDrag, .mouseUp, .escape, .interrupt, .quit, .resize, .tick, .tab, .shiftTab, .commandPalette, .cycleReasoningEffort: return .ignored
         case .deleteWordBackward: deleteWordBackward(); return .changed
         }
     }
@@ -469,13 +551,24 @@ public final class ChatComposer {
     }
 
     public func render(width: Int) -> (lines: [TUIStyledLine], cursor: TUIPoint?) {
+        lastRenderWidth = width
         let prefix = text.first == "/" ? "> " : "  "
         let contentWidth = max(1, width - TUIDisplayWidth.width(of: prefix))
         let displayText = text.isEmpty && focused ? placeholder : (masksInput ? String(repeating: "•", count: text.count) : text)
         let cursorOffset = text.isEmpty ? 0 : cursor
         let wrapped = TUIWrapping.lines(displayText, width: contentWidth, cursor: text.isEmpty ? 0 : cursorOffset)
         let visibleHeight = min(maxHeight, max(1, wrapped.count))
-        if wrapped.count > visibleHeight { scrollLine = min(scrollLine, wrapped.count - visibleHeight) } else { scrollLine = 0 }
+        let maxScroll = max(0, wrapped.count - visibleHeight)
+
+        if let absoluteLine = wrapped.firstIndex(where: { $0.cursorColumn != nil }) {
+            if absoluteLine < scrollLine {
+                scrollLine = absoluteLine
+            } else if absoluteLine >= scrollLine + visibleHeight {
+                scrollLine = absoluteLine - visibleHeight + 1
+            }
+        }
+        scrollLine = max(0, min(scrollLine, maxScroll))
+
         let visible = Array(wrapped.dropFirst(scrollLine).prefix(visibleHeight))
         if text.isEmpty {
             return ([TUIStyledLine(prefix + displayText, style: .composerPlaceholder)], TUIPoint(x: TUIDisplayWidth.width(of: prefix), y: 0))
@@ -553,13 +646,23 @@ public final class ChatComposer {
 
     private func moveVertical(_ direction: Int) {
         let characters = Array(text)
-        let start = lineStart()
-        let column = cursor - start
-        let target = direction < 0 ? start - 1 : lineEnd() + 1
-        guard target >= 0, target <= characters.count else { return }
-        let targetStart = target == characters.count ? characters.count : characters[..<target].lastIndex(of: "\n").map { $0 + 1 } ?? 0
-        let targetEnd = characters[target...].firstIndex(of: "\n") ?? characters.count
-        cursor = min(targetStart + column, targetEnd)
+        guard !characters.isEmpty else { return }
+        let contentWidth = max(10, lastRenderWidth - 4)
+        let wrapped = TUIWrapping.lines(text, width: contentWidth, cursor: cursor)
+        guard let currentLineIndex = wrapped.firstIndex(where: { $0.cursorColumn != nil }) else { return }
+        let currentLine = wrapped[currentLineIndex]
+        let currentColumn = cursor - currentLine.startIndex
+
+        if direction < 0 {
+            guard currentLineIndex > 0 else { return }
+            let targetLine = wrapped[currentLineIndex - 1]
+            cursor = min(targetLine.startIndex + currentColumn, targetLine.endIndex)
+        } else if direction > 0 {
+            guard currentLineIndex < wrapped.count - 1 else { return }
+            let targetLine = wrapped[currentLineIndex + 1]
+            cursor = min(targetLine.startIndex + currentColumn, targetLine.endIndex)
+        }
+        normalize()
     }
 
     private func lineStart() -> Int {
@@ -575,8 +678,16 @@ public final class ChatComposer {
     private func normalize() {
         cursor = min(max(0, cursor), Array(text).count)
         let contentWidth = 78
-        let lineCount = TUIWrapping.lines(text, width: contentWidth, cursor: cursor).count
-        scrollLine = max(0, min(scrollLine, max(0, lineCount - maxHeight)))
+        let wrapped = TUIWrapping.lines(text, width: contentWidth, cursor: cursor)
+        let maxScroll = max(0, wrapped.count - maxHeight)
+        if let absoluteLine = wrapped.firstIndex(where: { $0.cursorColumn != nil }) {
+            if absoluteLine < scrollLine {
+                scrollLine = absoluteLine
+            } else if absoluteLine >= scrollLine + maxHeight {
+                scrollLine = absoluteLine - maxHeight + 1
+            }
+        }
+        scrollLine = max(0, min(scrollLine, maxScroll))
     }
 }
 
@@ -865,6 +976,11 @@ public final class TranscriptViewport {
     public func replace(_ entries: [TUITranscriptEntry]) {
         self.entries = entries
         if followsBottom { scrollOffset = 0 }
+    }
+
+    public func scrollToBottom() {
+        scrollOffset = 0
+        followsBottom = true
     }
 
     public func replaceTimeline(_ items: [TUITimelineItem]) {
@@ -1206,20 +1322,40 @@ public final class TranscriptViewport {
         if entry.kind == .user, width >= 4 {
             let contentWidth = width - 4
             let bodyLines = TUIWrapping.lines(entry.text, width: contentWidth)
-            let border = String(repeating: "─", count: width - 2)
-            result = [TUIStyledLine("┌\(border)┐", style: entry.style)]
+            let headerTag = " 👤 User "
+            let tagWidth = TUIDisplayWidth.width(of: headerTag)
+            let rightDashCount = max(0, width - 2 - 2 - tagWidth)
+            let topBorder = "╭─\(headerTag)\(String(repeating: "─", count: rightDashCount))╮"
+            let bottomBorder = "╰\(String(repeating: "─", count: width - 2))╯"
+            result = [TUIStyledLine(topBorder, style: .accent)]
                 + bodyLines.map { line in
                     let padding = String(repeating: " ", count: max(0, contentWidth - TUIDisplayWidth.width(of: line.text)))
-                    return TUIStyledLine("│ \(line.text)\(padding) │", style: entry.style)
+                    return TUIStyledLine("│ \(line.text)\(padding) │", style: .composerText)
                 }
-                + [TUIStyledLine("└\(border)┘", style: entry.style)]
+                + [TUIStyledLine(bottomBorder, style: .accent)]
         } else if entry.kind == .toolCall {
             let rawLines = entry.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let wrapLine: (String) -> [String] = { lineStr in
+                let lineWidth = TUIDisplayWidth.width(of: lineStr)
+                guard lineWidth > width, width > 12 else { return [lineStr] }
+                let wrapped = TUIWrapping.lines(lineStr, width: width)
+                guard wrapped.count > 1 else { return [lineStr] }
+                var res: [String] = [wrapped[0].text]
+                let indent = "      "
+                let subWidth = max(10, width - 6)
+                for sub in wrapped.dropFirst() {
+                    let subLines = TUIWrapping.lines(sub.text.trimmingCharacters(in: .whitespaces), width: subWidth)
+                    for sl in subLines {
+                        res.append(indent + sl.text)
+                    }
+                }
+                return res
+            }
             if entry.collapsed {
                 let maxLinesToShow = min(2, rawLines.count)
                 var shownLines: [String] = []
                 for i in 0..<maxLinesToShow {
-                    shownLines.append(rawLines[i])
+                    shownLines.append(contentsOf: wrapLine(rawLines[i]))
                 }
                 let hiddenCount = rawLines.count - maxLinesToShow
                 if hiddenCount > 0 {
@@ -1227,7 +1363,11 @@ public final class TranscriptViewport {
                 }
                 result = shownLines.map { parseToolCallLineSpans($0, defaultStyle: entry.style) }
             } else {
-                result = rawLines.map { parseToolCallLineSpans($0, defaultStyle: entry.style) }
+                var wrappedLines: [String] = []
+                for line in rawLines {
+                    wrappedLines.append(contentsOf: wrapLine(line))
+                }
+                result = wrappedLines.map { parseToolCallLineSpans($0, defaultStyle: entry.style) }
             }
         } else if entry.kind == .thinking {
             let rawLines = entry.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -1246,12 +1386,18 @@ public final class TranscriptViewport {
                 result = lines
             }
         } else {
-            // Assistant 文本及其他消息：优雅 2 空格缩进，无生硬竖线
+            // Assistant 文本及其他消息：优雅 ✦ AI 引导与层次缩进
+            let prefixStr = entry.kind == .assistant ? "✦ " : "  "
             let available = max(1, width - 2)
             let bodyLines = TUIWrapping.lines(entry.text, width: available)
             let style: TUIStyle = entry.kind == .assistant ? .assistantText : entry.style
-            result = bodyLines.map { line in
-                TUIStyledLine("  " + line.text, style: style)
+            result = bodyLines.enumerated().map { idx, line in
+                let lineText = line.text
+                if lineText.hasPrefix("⚡️") || lineText.contains("⚡️") {
+                    return TUIStyledLine("  " + lineText, style: .dim)
+                }
+                let p = idx == 0 ? prefixStr : "  "
+                return TUIStyledLine(p + lineText, style: style)
             }
 
             // 初始化增量 Layout 状态（针对正在运行/流式的条目）
@@ -1264,7 +1410,7 @@ public final class TranscriptViewport {
                     style: entry.style,
                     kind: entry.kind,
                     rawText: entry.text,
-                    prefix: "  ",
+                    prefix: prefixStr,
                     availableWidth: available,
                     committedLines: completed,
                     trailingLine: trailing
@@ -1323,8 +1469,10 @@ public final class TranscriptViewport {
                 for (idx, tokenSubstring) in tokens.enumerated() {
                     let token = String(tokenSubstring)
                     let sep = (idx == tokens.count - 1) ? "" : " "
-                    if idx == 0 && (token == "Read" || token == "Search" || token == "Find" || token == "Edit" || token == "Call") {
+                    if idx == 0 && (token == "Read" || token == "Search" || token == "Find" || token == "Edit" || token == "Call" || token.contains("(")) {
                         spans.append(TUIStyledSpan(token + sep, style: .toolCommand))
+                    } else if token.contains("=") || token.hasPrefix("--") || token.hasPrefix("-") {
+                        spans.append(TUIStyledSpan(token + sep, style: .toolArg))
                     } else if token.hasPrefix("+") {
                         spans.append(TUIStyledSpan(token + sep, style: .toolDiffAdd))
                     } else if token.hasPrefix("-") {
@@ -1454,10 +1602,8 @@ public final class BottomPane {
     public func render(_ overlay: TUIOverlayModel?, in frame: inout TUIFrame, top: Int, height: Int) -> TUIPoint? {
         let composerRect = TUIRect(x: 1, y: top, width: max(2, frame.size.width - 2), height: max(2, height))
         let composerLines = composer.render(width: max(1, composerRect.width - 2))
-        let dividerY = max(0, top - 1)
-        frame.write(String(repeating: "─", count: frame.size.width), at: TUIPoint(x: 0, y: dividerY), maxWidth: frame.size.width, style: .dim)
         frame.fill(composerRect, style: .composer)
-        frame.stroke(composerRect, style: .accent)
+        frame.strokeBox(composerRect, style: .accent, rounded: true)
         frame.writeLines(composerLines.lines, at: TUIPoint(x: composerRect.x + 1, y: composerRect.y + 1), maxWidth: max(1, composerRect.width - 2), maxHeight: max(1, composerRect.height - 2))
         if let overlay { render(overlay, in: &frame, composerRect: composerRect) }
         guard let cursor = composerLines.cursor else { return nil }
@@ -1530,19 +1676,22 @@ public struct TUIHeroConfig: Sendable, Equatable {
     public var providerName: String
     public var reasoningEffort: String?
     public var tip: String
+    public var permissionName: String
 
     public init(
         modeName: String = "Build",
         modelName: String = "DeepSeek V4 Flash",
         providerName: String = "DeepSeek",
         reasoningEffort: String? = nil,
-        tip: String = "Press ctrl+p to see all available actions and commands"
+        tip: String = "Press ctrl+p to see all available actions and commands",
+        permissionName: String = "Ask/Workspace"
     ) {
         self.modeName = modeName
         self.modelName = modelName
         self.providerName = providerName
         self.reasoningEffort = reasoningEffort
         self.tip = tip
+        self.permissionName = permissionName
     }
 }
 
@@ -1566,14 +1715,22 @@ public struct TUISidebarModel: Sendable, Equatable {
 
     public enum MCPStatus: Sendable, Equatable {
         case ready
+        case empty
         case error(String?)
         case needsAuth
+        case disabled
 
         public var label: String {
             switch self {
             case .ready: return "可用"
-            case .error: return "错误"
+            case .empty: return "无工具"
+            case let .error(msg):
+                if let msg, msg == "不可用" || msg == "已禁用" {
+                    return msg
+                }
+                return "错误"
             case .needsAuth: return "待认证"
+            case .disabled: return "已禁用"
             }
         }
     }
@@ -1595,10 +1752,10 @@ public struct TUISidebarModel: Sendable, Equatable {
 
         public var icon: String {
             switch self {
-            case .pending: return "[ ]"
-            case .inProgress: return "[⟳]"
-            case .completed: return "[✓]"
-            case .failed: return "[✗]"
+            case .pending: return "•"
+            case .inProgress: return "●"
+            case .completed: return "✓"
+            case .failed: return "✗"
             }
         }
     }
@@ -1625,24 +1782,87 @@ public struct TUISidebarModel: Sendable, Equatable {
         }
     }
 
+    public struct PrefixCacheStats: Sendable, Equatable {
+        public let cachedTokens: Int
+        public let promptTokens: Int
+        public let previousPromptTokens: Int?
+        public let status: String // "active", "coldNewEpoch", "unavailable"
+        public let cacheEpoch: Int?
+        public let epochReason: String?
+        public let clientHealthStatus: String?
+        public let clientBustRate: Double?
+        public let clientCausedBusts: Int?
+        public let comparableRequests: Int?
+
+        public var prefixReuseEfficiency: Double? {
+            guard let prev = previousPromptTokens, prev > 0, status == "active" else { return nil }
+            return min(1.0, max(0.0, Double(cachedTokens) / Double(prev)))
+        }
+
+        public var cachedInputShare: Double? {
+            guard promptTokens > 0, status == "active" else { return nil }
+            return min(1.0, max(0.0, Double(cachedTokens) / Double(promptTokens)))
+        }
+
+        public var ratio: Double {
+            prefixReuseEfficiency ?? cachedInputShare ?? 0.0
+        }
+
+        public init(
+            cachedTokens: Int,
+            promptTokens: Int,
+            previousPromptTokens: Int? = nil,
+            status: String = "active",
+            cacheEpoch: Int? = nil,
+            epochReason: String? = nil,
+            clientHealthStatus: String? = nil,
+            clientBustRate: Double? = nil,
+            clientCausedBusts: Int? = nil,
+            comparableRequests: Int? = nil
+        ) {
+            self.cachedTokens = cachedTokens
+            self.promptTokens = promptTokens
+            self.previousPromptTokens = previousPromptTokens
+            self.status = status
+            self.cacheEpoch = cacheEpoch
+            self.epochReason = epochReason
+            self.clientHealthStatus = clientHealthStatus
+            self.clientBustRate = clientBustRate
+            self.clientCausedBusts = clientCausedBusts
+            self.comparableRequests = comparableRequests
+        }
+    }
+
     public var summary: String
     public var cacheLayers: [CacheLayer]
+    public var prefixCache: PrefixCacheStats?
     public var mcpItems: [MCPItem]
     public var tasks: [TaskItem]
     public var subagents: [SubagentItem]
+    public var scrollOffset: Int
+    public var mcpScrollOffset: Int
+    public var taskScrollOffset: Int
 
     public init(
         summary: String,
         cacheLayers: [CacheLayer] = [],
+        prefixCache: PrefixCacheStats? = nil,
         mcpItems: [MCPItem] = [],
         tasks: [TaskItem] = [],
-        subagents: [SubagentItem] = []
+        subagents: [SubagentItem] = [],
+        scrollOffset: Int = 0,
+        mcpScrollOffset: Int = 0,
+        taskScrollOffset: Int = 0
     ) {
         self.summary = summary
         self.cacheLayers = cacheLayers
+        self.prefixCache = prefixCache
         self.mcpItems = mcpItems
         self.tasks = tasks
         self.subagents = subagents
+        self.scrollOffset = scrollOffset
+        self.mcpScrollOffset = mcpScrollOffset
+        self.taskScrollOffset = taskScrollOffset
     }
 }
 
@@ -1724,7 +1944,38 @@ public final class TUIApp {
             ]
             let bannerWidth = 43
             let logoX = max(1, (size.width - bannerWidth) / 2)
-            let logoY = max(y + 1, (size.height / 2) - 6)
+
+            // 灵犀小狐狸像素吉祥物（萌萌长尖狐耳、灵犀灵动面容、捧着极光闪电、毛茸茸大狐尾）
+            let logoY: Int
+            if size.height >= 24, overlay == nil {
+                let mascotY = max(y + 1, (size.height / 2) - 8)
+                let earText = "  /\\___/\\  "
+                let faceText = " (  • ᴥ • ) "
+                let bodyText = "o(   ⚡   )o"
+                let tailText = "  (_______) ~彡✦"
+                let tag1 = "✦ LingXi Fox · 灵犀小狐狸 ✦"
+                let tag2 = "「随时为主人效劳，代码与奇迹共生~」"
+
+                let mascotBlockWidth = 48
+                let mascotX = max(1, (size.width - mascotBlockWidth) / 2)
+
+                frame.write(earText, at: TUIPoint(x: mascotX, y: mascotY), style: .mascotEar)
+                frame.write(faceText, at: TUIPoint(x: mascotX, y: mascotY + 1), style: .mascotBody)
+                frame.write("  " + tag1, at: TUIPoint(x: mascotX + 12, y: mascotY + 1), style: .mascotTag)
+
+                frame.write(bodyText, at: TUIPoint(x: mascotX, y: mascotY + 2), style: .badgeYolo)
+                frame.write("  " + tag2, at: TUIPoint(x: mascotX + 12, y: mascotY + 2), style: .dim)
+
+                frame.write(tailText, at: TUIPoint(x: mascotX, y: mascotY + 3), style: .mascotSpark)
+                logoY = mascotY + 5
+            } else {
+                let tag1 = "✦ LingXi Fox · 灵犀小狐狸 ✦"
+                let tag1X = max(1, (size.width - TUIDisplayWidth.width(of: tag1)) / 2)
+                let compactY = max(y + 1, (size.height / 2) - 6)
+                frame.write(tag1, at: TUIPoint(x: tag1X, y: compactY), style: .mascotTag)
+                logoY = compactY + 2
+            }
+
             for (lIdx, lStr) in logoLines.enumerated() {
                 frame.write(lStr, at: TUIPoint(x: logoX, y: logoY + lIdx), maxWidth: size.width, style: .heroLogo)
             }
@@ -1732,21 +1983,24 @@ public final class TUIApp {
             let boxWidth = min(max(64, size.width - 6), 88)
             let boxHeight = 5
             let boxX = max(1, (size.width - boxWidth) / 2)
-            let boxY = logoY + logoLines.count + 2
+            let boxY = logoY + logoLines.count + 1
             let boxRect = TUIRect(x: boxX, y: boxY, width: boxWidth, height: boxHeight)
             frame.fill(boxRect, style: .heroBoxBg)
-
-            for r in boxY..<(boxY + boxHeight) {
-                frame.put("│", at: TUIPoint(x: boxX, y: r), style: .heroBoxBorder)
-            }
+            frame.strokeBox(boxRect, style: .heroBoxBorder, rounded: true)
 
             if composer.isEmpty {
                 frame.write("Ask anything... \"Fix a TODO in the codebase\"", at: TUIPoint(x: boxX + 2, y: boxY + 1), maxWidth: boxWidth - 4, style: .heroBoxPlaceholder)
                 frame.cursor = TUIPoint(x: boxX + 2, y: boxY + 1)
             } else {
-                let wrapped = TUIWrapping.lines(composer.text, width: boxWidth - 4, cursor: composer.cursor)
-                for (rIdx, rLine) in wrapped.prefix(2).enumerated() {
-                    frame.write(rLine.text, at: TUIPoint(x: boxX + 2, y: boxY + 1 + rIdx), maxWidth: boxWidth - 4, style: .heroBoxText)
+                composer.lastRenderWidth = boxWidth
+                let innerWidth = boxWidth - 4
+                let wrapped = TUIWrapping.lines(composer.text, width: innerWidth, cursor: composer.cursor)
+                let visibleHeight = 2
+                let cursorLineIdx = wrapped.firstIndex(where: { $0.cursorColumn != nil }) ?? 0
+                let scrollOffset = max(0, min(cursorLineIdx - visibleHeight + 1, max(0, wrapped.count - visibleHeight)))
+                let visibleLines = Array(wrapped.dropFirst(scrollOffset).prefix(visibleHeight))
+                for (rIdx, rLine) in visibleLines.enumerated() {
+                    frame.write(rLine.text, at: TUIPoint(x: boxX + 2, y: boxY + 1 + rIdx), maxWidth: innerWidth, style: .heroBoxText)
                     if let col = rLine.cursorColumn {
                         frame.cursor = TUIPoint(x: min(boxX + boxWidth - 2, boxX + 2 + col), y: boxY + 1 + rIdx)
                     }
@@ -1756,11 +2010,30 @@ public final class TUIApp {
                 }
             }
 
-            frame.write(hero.modeName, at: TUIPoint(x: boxX + 2, y: boxY + boxHeight - 2), style: .heroMode)
-            let modeWidth = TUIDisplayWidth.width(of: hero.modeName)
+            var metaX = boxX + 2
+            let metaY = boxY + boxHeight - 2
+
+            // 1. Mode 名称
+            frame.write(hero.modeName, at: TUIPoint(x: metaX, y: metaY), style: .heroMode)
+            metaX += TUIDisplayWidth.width(of: hero.modeName)
+
+            // 2. 分隔点
+            frame.write(" · ", at: TUIPoint(x: metaX, y: metaY), style: .heroBoxMeta)
+            metaX += 3
+
+            // 3. Permission 徽标 (⚡ YOLO 或 Ask/Workspace)
+            let isYolo = hero.permissionName.contains("YOLO")
+            let permStyle: TUIStyle = isYolo ? .badgeYolo : .badgeAsk
+            frame.write(hero.permissionName, at: TUIPoint(x: metaX, y: metaY), style: permStyle)
+            metaX += TUIDisplayWidth.width(of: hero.permissionName)
+
+            // 4. Model / Provider / Reasoning Effort
             let effortText = hero.reasoningEffort.map { " (\($0))" } ?? ""
             let metaText = " · \(hero.modelName) \(hero.providerName)\(effortText)"
-            frame.write(metaText, at: TUIPoint(x: boxX + 2 + modeWidth, y: boxY + boxHeight - 2), maxWidth: boxWidth - 4 - modeWidth, style: .heroBoxMeta)
+            let remainingWidth = max(0, (boxX + boxWidth - 2) - metaX)
+            if remainingWidth > 0 {
+                frame.write(metaText, at: TUIPoint(x: metaX, y: metaY), maxWidth: remainingWidth, style: .heroBoxMeta)
+            }
 
             if let overlay, !overlay.isModal {
                 // 在居中输入框下方优雅展开命令补全或快捷浮层
@@ -1833,131 +2106,249 @@ public final class TUIApp {
         return frame
     }
 
+    private struct SidebarLineItem {
+        let xOffset: Int
+        let text: String
+        let style: TUIStyle
+        let maxWidth: Int?
+    }
+
+    private struct SidebarRow {
+        let items: [SidebarLineItem]
+    }
+
     private func renderSidebar(_ model: TUISidebarModel, in frame: inout TUIFrame, rect: TUIRect) {
         guard rect.width >= 10, rect.height >= 5 else { return }
-        var currentY = rect.y
-        let maxY = rect.y + rect.height
         let contentWidth = rect.width - 2
         let startX = rect.x + 1
+        var currentY = rect.y
+        let bottomY = rect.y + rect.height
 
-        // 1. 会话摘要
-        if currentY < maxY {
-            frame.write("◈ 会话摘要", at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarHeader)
+        func writeLine(_ text: String, style: TUIStyle, maxWidth: Int = contentWidth, xOffset: Int = 0) {
+            guard currentY < bottomY else { return }
+            frame.write(text, at: TUIPoint(x: startX + xOffset, y: currentY), maxWidth: maxWidth, style: style)
             currentY += 1
-            let trimmedSummary = model.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            let summaryText = trimmedSummary.isEmpty ? "新会话" : trimmedSummary
-            let wrapped = TUIWrapping.lines(summaryText, width: contentWidth)
-            for line in wrapped.prefix(2) {
-                guard currentY < maxY else { break }
-                frame.write(line.text, at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .composerText)
-                currentY += 1
+        }
+
+        func writeRow(items: [(text: String, style: TUIStyle, xOffset: Int, maxWidth: Int?)]) {
+            guard currentY < bottomY else { return }
+            for item in items {
+                frame.write(item.text, at: TUIPoint(x: startX + item.xOffset, y: currentY), maxWidth: item.maxWidth ?? (contentWidth - item.xOffset), style: item.style)
             }
             currentY += 1
         }
 
-        // 2. 三级缓存用量 (L1, L2, L3)
-        if currentY < maxY {
-            frame.write("◈ 缓存用量", at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarHeader)
-            currentY += 1
+        // 1. 会话摘要（固定顶栏，不随滚动滚动）
+        writeLine("◈ 会话摘要", style: .sidebarHeader)
+        let trimmedSummary = model.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summaryText = trimmedSummary.isEmpty ? "新会话" : trimmedSummary
+        let summaryLines = TUIWrapping.lines(summaryText, width: contentWidth)
+        for line in summaryLines.prefix(2) {
+            writeLine(line.text, style: .composerText)
+        }
+        if currentY < bottomY { currentY += 1 } // 空行
+
+        // 2. 缓存用量 (含 L1/L2/L3 及真实提供商 Prefix Cache 命中率)（固定常驻）
+        if currentY < bottomY {
+            writeLine("◈ 缓存用量", style: .sidebarHeader)
+            if let prefix = model.prefixCache {
+                let epochStr = prefix.cacheEpoch.map { " (Epoch \($0))" } ?? ""
+                let bustRatioStr: String
+                if let busts = prefix.clientCausedBusts, let total = prefix.comparableRequests, total > 0 {
+                    bustRatioStr = " (\(busts)/\(total))"
+                } else {
+                    bustRatioStr = epochStr
+                }
+                if prefix.clientHealthStatus == "bustDetected" {
+                    writeLine("结构前缀: 破坏 ⚠\(bustRatioStr)", style: .error)
+                } else if prefix.clientHealthStatus == "stable" {
+                    writeLine("结构前缀: 稳定 ✓\(bustRatioStr)", style: .sidebarLabel)
+                }
+
+                switch prefix.status {
+                case "unavailable":
+                    writeLine("前缀复用: 未提供 (Unavailable)", style: .dim)
+                case "coldNewEpoch":
+                    writeLine("前缀复用: 新代启始\(epochStr)", style: .sidebarLabel)
+                    writeLine("[首轮建仓中 · 等待次轮复用]", style: .dim)
+                default:
+                    if let reuse = prefix.prefixReuseEfficiency {
+                        let pct = String(format: "%.1f%%", reuse * 100.0)
+                        let barTotalWidth = max(4, contentWidth)
+                        let innerWidth = barTotalWidth - 2
+                        let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * reuse))))
+                        let emptyCount = innerWidth - filledCount
+                        let barStr = "[" + String(repeating: "█", count: filledCount) + String(repeating: "░", count: emptyCount) + "]"
+                        writeLine("前缀复用: \(pct)", style: .sidebarLabel)
+                        writeLine(barStr, style: .sidebarProgressFill)
+
+                        let prevStr = prefix.previousPromptTokens.map { TokenFormatter.format($0) } ?? "?"
+                        let cachedStr = TokenFormatter.format(prefix.cachedTokens)
+                        let inputSharePct = prefix.cachedInputShare.map { String(format: "%.1f%%", $0 * 100.0) } ?? "-"
+                        let subDetail = "\(cachedStr)/\(prevStr) 可复用 · 输入占比 \(inputSharePct)"
+                        writeLine(subDetail, style: .dim)
+                    } else if let share = prefix.cachedInputShare {
+                        let pct = String(format: "%.1f%%", share * 100.0)
+                        let cacheText = "前缀命中: \(TokenFormatter.format(prefix.cachedTokens))/\(TokenFormatter.format(prefix.promptTokens)) (\(pct))"
+                        writeLine(cacheText, style: .sidebarLabel)
+                        let barTotalWidth = max(4, contentWidth)
+                        let innerWidth = barTotalWidth - 2
+                        let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * share))))
+                        let emptyCount = innerWidth - filledCount
+                        let barStr = "[" + String(repeating: "█", count: filledCount) + String(repeating: "░", count: emptyCount) + "]"
+                        writeLine(barStr, style: .sidebarProgressFill)
+                    }
+                }
+            }
 
             for layer in model.cacheLayers {
-                guard currentY + 1 < maxY else { break }
                 let percent = String(format: "%.1f%%", layer.ratio * 100.0)
                 let headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))/\(TokenFormatter.format(layer.capacityTokens)) (\(percent))"
-                frame.write(headerText, at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarLabel)
-                currentY += 1
+                writeLine(headerText, style: .sidebarLabel)
 
                 let barTotalWidth = max(4, contentWidth)
                 let innerWidth = barTotalWidth - 2
                 let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * layer.ratio))))
                 let emptyCount = innerWidth - filledCount
-
-                frame.write("[", at: TUIPoint(x: startX, y: currentY), maxWidth: 1, style: .sidebarProgressTrack)
-                let filledStr = String(repeating: "█", count: filledCount)
-                frame.write(filledStr, at: TUIPoint(x: startX + 1, y: currentY), maxWidth: filledCount, style: .sidebarProgressFill)
-                let emptyStr = String(repeating: "░", count: emptyCount)
-                frame.write(emptyStr, at: TUIPoint(x: startX + 1 + filledCount, y: currentY), maxWidth: emptyCount, style: .sidebarProgressTrack)
-                frame.write("]", at: TUIPoint(x: startX + barTotalWidth - 1, y: currentY), maxWidth: 1, style: .sidebarProgressTrack)
-                currentY += 1
+                let barStr = "[" + String(repeating: "█", count: filledCount) + String(repeating: "░", count: emptyCount) + "]"
+                writeLine(barStr, style: .sidebarProgressTrack)
             }
-            currentY += 1
+            if currentY < bottomY { currentY += 1 } // 空行
         }
 
-        // 3. 激活的 MCP 具体的名字以及激活状态
-        if currentY < maxY {
-            let mcpHeader = "◈ MCP 工具 (\(model.mcpItems.count))"
-            frame.write(mcpHeader, at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarHeader)
-            currentY += 1
+        let remainingHeight = max(0, bottomY - currentY)
+        guard remainingHeight >= 3 else { return }
 
-            if model.mcpItems.isEmpty {
-                frame.write("• 暂无激活 MCP", at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .dim)
-                currentY += 1
-            } else {
-                for item in model.mcpItems.prefix(4) {
-                    guard currentY < maxY else { break }
-                    let (dotStyle, labelStyle): (TUIStyle, TUIStyle) = {
-                        switch item.status {
-                        case .ready: return (.sidebarMcpReady, .sidebarLabel)
-                        case .error: return (.sidebarMcpError, .error)
-                        case .needsAuth: return (.sidebarMcpAuth, .warning)
-                        }
-                    }()
-                    frame.put("●", at: TUIPoint(x: startX, y: currentY), style: dotStyle)
-                    let text = " \(item.id) (\(item.status.label))"
-                    frame.write(text, at: TUIPoint(x: startX + 1, y: currentY), maxWidth: contentWidth - 1, style: labelStyle)
-                    currentY += 1
-                }
+        // 准备组件数据
+        // 3. MCP 项
+        var mcpRows: [[(text: String, style: TUIStyle, xOffset: Int, maxWidth: Int?)]] = []
+        if model.mcpItems.isEmpty {
+            mcpRows.append([("• 暂无激活 MCP", .dim, 0, contentWidth)])
+        } else {
+            for item in model.mcpItems {
+                let (dotSymbol, dotStyle, labelStyle): (String, TUIStyle, TUIStyle) = {
+                    switch item.status {
+                    case .ready: return ("●", .sidebarMcpReady, .sidebarLabel)
+                    case .empty: return ("○", .dim, .dim)
+                    case .error: return ("✖", .sidebarMcpError, .error)
+                    case .needsAuth: return ("?", .sidebarMcpAuth, .warning)
+                    case .disabled: return ("○", .dim, .dim)
+                    }
+                }()
+                let text = " \(item.id) (\(item.status.label))"
+                mcpRows.append([
+                    (dotSymbol, dotStyle, 0, 1),
+                    (text, labelStyle, 1, contentWidth - 1)
+                ])
             }
-            currentY += 1
         }
 
-        // 4. Agent 的 tasks 显示区域
-        if currentY < maxY {
-            let taskHeader = "◈ 待办任务 (\(model.tasks.count))"
-            frame.write(taskHeader, at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarHeader)
-            currentY += 1
-
-            if model.tasks.isEmpty {
-                frame.write("• 暂无待办任务", at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .dim)
-                currentY += 1
-            } else {
-                for task in model.tasks.prefix(5) {
-                    guard currentY < maxY else { break }
-                    let (iconStyle, textStyle): (TUIStyle, TUIStyle) = {
-                        switch task.status {
-                        case .completed: return (.sidebarTaskCompleted, .dim)
-                        case .inProgress: return (.sidebarTaskInProgress, .composerText)
-                        case .pending: return (.sidebarTaskPending, .sidebarLabel)
-                        case .failed: return (.sidebarTaskFailed, .error)
-                        }
-                    }()
-                    let icon = task.status.icon
-                    frame.write(icon, at: TUIPoint(x: startX, y: currentY), maxWidth: 3, style: iconStyle)
-                    frame.write(" \(task.title)", at: TUIPoint(x: startX + 3, y: currentY), maxWidth: contentWidth - 3, style: textStyle)
-                    currentY += 1
+        // 4. Tasks 项
+        var taskRows: [[(text: String, style: TUIStyle, xOffset: Int, maxWidth: Int?)]] = []
+        if model.tasks.isEmpty {
+            taskRows.append([("• 暂无待办任务", .dim, 0, contentWidth)])
+        } else {
+            // 智能排序：优先展示进行中 (inProgress)，其次待办 (pending)，已完成与失败排在后方
+            let sortedTasks = model.tasks.sorted { a, b in
+                func rank(_ s: TUISidebarModel.TaskStatus) -> Int {
+                    switch s {
+                    case .inProgress: return 0
+                    case .pending: return 1
+                    case .failed: return 2
+                    case .completed: return 3
+                    }
+                }
+                return rank(a.status) < rank(b.status)
+            }
+            for task in sortedTasks {
+                let (iconStyle, textStyle): (TUIStyle, TUIStyle) = {
+                    switch task.status {
+                    case .completed: return (.sidebarTaskCompleted, .dim)
+                    case .inProgress: return (.sidebarTaskInProgress, .composerText)
+                    case .pending: return (.sidebarTaskPending, .sidebarLabel)
+                    case .failed: return (.sidebarTaskFailed, .error)
+                    }
+                }()
+                let icon = task.status.icon
+                let titleLines = TUIWrapping.lines(task.title, width: max(5, contentWidth - 3))
+                let firstLine = titleLines.first?.text ?? task.title
+                taskRows.append([
+                    (icon, iconStyle, 0, 1),
+                    (" \(firstLine)", textStyle, 1, contentWidth - 1)
+                ])
+                if titleLines.count > 1 {
+                    let secondLine = titleLines[1].text
+                    taskRows.append([
+                        ("  \(secondLine)", textStyle, 0, contentWidth)
+                    ])
                 }
             }
-            currentY += 1
         }
 
-        // 5. 子代理摘要
-        if currentY < maxY {
-            let subHeader = "◈ 子代理 (\(model.subagents.count))"
-            frame.write(subHeader, at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarHeader)
-            currentY += 1
+        let hasSubagents = !model.subagents.isEmpty
+        let subagentReserve = hasSubagents ? min(3, max(1, remainingHeight / 4)) : 0
+        let availableForMcpAndTasks = max(2, remainingHeight - subagentReserve)
 
-            if model.subagents.isEmpty {
-                frame.write("• 无活跃子代理", at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .dim)
-                currentY += 1
-            } else {
-                for sub in model.subagents.prefix(3) {
-                    guard currentY < maxY else { break }
-                    let icon = sub.status.lowercased().contains("run") ? "⚡" : "•"
-                    let roleName = sub.role.isEmpty ? sub.id : sub.role
-                    let subText = "\(icon) \(roleName) (\(sub.status))"
-                    frame.write(subText, at: TUIPoint(x: startX, y: currentY), maxWidth: contentWidth, style: .sidebarLabel)
-                    currentY += 1
-                }
+        let mcpPreferred = min(mcpRows.count + 2, max(3, availableForMcpAndTasks / 2))
+        let mcpAllocatedHeight = min(mcpPreferred, availableForMcpAndTasks - 2)
+
+        // 渲染 MCP 组件（局部独立滚动）
+        let mcpContentSlots = max(1, mcpAllocatedHeight - 1)
+        let mcpTotalRows = mcpRows.count
+        let mcpMaxScroll = max(0, mcpTotalRows - mcpContentSlots)
+        let effectiveMcpScroll = max(0, min(model.mcpScrollOffset, mcpMaxScroll))
+        let mcpScrollIndicator = mcpMaxScroll > 0 ? " [\(effectiveMcpScroll + 1)/\(mcpTotalRows)]" : ""
+        writeLine("◈ MCP 工具 (\(model.mcpItems.count))\(mcpScrollIndicator)", style: .sidebarHeader)
+
+        let visibleMcpRows = mcpRows.dropFirst(effectiveMcpScroll).prefix(mcpContentSlots)
+        let mcpStartY = currentY
+        for r in visibleMcpRows {
+            writeRow(items: r)
+        }
+        // 局部微型滚动指示（仅在 MCP 区域内，绝不贯穿整个侧边栏）
+        if mcpMaxScroll > 0 && mcpContentSlots >= 2 {
+            let sbX = rect.x + rect.width - 1
+            let thumb = min(mcpContentSlots - 1, max(0, Int(round(Double(effectiveMcpScroll) / Double(max(1, mcpMaxScroll)) * Double(mcpContentSlots - 1)))))
+            for s in 0..<mcpContentSlots {
+                frame.put(s == thumb ? "█" : "│", at: TUIPoint(x: sbX, y: mcpStartY + s), style: s == thumb ? .accent : .dim)
+            }
+        }
+
+        if currentY < bottomY { currentY += 1 } // 空行
+
+        // 渲染 Tasks 组件（局部独立滚动：默认限制最多显示 4 项保证排版呼吸感与美观，超出部分向下滚动）
+        let taskRemainingAvailable = max(2, bottomY - currentY - subagentReserve)
+        let maxVisibleTaskSlots = 4
+        let taskContentSlots = min(maxVisibleTaskSlots, max(1, taskRemainingAvailable - 1))
+        let taskTotalRows = taskRows.count
+        let taskMaxScroll = max(0, taskTotalRows - taskContentSlots)
+        let effectiveTaskScroll = max(0, min(model.taskScrollOffset > 0 ? model.taskScrollOffset : model.scrollOffset, taskMaxScroll))
+        let taskScrollIndicator = taskMaxScroll > 0 ? " [\(effectiveTaskScroll + 1)/\(taskTotalRows)]" : ""
+        writeLine("◈ 待办任务 (\(model.tasks.count))\(taskScrollIndicator)", style: .sidebarHeader)
+
+        let visibleTaskRows = taskRows.dropFirst(effectiveTaskScroll).prefix(taskContentSlots)
+        let taskStartY = currentY
+        for r in visibleTaskRows {
+            writeRow(items: r)
+        }
+        // 局部微型滚动指示（仅在 Tasks 区域内）
+        if taskMaxScroll > 0 && taskContentSlots >= 2 {
+            let sbX = rect.x + rect.width - 1
+            let thumb = min(taskContentSlots - 1, max(0, Int(round(Double(effectiveTaskScroll) / Double(max(1, taskMaxScroll)) * Double(taskContentSlots - 1)))))
+            for s in 0..<taskContentSlots {
+                frame.put(s == thumb ? "█" : "│", at: TUIPoint(x: sbX, y: taskStartY + s), style: s == thumb ? .accent : .dim)
+            }
+        }
+
+        // 渲染 Subagents（如果有空间且有活跃子代理）
+        if hasSubagents && currentY + 1 < bottomY {
+            currentY += 1
+            writeLine("◈ 子代理 (\(model.subagents.count))", style: .sidebarHeader)
+            for sub in model.subagents.prefix(bottomY - currentY) {
+                let icon = sub.status.lowercased().contains("run") ? "⚡" : "•"
+                let roleName = sub.role.isEmpty ? sub.id : sub.role
+                let subText = "\(icon) \(roleName) (\(sub.status))"
+                writeLine(subText, style: .sidebarLabel)
             }
         }
     }

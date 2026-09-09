@@ -219,8 +219,10 @@ public enum RuntimeConfigurationResolver {
     public static func resolveMCP(
         _ configuration: MCPConfiguration,
         credentials: any CredentialStore,
+        hostEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         schemaStoreDirectory: URL? = nil,
-        discoverTools: Bool = true
+        discoverTools: Bool = true,
+        faultTolerant: Bool = false
     ) async throws -> MCPRuntimeResolution {
         try requireUnique(configuration.servers.map(\.id), path: "$.servers")
         try requireUnique(configuration.servers.map(\.alias), path: "$.servers.alias")
@@ -229,96 +231,145 @@ public enum RuntimeConfigurationResolver {
         var resolved: [MCPServerConfiguration] = []
 
         for stored in configuration.servers {
-            let path = "$.servers.\(stored.id)"
-            if stored.transport == .streamableHTTP, !stored.environment.isEmpty {
-                throw ConfigurationValidationError(path: "\(path).environment", reason: "HTTP transport does not accept process environment")
-            }
-            if stored.transport == .stdio, stored.authentication.kind != .none {
-                throw ConfigurationValidationError(path: "\(path).authentication", reason: "stdio authentication must use environment credential references")
-            }
-            var secretValues: [String: String] = [:]
-            let authentication: MCPAuthentication
-            switch stored.authentication.kind {
-            case .none:
-                authentication = .none
-            case .bearer, .header:
-                guard let reference = stored.authentication.credential else {
-                    throw ConfigurationValidationError(path: "\(path).authentication.credential", reason: "credential reference is required")
+            do {
+                let path = "$.servers.\(stored.id)"
+                if stored.transport == .streamableHTTP, !stored.environment.isEmpty {
+                    throw ConfigurationValidationError(path: "\(path).environment", reason: "HTTP transport does not accept process environment")
                 }
-                if stored.enabled {
-                    guard let value = try await credentials.secret(for: reference), validHeaderValue(value) else {
-                        throw ConfigurationValidationError(path: "\(path).authentication.credential", reason: "credential is missing or invalid")
+                if stored.transport == .stdio, stored.authentication.kind != .none {
+                    throw ConfigurationValidationError(path: "\(path).authentication", reason: "stdio authentication must use environment credential references")
+                }
+                var secretValues: [String: String] = [:]
+                let authentication: MCPAuthentication
+                switch stored.authentication.kind {
+                case .none:
+                    authentication = .none
+                case .bearer, .header:
+                    guard let reference = stored.authentication.credential else {
+                        throw ConfigurationValidationError(path: "\(path).authentication.credential", reason: "credential reference is required")
                     }
-                    secretValues[reference.rawValue] = value
-                }
-                if stored.authentication.kind == .bearer {
-                    authentication = .bearer(SecretRef(reference.rawValue))
-                } else {
-                    guard let name = stored.authentication.headerName, validHeaderName(name) else {
-                        throw ConfigurationValidationError(path: "\(path).authentication.headerName", reason: "valid header name is required")
+                    if stored.enabled {
+                        guard let value = try await credentialValue(reference, credentials: credentials, environment: hostEnvironment), validHeaderValue(value) else {
+                            throw ConfigurationValidationError(path: "\(path).authentication.credential", reason: "credential is missing or invalid")
+                        }
+                        secretValues[reference.rawValue] = value
                     }
-                    authentication = .header(name: name, value: SecretRef(reference.rawValue))
+                    if stored.authentication.kind == .bearer {
+                        authentication = .bearer(SecretRef(reference.rawValue))
+                    } else {
+                        guard let name = stored.authentication.headerName, validHeaderName(name) else {
+                            throw ConfigurationValidationError(path: "\(path).authentication.headerName", reason: "valid header name is required")
+                        }
+                        authentication = .header(name: name, value: SecretRef(reference.rawValue))
+                    }
                 }
-            }
 
-            var environment: [String: SecretRef] = [:]
-            for item in stored.environment {
-                guard !item.name.isEmpty, environment[item.name] == nil else {
-                    throw ConfigurationValidationError(path: "\(path).environment", reason: "environment names must be non-empty and unique")
-                }
-                if stored.enabled {
-                    guard let value = try await credentials.secret(for: item.credential), !value.isEmpty else {
-                        throw ConfigurationValidationError(path: "\(path).environment.\(item.name)", reason: "credential is missing")
+                var environment: [String: SecretRef] = [:]
+                for item in stored.environment {
+                    guard !item.name.isEmpty, environment[item.name] == nil else {
+                        throw ConfigurationValidationError(path: "\(path).environment", reason: "environment names must be non-empty and unique")
                     }
-                    secretValues[item.credential.rawValue] = value
+                    if stored.enabled {
+                        guard let value = try await credentialValue(item.credential, credentials: credentials, environment: hostEnvironment), !value.isEmpty else {
+                            throw ConfigurationValidationError(path: "\(path).environment.\(item.name)", reason: "credential is missing")
+                        }
+                        secretValues[item.credential.rawValue] = value
+                    }
+                    environment[item.name] = SecretRef(item.credential.rawValue)
                 }
-                environment[item.name] = SecretRef(item.credential.rawValue)
-            }
 
-            let runtime: MCPServerConfiguration
-            switch stored.transport {
-            case .streamableHTTP:
-                guard stored.command == nil, stored.arguments.isEmpty, let endpoint = stored.endpoint else {
-                    throw ConfigurationValidationError(path: path, reason: "streamableHTTP requires endpoint and forbids command/arguments")
+                let runtime: MCPServerConfiguration
+                switch stored.transport {
+                case .streamableHTTP:
+                    guard stored.command == nil, stored.arguments.isEmpty, let endpoint = stored.endpoint else {
+                        throw ConfigurationValidationError(path: path, reason: "streamableHTTP requires endpoint and forbids command/arguments")
+                    }
+                    runtime = MCPServerConfiguration(
+                        serverID: MCPServerID(stored.id),
+                        alias: stored.alias,
+                        transport: .streamableHTTP,
+                        endpoint: try ConfigurationEndpointPolicy.resolve(endpoint, path: "\(path).endpoint"),
+                        protocolPreference: protocolPreference(stored.protocolPreference),
+                        enabled: stored.enabled,
+                        auth: authentication,
+                        timeoutSeconds: stored.timeoutSeconds
+                    )
+                    if stored.enabled {
+                        let transport = MCPStreamableHTTPTransport(configuration: runtime, resolver: InMemorySecretResolver(secretValues))
+                        await manager.register(transport, for: runtime.serverID)
+                        if discoverTools {
+                            do {
+                                let tools = try await transport.listTools()
+                                try await pager.replaceCatalog(serverID: runtime.serverID, tools: tools)
+                                if tools.isEmpty {
+                                    await pager.recordServerStatus(.empty, for: runtime.serverID, alias: runtime.alias)
+                                } else {
+                                    await pager.recordServerStatus(.ready(toolCount: tools.count), for: runtime.serverID, alias: runtime.alias)
+                                }
+                            } catch {
+                                await pager.recordServerStatus(.error(reason: error.localizedDescription), for: runtime.serverID, alias: runtime.alias)
+                                if !faultTolerant { throw error }
+                            }
+                        }
+                    } else {
+                        await pager.recordServerStatus(.disabled, for: runtime.serverID, alias: runtime.alias)
+                    }
+                case .stdio:
+                    guard stored.endpoint == nil, let command = stored.command, command.hasPrefix("/") else {
+                        throw ConfigurationValidationError(path: path, reason: "stdio requires an absolute command and forbids endpoint")
+                    }
+                    runtime = MCPServerConfiguration(
+                        serverID: MCPServerID(stored.id),
+                        alias: stored.alias,
+                        transport: .stdio,
+                        command: command,
+                        arguments: stored.arguments,
+                        protocolPreference: protocolPreference(stored.protocolPreference),
+                        enabled: stored.enabled,
+                        auth: authentication,
+                        environment: environment,
+                        timeoutSeconds: stored.timeoutSeconds
+                    )
+                    if stored.enabled {
+                        let transport = MCPStdioTransport(configuration: runtime, resolver: InMemorySecretResolver(secretValues))
+                        await manager.register(transport, for: runtime.serverID)
+                        if discoverTools {
+                            do {
+                                let tools = try await transport.listTools()
+                                try await pager.replaceCatalog(serverID: runtime.serverID, tools: tools)
+                                if tools.isEmpty {
+                                    await pager.recordServerStatus(.empty, for: runtime.serverID, alias: runtime.alias)
+                                } else {
+                                    await pager.recordServerStatus(.ready(toolCount: tools.count), for: runtime.serverID, alias: runtime.alias)
+                                }
+                            } catch {
+                                await pager.recordServerStatus(.error(reason: error.localizedDescription), for: runtime.serverID, alias: runtime.alias)
+                                if !faultTolerant { throw error }
+                            }
+                        }
+                    } else {
+                        await pager.recordServerStatus(.disabled, for: runtime.serverID, alias: runtime.alias)
+                    }
                 }
-                runtime = MCPServerConfiguration(
+                resolved.append(runtime)
+            } catch {
+                await pager.recordServerStatus(.error(reason: error.localizedDescription), for: MCPServerID(stored.id), alias: stored.alias)
+                if !faultTolerant {
+                    throw error
+                }
+                FileHandle.standardError.write(Data("Warning: Skipping failed MCP server '\(stored.id)': \(error.localizedDescription)\n".utf8))
+                let fallbackRuntime = MCPServerConfiguration(
                     serverID: MCPServerID(stored.id),
                     alias: stored.alias,
-                    transport: .streamableHTTP,
-                    endpoint: try ConfigurationEndpointPolicy.resolve(endpoint, path: "\(path).endpoint"),
-                    protocolPreference: protocolPreference(stored.protocolPreference),
-                    enabled: stored.enabled,
-                    auth: authentication,
-                    timeoutSeconds: stored.timeoutSeconds
-                )
-                if stored.enabled {
-                    let transport = MCPStreamableHTTPTransport(configuration: runtime, resolver: InMemorySecretResolver(secretValues))
-                    await manager.register(transport, for: runtime.serverID)
-                    if discoverTools { try await pager.replaceCatalog(serverID: runtime.serverID, tools: transport.listTools()) }
-                }
-            case .stdio:
-                guard stored.endpoint == nil, let command = stored.command, command.hasPrefix("/") else {
-                    throw ConfigurationValidationError(path: path, reason: "stdio requires an absolute command and forbids endpoint")
-                }
-                runtime = MCPServerConfiguration(
-                    serverID: MCPServerID(stored.id),
-                    alias: stored.alias,
-                    transport: .stdio,
-                    command: command,
+                    transport: stored.transport == .streamableHTTP ? .streamableHTTP : .stdio,
+                    command: stored.command,
                     arguments: stored.arguments,
-                    protocolPreference: protocolPreference(stored.protocolPreference),
-                    enabled: stored.enabled,
-                    auth: authentication,
-                    environment: environment,
+                    endpoint: stored.endpoint.flatMap { try? ConfigurationEndpointPolicy.resolve($0, path: "$.servers.\(stored.id).endpoint") },
+                    enabled: false,
                     timeoutSeconds: stored.timeoutSeconds
                 )
-                if stored.enabled {
-                    let transport = MCPStdioTransport(configuration: runtime, resolver: InMemorySecretResolver(secretValues))
-                    await manager.register(transport, for: runtime.serverID)
-                    if discoverTools { try await pager.replaceCatalog(serverID: runtime.serverID, tools: transport.listTools()) }
-                }
+                resolved.append(fallbackRuntime)
             }
-            resolved.append(runtime)
         }
         return MCPRuntimeResolution(pager: pager, configurations: resolved)
     }

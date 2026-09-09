@@ -102,6 +102,8 @@ public struct SessionSummary: Codable, Sendable, Equatable {
     public let turnCount: Int
     public let mode: AgentMode
     public let reasoningEffort: ReasoningEffort
+    public let workingDirectory: String?
+    public let messageCount: Int
 
     public init(
         sessionID: SessionID,
@@ -110,7 +112,9 @@ public struct SessionSummary: Codable, Sendable, Equatable {
         updatedAt: Date = Date(),
         turnCount: Int = 0,
         mode: AgentMode = .build,
-        reasoningEffort: ReasoningEffort = .auto
+        reasoningEffort: ReasoningEffort = .auto,
+        workingDirectory: String? = nil,
+        messageCount: Int = 0
     ) {
         self.sessionID = sessionID
         self.title = title
@@ -119,6 +123,25 @@ public struct SessionSummary: Codable, Sendable, Equatable {
         self.turnCount = turnCount
         self.mode = mode
         self.reasoningEffort = reasoningEffort
+        self.workingDirectory = workingDirectory
+        self.messageCount = messageCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, title, createdAt, updatedAt, turnCount, mode, reasoningEffort, workingDirectory, messageCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        turnCount = try container.decodeIfPresent(Int.self, forKey: .turnCount) ?? 0
+        mode = try container.decodeIfPresent(AgentMode.self, forKey: .mode) ?? .build
+        reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .auto
+        workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        messageCount = try container.decodeIfPresent(Int.self, forKey: .messageCount) ?? turnCount
     }
 }
 

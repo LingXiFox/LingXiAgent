@@ -655,4 +655,75 @@ struct VNextProductionIntegrationTests {
         }))
         #expect(provider.recorder.requests.count == 4)
     }
+
+    // MARK: - 7. Host Discovers Skills and MCPs
+    @Test("Host discovers skills and MCPs into ApplicationStore")
+    func testHostDiscoversSkillsAndMCPs() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let skillsDir = tempDir.appendingPathComponent("skills/test-skill", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillsDir, withIntermediateDirectories: true)
+        let skillMD = """
+        ---
+        name: test-skill
+        description: A test skill
+        ---
+        # Test Skill
+        """
+        try skillMD.write(to: skillsDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let workspace = try WorkspaceRoot(path: tempDir.path)
+        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test")
+        let permissions = PermissionEngine(defaultDecision: .allow)
+        let platform = ExtensionPlatform(globalRoot: tempDir, projectRoot: workspace.url, permissions: permissions)
+        let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
+
+        let host = try CoreHost(
+            providerAssembly: assembly,
+            sessionStore: InMemorySessionStore(),
+            workspaceRoot: workspace,
+            permissionDecision: .allow,
+            credentialStore: credStore,
+            extensionPlatform: platform
+        )
+        await host.start()
+
+        let req = QueryEnvelope(requestID: RequestID("r1"), payload: ListExtensionsRequest())
+        let resp = try await host.listExtensions(envelope: req)
+        let skills = resp.payload.filter { $0.kind == ExtensionKind.skill }
+        #expect(skills.contains(where: { $0.id == "test-skill" }))
+    }
+
+    @Test("User Home real skills and MCP discovery returns expected counts")
+    func testUserHomeRealSkillsAndMCPDiscovery() async throws {
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: userHome.appendingPathComponent("skills").path) else { return }
+
+        let workspace = try WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
+        let credStore = try FileCredentialStore(dataRoot: userHome.appendingPathComponent("vault"), passphrase: "integration-test")
+        let configStore = try ConfigurationStore(dataRoot: userHome)
+        let platform = ExtensionPlatform(globalRoot: userHome, projectRoot: workspace.url, permissions: PermissionEngine(defaultDecision: .allow))
+        let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
+
+        let host = try CoreHost(
+            providerAssembly: assembly,
+            sessionStore: InMemorySessionStore(),
+            workspaceRoot: workspace,
+            permissionDecision: .allow,
+            configurationStore: configStore,
+            credentialStore: credStore,
+            extensionPlatform: platform
+        )
+        await host.start()
+
+        let req = QueryEnvelope(requestID: RequestID("r2"), payload: ListExtensionsRequest())
+        let resp = try await host.listExtensions(envelope: req)
+        let skills = resp.payload.filter { $0.kind == ExtensionKind.skill }
+        let mcps = resp.payload.filter { $0.kind == ExtensionKind.mcp }
+        print("REAL DISCOVERY: found \(skills.count) skills, \(mcps.count) MCPs")
+        #expect(skills.count >= 30)
+        #expect(mcps.count >= 6)
+    }
 }

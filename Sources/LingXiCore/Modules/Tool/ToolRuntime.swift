@@ -449,23 +449,25 @@ public struct ToolRuntime: Sendable {
                 var candidateEntries: [[String: String]] = []
                 var discoveredIDs: Set<ToolID> = []
 
-                // 1. Search specialized builtin tools
-                var specialized: [ToolDefinition] = registry.definitions.filter { !Self.coreToolIDs.contains($0.id) && $0.id != ToolID("question") && $0.id != ToolID("skill") }
-                if subagents != nil { specialized.append(SubagentTool.definition) }
-                if let cacheController { specialized.append(ContextRetrieveTool(id: "context_search", cacheController: cacheController).definition) }
+                // 1. Search specialized builtin tools (if not filtering by external server)
+                if input.server == nil || input.server?.isEmpty == true {
+                    var specialized: [ToolDefinition] = registry.definitions.filter { !Self.coreToolIDs.contains($0.id) && $0.id != ToolID("question") && $0.id != ToolID("skill") }
+                    if subagents != nil { specialized.append(SubagentTool.definition) }
+                    if let cacheController { specialized.append(ContextRetrieveTool(id: "context_search", cacheController: cacheController).definition) }
 
-                for def in specialized {
-                    let text = "\(def.id.rawValue) \(def.name) \(def.description)".lowercased()
-                    let matches = terms.isEmpty || terms.contains(where: { text.contains($0) })
-                    if matches {
-                        discoveredIDs.insert(def.id)
-                        candidateEntries.append([
-                            "tool_id": def.id.rawValue,
-                            "display_name": "builtin.\(def.name)",
-                            "short_description": def.description,
-                            "category": "specialized",
-                            "availability": "available"
-                        ])
+                    for def in specialized {
+                        let text = "\(def.id.rawValue) \(def.name) \(def.description)".lowercased()
+                        let matches = terms.isEmpty || terms.contains(where: { text.contains($0) })
+                        if matches {
+                            discoveredIDs.insert(def.id)
+                            candidateEntries.append([
+                                "tool_id": def.id.rawValue,
+                                "display_name": "builtin.\(def.name)",
+                                "short_description": def.description,
+                                "category": "specialized",
+                                "availability": "available"
+                            ])
+                        }
                     }
                 }
                 await dynamicLeases.recordCandidates(sessionID: sessionID, tools: discoveredIDs)
@@ -497,7 +499,7 @@ public struct ToolRuntime: Sendable {
                 }
                 await dynamicLeases.recordCandidates(sessionID: sessionID, tools: discoveredIDs)
 
-                if let mcpResultContent, candidateEntries.count == discoveredIDs.count {
+                if let mcpResultContent, candidateEntries.allSatisfy({ $0["category"] != "specialized" }) {
                     return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: mcpResultContent, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: query)
                 }
 
@@ -509,11 +511,13 @@ public struct ToolRuntime: Sendable {
             if call.toolID == MCPDiscoveryTools.load.id {
                 struct LoadInput: Decodable {
                     let toolId: String?
+                    let tool_id: String?
+                    let id: String?
                 }
                 let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
                 let input = try? decoder.decode(LoadInput.self, from: Data(call.arguments.utf8))
-                guard let rawToolID = input?.toolId?.trimmingCharacters(in: .whitespacesAndNewlines), !rawToolID.isEmpty else {
+                let candidateString = input?.tool_id ?? input?.toolId ?? input?.id ?? (call.arguments.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") ? nil : call.arguments.trimmingCharacters(in: .whitespacesAndNewlines))
+                guard let rawToolID = candidateString?.trimmingCharacters(in: .whitespacesAndNewlines), !rawToolID.isEmpty else {
                     throw CoreError(code: .toolArgumentInvalid, message: "load_tool 需要 tool_id")
                 }
                 let normalized = rawToolID.hasPrefix("builtin.") ? String(rawToolID.dropFirst("builtin.".count)) : rawToolID
@@ -693,12 +697,27 @@ public struct ToolRuntime: Sendable {
                 toolName: call.toolName,
                 resource: nil
             )
+        } catch let error as MCPToolPagerError {
+            if let executionStartedAt { execution = executionStartedAt.duration(to: clock.now) }
+            let code: CoreError.Code = switch error { case .leaseMissing, .leaseExpired: .mcpToolLeaseMissing; case .schemaChanged: .mcpToolSchemaChanged; case .schemaTooLarge: .mcpToolSchemaTooLarge; case .schemaBudgetExceeded: .mcpToolSchemaBudgetExceeded; default: .mcpServerUnavailable }
+            let serverID = await mcpPager?.markToolAndServerUnavailable(providerToolID: call.toolID)
+            let serverName = serverID?.rawValue ?? "MCP"
+            let message = "MCP tool unavailable (\(error)).\n[System Notice: MCP Server '\(serverName)' is unreachable or failed. All tools from '\(serverName)' have been disabled for this session. Do NOT attempt to load or call any tools from '\(serverName)' again; continue using built-in tools or report the status.]"
+            return ExecutionOutcome(
+                result: ToolResult(callID: call.callID, success: false, content: message, error: ToolError(code: code.rawValue, message: String(describing: error)), toolName: call.toolName, outcome: .failure, summary: "Tool failed: \(code.rawValue)"),
+                permissionWait: permissionWait,
+                permissionAsked: permissionAsked,
+                execution: execution,
+                queueDuration: queueDuration,
+                toolName: call.toolName,
+                resource: nil
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             if let executionStartedAt { execution = executionStartedAt.duration(to: clock.now) }
             return ExecutionOutcome(
-                result: ToolResult(callID: call.callID, success: false, content: "", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolName),
+                result: ToolResult(callID: call.callID, success: false, content: "Tool execution failed: \(error)", error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolName),
                 permissionWait: permissionWait,
                 permissionAsked: permissionAsked,
                 execution: execution,
@@ -735,7 +754,13 @@ public struct ToolRuntime: Sendable {
         let lifecycleTrace = ToolExecutionContext.lifecycleTrace
         do {
             let lease = try await pager.resolve(sessionID: sessionID, providerToolID: call.toolID)
-            let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, toolCallID: call.callID, toolID: lease.toolID, capabilities: [.externalService, .networkAccess, .destructive], resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
+            let annotations = await pager.annotations(for: lease.toolID)
+            let isDestructive = annotations?.destructiveHint == true || (annotations?.readOnlyHint != true && (call.toolID.rawValue.contains("delete") || call.toolID.rawValue.contains("remove") || call.toolID.rawValue.contains("drop") || call.toolID.rawValue.contains("destroy") || call.toolID.rawValue.contains("kill")))
+            var capabilities: Set<ToolCapabilityKind> = [.externalService, .networkAccess]
+            if isDestructive {
+                capabilities.insert(.destructive)
+            }
+            let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, toolCallID: call.callID, toolID: lease.toolID, capabilities: capabilities, resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
             guard profile != .readOnly || ToolCapability(request.capabilities).readOnly else { throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 MCP Tool") }
             let permissionStarted = clock.now
             lifecycleTrace?.record(.permissionStart)
@@ -761,13 +786,24 @@ public struct ToolRuntime: Sendable {
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: response.lease.toolID.rawValue, metadata: ["mcpToolID": response.lease.toolID.rawValue, "schemaHash": response.lease.schemaHash], output: metadata), permissionWait: permissionWait, permissionAsked: resolution.asked, execution: executionStarted.duration(to: clock.now), toolName: response.lease.toolID.rawValue, resource: response.lease.toolID.rawValue)
         } catch let error as MCPToolPagerError {
             let code: CoreError.Code = switch error { case .leaseMissing, .leaseExpired: .mcpToolLeaseMissing; case .schemaChanged: .mcpToolSchemaChanged; case .schemaTooLarge: .mcpToolSchemaTooLarge; case .schemaBudgetExceeded: .mcpToolSchemaBudgetExceeded; default: .mcpServerUnavailable }
-            let explanation = "Tool '\(call.toolID.rawValue)' unavailable: \(error)"
+            let serverID = await pager.markToolAndServerUnavailable(providerToolID: call.toolID)
+            let serverName = serverID?.rawValue ?? "MCP"
+            let explanation = "Tool '\(call.toolID.rawValue)' unavailable (\(error)).\n[System Notice: MCP Server '\(serverName)' is currently offline or unreachable. All tools from '\(serverName)' are disabled for this session. Do NOT attempt to call any tools from '\(serverName)' again; continue using other tools or report the server issue.]"
             return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: explanation, error: ToolError(code: code.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue, outcome: .failure, summary: "Tool failed: \(code.rawValue)"), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         } catch let error as CoreError {
             let timedOut = error.code == .commandTimedOut || error.code == .idleTimedOut
-            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: error.message, error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolID.rawValue, outcome: error.code == .idleTimedOut ? .idleTimedOut : timedOut ? .timedOut : .failure, summary: "Tool failed: \(error.code.rawValue)"), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+            var explanation = error.message
+            if error.code == .mcpServerUnavailable {
+                let serverID = await pager.markToolAndServerUnavailable(providerToolID: call.toolID)
+                let serverName = serverID?.rawValue ?? "MCP"
+                explanation = "MCP Server '\(serverName)' unavailable: \(error.message).\n[System Notice: MCP Server '\(serverName)' is offline or disconnected. All tools from this server have been automatically disabled. Do NOT attempt to retry or call other tools from '\(serverName)' in this session; please proceed using other available tools.]"
+            }
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: explanation, error: ToolError(code: error.code.rawValue, message: error.message), toolName: call.toolID.rawValue, outcome: error.code == .idleTimedOut ? .idleTimedOut : timedOut ? .timedOut : .failure, summary: "Tool failed: \(error.code.rawValue)"), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         } catch {
-            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: String(describing: error), error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue, outcome: .failure, summary: "Tool failed"), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
+            let serverID = await pager.markToolAndServerUnavailable(providerToolID: call.toolID)
+            let serverName = serverID?.rawValue ?? "MCP"
+            let explanation = "Tool '\(call.toolID.rawValue)' failed: \(error).\n[System Notice: Tool failed unexpectedly. Avoid repeated calls if server '\(serverName)' is malfunctioning.]"
+            return ExecutionOutcome(result: ToolResult(callID: call.callID, success: false, content: explanation, error: ToolError(code: CoreError.Code.toolExecutionFailed.rawValue, message: String(describing: error)), toolName: call.toolID.rawValue, outcome: .failure, summary: "Tool failed"), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: nil)
         }
     }
 

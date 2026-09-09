@@ -302,8 +302,17 @@ public actor ExtensionPlatform {
         let skills = ExtensionDiscovery.skills(globalRoot: globalRoot, projectRoot: projectRoot, coreVersion: coreVersion)
         let commands = ExtensionDiscovery.commands(globalRoot: globalRoot, projectRoot: projectRoot, coreVersion: coreVersion)
         let result = ExtensionDiscoveryResult(extensions: skills.extensions + commands.extensions, diagnostics: skills.diagnostics + commands.diagnostics)
-        let preserved = (await registry.all()).filter { $0.type != .skill && $0.type != .command }
-        await registry.replace(preserved + result.extensions, diagnostics: result.diagnostics, coreVersion: coreVersion)
+        let existing = await registry.all()
+        let existingByKey = Dictionary(uniqueKeysWithValues: existing.map { ($0.key, $0) })
+        let mergedExtensions = result.extensions.map { ext -> ExtensionDescriptor in
+            guard let previous = existingByKey[ext.key] else { return ext }
+            var updated = ext
+            updated.enabled = previous.enabled
+            updated.lifecycleState = previous.lifecycleState
+            return updated
+        }
+        let preserved = existing.filter { $0.type != .skill && $0.type != .command }
+        await registry.replace(preserved + mergedExtensions, diagnostics: result.diagnostics, coreVersion: coreVersion)
         await persist()
         return result
     }

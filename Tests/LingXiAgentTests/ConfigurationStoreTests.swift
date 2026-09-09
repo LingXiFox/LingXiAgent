@@ -262,6 +262,71 @@ struct ConfigurationStoreTests {
         #expect(!FileManager.default.fileExists(atPath: masterKeyPath.path))
     }
 
+    @Test func universalCredentialStorePersistsAndDecryptsWithAutonomousProtectedKey() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try UniversalCredentialStore(dataRoot: root, passphrase: nil)
+        try await store.setSecret("autonomous-secret-123", for: CredentialRef("api-key"))
+
+        // Must create .vault_key with 0o600 permissions
+        let vaultKeyPath = root.appendingPathComponent(".vault_key")
+        #expect(FileManager.default.fileExists(atPath: vaultKeyPath.path))
+        #if !os(Windows)
+        let perms = try permissions(at: vaultKeyPath)
+        #expect(perms == 0o600)
+        #endif
+
+        // Must create credentials.vault with 0o600 permissions
+        let vaultPath = root.appendingPathComponent("credentials.vault")
+        #expect(FileManager.default.fileExists(atPath: vaultPath.path))
+
+        // Read through existing instance
+        let readSecret = try await store.secret(for: CredentialRef("api-key"))
+        #expect(readSecret == "autonomous-secret-123")
+
+        // Re-open in a fresh instance using autonomous key
+        let freshStore = try UniversalCredentialStore(dataRoot: root, passphrase: nil)
+        let freshRead = try await freshStore.secret(for: CredentialRef("api-key"))
+        #expect(freshRead == "autonomous-secret-123")
+
+        // Removal test
+        try await freshStore.removeSecret(for: CredentialRef("api-key"))
+        let removed = try await freshStore.secret(for: CredentialRef("api-key"))
+        #expect(removed == nil)
+    }
+
+    @Test func universalCredentialStoreRejectsIncorrectPassphraseVerification() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try UniversalCredentialStore(dataRoot: root, passphrase: "correct-passphrase")
+        try await store.setSecret("top-secret-payload", for: CredentialRef("secure-ref"))
+
+        let integrityOk = try await store.verifyStoreIntegrity()
+        #expect(integrityOk)
+
+        // Opening with incorrect passphrase must fail key verification during read
+        let badStore = try UniversalCredentialStore(dataRoot: root, passphrase: "wrong-passphrase")
+        await #expect(throws: ConfigurationValidationError.self) {
+            _ = try await badStore.secret(for: CredentialRef("secure-ref"))
+        }
+    }
+
+    @Test func platformSecureCredentialStoreDecoupledFromSystemKeychain() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try PlatformSecureCredentialStore(dataRoot: root, passphrase: nil)
+        try await store.setSecret("decoupled-secret-xyz", for: CredentialRef("provider-key"))
+
+        let fetched = try await store.secret(for: CredentialRef("provider-key"))
+        #expect(fetched == "decoupled-secret-xyz")
+
+        let integrity = try await store.verifyStoreIntegrity()
+        #expect(integrity)
+    }
+
     @Test func memoryOnlyStorePreservesSecretsWithoutTouchingDisk() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

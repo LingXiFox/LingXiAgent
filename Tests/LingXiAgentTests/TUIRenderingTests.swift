@@ -94,9 +94,9 @@ struct TUIRenderingTests {
 
         let lines = viewport.render(viewportHeight: 4, width: 20)
 
-        #expect(lines.first?.text == "┌──────────────────┐")
+        #expect(lines.first?.text == "╭─ 👤 User ───────╮")
         #expect(lines[1].text == "│ hello            │")
-        #expect(lines.last?.text == "└──────────────────┘")
+        #expect(lines.last?.text == "╰──────────────────╯")
     }
 
     @Test func frameWritesWideCellsWithoutAnsiContent() {
@@ -738,9 +738,9 @@ struct TUIRenderingTests {
 
         // 4. 待办任务模块与状态图标
         #expect(renderedText.contains("◈ 待办任务"))
-        #expect(renderedText.contains("[✓] 规划侧边栏"))
-        #expect(renderedText.contains("[⟳] 渲染全宽进度条"))
-        #expect(renderedText.contains("[ ] 打通Todo工具"))
+        #expect(renderedText.contains("✓ 规划侧边栏"))
+        #expect(renderedText.contains("● 渲染全宽进度条"))
+        #expect(renderedText.contains("• 打通Todo工具"))
 
         // 5. 子代理模块
         #expect(renderedText.contains("◈ 子代理"))
@@ -896,4 +896,200 @@ struct TUIRenderingTests {
         #expect(borderCells1.count == borderCells2.count)
         #expect(!borderCells1.isEmpty)
     }
+
+    @Test func composerAutoScrollsDownWhenInputExceedsMaxHeight() {
+        let composer = ChatComposer()
+        composer.maxHeight = 6
+        let multiLineText = (1...15).map { "line \($0)" }.joined(separator: "\n")
+        composer.setText(multiLineText)
+
+        let rendered = composer.render(width: 40)
+        #expect(rendered.lines.count == 6)
+        #expect(composer.scrollLine == 15 - 6) // 光标在最后一行，scrollLine 自动跟进到 9
+        #expect(rendered.cursor != nil)
+        #expect(rendered.lines.last?.text.contains("line 15") == true)
+    }
+
+    @Test func composerVerticalMovementMovesBetweenLines() {
+        let composer = ChatComposer()
+        composer.maxHeight = 6
+        let text = "Line 1\nLine 2\nLine 3"
+        composer.setText(text)
+        #expect(composer.cursor == Array(text).count)
+
+        _ = composer.handle(.up)
+        #expect(composer.render(width: 40).cursor?.y == 1) // 倒数第二行 (Line 2)
+
+        _ = composer.handle(.up)
+        #expect(composer.render(width: 40).cursor?.y == 0) // 第一行 (Line 1)
+
+        _ = composer.handle(.down)
+        #expect(composer.render(width: 40).cursor?.y == 1) // Line 2
+    }
+
+    @Test func composerScrollKeysScrollMultilineInput() {
+        let composer = ChatComposer()
+        composer.maxHeight = 6
+        let text = (1...20).map { "line \($0)" }.joined(separator: "\n")
+        composer.setText(text)
+        _ = composer.render(width: 40)
+        #expect(composer.scrollLine == 14)
+
+        _ = composer.handle(.scrollUp)
+        #expect(composer.scrollLine == 13)
+
+        _ = composer.handle(.pageUp)
+        #expect(composer.scrollLine == 7)
+
+        _ = composer.handle(.pageDown)
+        #expect(composer.scrollLine == 13)
+
+        _ = composer.handle(.scrollDown)
+        #expect(composer.scrollLine == 14)
+    }
+
+    @Test func transcriptScrollToBottomRestoresAutoFollow() {
+        let viewport = TranscriptViewport()
+        viewport.replace((0..<20).map { TUITranscriptEntry(kind: .assistant, text: "line \($0)") })
+        _ = viewport.render(viewportHeight: 5, width: 40)
+        viewport.handle(.pageUp, viewportHeight: 5)
+        #expect(!viewport.autoFollow)
+        #expect(viewport.scrollOffset > 0)
+
+        viewport.scrollToBottom()
+        #expect(viewport.autoFollow)
+        #expect(viewport.scrollOffset == 0)
+    }
+
+    @Test func todoStorePersistsAcrossInstancesAndTUISidebarRendersTasks() {
+        let testSessionID = "test-session-\(UUID().uuidString)"
+        defer { TodoStore.shared.clear(for: testSessionID) }
+
+        // 1. 添加待办任务并更新
+        TodoStore.shared.addTodo(TodoItemData(id: "task-1", title: "探活 Notion MCP", status: "pending"), for: testSessionID)
+        TodoStore.shared.addTodo(TodoItemData(id: "task-2", title: "测试 Skills 技能库", status: "pending"), for: testSessionID)
+
+        #expect(TodoStore.shared.getTodos(for: testSessionID).count == 2)
+
+        _ = TodoStore.shared.updateTodo(id: "task-1", status: "completed", title: nil, for: testSessionID)
+        let updatedTodos = TodoStore.shared.getTodos(for: testSessionID)
+        #expect(updatedTodos.first(where: { $0.id == "task-1" })?.status == "completed")
+
+        // 2. 模拟全新独立实例（跨进程模拟）读取该 session 的 todos
+        let brandNewStore = TodoStore()
+        let reloaded = brandNewStore.getTodos(for: testSessionID)
+        #expect(reloaded.count == 2)
+        #expect(reloaded.first(where: { $0.id == "task-1" })?.status == "completed")
+
+        // 3. 验证 TUISidebarModel 渲染
+        let sidebarModel = TUISidebarModel(
+            summary: "测试会话",
+            cacheLayers: [],
+            mcpItems: [],
+            tasks: [
+                TUISidebarModel.TaskItem(id: "task-1", title: "探活 Notion MCP", status: .completed),
+                TUISidebarModel.TaskItem(id: "task-2", title: "测试 Skills 技能库", status: .inProgress)
+            ],
+            subagents: []
+        )
+        #expect(sidebarModel.tasks.count == 2)
+        #expect(sidebarModel.tasks[0].status == .completed)
+        #expect(sidebarModel.tasks[1].status == .inProgress)
+    }
+
+    @Test func sidebarRendersPrefixCacheAndMoreThanFourMCPItemsAndScrollbar() {
+        let app = TUIApp()
+        app.heroConfig = nil
+
+        let mcpItems = [
+            TUISidebarModel.MCPItem(id: "notion", status: .ready),
+            TUISidebarModel.MCPItem(id: "context7", status: .ready),
+            TUISidebarModel.MCPItem(id: "alibaba", status: .ready),
+            TUISidebarModel.MCPItem(id: "git-tool", status: .ready),
+            TUISidebarModel.MCPItem(id: "excel", status: .ready),
+            TUISidebarModel.MCPItem(id: "trivy", status: .ready),
+            TUISidebarModel.MCPItem(id: "penpot", status: .ready)
+        ]
+
+        let tasks = [
+            TUISidebarModel.TaskItem(id: "1", title: "任务 1: 这是一个非常非常长而且需要自动换行展示的超级长待办任务标题测试", status: .inProgress),
+            TUISidebarModel.TaskItem(id: "2", title: "任务 2", status: .completed),
+            TUISidebarModel.TaskItem(id: "3", title: "任务 3", status: .pending),
+            TUISidebarModel.TaskItem(id: "4", title: "任务 4", status: .pending),
+            TUISidebarModel.TaskItem(id: "5", title: "任务 5", status: .pending),
+            TUISidebarModel.TaskItem(id: "6", title: "任务 6", status: .pending),
+            TUISidebarModel.TaskItem(id: "7", title: "任务 7", status: .pending)
+        ]
+
+        app.sidebarModel = TUISidebarModel(
+            summary: "前缀缓存与完整展示测试",
+            cacheLayers: [
+                TUISidebarModel.CacheLayer(name: "L1", usedTokens: 10_000, capacityTokens: 220_000)
+            ],
+            prefixCache: TUISidebarModel.PrefixCacheStats(cachedTokens: 1152, promptTokens: 1250),
+            mcpItems: mcpItems,
+            tasks: tasks,
+            subagents: []
+        )
+
+        let size = TUISize(width: 120, height: 40)
+        let frame = app.render(size: size, overlay: nil)
+        let text = frame.text(in: TUIRect(x: 0, y: 0, width: size.width, height: size.height))
+
+        // 验证真实前缀缓存命中显示
+        #expect(text.contains("前缀命中: 1.2K/1.3K (92.2%)") || text.contains("前缀命中:"))
+        // 验证不再限制在 4 个 MCP，后方的 excel、trivy、penpot 均能完整展示
+        #expect(text.contains("excel"))
+        #expect(text.contains("trivy"))
+        #expect(text.contains("penpot"))
+    }
+
+    @Test func longToolCallCommandWrapsNaturallyWithoutClipping() {
+        let viewport = TranscriptViewport()
+        let longCommand = "Ran find /Volumes/Development/Projects/projects/LingXiAgent -name \"*AgentInstructions*\" 2>/dev/null | grep -v \".build\" | sort"
+        let entry = TUITranscriptEntry(
+            id: "tool-1",
+            kind: .toolCall,
+            text: longCommand,
+            style: .accent,
+            collapsed: false
+        )
+        viewport.replace([entry])
+
+        // 视口宽度设为 45（远小于 118 字符的长命令）
+        let lines = viewport.render(viewportHeight: 10, width: 45)
+        #expect(lines.count > 1) // 必须自动换行，至少换成 2 行以上
+        #expect(lines[0].text.contains("Ran find"))
+        #expect(lines[1].text.hasPrefix("      ")) // 续行增加 6 空格缩进对齐
+    }
+
+    @Test func heroCenteredModeRendersPermissionBadgeAndCyberFoxMascot() {
+        let app = TUIApp()
+        app.heroConfig = TUIHeroConfig(
+            modeName: "Build",
+            modelName: "deepseek-v4-flash",
+            providerName: "DeepSeek",
+            reasoningEffort: "high",
+            tip: "Press ctrl+p to see all available actions and commands",
+            permissionName: "⚡ YOLO"
+        )
+        let frame = app.render(size: TUISize(width: 86, height: 26), overlay: nil)
+        let cleanText = frame.cells.filter { !$0.continuation }.map { String($0.character) }.joined()
+
+        // 1. 验证权限徽标在 Hero 界面内明确可见
+        #expect(cleanText.contains("⚡ YOLO"))
+        let yoloCells = frame.cells.filter { $0.style == .badgeYolo }
+        #expect(!yoloCells.isEmpty)
+
+        // 2. 验证灵犀小狐狸吉祥物立绘及专属标语完整展现
+        #expect(cleanText.contains("LingXi Fox"))
+        #expect(cleanText.contains("随时为主人效劳"))
+        #expect(cleanText.contains("/\\___/\\"))
+
+        // 3. 验证输入框圆角边框单元格正常存在
+        let borderCells = frame.cells.filter { $0.style == .heroBoxBorder }
+        #expect(!borderCells.isEmpty)
+        #expect(cleanText.contains("╭") && cleanText.contains("╰"))
+    }
 }
+

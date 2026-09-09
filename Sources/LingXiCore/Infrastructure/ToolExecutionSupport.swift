@@ -14,7 +14,7 @@ public enum EnvironmentSanitizer {
             "LANG": environment["LANG"] ?? "en_US.UTF-8",
             "TMPDIR": environment["TMPDIR"] ?? FileManager.default.temporaryDirectory.path,
         ]
-        for (key, value) in environment where key.hasPrefix("LC_") || ["DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"].contains(key) {
+        for (key, value) in environment where key.hasPrefix("LC_") || ["DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"].contains(key) || key.hasPrefix("ALIBABA_CLOUD_") || key.hasPrefix("ALICLOUD_") {
             if key != "DEVELOPER_DIR" || FileManager.default.fileExists(atPath: value) {
                 result[key] = value
             }

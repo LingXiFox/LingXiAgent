@@ -116,19 +116,31 @@ public struct ModelGateway: Sendable {
                     providerRequestID: providerRequestID
                 )
             } catch let error as ProviderRateLimitError {
-                await rateScheduler.release(endpoint: endpoint)
+                await rateScheduler.release(requestID: request.requestID, endpoint: endpoint)
                 let delay = retryDelay(error.retryAfter, policy: policy, retry: retries + 1)
                 await rateScheduler.recordRateLimit(endpoint: endpoint, requestID: request.requestID, cooldown: delay)
                 guard retries < policy.maxRetries else { throw error.underlying }
                 retries += 1
                 await rateScheduler.recordRetry(requestID: request.requestID)
+                await ProviderActivityRegistry.shared.record(
+                    sessionID: sessionID,
+                    runID: runID,
+                    providerRequestID: providerRequestID,
+                    state: .waitingForRateBudget,
+                    model: request.model.rawValue
+                )
                 try await Task.sleep(for: delay)
                 await rateScheduler.recordWait(requestID: request.requestID, duration: delay)
             } catch {
-                await rateScheduler.release(endpoint: endpoint)
+                let isCancelled = (error is CancellationError)
+                if isCancelled {
+                    await rateScheduler.cancel(requestID: request.requestID, endpoint: endpoint)
+                } else {
+                    await rateScheduler.release(requestID: request.requestID, endpoint: endpoint)
+                }
                 let coreErr = error as? CoreError
                 let isTransient = (coreErr?.code == .transportLost || coreErr?.code == .commandTimedOut)
-                if isTransient && !(error is CancellationError) && retries < policy.maxRetries {
+                if isTransient && !isCancelled && retries < policy.maxRetries {
                     retries += 1
                     let delay = retryDelay(nil, policy: policy, retry: retries)
                     await rateScheduler.recordRetry(requestID: request.requestID)
@@ -143,7 +155,7 @@ public struct ModelGateway: Sendable {
                     await rateScheduler.recordWait(requestID: request.requestID, duration: delay)
                     continue
                 }
-                let terminalState: ProviderActivityState = (error is CancellationError) ? .cancelled : .failed
+                let terminalState: ProviderActivityState = isCancelled ? .cancelled : .failed
                 await ProviderActivityRegistry.shared.record(
                     sessionID: sessionID,
                     runID: runID,
@@ -160,6 +172,10 @@ public struct ModelGateway: Sendable {
         await rateScheduler.metrics(for: requestID)
     }
 
+    public func resetRateLimiter(endpoint: ResolvedModelEndpoint? = nil) async {
+        await rateScheduler.reset(endpoint: endpoint)
+    }
+
     private func releaseRatePermit(
         _ source: AsyncThrowingStream<ModelEvent, Error>,
         endpoint: ResolvedModelEndpoint,
@@ -171,12 +187,19 @@ public struct ModelGateway: Sendable {
         let doneFlag = StreamDoneFlag()
         return AsyncThrowingStream { continuation in
             let pump = Task {
-                defer { Task { await rateScheduler.release(endpoint: endpoint) } }
+                var released = false
+                func releasePermit() async {
+                    guard !released else { return }
+                    released = true
+                    await rateScheduler.release(requestID: requestID, endpoint: endpoint)
+                }
                 do {
                     var streamedFirstChunk = false
                     for try await event in source {
                         if Task.isCancelled {
                             doneFlag.markDone()
+                            released = true
+                            await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
                             await ProviderActivityRegistry.shared.record(
                                 sessionID: sessionID,
                                 runID: runID,
@@ -189,6 +212,8 @@ public struct ModelGateway: Sendable {
                         }
                         if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
                             doneFlag.markDone()
+                            released = true
+                            await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
                             continuation.finish(throwing: CancellationError())
                             return
                         }
@@ -208,6 +233,7 @@ public struct ModelGateway: Sendable {
                         continuation.yield(event)
                     }
                     doneFlag.markDone()
+                    await releasePermit()
                     await ProviderActivityRegistry.shared.record(
                         sessionID: sessionID,
                         runID: runID,
@@ -218,7 +244,14 @@ public struct ModelGateway: Sendable {
                     continuation.finish()
                 } catch {
                     doneFlag.markDone()
-                    let terminalState: ProviderActivityState = (error is CancellationError) ? .cancelled : .failed
+                    let isCancelled = (error is CancellationError)
+                    if isCancelled {
+                        released = true
+                        await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
+                    } else {
+                        await releasePermit()
+                    }
+                    let terminalState: ProviderActivityState = isCancelled ? .cancelled : .failed
                     await ProviderActivityRegistry.shared.record(
                         sessionID: sessionID,
                         runID: runID,
@@ -229,10 +262,12 @@ public struct ModelGateway: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { @Sendable _ in
+            continuation.onTermination = { @Sendable termination in
                 guard !doneFlag.isDone else { return }
+                guard case .cancelled = termination else { return }
                 pump.cancel()
                 Task {
+                    await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
                     await ProviderActivityRegistry.shared.cancel(providerRequestID: providerRequestID)
                 }
             }

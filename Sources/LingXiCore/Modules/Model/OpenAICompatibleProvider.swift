@@ -98,6 +98,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
         urlRequest.httpMethod = "POST"
         if let timeout = request.overallTimeoutSeconds { urlRequest.timeoutInterval = timeout }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        urlRequest.setValue("LingXiAgent/1.0", forHTTPHeaderField: "User-Agent")
         switch config.authentication {
         case .none: break
         case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
@@ -117,17 +119,32 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
     private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?) throws -> Data {
         var messages: [ChatRequestBody.Message] = []
-        if let system = request.system, !system.isEmpty {
-            messages.append(Message(role: "system", content: system))
+        let orderedTools: [ToolDefinition]
+        if let plan = request.cachePlan {
+            if let system = plan.immutableBase.systemPrompt, !system.isEmpty {
+                messages.append(Message(role: "system", content: system))
+            }
+            messages.append(contentsOf: plan.appendOnlyContext.messages.flatMap { providerMessages($0, continuation: continuation) })
+            orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
+        } else {
+            if let system = request.system, !system.isEmpty {
+                messages.append(Message(role: "system", content: system))
+            }
+            messages.append(contentsOf: request.messages.flatMap { providerMessages($0, continuation: continuation) })
+            let coreIDs = ToolRuntime.coreToolIDs
+            let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+            let dynamic = request.tools.filter { !coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+            orderedTools = core + dynamic
         }
-        messages.append(contentsOf: request.messages.flatMap { providerMessages($0, continuation: continuation) })
         let body = ChatRequestBody(
             model: request.model.rawValue,
             stream: true,
             messages: messages,
-            tools: request.tools.isEmpty ? nil : request.tools.map(ProviderTool.init)
+            tools: orderedTools.isEmpty ? nil : orderedTools.map(ProviderTool.init)
         )
-        return try JSONEncoder().encode(body)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(body)
     }
 
     private static func providerMessages(_ message: ModelMessage, continuation: ProviderContinuation?) -> [ChatRequestBody.Message] {
@@ -263,11 +280,12 @@ public struct OpenAICompatibleProvider: ModelProvider {
     }
 
     private static func usage(from raw: SSEUsage) -> ModelUsage {
-        ModelUsage(
+        let cached = raw.promptTokensDetails?.cachedTokens ?? raw.promptCacheHitTokens
+        return ModelUsage(
             inputTokens: raw.promptTokens,
             outputTokens: raw.completionTokens,
             reasoningTokens: raw.completionTokensDetails?.reasoningTokens,
-            cacheReadTokens: raw.promptTokensDetails?.cachedTokens,
+            cacheReadTokens: cached,
             cacheWriteTokens: nil
         )
     }
@@ -602,12 +620,16 @@ private extension OpenAICompatibleProvider {
         let completionTokens: Int?
         let completionTokensDetails: CompletionDetails?
         let promptTokensDetails: PromptDetails?
+        let promptCacheHitTokens: Int?
+        let promptCacheMissTokens: Int?
 
         enum CodingKeys: String, CodingKey {
             case promptTokens = "prompt_tokens"
             case completionTokens = "completion_tokens"
             case completionTokensDetails = "completion_tokens_details"
             case promptTokensDetails = "prompt_tokens_details"
+            case promptCacheHitTokens = "prompt_cache_hit_tokens"
+            case promptCacheMissTokens = "prompt_cache_miss_tokens"
         }
     }
 

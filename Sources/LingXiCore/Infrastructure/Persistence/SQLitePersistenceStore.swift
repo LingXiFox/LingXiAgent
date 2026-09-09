@@ -170,6 +170,142 @@ public actor SQLitePersistenceStore {
         }
     }
 
+    public func loadAllGlobalSessions() throws -> [SessionSummary] {
+        try Self.loadAllGlobalSessions(dataRoot: dataRoot)
+    }
+
+    public static func loadAllGlobalSessions(dataRoot: URL) throws -> [SessionSummary] {
+        let catalogPath = dataRoot.appendingPathComponent("catalog.sqlite")
+        guard FileManager.default.fileExists(atPath: catalogPath.path) else { return [] }
+        var catalogDB: OpaquePointer?
+        guard sqlite3_open_v2(catalogPath.path, &catalogDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let catalogDB else {
+            return []
+        }
+        defer { sqlite3_close(catalogDB) }
+
+        let roots = try rows(catalogDB, "SELECT project_id, absolute_root FROM root_bindings WHERE kind = 'main' AND lifecycle_state = 'active'", [])
+        var summaries: [SessionSummary] = []
+
+        for row in roots {
+            guard row.count >= 2 else { continue }
+            let pID = row[0]
+            let absRoot = row[1]
+            let stateURL = dataRoot.appendingPathComponent("projects/\(pID)/state.sqlite")
+            guard FileManager.default.fileExists(atPath: stateURL.path) else { continue }
+            var stateDB: OpaquePointer?
+            guard sqlite3_open_v2(stateURL.path, &stateDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let stateDB else {
+                continue
+            }
+            defer { sqlite3_close(stateDB) }
+
+            let sessionRows = (try? rows(stateDB, "SELECT session_id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC", [])) ?? []
+            for sRow in sessionRows {
+                guard sRow.count >= 4 else { continue }
+                let sID = sRow[0]
+                var title = sRow[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                let cDate = parseDate(sRow[2])
+                let uDate = parseDate(sRow[3])
+
+                let msgCount = (try? scalar(stateDB, "SELECT COUNT(*) FROM messages WHERE session_id = ?", [sID])).flatMap(Int.init) ?? 0
+
+                if title.isEmpty {
+                    let firstUserPayload = try? scalar(stateDB, "SELECT payload FROM message_parts WHERE message_id IN (SELECT message_id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY ordinal LIMIT 1) LIMIT 1", [sID])
+                    if let firstUserPayload,
+                       let data = firstUserPayload.data(using: .utf8),
+                       let part = try? JSONDecoder().decode(SessionMessagePart.self, from: data) {
+                        switch part {
+                        case let .text(txt):
+                            let clean = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                                .replacingOccurrences(of: "\n", with: " ")
+                            title = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
+                        default:
+                            break
+                        }
+                    }
+                }
+                if title.isEmpty {
+                    title = "未命名会话"
+                }
+
+                summaries.append(
+                    SessionSummary(
+                        sessionID: SessionID(sID),
+                        title: title,
+                        createdAt: cDate,
+                        updatedAt: uDate,
+                        turnCount: msgCount,
+                        mode: .build,
+                        reasoningEffort: .auto,
+                        workingDirectory: absRoot,
+                        messageCount: msgCount
+                    )
+                )
+            }
+        }
+        return summaries
+    }
+
+    public static func findProjectDirectory(for sessionID: SessionID, dataRoot: URL) throws -> (projectID: ProjectID, absoluteRoot: String)? {
+        let catalogPath = dataRoot.appendingPathComponent("catalog.sqlite")
+        guard FileManager.default.fileExists(atPath: catalogPath.path) else { return nil }
+        var catalogDB: OpaquePointer?
+        guard sqlite3_open_v2(catalogPath.path, &catalogDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let catalogDB else { return nil }
+        defer { sqlite3_close(catalogDB) }
+
+        let roots = try rows(catalogDB, "SELECT project_id, absolute_root FROM root_bindings WHERE kind = 'main' AND lifecycle_state = 'active'", [])
+        for row in roots {
+            guard row.count >= 2 else { continue }
+            let pID = row[0]
+            let absRoot = row[1]
+            let stateURL = dataRoot.appendingPathComponent("projects/\(pID)/state.sqlite")
+            guard FileManager.default.fileExists(atPath: stateURL.path) else { continue }
+            var stateDB: OpaquePointer?
+            guard sqlite3_open_v2(stateURL.path, &stateDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let stateDB else { continue }
+            defer { sqlite3_close(stateDB) }
+            let exists = (try? scalar(stateDB, "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1", [sessionID.rawValue])) != nil
+            if exists {
+                return (ProjectID(pID), absRoot)
+            }
+        }
+        return nil
+    }
+
+    public func loadGlobalSession(_ id: SessionID) throws -> Session? {
+        if let local = try loadSessions().first(where: { $0.id == id }) {
+            return local
+        }
+        guard let info = try Self.findProjectDirectory(for: id, dataRoot: dataRoot) else {
+            return nil
+        }
+        let otherStateURL = dataRoot.appendingPathComponent("projects/\(info.projectID.rawValue)/state.sqlite")
+        var otherDB: OpaquePointer?
+        guard sqlite3_open_v2(otherStateURL.path, &otherDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let otherDB else { return nil }
+        defer { sqlite3_close(otherDB) }
+
+        let rows = try Self.rows(otherDB, "SELECT session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at FROM sessions WHERE session_id = ? LIMIT 1", [id.rawValue])
+        guard let row = rows.first, row.count >= 12 else { return nil }
+        let messages = try Self.rows(otherDB, "SELECT message_id, role, created_at FROM messages WHERE session_id = ? ORDER BY ordinal", [id.rawValue]).map { mRow -> Message in
+            let parts = try Self.rows(otherDB, "SELECT payload FROM message_parts WHERE message_id = ? ORDER BY ordinal", [mRow[0]]).map { try JSONDecoder().decode(SessionMessagePart.self, from: Data($0[0].utf8)) }
+            guard let role = MessageRole(rawValue: mRow[1]) else { throw PersistenceError.sqlite("invalid message role") }
+            return Message(id: MessageID(mRow[0]), role: role, parts: parts, createdAt: Self.parseDate(mRow[2]))
+        }
+        return Session(
+            id: id,
+            createdAt: Self.parseDate(row[10]),
+            kind: SessionKind(rawValue: row[2]) ?? .primary,
+            parentSessionID: row[3].isEmpty ? nil : SessionID(row[3]),
+            rootSessionID: SessionID(row[4]),
+            spawnedByRunID: row[5].isEmpty ? nil : AgentRunID(row[5]),
+            spawnedByToolCallID: row[6].isEmpty ? nil : ToolCallID(row[6]),
+            title: row[7].isEmpty ? nil : row[7],
+            projectID: ProjectID(row[1]),
+            cwdRootBindingID: RootBindingID(row[8]),
+            cwdRelativePath: ProjectRelativePath(rawValue: row[9]),
+            updatedAt: Self.parseDate(row[11]),
+            messages: messages
+        )
+    }
+
     public func loadMessages(sessionID: SessionID) throws -> [Message] {
         try Self.rows(state, "SELECT message_id, role, created_at FROM messages WHERE session_id = ? ORDER BY ordinal", [sessionID.rawValue]).map { row in
             let parts = try Self.rows(state, "SELECT payload FROM message_parts WHERE message_id = ? ORDER BY ordinal", [row[0]]).map { try JSONDecoder().decode(SessionMessagePart.self, from: Data($0[0].utf8)) }

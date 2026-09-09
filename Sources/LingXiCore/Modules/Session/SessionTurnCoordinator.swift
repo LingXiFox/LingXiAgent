@@ -23,6 +23,90 @@ public actor SessionTurnCoordinator {
         self.eventLog = eventLog
     }
 
+    /// 从持久化消息流中水合还原历史 turns 和 timeline events
+    public func hydrateHistoricalMessages(_ messages: [Message]) async {
+        guard turns.isEmpty, !messages.isEmpty else { return }
+
+        var currentTurnID: TurnID?
+        for msg in messages {
+            let causal = CausalContext(sessionID: sessionID, turnID: currentTurnID)
+            switch msg.role {
+            case .user:
+                let tID = TurnID(msg.id.rawValue)
+                currentTurnID = tID
+                let snap = MessageSnapshot(
+                    messageID: msg.id,
+                    role: .user,
+                    text: msg.content,
+                    createdAt: msg.createdAt
+                )
+                let turnSnap = TurnSnapshot(
+                    turnID: tID,
+                    sessionID: sessionID,
+                    userMessage: snap,
+                    executionIntent: TurnExecutionIntent(),
+                    status: .completed,
+                    createdAt: msg.createdAt
+                )
+                turns[tID] = turnSnap
+
+                let turnCausal = CausalContext(sessionID: sessionID, turnID: tID)
+                await eventLog.append(causal: turnCausal, payload: .turnCreated(turnSnap))
+                await eventLog.append(causal: turnCausal, payload: .userMessageCommitted(snap))
+
+            case .assistant:
+                var textContent = ""
+                for part in msg.parts {
+                    switch part {
+                    case let .text(txt):
+                        textContent += txt
+                    case let .toolCall(tc):
+                        let invocation = ToolInvocationSnapshot(
+                            callID: tc.callID,
+                            toolID: tc.toolID,
+                            displayName: tc.toolName,
+                            argumentsSummary: tc.arguments,
+                            state: .completed
+                        )
+                        toolInvocations[tc.callID] = invocation
+                        await eventLog.append(causal: causal, payload: .toolRequested(invocation))
+                        await eventLog.append(causal: causal, payload: .toolRunning(callID: tc.callID, stdoutStreamID: nil, stderrStreamID: nil))
+                    case .toolResult:
+                        break
+                    }
+                }
+                if !textContent.isEmpty || !msg.parts.isEmpty {
+                    await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
+                        messageID: msg.id,
+                        content: textContent,
+                        assistantFinalIndex: 0
+                    ))
+                }
+                if let tID = currentTurnID {
+                    await eventLog.append(causal: causal, payload: .turnCompleted(turnID: tID, terminalReason: .completed))
+                }
+
+            case .tool:
+                for part in msg.parts {
+                    if case let .toolResult(res) = part {
+                        let summaryText = res.summary.isEmpty ? (res.content.count > 100 ? String(res.content.prefix(100)) + "..." : res.content) : res.summary
+                        let resSnap = ToolResultSnapshot(
+                            callID: res.callID,
+                            success: res.success,
+                            summary: summaryText
+                        )
+                        await eventLog.append(causal: causal, payload: .toolCompleted(
+                            callID: res.callID,
+                            result: resSnap,
+                            stdoutFinalIndex: nil,
+                            stderrFinalIndex: nil
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Turn 提交与调度
 
     public struct SubmitTurnDecision: Sendable {
@@ -586,7 +670,7 @@ public actor SessionTurnCoordinator {
         revision: UInt64
     ) async -> SessionSnapshot {
         let cursor = await eventLog.currentCursor()
-        let recentEvents = await eventLog.recentEvents(count: 50)
+        let recentEvents = await eventLog.recentEvents(count: 2000)
         let activeRun = activeRootRunID.flatMap { runs[$0] }
 
         return SessionSnapshot(

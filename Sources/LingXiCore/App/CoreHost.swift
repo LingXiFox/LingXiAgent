@@ -20,6 +20,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let sessionStore: any SessionStore
     /// nil 表示显式的 ephemeral Core；调用方传入 dataRoot 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
+    public let workspaceURL: URL
     public let extensionPlatform: ExtensionPlatform
     private let gateway: ModelGateway
     private let modelResolver: SubagentModelResolver
@@ -153,6 +154,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let persistentRoot = dataRoot
         let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url, excluding: persistentRoot.map { [$0] } ?? [])
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
+        self.workspaceURL = workspace.url
         let instructions = try AgentInstructionSet.load(workspace: workspace.url)
         let agentSettings = configuration?.agent ?? AgentSettings()
         self.agentSettings = agentSettings
@@ -198,7 +200,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             ?? PermissionEngine(configuration: PermissionConfiguration(policy: agentSettings.permissionPolicy, profile: agentSettings.executionProfile))
         permissionEngine = permissions
         self.extensionPlatform = extensionPlatform ?? ExtensionPlatform(
-            globalRoot: persistentRoot?.appendingPathComponent("global-extensions", isDirectory: true) ?? FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-extensions-\(UUID().uuidString)", isDirectory: true),
+            globalRoot: persistentRoot ?? FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-extensions-\(UUID().uuidString)", isDirectory: true),
             projectRoot: workspace.url,
             permissions: permissions,
             deadlinePolicy: executionDeadlinePolicy
@@ -290,6 +292,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
         await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
         await extensionPlatform.restore()
+        _ = await extensionPlatform.discover()
         await questions.setEventSink { [weak self] request in
             await self?.agent?.markWaitingForQuestion(request, waiting: true)
             await self?.routeWorkflowQuestion(request)
@@ -314,6 +317,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             try await agent.selectModel(selection)
             await setSelectedModelOverride(selection.modelID)
             if let contextWindow = try await modelContextWindow(for: model) { await setSelectedModelContextWindow(contextWindow) }
+            if let store = configurationStore {
+                if var config = try? await store.load() {
+                    config.providers.model = model
+                    try? await store.save(config)
+                }
+            }
             return .providerModelSelected(await providerStatus)
         }
         await bus.add(.storeProviderCredential) { [self] command in
@@ -559,6 +568,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         lifecycle("cleanupStarted", waitingOn: "processes")
         await processes.stopAll()
         lifecycle("cleanupCompleted", waitingOn: "processes")
+        await ProviderActivityRegistry.shared.reset()
         agent = nil
         workflows = nil
         eventContinuations.values.forEach { $0.finish() }
@@ -885,11 +895,61 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func extensionInfos(kind: ExtensionKind?) async -> [ExtensionInfo] {
-        if kind == .skill || kind == .command { _ = await extensionPlatform.discover() }
+        if kind == nil || kind == .skill || kind == .command { _ = await extensionPlatform.discover() }
         let coreKind = kind.flatMap { ExtensionType(rawValue: $0.rawValue) }
-        return await extensionPlatform.list(type: coreKind).map { descriptor in
+        var result = await extensionPlatform.list(type: coreKind).map { descriptor in
             ExtensionInfo(id: descriptor.id, version: descriptor.version, kind: ExtensionKind(rawValue: descriptor.type.rawValue) ?? .plugin, scope: descriptor.scope.rawValue, enabled: descriptor.enabled, lifecycleState: descriptor.lifecycleState.rawValue)
         }
+        if kind == nil || kind == .mcp {
+            if let config = try? await configurationStore?.load() {
+                let existingIDs = Set(result.filter { $0.kind == .mcp }.map(\.id))
+                for server in config.mcp.servers {
+                    guard !existingIDs.contains(server.id) else { continue }
+                    let status = await mcpPager.serverStatus(for: MCPServerID(server.id))
+                    let lifecycle: String
+                    switch status {
+                    case .ready: lifecycle = "ready"
+                    case .empty: lifecycle = "empty"
+                    case .error: lifecycle = "error"
+                    case .disabled: lifecycle = "disabled"
+                    case nil: lifecycle = server.enabled ? "enabled" : "disabled"
+                    }
+                    result.append(ExtensionInfo(
+                        id: server.id,
+                        version: "1.0.0",
+                        kind: .mcp,
+                        scope: "global",
+                        enabled: server.enabled && status != .disabled,
+                        lifecycleState: lifecycle
+                    ))
+                }
+            }
+        }
+        var calibratedResult: [ExtensionInfo] = []
+        for item in result {
+            if item.kind == .mcp {
+                let status = await mcpPager.serverStatus(for: MCPServerID(item.id))
+                let lifecycle: String
+                switch status {
+                case .ready: lifecycle = "ready"
+                case .empty: lifecycle = "empty"
+                case .error: lifecycle = "error"
+                case .disabled: lifecycle = "disabled"
+                case nil: lifecycle = item.lifecycleState
+                }
+                calibratedResult.append(ExtensionInfo(
+                    id: item.id,
+                    version: item.version,
+                    kind: item.kind,
+                    scope: item.scope,
+                    enabled: item.enabled && status != .disabled,
+                    lifecycleState: lifecycle
+                ))
+            } else {
+                calibratedResult.append(item)
+            }
+        }
+        return calibratedResult
     }
 
     private func modelContextWindow(for value: String) async throws -> Int? {
@@ -1278,13 +1338,33 @@ extension CoreHost {
         let estimatedTokens = effectiveL1Usage + l2Usage + l3Usage
         let generation = snapshot?.metrics.compactionGeneration ?? 0
 
+        let cacheRecord = await cacheController.lastProviderCacheRecord(for: sessionID)
+        let clientHealth = await cacheController.lastClientHealth(for: sessionID)
+
         return ContextStateSnapshot(
             sessionID: sessionID,
             estimatedTokens: estimatedTokens,
             l1Tokens: effectiveL1Usage,
             l2Tokens: l2Usage,
             l3Tokens: l3Usage,
-            compactionGeneration: generation
+            compactionGeneration: generation,
+            cacheReadTokens: cacheRecord?.cachedTokens,
+            promptTokens: cacheRecord?.promptTokens,
+            previousPromptTokens: cacheRecord?.previousPromptTokens,
+            cacheStatus: cacheRecord?.status,
+            cacheEpoch: cacheRecord?.epoch ?? clientHealth?.cacheEpoch,
+            epochReason: cacheRecord?.epochReason,
+            stablePrefixHash: cacheRecord?.stablePrefixHash ?? clientHealth?.stablePrefixHash,
+            missDiagnostics: cacheRecord?.missDiagnostics,
+            structuralPrefixStability: clientHealth.map { $0.prefixMutationDetected ? 0.0 : 1.0 },
+            clientCausedBustRate: clientHealth?.clientCausedBustRate,
+            appendOnlyContextRatio: clientHealth?.appendOnlyRatio,
+            volatileTailBytes: clientHealth?.volatileTailBytes,
+            clientHealthStatus: clientHealth?.status,
+            observedGranularity: nil,
+            clientCausedBusts: clientHealth?.clientCausedBusts,
+            comparableRequests: clientHealth?.comparableRequests,
+            appendOnlyViolations: clientHealth?.appendOnlyViolations
         )
     }
 
@@ -1333,6 +1413,32 @@ extension CoreHost {
         var currentAssistantIndex: UInt64 = 0
         var currentReasoningIndex: UInt64 = 0
         var currentAssistantText = ""
+        var stepStartTime = Date()
+        var firstTokenTime: Date? = nil
+        var stepCharsCount: Int = 0
+
+        let runModel = await coordinator.getRun(runID: runID)?.model
+        let activeModelName = executionIntent.modelSelection ?? runModel ?? "model"
+
+        let computeMetadata: (String) -> ModelStepOutputMetadata = { reason in
+            let endTime = Date()
+            let durMs = max(1.0, endTime.timeIntervalSince(stepStartTime) * 1000.0)
+            let ftMs = firstTokenTime.map { max(0.0, $0.timeIntervalSince(stepStartTime) * 1000.0) }
+            let tokens = max(1, Int(ceil(Double(stepCharsCount) / 1.5)))
+            let genSec = (firstTokenTime != nil) ? max(0.05, endTime.timeIntervalSince(firstTokenTime!)) : max(0.05, durMs / 1000.0)
+            let rate = Double(tokens) / genSec
+            let modelName = activeModelName
+            return ModelStepOutputMetadata(
+                totalTokens: tokens,
+                finishReason: reason,
+                model: modelName,
+                durationMs: durMs,
+                firstTokenMs: ftMs,
+                tokenRate: rate,
+                completedAt: endTime
+            )
+        }
+
         do {
             let stream = try await agent.sendMessage(sessionID, input.text)
 
@@ -1355,11 +1461,15 @@ extension CoreHost {
                             assistantText: currentAssistantText,
                             assistantIndex: currentAssistantIndex,
                             reasoningIndex: currentReasoningIndex,
-                            finishReason: "tool_calls"
+                            finishReason: "tool_calls",
+                            metadata: computeMetadata("tool_calls")
                         )
                     }
                     currentStepID = chunkStepID
                     currentStepNumber = chunkStepNumber
+                    stepStartTime = Date()
+                    firstTokenTime = nil
+                    stepCharsCount = 0
                     let step = await coordinator.beginModelStep(
                         stepID: chunkStepID,
                         runID: runID,
@@ -1378,8 +1488,13 @@ extension CoreHost {
                       let reasoningStreamID = currentReasoningStreamID,
                       let causal = currentCausal else { continue }
 
+                if firstTokenTime == nil {
+                    firstTokenTime = Date()
+                }
+
                 switch chunk.kind {
                 case .text:
+                    stepCharsCount += chunk.text.count
                     currentAssistantText += chunk.text
                     let frame = StreamFrame(
                         streamID: assistantStreamID,
@@ -1413,7 +1528,8 @@ extension CoreHost {
                     assistantText: currentAssistantText,
                     assistantIndex: currentAssistantIndex,
                     reasoningIndex: currentReasoningIndex,
-                    finishReason: "stop"
+                    finishReason: "stop",
+                    metadata: computeMetadata("stop")
                 )
             }
             if Task.isCancelled {
@@ -1451,7 +1567,8 @@ extension CoreHost {
                     assistantText: currentAssistantText,
                     assistantIndex: currentAssistantIndex,
                     reasoningIndex: currentReasoningIndex,
-                    finishReason: "error"
+                    finishReason: "error",
+                    metadata: computeMetadata("error")
                 )
             }
             let runtimeErr = (error as? RuntimeError) ?? (error as? CoreError)?.asRuntimeError ?? RuntimeError(category: .runtime, code: "executionError", message: error.localizedDescription, retryability: .none, source: .core)
@@ -1482,7 +1599,8 @@ extension CoreHost {
         assistantText: String,
         assistantIndex: UInt64,
         reasoningIndex: UInt64,
-        finishReason: String
+        finishReason: String,
+        metadata: ModelStepOutputMetadata? = nil
     ) async {
         guard let stepID, let causal else { return }
         if let msgID, let astStreamID, !assistantText.isEmpty {
@@ -1496,11 +1614,12 @@ extension CoreHost {
             )
         }
         let reasoningFinalIndex: UInt64? = reasoningIndex > 0 ? (reasoningIndex - 1) : nil
+        let finalMeta = metadata ?? ModelStepOutputMetadata(finishReason: finishReason)
         await coordinator.completeModelStep(
             stepID: stepID,
             causal: causal,
             finalIndex: reasoningFinalIndex,
-            outputMetadata: ModelStepOutputMetadata(finishReason: finishReason)
+            outputMetadata: finalMeta
         )
     }
 
@@ -1565,6 +1684,7 @@ extension CoreHost {
         }
 
         await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "createSession")
+        await ProviderRateScheduler.shared.reset()
 
         let initialRuntimeSeq = await runtimeEventLog.currentSequence()
         let session = try await sessionStore.create(
@@ -1747,17 +1867,60 @@ extension CoreHost {
     }
 
     public func listSessions(envelope: QueryEnvelope<PageRequest>) async throws -> ResponseEnvelope<Page<SessionSummary>> {
-        let sessions = try await sessionStore.listSessions()
-        let all: [SessionSummary] = sessions.map {
-            SessionSummary(
-                sessionID: $0.id,
-                title: $0.title,
-                createdAt: $0.createdAt,
-                updatedAt: $0.updatedAt,
-                turnCount: 0,
-                mode: .build
-            )
+        let currentCwd = workspaceURL.standardizedFileURL.resolvingSymlinksInPath().path
+        var rawSummaries: [SessionSummary] = []
+        if let persistent = persistence, let globals = try? await persistent.loadAllGlobalSessions(), !globals.isEmpty {
+            rawSummaries = globals
+        } else {
+            let sessions = try await sessionStore.listSessions()
+            rawSummaries = sessions.map {
+                let msgCount = $0.messages.count
+                var t = $0.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if t.isEmpty {
+                    if let firstMsg = $0.messages.first(where: { $0.role == .user })?.content {
+                        let clean = firstMsg.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+                        t = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
+                    }
+                }
+                if t.isEmpty { t = "未命名会话" }
+                return SessionSummary(
+                    sessionID: $0.id,
+                    title: t,
+                    createdAt: $0.createdAt,
+                    updatedAt: $0.updatedAt,
+                    turnCount: msgCount,
+                    mode: .build,
+                    reasoningEffort: $0.reasoningEffort,
+                    workingDirectory: currentCwd,
+                    messageCount: msgCount
+                )
+            }
         }
+
+        // 按工作目录分组：当前目录排第一，其它目录按最新活跃时间倒序
+        var groups: [String: [SessionSummary]] = [:]
+        for s in rawSummaries {
+            let dir = s.workingDirectory ?? currentCwd
+            groups[dir, default: []].append(s)
+        }
+
+        let sortedDirs = groups.keys.sorted { d1, d2 in
+            let isCurrent1 = (d1 == currentCwd)
+            let isCurrent2 = (d2 == currentCwd)
+            if isCurrent1 != isCurrent2 {
+                return isCurrent1
+            }
+            let latest1 = groups[d1]?.map(\.updatedAt).max() ?? Date.distantPast
+            let latest2 = groups[d2]?.map(\.updatedAt).max() ?? Date.distantPast
+            return latest1 > latest2
+        }
+
+        var all: [SessionSummary] = []
+        for dir in sortedDirs {
+            let sortedInGroup = (groups[dir] ?? []).sorted(by: { $0.updatedAt > $1.updatedAt })
+            all.append(contentsOf: sortedInGroup)
+        }
+
         let limit = max(1, envelope.payload.limit)
         let items = Array(all.prefix(limit))
         let hasMore = all.count > items.count
@@ -1773,13 +1936,37 @@ extension CoreHost {
     public func getSessionSnapshot(envelope: QueryEnvelope<GetSessionSnapshotRequest>) async throws -> ResponseEnvelope<SessionSnapshot> {
         let session = try await sessionStore.session(envelope.payload.sessionID)
         let coord = try await coordinator(for: session.id)
+
+        // 水合还原持久化历史消息与事件流
+        await coord.hydrateHistoricalMessages(session.messages)
+
+        let msgCount = session.messages.count
+        var title = session.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if title.isEmpty {
+            if let firstUser = session.messages.first(where: { $0.role == .user })?.content {
+                let clean = firstUser.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+                title = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
+            }
+        }
+        if title.isEmpty { title = "未命名会话" }
+
+        let resolvedDir: String
+        if let p = persistence, let root = try? SQLitePersistenceStore.findProjectDirectory(for: session.id, dataRoot: p.dataRoot)?.absoluteRoot {
+            resolvedDir = root
+        } else {
+            resolvedDir = workspaceURL.path
+        }
+
         let summary = SessionSummary(
             sessionID: session.id,
-            title: session.title,
+            title: title,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
-            turnCount: 0,
-            mode: .build
+            turnCount: session.messages.filter { $0.role == .user }.count,
+            mode: .build,
+            reasoningEffort: session.reasoningEffort,
+            workingDirectory: resolvedDir,
+            messageCount: msgCount
         )
         let contextState = await buildContextStateSnapshot(sessionID: session.id)
         let agentMode = await coord.currentAgentMode()
@@ -2287,6 +2474,10 @@ extension CoreHost {
             eventCursor: await coord.eventLog.currentCursor(),
             payload: snapshot
         )
+    }
+
+    public func contextStateSnapshot(sessionID: SessionID) async -> ContextStateSnapshot {
+        await buildContextStateSnapshot(sessionID: sessionID)
     }
 
     public func getContextPolicy(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ContextCachePolicySnapshot> {

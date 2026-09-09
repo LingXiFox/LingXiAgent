@@ -73,7 +73,13 @@ public struct L1ContextSnapshot: Sendable, Equatable {
             }
             let facts = String(content[..<separator.lowerBound])
             let instructions = String(content[separator.upperBound...])
-            let fragments = entries.first?.messageID == nil ? [instructions, facts] : [facts, instructions]
+            let instructionBlocks = instructions.components(separatedBy: "\n\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            var fragments = instructionBlocks.isEmpty ? [instructions] : instructionBlocks
+            if entries.first?.messageID == nil {
+                fragments.append(facts)
+            } else {
+                fragments.insert(facts, at: 0)
+            }
             return fragments.map { ContextEntry(messageID: nil, role: .system, source: .system, part: .text($0)) }
         }
 

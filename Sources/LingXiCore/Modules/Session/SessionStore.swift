@@ -125,10 +125,13 @@ public actor PersistentSessionStore: SessionStore {
     }
 
     public func session(_ id: SessionID) async throws -> Session {
-        guard let session = try await persistence.loadSessions().first(where: { $0.id == id }) else {
-            throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(id.rawValue)")
+        if let session = try await persistence.loadSessions().first(where: { $0.id == id }) {
+            return session
         }
-        return session
+        if let global = try await persistence.loadGlobalSession(id) {
+            return global
+        }
+        throw CoreError(code: .sessionNotFound, message: "Session 不存在: \(id.rawValue)")
     }
 
     public func listSessions() async throws -> [Session] { try await persistence.loadSessions() }

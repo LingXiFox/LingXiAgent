@@ -143,13 +143,27 @@ public struct OpenAIResponsesProvider: ModelProvider {
                 return [.message(role: "user", content: message.content)]
             }
         }
-        return try JSONEncoder().encode(ResponseRequestBody(
+        let orderedTools: [ToolDefinition]
+        let instructions: String?
+        if let plan = request.cachePlan {
+            instructions = plan.immutableBase.systemPrompt ?? request.system
+            orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
+        } else {
+            instructions = request.system
+            let coreIDs = ToolRuntime.coreToolIDs
+            let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+            let dynamic = request.tools.filter { !coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+            orderedTools = core + dynamic
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(ResponseRequestBody(
             model: request.model.rawValue,
             stream: true,
             store: store,
-            instructions: request.system,
+            instructions: instructions,
             input: input,
-            tools: request.tools.isEmpty ? nil : request.tools.map(ResponseRequestBody.Tool.init),
+            tools: orderedTools.isEmpty ? nil : orderedTools.map(ResponseRequestBody.Tool.init),
             reasoning: request.reasoning.map { ResponseRequestBody.Reasoning(effort: $0) },
             include: !store && request.reasoning != nil ? ["reasoning.encrypted_content"] : nil,
             previousResponseID: previousResponseID
@@ -427,6 +441,12 @@ public struct ResponsesStreamStateMachine: Sendable {
                 }
                 return try updateCall(callID: extractCallID(in: item), name: item["name"] as? String, arguments: item["arguments"] as? String, finish: true)
             }
+            if itemType == "reasoning", let itemID = item["id"] as? String {
+                let key = "opaque:\(itemID)"
+                if !orderedKeys.contains(key) { orderedKeys.append(key) }
+                opaqueItems[key] = try JSONSerialization.data(withJSONObject: item, options: [.sortedKeys])
+                return []
+            }
             return []
 
         // 10. response.completed
@@ -667,7 +687,6 @@ private struct ResponseRequestBody: Encodable {
                 try values.encode(name, forKey: .name)
                 try values.encode(arguments, forKey: .arguments)
                 if let itemID { try values.encode(itemID, forKey: .id) }
-                try values.encode("completed", forKey: .status)
             case let .functionOutput(callID, output):
                 try values.encode("function_call_output", forKey: .type); try values.encode(callID, forKey: .callID); try values.encode(output, forKey: .output)
             case let .opaque(data):

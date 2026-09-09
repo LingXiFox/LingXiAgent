@@ -156,6 +156,13 @@ public struct AgentEnvironmentFacts: Sendable, Equatable {
 }
 
 enum AgentBehaviorInstructions {
+    static let runtimeGuidelines = """
+    Agent Runtime Guidelines:
+    - Task Planning: For multi-step tasks, investigations, or refactoring, proactively use `todo` (action: 'add') to establish a checklist, and update task status ('in_progress', 'completed', 'failed') as you advance to keep the sidebar updated.
+    - Tool Discovery: Builtin tools are always available for filesystem, grep, and execution. If `search_tools` returns no matches or a diagnostic notice (empty/error), do not retry searching; proceed with builtin tools.
+    - Execution & Truthfulness: Inspect before mutating, run verification after changes, and report obstacles truthfully without hallucination.
+    """
+
     static func render(
         profile: AgentBehaviorProfile,
         configured: String?,
@@ -174,6 +181,7 @@ enum AgentBehaviorInstructions {
         case .explore:
             entries.append("Explore profile: use read-only search and inspection, report evidence and uncertainty, and do not mutate the repository. Mutation is forbidden by runtime capability policy.")
         }
+        entries.append(runtimeGuidelines)
         if let configured, !configured.isEmpty { entries.append(configured) }
         if let repository = repository.rendered() { entries.append(repository) }
         return entries.joined(separator: "\n\n")
