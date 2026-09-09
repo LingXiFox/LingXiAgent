@@ -1,5 +1,10 @@
 # LingXiAgent
 
+> [!IMPORTANT]
+> **系统平台支持说明（Platform Support）**
+> - **当前支持**：本项目目前**仅支持 macOS**（macOS 13+）。
+> - **暂不支持**：**Linux**、**Windows**、**HarmonyOS**、**ChromeOS**、**Android** 目前暂不支持，未来版本可能视生态成熟度与架构规划逐步评估支持。
+
 LingXiAgent 是以纯 Swift 原生实现的现代化本地自主智能体（Agent Core）。它拥有完整的自主决策树、多级上下文缓存、动态工具调度、敏感权限拦截、多协议模型网关、MCP 服务运行时与本地加密持久化体系；外部模型通信仅在 Provider Adapter 边界做契约映射，严守领域模型的内聚与纯粹。
 
 ---
