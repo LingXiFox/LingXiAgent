@@ -704,12 +704,6 @@ struct UnifiedModelRegistryTests {
             version: 1,
             model: "openai-codex/gpt-6-astra",
             providers: [
-                "openai-codex": PublicProviderConfiguration(
-                    name: "OpenAI Codex",
-                    adapter: "openai-compatible",
-                    options: PublicProviderOptions(baseURL: "https://api.openai.com/v1"),
-                    models: [:]
-                ),
                 "bai": PublicProviderConfiguration(
                     name: "BAI",
                     adapter: "openai-compatible",
@@ -763,6 +757,12 @@ struct UnifiedModelRegistryTests {
 
         // Must filter out hidden model
         #expect(!models.contains(where: { $0.id == "openai-codex/gpt-reserve" }))
+
+        // Selecting builtin openai-codex model succeeds without being in providers.json!
+        let status = try await client.selectProviderModel("openai-codex/gpt-6-astra")
+        #expect(status.configured)
+        #expect(status.model == "openai-codex/gpt-6-astra")
+        #expect(status.baseURL == "https://chatgpt.com/backend-api/codex")
     }
 
     @Test func testOpenAICodexAccountIDExtraction() {

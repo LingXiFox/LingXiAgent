@@ -475,34 +475,19 @@ Enter the authorization callback URL or code (press Enter to cancel):
             }
         }
 
+        // Clean up legacy builtin entries from providers.json if previously written
         let snapshot = try await configStore.load()
-        var currentProviders = snapshot.providers.providers
-
-        let adapterName: String
-        switch profile.protocolFamily {
-        case "openai_responses": adapterName = "openai-responses"
-        case "anthropic_messages": adapterName = "anthropic-messages"
-        default: adapterName = "openai-compatible"
+        if snapshot.providers.providers[productID] != nil {
+            var currentProviders = snapshot.providers.providers
+            currentProviders.removeValue(forKey: productID)
+            let newConfig = ProvidersConfiguration(
+                schema: snapshot.providers.schema,
+                version: snapshot.providers.version,
+                model: snapshot.providers.model,
+                providers: currentProviders
+            )
+            try await configStore.saveProviders(newConfig)
         }
-
-        // providers.json is configuration only; models are stored in account-scoped cache
-        currentProviders[productID] = PublicProviderConfiguration(
-            name: profile.displayName,
-            adapter: adapterName,
-            options: PublicProviderOptions(
-                baseURL: profile.endpoint,
-                apiKey: "{oauth:\(ref.rawValue)}"
-            ),
-            models: [:]
-        )
-
-        let newConfig = ProvidersConfiguration(
-            schema: snapshot.providers.schema,
-            version: snapshot.providers.version,
-            model: snapshot.providers.model,
-            providers: currentProviders
-        )
-        try await configStore.saveProviders(newConfig)
 
         // The account's own listing decides availability; registry metadata
         // only enriches what is already reachable.
@@ -563,72 +548,19 @@ Available models:
         let ref = CredentialRef("provider-\(providerID)-key")
         try await credStore.setSecret(secret, for: ref)
 
+        // Clean up legacy builtin entries from providers.json if previously written
         let snapshot = try await configStore.load()
-        var currentProviders = snapshot.providers.providers
-
-        // Seed the model list by discovering it with the credential just
-        // stored. This is deliberately best-effort: an unreachable vendor must
-        // not fail the login, and the list is refreshed again on first use.
-        // Nothing is invented here — a product with no reachable listing keeps
-        // an empty model set rather than a stale built-in roster.
-        var modelsDict: [String: PublicModelConfiguration] = [:]
-        if let product = BuiltinProviderCatalog.registryProduct(id: providerID) {
-            let result = await AccountModelDiscovery.refresh(
-                product: product,
-                accountRef: AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: secret),
-                credential: secret
+        if snapshot.providers.providers[providerID] != nil {
+            var currentProviders = snapshot.providers.providers
+            currentProviders.removeValue(forKey: providerID)
+            let newConfig = ProvidersConfiguration(
+                schema: snapshot.providers.schema,
+                version: snapshot.providers.version,
+                model: snapshot.providers.model,
+                providers: currentProviders
             )
-            if case let .success(discovered) = result {
-                for model in discovered {
-                    modelsDict[model.id] = PublicModelConfiguration(
-                        name: model.displayName,
-                        reasoning: model.capabilities?.reasoning ?? !model.supportedReasoningEfforts.isEmpty,
-                        limit: PublicModelLimit(
-                            context: model.contextWindow ?? 128_000,
-                            output: model.maxOutputTokens ?? 4_096
-                        ),
-                        toolCalling: model.toolCalling,
-                        vision: model.vision,
-                        reasoningCapability: nil
-                    )
-                }
-            }
+            try await configStore.saveProviders(newConfig)
         }
-
-        let adapterName: String
-        switch profile.protocolFamily {
-        case "openai_responses": adapterName = "openai-responses"
-        case "anthropic_messages": adapterName = "anthropic-messages"
-        default: adapterName = "openai-compatible"
-        }
-
-        let apiKeyHeaderName: String?
-        if BuiltinProviderCatalog.hasQuirk(providerID: providerID, quirk: "customApiKeyHeader") {
-            apiKeyHeaderName = "api-key"
-        } else if profile.protocolFamily == "anthropic_messages" {
-            apiKeyHeaderName = "x-api-key"
-        } else {
-            apiKeyHeaderName = nil
-        }
-
-        currentProviders[providerID] = PublicProviderConfiguration(
-            name: profile.displayName,
-            adapter: adapterName,
-            options: PublicProviderOptions(
-                baseURL: profile.endpoint,
-                apiKey: "{vault:\(ref.rawValue)}",
-                apiKeyHeader: apiKeyHeaderName
-            ),
-            models: modelsDict
-        )
-
-        let newConfig = ProvidersConfiguration(
-            schema: snapshot.providers.schema,
-            version: snapshot.providers.version,
-            model: snapshot.providers.model,
-            providers: currentProviders
-        )
-        try await configStore.saveProviders(newConfig)
 
         let treeOutput = CLIFormatter.renderTree(
             header: "✓ Successfully authenticated \(profile.displayName)!",
@@ -660,16 +592,18 @@ Available models:
         try await credStore.removeSecret(for: oauthRef)
 
         let snapshot = try await configStore.load()
-        var currentProviders = snapshot.providers.providers
-        currentProviders.removeValue(forKey: providerID)
+        if snapshot.providers.providers[providerID] != nil {
+            var currentProviders = snapshot.providers.providers
+            currentProviders.removeValue(forKey: providerID)
 
-        let newConfig = ProvidersConfiguration(
-            schema: snapshot.providers.schema,
-            version: snapshot.providers.version,
-            model: snapshot.providers.model,
-            providers: currentProviders
-        )
-        try await configStore.saveProviders(newConfig)
+            let newConfig = ProvidersConfiguration(
+                schema: snapshot.providers.schema,
+                version: snapshot.providers.version,
+                model: snapshot.providers.model,
+                providers: currentProviders
+            )
+            try await configStore.saveProviders(newConfig)
+        }
 
         return CLIFormatter.renderTree(
             header: "✓ Successfully logged out from '\(providerID)'.",
@@ -707,41 +641,82 @@ Available models:
     /// Only selectable models are emitted, so completion never suggests a
     /// deprecated entry the user cannot actually choose.
     private static func renderModelIDs() async -> String {
-        guard let catalog = await ModelRegistryClient.shared.catalog() else { return "" }
-        return catalog.models
-            .filter { $0.modelStatus.isSelectable }
-            .map { "\($0.productID)/\($0.id)" }
-            .sorted()
-            .joined(separator: "\n")
+        var ids: Set<String> = []
+        if let catalog = await ModelRegistryClient.shared.catalog() {
+            for m in catalog.models where m.modelStatus.isSelectable {
+                ids.insert("\(m.productID)/\(m.id)")
+            }
+        }
+        for product in BuiltinProviderCatalog.registryProducts {
+            let accounts = await AccountScopedCatalogCache.shared.listAccounts(productID: product.id)
+            for acc in accounts {
+                if let record = await AccountScopedCatalogCache.shared.load(productID: product.id, accountRef: acc) {
+                    for m in record.models where m.visibility.lowercased() != "hide" && m.visibility.lowercased() != "disabled" {
+                        ids.insert("\(product.id)/\(m.id)")
+                    }
+                }
+            }
+        }
+        return ids.sorted().joined(separator: "\n")
     }
 
-    /// Lists models as published by the registry catalog.
-    ///
-    /// Nothing is declared statically: a product whose models are resolved
-    /// against an account shows none here, because the registry deliberately
-    /// does not guess what an account can reach.
+    /// Lists models as published by the registry catalog or cached accounts.
     private static func renderModels(providerID: String?) async -> String {
-        guard let catalog = await ModelRegistryClient.shared.catalog() else {
-            return "Error: registry catalog unavailable and no cached copy exists."
-        }
-
+        let catalog = await ModelRegistryClient.shared.catalog()
         let products: [RegistryProduct]
-        if let providerID {
-            guard let product = catalog.product(id: providerID) else {
-                return "Error: Unknown provider '\(providerID)'"
+        if let catalog {
+            if let providerID {
+                guard let product = catalog.product(id: providerID) else {
+                    return "Error: Unknown provider '\(providerID)'"
+                }
+                products = [product]
+            } else {
+                products = catalog.products.filter { $0.runtime.isRunnable }
             }
-            products = [product]
         } else {
-            products = catalog.products.filter { $0.runtime.isRunnable }
+            let builtins = BuiltinProviderCatalog.registryProducts.filter { $0.runtime.isRunnable }
+            if let providerID {
+                guard let product = builtins.first(where: { $0.id == providerID }) else {
+                    return "Error: Unknown provider '\(providerID)'"
+                }
+                products = [product]
+            } else {
+                products = builtins
+            }
         }
 
         let headers = ["Product", "Model ID", "Display Name", "Status", "Context", "Output"]
         var rows: [[String]] = []
         for product in products {
-            for m in catalog.models(productID: product.id) {
+            let foundModels = catalog?.models(productID: product.id) ?? []
+            for m in foundModels {
                 let ctx = m.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-"
                 let out = m.capabilities.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
                 rows.append([product.id, m.id, m.displayName, m.status, ctx, out])
+            }
+            if foundModels.isEmpty {
+                var seenModelIDs = Set<String>()
+                let accounts = await AccountScopedCatalogCache.shared.listAccounts(productID: product.id)
+                for acc in accounts {
+                    if let record = await AccountScopedCatalogCache.shared.load(productID: product.id, accountRef: acc) {
+                        for m in record.models {
+                            guard m.visibility.lowercased() != "hide" && m.visibility.lowercased() != "disabled" else { continue }
+                            if seenModelIDs.contains(m.id) { continue }
+                            seenModelIDs.insert(m.id)
+                            let ctx = m.contextWindow.map { "\($0 / 1000)k" } ?? "-"
+                            let out = m.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
+                            rows.append([product.id, m.id, m.displayName, "active", ctx, out])
+                        }
+                    }
+                }
+            }
+        }
+
+        if rows.isEmpty {
+            if catalog != nil {
+                return "No runnable models found in catalog."
+            } else {
+                return "No models available locally. Run 'lingxiagent auth login <product>' or configure custom providers in ~/.lingxiagent/providers.json."
             }
         }
 

@@ -53,6 +53,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private var runtimeProviderAccounts: [String: ProviderAccountInfo] = [:]
     private var runtimeExtensions: [String: ExtensionInfo] = [:]
     private var cachedAssemblies: [String: ModelRuntimeAssembly] = [:]
+    private var currentAssembly: ModelRuntimeAssembly?
     private let dataRootURL: URL?
     private var selectedModelOverride: String?
     private var selectedModelContextWindow: Int?
@@ -216,6 +217,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
         projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let effective = providerAssembly ?? .unavailable
+        self.currentAssembly = (providerAssembly != nil && !effective.modelID.rawValue.isEmpty) ? providerAssembly : nil
         gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy)
         let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
         modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
@@ -319,8 +321,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             guard case let .selectProviderModel(model) = command else { return .error(CoreError(code: .unsupportedCommand, message: "selectProviderModel 参数缺失")) }
             let agent = try await requireAgent()
             let selection = try await modelSelection(for: model)
-            let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: model)
+            let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
             try await agent.selectModel(selection, assembly: assembly)
+            await setCurrentAssembly(assembly)
             await setSelectedModelOverride(model)
             if let contextWindow = try await modelContextWindow(for: model) { await setSelectedModelContextWindow(contextWindow) }
             if let store = configurationStore {
@@ -549,6 +552,18 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         do {
             try await agent.restore()
             try await workflows.restore()
+            if currentAssembly == nil {
+                if let store = configurationStore,
+                   let config = try? await store.load(),
+                   let defaultModel = config.providers.model,
+                   !defaultModel.isEmpty,
+                   let selection = try? await modelSelection(for: defaultModel),
+                   let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: defaultModel) {
+                    try? await agent.selectModel(selection, assembly: assembly)
+                    self.currentAssembly = assembly
+                    self.selectedModelOverride = defaultModel
+                }
+            }
         } catch {
             await diagnosticsStore.record(kind: .error, event: "core.start.failed", metadata: ["errorType": String(describing: type(of: error))], errorCode: (error as? CoreError)?.code.rawValue)
             self.agent = nil
@@ -812,12 +827,20 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private var providerStatus: ProviderStatus {
-        ProviderStatus(
-            configured: gateway.isConfigured,
-            model: selectedModelOverride ?? gateway.modelID?.rawValue,
-            baseURL: nil,
-            missingRequirements: gateway.missingRequirements
+        let activeModel = selectedModelOverride ?? currentAssembly?.modelID.rawValue ?? gateway.modelID?.rawValue
+        let isConfigured = currentAssembly != nil || gateway.isConfigured
+        let baseURL = currentAssembly?.endpoint.baseURL?.absoluteString
+        let missingReqs = isConfigured ? [] : gateway.missingRequirements
+        return ProviderStatus(
+            configured: isConfigured,
+            model: activeModel,
+            baseURL: baseURL,
+            missingRequirements: missingReqs
         )
+    }
+
+    private func setCurrentAssembly(_ assembly: ModelRuntimeAssembly?) {
+        currentAssembly = assembly
     }
 
     private func setSelectedModelOverride(_ model: String) {
@@ -1070,51 +1093,71 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private func providerModels() async throws -> [ProviderModelInfo] {
         guard let configurationStore else { return [] }
         let snapshot = try await configurationStore.load()
-        let configuredProviders = Set(snapshot.providers.providers.keys)
         let catalog = await ModelRegistryClient.shared.catalog()
+        let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
 
         var results: [ProviderModelInfo] = []
+        var handledBuiltinIDs = Set<String>()
 
-        for providerID in snapshot.providers.providers.keys.sorted() {
-            guard let provider = snapshot.providers.providers[providerID] else { continue }
+        // 1. All built-in products are first-class citizens. Their availability and
+        // credentials are managed through CredentialStore/Environment, NEVER by providers.json.
+        for product in availableProducts {
+            guard product.runtime.isRunnable else { continue }
+            handledBuiltinIDs.insert(product.id)
 
-            if let product = catalog?.product(id: providerID) ?? BuiltinProviderCatalog.registryProduct(id: providerID) {
-                let accountModels = await accountDiscoveredModels(
+            let isConfigured = await isProductConfigured(product: product)
+            let accountModels: [DiscoveredRemoteModel]
+            if isConfigured {
+                accountModels = await accountDiscoveredModels(
                     product: product,
-                    providerID: providerID
+                    providerID: product.id
                 )
-                let outcome = ModelAvailabilityResolver.resolve(
-                    product: product,
-                    registryModels: catalog?.models(productID: providerID) ?? [],
-                    accountModels: accountModels,
-                    isConfigured: true
-                )
-                if !outcome.models.isEmpty {
-                    results.append(contentsOf: outcome.models)
-                    continue
-                }
+            } else {
+                accountModels = []
             }
 
-            // The registry does not describe this product — an older or custom
-            // configuration. Fall back to whatever the user configured.
-            results.append(contentsOf: configuredModelInfos(providerID: providerID, provider: provider))
-        }
-
-        // Products the registry publishes but which the user has not configured
-        // yet are still listed, so they can be discovered and connected.
-        let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
-        for product in availableProducts where !configuredProviders.contains(product.id) {
-            guard product.runtime.isRunnable else { continue }
             let outcome = ModelAvailabilityResolver.resolve(
                 product: product,
                 registryModels: catalog?.models(productID: product.id) ?? [],
-                accountModels: [],
-                isConfigured: false
+                accountModels: accountModels,
+                isConfigured: isConfigured
             )
             results.append(contentsOf: outcome.models)
         }
 
+        // 2. Custom providers configured explicitly by the user in ~/.lingxiagent/providers.json.
+        for providerID in snapshot.providers.providers.keys.sorted() {
+            if handledBuiltinIDs.contains(providerID) { continue }
+            guard let provider = snapshot.providers.providers[providerID] else { continue }
+            results.append(contentsOf: configuredModelInfos(providerID: providerID, provider: provider))
+        }
+
         return results
+    }
+
+    private func isProductConfigured(product: RegistryProduct) async -> Bool {
+        if product.authMethods?.contains("none") == true {
+            return true
+        }
+        if await providerCredential(providerID: product.id) != nil {
+            return true
+        }
+        if let envKey = defaultEnvironmentKey(for: product.id),
+           let envVal = ProcessInfo.processInfo.environment[envKey], !envVal.isEmpty {
+            return true
+        }
+        return false
+    }
+
+    private func defaultEnvironmentKey(for productID: String) -> String? {
+        switch productID {
+        case "openai-api": return "OPENAI_API_KEY"
+        case "anthropic-api": return "ANTHROPIC_API_KEY"
+        case "gemini-api": return "GEMINI_API_KEY"
+        case "deepseek-api": return "DEEPSEEK_API_KEY"
+        case "xai-api": return "XAI_API_KEY"
+        default: return nil
+        }
     }
 
     /// Models from the user's own configured list, used only for products the
@@ -1238,37 +1281,32 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         guard let separator = value.firstIndex(of: "/") else { throw CoreError(code: .toolArgumentInvalid, message: "模型格式必须是 provider/model") }
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
+
+        // 1. Built-in products: validate via builtin catalog and credential store.
+        if let product = BuiltinProviderCatalog.registryProduct(id: providerID) ?? ProviderRegistry.shared.product(id: providerID).flatMap({ BuiltinProviderCatalog.registryProduct(id: $0.id) }) {
+            let isConfigured = await isProductConfigured(product: product)
+            guard isConfigured else {
+                throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
+            }
+            return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
+        }
+
+        // 2. Custom providers: loaded from ~/.lingxiagent/providers.json
         let snapshot = try await requireConfigurationStore().load()
         guard let providerConfig = snapshot.providers.providers[providerID] else {
-            if let profile = BuiltinProviderCatalog.profile(for: providerID), !profile.authMethods.contains("none") {
-                throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
-            }
+            throw CoreError(code: .provider, message: "未找到自定义 Provider 配置: \(providerID)")
+        }
+
+        guard providerConfig.models[modelID] != nil else {
             throw CoreError(code: .provider, message: "模型不可用: \(value)")
         }
 
-        let isDynamicAuth = BuiltinProviderCatalog.profile(for: providerID)?.modelDiscovery == .authenticatedRemote
-        let hasModelInConfig = providerConfig.models[modelID] != nil
-        let isAvailableInDynamic: Bool
-        if isDynamicAuth {
-            let availableModels = try await providerModels()
-            isAvailableInDynamic = availableModels.contains(where: { $0.providerID == providerID && $0.modelID == modelID })
-        } else {
-            isAvailableInDynamic = false
-        }
-
-        guard (hasModelInConfig || isAvailableInDynamic) else {
-            throw CoreError(code: .provider, message: "模型不可用: \(value)")
-        }
-
-        let isLocalNoAuth = BuiltinProviderCatalog.profile(for: providerID)?.authMethods.contains("none") ?? false
-        if !isLocalNoAuth {
-            let keyRef = CredentialRef("provider-\(providerID)-key")
-            let oauthRef = CredentialRef("provider-\(providerID)-oauth")
-            let hasKey = (try? await requireCredentialStore().secret(for: keyRef)) != nil || providerConfig.options.apiKey != nil
-            let hasOAuth = (try? await requireCredentialStore().secret(for: oauthRef)) != nil
-            if !hasKey && !hasOAuth {
-                throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
-            }
+        let keyRef = CredentialRef("provider-\(providerID)-key")
+        let oauthRef = CredentialRef("provider-\(providerID)-oauth")
+        let hasKey = (try? await requireCredentialStore().secret(for: keyRef)) != nil || providerConfig.options.apiKey != nil
+        let hasOAuth = (try? await requireCredentialStore().secret(for: oauthRef)) != nil
+        if !hasKey && !hasOAuth {
+            throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
         }
         return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
     }
@@ -1460,9 +1498,13 @@ extension CoreHost {
         // Core 执行必须使用该 Turn 的 frozen executionIntent
         await permissionEngine.setConfiguration(executionIntent.permissionConfiguration)
         if let model = executionIntent.modelSelection, let selection = try? await modelSelection(for: model) {
-            try? await agent?.selectModel(selection)
+            let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: model)
+            try? await agent?.selectModel(selection, assembly: assembly)
+            if let assembly {
+                self.currentAssembly = assembly
+            }
         }
-        guard let agent, state == .ready, gateway.isConfigured else {
+        guard let agent, state == .ready, (currentAssembly != nil || gateway.isConfigured) else {
             let next = await coordinator.finishRun(runID: runID, reason: .completed)
             if let next {
                 let task = Task { [weak self, weak coordinator] () -> Void in
@@ -2558,71 +2600,115 @@ extension CoreHost {
             return cached
         }
 
+        // 1. Built-in products: resolved entirely by builtin catalog, specifications,
+        // and CredentialStore/Environment. They NEVER require an entry in providers.json.
+        if let builtinProduct = ProviderRegistry.shared.product(id: selection.providerID) ?? BuiltinProviderCatalog.registryProduct(id: selection.providerID).flatMap({ ProviderRegistry.shared.product(id: $0.id) }) {
+            let assembly = try await resolveBuiltinRuntimeAssembly(
+                product: builtinProduct,
+                selection: selection,
+                fullModelValue: fullModelValue
+            )
+            cachedAssemblies[key] = assembly
+            cachedAssemblies[selection.providerID] = assembly
+            return assembly
+        }
+
+        // 2. Custom providers: configured explicitly by the user in ~/.lingxiagent/providers.json.
         guard let configStore = configurationStore else {
             throw CoreError(code: .provider, message: "ConfigurationStore 未就绪")
         }
         let snapshot = try await configStore.load()
         guard let providerConfig = snapshot.providers.providers[selection.providerID] else {
-            throw CoreError(code: .provider, message: "未找到 Provider 配置: \(selection.providerID)")
+            throw CoreError(code: .provider, message: "未找到自定义 Provider 配置: \(selection.providerID)")
         }
 
-        let profile = BuiltinProviderCatalog.profile(for: selection.providerID)
-        let adapter = providerConfig.adapter.lowercased()
+        let assembly = try await resolveCustomRuntimeAssembly(
+            providerID: selection.providerID,
+            providerConfig: providerConfig,
+            selection: selection,
+            fullModelValue: fullModelValue
+        )
+        cachedAssemblies[key] = assembly
+        cachedAssemblies[selection.providerID] = assembly
+        return assembly
+    }
 
+    private func resolveBuiltinRuntimeAssembly(
+        product: ResolvedProviderProduct,
+        selection: ModelSelection,
+        fullModelValue: String
+    ) async throws -> ModelRuntimeAssembly {
+        let productID = product.id
+        let profile = BuiltinProviderCatalog.profile(for: productID)
+
+        // 1. Wire Protocol: Built-in specifications govern official API vs official OAuth.
         let wireProtocol: ModelWireProtocol
-        if selection.providerID == "openai-codex" {
+        if productID == "openai-codex" {
             wireProtocol = .responses
-        } else if adapter == "openai-responses" || profile?.protocolFamily == "openai_responses" {
-            wireProtocol = .responses
-        } else if adapter == "anthropic-messages" || profile?.protocolFamily == "anthropic_messages" {
+        } else if productID == "anthropic-api" || productID == "anthropic-claude-subscription" || profile?.protocolFamily == "anthropic_messages" {
             wireProtocol = .anthropicMessages
+        } else if productID == "openai-api" || profile?.protocolFamily == "openai_responses" {
+            wireProtocol = .responses
         } else {
             wireProtocol = .chatCompletions
         }
 
+        // 2. Base URL: Dedicated official API vs official OAuth endpoints.
         let baseURLStr: String
-        if selection.providerID == "openai-codex" {
+        switch productID {
+        case "openai-codex":
             baseURLStr = "https://chatgpt.com/backend-api/codex"
-        } else {
-            baseURLStr = providerConfig.options.baseURL.isEmpty ? (profile?.endpoint ?? "https://api.openai.com/v1") : providerConfig.options.baseURL
+        case "openai-api":
+            baseURLStr = "https://api.openai.com/v1"
+        case "anthropic-api", "anthropic-claude-subscription":
+            baseURLStr = "https://api.anthropic.com"
+        case "gemini-api":
+            baseURLStr = "https://generativelanguage.googleapis.com/v1beta/openai"
+        case "gemini-code-assist", "antigravity":
+            baseURLStr = "https://cloudcode-pa.googleapis.com/v1internal"
+        case "deepseek-api":
+            baseURLStr = "https://api.deepseek.com"
+        case "ollama-local":
+            baseURLStr = "http://127.0.0.1:11434/v1"
+        case "lm-studio-local":
+            baseURLStr = "http://127.0.0.1:1234/v1"
+        case "llama-cpp-local":
+            baseURLStr = "http://127.0.0.1:8080/v1"
+        default:
+            baseURLStr = product.binding(for: product.primaryProtocol)?.baseURL ?? profile?.endpoint ?? "https://api.openai.com/v1"
         }
         guard let baseURL = URL(string: baseURLStr) else {
-            throw CoreError(code: .provider, message: "无效的 baseURL: \(baseURLStr)")
+            throw CoreError(code: .provider, message: "无效的内置 Base URL: \(baseURLStr)")
         }
 
+        // 3. Credentials
+        let isNoAuth = product.spec.credentialKind == "none" || (profile?.authMethods.contains("none") ?? false)
         var authToken: String? = nil
-        if let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
-            if apiKey.hasPrefix("{oauth:") && apiKey.hasSuffix("}") {
-                let refStr = String(apiKey.dropFirst(7).dropLast(1))
-                if let credStore = credentialStore, let secret = try? await credStore.secret(for: CredentialRef(refStr)) {
-                    authToken = extractBearerToken(from: secret)
-                }
-            } else {
-                authToken = apiKey
-            }
-        }
-        if authToken == nil, let credStore = credentialStore {
-            let oauthRef = CredentialRef("provider-\(selection.providerID)-oauth")
+        if let credStore = credentialStore {
+            let oauthRef = CredentialRef("provider-\(productID)-oauth")
             if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
                 authToken = extractBearerToken(from: secret)
             }
             if authToken == nil {
-                let keyRef = CredentialRef("provider-\(selection.providerID)-key")
+                let keyRef = CredentialRef("provider-\(productID)-key")
                 if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
                     authToken = secret
                 }
             }
         }
-
-        let isNoAuth = profile?.authMethods.contains("none") ?? false
-        if !isNoAuth && authToken == nil {
-            throw CoreError(code: .provider, message: "Provider '\(selection.providerID)' 未认证或凭据缺失")
+        if authToken == nil, let envKey = defaultEnvironmentKey(for: productID) {
+            authToken = ProcessInfo.processInfo.environment[envKey]
         }
 
+        if !isNoAuth && authToken == nil {
+            throw CoreError(code: .provider, message: "Provider '\(productID)' 未认证或凭据缺失\n请运行: lingxiagent auth login \(productID)")
+        }
+
+        // 4. ProviderAuthentication
         let auth: ProviderAuthentication
         if let token = authToken {
-            if let headerName = providerConfig.options.apiKeyHeader {
-                auth = .header(name: headerName, value: token)
+            if productID == "anthropic-api" {
+                auth = .header(name: "x-api-key", value: token)
             } else {
                 auth = .bearer(token)
             }
@@ -2630,25 +2716,22 @@ extension CoreHost {
             auth = .none
         }
 
-        var requiredHeaders = providerConfig.options.headers
-        if selection.providerID == "openai-codex" {
-            if requiredHeaders["OpenAI-Beta"] == nil {
-                requiredHeaders["OpenAI-Beta"] = "responses=v1"
-            }
-            if requiredHeaders["User-Agent"] == nil {
-                requiredHeaders["User-Agent"] = "codex-cli/0.154.0 (darwin; arm64)"
-            }
-            if requiredHeaders["originator"] == nil {
-                requiredHeaders["originator"] = "codex-cli"
-            }
+        // 5. Required Headers & Quirks
+        var requiredHeaders: [String: String] = [:]
+        if productID == "openai-codex" {
+            requiredHeaders["OpenAI-Beta"] = "responses=v1"
+            requiredHeaders["User-Agent"] = "codex-cli/0.154.0 (darwin; arm64)"
+            requiredHeaders["originator"] = "codex-cli"
             if let token = authToken, let accountID = CodexRemoteModelDiscovery.extractChatGPTAccountID(from: token) {
                 requiredHeaders["chatgpt-account-id"] = accountID
             }
+        } else if productID == "anthropic-api" || productID == "anthropic-claude-subscription" {
+            requiredHeaders["anthropic-version"] = "2023-06-01"
         }
 
         let contextWindow = (try? await modelContextWindow(for: fullModelValue)) ?? 128_000
         let maxOutput = 4_096
-        let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow, maxOutputTokens: maxOutput, source: "dynamic:\(fullModelValue)")
+        let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow, maxOutputTokens: maxOutput, source: "builtin:\(fullModelValue)")
 
         let runtimeConfig = ProviderConfig(
             baseURL: baseURL,
@@ -2673,7 +2756,7 @@ extension CoreHost {
             providerInstance = OpenAICompatibleProvider(config: runtimeConfig, provenance: provenance)
         }
 
-        let assembly = ModelRuntimeAssembly(
+        return ModelRuntimeAssembly(
             provider: providerInstance,
             modelID: ModelID(selection.modelID),
             contextProfile: contextProfile,
@@ -2690,10 +2773,110 @@ extension CoreHost {
                 capabilities: ModelCapabilities(toolCalling: true, parallelToolCalling: true, reasoning: true, vision: true, structuredOutput: true)
             )
         )
+    }
 
-        cachedAssemblies[key] = assembly
-        cachedAssemblies[selection.providerID] = assembly
-        return assembly
+    private func resolveCustomRuntimeAssembly(
+        providerID: String,
+        providerConfig: PublicProviderConfiguration,
+        selection: ModelSelection,
+        fullModelValue: String
+    ) async throws -> ModelRuntimeAssembly {
+        let adapter = providerConfig.adapter.lowercased()
+        let wireProtocol: ModelWireProtocol
+        if adapter == "openai-responses" {
+            wireProtocol = .responses
+        } else if adapter == "anthropic-messages" {
+            wireProtocol = .anthropicMessages
+        } else {
+            wireProtocol = .chatCompletions
+        }
+
+        let baseURLStr = providerConfig.options.baseURL.isEmpty ? "https://api.openai.com/v1" : providerConfig.options.baseURL
+        guard let baseURL = URL(string: baseURLStr) else {
+            throw CoreError(code: .provider, message: "无效的自定义 baseURL: \(baseURLStr)")
+        }
+
+        var authToken: String? = nil
+        if let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
+            if apiKey.hasPrefix("{vault:") && apiKey.hasSuffix("}") {
+                let refStr = String(apiKey.dropFirst(7).dropLast(1))
+                if let credStore = credentialStore, let secret = try? await credStore.secret(for: CredentialRef(refStr)) {
+                    authToken = extractBearerToken(from: secret)
+                }
+            } else if apiKey.hasPrefix("{oauth:") && apiKey.hasSuffix("}") {
+                let refStr = String(apiKey.dropFirst(7).dropLast(1))
+                if let credStore = credentialStore, let secret = try? await credStore.secret(for: CredentialRef(refStr)) {
+                    authToken = extractBearerToken(from: secret)
+                }
+            } else if apiKey.hasPrefix("{env:") && apiKey.hasSuffix("}") {
+                let envName = String(apiKey.dropFirst(5).dropLast(1))
+                authToken = ProcessInfo.processInfo.environment[envName]
+            } else {
+                authToken = apiKey
+            }
+        }
+        if authToken == nil, let credStore = credentialStore {
+            let keyRef = CredentialRef("provider-\(providerID)-key")
+            if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
+                authToken = secret
+            }
+        }
+
+        let auth: ProviderAuthentication
+        if let token = authToken {
+            if let headerName = providerConfig.options.apiKeyHeader {
+                auth = .header(name: headerName, value: token)
+            } else {
+                auth = .bearer(token)
+            }
+        } else {
+            auth = .none
+        }
+
+        let contextWindow = (try? await modelContextWindow(for: fullModelValue)) ?? 128_000
+        let maxOutput = 4_096
+        let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow, maxOutputTokens: maxOutput, source: "custom:\(fullModelValue)")
+
+        let runtimeConfig = ProviderConfig(
+            baseURL: baseURL,
+            authentication: auth,
+            model: selection.modelID,
+            wireProtocol: wireProtocol,
+            diagnosticsEnabled: false,
+            performanceDiagnosticsEnabled: false,
+            remoteStateEnabled: wireProtocol == .responses,
+            maxOutputTokens: maxOutput,
+            requiredHeaders: providerConfig.options.headers
+        )
+
+        let provenance = ProviderProvenanceStore(directory: dataRootURL?.appendingPathComponent("provider-provenance", isDirectory: true))
+        let providerInstance: any ModelProvider
+        switch wireProtocol {
+        case .responses:
+            providerInstance = OpenAIResponsesProvider(config: runtimeConfig, provenance: provenance)
+        case .anthropicMessages:
+            providerInstance = AnthropicMessagesProvider(config: runtimeConfig, provenance: provenance)
+        case .chatCompletions:
+            providerInstance = OpenAICompatibleProvider(config: runtimeConfig, provenance: provenance)
+        }
+
+        return ModelRuntimeAssembly(
+            provider: providerInstance,
+            modelID: ModelID(selection.modelID),
+            contextProfile: contextProfile,
+            endpoint: ResolvedModelEndpoint(
+                providerID: selection.providerID,
+                productID: selection.providerID,
+                endpointID: nil,
+                accountID: selection.accountID,
+                profileID: selection.profileID ?? selection.modelID,
+                modelID: ModelID(selection.modelID),
+                baseURL: baseURL,
+                wireProtocol: wireProtocol,
+                contextProfile: contextProfile,
+                capabilities: ModelCapabilities(toolCalling: true, parallelToolCalling: true, reasoning: true, vision: true, structuredOutput: true)
+            )
+        )
     }
 
     private func extractBearerToken(from secret: String) -> String? {
