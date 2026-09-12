@@ -387,7 +387,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
             let request = await questions.request(reply.questionID)
             try await questions.reply(reply)
-            if let request, let agent = self.agent { await agent.markWaitingForQuestion(request, waiting: false) }
+            if let request, let agent = try? await requireAgent() { await agent.markWaitingForQuestion(request, waiting: false) }
             return .questionReplyAccepted(reply.questionID)
         }
         await bus.add(.getContext) { [self] command in
