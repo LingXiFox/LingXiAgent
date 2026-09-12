@@ -1401,7 +1401,10 @@ public final class ApplicationTUI {
         for node in nodes {
             if case let .tool(tl) = node.kind, (tl.phase == .failed || tl.result?.success == false || tl.result?.error != nil) {
                 let toolName = tl.toolName
-                let content = (tl.result?.summary ?? "") + " " + (tl.result?.preview ?? "") + " " + (tl.result?.error?.message ?? "")
+                let summaryStr = tl.result?.summary ?? ""
+                let previewStr = tl.result?.preview ?? ""
+                let errStr = tl.result?.error?.message ?? ""
+                let content = "\(summaryStr) \(previewStr) \(errStr)"
                 for ext in state.extensions where ext.kind == .mcp {
                     if toolName.contains(ext.id) || content.contains(ext.id) || content.contains("mcpServerUnavailable") {
                         if content.contains(ext.id) || toolName.hasPrefix("mcp_\(ext.id)") || toolName.contains(ext.id) {
