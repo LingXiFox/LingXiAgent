@@ -170,11 +170,8 @@ public enum BuiltinProviderCatalog {
                         version: "2026-09",
                         compatibilityMode: "officialLike",
                         endpointOverride: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-                        requiredHeaders: [
-                            "Content-Type": "application/json",
-                            "Accept": "application/json"
-                        ],
-                        userAgentProfile: "antigravity/1.2.1 (darwin; arm64)"
+                        requiredHeaders: ClientFingerprint.headers(for: "antigravity"),
+                        userAgentProfile: ClientFingerprint.userAgent(for: "antigravity")
                     )
                 ]
             case "gemini-code-assist":
@@ -182,7 +179,9 @@ public enum BuiltinProviderCatalog {
                     "gemini-code-assist@2026-09": OverlayRequestProfile(
                         id: "gemini-code-assist@2026-09",
                         version: "2026-09",
-                        compatibilityMode: "conservative"
+                        compatibilityMode: "officialLike",
+                        requiredHeaders: ClientFingerprint.headers(for: "gemini-code-assist"),
+                        userAgentProfile: ClientFingerprint.userAgent(for: "gemini-code-assist")
                     )
                 ]
             case "openai-codex":
@@ -191,12 +190,29 @@ public enum BuiltinProviderCatalog {
                         id: "openai-codex@2026-09",
                         version: "2026-09",
                         compatibilityMode: "officialLike",
-                        endpointOverride: "https://chatgpt.com/backend-api/codex/models?client_version=0.154.0",
-                        requiredHeaders: [
-                            "originator": "codex-cli",
-                            "Accept": "application/json"
-                        ],
-                        userAgentProfile: "codex-cli/0.154.0 (darwin; arm64)"
+                        endpointOverride: "https://chatgpt.com/backend-api/codex/models?client_version=\(ClientFingerprint.codexVersion())",
+                        requiredHeaders: ClientFingerprint.headers(for: "openai-codex"),
+                        userAgentProfile: ClientFingerprint.userAgent(for: "openai-codex")
+                    )
+                ]
+            case "anthropic-claude-subscription":
+                return [
+                    "anthropic-claude-subscription@2026-09": OverlayRequestProfile(
+                        id: "anthropic-claude-subscription@2026-09",
+                        version: "2026-09",
+                        compatibilityMode: "officialLike",
+                        requiredHeaders: ClientFingerprint.headers(for: "anthropic-claude-subscription"),
+                        userAgentProfile: ClientFingerprint.userAgent(for: "anthropic-claude-subscription")
+                    )
+                ]
+            case "xai-grok-subscription":
+                return [
+                    "xai-grok-subscription@2026-09": OverlayRequestProfile(
+                        id: "xai-grok-subscription@2026-09",
+                        version: "2026-09",
+                        compatibilityMode: "officialLike",
+                        requiredHeaders: ClientFingerprint.headers(for: "xai-grok-subscription"),
+                        userAgentProfile: ClientFingerprint.userAgent(for: "xai-grok-subscription")
                     )
                 ]
             default:

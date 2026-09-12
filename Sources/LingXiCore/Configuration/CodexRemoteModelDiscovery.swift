@@ -2,8 +2,12 @@ import Foundation
 import LingXiProtocol
 
 public enum CodexRemoteModelDiscovery {
-    public static let defaultCodexModelsEndpoint = URL(string: "https://chatgpt.com/backend-api/codex/models?client_version=0.154.0")!
-    public static let defaultChatGPTModelsEndpoint = defaultCodexModelsEndpoint
+    public static var defaultCodexModelsEndpoint: URL {
+        URL(string: "https://chatgpt.com/backend-api/codex/models?client_version=\(ClientFingerprint.codexVersion())")!
+    }
+    public static var defaultChatGPTModelsEndpoint: URL {
+        defaultCodexModelsEndpoint
+    }
 
     /// Extracts the chatgpt_account_id claim from a JWT access token if present.
     public static func extractChatGPTAccountID(from token: String) -> String? {
@@ -56,14 +60,16 @@ public enum CodexRemoteModelDiscovery {
                 request.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
                 request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-                let ua = requestProfile?.userAgentProfile ?? "codex-cli/0.154.0 (darwin; arm64)"
+                let defaultUA = ClientFingerprint.userAgent(for: "openai-codex")
+                let ua = requestProfile?.userAgentProfile ?? defaultUA
                 request.setValue(ua, forHTTPHeaderField: "User-Agent")
 
                 // Official Codex originator header (or from requestProfile requiredHeaders)
                 if let originator = requestProfile?.requiredHeaders?["originator"] {
                     request.setValue(originator, forHTTPHeaderField: "originator")
                 } else {
-                    request.setValue("codex-cli", forHTTPHeaderField: "originator")
+                    let defaultOriginator = ClientFingerprint.headers(for: "openai-codex")["originator"] ?? "codex-cli"
+                    request.setValue(defaultOriginator, forHTTPHeaderField: "originator")
                 }
 
                 // Account metadata if present in token JWT claims

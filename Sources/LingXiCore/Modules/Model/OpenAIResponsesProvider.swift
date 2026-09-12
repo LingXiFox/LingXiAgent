@@ -91,7 +91,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
         case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): urlRequest.setValue(value, forHTTPHeaderField: name)
         }
-        for (name, value) in config.requiredHeaders where urlRequest.value(forHTTPHeaderField: name) == nil {
+        for (name, value) in config.requiredHeaders {
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
         let isCodexBackend = config.baseURL.host?.contains("chatgpt.com") == true

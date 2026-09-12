@@ -2717,17 +2717,7 @@ extension CoreHost {
         }
 
         // 5. Required Headers & Quirks
-        var requiredHeaders: [String: String] = [:]
-        if productID == "openai-codex" {
-            requiredHeaders["OpenAI-Beta"] = "responses=v1"
-            requiredHeaders["User-Agent"] = "codex-cli/0.154.0 (darwin; arm64)"
-            requiredHeaders["originator"] = "codex-cli"
-            if let token = authToken, let accountID = CodexRemoteModelDiscovery.extractChatGPTAccountID(from: token) {
-                requiredHeaders["chatgpt-account-id"] = accountID
-            }
-        } else if productID == "anthropic-api" || productID == "anthropic-claude-subscription" {
-            requiredHeaders["anthropic-version"] = "2023-06-01"
-        }
+        let requiredHeaders = ClientFingerprint.headers(for: productID, authToken: authToken)
 
         let contextWindow = (try? await modelContextWindow(for: fullModelValue)) ?? 128_000
         let maxOutput = 4_096

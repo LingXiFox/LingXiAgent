@@ -68,8 +68,12 @@ public enum GoogleAccountProjectBootstrap {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let ua = requestProfile?.userAgentProfile ?? "antigravity/1.2.1 (darwin; arm64)"
+        let defaultUA = ClientFingerprint.userAgent(for: "antigravity")
+        let ua = requestProfile?.userAgentProfile ?? defaultUA
         request.setValue(ua, forHTTPHeaderField: "User-Agent")
+        if let clientHeader = ClientFingerprint.headers(for: "antigravity")["X-Goog-Api-Client"] {
+            request.setValue(clientHeader, forHTTPHeaderField: "X-Goog-Api-Client")
+        }
 
         if let headers = requestProfile?.requiredHeaders {
             for (key, val) in headers {

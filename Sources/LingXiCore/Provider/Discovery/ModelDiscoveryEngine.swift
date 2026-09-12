@@ -261,13 +261,14 @@ public final class ModelDiscoveryEngine: Sendable {
         guard let credential, !credential.isEmpty else {
             throw DiscoveryError.missingCredential(productID: product.id)
         }
-        let url = URL(string: "https://chatgpt.com/backend-api/codex/models?client_version=0.154.0")!
+        let url = URL(string: "https://chatgpt.com/backend-api/codex/models?client_version=\(ClientFingerprint.codexVersion())")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("codex-cli", forHTTPHeaderField: "originator")
-        request.setValue("codex-cli/0.154.0 (darwin; arm64)", forHTTPHeaderField: "User-Agent")
+        let headers = ClientFingerprint.headers(for: "openai-codex", authToken: credential)
+        for (k, v) in headers {
+            request.setValue(v, forHTTPHeaderField: k)
+        }
         request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await send(request, httpClient: httpClient)
@@ -290,9 +291,10 @@ public final class ModelDiscoveryEngine: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 15
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("antigravity/1.2.1 (darwin; arm64)", forHTTPHeaderField: "User-Agent")
+        let headers = ClientFingerprint.headers(for: "antigravity", authToken: credential)
+        for (k, v) in headers {
+            request.setValue(v, forHTTPHeaderField: k)
+        }
         request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         request.httpBody = "{}".data(using: .utf8)
 
