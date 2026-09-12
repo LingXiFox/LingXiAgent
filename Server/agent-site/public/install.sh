@@ -29,18 +29,14 @@ echo -e "${RESET}"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-case "$OS" in
-    Darwin)
-        PLATFORM="macos"
-        ;;
-    Linux)
-        PLATFORM="linux"
-        ;;
-    *)
-        echo -e "${RED}[ERROR] 暂不支持的操作系统: ${OS}${RESET}"
-        exit 1
-        ;;
-esac
+if [ "$OS" != "Darwin" ]; then
+    echo -e "${RED}[ERROR] 抱歉，LingXiAgent 当前版本专为 macOS (Apple Silicon & Intel) 原生打造，暂未支持 ${OS}。${RESET}"
+    echo -e "${GRAY}系统深度集成了 macOS Keychain 安全凭据体系与 Darwin 原生网络层。${RESET}"
+    echo -e "${AMBER}Linux 等多平台支持正在筹备与适配中，敬请期待！${RESET}"
+    echo -e "${GRAY}项目主页: https://agent.lingxifox.cn | GitHub: https://github.com/LingXiFox/LingXiAgent${RESET}"
+    exit 1
+fi
+PLATFORM="macos"
 
 case "$ARCH" in
     arm64|aarch64)
@@ -55,7 +51,7 @@ case "$ARCH" in
         ;;
 esac
 
-echo -e "${GRAY}[1/5] 检测到系统环境: ${BOLD}${PLATFORM} (${CPU_ARCH})${RESET}"
+echo -e "${GRAY}[1/5] 检测到系统环境: ${BOLD}macOS (${CPU_ARCH})${RESET}"
 
 # 2. 准备安装目录
 INSTALL_ROOT="$HOME/.lingxiagent"
@@ -84,13 +80,19 @@ if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null
     fi
 fi
 
-# 场景 B: 尝试从 GitHub Releases 获取预编译 Release 包
+# 场景 B: 从 GitHub Releases 获取预编译 Release 包
 if [ "$INSTALLED" = false ]; then
-    RELEASE_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-${PLATFORM}-${CPU_ARCH}.tar.gz"
-    echo -e "${GRAY}[3/5] 尝试下载最新预编译发行包...${RESET}"
+    RELEASE_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-macos-${CPU_ARCH}.tar.gz"
+    FALLBACK_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-macos-universal.tar.gz"
+    echo -e "${GRAY}[3/5] 正在从 GitHub Releases 下载预编译发布包...${RESET}"
     TMP_DIR="$(mktemp -d /tmp/lingxiagent-install.XXXXXX)"
     
     HTTP_CODE=$(curl -s -L -o "$TMP_DIR/release.tar.gz" -w "%{http_code}" "$RELEASE_URL" || true)
+    if [ "$HTTP_CODE" != "200" ] || [ ! -s "$TMP_DIR/release.tar.gz" ]; then
+        echo -e "${AMBER}[!] 尝试获取通用发布包 (Universal)...${RESET}"
+        HTTP_CODE=$(curl -s -L -o "$TMP_DIR/release.tar.gz" -w "%{http_code}" "$FALLBACK_URL" || true)
+    fi
+
     if [ "$HTTP_CODE" = "200" ] && [ -s "$TMP_DIR/release.tar.gz" ]; then
         echo -e "${CYAN}[*] 正在解压安装预编译二进制...${RESET}"
         tar -xzf "$TMP_DIR/release.tar.gz" -C "$TMP_DIR"

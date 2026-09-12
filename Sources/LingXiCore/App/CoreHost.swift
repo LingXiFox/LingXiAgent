@@ -3,7 +3,7 @@ import LingXiProtocol
 
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
-    public static let coreVersion = "0.1.0"
+    public static let coreVersion = "0.1.1"
     public static let protocolVersion = "1"
 
     public static func stdioInteractive(environment: [String: String]) -> Bool {

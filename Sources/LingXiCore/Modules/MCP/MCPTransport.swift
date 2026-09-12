@@ -107,7 +107,7 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
         let initParams: [String: Any] = [
             "protocolVersion": protocolVersion,
             "capabilities": [String: Any](),
-            "clientInfo": ["name": "lingxiagent", "version": "0.1.0"]
+            "clientInfo": ["name": "lingxiagent", "version": "0.1.1"]
         ]
         if let initResp = try? await post(method: "initialize", parameters: initParams) {
             sessionID = initResp.sessionID
@@ -259,7 +259,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
             "params": [
                 "protocolVersion": "2024-11-05",
                 "capabilities": [String: Any](),
-                "clientInfo": ["name": "lingxiagent", "version": "0.1.0"]
+                "clientInfo": ["name": "lingxiagent", "version": "0.1.1"]
             ]
         ]
         let initData = try JSONSerialization.data(withJSONObject: initReq)
