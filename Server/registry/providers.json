@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "anthropic-api",
+      "vendorID": "anthropic",
+      "displayName": "Anthropic API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey", "workloadIdentity"],
+      "protocolFamily": "anthropic_messages",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "anthropic-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.anthropic.com",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "quirks": ["requiresAnthropicVersionHeader"],
+      "concurrencyLimit": 10,
+      "requestProfiles": {
+        "anthropic-api@2026-09": {
+          "id": "anthropic-api@2026-09",
+          "version": "2026-09",
+          "compatibilityMode": "conservative",
+          "requiredHeaders": { "anthropic-version": "2023-06-01" }
+        }
+      },
+      "requestProfileID": "anthropic-api@2026-09"
+    },
+    {
+      "id": "cloudflare-ai-gateway",
+      "vendorID": "cloudflare",
+      "displayName": "Cloudflare AI Gateway",
+      "type": "gateway",
+      "authStrategy": "gateway",
+      "authMethods": ["gateway", "apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "custom",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "custom"
+      },
+      "namingVerification": "verified",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial"
+    },
+    {
+      "id": "deepseek-api",
+      "vendorID": "deepseek",
+      "displayName": "DeepSeek API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "deepseek-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.deepseek.com",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "quirks": ["statelessContinuationOnly"]
+    },
+    {
+      "id": "hugging-face-inference",
+      "vendorID": "hugging-face",
+      "displayName": "Hugging Face Inference Providers",
+      "type": "gateway",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey", "gateway"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "custom",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "custom"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://router.huggingface.co/v1",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial"
+    },
+    {
+      "id": "llama-cpp-local",
+      "vendorID": "llama-cpp",
+      "displayName": "llama.cpp",
+      "type": "localRuntime",
+      "authStrategy": "none",
+      "authMethods": ["anonymousLocal", "localInstance", "apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "llama-cpp-local-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "http://localhost:8080/v1",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "quirks": ["localRuntime"]
+    },
+    {
+      "id": "lm-studio-local",
+      "vendorID": "lm-studio",
+      "displayName": "LM Studio",
+      "type": "localRuntime",
+      "authStrategy": "none",
+      "authMethods": ["anonymousLocal", "localInstance", "apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "lm-studio-local-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "http://localhost:1234/v1",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "quirks": ["localRuntime"]
+    },
+    {
+      "id": "minimax-api",
+      "vendorID": "minimax",
+      "displayName": "MiniMax API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "minimax-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.minimax.io/v1",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial"
+    },
+    {
+      "id": "ollama-cloud",
+      "vendorID": "ollama",
+      "displayName": "Ollama Cloud",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "ollama-cloud-public",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://ollama.com/v1",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial"
+    },
+    {
+      "id": "ollama-local",
+      "vendorID": "ollama",
+      "displayName": "Ollama",
+      "type": "localRuntime",
+      "authStrategy": "none",
+      "authMethods": ["anonymousLocal", "localInstance"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "ollama-local-tags",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "http://localhost:11434/v1",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "quirks": ["localRuntime"]
+    },
+    {
+      "id": "openai-api",
+      "vendorID": "openai",
+      "displayName": "OpenAI API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_responses",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "openai-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.openai.com/v1",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "concurrencyLimit": 10
+    },
+    {
+      "id": "gemini-api",
+      "vendorID": "google",
+      "displayName": "Gemini API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey", "workloadIdentity"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "gemini-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "concurrencyLimit": 10
+    },
+    {
+      "id": "openrouter",
+      "vendorID": "openrouter",
+      "displayName": "OpenRouter",
+      "type": "gateway",
+      "authStrategy": "gateway",
+      "authMethods": ["gateway", "apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "openrouter-public",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified"
+    },
+    {
+      "id": "xai-api",
+      "vendorID": "xai",
+      "displayName": "xAI API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_responses",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "xai-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.x.ai/v1",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial",
+      "quirks": ["statelessContinuationOnly"]
+    },
+    {
+      "id": "zai-api",
+      "vendorID": "zai",
+      "displayName": "Z.AI API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "zai-api-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.z.ai/api/paas/v4",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial"
+    },
+    {
+      "id": "mimo-api",
+      "vendorID": "xiaomi",
+      "displayName": "MiMo API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKeyHeader",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "custom",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "custom"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://api.xiaomimimo.com/v1",
+      "runtimeSupport": "partial",
+      "verificationStatus": "partial",
+      "quirks": ["customApiKeyHeader"]
+    },
+    {
+      "id": "alibaba-bailian-api",
+      "vendorID": "alibaba",
+      "displayName": "Alibaba Bailian API",
+      "type": "cloudAPI",
+      "authStrategy": "apiKey",
+      "authMethods": ["apiKey"],
+      "protocolFamily": "openai_chat",
+      "discoveryStrategy": "apiModels",
+      "discoveryProfileID": "alibaba-bailian-models",
+      "discoveryImplementation": {
+        "status": "implemented",
+        "backend": "apiModels"
+      },
+      "namingVerification": "verified",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "runtimeSupport": "implemented",
+      "verificationStatus": "verified",
+      "accountFields": ["region", "workspace"]
+    }
+  ]
+}

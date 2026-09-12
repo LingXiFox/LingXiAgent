@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.example.invalid/lingxiagent/providers.schema.json",
+  "$id": "https://lingxiagent.lingxifox.cn/schema/providers.json",
   "type": "object",
   "properties": {
     "$schema": {
       "type": "string",
-      "enum": ["https://schemas.example.invalid/lingxiagent/providers.schema.json"]
+      "enum": ["https://lingxiagent.lingxifox.cn/schema/providers.json"]
     },
     "version": { "type": "integer", "enum": [1], "minimum": 1 },
     "model": { "type": ["string", "null"], "minLength": 1 },

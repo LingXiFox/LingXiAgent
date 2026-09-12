@@ -11,11 +11,17 @@ public final class LiveDeltaBuffer: @unchecked Sendable {
     private var pendingFrames: [StreamFrame] = []
     private var flushTask: Task<Void, Never>?
     private var onFlush: (@Sendable ([StreamFrame]) async -> Void)?
+    private var synchronousFlush: (@Sendable ([StreamFrame]) -> Void)?
     private var isTerminated: Bool = false
 
     public init(windowMs: UInt64 = 16, onFlush: (@Sendable ([StreamFrame]) async -> Void)? = nil) {
         self.windowNanoseconds = windowMs * 1_000_000
         self.onFlush = onFlush
+    }
+
+    private init(windowMs: UInt64, synchronousFlush: @escaping @Sendable ([StreamFrame]) -> Void) {
+        self.windowNanoseconds = windowMs * 1_000_000
+        self.synchronousFlush = synchronousFlush
     }
 
     deinit {
@@ -48,7 +54,8 @@ public final class LiveDeltaBuffer: @unchecked Sendable {
             let delayNs = self.windowNanoseconds
             flushTask = Task { [weak self] in
                 if delayNs > 0 {
-                    try? await Task.sleep(nanoseconds: delayNs)
+                    do { try await Task.sleep(nanoseconds: delayNs) }
+                    catch { return }
                 }
                 await self?.flush()
             }
@@ -62,6 +69,8 @@ public final class LiveDeltaBuffer: @unchecked Sendable {
         flushTask = nil
         let frames = pendingFrames
         pendingFrames.removeAll(keepingCapacity: true)
+        // AsyncStream delivery is synchronous under the drain lock, so finish cannot overtake a flush.
+        synchronousFlush?(frames)
         return (frames, onFlush)
     }
 
@@ -117,7 +126,20 @@ public final class LiveDeltaBuffer: @unchecked Sendable {
         _ upstream: AsyncStream<StreamFrame>,
         windowMs: UInt64 = 16
     ) -> AsyncStream<StreamFrame> {
-        fluidStream(upstream, intervalMs: windowMs)
+        AsyncStream { continuation in
+            let buffer = LiveDeltaBuffer(windowMs: windowMs, synchronousFlush: { frames in
+                for frame in frames { continuation.yield(frame) }
+            })
+            let pump = Task {
+                for await frame in upstream {
+                    guard !Task.isCancelled else { break }
+                    buffer.append(frame)
+                }
+                await buffer.finish()
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
     }
 
     /// 将任意 AsyncStream<StreamFrame> 包装为经过自适应平滑缓冲 (Fluid Pacing) 后的流，

@@ -51,6 +51,20 @@ public struct SessionDomainClient: Sendable {
         return resp.payload
     }
 
+    public func listAll() async throws -> [SessionSummary] {
+        var sessions: [SessionSummary] = []
+        var cursor: String?
+        var seen = Set<String>()
+        repeat {
+            try Task.checkCancellation()
+            let page = try await list(page: PageRequest(cursor: cursor, limit: 200))
+            sessions.append(contentsOf: page.items)
+            guard page.hasMore, let next = page.nextCursor, seen.insert(next).inserted else { break }
+            cursor = next
+        } while true
+        return sessions
+    }
+
     public func snapshot(sessionID: SessionID) async throws -> SessionSnapshot {
         let req = GetSessionSnapshotRequest(sessionID: sessionID)
         let resp = try await transport.getSessionSnapshot(envelope: QueryEnvelope(payload: req))

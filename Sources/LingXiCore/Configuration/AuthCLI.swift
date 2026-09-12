@@ -112,8 +112,17 @@ public enum AuthCLI {
             return renderMatrix()
 
         case "models":
+            if args.count > 1 && args[1] == "sync" {
+                let providerID = args.count > 2 ? args[2] : nil
+                return try await syncCloudCatalog(providerID: providerID)
+            }
+            // Machine-readable listing for shell completion: the model set is
+            // discovered, so it cannot be baked into a completion script.
+            if args.count > 1 && args[1] == "--ids" {
+                return await renderModelIDs()
+            }
             let providerID = args.count > 1 ? args[1] : nil
-            return renderModels(providerID: providerID)
+            return await renderModels(providerID: providerID)
 
         case "set":
             guard args.count > 1 else {
@@ -255,13 +264,10 @@ public enum AuthCLI {
                 ("Status", statusText)
             ]
 
-            if isOAuth {
-                let genProduct = BuiltinProviderCatalog.catalog?.products.first(where: { $0.id == providerID })
-                if let oauth = genProduct?.oauth {
-                    fields.append(("OAuth Client", oauth.clientID))
-                    fields.append(("OAuth Scopes", oauth.scopes.joined(separator: ", ")))
-                    fields.append(("PKCE", oauth.usePKCE ? "Enabled (S256)" : "Disabled"))
-                }
+            if isOAuth, let oauth = BuiltinProviderCatalog.metadata(for: providerID).oauth {
+                fields.append(("OAuth Client", oauth.clientID))
+                fields.append(("OAuth Scopes", oauth.scopes.joined(separator: ", ")))
+                fields.append(("PKCE", oauth.usePKCE ? "Enabled (S256)" : "Disabled"))
             }
 
             var displayModels: [String] = []
@@ -281,13 +287,13 @@ public enum AuthCLI {
                             return secret.contains("{") ? nil : secret
                         }()
                         if let tokenStr = accessToken, !tokenStr.isEmpty {
-                            let tokens = OAuthTokens(accessToken: tokenStr)
-                            if let discovered = try? await CodexRemoteModelDiscovery.discoverModels(tokens: tokens) {
+                            if let regProd = BuiltinProviderCatalog.registryProduct(id: providerID),
+                               let discovered = try? await AccountModelDiscovery.discoverAuthenticatedRemote(product: regProd, accessToken: tokenStr) {
                                 _ = try? await AccountScopedCatalogCache.shared.save(
                                     productID: providerID,
                                     accountRef: accountRef,
                                     models: discovered,
-                                    source: "ChatGPT Remote Model Catalog"
+                                    source: "Authenticated Remote Model Catalog"
                                 )
                                 cached = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: accountRef)
                             }
@@ -375,8 +381,7 @@ public enum AuthCLI {
         httpClient: (@Sendable (URLRequest) async throws -> (Data, URLResponse))?
     ) async throws -> String {
         let productID = profile.id
-        let genProduct = BuiltinProviderCatalog.catalog?.products.first(where: { $0.id == productID })
-        guard let oauthConfig = genProduct?.oauth,
+        guard let oauthConfig = BuiltinProviderCatalog.metadata(for: productID).oauth,
               let authURL = URL(string: oauthConfig.authURL),
               let tokenURL = URL(string: oauthConfig.tokenURL) else {
             return "Error: Incomplete OAuth configuration for '\(productID)'"
@@ -449,23 +454,24 @@ Enter the authorization callback URL or code (press Enter to cancel):
         // Perform authenticated remote model discovery
         var discoveredModels: [DiscoveredRemoteModel] = []
         var discoveryError: String? = nil
-        do {
-            discoveredModels = try await CodexRemoteModelDiscovery.discoverModels(
-                tokens: tokens,
-                endpoint: nil,
-                requestProfile: genProduct?.requestProfiles.values.first,
-                httpClient: httpClient
-            )
-            try await AccountScopedCatalogCache.shared.save(
-                productID: productID,
-                accountRef: accountRef,
-                models: discoveredModels
-            )
-        } catch {
-            discoveryError = error.localizedDescription
-            await AccountScopedCatalogCache.shared.markStale(productID: productID, accountRef: accountRef)
-            if let cached = await AccountScopedCatalogCache.shared.load(productID: productID, accountRef: accountRef) {
-                discoveredModels = cached.models
+        if let regProd = BuiltinProviderCatalog.registryProduct(id: productID) {
+            do {
+                discoveredModels = try await AccountModelDiscovery.discoverAuthenticatedRemote(
+                    product: regProd,
+                    accessToken: tokens.accessToken,
+                    httpClient: httpClient
+                )
+                try await AccountScopedCatalogCache.shared.save(
+                    productID: productID,
+                    accountRef: accountRef,
+                    models: discoveredModels
+                )
+            } catch {
+                discoveryError = error.localizedDescription
+                await AccountScopedCatalogCache.shared.markStale(productID: productID, accountRef: accountRef)
+                if let cached = await AccountScopedCatalogCache.shared.load(productID: productID, accountRef: accountRef) {
+                    discoveredModels = cached.models
+                }
             }
         }
 
@@ -498,11 +504,17 @@ Enter the authorization callback URL or code (press Enter to cancel):
         )
         try await configStore.saveProviders(newConfig)
 
-        let resolvedModels = ResolvedModelCatalogResolver.resolve(
-            productID: productID,
-            authenticatedModels: discoveredModels,
-            staticCatalog: BuiltinProviderCatalog.catalog
-        )
+        // The account's own listing decides availability; registry metadata
+        // only enriches what is already reachable.
+        let resolvedModels: [ProviderModelInfo] = {
+            guard let product = BuiltinProviderCatalog.registryProduct(id: productID) else { return [] }
+            return ModelAvailabilityResolver.resolve(
+                product: product,
+                registryModels: [],
+                accountModels: discoveredModels,
+                isConfigured: true
+            ).models
+        }()
 
         let expiryDesc = tokens.expiresAt.map { "expires at \($0)" } ?? "no expiration"
         let statusDesc = discoveryError == nil ? "Authenticated remote catalog synced (\(discoveredModels.count) models)" : "Discovery warning: \(discoveryError!) (using cached)"
@@ -554,16 +566,33 @@ Available models:
         let snapshot = try await configStore.load()
         var currentProviders = snapshot.providers.providers
 
+        // Seed the model list by discovering it with the credential just
+        // stored. This is deliberately best-effort: an unreachable vendor must
+        // not fail the login, and the list is refreshed again on first use.
+        // Nothing is invented here — a product with no reachable listing keeps
+        // an empty model set rather than a stale built-in roster.
         var modelsDict: [String: PublicModelConfiguration] = [:]
-        for m in profile.models {
-            modelsDict[m.id] = PublicModelConfiguration(
-                name: m.displayName,
-                reasoning: m.reasoningCapability != nil,
-                limit: PublicModelLimit(context: m.contextWindow ?? 128_000, output: m.maxOutputTokens ?? 4096),
-                toolCalling: m.toolCall,
-                vision: m.vision,
-                reasoningCapability: m.reasoningCapability
+        if let product = BuiltinProviderCatalog.registryProduct(id: providerID) {
+            let result = await AccountModelDiscovery.refresh(
+                product: product,
+                accountRef: AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: secret),
+                credential: secret
             )
+            if case let .success(discovered) = result {
+                for model in discovered {
+                    modelsDict[model.id] = PublicModelConfiguration(
+                        name: model.displayName,
+                        reasoning: model.capabilities?.reasoning ?? !model.supportedReasoningEfforts.isEmpty,
+                        limit: PublicModelLimit(
+                            context: model.contextWindow ?? 128_000,
+                            output: model.maxOutputTokens ?? 4_096
+                        ),
+                        toolCalling: model.toolCalling,
+                        vision: model.vision,
+                        reasoningCapability: nil
+                    )
+                }
+            }
         }
 
         let adapterName: String
@@ -653,15 +682,18 @@ Available models:
 
     private static func renderMatrix() -> String {
         let matrix = ProviderCompatibilityMatrix.generateMatrix()
-        let headers = ["Provider", "Protocol Family", "Auth", "Reasoning", "Tools", "Vision", "Cache"]
+        let headers = ["Product", "Protocol", "Auth", "Discovery", "Runtime", "Quirks"]
         var rows: [[String]] = []
         for p in matrix {
             let auth = p.authMethods.joined(separator: ", ")
-            let reasoning = Set(p.models.map(\.reasoningMode)).sorted().joined(separator: ", ")
-            let tools = p.models.contains(where: \.toolCall) ? "✅" : "❌"
-            let vision = p.models.contains(where: \.vision) ? "✅" : "❌"
-            let cache = p.models.contains(where: \.cache) ? "✅" : "❌"
-            rows.append(["\(p.displayName) (\(p.providerID))", p.protocolFamily, auth, reasoning, tools, vision, cache])
+            let discovery: String
+            if let kind = p.discoveryKind {
+                discovery = p.discoveryStrategy + " (" + kind + ")"
+            } else {
+                discovery = p.discoveryStrategy
+            }
+            let quirks = p.quirks.isEmpty ? "—" : p.quirks.joined(separator: ", ")
+            rows.append(["\(p.displayName) (\(p.providerID))", p.protocolFamily, auth, discovery, p.runtimeSupport, quirks])
         }
         let table = CLIFormatter.renderTable(headers: headers, rows: rows, borderStyle: .rounded)
         return """
@@ -670,32 +702,46 @@ Available models:
 """
     }
 
-    private static func renderModels(providerID: String?) -> String {
-        let headers = ["Provider", "Model ID", "Display Name", "Context", "Output", "Features"]
-        var rows: [[String]] = []
+    /// Bare `product/model` references, one per line, for shell completion.
+    ///
+    /// Only selectable models are emitted, so completion never suggests a
+    /// deprecated entry the user cannot actually choose.
+    private static func renderModelIDs() async -> String {
+        guard let catalog = await ModelRegistryClient.shared.catalog() else { return "" }
+        return catalog.models
+            .filter { $0.modelStatus.isSelectable }
+            .map { "\($0.productID)/\($0.id)" }
+            .sorted()
+            .joined(separator: "\n")
+    }
 
-        let profiles: [BuiltinProviderCatalog.ProviderProfile]
-        if let providerID {
-            if let p = BuiltinProviderCatalog.profile(for: providerID) {
-                profiles = [p]
-            } else {
-                return "Error: Unknown provider '\(providerID)'"
-            }
-        } else {
-            profiles = BuiltinProviderCatalog.profiles
+    /// Lists models as published by the registry catalog.
+    ///
+    /// Nothing is declared statically: a product whose models are resolved
+    /// against an account shows none here, because the registry deliberately
+    /// does not guess what an account can reach.
+    private static func renderModels(providerID: String?) async -> String {
+        guard let catalog = await ModelRegistryClient.shared.catalog() else {
+            return "Error: registry catalog unavailable and no cached copy exists."
         }
 
-        for p in profiles {
-            for m in p.models {
-                let ctx = m.contextWindow.map { "\($0 / 1000)k" } ?? "-"
-                let out = m.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
-                var feats: [String] = []
-                if m.reasoningCapability != nil { feats.append("🧠") }
-                if m.toolCall { feats.append("🛠️") }
-                if m.vision { feats.append("👁️") }
-                if m.cache { feats.append("⚡") }
-                let featStr = feats.isEmpty ? "-" : feats.joined(separator: " ")
-                rows.append([p.id, m.id, m.displayName, ctx, out, featStr])
+        let products: [RegistryProduct]
+        if let providerID {
+            guard let product = catalog.product(id: providerID) else {
+                return "Error: Unknown provider '\(providerID)'"
+            }
+            products = [product]
+        } else {
+            products = catalog.products.filter { $0.runtime.isRunnable }
+        }
+
+        let headers = ["Product", "Model ID", "Display Name", "Status", "Context", "Output"]
+        var rows: [[String]] = []
+        for product in products {
+            for m in catalog.models(productID: product.id) {
+                let ctx = m.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-"
+                let out = m.capabilities.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
+                rows.append([product.id, m.id, m.displayName, m.status, ctx, out])
             }
         }
 
@@ -704,6 +750,70 @@ Available models:
 === Registered Models ===
 \(table)
 """
+    }
+
+    /// Refreshes the unified registry catalog, optionally reporting one
+    /// product's published models.
+    ///
+    /// Account-scoped discovery is deliberately not run here: it needs the
+    /// user's credential and belongs to the login flow and the runtime, not to
+    /// a catalog refresh.
+    private static func syncCloudCatalog(providerID: String?) async throws -> String {
+        let outcome = await ModelRegistryClient.shared.fetch(maxAge: 0)
+
+        let catalog: RegistryCatalog
+        switch outcome {
+        case let .updated(fetched), let .notModified(fetched):
+            catalog = fetched
+        case let .stale(cached, reason):
+            catalog = cached
+            if providerID == nil {
+                return """
+                ⚠ Registry unreachable (\(reason))
+                  using cached revision \(cached.metadata.catalogRevision)
+                  products: \(cached.products.count)   models: \(cached.models.count)
+                """
+            }
+        case let .unavailable(reason):
+            throw CoreError(code: .provider, message: "Registry catalog unavailable: \(reason)")
+        }
+
+        guard let providerID else {
+            return """
+            ✓ Registry catalog synchronized
+              revision: \(catalog.metadata.catalogRevision)
+              products: \(catalog.products.count)   models: \(catalog.models.count)   providers: \(catalog.vendors.count)
+            """
+        }
+
+        guard let product = catalog.product(id: providerID) else {
+            throw CoreError(code: .provider, message: "Unknown product '\(providerID)'")
+        }
+        let models = catalog.models(productID: providerID)
+        guard !models.isEmpty else {
+            return """
+            ✓ '\(providerID)' is in the catalog but publishes no models.
+              discovery: \(product.discoveryStrategy) — its model list is resolved against your account.
+            """
+        }
+
+        let headers = ["Model ID", "Display Name", "Status", "Context", "Metadata"]
+        var rows: [[String]] = []
+        for model in models {
+            let context = model.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-"
+            rows.append([
+                model.id,
+                model.displayName,
+                model.modelStatus.rawValue,
+                context,
+                model.metadataIncomplete ? "incomplete" : "complete"
+            ])
+        }
+        let table = CLIFormatter.renderTable(headers: headers, rows: rows, borderStyle: .rounded)
+        return """
+        ✓ '\(providerID)' — \(models.count) models from the registry catalog
+        \(table)
+        """
     }
 
     private static func renderHelp() -> String {
@@ -717,6 +827,7 @@ Available models:
             ("auth logout <product>", "清除凭据并解绑 Provider 配置"),
             ("matrix", "展示所有 Provider 的协议、推理等级与特性兼容矩阵"),
             ("models [provider]", "展示模型上下文窗口、输出上限及特性标志"),
+            ("models sync [provider]", "从云端权威端点拉取最新模型目录并更新本地缓存"),
             ("help", "查看本帮助指南")
         ]
         let sections = [
@@ -730,7 +841,8 @@ Available models:
                 "  lingxiagent auth status antigravity",
                 "  lingxiagent auth login deepseek-api",
                 "  lingxiagent matrix",
-                "  lingxiagent models anthropic-api"
+                "  lingxiagent models openai-codex",
+                "  lingxiagent models sync openai-codex"
             ])
         ]
         return CLIFormatter.renderCard(

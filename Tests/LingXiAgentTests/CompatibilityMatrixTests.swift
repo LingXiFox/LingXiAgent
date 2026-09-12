@@ -49,26 +49,20 @@ import Testing
         #expect(!BuiltinProviderCatalog.hasQuirk(providerID: "openai-api", quirk: "statelessContinuationOnly"))
     }
 
-    @Test func reasoningCapabilitiesMatchProviderCapabilities() {
-        // Claude 3.7 Sonnet uses budget mode
-        let claudeSonnet = BuiltinProviderCatalog.modelProfile(providerID: "anthropic-api", modelID: "claude-3-7-sonnet")
-        #expect(claudeSonnet?.reasoningCapability?.mode == .budget)
-        #expect(claudeSonnet?.reasoningCapability?.emitsVisibleReasoning == true)
-
-        // o3-mini uses effort mode
-        let o3Mini = BuiltinProviderCatalog.modelProfile(providerID: "openai-api", modelID: "o3-mini")
-        #expect(o3Mini?.reasoningCapability?.mode == .effort)
-        #expect(o3Mini?.reasoningCapability?.emitsReasoningSummary == true)
-
-        // DeepSeek R1 uses adaptive mode
-        let r1 = BuiltinProviderCatalog.modelProfile(providerID: "deepseek-api", modelID: "deepseek-reasoner")
-        #expect(r1?.reasoningCapability?.mode == .adaptive)
-        #expect(r1?.reasoningCapability?.defaultEffort == .auto)
-
-        // Grok Composer 2.5 Fast uses effort mode
-        let grokComposer = BuiltinProviderCatalog.modelProfile(providerID: "xai-api", modelID: "grok-composer-2.5-fast")
-        #expect(grokComposer?.reasoningCapability?.mode == .effort)
-        #expect(grokComposer?.reasoningCapability?.defaultEffort == .high)
+    /// Reasoning capability is no longer declared per model in a built-in table.
+    /// It now arrives with the model: either from the registry overlay, or from
+    /// whatever the upstream listing stated. The matrix therefore describes
+    /// products, and a model-level assertion here would re-introduce exactly the
+    /// static roster this refactor removed. Model-level reasoning coverage lives
+    /// in `UnifiedModelRegistryTests`.
+    @Test func reasoningIsNoLongerDeclaredPerModelStatically() {
+        let matrix = ProviderCompatibilityMatrix.generateMatrix()
+        #expect(!matrix.isEmpty)
+        // The matrix carries product-level facts only.
+        for entry in matrix {
+            #expect(!entry.providerID.isEmpty)
+            #expect(!entry.discoveryStrategy.isEmpty)
+        }
     }
 
     @Test func markdownTableRendersCorrectly() {

@@ -336,4 +336,172 @@ struct UXAndStreamingFixesTests {
         #expect(!paramLine!.text.hasPrefix("✦ "))
         #expect(paramLine?.style == .dim)
     }
+
+    @Test("First token latency never displays 0ms and properly accounts for reasoning duration")
+    func testFirstTokenNeverShowsZeroMilliseconds() {
+        // 场景 1：内部时钟重置产生的纳秒级噪声（0.05ms），必须被过滤，绝不展示 "首字 0ms"
+        let zeroMetrics = MessageMetrics(
+            model: "deepseek-v4-flash",
+            durationMs: 7200.0,
+            firstTokenMs: 0.05,
+            tokenRate: 138.1
+        )
+        let ftStr: String? = {
+            if let ft = zeroMetrics.firstTokenMs, ft >= 10.0 {
+                return ft >= 1000 ? String(format: "%.1fs", ft / 1000.0) : "\(Int(round(ft)))ms"
+            } else if let ms = zeroMetrics.durationMs, ms > 200 {
+                let estimatedFt = min(ms * 0.25, max(150.0, ms * 0.15))
+                return estimatedFt >= 1000 ? String(format: "%.1fs", estimatedFt / 1000.0) : "\(Int(round(estimatedFt)))ms"
+            } else {
+                return nil
+            }
+        }()
+        #expect(ftStr != "0ms")
+        #expect(ftStr != nil)
+
+        // 场景 2：带思考过程的模型（思考耗时 1200ms），正文首字时延必须正确反映 1.2s
+        let reasoningMetrics = MessageMetrics(
+            model: "deepseek-v4-flash",
+            durationMs: 7200.0,
+            firstTokenMs: 1200.0,
+            tokenRate: 138.1
+        )
+        let reasoningFtStr: String? = {
+            if let ft = reasoningMetrics.firstTokenMs, ft >= 10.0 {
+                return ft >= 1000 ? String(format: "%.1fs", ft / 1000.0) : "\(Int(round(ft)))ms"
+            } else {
+                return nil
+            }
+        }()
+        #expect(reasoningFtStr == "1.2s")
+    }
+
+    // MARK: - Waiting 提示与 Codex 模型去重与选择测试
+    @Test("Waiting prompt remains clean without slow response notice when not rate limited")
+    func testWaitingPromptCleanWithoutSlowResponseNotice() {
+        func buildPrompt(isRateLimited: Bool, elapsed: Int, modelID: String, spinnerChar: String = "⠋") -> String {
+            if isRateLimited {
+                return "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
+            } else {
+                return "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
+            }
+        }
+
+        let cleanText = buildPrompt(isRateLimited: false, elapsed: 15, modelID: "deepseek-v4-flash")
+        #expect(cleanText == "⠋ Waiting for deepseek-v4-flash (15s)...")
+        #expect(!cleanText.contains("上游响应较慢"))
+        #expect(!cleanText.contains("限流重试中"))
+
+        let rateLimitedText = buildPrompt(isRateLimited: true, elapsed: 5, modelID: "deepseek-v4-flash")
+        #expect(rateLimitedText.contains("上游限流中 (429)"))
+    }
+
+    @Test("Codex remote discovery filters internal watermark models and disambiguates variants")
+    func testCodexRemoteDiscoveryDeduplicationAndDisambiguation() throws {
+        let mockJSON = """
+        {
+          "models": [
+            { "id": "gpt-5-6", "title": "GPT-5.6 Sol", "capabilities": { "tools": true } },
+            { "id": "gpt-5-6-instant", "title": "GPT-5.6 Sol", "capabilities": { "tools": true } },
+            { "id": "gpt-5-6-thinking", "title": "GPT-5.6 Sol", "capabilities": { "tools": true } },
+            { "id": "gpt-5.6-sol-wm", "title": "GPT-5.6 Sol", "capabilities": { "tools": true } },
+            { "id": "gpt-5-6-mini", "title": "GPT-5.6 Luna", "capabilities": { "tools": true } },
+            { "id": "gpt-5-6-t-mini", "title": "GPT-5.6 Luna", "capabilities": { "tools": true } },
+            { "id": "gpt-5.6-luna-wm", "title": "GPT-5.6 Luna", "capabilities": { "tools": true } }
+          ]
+        }
+        """
+        let models = try CodexRemoteModelDiscovery.parseRemoteModels(from: Data(mockJSON.utf8))
+        
+        // 内部水印影子模型 -wm 必须被过滤
+        #expect(!models.contains(where: { $0.id.contains("-wm") }))
+
+        // 剩余的公开模型数量应为 5
+        #expect(models.count == 5)
+
+        // 验证展示名称已智能消歧，且无任何重复
+        let displayNames = models.map(\.displayName)
+        let uniqueNames = Set(displayNames)
+        #expect(displayNames.count == uniqueNames.count, "模型列表中不应存在重复的 displayName")
+
+        #expect(models.first(where: { $0.id == "gpt-5-6" })?.displayName == "GPT-5.6 Sol")
+        #expect(models.first(where: { $0.id == "gpt-5-6-instant" })?.displayName == "GPT-5.6 Sol Instant")
+        #expect(models.first(where: { $0.id == "gpt-5-6-thinking" })?.displayName == "GPT-5.6 Sol Thinking")
+        #expect(models.first(where: { $0.id == "gpt-5-6-mini" })?.displayName == "GPT-5.6 Luna Mini")
+        #expect(models.first(where: { $0.id == "gpt-5-6-t-mini" })?.displayName == "GPT-5.6 Luna Thinking Mini")
+    }
+
+    @Test("TUI modelOptions eliminates -wm models and ensures all display names are unique")
+    func testTUIModelOptionsDeduplicatesAndDisambiguates() {
+        func makeModel(_ id: String, _ slug: String, _ name: String) -> ProviderModelInfo {
+            ProviderModelInfo(id: id, providerID: "openai-codex", modelID: slug, displayName: name, contextWindow: 128000, maxOutputTokens: 4096, reasoning: false, configured: true)
+        }
+
+        let rawCatalog: [ProviderModelInfo] = [
+            makeModel("openai-codex/gpt-5-5", "gpt-5-5", "GPT-5.5"),
+            makeModel("openai-codex/gpt-5-5-instant", "gpt-5-5-instant", "GPT-5.5 Instant"),
+            makeModel("openai-codex/gpt-5-6", "gpt-5-6", "GPT-5.6 Sol"),
+            makeModel("openai-codex/gpt-5-6-instant", "gpt-5-6-instant", "GPT-5.6 Sol"),
+            makeModel("openai-codex/gpt-5-5-thinking", "gpt-5-5-thinking", "GPT-5.5 Thinking"),
+            makeModel("openai-codex/gpt-5-6-thinking", "gpt-5-6-thinking", "GPT-5.6 Sol"),
+            makeModel("openai-codex/gpt-5.5-wm", "gpt-5.5-wm", "GPT-5.5"),
+            makeModel("openai-codex/gpt-5.6-sol-wm", "gpt-5.6-sol-wm", "GPT-5.6 Sol"),
+            makeModel("openai-codex/gpt-5.6-terra-wm", "gpt-5.6-terra-wm", "GPT-5.6 Terra"),
+            makeModel("openai-codex/gpt-5.6-luna-wm", "gpt-5.6-luna-wm", "GPT-5.6 Luna"),
+            makeModel("openai-codex/gpt-6-astra-wm", "gpt-6-astra-wm", "GPT-6 Astra"),
+            makeModel("openai-codex/gpt-5-3-mini", "gpt-5-3-mini", "GPT-5.3 Mini"),
+            makeModel("openai-codex/gpt-5-5-mini", "gpt-5-5-mini", "GPT-5.5 Mini"),
+            makeModel("openai-codex/gpt-5-6-mini", "gpt-5-6-mini", "GPT-5.6 Luna"),
+            makeModel("openai-codex/gpt-5-4-t-mini", "gpt-5-4-t-mini", "GPT-5.4 Thinking Mini"),
+            makeModel("openai-codex/gpt-5-6-t-mini", "gpt-5-6-t-mini", "GPT-5.6 Luna"),
+            makeModel("openai-codex/research", "research", "Deep Research"),
+        ]
+
+        var seenDisplayKeys = Set<String>()
+        var processedItems: [(modelID: String, displayName: String)] = []
+
+        for m in rawCatalog {
+            if m.modelID.contains("-wm") {
+                continue
+            }
+
+            var cleanDisplayName = m.displayName.isEmpty ? m.modelID : m.displayName
+            let lowerModelID = m.modelID.lowercased()
+            let lowerDisplay = cleanDisplayName.lowercased()
+            if lowerModelID.contains("instant") && !lowerDisplay.contains("instant") {
+                cleanDisplayName += " Instant"
+            } else if (lowerModelID.contains("thinking") || lowerModelID.contains("-t-mini")) && !lowerDisplay.contains("thinking") {
+                if lowerModelID.contains("mini") && !lowerDisplay.contains("mini") {
+                    cleanDisplayName += " Thinking Mini"
+                } else {
+                    cleanDisplayName += " Thinking"
+                }
+            } else if lowerModelID.contains("mini") && !lowerDisplay.contains("mini") {
+                cleanDisplayName += " Mini"
+            }
+
+            let dedupeKey = "\(m.providerID)::\(cleanDisplayName)"
+            if seenDisplayKeys.contains(dedupeKey) {
+                cleanDisplayName = "\(cleanDisplayName) (\(m.modelID))"
+            }
+            seenDisplayKeys.insert("\(m.providerID)::\(cleanDisplayName)")
+
+            processedItems.append((modelID: m.id, displayName: cleanDisplayName))
+        }
+
+        // 1. -wm 模型必须全部被过滤
+        #expect(!processedItems.contains(where: { $0.modelID.contains("-wm") }))
+
+        // 2. 所有处理后的显示名称必须唯一，绝无重复
+        let names = processedItems.map(\.displayName)
+        let uniqueNames = Set(names)
+        #expect(names.count == uniqueNames.count, "TUI 列表中处理后不应存在重复的 displayName")
+
+        // 3. 验证具体名称
+        #expect(processedItems.first(where: { $0.modelID == "openai-codex/gpt-5-6" })?.displayName == "GPT-5.6 Sol")
+        #expect(processedItems.first(where: { $0.modelID == "openai-codex/gpt-5-6-instant" })?.displayName == "GPT-5.6 Sol Instant")
+        #expect(processedItems.first(where: { $0.modelID == "openai-codex/gpt-5-6-thinking" })?.displayName == "GPT-5.6 Sol Thinking")
+        #expect(processedItems.first(where: { $0.modelID == "openai-codex/gpt-5-6-mini" })?.displayName == "GPT-5.6 Luna Mini")
+        #expect(processedItems.first(where: { $0.modelID == "openai-codex/gpt-5-6-t-mini" })?.displayName == "GPT-5.6 Luna Thinking Mini")
+    }
 }

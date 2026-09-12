@@ -84,6 +84,26 @@ public struct ToolNode: Sendable, Equatable {
         Self.summarizeArguments(argumentsJSON, toolName: toolName)
     }
 
+    private static func compactPathString(_ path: String, maxLength: Int = 45) -> String {
+        guard path.count > maxLength else { return path }
+        let parts = path.split(separator: "/")
+        if parts.count >= 2 {
+            let suffix = parts.suffix(2).joined(separator: "/")
+            let candidate = ".../" + suffix
+            if candidate.count <= maxLength {
+                return candidate
+            }
+        }
+        if let last = parts.last {
+            let suffix = String(last)
+            if (".../" + suffix).count <= maxLength {
+                return ".../" + suffix
+            }
+            return "..." + String(suffix.suffix(max(10, maxLength - 3)))
+        }
+        return "..." + String(path.suffix(max(10, maxLength - 3)))
+    }
+
     public static func summarizeArguments(_ argumentsJSON: String, toolName: String? = nil) -> String {
         guard let data = argumentsJSON.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -92,25 +112,33 @@ public struct ToolNode: Sendable, Equatable {
         let lowerName = toolName?.lowercased() ?? ""
         if lowerName.contains("write") || lowerName.contains("create") || lowerName.contains("edit") {
             var parts: [String] = []
-            if let path = object["path"] as? String {
-                parts.append("path=\(path)")
+            if let path = (object["TargetFile"] as? String) ?? (object["path"] as? String) {
+                parts.append("path=\(compactPathString(path))")
             }
-            if let content = object["content"] as? String {
+            if let content = (object["CodeContent"] as? String) ?? (object["content"] as? String) ?? (object["ReplacementContent"] as? String) {
                 parts.append("bytes=\(content.utf8.count)")
             }
             if !parts.isEmpty {
                 return parts.joined(separator: " ")
             }
         }
-        let preferredKeys = ["command", "cmd", "path", "pattern", "query", "url"]
-        let keys = preferredKeys.filter { object[$0] != nil } + object.keys.filter { !preferredKeys.contains($0) && $0 != "content" }.sorted()
+        let preferredKeys = ["command", "CommandLine", "cmd", "pattern", "query", "path", "TargetFile", "AbsolutePath", "SearchPath", "SearchDirectory", "url"]
+        let pathKeys: Set<String> = ["path", "TargetFile", "AbsolutePath", "SearchPath", "SearchDirectory", "url"]
+        let keys = preferredKeys.filter { object[$0] != nil } + object.keys.filter { !preferredKeys.contains($0) && $0 != "content" && $0 != "CodeContent" && $0 != "ReplacementContent" && $0 != "TargetContent" }.sorted()
         let summary = keys.compactMap { key -> String? in
             guard let value = object[key] else { return nil }
-            if let string = value as? String { return "\(key)=\(string)" }
+            if let string = value as? String {
+                let formatted = pathKeys.contains(key) ? compactPathString(string) : (string.count > 60 ? String(string.prefix(57)) + "..." : string)
+                return "\(key)=\(formatted)"
+            }
             if let number = value as? NSNumber { return "\(key)=\(number)" }
             return "\(key)=…"
         }.joined(separator: " ")
-        return String((summary.isEmpty ? "{}" : summary).prefix(120))
+        if summary.isEmpty { return "{}" }
+        if summary.count > 100 {
+            return String(summary.prefix(97)) + "..."
+        }
+        return summary
     }
 
     public static func formatDuration(_ duration: Duration) -> String {

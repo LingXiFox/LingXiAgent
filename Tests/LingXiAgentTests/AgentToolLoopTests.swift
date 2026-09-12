@@ -107,7 +107,7 @@ struct AgentToolLoopTests {
 
         let requests = provider.recorder.requests
         #expect(requests.count == 2)
-        #expect(requests[0].tools.map(\.id.rawValue) == ["shell", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "glob", "grep", "web_search", "web_fetch", "search_tools", "load_tool"])
+        #expect(requests[0].tools.map(\.id.rawValue) == ["shell", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "glob", "grep", "web_search", "web_fetch", "search_tools", "load_tool"].sorted())
         #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool, .system])
         #expect(requests[1].messages[1].parts.contains(.toolCall(call())))
         let toolResult = try #require(requests[1].messages[2].parts.compactMap { part in
@@ -304,6 +304,8 @@ struct AgentToolLoopTests {
             [.textDelta("settled"), .completed(.stop)],
         ])
         let client = try await makeClient(root: root, provider: provider, permission: .allow, registry: ToolRegistry([DelayedReadTool(recorder: recorder)]))
+        let (capture, eventTask) = await collectEvents(client)
+        defer { eventTask.cancel() }
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "read three")
         for try await _ in stream {}
@@ -318,6 +320,13 @@ struct AgentToolLoopTests {
         #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
         #expect(snapshot.messages.first { $0.role == .tool }?.parts.count == 3)
         #expect(await recorder.snapshot().first == "fast")
+        let events = await capture.waitForTerminal()
+        let completionIDs = events.compactMap { event -> ToolCallID? in
+            if case let .toolResult(result) = event { return result.callID }
+            return nil
+        }
+        #expect(completionIDs.count == 3)
+        #expect(try #require(completionIDs.firstIndex(of: fast.callID)) < #require(completionIDs.firstIndex(of: slow.callID)))
         #expect(snapshot.messages.last?.content == "settled")
     }
 

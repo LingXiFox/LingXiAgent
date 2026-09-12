@@ -137,6 +137,27 @@ private struct ReadArguments: Decodable {
     let endLine: Int?
     let maxLines: Int?
     let lineNumbers: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case startLine = "start_line"
+        case startLineCamel = "startLine"
+        case endLine = "end_line"
+        case endLineCamel = "endLine"
+        case maxLines = "max_lines"
+        case maxLinesCamel = "maxLines"
+        case lineNumbers = "line_numbers"
+        case lineNumbersCamel = "lineNumbers"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        startLine = try c.decodeIfPresent(Int.self, forKey: .startLine) ?? c.decodeIfPresent(Int.self, forKey: .startLineCamel)
+        endLine = try c.decodeIfPresent(Int.self, forKey: .endLine) ?? c.decodeIfPresent(Int.self, forKey: .endLineCamel)
+        maxLines = try c.decodeIfPresent(Int.self, forKey: .maxLines) ?? c.decodeIfPresent(Int.self, forKey: .maxLinesCamel)
+        lineNumbers = try c.decodeIfPresent(Bool.self, forKey: .lineNumbers) ?? c.decodeIfPresent(Bool.self, forKey: .lineNumbersCamel)
+    }
 }
 private struct WriteArguments: Decodable {
     let path: String
@@ -269,7 +290,11 @@ public struct ReadFileTool: ToolExecutor {
         id: ToolID("read_file"),
         description: "Read a UTF-8 text file inside the workspace.",
         inputSchema: ToolInputSchema(
-            properties: ["path": ToolInputProperty(type: .string, description: "Workspace-relative file path")],
+            properties: [
+                "path": ToolInputProperty(type: .string, description: "Workspace-relative file path"),
+                "start_line": ToolInputProperty(type: .integer, description: "1-based start line"),
+                "end_line": ToolInputProperty(type: .integer, description: "1-based end line")
+            ],
             required: ["path"]
         ),
         capability: ToolCapability(readOnly: true)
@@ -413,6 +438,13 @@ public struct GlobTool: ToolExecutor {
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: GlobArguments = try decodeArguments(arguments)
         let root = try workspace.resolve(input.path ?? ".", profile: profile)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory) else {
+            throw CoreError(code: .toolExecutionFailed, message: "路径不存在: \(root.path)")
+        }
+        guard isDirectory.boolValue else {
+            throw CoreError(code: .toolExecutionFailed, message: "glob 搜索根路径必须是目录: \(root.path)")
+        }
         let limit = min(max(1, input.maxResults ?? 1_000), 10_000)
         let result = try await runRipgrep(arguments: ripgrepArguments(input, root: root), root: root, workspace: workspace, profile: profile)
         let paths = ignoredByWorkspaceGitignore(result.stdout.split(separator: "\n", omittingEmptySubsequences: true).map(String.init), root: root, includeIgnored: input.includeIgnored)
@@ -478,14 +510,18 @@ private func ripgrepArguments(_ input: GlobArguments, root: URL) -> [String] {
     return arguments
 }
 
-private func ripgrepArguments(_ input: GrepArguments, root: URL) -> [String] {
+private func ripgrepArguments(_ input: GrepArguments, root: URL, targetIsFile: Bool = false, filePath: String? = nil) -> [String] {
     var arguments = ["--json", "--no-require-git", "--line-number", "--color", "never", "--regexp", input.pattern]
-    if let glob = input.glob { arguments += ["--glob", glob] }
+    if !targetIsFile, let glob = input.glob { arguments += ["--glob", glob] }
     if input.includeHidden == true { arguments.append("--hidden") }
     if input.includeIgnored == true { arguments.append("--no-ignore") }
     arguments += workspaceIgnoreArguments(root: root, includeIgnored: input.includeIgnored)
     for exclude in generatedExcludes(input.includeGenerated) + sensitiveSearchExcludes { arguments += ["--glob", exclude] }
-    arguments.append(".")
+    if targetIsFile, let filePath {
+        arguments.append(filePath)
+    } else {
+        arguments.append(".")
+    }
     return arguments
 }
 
@@ -500,6 +536,13 @@ private func runRipgrep(arguments: [String], root: URL, workspace: WorkspaceRoot
 }
 
 private func workspaceRelativeSearchPath(_ path: String, root: URL, workspace: WorkspaceRoot) -> String {
+    if path.hasPrefix("/") {
+        let wsPath = workspace.url.path
+        if path == wsPath { return "." }
+        if path.hasPrefix(wsPath + "/") {
+            return String(path.dropFirst(wsPath.count + 1))
+        }
+    }
     let local = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
     if root.path == workspace.url.path { return local }
     let prefix = relativePath(root, workspace: workspace)
@@ -526,9 +569,19 @@ public struct GrepTool: ToolExecutor {
     }
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: GrepArguments = try decodeArguments(arguments)
-        let root = try workspace.resolve(input.path ?? ".", profile: profile)
+        let target = try workspace.resolve(input.path ?? ".", profile: profile)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) else {
+            throw CoreError(code: .toolExecutionFailed, message: "搜索路径不存在: \(target.path)")
+        }
         let limit = min(max(1, input.maxResults ?? 1_000), 10_000)
-        let result = try await runRipgrep(arguments: ripgrepArguments(input, root: root), root: root, workspace: workspace, profile: profile)
+        let targetIsFile = !isDirectory.boolValue
+        if targetIsFile, workspace.sensitivePathPolicy.isSensitive(target) {
+            return try json([GrepMatch]())
+        }
+        let runDir = targetIsFile ? (FileManager.default.fileExists(atPath: target.deletingLastPathComponent().path) ? target.deletingLastPathComponent() : workspace.url) : target
+        let rgArgs = ripgrepArguments(input, root: runDir, targetIsFile: targetIsFile, filePath: targetIsFile ? target.path : nil)
+        let result = try await runRipgrep(arguments: rgArgs, root: runDir, workspace: workspace, profile: profile)
         var matches: [GrepMatch] = []
         for row in result.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let data = row.data(using: .utf8),
@@ -541,9 +594,10 @@ public struct GrepTool: ToolExecutor {
                   let lineObject = payload["lines"] as? [String: Any],
                   let text = lineObject["text"] as? String
             else { continue }
-            matches.append(GrepMatch(path: workspaceRelativeSearchPath(path, root: root, workspace: workspace), line: line, content: text.hasSuffix("\n") ? String(text.dropLast()) : text))
+            let relPath = workspaceRelativeSearchPath(path, root: runDir, workspace: workspace)
+            matches.append(GrepMatch(path: relPath, line: line, content: text.hasSuffix("\n") ? String(text.dropLast()) : text))
         }
-        let ordered = matches.filter { !ignoredByWorkspaceGitignore([$0.path], root: root, includeIgnored: input.includeIgnored).isEmpty }.sorted { $0.path == $1.path ? $0.line < $1.line : $0.path < $1.path }
+        let ordered = matches.filter { !ignoredByWorkspaceGitignore([$0.path], root: runDir, includeIgnored: input.includeIgnored).isEmpty }.sorted { $0.path == $1.path ? $0.line < $1.line : $0.path < $1.path }
         return try json(Array(ordered.prefix(limit)))
     }
 }
@@ -842,7 +896,15 @@ public struct ApplyPatchTool: ToolExecutor {
 }
 
 private func cwd(_ value: String?, workspace: WorkspaceRoot, profile: ExecutionProfile) throws -> URL {
-    try workspace.resolve(value ?? ".", profile: profile)
+    let url = try workspace.resolve(value ?? ".", profile: profile)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        throw CoreError(code: .toolExecutionFailed, message: "工作目录不存在: \(url.path)")
+    }
+    guard isDirectory.boolValue else {
+        throw CoreError(code: .toolExecutionFailed, message: "工作目录必须是目录而不是文件: \(url.path)")
+    }
+    return url
 }
 
 private func processSetup(executable: String, arguments: [String], workspace: WorkspaceRoot, cwd: URL, profile: ExecutionProfile) throws -> (ToolProcessInvocation, [String: String]) {

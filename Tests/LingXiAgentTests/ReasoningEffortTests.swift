@@ -8,7 +8,7 @@ import Testing
 
 @Suite struct ReasoningEffortTests {
     @Test func canonicalReasoningEffortEnumCoversAllRequiredLevels() {
-        let expected: [ReasoningEffort] = [.auto, .off, .minimal, .low, .medium, .high, .max]
+        let expected: [ReasoningEffort] = [.off, .minimal, .low, .medium, .high, .xhigh, .max, .ultra, .auto]
         #expect(ReasoningEffort.allCases == expected)
     }
 

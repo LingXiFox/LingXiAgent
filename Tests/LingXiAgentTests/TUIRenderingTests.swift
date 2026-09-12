@@ -94,7 +94,7 @@ struct TUIRenderingTests {
 
         let lines = viewport.render(viewportHeight: 4, width: 20)
 
-        #expect(lines.first?.text == "╭─ 👤 User ───────╮")
+        #expect(lines.first?.text == "╭──────────────────╮")
         #expect(lines[1].text == "│ hello            │")
         #expect(lines.last?.text == "╰──────────────────╯")
     }
@@ -792,6 +792,26 @@ struct TUIRenderingTests {
         #expect(rendered.text.contains("Build"))
     }
 
+    @Test func statusLineDualPartAlignmentAndGridIndentation() {
+        let status = StatusLine()
+        let left = "● Ready · deepseek"
+        let right = "Build · YOLO"
+        status.setParts(left: left, right: right)
+
+        // 宽终端（60列）：双端对齐 + 前置2格缩进
+        let wideRendered = status.render(width: 60)
+        #expect(wideRendered.text.hasPrefix("  ● Ready · deepseek"))
+        #expect(wideRendered.text.hasSuffix("Build · YOLO"))
+
+        // 中等终端（35列）：两端间距不足2格，平滑降级为紧凑单行中点拼接
+        let compactRendered = status.render(width: 35)
+        #expect(compactRendered.text == "  ● Ready · deepseek · Build · YOLO")
+
+        // 超窄终端（20列）：优先保全核心状态，空间极紧凑时自动顶格避免换行
+        let narrowRendered = status.render(width: 20)
+        #expect(narrowRendered.text == "● Ready · deepseek")
+    }
+
     @Test func transcriptDoesNotRenderInternalRunTerminalMetadata() {
         let view = TranscriptViewport()
         let regularEntries = [
@@ -1091,5 +1111,82 @@ struct TUIRenderingTests {
         #expect(!borderCells.isEmpty)
         #expect(cleanText.contains("╭") && cleanText.contains("╰"))
     }
-}
 
+    @Test func markdownRendererFormatsCodeBlocksHeadingsQuotesAndLists() {
+        let md = """
+        # 核心标题
+        ## 子标题
+        > 这是一个重要的引用说明
+
+        - 项目一
+        - 项目二
+
+        ```swift
+        let message = "Hello Fox"
+        ```
+        """
+        let rendered = TUIMarkdownRenderer.render(md, width: 40)
+        let texts = rendered.map(\.text)
+
+        // 验证标题样式符号
+        #expect(texts.contains { $0.contains("◈ 核心标题") })
+        #expect(texts.contains { $0.contains("◆ 子标题") })
+        // 验证引用样式竖线
+        #expect(texts.contains { $0.contains("▎ 这是一个重要的引用说明") })
+        // 验证列表圆点
+        #expect(texts.contains { $0.contains("• 项目一") })
+        #expect(texts.contains { $0.contains("• 项目二") })
+        // 验证代码块带框线
+        #expect(texts.contains { $0.contains("┌─ swift") })
+        #expect(texts.contains { $0.contains("│ let message = \"Hello Fox\"") })
+        #expect(texts.contains { $0.contains("└─") })
+    }
+
+    @Test func configCommandAndPreferencesPersistence() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = UserPreferencesStore(fileURL: tempDir.appendingPathComponent("test_prefs.json"))
+        var prefs = store.load()
+        #expect(prefs.expandThinking == nil)
+        #expect(prefs.expandTools == nil)
+        #expect(prefs.showSidebar == nil)
+
+        store.update(expandThinking: true, expandTools: false, showSidebar: true)
+        prefs = store.load()
+        #expect(prefs.expandThinking == true)
+        #expect(prefs.expandTools == false)
+        #expect(prefs.showSidebar == true)
+    }
+
+    @Test func wordWrappingPreventsBrokenWesternWords() {
+        let text = "for this simulation"
+        let lines = TUIWrapping.lines(text, width: 12)
+        #expect(lines.count == 2)
+        #expect(lines[0].text == "for this")
+        #expect(lines[1].text == "simulation")
+    }
+
+    @Test func thinkingLayoutWrapsLongLinesWithoutClippingToDivider() {
+        let viewport = TranscriptViewport()
+        let longThought = "The grep on project.pbxproj failed because path was treated as directory. Let me grep the pbxproj file directly to find swift files."
+        let entry = TUITranscriptEntry(kind: .thinking, text: "• Thought for 1.2s\n" + longThought, collapsed: false)
+        viewport.replace([entry])
+
+        let lines = viewport.render(viewportHeight: 20, width: 50)
+        #expect(lines.count > 2)
+        for line in lines {
+            #expect(TUIDisplayWidth.width(of: line.text) <= 48)
+        }
+        #expect(lines.contains { $0.text.contains("project.pbxproj") })
+    }
+
+    @Test func toolNodeSummarizeArgumentsCompactsLongPaths() {
+        let json = #"{"path":"/Users/lingxifox/Documents/Vibe Coding/Apple Operation System Manage/Apple Operation System Manage.xcodeproj/project.pbxproj"}"#
+        let summary = ToolNode.summarizeArguments(json, toolName: "grep")
+        #expect(summary.contains("path=.../"))
+        #expect(summary.contains("project.pbxproj"))
+        #expect(!summary.contains("Apple Operation )"))
+    }
+}

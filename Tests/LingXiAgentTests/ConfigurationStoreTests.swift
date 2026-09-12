@@ -18,7 +18,7 @@ struct ConfigurationStoreTests {
         #expect(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)) == Set([
             "config.json", "providers.json", "mcp.json", "plugins.json",
         ]))
-        #expect(ConfigurationSchemaURI.core.contains(".invalid/"))
+        #expect(ConfigurationSchemaURI.core.contains("lingxifox.cn/schema/"))
     }
 
     @Test func bundledTemplatesAndSchemasUseTheCanonicalURIs() throws {
@@ -42,7 +42,7 @@ struct ConfigurationStoreTests {
         _ = try await store.load()
         let legacy = #"""
         {
-          "$schema": "https://schemas.example.invalid/lingxiagent/providers.schema.json",
+          "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
           "version": 1,
           "customProviders": [{"id":"legacy","displayName":"Legacy","baseURL":"https://legacy.example.com/v1"}],
           "accounts": [{"id":"legacy-account","providerID":"legacy","displayName":"Legacy","enabled":true,"authentication":"none","configOverrides":{},"accountType":"apiKey","createdAt":0,"updatedAt":0}],

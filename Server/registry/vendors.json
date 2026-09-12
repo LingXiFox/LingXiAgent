@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "alibaba", "displayName": "Alibaba Cloud" },
+    { "id": "anthropic", "displayName": "Anthropic" },
+    { "id": "cloudflare", "displayName": "Cloudflare" },
+    { "id": "deepseek", "displayName": "DeepSeek" },
+    { "id": "google", "displayName": "Google" },
+    { "id": "hugging-face", "displayName": "Hugging Face" },
+    { "id": "llama-cpp", "displayName": "llama.cpp" },
+    { "id": "lm-studio", "displayName": "LM Studio" },
+    { "id": "minimax", "displayName": "MiniMax" },
+    { "id": "ollama", "displayName": "Ollama" },
+    { "id": "openai", "displayName": "OpenAI" },
+    { "id": "opencode", "displayName": "OpenCode" },
+    { "id": "openrouter", "displayName": "OpenRouter" },
+    { "id": "xai", "displayName": "xAI" },
+    { "id": "xiaomi", "displayName": "Xiaomi" },
+    { "id": "zai", "displayName": "Z.AI" }
+  ]
+}

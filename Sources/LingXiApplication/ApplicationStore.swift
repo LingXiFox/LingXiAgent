@@ -15,6 +15,7 @@ public actor ApplicationStore {
     private var connectionStateTask: Task<Void, Never>?
     private var sessionEventsTask: Task<Void, Never>?
     private var activeStreamTasks: [StreamID: Task<Void, Never>] = [:]
+    private var runtimeRefreshTask: Task<Void, Never>?
 
     public init(
         client: LingXiClientVNext,
@@ -86,6 +87,7 @@ public actor ApplicationStore {
         runtimeEventsTask?.cancel()
         connectionStateTask?.cancel()
         sessionEventsTask?.cancel()
+        runtimeRefreshTask?.cancel()
         for task in activeStreamTasks.values {
             task.cancel()
         }
@@ -148,8 +150,8 @@ public actor ApplicationStore {
             _ = try? await client.session.delete(sessionID: sessionID)
 
         case .listSessions:
-            if let page = try? await client.session.list() {
-                state.sessionCatalog = page.items
+            if let sessions = try? await client.session.listAll() {
+                state.sessionCatalog = sessions
                 notifyStateChanged()
             }
 
@@ -214,7 +216,16 @@ public actor ApplicationStore {
         // MARK: 5. Provider & Model
         case let .selectModel(modelID):
             UserPreferencesStore.shared.update(modelID: modelID)
-            _ = try? await client.model.select(model: modelID)
+            do {
+                let receipt = try await client.model.select(model: modelID)
+                state.currentModelID = modelID
+                if let sel = receipt.result {
+                    state.selectedModel = sel
+                }
+                notifyStateChanged()
+            } catch {
+                debug("selectModel.failed: \(error)")
+            }
 
         case .listProviders:
             if let list = try? await client.provider.list() {
@@ -272,8 +283,10 @@ public actor ApplicationStore {
         case let ._runtimeEventReceived(event):
             RootReducer.reduce(state: &state, action: ._runtimeEventReceived(event))
             switch event.payload {
-            case .providerCatalogChanged, .modelCatalogChanged, .extensionCatalogChanged:
+            case .providerCatalogChanged, .modelCatalogChanged:
                 await refreshRuntimeBasics()
+            case .extensionCatalogChanged:
+                await dispatch(.refreshExtensions)
             default:
                 break
             }
@@ -375,6 +388,35 @@ public actor ApplicationStore {
         }
         guard let validSessionID = sessionID else { return }
 
+        // 自动重命名会话：若当前会话标题为空或为未命名，提取首条 Prompt 生成有意义的摘要标题
+        let currentTitle = state.activeSessionState?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let isDefaultOrUntitled = currentTitle.isEmpty || currentTitle == "未命名会话" || currentTitle == "未命名" || currentTitle.lowercased() == "untitled"
+        if isDefaultOrUntitled {
+            let cleanPrompt = prompt.split(separator: "\n").first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }).map(String.init) ?? prompt
+            let trimmedPrompt = cleanPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedPrompt.isEmpty {
+                let autoTitle = trimmedPrompt.count > 28 ? String(trimmedPrompt.prefix(28)) + "..." : trimmedPrompt
+                state.activeSessionState?.title = autoTitle
+                if let idx = state.sessionCatalog.firstIndex(where: { $0.sessionID == validSessionID }) {
+                    let old = state.sessionCatalog[idx]
+                    state.sessionCatalog[idx] = SessionSummary(
+                        sessionID: old.sessionID,
+                        title: autoTitle,
+                        createdAt: old.createdAt,
+                        updatedAt: Date(),
+                        turnCount: old.turnCount,
+                        mode: old.mode,
+                        reasoningEffort: old.reasoningEffort,
+                        workingDirectory: old.workingDirectory,
+                        messageCount: old.messageCount
+                    )
+                }
+                Task { [client, validSessionID, autoTitle] in
+                    _ = try? await client.session.rename(sessionID: validSessionID, title: autoTitle)
+                }
+            }
+        }
+
         let intent = TurnExecutionIntent(
             modelSelection: state.currentModelID,
             mode: nextMode,
@@ -404,26 +446,39 @@ public actor ApplicationStore {
 
     // MARK: - Workspace Reference Scanning
     private var cachedReferenceCandidates: [String] = []
+    private var cachedReferenceRoot: String?
 
     public func workspaceReferenceCandidates() async -> [String] {
-        if !cachedReferenceCandidates.isEmpty {
+        let rootPath = state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
+        if cachedReferenceRoot == rootPath {
             return cachedReferenceCandidates
         }
-        let rootPath = state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
-        let root = URL(fileURLWithPath: rootPath)
-        if let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) {
-            cachedReferenceCandidates = enumerator.compactMap { value in
-                guard let url = value as? URL else { return nil }
-                let path = url.path.replacingOccurrences(of: root.path + "/", with: "")
-                guard !path.isEmpty, !path.hasPrefix(".build/"), !path.hasPrefix(".git/") else { return nil }
-                return path
-            }.prefix(500).map { $0 }
+        let scan = Task.detached(priority: .utility) {
+            let root = URL(fileURLWithPath: rootPath).standardizedFileURL
+            var candidates: [String] = []
+            if let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) {
+                while let url = enumerator.nextObject() as? URL {
+                    if Task.isCancelled { break }
+                    if ["node_modules", "build", "dist", "coverage"].contains(url.lastPathComponent) {
+                        enumerator.skipDescendants()
+                        continue
+                    }
+                    candidates.append(String(url.path.dropFirst(root.path.count + 1)))
+                    if candidates.count >= 500 { break }
+                }
+            }
+            return candidates
         }
-        return cachedReferenceCandidates
+        let candidates = await withTaskCancellationHandler { await scan.value } onCancel: { scan.cancel() }
+        guard !Task.isCancelled,
+              rootPath == (state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath) else { return [] }
+        cachedReferenceRoot = rootPath
+        cachedReferenceCandidates = candidates
+        return candidates
     }
 
     // MARK: - 会话切换与订阅
@@ -479,57 +534,74 @@ public actor ApplicationStore {
     }
 
     private func refreshRuntimeBasics() async {
-        debug("refresh.runtime.info.begin")
-        if let info = try? await client.runtime.getInfo() {
+        if let task = runtimeRefreshTask {
+            await task.value
+            return
+        }
+        let task = Task { await self.performRuntimeBasicsRefresh() }
+        runtimeRefreshTask = task
+        await task.value
+        runtimeRefreshTask = nil
+    }
+
+    private func performRuntimeBasicsRefresh() async {
+        debug("refresh.runtime.basics.concurrent.begin")
+        async let infoTask = try? client.runtime.getInfo()
+        async let healthTask = try? client.runtime.getHealth()
+        async let capsTask = try? client.runtime.getCapabilities()
+        async let modelsTask = try? client.model.list()
+        async let selectionTask = try? client.model.getSelection()
+        async let providersTask = try? client.provider.list()
+        async let pStatusTask = try? client.provider.status()
+        async let extensionsTask = try? client.extensionDomain.list()
+        async let wsTask = try? client.workspace.get()
+
+        let (info, health, caps, models, selection, providers, pStatus, extensions, ws) = await (
+            infoTask, healthTask, capsTask, modelsTask, selectionTask, providersTask, pStatusTask, extensionsTask, wsTask
+        )
+
+        if let info {
             RootReducer.reduce(state: &state, action: ._runtimeInfoResynced(info))
         }
-        debug("refresh.runtime.info.end")
-        debug("refresh.runtime.health.begin")
-        if let health = try? await client.runtime.getHealth() {
+        if let health {
             RootReducer.reduce(state: &state, action: ._runtimeHealthResynced(health))
         }
-        debug("refresh.runtime.health.end")
-        debug("refresh.runtime.capabilities.begin")
-        if let caps = try? await client.runtime.getCapabilities() {
+        if let caps {
             RootReducer.reduce(state: &state, action: ._runtimeCapabilitiesResynced(caps))
         }
-        debug("refresh.runtime.capabilities.end")
-        debug("refresh.model.list.begin")
-        if let models = try? await client.model.list() {
+        if let models {
             state.models = models
         }
-        debug("refresh.model.list.end")
-        debug("refresh.model.selection.begin")
-        if let selection = try? await client.model.getSelection() {
+        if let selection {
             state.currentModelID = selection.modelID
             state.selectedModel = selection
         }
-        debug("refresh.model.selection.end")
-        debug("refresh.provider.list.begin")
-        if let providers = try? await client.provider.list() {
+        if let providers {
             state.providers = providers
         }
-        debug("refresh.provider.list.end")
-        debug("refresh.provider.status.begin")
-        if let pStatus = try? await client.provider.status() {
+        if let pStatus {
             state.providerStatus = pStatus
         }
-        debug("refresh.provider.status.end")
-        debug("refresh.extension.list.begin")
-        if let extensions = try? await client.extensionDomain.list() {
+        if let extensions {
             state.extensions = extensions
         }
-        debug("refresh.extension.list.end")
-        debug("refresh.workspace.get.begin")
-        if let ws = try? await client.workspace.get() {
+        if let ws {
             state.currentWorkspace = ws
         }
-        debug("refresh.workspace.get.end")
-        debug("refresh.workspace.diff.begin")
-        if let diff = try? await client.workspace.diff() {
-            state.workspaceDiff = diff
+        debug("refresh.runtime.basics.concurrent.end")
+        notifyStateChanged()
+
+        // 异步后台拉取 workspace diff，不阻塞 UI 首屏渲染
+        Task { [weak self] in
+            guard let self = self else { return }
+            if let diff = try? await self.client.workspace.diff() {
+                await self.updateWorkspaceDiff(diff)
+            }
         }
-        debug("refresh.workspace.diff.end")
+    }
+
+    private func updateWorkspaceDiff(_ diff: WorkspaceDiffSummary) {
+        state.workspaceDiff = diff
         notifyStateChanged()
     }
 

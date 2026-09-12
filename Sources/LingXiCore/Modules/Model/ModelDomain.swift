@@ -247,6 +247,37 @@ public struct ModelToolResultProjection: Sendable, Equatable {
 
         // 4. Read (read_file / read)
         if tool == "read_file" || tool == "read" {
+            // 4.1 如果已经是结构化 ReadPage JSON，尊重其已有分页元数据，不要二次破坏
+            if let data = result.content.data(using: .utf8),
+               let pageDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let rawLines = pageDict["lines"] as? [[String: Any]] {
+                let startLine = pageDict["startLine"] as? Int ?? 1
+                let endLine = pageDict["endLine"] as? Int ?? rawLines.count
+                let nextLine = pageDict["nextLine"] as? Int
+                let truncated = pageDict["truncated"] as? Bool ?? false
+                let lineTexts = rawLines.compactMap { dict -> String? in
+                    if let num = dict["number"] as? Int, let c = dict["content"] as? String {
+                        return "\(num)\t\(c)"
+                    }
+                    return dict["content"] as? String
+                }
+                let summary = "ReadFile · lines \(startLine)-\(endLine) (truncated: \(truncated))"
+                return Self(
+                    callID: result.callID,
+                    toolName: result.toolName,
+                    success: true,
+                    content: result.content,
+                    summary: summary,
+                    totalCount: rawLines.count,
+                    shownCount: rawLines.count,
+                    truncated: truncated,
+                    page: max(1, startLine / max(1, rawLines.count)),
+                    cursor: nextLine.map(String.init),
+                    items: lineTexts
+                )
+            }
+
+            // 4.2 普通全文读取：提供合理的单次阅读视窗（默认 60 行）
             let lines = result.content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             let total = lines.count
             let maxLines = max(budget.maxShown, 60)
@@ -262,6 +293,8 @@ public struct ModelToolResultProjection: Sendable, Equatable {
                     "shownCount": shown,
                     "truncated": true,
                     "page": 1,
+                    "nextLine": shown + 1,
+                    "tip": "File truncated at line \(shown). Use read_file with start_line=\(shown + 1) to read further.",
                     "lines": shownLines
                 ]
                 if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
@@ -283,7 +316,7 @@ public struct ModelToolResultProjection: Sendable, Equatable {
                 shownCount: shown,
                 truncated: truncated,
                 page: 1,
-                cursor: truncated ? String(shown) : nil,
+                cursor: truncated ? String(shown + 1) : nil,
                 items: shownLines
             )
         }

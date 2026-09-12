@@ -242,6 +242,7 @@ public actor SQLitePersistenceStore {
                 )
             }
         }
+        summaries.sort(by: { $0.updatedAt > $1.updatedAt })
         return summaries
     }
 

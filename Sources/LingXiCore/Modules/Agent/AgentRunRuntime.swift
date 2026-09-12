@@ -14,7 +14,7 @@ public struct SubagentRuntimeLimits: Sendable, Equatable {
 }
 
 public actor SubagentModelResolver {
-    private let runtimes: [String: ModelRuntimeAssembly]
+    private var runtimes: [String: ModelRuntimeAssembly]
     private let allowedModels: Set<String>?
     private var defaultSelection: ModelSelection?
     private let defaultSubagentSelection: ModelSelection?
@@ -29,22 +29,62 @@ public actor SubagentModelResolver {
         self.defaultSubagentSelection = defaultSubagentSelection
     }
 
+    public func registerAssembly(_ assembly: ModelRuntimeAssembly, for selection: ModelSelection) {
+        let providerID = selection.providerID
+        runtimes[providerID] = assembly
+        runtimes["default"] = assembly
+        if let accountID = selection.accountID, let profileID = selection.profileID {
+            runtimes["\(accountID)::\(profileID)"] = assembly
+        }
+    }
+
     public func resolve(_ requested: ModelSelection?, subagent: Bool = false) throws -> (selection: ModelSelection, assembly: ModelRuntimeAssembly) {
         let requested = requested ?? (subagent ? defaultSubagentSelection ?? defaultSelection : defaultSelection)
         let providerID = requested?.providerID ?? "default"
         guard (requested?.accountID == nil) == (requested?.profileID == nil) else { throw CoreError(code: .subagentModelNotAllowed, message: "ModelSelection 必须同时提供 accountID 与 profileID") }
         let key = requested?.accountID.flatMap { account in requested?.profileID.map { "\(account)::\($0)" } }
-        guard let assembly = key.flatMap({ runtimes[$0] }) ?? (requested?.accountID == nil ? runtimes[providerID] : nil) else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Provider 不可用: \(providerID)") }
-        guard !assembly.modelID.rawValue.isEmpty else { throw CoreError(code: .provider, message: "未配置模型 Provider") }
-        let selection = requested ?? ModelSelection(providerID: providerID, modelID: assembly.modelID.rawValue)
-        guard selection.providerID == assembly.endpoint.providerID || selection.providerID == "default" else { throw CoreError(code: .subagentModelNotAllowed, message: "ModelSelection Provider 与 resolved endpoint 不一致") }
-        guard selection.accountID == nil || selection.accountID == assembly.endpoint.accountID, selection.profileID == nil || selection.profileID == assembly.endpoint.profileID else { throw CoreError(code: .subagentModelNotAllowed, message: "ModelSelection account/profile 与 resolved endpoint 不一致") }
-        guard selection.modelID == assembly.modelID.rawValue else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Model 不可用: \(selection.modelID)") }
+        var assembly = key.flatMap({ runtimes[$0] }) ?? (requested?.accountID == nil ? runtimes[providerID] : nil)
+        if assembly == nil {
+            assembly = runtimes[providerID] ?? runtimes["default"]
+        }
+        guard let resolvedAssembly = assembly else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Provider 不可用: \(providerID)") }
+        guard !resolvedAssembly.modelID.rawValue.isEmpty else { throw CoreError(code: .provider, message: "未配置模型 Provider") }
+
+        let selection = requested ?? ModelSelection(providerID: providerID, modelID: resolvedAssembly.modelID.rawValue)
         guard allowedModels?.contains(selection.modelID) ?? true else { throw CoreError(code: .subagentModelNotAllowed, message: "Subagent Model 未获用户许可: \(selection.modelID)") }
-        return (selection, assembly)
+
+        // 若 modelID 属于该 provider 且与初始 assembly 声明的缺省 modelID 不同，动态派生出对应 modelID 的 assembly
+        let effectiveAssembly: ModelRuntimeAssembly
+        if selection.modelID != resolvedAssembly.modelID.rawValue {
+            effectiveAssembly = ModelRuntimeAssembly(
+                provider: resolvedAssembly.provider,
+                modelID: ModelID(selection.modelID),
+                contextProfile: resolvedAssembly.contextProfile,
+                endpoint: ResolvedModelEndpoint(
+                    providerID: resolvedAssembly.endpoint.providerID,
+                    productID: resolvedAssembly.endpoint.productID,
+                    endpointID: resolvedAssembly.endpoint.endpointID,
+                    accountID: resolvedAssembly.endpoint.accountID,
+                    profileID: selection.profileID ?? resolvedAssembly.endpoint.profileID,
+                    modelID: ModelID(selection.modelID),
+                    baseURL: resolvedAssembly.endpoint.baseURL,
+                    wireProtocol: resolvedAssembly.endpoint.wireProtocol,
+                    contextProfile: resolvedAssembly.endpoint.contextProfile,
+                    capabilities: resolvedAssembly.endpoint.capabilities,
+                    rateLimits: resolvedAssembly.endpoint.rateLimits
+                )
+            )
+        } else {
+            effectiveAssembly = resolvedAssembly
+        }
+
+        return (selection, effectiveAssembly)
     }
 
-    public func setDefaultSelection(_ selection: ModelSelection) throws {
+    public func setDefaultSelection(_ selection: ModelSelection, assembly: ModelRuntimeAssembly? = nil) throws {
+        if let assembly {
+            registerAssembly(assembly, for: selection)
+        }
         _ = try resolve(selection)
         defaultSelection = selection
     }

@@ -1,4 +1,4 @@
 {
-  "$schema": "https://schemas.example.invalid/lingxiagent/plugins.schema.json",
+  "$schema": "https://lingxiagent.lingxifox.cn/schema/plugins.json",
   "version": 1
 }

@@ -153,4 +153,40 @@ struct CodingToolContractTests {
         #expect(rendered.contains("userHome:"))
         #expect(rendered.contains("accessScope: fullAccess"))
     }
+
+    @Test func grepSupportsSearchingSingleFilesAndPathsWithSpaces() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let spaceDir = root.appendingPathComponent("Vibe Coding/Apple Operation System Manage", isDirectory: true)
+        try FileManager.default.createDirectory(at: spaceDir, withIntermediateDirectories: true)
+        let pbxproj = spaceDir.appendingPathComponent("project.pbxproj")
+        let content = "/* Begin PBXBuildFile section */\nSWIFT_VERSION = 5.0;\n/* End PBXBuildFile section */\n"
+        try content.write(to: pbxproj, atomically: true, encoding: .utf8)
+        let tools = try runtime(root: root)
+
+        // 1. Search directly on a single file path with spaces
+        let singleFileCall = call(
+            "grep_single_file",
+            "grep",
+            #"{"pattern":"SWIFT_VERSION","path":"Vibe Coding/Apple Operation System Manage/project.pbxproj"}"#
+        )
+        let singleResult = await tools.execute(singleFileCall, sessionID: SessionID("s")) { _ in }
+        #expect(singleResult.success)
+        let singleMatches = try #require(JSONSerialization.jsonObject(with: Data(singleResult.content.utf8)) as? [[String: Any]])
+        #expect(singleMatches.count == 1)
+        #expect(singleMatches[0]["path"] as? String == "Vibe Coding/Apple Operation System Manage/project.pbxproj")
+        #expect(singleMatches[0]["line"] as? Int == 2)
+        #expect(singleMatches[0]["content"] as? String == "SWIFT_VERSION = 5.0;")
+
+        // 2. Search on the directory path with spaces
+        let dirCall = call(
+            "grep_dir",
+            "grep",
+            #"{"pattern":"PBXBuildFile","path":"Vibe Coding/Apple Operation System Manage"}"#
+        )
+        let dirResult = await tools.execute(dirCall, sessionID: SessionID("s")) { _ in }
+        #expect(dirResult.success)
+        let dirMatches = try #require(JSONSerialization.jsonObject(with: Data(dirResult.content.utf8)) as? [[String: Any]])
+        #expect(dirMatches.count == 2)
+    }
 }

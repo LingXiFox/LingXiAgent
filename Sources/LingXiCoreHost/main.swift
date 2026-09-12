@@ -57,7 +57,7 @@ let providers = try await RuntimeConfigurationResolver.resolveProviders(
 )
 let mcp: MCPRuntimeResolution
 do {
-    mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true), faultTolerant: true)
+    mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true), discoverTools: false, faultTolerant: true)
 } catch {
     FileHandle.standardError.write(Data("Warning: Failed to resolve some MCP configurations: \(error.localizedDescription)\n".utf8))
     var safeMCP = snapshot.mcp
@@ -81,6 +81,12 @@ let host = try CoreHost(
 debug("configuration.end")
 await host.start()
 debug("host.start.end")
+// Discovery populates the shared pager as servers become available; handshake does not wait for them.
+let discoveryTask = Task {
+    try await mcp.discover()
+    await host.notifyExtensionCatalogChanged()
+}
+defer { discoveryTask.cancel() }
 if CommandLine.arguments.contains("--vnext") {
     debug("vnext.server.begin")
     try await VNextStdioCoreServer(service: host).run()

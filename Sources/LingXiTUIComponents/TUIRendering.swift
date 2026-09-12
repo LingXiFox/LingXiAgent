@@ -408,6 +408,17 @@ public struct TUIWrappedLine: Sendable {
 }
 
 public enum TUIWrapping {
+    private static func isCJK(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        let val = scalar.value
+        return (0x4E00...0x9FFF).contains(val)
+            || (0x3400...0x4DBF).contains(val)
+            || (0x20000...0x2A6DF).contains(val)
+            || (0xF900...0xFAFF).contains(val)
+            || (0x3000...0x303F).contains(val)
+            || (0xFF00...0xFFEF).contains(val)
+    }
+
     public static func lines(_ text: String, width: Int, cursor: Int? = nil) -> [TUIWrappedLine] {
         let limit = max(1, width)
         let characters = Array(text)
@@ -418,12 +429,16 @@ public enum TUIWrapping {
         var cursorColumn: Int?
         var cursorIndex = 0
         var lineStartIndex = 0
+        var lastSpaceInCurrent: Int? = nil
+        var lastSpaceOrigIndex: Int? = nil
 
         func flush(lineEndIndex: Int) {
             result.append(TUIWrappedLine(text: String(current), cursorColumn: nil, startIndex: lineStartIndex, endIndex: lineEndIndex))
             current.removeAll(keepingCapacity: true)
             currentWidth = 0
             lineStartIndex = lineEndIndex
+            lastSpaceInCurrent = nil
+            lastSpaceOrigIndex = nil
         }
 
         for (index, character) in characters.enumerated() {
@@ -436,9 +451,45 @@ public enum TUIWrapping {
             }
             let characterWidth = max(1, TUIDisplayWidth.width(of: character))
             if currentWidth + characterWidth > limit, !current.isEmpty {
-                if let cursor, cursor >= cursorIndex, cursor <= index { cursorLine = result.count; cursorColumn = currentWidth }
-                flush(lineEndIndex: index)
-                cursorIndex = index
+                // 只有当当前待加入字符为西文字符，且前面有西文单词边界时，才进行单词级回溯折行
+                let shouldWordWrap: Bool = {
+                    guard !isCJK(character), character != " " else { return false }
+                    guard let spacePos = lastSpaceInCurrent, spacePos > 0, spacePos < current.count else { return false }
+                    let wordChars = current[(spacePos + 1)...]
+                    return !wordChars.isEmpty && wordChars.allSatisfy { !isCJK($0) && $0 != " " }
+                }()
+
+                if shouldWordWrap, let spacePos = lastSpaceInCurrent {
+                    let wrappedCount = spacePos
+                    let carriedChars = Array(current[(spacePos + 1)...])
+                    let spaceEndIndex = lastSpaceOrigIndex ?? index
+
+                    current = Array(current[0..<wrappedCount])
+                    if let cursor, cursor >= cursorIndex, cursor <= spaceEndIndex {
+                        cursorLine = result.count
+                        var col = 0
+                        for i in 0..<(cursor - cursorIndex) {
+                            if i < current.count { col += max(1, TUIDisplayWidth.width(of: current[i])) }
+                        }
+                        cursorColumn = col
+                    }
+                    flush(lineEndIndex: spaceEndIndex + 1)
+                    cursorIndex = spaceEndIndex + 1
+                    lineStartIndex = spaceEndIndex + 1
+
+                    current = carriedChars
+                    currentWidth = carriedChars.reduce(0) { $0 + max(1, TUIDisplayWidth.width(of: $1)) }
+                    lastSpaceInCurrent = nil
+                    lastSpaceOrigIndex = nil
+                } else {
+                    if let cursor, cursor >= cursorIndex, cursor <= index { cursorLine = result.count; cursorColumn = currentWidth }
+                    flush(lineEndIndex: index)
+                    cursorIndex = index
+                }
+            }
+            if character == " " {
+                lastSpaceInCurrent = current.count
+                lastSpaceOrigIndex = index
             }
             current.append(character)
             currentWidth += characterWidth
@@ -920,6 +971,178 @@ public final class TUIViewStack {
     public func removeAll() { views.removeAll() }
 }
 
+// MARK: - Markdown Renderer for Assistant Output
+public enum TUIMarkdownRenderer {
+    public static func render(_ text: String, width: Int, defaultStyle: TUIStyle = .assistantText) -> [TUIStyledLine] {
+        let maxTextWidth = max(10, width - 4)
+        let rawLines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var result: [TUIStyledLine] = []
+        var inCodeBlock = false
+        var codeBlockLang = ""
+        var codeBlockLines: [String] = []
+        var isFirstAssistantLine = true
+
+        func flushCodeBlock() {
+            guard inCodeBlock else { return }
+            inCodeBlock = false
+            let boxWidth = min(maxTextWidth, max(24, maxTextWidth))
+            let innerWidth = max(10, boxWidth - 4)
+            let langTag = codeBlockLang.trimmingCharacters(in: .whitespaces)
+            let tag = langTag.isEmpty ? " Code " : " \(langTag) "
+            let tagLen = TUIDisplayWidth.width(of: tag)
+            let rightDashes = max(2, boxWidth - 2 - 2 - tagLen)
+            let topBorder = "  ┌─\(tag)\(String(repeating: "─", count: rightDashes))┐"
+            let bottomBorder = "  └\(String(repeating: "─", count: boxWidth - 2))┘"
+
+            result.append(TUIStyledLine(topBorder, style: .toolCommand))
+            for cline in codeBlockLines {
+                let wrapped = TUIWrapping.lines(cline, width: innerWidth)
+                for w in wrapped {
+                    let pad = String(repeating: " ", count: max(0, innerWidth - TUIDisplayWidth.width(of: w.text)))
+                    result.append(TUIStyledLine("  │ \(w.text)\(pad) │", style: .composerText))
+                }
+            }
+            result.append(TUIStyledLine(bottomBorder, style: .toolTree))
+            codeBlockLines.removeAll()
+            codeBlockLang = ""
+        }
+
+        func parseOrderedList(_ s: String) -> (marker: String, remainder: String)? {
+            guard let dotIdx = s.firstIndex(of: ".") else { return nil }
+            let numStr = String(s[..<dotIdx])
+            guard Int(numStr) != nil else { return nil }
+            let afterDot = s[s.index(after: dotIdx)...]
+            guard afterDot.hasPrefix(" ") else { return nil }
+            let marker = numStr + ". "
+            let remainder = String(afterDot.dropFirst()).trimmingCharacters(in: .whitespaces)
+            return (marker, remainder)
+        }
+
+        for rawLine in rawLines {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+
+            // 1. 代码块起始 / 结束标记 ```
+            if trimmed.hasPrefix("```") {
+                if inCodeBlock {
+                    flushCodeBlock()
+                } else {
+                    inCodeBlock = true
+                    codeBlockLang = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                    codeBlockLines.removeAll()
+                }
+                continue
+            }
+
+            if inCodeBlock {
+                codeBlockLines.append(rawLine)
+                continue
+            }
+
+            // 2. 遥测信息行 ⚡️（原样输出，靠左带缩进）
+            if rawLine.contains("⚡️") {
+                result.append(TUIStyledLine("  " + trimmed, style: .dim))
+                continue
+            }
+
+            // 3. 空行
+            if trimmed.isEmpty {
+                result.append(TUIStyledLine("", style: defaultStyle))
+                continue
+            }
+
+            // 4. 标题 Heading (#, ##, ###)
+            if trimmed.hasPrefix("# ") {
+                let title = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                let wrapped = TUIWrapping.lines(title, width: max(10, maxTextWidth - 4))
+                for (idx, w) in wrapped.enumerated() {
+                    let prefix = idx == 0 ? "◈ " : "  "
+                    result.append(TUIStyledLine(prefix + w.text, style: .modalHighlight))
+                }
+                isFirstAssistantLine = false
+                continue
+            } else if trimmed.hasPrefix("## ") {
+                let title = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                let wrapped = TUIWrapping.lines(title, width: max(10, maxTextWidth - 4))
+                for (idx, w) in wrapped.enumerated() {
+                    let prefix = idx == 0 ? "◆ " : "  "
+                    result.append(TUIStyledLine(prefix + w.text, style: .toolCommand))
+                }
+                isFirstAssistantLine = false
+                continue
+            } else if trimmed.hasPrefix("### ") {
+                let title = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                let wrapped = TUIWrapping.lines(title, width: max(10, maxTextWidth - 4))
+                for (idx, w) in wrapped.enumerated() {
+                    let prefix = idx == 0 ? "◇ " : "  "
+                    result.append(TUIStyledLine(prefix + w.text, style: .toolArg))
+                }
+                isFirstAssistantLine = false
+                continue
+            }
+
+            // 5. 引用块 Blockquote (> )
+            if trimmed.hasPrefix("> ") {
+                let quoteText = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                let wrapped = TUIWrapping.lines(quoteText, width: max(10, maxTextWidth - 4))
+                for w in wrapped {
+                    result.append(TUIStyledLine("  ▎ " + w.text, style: .thinkingHeader))
+                }
+                isFirstAssistantLine = false
+                continue
+            }
+
+            // 6. 列表项 List Items (- item, * item, 1. item)
+            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+                let itemText = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                let itemAvail = max(10, maxTextWidth - 4)
+                let wrapped = TUIWrapping.lines(itemText, width: itemAvail)
+                for (idx, w) in wrapped.enumerated() {
+                    let prefix = idx == 0 ? "  • " : "    "
+                    result.append(TUIStyledLine(prefix + w.text, style: defaultStyle))
+                }
+                isFirstAssistantLine = false
+                continue
+            } else if let ordered = parseOrderedList(trimmed) {
+                let prefixMarker = ordered.marker
+                let pLen = TUIDisplayWidth.width(of: prefixMarker)
+                let indentSpaces = String(repeating: " ", count: pLen + 2)
+                let itemAvail = max(10, maxTextWidth - pLen - 2)
+                let wrapped = TUIWrapping.lines(ordered.remainder, width: itemAvail)
+                for (idx, w) in wrapped.enumerated() {
+                    let p = idx == 0 ? "  \(prefixMarker)" : indentSpaces
+                    result.append(TUIStyledLine(p + w.text, style: defaultStyle))
+                }
+                isFirstAssistantLine = false
+                continue
+            }
+
+            // 7. 分割线 (--- or ***)
+            if trimmed == "---" || trimmed == "***" || trimmed == "------" {
+                let ruleWidth = min(maxTextWidth - 4, 40)
+                result.append(TUIStyledLine("  " + String(repeating: "┈", count: ruleWidth), style: .dim))
+                continue
+            }
+
+            // 8. 普通段落与文本
+            let prefixStr = isFirstAssistantLine ? "✦ " : "  "
+            let pWidth = TUIDisplayWidth.width(of: prefixStr)
+            let bodyAvail = max(10, maxTextWidth - pWidth)
+            let wrapped = TUIWrapping.lines(trimmed, width: bodyAvail)
+            for (idx, w) in wrapped.enumerated() {
+                let p = (isFirstAssistantLine && idx == 0) ? prefixStr : "  "
+                result.append(TUIStyledLine(p + w.text, style: defaultStyle))
+            }
+            isFirstAssistantLine = false
+        }
+
+        if inCodeBlock {
+            flushCodeBlock()
+        }
+
+        return result
+    }
+}
+
 public final class TranscriptViewport {
     public var entries: [TUITranscriptEntry] = []
     public private(set) var scrollOffset = 0
@@ -1320,13 +1543,11 @@ public final class TranscriptViewport {
         // 全量渲染单个 entry
         let result: [TUIStyledLine]
         if entry.kind == .user, width >= 4 {
-            let contentWidth = width - 4
+            let boxWidth = max(4, width)
+            let contentWidth = max(1, boxWidth - 4)
             let bodyLines = TUIWrapping.lines(entry.text, width: contentWidth)
-            let headerTag = " 👤 User "
-            let tagWidth = TUIDisplayWidth.width(of: headerTag)
-            let rightDashCount = max(0, width - 2 - 2 - tagWidth)
-            let topBorder = "╭─\(headerTag)\(String(repeating: "─", count: rightDashCount))╮"
-            let bottomBorder = "╰\(String(repeating: "─", count: width - 2))╯"
+            let topBorder = "╭\(String(repeating: "─", count: max(0, boxWidth - 2)))╮"
+            let bottomBorder = "╰\(String(repeating: "─", count: max(0, boxWidth - 2)))╯"
             result = [TUIStyledLine(topBorder, style: .accent)]
                 + bodyLines.map { line in
                     let padding = String(repeating: " ", count: max(0, contentWidth - TUIDisplayWidth.width(of: line.text)))
@@ -1335,14 +1556,15 @@ public final class TranscriptViewport {
                 + [TUIStyledLine(bottomBorder, style: .accent)]
         } else if entry.kind == .toolCall {
             let rawLines = entry.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let safeWidth = max(10, width - 4)
             let wrapLine: (String) -> [String] = { lineStr in
                 let lineWidth = TUIDisplayWidth.width(of: lineStr)
-                guard lineWidth > width, width > 12 else { return [lineStr] }
-                let wrapped = TUIWrapping.lines(lineStr, width: width)
+                guard lineWidth > safeWidth, safeWidth > 12 else { return [lineStr] }
+                let wrapped = TUIWrapping.lines(lineStr, width: safeWidth)
                 guard wrapped.count > 1 else { return [lineStr] }
                 var res: [String] = [wrapped[0].text]
                 let indent = "      "
-                let subWidth = max(10, width - 6)
+                let subWidth = max(10, safeWidth - 6)
                 for sub in wrapped.dropFirst() {
                     let subLines = TUIWrapping.lines(sub.text.trimmingCharacters(in: .whitespaces), width: subWidth)
                     for sl in subLines {
@@ -1372,45 +1594,47 @@ public final class TranscriptViewport {
         } else if entry.kind == .thinking {
             let rawLines = entry.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             let firstLine = rawLines.first ?? "Thinking"
+            let safeWidth = max(10, width - 4)
             if entry.collapsed {
-                let summaryLine = "  └ ▶ " + (rawLines.count > 1 ? rawLines[1].trimmingCharacters(in: .whitespaces) : "Thinking process")
+                let summaryRaw = rawLines.count > 1 ? rawLines[1].trimmingCharacters(in: .whitespaces) : "Thinking process"
+                let maxSummaryWidth = max(10, safeWidth - 6)
+                let wrappedSummary = TUIWrapping.lines(summaryRaw, width: maxSummaryWidth)
+                let summaryText = wrappedSummary.first?.text ?? summaryRaw
+                let summaryLine = "  └ ▶ " + summaryText
                 result = [
                     TUIStyledLine(firstLine, style: .thinkingHeader),
                     TUIStyledLine(summaryLine, style: .thinkingBody)
                 ]
             } else {
-                var lines: [TUIStyledLine] = [TUIStyledLine(firstLine, style: .thinkingHeader)]
+                let wrappedFirst = TUIWrapping.lines(firstLine, width: safeWidth)
+                var lines: [TUIStyledLine] = wrappedFirst.map { TUIStyledLine($0.text, style: .thinkingHeader) }
+                let contentWidth = max(10, safeWidth - 2)
                 for line in rawLines.dropFirst() {
-                    lines.append(TUIStyledLine("  " + line, style: .thinkingBody))
+                    let wrapped = TUIWrapping.lines(line, width: contentWidth)
+                    for w in wrapped {
+                        lines.append(TUIStyledLine("  " + w.text, style: .thinkingBody))
+                    }
                 }
                 result = lines
             }
         } else {
-            // Assistant 文本及其他消息：优雅 ✦ AI 引导与层次缩进
-            let prefixStr = entry.kind == .assistant ? "✦ " : "  "
-            let available = max(1, width - 2)
-            let bodyLines = TUIWrapping.lines(entry.text, width: available)
+            // Assistant 文本及其他消息：优雅 Markdown 结构化解析（代码块、标题、列表、引用）
             let style: TUIStyle = entry.kind == .assistant ? .assistantText : entry.style
-            result = bodyLines.enumerated().map { idx, line in
-                let lineText = line.text
-                if lineText.hasPrefix("⚡️") || lineText.contains("⚡️") {
-                    return TUIStyledLine("  " + lineText, style: .dim)
-                }
-                let p = idx == 0 ? prefixStr : "  "
-                return TUIStyledLine(p + lineText, style: style)
-            }
+            let mdLines = TUIMarkdownRenderer.render(entry.text, width: width, defaultStyle: style)
+            result = mdLines
 
             // 初始化增量 Layout 状态（针对正在运行/流式的条目）
             if entry.style == .accent {
+                let available = max(10, width - 5)
                 let completed = result.count > 1 ? Array(result.dropLast()) : []
-                let trailing = bodyLines.last?.text ?? ""
+                let trailing = result.last?.text ?? ""
                 activeIncrementalLayout = IncrementalLayoutState(
                     id: entry.id,
                     width: width,
                     style: entry.style,
                     kind: entry.kind,
                     rawText: entry.text,
-                    prefix: prefixStr,
+                    prefix: "✦ ",
                     availableWidth: available,
                     committedLines: completed,
                     trailingLine: trailing
@@ -1582,10 +1806,64 @@ private extension TUITimelineKind {
 }
 
 public final class StatusLine {
-    public var text = ""
+    public var leftText: String = ""
+    public var rightText: String = ""
+
+    public var text: String {
+        get {
+            if rightText.isEmpty { return leftText }
+            if leftText.isEmpty { return rightText }
+            return "\(leftText) · \(rightText)"
+        }
+        set {
+            leftText = newValue
+            rightText = ""
+        }
+    }
+
+    public init(leftText: String = "", rightText: String = "") {
+        self.leftText = leftText
+        self.rightText = rightText
+    }
+
+    public func setParts(left: String, right: String = "") {
+        self.leftText = left
+        self.rightText = right
+    }
 
     public func render(width: Int) -> TUIStyledLine {
-        TUIStyledLine(text, style: .dim)
+        let left = leftText.trimmingCharacters(in: .whitespaces)
+        let right = rightText.trimmingCharacters(in: .whitespaces)
+
+        if left.isEmpty && right.isEmpty {
+            return TUIStyledLine("", style: .dim)
+        }
+
+        let pad = 2
+        let leftWidth = TUIDisplayWidth.width(of: left)
+        let rightWidth = TUIDisplayWidth.width(of: right)
+
+        let minSeparation = 2
+        if !left.isEmpty && !right.isEmpty {
+            let available = max(0, width - (pad * 2))
+            if leftWidth + rightWidth + minSeparation <= available {
+                let spaceCount = available - leftWidth - rightWidth
+                let spaces = String(repeating: " ", count: spaceCount)
+                let indentation = String(repeating: " ", count: pad)
+                return TUIStyledLine("\(indentation)\(left)\(spaces)\(right)", style: .dim)
+            } else if leftWidth + rightWidth + 3 <= max(0, width - pad) {
+                let indentation = String(repeating: " ", count: pad)
+                return TUIStyledLine("\(indentation)\(left) · \(right)", style: .dim)
+            } else {
+                let indentation = width > leftWidth + pad ? String(repeating: " ", count: pad) : ""
+                return TUIStyledLine("\(indentation)\(left)", style: .dim)
+            }
+        }
+
+        let single = left.isEmpty ? right : left
+        let singleWidth = left.isEmpty ? rightWidth : leftWidth
+        let indentation = (width >= singleWidth + pad) ? String(repeating: " ", count: pad) : ""
+        return TUIStyledLine("\(indentation)\(single)", style: .dim)
     }
 }
 

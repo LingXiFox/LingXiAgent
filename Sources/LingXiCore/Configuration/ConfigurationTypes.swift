@@ -4,10 +4,10 @@ import LingXiProtocol
 public typealias CredentialRef = LingXiProtocol.CredentialRef
 
 public enum ConfigurationSchemaURI {
-    public static let core = "https://schemas.example.invalid/lingxiagent/config.schema.json"
-    public static let providers = "https://schemas.example.invalid/lingxiagent/providers.schema.json"
-    public static let mcp = "https://schemas.example.invalid/lingxiagent/mcp.schema.json"
-    public static let plugins = "https://schemas.example.invalid/lingxiagent/plugins.schema.json"
+    public static let core = "https://lingxiagent.lingxifox.cn/schema/config.json"
+    public static let providers = "https://lingxiagent.lingxifox.cn/schema/providers.json"
+    public static let mcp = "https://lingxiagent.lingxifox.cn/schema/mcp.json"
+    public static let plugins = "https://lingxiagent.lingxifox.cn/schema/plugins.json"
 }
 
 public enum ConfigurationFormat {

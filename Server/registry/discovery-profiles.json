@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "openrouter-public",
+      "kind": "openrouter-models",
+      "url": "https://openrouter.ai/api/v1/models",
+      "auth": "none",
+      "public": true,
+      "sourceAuthorityKind": "aggregator",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "ollama-cloud-public",
+      "kind": "ollama-tags",
+      "url": "https://ollama.com/api/tags",
+      "auth": "none",
+      "public": true,
+      "sourceAuthorityKind": "aggregator",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "openai-api-models",
+      "kind": "openai-models",
+      "url": "https://api.openai.com/v1/models",
+      "auth": "bearer",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "1h"
+    },
+    {
+      "id": "deepseek-api-models",
+      "kind": "openai-models",
+      "url": "https://api.deepseek.com/models",
+      "auth": "bearer",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "xai-api-models",
+      "kind": "openai-models",
+      "url": "https://api.x.ai/v1/models",
+      "auth": "bearer",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "anthropic-api-models",
+      "kind": "anthropic-models",
+      "url": "https://api.anthropic.com/v1/models",
+      "auth": "apiKeyHeader",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "headers": { "anthropic-version": "2023-06-01" },
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "gemini-api-models",
+      "kind": "gemini-models",
+      "url": "https://generativelanguage.googleapis.com/v1beta/models",
+      "auth": "apiKeyQuery",
+      "authKeyParam": "key",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "alibaba-bailian-models",
+      "kind": "openai-models",
+      "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+      "auth": "bearer",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "zai-api-models",
+      "kind": "openai-models",
+      "url": "https://api.z.ai/api/paas/v4/models",
+      "auth": "bearer",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "minimax-api-models",
+      "kind": "openai-models",
+      "url": "https://api.minimax.io/v1/models",
+      "auth": "bearer",
+      "public": false,
+      "sourceAuthorityKind": "vendorFirstParty",
+      "cacheTTL": "6h"
+    },
+    {
+      "id": "ollama-local-tags",
+      "kind": "ollama-tags",
+      "url": "http://localhost:11434/api/tags",
+      "auth": "none",
+      "public": false,
+      "sourceAuthorityKind": "localRuntime",
+      "cacheTTL": "5m"
+    },
+    {
+      "id": "llama-cpp-local-models",
+      "kind": "openai-models",
+      "url": "http://localhost:8080/v1/models",
+      "auth": "none",
+      "public": false,
+      "sourceAuthorityKind": "localRuntime",
+      "cacheTTL": "5m"
+    },
+    {
+      "id": "lm-studio-local-models",
+      "kind": "openai-models",
+      "url": "http://localhost:1234/v1/models",
+      "auth": "none",
+      "public": false,
+      "sourceAuthorityKind": "localRuntime",
+      "cacheTTL": "5m"
+    }
+  ]
+}

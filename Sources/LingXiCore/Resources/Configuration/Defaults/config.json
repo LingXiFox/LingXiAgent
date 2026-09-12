@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schemas.example.invalid/lingxiagent/config.schema.json",
+  "$schema": "https://lingxiagent.lingxifox.cn/schema/config.json",
   "agent": {
     "executionProfile": "workspace",
     "codeIntelligenceEnabled": false,

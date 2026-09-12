@@ -108,18 +108,12 @@ public enum CompletionCLI {
         }
 
         _lingxiagent_models() {
-            local models; models=(
-                'gpt-5-5'
-                'gpt-5'
-                'gpt-4o'
-                'o1'
-                'o3-mini'
-                'claude-3-7-sonnet'
-                'claude-3-5-sonnet'
-                'deepseek-chat'
-                'deepseek-reasoner'
-            )
-            _describe 'models' models
+            # Model IDs are discovered against the account, so the list is read
+            # live rather than baked into this script. A static roster here
+            # would go stale the moment a vendor ships a new model.
+            local models
+            models=(${(f)"$(lingxiagent models --ids 2>/dev/null)"})
+            (( ${#models} )) && _describe 'models' models
         }
 
         compdef _lingxiagent lingxiagent

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schemas.example.invalid/lingxiagent/providers.schema.json",
+  "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
   "providers": {},
   "version": 1
 }

@@ -45,8 +45,6 @@ import Testing
         )
 
         #expect(output.contains("Successfully authenticated DeepSeek API"))
-        #expect(output.contains("deepseek-api/deepseek-chat"))
-        #expect(output.contains("deepseek-api/deepseek-reasoner"))
 
         // Verify stored in encrypted vault
         let storedSecret = try await credStore.secret(for: CredentialRef("provider-deepseek-api-key"))
@@ -56,8 +54,13 @@ import Testing
         let snapshot = try await configStore.load()
         let deepseek = try #require(snapshot.providers.providers["deepseek-api"])
         #expect(deepseek.options.apiKey == "{vault:provider-deepseek-api-key}")
-        #expect(deepseek.models["deepseek-chat"] != nil)
-        #expect(deepseek.models["deepseek-reasoner"] != nil)
+
+        // Login guarantees a credential, not a model list. Models are
+        // discovered against the vendor's own listing with the credential just
+        // stored, so an offline login legitimately yields none — asserting a
+        // specific model ID here would re-introduce the built-in roster this
+        // refactor removed.
+        #expect(deepseek.models.isEmpty)
 
         // Verify status
         let statusOutput = try await AuthCLI.run(

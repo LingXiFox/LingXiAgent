@@ -1,0 +1,149 @@
+{
+	# The admin API stays reachable, but only over a loopback Unix socket owned
+	# by the caddy user with mode 0600 — no TCP port, no network exposure. This
+	# is what lets configuration changes be applied with `systemctl reload caddy`
+	# (a hot reload with no dropped connections) instead of a restart.
+	#
+	# `admin off` was the previous setting and made hot reload impossible: every
+	# Caddyfile change required restarting the process, briefly interrupting
+	# every site it serves.
+	admin unix//run/caddy/admin.sock|0600
+
+	debug
+	email lingxifox@gmail.com
+}
+
+http://lingxifox.cn, http://www.lingxifox.cn {
+	redir https://www.lingxifox.cn{uri} permanent
+}
+
+www.lingxifox.cn {
+	tls {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
+			}
+		}
+	}
+
+	encode zstd gzip
+
+	handle {
+		reverse_proxy 127.0.0.1:3000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/lingxifox-access.log
+		format console
+	}
+}
+
+lingxifox.cn {
+	redir https://www.lingxifox.cn{uri} permanent
+}
+
+http://lingxiagent.lingxifox.cn {
+	# Unified Model Registry. The catalog service owns /v1/*; the static file
+	# root remains for the JSON schemas and for the deprecated /models/* files
+	# that are still served read-only during the client migration.
+	@static {
+		not path /v1/*
+	}
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	handle {
+		root * /var/www/lingxiagent
+
+		@models {
+			path_regexp model ^/models/([a-zA-Z0-9_\-]+)/?$
+		}
+		rewrite @models /models/{re.model.1}.json
+
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		-Server
+	}
+
+	# Static files keep the long TTL they had before. The catalog service sets
+	# its own, much shorter, Cache-Control and revalidates on ETag.
+	header @static Cache-Control "public, max-age=3600"
+}
+
+lingxiagent.lingxifox.cn {
+	tls {
+		ca https://acme.zerossl.com/v2/DV90
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
+			}
+		}
+	}
+
+	@static {
+		not path /v1/*
+	}
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	handle {
+		root * /var/www/lingxiagent
+
+		@models {
+			path_regexp model ^/models/([a-zA-Z0-9_\-]+)/?$
+		}
+		rewrite @models /models/{re.model.1}.json
+
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	header @static Cache-Control "public, max-age=3600"
+
+	log {
+		output file /var/log/caddy/lingxiagent-access.log
+		format console
+	}
+}

@@ -39,6 +39,8 @@ public final class ApplicationTUI {
         case completion(tokenStart: Int, selected: Int)
         case modelPicker(query: String, selected: Int)
         case variantPicker(modelID: String, query: String, selected: Int, variants: [String])
+        case sessionPicker(query: String, selected: Int)
+        case configModal(selected: Int)
     }
 
     public let options: TUILaunchOptions
@@ -47,11 +49,14 @@ public final class ApplicationTUI {
     private let completionView = CompletionView()
     private var store: ApplicationStore?
     private var latestState = ApplicationState()
+    private var activeDisplayedSessionID: SessionID?
     private var commands: [ApplicationCommand] = []
     private var overlay: Overlay?
     private var hitlSelectedOption = 0
     private var activeInteractionID: InteractionID?
     private var referenceCandidates: [String] = []
+    private var referenceScanTask: Task<Void, Never>?
+    private var renderedPreferences: UserPreferences?
     private var spinnerIndex = 0
     private var commandEntries: [TUITranscriptEntry] = []
     private var shouldQuit = false
@@ -80,7 +85,7 @@ public final class ApplicationTUI {
         if dirtyFlags.contains(.content) {
             self.refreshView(self.latestState)
         } else if dirtyFlags.contains(.animation) {
-            self.view.statusLine.text = self.statusText(self.latestState)
+            self.updateStatusLine(self.latestState)
             if self.waitingStartedAt != nil {
                 self.refreshWaitingIndicator()
             }
@@ -93,13 +98,16 @@ public final class ApplicationTUI {
         self.terminal = POSIXTerminalBackend(noAltScreen: options.noAltScreen)
         animationNow = animationClock.now
         let prefs = UserPreferencesStore.shared.load()
-        let initialModel = options.initialModelID ?? prefs.lastModelID ?? "deepseek-v4-flash"
+        // No canned default model: with nothing selected the model picker
+        // decides. A hardcoded ID here would advertise a model this account may
+        // not be able to reach.
+        let initialModel = options.initialModelID ?? prefs.lastModelID ?? ""
         let initialEffort = options.reasoningEffort?.rawValue ?? prefs.lastReasoningEffort ?? "auto"
+        // The provider is whatever the model reference names, never inferred
+        // from the model ID's spelling.
         let initialProvider: String = {
-            if let slashIdx = initialModel.firstIndex(of: "/") {
-                return String(initialModel[..<slashIdx]).uppercased()
-            }
-            return initialModel.lowercased().contains("deepseek") ? "DeepSeek" : "Provider"
+            guard let slashIdx = initialModel.firstIndex(of: "/") else { return "" }
+            return String(initialModel[..<slashIdx])
         }()
         let initialPermission = options.isYoloMode ? "⚡ YOLO" : "Ask/Workspace"
         view.heroConfig = TUIHeroConfig(
@@ -139,7 +147,7 @@ public final class ApplicationTUI {
             debug("connecting.frame.begin")
             let initialWorkspace = FileManager.default.currentDirectoryPath.split(separator: "/").last.map(String.init) ?? "LingXiAgent"
             view.header.subtitle = options.isYoloMode ? "⚡ YOLO · Connecting" : "Connecting"
-            view.statusLine.text = "📂 \(initialWorkspace)  ·  ● 正在连接..."
+            view.statusLine.setParts(left: "● 正在连接...", right: "📂 \(initialWorkspace)")
             render()
             debug("connecting.frame.end")
 
@@ -159,6 +167,7 @@ public final class ApplicationTUI {
             }
             defer { updates.cancel() }
             defer { actionTail?.cancel() }
+            defer { referenceScanTask?.cancel() }
 
             let animationUpdates = Task { [weak self] in
                 guard let self else { return }
@@ -184,8 +193,6 @@ public final class ApplicationTUI {
                     self?.debug("connect.begin")
                     try await store.connect()
                     self?.debug("connect.end")
-                    self?.referenceCandidates = await store.workspaceReferenceCandidates()
-                    self?.debug("workspace.references.end")
                     await store.dispatch(.listSessions)
                     self?.debug("sessions.list.end")
 
@@ -232,7 +239,14 @@ public final class ApplicationTUI {
                     }
                 case let .stateUpdate(state):
                     if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
-                        referenceCandidates = await store.workspaceReferenceCandidates()
+                        referenceScanTask?.cancel()
+                        referenceCandidates = []
+                        referenceScanTask = Task { [weak self, store] in
+                            let candidates = await store.workspaceReferenceCandidates()
+                            guard !Task.isCancelled else { return }
+                            self?.referenceCandidates = candidates
+                            self?.frameScheduler.markDirty(.content)
+                        }
                     }
                     latestState = state
                     if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
@@ -259,6 +273,10 @@ public final class ApplicationTUI {
     }
 
     private func handle(_ event: TUIInputEvent, store: ApplicationStore) async {
+        if event == .quit || event == .interrupt {
+            shouldQuit = true
+            return
+        }
         if latestState.activeInteraction != nil {
             await handleInteraction(event, store: store)
             return
@@ -270,7 +288,7 @@ public final class ApplicationTUI {
         }
 
         if case .completion = overlay {
-            await handleCompletion(event)
+            await handleCompletion(event, store: store)
             return
         }
 
@@ -281,6 +299,16 @@ public final class ApplicationTUI {
 
         if case .variantPicker = overlay {
             await handleVariantPicker(event, store: store)
+            return
+        }
+
+        if case .sessionPicker = overlay {
+            await handleSessionPicker(event, store: store)
+            return
+        }
+
+        if case .configModal = overlay {
+            await handleConfigModal(event)
             return
         }
 
@@ -466,8 +494,19 @@ public final class ApplicationTUI {
         }
     }
 
-    private func handleCompletion(_ event: TUIInputEvent) async {
+    private func handleCompletion(_ event: TUIInputEvent, store: ApplicationStore) async {
         guard case let .completion(tokenStart, selected) = overlay else { return }
+        let input = view.composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if event == .enter, tokenStart == 0, allCommands.contains(where: {
+            (["/" + $0.name] + $0.aliases.map { "/" + $0 }).contains(input.lowercased())
+        }) {
+            view.composer.commitHistory()
+            view.composer.clear()
+            overlay = nil
+            view.setFocus(.composer)
+            executeLocalOrApplicationCommand(input, store: store)
+            return
+        }
         switch event {
         case .up, .down, .pageUp, .pageDown:
             completionView.handle(event)
@@ -513,7 +552,7 @@ public final class ApplicationTUI {
 
     private func modelOptions(query: String) -> [ModelOptionItem] {
         var base: [ModelOptionItem] = []
-        let currentID = latestState.currentModelID ?? "bai/deepseek-v4-flash"
+        let currentID = latestState.currentModelID ?? ""
         let catalog = latestState.models
 
         // 1. Recent / Active 分组（当前使用的活动模型排首位）
@@ -535,47 +574,28 @@ public final class ApplicationTUI {
             isFree: false
         ))
 
-        // 辅助映射：将知名内置 providerID 转为友好的分组名称和显示名称
-        let knownVendors: [String: String] = [
-            "openai-codex": "OpenAI (ChatGPT Plus)",
-            "openai-api": "OpenAI API",
-            "anthropic-api": "Anthropic",
-            "anthropic-claude-subscription": "Anthropic (Claude)",
-            "deepseek-api": "DeepSeek",
-            "gemini-api": "Google Gemini",
-            "gemini-code-assist": "Google Code Assist",
-            "antigravity": "Google Antigravity",
-            "ollama-local": "Ollama (Local)",
-            "llama-cpp-local": "llama.cpp (Local)",
-            "lm-studio-local": "LM Studio (Local)",
-            "openrouter": "OpenRouter",
-            "xai-api": "xAI Grok",
-            "xai-grok-subscription": "xAI Grok Subscription",
-            "alibaba-bailian-api": "Alibaba Bailian",
-            "minimax-api": "MiniMax",
-        ]
-
-        // 构造提供商分组字典与排序权值
+        // Grouping uses whatever display name the registry publishes for the
+        // product. No product is special-cased here, so a product added to the
+        // registry groups correctly without a client change.
         func groupInfo(for providerID: String, configured: Bool) -> (groupName: String, orderPriority: Int) {
-            if let friendlyName = knownVendors[providerID] {
-                if configured {
-                    return (friendlyName, 1) // 已配置/已登录的内置提供商（如 ChatGPT Plus）排最前
-                } else {
-                    return ("\(friendlyName) (Built-in)", 3) // 未配置的内置提供商排在后面
-                }
-            } else {
-                // 自定义提供商 (如 bai)
-                let customName = latestState.providers.first(where: { $0.id == providerID || $0.productID == providerID })?.displayName ?? providerID.uppercased()
-                return ("Custom: \(customName)", 2) // 自定义提供商
-            }
+            let displayName = latestState.providers
+                .first(where: { $0.id == providerID || $0.productID == providerID })?
+                .displayName ?? providerID
+            return configured ? (displayName, 1) : ("\(displayName) (Built-in)", 3)
         }
 
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var otherItems: [(item: ModelOptionItem, priority: Int)] = []
+        var seenDisplayKeys = Set<String>()
 
         for m in catalog {
             // 跳过当前活动模型，避免在 Recent 之外重复展示
             if m.id == currentID || m.modelID == currentID { continue }
+
+            // 未输入 query 时，过滤内部 watermark 影子镜像
+            if m.modelID.contains("-wm") && !q.contains("wm") {
+                continue
+            }
 
             // 未输入 query 时，绝不展示未配置的内置提供商模型
             if q.isEmpty && !m.configured {
@@ -585,9 +605,32 @@ public final class ApplicationTUI {
             let (gName, priority) = groupInfo(for: m.providerID, configured: m.configured)
             let isFree = m.modelID.contains("flash") || m.modelID.contains("free") || m.displayName.lowercased().contains("free")
 
+            // 智能消歧：若 displayName 相同，按 modelID 补充变体标签，防止视觉重复
+            var cleanDisplayName = m.displayName.isEmpty ? m.modelID : m.displayName
+            let lowerModelID = m.modelID.lowercased()
+            let lowerDisplay = cleanDisplayName.lowercased()
+            if lowerModelID.contains("instant") && !lowerDisplay.contains("instant") {
+                cleanDisplayName += " Instant"
+            } else if (lowerModelID.contains("thinking") || lowerModelID.contains("-t-mini")) && !lowerDisplay.contains("thinking") {
+                if lowerModelID.contains("mini") && !lowerDisplay.contains("mini") {
+                    cleanDisplayName += " Thinking Mini"
+                } else {
+                    cleanDisplayName += " Thinking"
+                }
+            } else if lowerModelID.contains("mini") && !lowerDisplay.contains("mini") {
+                cleanDisplayName += " Mini"
+            }
+
+            // 避免同 provider 下完全相同的 displayName 重复
+            let dedupeKey = "\(m.providerID)::\(cleanDisplayName)"
+            if seenDisplayKeys.contains(dedupeKey) {
+                cleanDisplayName = "\(cleanDisplayName) (\(m.modelID))"
+            }
+            seenDisplayKeys.insert("\(m.providerID)::\(cleanDisplayName)")
+
             let item = ModelOptionItem(
                 modelID: m.id,
-                displayName: m.displayName.isEmpty ? m.modelID : m.displayName,
+                displayName: cleanDisplayName,
                 providerID: m.providerID,
                 group: gName,
                 isFree: isFree
@@ -683,6 +726,127 @@ public final class ApplicationTUI {
             UserPreferencesStore.shared.update(modelID: modelID, reasoningEffort: effort.rawValue)
             commandEntries.append(TUITranscriptEntry(kind: .result, text: "✓ 已选择模型: \(modelID) · 思考等级: \(effort.rawValue)"))
             refreshView(latestState)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Session Picker Modal (/resume)
+
+    private func openSessionPicker() {
+        overlay = .sessionPicker(query: "", selected: 0)
+    }
+
+    private func sessionOptions(query: String) -> [SessionSummary] {
+        SessionCatalog.groups(latestState.sessionCatalog, currentDirectory: currentDirectory, query: query).flatMap(\.sessions)
+    }
+
+    private var currentDirectory: String {
+        latestState.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
+    }
+
+    private func handleSessionPicker(_ event: TUIInputEvent, store: ApplicationStore) async {
+        guard case let .sessionPicker(query, selected) = overlay else { return }
+        let items = sessionOptions(query: query)
+        switch event {
+        case .up, .scrollUp:
+            overlay = .sessionPicker(query: query, selected: max(0, selected - 1))
+        case .down, .scrollDown:
+            overlay = .sessionPicker(query: query, selected: min(max(0, items.count - 1), selected + 1))
+        case .pageUp:
+            overlay = .sessionPicker(query: query, selected: max(0, selected - 5))
+        case .pageDown:
+            overlay = .sessionPicker(query: query, selected: min(max(0, items.count - 1), selected + 5))
+        case .escape:
+            overlay = nil
+            view.setFocus(.composer)
+        case .backspace:
+            var newQuery = query
+            _ = newQuery.popLast()
+            overlay = .sessionPicker(query: newQuery, selected: 0)
+        case let .character(c):
+            let newQuery = query + String(c)
+            overlay = .sessionPicker(query: newQuery, selected: 0)
+        case .enter:
+            guard items.indices.contains(selected) else { return }
+            let chosen = items[selected]
+            overlay = nil
+            view.setFocus(.composer)
+            commandEntries.append(TUITranscriptEntry(kind: .result, text: "✓ 已恢复会话: \(chosen.title ?? chosen.sessionID.rawValue)"))
+            enqueue {
+                await store.dispatch(.switchSession(chosen.sessionID))
+            }
+        default:
+            break
+        }
+    }
+
+    // MARK: - Config Modal (/config)
+
+    private func openConfigModal() {
+        overlay = .configModal(selected: 0)
+    }
+
+    private struct TUIConfigItem {
+        let key: String
+        let title: String
+        let description: String
+        let isOn: Bool
+    }
+
+    private func currentConfigItems() -> [TUIConfigItem] {
+        let prefs = UserPreferencesStore.shared.load()
+        return [
+            TUIConfigItem(
+                key: "thinking",
+                title: "思考过程默认展开",
+                description: "开启后模型思考过程自动展开显示，折叠时仅保留概要标签",
+                isOn: prefs.expandThinking ?? false
+            ),
+            TUIConfigItem(
+                key: "tools",
+                title: "工具调用详情展开",
+                description: "开启后工具调用入参和输出自动展开，折叠时以紧凑胶囊显示",
+                isOn: prefs.expandTools ?? false
+            ),
+            TUIConfigItem(
+                key: "sidebar",
+                title: "监控侧边栏显示",
+                description: "开启后屏幕右侧显示活动状态、MCP 服务与任务监控面板",
+                isOn: prefs.showSidebar ?? true
+            )
+        ]
+    }
+
+    private func handleConfigModal(_ event: TUIInputEvent) async {
+        guard case let .configModal(selected) = overlay else { return }
+        let items = currentConfigItems()
+        switch event {
+        case .up, .scrollUp:
+            overlay = .configModal(selected: max(0, selected - 1))
+        case .down, .scrollDown:
+            overlay = .configModal(selected: min(max(0, items.count - 1), selected + 1))
+        case .escape:
+            overlay = nil
+            view.setFocus(.composer)
+        case .enter, .left, .right, .character(" "):
+            guard items.indices.contains(selected) else { return }
+            let item = items[selected]
+            let newStatus = !item.isOn
+            switch item.key {
+            case "thinking":
+                UserPreferencesStore.shared.update(expandThinking: newStatus)
+                committedEntryCache.removeAll(keepingCapacity: true)
+            case "tools":
+                UserPreferencesStore.shared.update(expandTools: newStatus)
+                committedEntryCache.removeAll(keepingCapacity: true)
+            case "sidebar":
+                UserPreferencesStore.shared.update(showSidebar: newStatus)
+            default:
+                break
+            }
+            refreshView(latestState)
+            overlay = .configModal(selected: selected)
         default:
             break
         }
@@ -836,9 +1000,24 @@ public final class ApplicationTUI {
                 }
             }
         case "/model", "/m":
-            let parts = input.split(whereSeparator: \ .isWhitespace).map(String.init)
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
             if parts.count == 1 {
                 openModelPicker()
+                return
+            }
+            fallthrough
+        case "/resume":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 {
+                openSessionPicker()
+                enqueue { await store.dispatch(.listSessions) }
+                return
+            }
+            fallthrough
+        case "/config", "/preference", "/set":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 {
+                openConfigModal()
                 return
             }
             fallthrough
@@ -962,19 +1141,17 @@ public final class ApplicationTUI {
             if !latestState.models.isEmpty {
                 rawOptions = latestState.models.map { ($0.id, $0.id, "\($0.displayName) (\($0.providerID))") }
             } else {
-                rawOptions = [
-                    ("deepseek-v4-flash", "deepseek-v4-flash", "DeepSeek Flash 快速模型"),
-                    ("deepseek-chat", "deepseek-chat", "DeepSeek V3 通用对话模型"),
-                    ("deepseek-reasoner", "deepseek-reasoner", "DeepSeek R1 深度推理模型"),
-                    ("claude-3-5-sonnet", "claude-3-5-sonnet", "Anthropic Claude 3.5 Sonnet"),
-                    ("gpt-4o", "gpt-4o", "OpenAI GPT-4o")
-                ]
+                // No models known yet — either no product is connected or
+                // discovery has not completed. A canned roster here would offer
+                // models this account may not be able to reach at all.
+                rawOptions = []
             }
         case "resume":
             let currentCwd = FileManager.default.currentDirectoryPath
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "MM-dd HH:mm"
-            rawOptions = latestState.sessionCatalog.map { s in
+            let sortedCatalog = latestState.sessionCatalog.sorted(by: { $0.updatedAt > $1.updatedAt })
+            rawOptions = sortedCatalog.map { s in
                 let isCurrent = (s.workingDirectory == currentCwd)
                 let dirName = URL(fileURLWithPath: s.workingDirectory ?? currentCwd).lastPathComponent
                 let dirTag = isCurrent ? "[当前] " : "[\(dirName)] "
@@ -1022,22 +1199,29 @@ public final class ApplicationTUI {
     }
 
     private func refreshView(_ state: ApplicationState) {
+        let preferences = UserPreferencesStore.shared.load()
+        if renderedPreferences != preferences {
+            renderedPreferences = preferences
+            committedEntryCache.removeAll(keepingCapacity: true)
+        }
         animationNow = animationClock.now
         if activeInteractionID != state.activeInteraction?.interactionID {
             activeInteractionID = state.activeInteraction?.interactionID
             hitlSelectedOption = 0
             if state.activeInteraction != nil { view.composer.clear() }
         }
-        if state.activeSessionID != latestState.activeSessionID {
+        if state.activeSessionID != activeDisplayedSessionID {
+            activeDisplayedSessionID = state.activeSessionID
             commandEntries.removeAll()
             committedEntryCache.removeAll(keepingCapacity: true)
             activityStartedAt.removeAll(keepingCapacity: true)
             activityFinishedDuration.removeAll(keepingCapacity: true)
             userToggledEntries.removeAll(keepingCapacity: true)
+            view.transcript.entries.removeAll()
         }
         let yoloPrefix = options.isYoloMode ? "⚡ YOLO · " : ""
         view.header.subtitle = "\(yoloPrefix)\(state.activeSessionState?.title ?? state.connectionState.status.rawValue)"
-        view.statusLine.text = statusText(state)
+        updateStatusLine(state)
 
         let session = state.activeSessionState
         let nodes = session?.timelineNodes ?? []
@@ -1045,34 +1229,24 @@ public final class ApplicationTUI {
         var entries: [TUITranscriptEntry] = []
         entries.reserveCapacity(nodes.count + commandEntries.count + 1)
 
+        let lastAssistantNodeID: TimelineNodeID? = nodes.reversed().first(where: { node in
+            if case let .message(msg) = node.kind, msg.role == .assistant {
+                return true
+            }
+            return false
+        })?.id
+
         var hasActiveStreamingNode = false
         for node in nodes {
-            if case .runTerminal = node.kind {
-                // 内部生命周期元数据（如 Run · completed），不应作为消息暴露给用户
-                continue
-            }
-            let isMutable: Bool
             switch node.kind {
             case let .message(msg):
-                isMutable = msg.isStreaming
                 if msg.isStreaming { hasActiveStreamingNode = true }
             case let .thinking(th):
-                isMutable = th.isStreaming || !th.isComplete
                 if th.isStreaming || !th.isComplete { hasActiveStreamingNode = true }
             case let .tool(tl):
-                isMutable = [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase)
-                if isMutable { hasActiveStreamingNode = true }
+                if [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase) { hasActiveStreamingNode = true }
             case .interaction, .subagent, .error, .runTerminal:
-                isMutable = false
-            }
-
-            if !isMutable, let cached = committedEntryCache[node.id] {
-                entries.append(cached)
-            } else if let rendered = renderEntry(node) {
-                if !isMutable {
-                    committedEntryCache[node.id] = rendered
-                }
-                entries.append(rendered)
+                break
             }
         }
 
@@ -1083,6 +1257,35 @@ public final class ApplicationTUI {
             isRateLimited ||
             (state.status == .ready && (state.activeSessionState?.activeRootRunID != nil || (state.activeSessionState?.queuedTurns.count ?? 0) > 0))
         )
+        let isSessionIdle = !hasActiveStreamingNode && !isWaitingForProvider && !isActive(state)
+
+        for node in nodes {
+            if case .runTerminal = node.kind {
+                // 内部生命周期元数据（如 Run · completed），不应作为消息暴露给用户
+                continue
+            }
+            let isMutable: Bool
+            switch node.kind {
+            case let .message(msg):
+                isMutable = msg.isStreaming
+            case let .thinking(th):
+                isMutable = th.isStreaming || !th.isComplete
+            case let .tool(tl):
+                isMutable = [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase)
+            case .interaction, .subagent, .error, .runTerminal:
+                isMutable = false
+            }
+
+            let isTerminalAssistant = isSessionIdle && (node.id == lastAssistantNodeID)
+            if !isMutable && !isTerminalAssistant, let cached = committedEntryCache[node.id] {
+                entries.append(cached)
+            } else if let rendered = renderEntry(node, isTerminalAssistant: isTerminalAssistant) {
+                if !isMutable && !isTerminalAssistant {
+                    committedEntryCache[node.id] = rendered
+                }
+                entries.append(rendered)
+            }
+        }
 
         if isWaitingForProvider {
             if waitingStartedAt == nil { waitingStartedAt = animationNow }
@@ -1093,8 +1296,6 @@ public final class ApplicationTUI {
             let waitingText: String
             if isRateLimited {
                 waitingText = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
-            } else if elapsed >= 8 {
-                waitingText = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)... (上游响应较慢或限流重试中)"
             } else {
                 waitingText = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
             }
@@ -1127,15 +1328,13 @@ public final class ApplicationTUI {
         latestState = state
 
         let isHero = isHeroEmptyState(state)
+        let prefs = UserPreferencesStore.shared.load()
         if isHero {
-            let prefs = UserPreferencesStore.shared.load()
             let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
-            let model = state.currentModelID ?? prefs.lastModelID ?? "deepseek-v4-flash"
+            let model = state.currentModelID ?? prefs.lastModelID ?? ""
             let provider: String = {
-                if let slashIdx = model.firstIndex(of: "/") {
-                    return String(model[..<slashIdx]).uppercased()
-                }
-                return model.lowercased().contains("deepseek") ? "DeepSeek" : "Provider"
+                guard let slashIdx = model.firstIndex(of: "/") else { return "" }
+                return String(model[..<slashIdx])
             }()
             let effort = state.nextTurnReasoningEffort?.rawValue ?? prefs.lastReasoningEffort ?? state.effectiveReasoningEffort.rawValue
             let permission = currentPermissionDisplayName(from: state)
@@ -1150,7 +1349,7 @@ public final class ApplicationTUI {
             view.sidebarModel = nil
         } else {
             view.heroConfig = nil
-            view.sidebarModel = buildSidebarModel(from: state)
+            view.sidebarModel = (prefs.showSidebar ?? true) ? buildSidebarModel(from: state) : nil
         }
     }
 
@@ -1421,8 +1620,6 @@ public final class ApplicationTUI {
         let text: String
         if isRateLimited {
             text = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
-        } else if elapsed >= 8 {
-            text = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)... (上游响应较慢或限流重试中)"
         } else {
             text = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
         }
@@ -1461,6 +1658,10 @@ public final class ApplicationTUI {
             return renderModelPickerOverlay(query: query, selected: selected)
         case let .variantPicker(modelID, query, selected, variants):
             return renderVariantPickerOverlay(modelID: modelID, query: query, selected: selected, variants: variants)
+        case let .sessionPicker(query, selected):
+            return renderSessionPickerOverlay(query: query, selected: selected)
+        case let .configModal(selected):
+            return renderConfigModalOverlay(selected: selected)
         case nil:
             return nil
         }
@@ -1608,6 +1809,115 @@ public final class ApplicationTUI {
         return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
     }
 
+    private func renderSessionPickerOverlay(query: String, selected: Int) -> TUIOverlayModel {
+        Self.sessionPickerOverlay(sessions: latestState.sessionCatalog, currentDirectory: currentDirectory,
+                                  activeSessionID: latestState.activeSessionID, query: query, selected: selected, size: terminal.size)
+    }
+
+    static func sessionPickerOverlay(sessions: [SessionSummary], currentDirectory: String, activeSessionID: SessionID?,
+                                     query: String, selected: Int, size: TUISize) -> TUIOverlayModel {
+        let width = max(4, min(90, size.width - 2))
+        let innerWidth = max(1, width - 4)
+        let rowCount = max(3, min(16, size.height - 8))
+        let groups = SessionCatalog.groups(sessions, currentDirectory: currentDirectory, query: query)
+        let count = groups.reduce(0) { $0 + $1.sessions.count }
+        let selection = max(0, min(selected, count - 1))
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var rows: [TUIStyledLine] = []
+        var selectedRow = 0
+        var index = 0
+        var groupRows: [Int] = []
+        for group in groups {
+            groupRows.append(rows.count)
+            let current = group.directory == URL(fileURLWithPath: currentDirectory).standardizedFileURL.path
+            let directory = group.directory.isEmpty ? "未知项目" : group.directory
+            rows.append(TUIStyledLine("\(current ? "[当前项目] " : "[项目] ")\(directory)", style: .modalGroup))
+            for session in group.sessions {
+                if index == selection { selectedRow = rows.count }
+                let marker = index == selection ? "> " : "  "
+                let active = session.sessionID == activeSessionID ? "● " : ""
+                rows.append(TUIStyledLine("\(marker)\(active)\(session.title ?? "未命名会话")",
+                                           style: index == selection ? .modalHighlight : .modalItem))
+                rows.append(TUIStyledLine("  \(formatter.string(from: session.updatedAt)) · \(session.messageCount)条 · \(session.sessionID.rawValue.prefix(8))",
+                                           style: .modalItemDim))
+                index += 1
+            }
+        }
+        if rows.isEmpty { rows.append(TUIStyledLine("暂无匹配的历史会话", style: .modalItemDim)) }
+        let start = max(0, min(selectedRow - rowCount / 2, max(0, rows.count - rowCount)))
+        var visible = Array(rows.dropFirst(start).prefix(rowCount))
+        // Keep the project label visible when scrolling through a large group.
+        if !groupRows.contains(start), let header = groupRows.last(where: { $0 < start }) {
+            visible = [rows[header]] + Array(rows.dropFirst(start).prefix(rowCount - 1))
+        }
+        var lines = [
+            TUIStyledLine("恢复会话 · 当前项目优先 / 最近更新在前", style: .modalTitle),
+            TUIStyledLine(query.isEmpty ? "搜索标题、会话 ID 或项目路径…" : query + "│", style: .modalSearchPlaceholder)
+        ]
+        lines += visible
+        lines.append(TUIStyledLine("\(count == 0 ? 0 : selection + 1)/\(count) · ↑↓ 移动 · Enter 恢复 · Esc 关闭", style: .modalItemDim))
+        lines = lines.map { TUIStyledLine(modalText($0.text, width: innerWidth), style: $0.style) }
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: width, modalHeight: lines.count + 2)
+    }
+
+    private static func modalText(_ text: String, width: Int) -> String {
+        let text = text.components(separatedBy: .controlCharacters).joined(separator: " ")
+        var result = ""
+        var used = 0
+        for character in text {
+            let cells = TUIDisplayWidth.width(of: character)
+            if used + cells > width { break }
+            result.append(character)
+            used += cells
+        }
+        return result + String(repeating: " ", count: max(0, width - used))
+    }
+
+    private func renderConfigModalOverlay(selected: Int) -> TUIOverlayModel {
+        let items = currentConfigItems()
+        let totalWidth = max(4, min(72, terminal.size.width - 2))
+        let innerWidth = max(1, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header
+        let titleLeft = "TUI 偏好配置 (Preferences)"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Tip
+        let tip = "  ↑/↓ 切换选项 · Space/Enter/←/→ 切换状态 · Esc 退出"
+        lines.append(TUIStyledLine(tip.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Items
+        let safeSelected = items.isEmpty ? 0 : max(0, min(items.count - 1, selected))
+        for (i, item) in items.enumerated() {
+            let isSelected = i == safeSelected
+            let cursor = isSelected ? "> " : "  "
+            let statusTag = item.isOn ? "[ ON ]" : "[ OFF ]"
+            let left = "\(cursor)\(item.title)"
+            let pad = max(1, innerWidth - TUIDisplayWidth.width(of: left) - TUIDisplayWidth.width(of: statusTag))
+            let rowText = left + String(repeating: " ", count: pad) + statusTag
+
+            if isSelected {
+                lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+            } else {
+                lines.append(TUIStyledLine(rowText, style: item.isOn ? .modalActiveDot : .modalItem))
+            }
+
+            let descText = "    \(item.description)"
+            lines.append(TUIStyledLine(descText.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+            lines.append(TUIStyledLine("", style: .modalBackground))
+        }
+
+        lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
+        let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
     private func interactionLines(_ state: ApplicationState) -> [TUIStyledLine] {
         guard let interaction = state.activeInteraction else { return [] }
         switch interaction.kind {
@@ -1636,7 +1946,7 @@ public final class ApplicationTUI {
         }
     }
 
-    private func statusText(_ state: ApplicationState) -> String {
+    private func statusParts(_ state: ApplicationState) -> (left: String, right: String) {
         let feedback = copyFeedback.map { "  \($0)" } ?? ""
         if isHeroEmptyState(state) {
             let workspace = state.currentWorkspace?.rootPath.split(separator: "/").last.map(String.init)
@@ -1644,7 +1954,7 @@ public final class ApplicationTUI {
                 ?? "LingXiAgent"
             let mcpCount = state.activeMCPCount
             let skillCount = state.activeSkillCount
-            return "📂 \(workspace)  ·  ● \(mcpCount) 激活 MCP  ·  \(skillCount) 激活 Skills\(feedback)"
+            return ("📂 \(workspace)", "● \(mcpCount) 激活 MCP · \(skillCount) 激活 Skills\(feedback)")
         }
 
         let queuedCount = state.activeSessionState?.queuedTurns.count ?? 0
@@ -1670,9 +1980,20 @@ public final class ApplicationTUI {
             baseStatus = statusLabel(state.status)
         }
         let status = "\(baseStatus)\(queuedSuffix)"
-        let model = state.currentModelID ?? "no model"
+        let rawModel = state.currentModelID ?? "no model"
+        let modelSlug = rawModel.split(separator: "/").last.map(String.init) ?? rawModel
         let effort = state.effectiveReasoningEffort.rawValue
-        let modelWithEffort = "\(model) (\(effort))"
+        let modelWithEffort = "\(modelSlug) (\(effort))"
+
+        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let statusIndicator: String
+        if isActive(state) {
+            statusIndicator = "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) \(status)"
+        } else {
+            statusIndicator = "● \(status)"
+        }
+        let left = "\(statusIndicator) · \(modelWithEffort)"
+
         let workspace = state.currentWorkspace?.rootPath.split(separator: "/").last.map(String.init) ?? "cwd"
         let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
         let currentPermission = state.activeTurnPermissionConfiguration
@@ -1687,9 +2008,18 @@ public final class ApplicationTUI {
         } else {
             permissions = currentPermissionName
         }
-        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        let spinner = isActive(state) ? "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) " : ""
-        return "\(spinner)\(status)  ·  \(modelWithEffort)  ·  \(workspace)  ·  \(mode)  ·  \(permissions)\(feedback)"
+        let right = "\(workspace) · \(mode) · \(permissions)\(feedback)"
+        return (left, right)
+    }
+
+    private func statusText(_ state: ApplicationState) -> String {
+        let (left, right) = statusParts(state)
+        return "\(left) · \(right)"
+    }
+
+    private func updateStatusLine(_ state: ApplicationState) {
+        let (left, right) = statusParts(state)
+        view.statusLine.setParts(left: left, right: right)
     }
 
     private func handleMouseClick(at point: TUIPoint) {
@@ -1779,10 +2109,11 @@ public final class ApplicationTUI {
         }
 
         let firstTokenStr: String?
-        if let ft = metrics?.firstTokenMs, ft > 0 {
-            firstTokenStr = ft >= 1000 ? String(format: "%.1fs", ft / 1000.0) : "\(Int(ft))ms"
+        if let ft = metrics?.firstTokenMs, ft >= 10.0 {
+            firstTokenStr = ft >= 1000 ? String(format: "%.1fs", ft / 1000.0) : "\(Int(round(ft)))ms"
         } else if let ms = metrics?.durationMs, ms > 200 {
-            firstTokenStr = "\(Int(ms * 0.25))ms"
+            let estimatedFt = min(ms * 0.25, max(150.0, ms * 0.15))
+            firstTokenStr = estimatedFt >= 1000 ? String(format: "%.1fs", estimatedFt / 1000.0) : "\(Int(round(estimatedFt)))ms"
         } else {
             firstTokenStr = nil
         }
@@ -1821,13 +2152,13 @@ public final class ApplicationTUI {
         return segments.joined(separator: " · ")
     }
 
-    private func renderEntry(_ node: TimelineNode) -> TUITranscriptEntry? {
+    private func renderEntry(_ node: TimelineNode, isTerminalAssistant: Bool) -> TUITranscriptEntry? {
         let id = node.id.rawValue
         switch node.kind {
         case let .message(message):
             let kind: TUITranscriptKind = message.role == .user ? .user : .assistant
             var content = message.content
-            if message.role == .assistant && !message.isStreaming && !content.isEmpty {
+            if message.role == .assistant && !message.isStreaming && !content.isEmpty && isTerminalAssistant {
                 let params = formatSessionParams(node: node, message: message)
                 content += "\n\n" + params
             }
@@ -1862,7 +2193,16 @@ public final class ApplicationTUI {
             let marker = isStreaming ? "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) " : "• "
             let firstLine = isStreaming ? "Thinking..." : "Thought for \(durationText)"
             let text = "\(marker)\(firstLine)\n\(contentBody)"
-            let isCollapsed = userToggledEntries[id] ?? (!isStreaming && thinking.isComplete)
+
+            let prefs = UserPreferencesStore.shared.load()
+            let isCollapsed: Bool
+            if let userToggled = userToggledEntries[id] {
+                isCollapsed = userToggled
+            } else if prefs.expandThinking == true {
+                isCollapsed = false
+            } else {
+                isCollapsed = !isStreaming && thinking.isComplete
+            }
             return TUITranscriptEntry(id: id, kind: .thinking, text: text, style: .dim, collapsed: isCollapsed, timestamp: node.timestamp)
         case let .tool(tool):
             let active = [.requested, .waitingPermission, .scheduled, .running].contains(tool.phase)
@@ -1928,24 +2268,24 @@ public final class ApplicationTUI {
                     lines.append("    \(outLines[outLines.count - 1])")
                 }
             }
-        } else if toolName == "view_file" || toolName == "read_file" {
+        } else if toolName == "view_file" || toolName == "read_file" || toolName == "read" {
             lines.append("\(dotMarker)Explored")
             let path = (argsDict["AbsolutePath"] as? String) ?? (argsDict["path"] as? String) ?? (argsDict["TargetFile"] as? String) ?? ""
             let fileName = path.split(separator: "/").last.map(String.init) ?? path
             lines.append("  └ Read \(fileName.isEmpty ? "file" : fileName)")
-        } else if toolName == "grep_search" || toolName == "search_code" {
+        } else if toolName == "grep" || toolName == "grep_search" || toolName == "search_code" {
             lines.append("\(dotMarker)Explored")
-            let query = (argsDict["Query"] as? String) ?? (argsDict["query"] as? String) ?? ""
-            let path = (argsDict["SearchPath"] as? String) ?? ""
+            let query = (argsDict["pattern"] as? String) ?? (argsDict["Query"] as? String) ?? (argsDict["query"] as? String) ?? ""
+            let path = (argsDict["path"] as? String) ?? (argsDict["SearchPath"] as? String) ?? ""
             let shortPath = path.split(separator: "/").last.map(String.init) ?? "workspace"
-            lines.append("  └ Search \(query) in \(shortPath)")
-        } else if toolName == "find_by_name" {
+            lines.append("  └ Search \(query) in \(shortPath.isEmpty ? "workspace" : shortPath)")
+        } else if toolName == "glob" || toolName == "find_by_name" {
             lines.append("\(dotMarker)Explored")
-            let pattern = (argsDict["Pattern"] as? String) ?? ""
-            let dir = (argsDict["SearchDirectory"] as? String) ?? ""
+            let pattern = (argsDict["pattern"] as? String) ?? (argsDict["Pattern"] as? String) ?? ""
+            let dir = (argsDict["path"] as? String) ?? (argsDict["SearchDirectory"] as? String) ?? ""
             let shortDir = dir.split(separator: "/").last.map(String.init) ?? "workspace"
-            lines.append("  └ Find \(pattern) in \(shortDir)")
-        } else if toolName == "replace_file_content" || toolName == "write_to_file" {
+            lines.append("  └ Find \(pattern) in \(shortDir.isEmpty ? "workspace" : shortDir)")
+        } else if toolName == "replace_file_content" || toolName == "write_to_file" || toolName == "write_file" {
             let path = (argsDict["TargetFile"] as? String) ?? (argsDict["path"] as? String) ?? ""
             let shortPath = path.split(separator: "/").last.map(String.init) ?? path
             lines.append("\(dotMarker)Edit(\(shortPath))")
@@ -1983,7 +2323,9 @@ public final class ApplicationTUI {
         }
 
         let entryStyle: TUIStyle = isError ? .error : (active ? .accent : .normal)
-        let isCollapsed = userToggledEntries[id] ?? false
+        let prefs = UserPreferencesStore.shared.load()
+        let defaultCollapsed = !(prefs.expandTools ?? false) && !active
+        let isCollapsed = userToggledEntries[id] ?? defaultCollapsed
         return TUITranscriptEntry(id: id, kind: .toolCall, text: lines.joined(separator: "\n"), style: entryStyle, collapsed: isCollapsed, timestamp: timestamp)
     }
 }

@@ -245,8 +245,8 @@ public actor AgentRuntime {
         return try await store.updateTitle(id, title: normalized?.isEmpty == true ? nil : normalized).toInfo()
     }
 
-    public func selectModel(_ selection: ModelSelection) async throws {
-        try await modelResolver.setDefaultSelection(selection)
+    public func selectModel(_ selection: ModelSelection, assembly: ModelRuntimeAssembly? = nil) async throws {
+        try await modelResolver.setDefaultSelection(selection, assembly: assembly)
     }
 
     public func contextSnapshot(_ id: SessionID) async -> L1ContextSnapshot? {

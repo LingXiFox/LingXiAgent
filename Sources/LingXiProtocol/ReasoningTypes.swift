@@ -1,14 +1,36 @@
 import Foundation
 
 /// Canonical reasoning effort levels across sessions and models.
-public enum ReasoningEffort: String, Codable, Sendable, CaseIterable {
-    case auto
+public enum ReasoningEffort: String, Codable, Sendable, CaseIterable, Comparable {
     case off
     case minimal
     case low
     case medium
     case high
+    case xhigh
     case max
+    case ultra
+    case auto
+
+    /// Numerical sort rank for canonical reasoning progression:
+    /// off (0) < minimal (1) < low (2) < medium (3) < high (4) < xhigh (5) < max (6) < ultra (7) < auto (99)
+    public var sortOrder: Int {
+        switch self {
+        case .off: return 0
+        case .minimal: return 1
+        case .low: return 2
+        case .medium: return 3
+        case .high: return 4
+        case .xhigh: return 5
+        case .max: return 6
+        case .ultra: return 7
+        case .auto: return 99
+        }
+    }
+
+    public static func < (lhs: ReasoningEffort, rhs: ReasoningEffort) -> Bool {
+        lhs.sortOrder < rhs.sortOrder
+    }
 }
 
 /// Reasoning capability configuration for a model profile.

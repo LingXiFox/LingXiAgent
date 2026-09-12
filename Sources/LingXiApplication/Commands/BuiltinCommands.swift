@@ -151,8 +151,8 @@ public enum BuiltinCommands {
                 category: "Session",
                 argumentSchema: "[sessionID]"
             ) { ctx in
-                let sessions = (try? await ctx.client.session.list())?.items ?? []
-                let currentCwd = FileManager.default.currentDirectoryPath
+                let sessions = try await ctx.client.session.listAll()
+                let currentCwd = ctx.state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
 
                 if let target = ctx.arguments.first {
                     // 支持短 ID / 前缀匹配
@@ -173,38 +173,17 @@ public enum BuiltinCommands {
                         return ApplicationCommandResult(output: "暂无可恢复的历史会话。")
                     }
 
-                    // 按工作目录分组：当前目录置顶
-                    var groups: [String: [SessionSummary]] = [:]
-                    for s in sessions {
-                        let dir = s.workingDirectory ?? currentCwd
-                        groups[dir, default: []].append(s)
-                    }
-
-                    let sortedDirs = groups.keys.sorted { d1, d2 in
-                        let isCurrent1 = (d1 == currentCwd)
-                        let isCurrent2 = (d2 == currentCwd)
-                        if isCurrent1 != isCurrent2 { return isCurrent1 }
-                        let latest1 = groups[d1]?.map(\.updatedAt).max() ?? Date.distantPast
-                        let latest2 = groups[d2]?.map(\.updatedAt).max() ?? Date.distantPast
-                        return latest1 > latest2
-                    }
-
                     let dateFormatter = DateFormatter()
                     dateFormatter.dateFormat = "MM-dd HH:mm"
 
                     var sections: [String] = []
-                    sections.append("可用历史会话 (按工作目录分类展示，共 \(sessions.count) 个):")
-
-                    for dir in sortedDirs {
-                        let dirSessions = (groups[dir] ?? []).sorted(by: { $0.updatedAt > $1.updatedAt })
-                        let isCurrent = (dir == currentCwd)
-                        let header = isCurrent ? "📂 [当前工作目录] \(dir)" : "📂 \(dir)"
-                        var lines: [String] = [header]
-                        for s in dirSessions.prefix(6) {
-                            let shortID = String(s.sessionID.rawValue.prefix(8))
-                            let dateStr = dateFormatter.string(from: s.updatedAt)
-                            let title = s.title ?? "未命名会话"
-                            lines.append("  • \(shortID) · \(dateStr) (\(s.messageCount)条消息) · \(title)")
+                    sections.append("可用历史会话 (按项目分组，组内按更新时间倒序，共 \(sessions.count) 个):")
+                    for group in SessionCatalog.groups(sessions, currentDirectory: currentCwd) {
+                        let tag = group.directory == currentCwd ? "[当前项目] " : ""
+                        var lines = ["\(tag)\(group.directory.isEmpty ? "未知项目" : group.directory)"]
+                        for s in group.sessions {
+                            let title = (s.title ?? "未命名会话").components(separatedBy: .newlines).joined(separator: " ")
+                            lines.append("  • \(s.sessionID.rawValue.prefix(8)) · \(dateFormatter.string(from: s.updatedAt)) · \(s.messageCount)条 · \(title)")
                         }
                         sections.append(lines.joined(separator: "\n"))
                     }
@@ -538,8 +517,70 @@ public enum BuiltinCommands {
                 argumentSchema: "[effort]"
             ) { ctx in
                 try await handleReasoningEffort(ctx: ctx)
+            },
+
+            // 23. /config
+            ApplicationCommand(
+                name: "config",
+                aliases: ["preference", "set"],
+                description: "查看或修改 TUI 偏好配置 (如思考折叠、工具详情、侧边栏)",
+                category: "General",
+                argumentSchema: "[key] [value]"
+            ) { ctx in
+                try await handleConfig(ctx: ctx)
             }
         ]
+    }
+
+    private static func handleConfig(ctx: ApplicationCommandContext) async throws -> ApplicationCommandResult {
+        let prefs = UserPreferencesStore.shared.load()
+        if ctx.arguments.isEmpty {
+            let fields: [(String, String)] = [
+                ("思考过程默认展开 (think)", (prefs.expandThinking ?? false) ? "开启 (on)" : "折叠 (off)"),
+                ("工具调用详情默认展开 (tools)", (prefs.expandTools ?? false) ? "开启 (on)" : "折叠 (off)"),
+                ("监控侧边栏显示 (sidebar)", (prefs.showSidebar ?? true) ? "显示 (on)" : "隐藏 (off)")
+            ]
+            let card = CLIFormatter.renderCard(
+                title: "TUI 偏好配置 (/config)",
+                fields: fields,
+                footer: "修改示例: /config think on · /config tools on · /config sidebar off",
+                borderStyle: .rounded
+            )
+            return ApplicationCommandResult(output: card)
+        }
+
+        let key = ctx.arguments[0].lowercased()
+        let val = ctx.arguments.count > 1 ? ctx.arguments[1].lowercased() : "toggle"
+
+        guard ctx.arguments.count <= 2 else {
+            throw ApplicationCommandError.executionFailed("用法: /config <think|tools|sidebar> [on|off|toggle]")
+        }
+        let parseBool = UserPreferences.parseToggle
+
+        var msg = ""
+        switch key {
+        case "think", "thinking", "expand_thinking":
+            let newVal = try parseBool(val, prefs.expandThinking ?? false)
+            guard UserPreferencesStore.shared.update(expandThinking: newVal) else {
+                throw ApplicationCommandError.executionFailed("无法保存偏好配置，请检查数据目录的写入权限。")
+            }
+            msg = "思考过程默认展开已设为: \(newVal ? "开启 (on)" : "折叠 (off)")"
+        case "tool", "tools", "expand_tools":
+            let newVal = try parseBool(val, prefs.expandTools ?? false)
+            guard UserPreferencesStore.shared.update(expandTools: newVal) else {
+                throw ApplicationCommandError.executionFailed("无法保存偏好配置，请检查数据目录的写入权限。")
+            }
+            msg = "工具详情默认展开已设为: \(newVal ? "开启 (on)" : "折叠 (off)")"
+        case "sidebar", "side":
+            let newVal = try parseBool(val, prefs.showSidebar ?? true)
+            guard UserPreferencesStore.shared.update(showSidebar: newVal) else {
+                throw ApplicationCommandError.executionFailed("无法保存偏好配置，请检查数据目录的写入权限。")
+            }
+            msg = "监控侧边栏已设为: \(newVal ? "显示 (on)" : "隐藏 (off)")"
+        default:
+            msg = "未知的配置项: \(key)。可用配置: think, tools, sidebar\n示例: /config think on"
+        }
+        return ApplicationCommandResult(output: msg)
     }
 
     private static func handleReasoningEffort(ctx: ApplicationCommandContext) async throws -> ApplicationCommandResult {

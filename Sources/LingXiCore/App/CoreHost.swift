@@ -52,6 +52,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private var workflows: WorkflowRuntime?
     private var runtimeProviderAccounts: [String: ProviderAccountInfo] = [:]
     private var runtimeExtensions: [String: ExtensionInfo] = [:]
+    private var cachedAssemblies: [String: ModelRuntimeAssembly] = [:]
+    private let dataRootURL: URL?
     private var selectedModelOverride: String?
     private var selectedModelContextWindow: Int?
     private var contextActivity: ContextPagingActivity = .idle
@@ -140,6 +142,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.configurationStore = configurationStore
         self.credentialStore = credentialStore
         self.restoreScheduler = restoreScheduler
+        self.dataRootURL = dataRoot
+        self.cachedAssemblies = modelRuntimes
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
         self.processes = processes
@@ -299,6 +303,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             await self?.broadcast(request.originSessionID == request.rootSessionID ? .questionAsked(request) : .questionEscalated(request))
         }
         await bus.add(.ping) { _ in .pong }
+        scheduleRegistryRefresh()
         await bus.add(.getInfo) { [self] _ in .info(info) }
         await bus.add(.getState) { [self] _ in .state(await state) }
         await bus.add(.getProviderStatus) { [self] _ in
@@ -314,8 +319,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             guard case let .selectProviderModel(model) = command else { return .error(CoreError(code: .unsupportedCommand, message: "selectProviderModel 参数缺失")) }
             let agent = try await requireAgent()
             let selection = try await modelSelection(for: model)
-            try await agent.selectModel(selection)
-            await setSelectedModelOverride(selection.modelID)
+            let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: model)
+            try await agent.selectModel(selection, assembly: assembly)
+            await setSelectedModelOverride(model)
             if let contextWindow = try await modelContextWindow(for: model) { await setSelectedModelContextWindow(contextWindow) }
             if let store = configurationStore {
                 if var config = try? await store.load() {
@@ -961,29 +967,16 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func workspaceDiff() async throws -> String {
-        let process = Process()
-        let output = Pipe()
-        let errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", extensionPlatform.projectRoot.path, "diff", "--"]
-        process.standardOutput = output
-        process.standardError = errors
-        try process.run()
-        let outputTask = Task.detached {
-            output.fileHandleForReading.readDataToEndOfFile()
+        let result = try await runToolProcess(
+            invocation: ToolProcessInvocation(executable: "/usr/bin/git", arguments: ["diff", "--no-ext-diff", "--no-textconv", "--"]),
+            cwd: extensionPlatform.projectRoot,
+            environment: EnvironmentSanitizer.sanitized(),
+            timeoutMilliseconds: 5_000
+        )
+        guard result.exitCode == 0 else {
+            throw CoreError(code: .gitError, message: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        let errorTask = Task.detached {
-            errors.fileHandleForReading.readDataToEndOfFile()
-        }
-        process.waitUntilExit()
-        let outputData = await outputTask.value
-        let errorData = await errorTask.value
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8) ?? "git diff failed"
-            throw CoreError(code: .gitError, message: message.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        let text = String(data: outputData, encoding: .utf8) ?? ""
-        return String(text.prefix(20_000))
+        return String(result.stdout.prefix(20_000))
     }
 
     private func diagnosticsBundle() async -> RuntimeDiagnosticsBundle {
@@ -1049,114 +1042,176 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         return accounts.filter { !runtimeProviderIDs.contains($0.productID) } + runtimeProviderAccounts.values.sorted { $0.id < $1.id }
     }
 
+    /// Refreshes the registry catalog in the background shortly after startup.
+    ///
+    /// The first model listing must not wait on the network: the on-disk
+    /// catalog cache serves the initial render, and this brings it up to date.
+    private func scheduleRegistryRefresh(delaySeconds: Double = 5.0) {
+        Task.detached(priority: .background) {
+            if delaySeconds > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+            }
+            _ = await ModelRegistryClient.shared.fetch()
+        }
+    }
+
+    /// The model list offered to the user for every configured product, plus
+    /// the products the registry knows about but which are not yet configured.
+    ///
+    /// Three sources are combined per product, and they answer different
+    /// questions:
+    ///
+    ///   - the **registry catalog** supplies protocol, capabilities and status;
+    ///   - **account discovery** (run with the user's own credential, never
+    ///     uploaded anywhere) decides what is actually reachable;
+    ///   - **runtime support** decides what LingXi can execute.
+    ///
+    /// No branch here inspects a provider or product name.
     private func providerModels() async throws -> [ProviderModelInfo] {
         guard let configurationStore else { return [] }
         let snapshot = try await configurationStore.load()
         let configuredProviders = Set(snapshot.providers.providers.keys)
+        let catalog = await ModelRegistryClient.shared.catalog()
+
         var results: [ProviderModelInfo] = []
 
         for providerID in snapshot.providers.providers.keys.sorted() {
             guard let provider = snapshot.providers.providers[providerID] else { continue }
-            let isDynamicAuth = BuiltinProviderCatalog.profile(for: providerID)?.modelDiscovery == .authenticatedRemote
 
-            if isDynamicAuth {
-                var accountRef = providerID
-                var rawSecret: String? = nil
-                if let credStore = credentialStore {
-                    let oauthRef = CredentialRef("provider-\(providerID)-oauth")
-                    if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
-                        accountRef = AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: secret)
-                        rawSecret = secret
-                    }
-                }
-                var cachedRecord = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: accountRef)
-
-                // If cache is missing or empty, and we have valid credentials, attempt remote discovery immediately
-                if (cachedRecord == nil || cachedRecord?.models.isEmpty == true), let secret = rawSecret, providerID == "openai-codex" {
-                    let accessToken: String? = {
-                        if let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8)) {
-                            return tokens.accessToken
-                        }
-                        if let json = try? JSONSerialization.jsonObject(with: Data(secret.utf8)) as? [String: Any] {
-                            return (json["accessToken"] as? String) ?? (json["access_token"] as? String)
-                        }
-                        return secret.contains("{") ? nil : secret
-                    }()
-                    if let tokenStr = accessToken, !tokenStr.isEmpty {
-                        let tokens = OAuthTokens(accessToken: tokenStr)
-                        if let discovered = try? await CodexRemoteModelDiscovery.discoverModels(tokens: tokens), !discovered.isEmpty {
-                            _ = try? await AccountScopedCatalogCache.shared.save(
-                                productID: providerID,
-                                accountRef: accountRef,
-                                models: discovered,
-                                source: "ChatGPT Remote Model Catalog"
-                            )
-                            cachedRecord = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: accountRef)
-                        }
-                    }
-                }
-
-                if let record = cachedRecord, !record.models.isEmpty {
-                    let resolved = ResolvedModelCatalogResolver.resolve(
-                        productID: providerID,
-                        authenticatedModels: record.models,
-                        staticCatalog: BuiltinProviderCatalog.catalog,
-                        isConfigured: true
-                    )
-                    results.append(contentsOf: resolved)
-                } else if !provider.models.isEmpty {
-                    for modelID in provider.models.keys.sorted() {
-                        let model = provider.models[modelID]!
-                        results.append(ProviderModelInfo(
-                            id: "\(providerID)/\(modelID)",
-                            providerID: providerID,
-                            modelID: modelID,
-                            displayName: model.name,
-                            contextWindow: model.limit.context,
-                            maxOutputTokens: model.limit.output,
-                            reasoning: model.reasoning,
-                            configured: true
-                        ))
-                    }
-                }
-            } else {
-                for modelID in provider.models.keys.sorted() {
-                    let model = provider.models[modelID]!
-                    results.append(ProviderModelInfo(
-                        id: "\(providerID)/\(modelID)",
-                        providerID: providerID,
-                        modelID: modelID,
-                        displayName: model.name,
-                        contextWindow: model.limit.context,
-                        maxOutputTokens: model.limit.output,
-                        reasoning: model.reasoning,
-                        configured: true
-                    ))
-                }
-            }
-        }
-
-        for profile in BuiltinProviderCatalog.profiles {
-            if configuredProviders.contains(profile.id) { continue }
-            // Dynamic authenticated products without accounts must not declare static models
-            if profile.modelDiscovery == .authenticatedRemote {
+            if let product = catalog?.product(id: providerID) {
+                let accountModels = await accountDiscoveredModels(
+                    product: product,
+                    providerID: providerID
+                )
+                let outcome = ModelAvailabilityResolver.resolve(
+                    product: product,
+                    registryModels: catalog?.models(productID: providerID) ?? [],
+                    accountModels: accountModels,
+                    isConfigured: true
+                )
+                results.append(contentsOf: outcome.models)
                 continue
             }
-            for model in profile.models {
-                results.append(ProviderModelInfo(
-                    id: "\(profile.id)/\(model.id)",
-                    providerID: profile.id,
-                    modelID: model.id,
-                    displayName: model.displayName,
-                    contextWindow: model.contextWindow ?? 128000,
-                    maxOutputTokens: model.maxOutputTokens ?? 4096,
-                    reasoning: model.reasoningCapability != nil,
-                    configured: false
-                ))
+
+            // The registry does not describe this product — an older or custom
+            // configuration. Fall back to whatever the user configured.
+            results.append(contentsOf: configuredModelInfos(providerID: providerID, provider: provider))
+        }
+
+        // Products the registry publishes but which the user has not configured
+        // yet are still listed, so they can be discovered and connected.
+        if let catalog {
+            for product in catalog.products where !configuredProviders.contains(product.id) {
+                guard product.runtime.isRunnable else { continue }
+                let outcome = ModelAvailabilityResolver.resolve(
+                    product: product,
+                    registryModels: catalog.models(productID: product.id),
+                    accountModels: [],
+                    isConfigured: false
+                )
+                results.append(contentsOf: outcome.models)
             }
         }
 
         return results
+    }
+
+    /// Models from the user's own configured list, used only for products the
+    /// registry catalog does not describe.
+    private func configuredModelInfos(
+        providerID: String,
+        provider: PublicProviderConfiguration
+    ) -> [ProviderModelInfo] {
+        provider.models.keys.sorted().compactMap { modelID in
+            guard let model = provider.models[modelID] else { return nil }
+            return ProviderModelInfo(
+                id: "\(providerID)/\(modelID)",
+                providerID: providerID,
+                modelID: modelID,
+                displayName: model.name,
+                contextWindow: model.limit.context,
+                maxOutputTokens: model.limit.output,
+                reasoning: model.reasoning,
+                configured: true
+            )
+        }
+    }
+
+    /// The account's view of a product's models, read from the account-scoped
+    /// cache and refreshed from the upstream vendor when the cache is cold.
+    ///
+    /// A refresh failure leaves the cached list in place: an upstream outage
+    /// must never empty the user's model picker.
+    private func accountDiscoveredModels(
+        product: RegistryProduct,
+        providerID: String
+    ) async -> [DiscoveredRemoteModel] {
+        // A product whose models are not account-scoped has nothing to discover;
+        // the registry catalog is its source.
+        guard product.discoveryProfile != nil || product.discovery == .authenticatedRemote else {
+            return []
+        }
+
+        let credential = await providerCredential(providerID: providerID)
+        let accountRef = credential.map {
+            AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: $0)
+        } ?? providerID
+
+        let cached = await AccountScopedCatalogCache.shared.load(
+            productID: providerID,
+            accountRef: accountRef
+        )
+        if let cached, !cached.models.isEmpty, !cached.isExpired {
+            // Still fresh: serve it and let the next refresh happen in the
+            // background rather than blocking a model listing on the network.
+            if !cached.isStale {
+                return cached.models
+            }
+        }
+
+        if let cached, !cached.models.isEmpty {
+            // Expired or marked stale: refresh, but never block the listing on
+            // the result — fall through to the cached value either way.
+            _ = await AccountModelDiscovery.refresh(
+                product: product,
+                accountRef: accountRef,
+                credential: credential
+            )
+            let refreshed = await AccountScopedCatalogCache.shared.load(
+                productID: providerID,
+                accountRef: accountRef
+            )
+            return refreshed?.models ?? cached.models
+        }
+
+        // Cold cache: discovery is the only way to know what this account can
+        // reach, so this one waits.
+        let result = await AccountModelDiscovery.refresh(
+            product: product,
+            accountRef: accountRef,
+            credential: credential
+        )
+        if case let .success(models) = result, !models.isEmpty {
+            return models
+        }
+        let stored = await AccountScopedCatalogCache.shared.load(
+            productID: providerID,
+            accountRef: accountRef
+        )
+        return stored?.models ?? []
+    }
+
+    /// Reads whichever credential this product authenticates with. Returns nil
+    /// when the product needs none or none is stored.
+    private func providerCredential(providerID: String) async -> String? {
+        guard let credentialStore else { return nil }
+        for suffix in ["oauth", "key"] {
+            let ref = CredentialRef("provider-\(providerID)-\(suffix)")
+            if let secret = try? await credentialStore.secret(for: ref), !secret.isEmpty {
+                return secret
+            }
+        }
+        return nil
     }
 
     private func modelSelection(for value: String) async throws -> ModelSelection {
@@ -1415,6 +1470,7 @@ extension CoreHost {
         var currentAssistantText = ""
         var stepStartTime = Date()
         var firstTokenTime: Date? = nil
+        var firstContentTokenTime: Date? = nil
         var stepCharsCount: Int = 0
 
         let runModel = await coordinator.getRun(runID: runID)?.model
@@ -1423,9 +1479,25 @@ extension CoreHost {
         let computeMetadata: (String) -> ModelStepOutputMetadata = { reason in
             let endTime = Date()
             let durMs = max(1.0, endTime.timeIntervalSince(stepStartTime) * 1000.0)
-            let ftMs = firstTokenTime.map { max(0.0, $0.timeIntervalSince(stepStartTime) * 1000.0) }
+
+            // 优先使用正文首字相对于步骤起点的延迟；若存在思考过程，思考耗时亦为正文的真实等待时延
+            let effectiveFirstToken = firstContentTokenTime ?? firstTokenTime
+            var ftMs: Double? = nil
+            if let ft = effectiveFirstToken {
+                let elapsed = ft.timeIntervalSince(stepStartTime) * 1000.0
+                if elapsed >= 10.0 {
+                    ftMs = elapsed
+                } else if let contentFt = firstContentTokenTime, let initialFt = firstTokenTime, contentFt > initialFt {
+                    let thinkingElapsed = contentFt.timeIntervalSince(initialFt) * 1000.0
+                    if thinkingElapsed >= 10.0 {
+                        ftMs = thinkingElapsed
+                    }
+                }
+            }
+
             let tokens = max(1, Int(ceil(Double(stepCharsCount) / 1.5)))
-            let genSec = (firstTokenTime != nil) ? max(0.05, endTime.timeIntervalSince(firstTokenTime!)) : max(0.05, durMs / 1000.0)
+            let genStart = firstContentTokenTime ?? firstTokenTime
+            let genSec = (genStart != nil) ? max(0.05, endTime.timeIntervalSince(genStart!)) : max(0.05, durMs / 1000.0)
             let rate = Double(tokens) / genSec
             let modelName = activeModelName
             return ModelStepOutputMetadata(
@@ -1464,11 +1536,12 @@ extension CoreHost {
                             finishReason: "tool_calls",
                             metadata: computeMetadata("tool_calls")
                         )
+                        stepStartTime = Date()
                     }
                     currentStepID = chunkStepID
                     currentStepNumber = chunkStepNumber
-                    stepStartTime = Date()
                     firstTokenTime = nil
+                    firstContentTokenTime = nil
                     stepCharsCount = 0
                     let step = await coordinator.beginModelStep(
                         stepID: chunkStepID,
@@ -1494,6 +1567,9 @@ extension CoreHost {
 
                 switch chunk.kind {
                 case .text:
+                    if firstContentTokenTime == nil {
+                        firstContentTokenTime = Date()
+                    }
                     stepCharsCount += chunk.text.count
                     currentAssistantText += chunk.text
                     let frame = StreamFrame(
@@ -1897,33 +1973,15 @@ extension CoreHost {
             }
         }
 
-        // 按工作目录分组：当前目录排第一，其它目录按最新活跃时间倒序
-        var groups: [String: [SessionSummary]] = [:]
-        for s in rawSummaries {
-            let dir = s.workingDirectory ?? currentCwd
-            groups[dir, default: []].append(s)
-        }
-
-        let sortedDirs = groups.keys.sorted { d1, d2 in
-            let isCurrent1 = (d1 == currentCwd)
-            let isCurrent2 = (d2 == currentCwd)
-            if isCurrent1 != isCurrent2 {
-                return isCurrent1
-            }
-            let latest1 = groups[d1]?.map(\.updatedAt).max() ?? Date.distantPast
-            let latest2 = groups[d2]?.map(\.updatedAt).max() ?? Date.distantPast
-            return latest1 > latest2
-        }
-
-        var all: [SessionSummary] = []
-        for dir in sortedDirs {
-            let sortedInGroup = (groups[dir] ?? []).sorted(by: { $0.updatedAt > $1.updatedAt })
-            all.append(contentsOf: sortedInGroup)
+        // 严格按最新活跃/更新时间倒序排列，确保最新的会话置顶排在最前
+        let all = rawSummaries.sorted {
+            $0.updatedAt == $1.updatedAt ? $0.sessionID.rawValue < $1.sessionID.rawValue : $0.updatedAt > $1.updatedAt
         }
 
         let limit = max(1, envelope.payload.limit)
-        let items = Array(all.prefix(limit))
-        let hasMore = all.count > items.count
+        let start = envelope.payload.cursor.flatMap { cursor in all.firstIndex { $0.sessionID.rawValue == cursor }.map { $0 + 1 } } ?? 0
+        let items = Array(all.dropFirst(start).prefix(limit))
+        let hasMore = all.count > start + items.count
         let page = Page<SessionSummary>(items: items, nextCursor: hasMore ? items.last?.sessionID.rawValue : nil, hasMore: hasMore)
         return ResponseEnvelope(
             requestID: envelope.requestID,
@@ -2446,13 +2504,20 @@ extension CoreHost {
         }
         let selection = try await modelSelection(for: envelope.payload.model)
         let agent = try requireAgent()
-        try await agent.selectModel(selection)
-        setSelectedModelOverride(selection.modelID)
+        let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: envelope.payload.model)
+        try await agent.selectModel(selection, assembly: assembly)
+        setSelectedModelOverride(envelope.payload.model)
         if let contextWindow = try await modelContextWindow(for: envelope.payload.model) {
             setSelectedModelContextWindow(contextWindow)
         }
+        if let store = configurationStore {
+            if var config = try? await store.load() {
+                config.providers.model = envelope.payload.model
+                try? await store.save(config)
+            }
+        }
         let watermark = await runtimeEventLog.currentWatermark()
-        let result = ModelSelectionInfo(modelID: selection.modelID, providerID: selection.providerID)
+        let result = ModelSelectionInfo(modelID: envelope.payload.model, providerID: selection.providerID)
         let receipt = CommandReceipt<ModelSelectionInfo>(
             commandID: envelope.commandID,
             applied: true,
@@ -2462,6 +2527,141 @@ extension CoreHost {
         )
         await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
+    }
+
+    private func resolveRuntimeAssembly(for selection: ModelSelection, fullModelValue: String) async throws -> ModelRuntimeAssembly {
+        let key = "\(selection.providerID)::\(selection.modelID)"
+        if let cached = cachedAssemblies[key] {
+            return cached
+        }
+        if let cached = cachedAssemblies[selection.providerID], cached.modelID.rawValue == selection.modelID {
+            return cached
+        }
+
+        guard let configStore = configurationStore else {
+            throw CoreError(code: .provider, message: "ConfigurationStore 未就绪")
+        }
+        let snapshot = try await configStore.load()
+        guard let providerConfig = snapshot.providers.providers[selection.providerID] else {
+            throw CoreError(code: .provider, message: "未找到 Provider 配置: \(selection.providerID)")
+        }
+
+        let profile = BuiltinProviderCatalog.profile(for: selection.providerID)
+        let adapter = providerConfig.adapter.lowercased()
+
+        let wireProtocol: ModelWireProtocol
+        if adapter == "openai-responses" || profile?.protocolFamily == "openai_responses" {
+            wireProtocol = .responses
+        } else if adapter == "anthropic-messages" || profile?.protocolFamily == "anthropic_messages" {
+            wireProtocol = .anthropicMessages
+        } else {
+            wireProtocol = .chatCompletions
+        }
+
+        let baseURLStr = providerConfig.options.baseURL.isEmpty ? (profile?.endpoint ?? "https://api.openai.com/v1") : providerConfig.options.baseURL
+        guard let baseURL = URL(string: baseURLStr) else {
+            throw CoreError(code: .provider, message: "无效的 baseURL: \(baseURLStr)")
+        }
+
+        var authToken: String? = nil
+        if let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
+            if apiKey.hasPrefix("{oauth:") && apiKey.hasSuffix("}") {
+                let refStr = String(apiKey.dropFirst(7).dropLast(1))
+                if let credStore = credentialStore, let secret = try? await credStore.secret(for: CredentialRef(refStr)) {
+                    authToken = extractBearerToken(from: secret)
+                }
+            } else {
+                authToken = apiKey
+            }
+        }
+        if authToken == nil, let credStore = credentialStore {
+            let oauthRef = CredentialRef("provider-\(selection.providerID)-oauth")
+            if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
+                authToken = extractBearerToken(from: secret)
+            }
+            if authToken == nil {
+                let keyRef = CredentialRef("provider-\(selection.providerID)-key")
+                if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
+                    authToken = secret
+                }
+            }
+        }
+
+        let isNoAuth = profile?.authMethods.contains("none") ?? false
+        if !isNoAuth && authToken == nil {
+            throw CoreError(code: .provider, message: "Provider '\(selection.providerID)' 未认证或凭据缺失")
+        }
+
+        let auth: ProviderAuthentication
+        if let token = authToken {
+            if let headerName = providerConfig.options.apiKeyHeader {
+                auth = .header(name: headerName, value: token)
+            } else {
+                auth = .bearer(token)
+            }
+        } else {
+            auth = .none
+        }
+
+        let contextWindow = (try? await modelContextWindow(for: fullModelValue)) ?? 128_000
+        let maxOutput = 4_096
+        let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow, maxOutputTokens: maxOutput, source: "dynamic:\(fullModelValue)")
+
+        let runtimeConfig = ProviderConfig(
+            baseURL: baseURL,
+            authentication: auth,
+            model: selection.modelID,
+            wireProtocol: wireProtocol,
+            diagnosticsEnabled: false,
+            performanceDiagnosticsEnabled: false,
+            remoteStateEnabled: wireProtocol == .responses,
+            maxOutputTokens: maxOutput,
+            requiredHeaders: providerConfig.options.headers
+        )
+
+        let provenance = ProviderProvenanceStore(directory: dataRootURL?.appendingPathComponent("provider-provenance", isDirectory: true))
+        let providerInstance: any ModelProvider
+        switch wireProtocol {
+        case .responses:
+            providerInstance = OpenAIResponsesProvider(config: runtimeConfig, provenance: provenance)
+        case .anthropicMessages:
+            providerInstance = AnthropicMessagesProvider(config: runtimeConfig, provenance: provenance)
+        case .chatCompletions:
+            providerInstance = OpenAICompatibleProvider(config: runtimeConfig, provenance: provenance)
+        }
+
+        let assembly = ModelRuntimeAssembly(
+            provider: providerInstance,
+            modelID: ModelID(selection.modelID),
+            contextProfile: contextProfile,
+            endpoint: ResolvedModelEndpoint(
+                providerID: selection.providerID,
+                productID: selection.providerID,
+                endpointID: nil,
+                accountID: selection.accountID,
+                profileID: selection.profileID ?? selection.modelID,
+                modelID: ModelID(selection.modelID),
+                baseURL: baseURL,
+                wireProtocol: wireProtocol,
+                contextProfile: contextProfile,
+                capabilities: ModelCapabilities(toolCalling: true, parallelToolCalling: true, reasoning: true, vision: true, structuredOutput: true)
+            )
+        )
+
+        cachedAssemblies[key] = assembly
+        cachedAssemblies[selection.providerID] = assembly
+        return assembly
+    }
+
+    private func extractBearerToken(from secret: String) -> String? {
+        if let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8)), !tokens.accessToken.isEmpty {
+            return tokens.accessToken
+        }
+        if let json = try? JSONSerialization.jsonObject(with: Data(secret.utf8)) as? [String: Any],
+           let tok = (json["accessToken"] as? String) ?? (json["access_token"] as? String), !tok.isEmpty {
+            return tok
+        }
+        return secret.contains("{") ? nil : secret
     }
 
     // MARK: - 8. Context
@@ -2903,6 +3103,10 @@ extension CoreHost {
             observedThrough: [watermark],
             result: info
         )
+    }
+
+    public func notifyExtensionCatalogChanged() async {
+        _ = await runtimeEventLog.append(payload: .extensionCatalogChanged)
     }
 
     public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {

@@ -1,0 +1,48 @@
+# LingXi Unified Model Registry — systemd unit
+#
+# Install with:
+#   sudo install -m 0644 lingxi-registry.service /etc/systemd/system/lingxi-registry.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now lingxi-registry
+#
+# The service listens on loopback only; Caddy is the sole ingress and terminates
+# TLS in front of it.
+[Unit]
+Description=LingXi Unified Model Registry
+Documentation=https://lingxiagent.lingxifox.cn/v1/catalog/status
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lingxireg
+Group=lingxireg
+WorkingDirectory=/srv/lingxi-registry
+
+ExecStart=/srv/lingxi-registry/bin/lingxi-registry \
+    -registry /srv/lingxi-registry/registry \
+    -cache /srv/lingxi-registry/cache/discovered-models \
+    -listen 127.0.0.1:8787 \
+    -refresh 30m
+
+Restart=on-failure
+RestartSec=5
+
+# The registry holds no credentials and needs no privileges. Everything below is
+# hardening that costs the service nothing.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/srv/lingxi-registry/cache
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

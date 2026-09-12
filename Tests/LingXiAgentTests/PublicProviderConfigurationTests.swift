@@ -11,7 +11,7 @@ struct PublicProviderConfigurationTests {
         _ = try await store.load()
         let publicConfiguration = #"""
         {
-          "$schema": "https://schemas.example.invalid/lingxiagent/providers.schema.json",
+          "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
           "version": 1,
           "model": "amd-radeon/DeepSeek-V4-Flash",
           "providers": {
@@ -78,7 +78,7 @@ struct PublicProviderConfigurationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try ConfigurationStore(dataRoot: root)
         _ = try await store.load()
-        let invalid = #"{"$schema":"https://schemas.example.invalid/lingxiagent/providers.schema.json","version":1,"providers":{"provider":{"name":"Provider","adapter":"openai-compatible","options":{"baseURL":"https://provider.example.com/v1","apiKey":"literal-secret"},"models":{"model":{"name":"Model","limit":{"context":32768,"output":4096}}}}}}"#
+        let invalid = #"{"$schema":"https://lingxiagent.lingxifox.cn/schema/providers.json","version":1,"providers":{"provider":{"name":"Provider","adapter":"openai-compatible","options":{"baseURL":"https://provider.example.com/v1","apiKey":"literal-secret"},"models":{"model":{"name":"Model","limit":{"context":32768,"output":4096}}}}}}"#
         try Data(invalid.utf8).write(to: root.appendingPathComponent("providers.json"), options: .atomic)
 
         await #expect(throws: ConfigurationValidationError.self) { _ = try await store.load() }

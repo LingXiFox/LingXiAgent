@@ -7,38 +7,29 @@ import Testing
 
 @Suite("Provider and Model Grouping Tests")
 struct ProviderModelGroupingTests {
-    @Test("openai-codex uses authenticatedRemote discovery without static hardcoded availability")
-    func codexUsesAuthenticatedRemoteDiscovery() throws {
-        guard let catalog = BuiltinProviderCatalog.catalog else {
-            Issue.record("Catalog must be present")
-            return
-        }
-        guard let codex = catalog.products.first(where: { $0.id == "openai-codex" }) else {
-            Issue.record("openai-codex must exist")
-            return
-        }
+    /// An OAuth product resolves its models against the account; an API product
+    /// resolves them against the vendor's listing endpoint. Neither declares a
+    /// roster, which is what stops an old model ID from anchoring the picker.
+    @Test("products declare how to discover models, never which models exist")
+    func productsDeclareDiscoveryNotModelRosters() throws {
+        let codex = try #require(BuiltinProviderCatalog.profile(for: "openai-codex"))
         #expect(codex.modelDiscovery == .authenticatedRemote)
-        #expect(codex.models.isEmpty)
+        #expect(codex.models.isEmpty, "an OAuth product must not declare static models")
 
-        // API catalog still holds verified OpenAI models
-        guard let api = catalog.products.first(where: { $0.id == "openai-api" }) else {
-            Issue.record("openai-api must exist")
-            return
-        }
-        let apiModelIDs = Set(api.models.map(\.id))
-        #expect(apiModelIDs.contains("gpt-4o"))
+        let api = try #require(BuiltinProviderCatalog.profile(for: "openai-api"))
+        #expect(api.modelDiscovery == .endpoint)
+        #expect(api.models.isEmpty, "an API product's models come from upstream discovery")
+
+        // The API product knows *where* its models come from.
+        let metadata = BuiltinProviderCatalog.metadata(for: "openai-api")
+        #expect(metadata.discoveryProfile?.kind == "openai-models")
+        #expect(metadata.discoveryProfile?.url.isEmpty == false)
     }
 
-    @Test("OpenCode Zen mock models do not exist anywhere in catalog")
-    func noMockModelsInCatalog() throws {
-        guard let catalog = BuiltinProviderCatalog.catalog else {
-            Issue.record("Catalog must be present")
-            return
-        }
-        let allModelIDs = catalog.products.flatMap { $0.models.map(\.id) }
-        let forbidden = ["muse-spark-1.3", "nemotron-3.5-lightning", "big-pickle", "gpt-6-astra"]
-        for f in forbidden {
-            #expect(!allModelIDs.contains(f))
+    @Test("no built-in product carries a static model roster")
+    func noStaticModelRosters() throws {
+        for profile in BuiltinProviderCatalog.profiles {
+            #expect(profile.models.isEmpty, "\(profile.id) must not declare a static model list")
         }
     }
 

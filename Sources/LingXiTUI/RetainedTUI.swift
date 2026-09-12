@@ -206,7 +206,8 @@ final class RetainedTUI: @unchecked Sendable {
                     if workingPhase.isAnimated {
                         spinnerFrameIndex = (spinnerFrameIndex + 1) % Self.spinnerFrames.count
                         let scrollHint = app.transcript.showsBackToCurrent ? " · ↓ Back to current" : ""
-                        app.statusLine.text = statusLineText(scrollHint: scrollHint)
+                        let (left, right) = statusLineParts(scrollHint: scrollHint)
+                        app.statusLine.setParts(left: left, right: right)
                         terminal.render(app.render(size: terminal.size, overlay: overlay.map(overlayModel)))
                     }
                     continue
@@ -964,7 +965,8 @@ final class RetainedTUI: @unchecked Sendable {
         if app.composer.text != composer { app.composer.setText(composer) }
         app.composer.masksInput = secretInput
         let scrollHint = app.transcript.showsBackToCurrent ? " · ↓ Back to current" : ""
-        app.statusLine.text = statusLineText(scrollHint: scrollHint)
+        let (left, right) = statusLineParts(scrollHint: scrollHint)
+        app.statusLine.setParts(left: left, right: right)
         terminal.render(app.render(size: size, overlay: overlay.map(overlayModel)))
     }
 
@@ -981,8 +983,15 @@ final class RetainedTUI: @unchecked Sendable {
         await modeCommand([behaviorProfile.next.rawValue])
     }
 
+    private func statusLineParts(scrollHint: String) -> (left: String, right: String) {
+        let left = "\(workingStatusText) · \(activeModel)"
+        let right = "\(gitBranchName) · Mode \(behaviorProfile.displayName) · \(permissionSummary)\(scrollHint)"
+        return (left, right)
+    }
+
     private func statusLineText(scrollHint: String) -> String {
-        "\(workingStatusText) · \(activeModel) · \(gitBranchName) · Mode \(behaviorProfile.displayName) · \(permissionSummary)\(scrollHint)"
+        let (left, right) = statusLineParts(scrollHint: scrollHint)
+        return "\(left) · \(right)"
     }
 
     private func overlayModel(_ overlay: Overlay) -> TUIOverlayModel {

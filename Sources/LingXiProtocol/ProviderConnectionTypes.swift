@@ -70,8 +70,24 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
     public let reasoning: Bool
     public let configured: Bool
     public let metadataIncomplete: Bool
+    public let canonicalModelID: String?
+    public let backendVariant: String?
+    public let backendVariants: [String]?
 
-    public init(id: String, providerID: String, modelID: String, displayName: String, contextWindow: Int, maxOutputTokens: Int, reasoning: Bool, configured: Bool, metadataIncomplete: Bool = false) {
+    public init(
+        id: String,
+        providerID: String,
+        modelID: String,
+        displayName: String,
+        contextWindow: Int,
+        maxOutputTokens: Int,
+        reasoning: Bool,
+        configured: Bool,
+        metadataIncomplete: Bool = false,
+        canonicalModelID: String? = nil,
+        backendVariant: String? = nil,
+        backendVariants: [String]? = nil
+    ) {
         self.id = id
         self.providerID = providerID
         self.modelID = modelID
@@ -81,6 +97,9 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         self.reasoning = reasoning
         self.configured = configured
         self.metadataIncomplete = metadataIncomplete
+        self.canonicalModelID = canonicalModelID
+        self.backendVariant = backendVariant
+        self.backendVariants = backendVariants
     }
 }
 

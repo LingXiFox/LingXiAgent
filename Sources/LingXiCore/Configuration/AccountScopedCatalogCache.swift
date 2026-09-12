@@ -2,6 +2,36 @@ import Foundation
 import CryptoKit
 import LingXiProtocol
 
+/// Capability facts an upstream listing stated about a model, carried through
+/// to the resolver so that discovered facts survive the merge.
+///
+/// Every field is optional: an upstream that says nothing about vision must not
+/// be read as an upstream that denied it.
+public struct DiscoveredModelCapabilities: Codable, Sendable, Equatable {
+    public let parallelToolCalling: Bool?
+    public let structuredOutput: Bool?
+    public let cache: Bool?
+    public let reasoning: Bool?
+    public let reasoningMode: String?
+    public let modalities: [String]?
+
+    public init(
+        parallelToolCalling: Bool? = nil,
+        structuredOutput: Bool? = nil,
+        cache: Bool? = nil,
+        reasoning: Bool? = nil,
+        reasoningMode: String? = nil,
+        modalities: [String]? = nil
+    ) {
+        self.parallelToolCalling = parallelToolCalling
+        self.structuredOutput = structuredOutput
+        self.cache = cache
+        self.reasoning = reasoning
+        self.reasoningMode = reasoningMode
+        self.modalities = modalities
+    }
+}
+
 public struct DiscoveredRemoteModel: Codable, Sendable, Equatable {
     public let id: String
     public let displayName: String
@@ -15,6 +45,14 @@ public struct DiscoveredRemoteModel: Codable, Sendable, Equatable {
     public let toolCalling: Bool
     public let vision: Bool
     public let metadataIncomplete: Bool
+    /// Additional capability facts the upstream listing stated. Optional so
+    /// that caches written before this field existed still decode.
+    public let capabilities: DiscoveredModelCapabilities?
+    public let upstreamModelID: String?
+    public let displayNameSource: String?
+    public let canonicalModelID: String?
+    public let backendVariant: String?
+    public let nativeMetadata: [String: String]?
 
     public init(
         id: String,
@@ -28,7 +66,13 @@ public struct DiscoveredRemoteModel: Codable, Sendable, Equatable {
         maxOutputTokens: Int? = nil,
         toolCalling: Bool = true,
         vision: Bool = false,
-        metadataIncomplete: Bool = false
+        metadataIncomplete: Bool = false,
+        capabilities: DiscoveredModelCapabilities? = nil,
+        upstreamModelID: String? = nil,
+        displayNameSource: String? = nil,
+        canonicalModelID: String? = nil,
+        backendVariant: String? = nil,
+        nativeMetadata: [String: String]? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -42,6 +86,12 @@ public struct DiscoveredRemoteModel: Codable, Sendable, Equatable {
         self.toolCalling = toolCalling
         self.vision = vision
         self.metadataIncomplete = metadataIncomplete
+        self.capabilities = capabilities
+        self.upstreamModelID = upstreamModelID
+        self.displayNameSource = displayNameSource
+        self.canonicalModelID = canonicalModelID
+        self.backendVariant = backendVariant
+        self.nativeMetadata = nativeMetadata
     }
 }
 
@@ -105,16 +155,10 @@ public actor AccountScopedCatalogCache {
         if fileManager.fileExists(atPath: fileURL.path), let record = tryDecodeRecord(at: fileURL) {
             return record
         }
-
-        // Fallback: If specific accountRef file is not found or empty, search existing cached accounts for this product
-        let existingAccounts = listAccounts(productID: productID)
-        for acc in existingAccounts {
-            let candidateURL = cacheFileURL(productID: productID, accountRef: acc)
-            if let record = tryDecodeRecord(at: candidateURL), !record.models.isEmpty {
-                return record
-            }
-        }
-
+        // Strict account isolation: discovery failures or missing caches must
+        // never fall back to historical static baselines (e.g. global.json).
+        // If an account has no last-known-good cache, it has no models.
+        // "global" is accessible only when explicitly requested (e.g. migration tools).
         return nil
     }
 
@@ -134,6 +178,13 @@ public actor AccountScopedCatalogCache {
         upstreamVersion: String? = nil,
         ttl: TimeInterval = 3600 // 1 hour TTL
     ) throws -> AccountCatalogCacheRecord {
+        let fileURL = cacheFileURL(productID: productID, accountRef: accountRef)
+
+        // Protect existing valid cache from being wiped by empty discovery
+        if models.isEmpty, let existing = tryDecodeRecord(at: fileURL), !existing.models.isEmpty {
+            return existing
+        }
+
         let now = Date()
         let expiresAt = now.addingTimeInterval(ttl)
         let record = AccountCatalogCacheRecord(
@@ -146,7 +197,6 @@ public actor AccountScopedCatalogCache {
             models: models
         )
 
-        let fileURL = cacheFileURL(productID: productID, accountRef: accountRef)
         let parentDir = fileURL.deletingLastPathComponent()
         if !fileManager.fileExists(atPath: parentDir.path) {
             try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)

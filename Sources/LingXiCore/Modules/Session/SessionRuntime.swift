@@ -820,6 +820,7 @@ public actor SessionRuntime {
                 trace("tool.batch.settle.begin", step: step + 1, toolCount: calls.count)
                 let signatures = calls.map { try? toolRuntime.readOnlySignature(for: $0) }
                 var outcomes = Array<ToolRuntime.ExecutionOutcome?>(repeating: nil, count: calls.count)
+                var publishedOutcomes = Set<Int>()
                 var primaryByIndex: [Int: Int] = [:]
                 var primaryBySignature: [ToolRuntime.ReadOnlySignature: Int] = [:]
 
@@ -858,7 +859,13 @@ public actor SessionRuntime {
                             return (offset, outcome)
                         }
                     }
-                    for await (offset, outcome) in group { outcomes[offset] = outcome }
+                    for await (offset, outcome) in group {
+                        outcomes[offset] = outcome
+                        guard !Task.isCancelled else { continue }
+                        trace("tool.execute.end", step: step + 1, toolCallID: calls[offset].callID)
+                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                        publishedOutcomes.insert(offset)
+                    }
                 }
                 try Task.checkCancellation()
 
@@ -875,11 +882,12 @@ public actor SessionRuntime {
                 }
                 for (offset, outcome) in settled.enumerated() {
                     let call = calls[offset]
-                    trace("tool.execute.end", step: step + 1, toolCallID: call.callID)
                     profiler.recordTool(outcome)
                     let result = outcome.result
-                    await completedToolCall(batchID: batchID, result: result)
-                    outcome.lifecycleTrace?.record(.resultCommitted, exitCode: result.exitCode.map { Int32($0) })
+                    if !publishedOutcomes.contains(offset) {
+                        trace("tool.execute.end", step: step + 1, toolCallID: call.callID)
+                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                    }
                     if let signature = signatures[offset], result.success || result.error?.code == "duplicateToolCall" {
                         lastSuccessfulRead = (signature, result.content)
                     } else {
@@ -888,8 +896,6 @@ public actor SessionRuntime {
                     if let error = result.error, isDeterministicFailure(result) {
                         deterministicFailures[failureKey(for: call)] = "\(error.code):\(error.message)"
                     }
-                    await eventSink(.toolResult(result.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)))
-                    outcome.lifecycleTrace?.record(.applicationProjectionReceived, exitCode: result.exitCode.map { Int32($0) })
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
                 let resultMessage: Message
@@ -1204,6 +1210,14 @@ public actor SessionRuntime {
 
     private func completedToolCall(batchID: String, result: ToolResult) async {
         await updateToolCall(batchID: batchID, callID: result.callID) { $0.with(state: .completed, result: result) }
+    }
+
+    private func publishCompletedTool(_ outcome: ToolRuntime.ExecutionOutcome, batchID: String, modelStepID: ModelStepID?) async {
+        let result = outcome.result
+        await completedToolCall(batchID: batchID, result: result)
+        outcome.lifecycleTrace?.record(.resultCommitted, exitCode: result.exitCode.map { Int32($0) })
+        await eventSink(.toolResult(result.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: modelStepID)))
+        outcome.lifecycleTrace?.record(.applicationProjectionReceived, exitCode: result.exitCode.map { Int32($0) })
     }
 
     private func updateToolCall(batchID: String, callID: ToolCallID, _ update: (DurableToolCall) -> DurableToolCall) async {

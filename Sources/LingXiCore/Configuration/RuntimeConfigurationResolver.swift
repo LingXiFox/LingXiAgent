@@ -12,6 +12,7 @@ public struct ProviderRuntimeResolution: Sendable {
 public struct MCPRuntimeResolution: Sendable {
     public let pager: MCPToolPager
     public let configurations: [MCPServerConfiguration]
+    public let discover: @Sendable () async throws -> Void
 }
 
 public enum LingXiDataRootResolver {
@@ -230,6 +231,13 @@ public enum RuntimeConfigurationResolver {
         let pager = MCPToolPager(schemaStore: MCPToolSchemaStore(directory: schemaStoreDirectory), invoker: manager)
         var resolved: [MCPServerConfiguration] = []
 
+        struct PendingMCPProbe: Sendable {
+            let serverID: MCPServerID
+            let alias: String
+            let fetchTools: @Sendable () async throws -> [MCPDiscoveredTool]
+        }
+        var pendingProbes: [PendingMCPProbe] = []
+
         for stored in configuration.servers {
             do {
                 let path = "$.servers.\(stored.id)"
@@ -297,20 +305,7 @@ public enum RuntimeConfigurationResolver {
                     if stored.enabled {
                         let transport = MCPStreamableHTTPTransport(configuration: runtime, resolver: InMemorySecretResolver(secretValues))
                         await manager.register(transport, for: runtime.serverID)
-                        if discoverTools {
-                            do {
-                                let tools = try await transport.listTools()
-                                try await pager.replaceCatalog(serverID: runtime.serverID, tools: tools)
-                                if tools.isEmpty {
-                                    await pager.recordServerStatus(.empty, for: runtime.serverID, alias: runtime.alias)
-                                } else {
-                                    await pager.recordServerStatus(.ready(toolCount: tools.count), for: runtime.serverID, alias: runtime.alias)
-                                }
-                            } catch {
-                                await pager.recordServerStatus(.error(reason: error.localizedDescription), for: runtime.serverID, alias: runtime.alias)
-                                if !faultTolerant { throw error }
-                            }
-                        }
+                        pendingProbes.append(PendingMCPProbe(serverID: runtime.serverID, alias: runtime.alias, fetchTools: { try await transport.listTools() }))
                     } else {
                         await pager.recordServerStatus(.disabled, for: runtime.serverID, alias: runtime.alias)
                     }
@@ -333,20 +328,7 @@ public enum RuntimeConfigurationResolver {
                     if stored.enabled {
                         let transport = MCPStdioTransport(configuration: runtime, resolver: InMemorySecretResolver(secretValues))
                         await manager.register(transport, for: runtime.serverID)
-                        if discoverTools {
-                            do {
-                                let tools = try await transport.listTools()
-                                try await pager.replaceCatalog(serverID: runtime.serverID, tools: tools)
-                                if tools.isEmpty {
-                                    await pager.recordServerStatus(.empty, for: runtime.serverID, alias: runtime.alias)
-                                } else {
-                                    await pager.recordServerStatus(.ready(toolCount: tools.count), for: runtime.serverID, alias: runtime.alias)
-                                }
-                            } catch {
-                                await pager.recordServerStatus(.error(reason: error.localizedDescription), for: runtime.serverID, alias: runtime.alias)
-                                if !faultTolerant { throw error }
-                            }
-                        }
+                        pendingProbes.append(PendingMCPProbe(serverID: runtime.serverID, alias: runtime.alias, fetchTools: { try await transport.listTools() }))
                     } else {
                         await pager.recordServerStatus(.disabled, for: runtime.serverID, alias: runtime.alias)
                     }
@@ -371,7 +353,35 @@ public enum RuntimeConfigurationResolver {
                 resolved.append(fallbackRuntime)
             }
         }
-        return MCPRuntimeResolution(pager: pager, configurations: resolved)
+
+        let probes = pendingProbes
+        let discover: @Sendable () async throws -> Void = {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for probe in probes {
+                    group.addTask {
+                        do {
+                            try Task.checkCancellation()
+                            let tools = try await probe.fetchTools()
+                            try Task.checkCancellation()
+                            try await pager.replaceCatalog(serverID: probe.serverID, tools: tools)
+                            if tools.isEmpty {
+                                await pager.recordServerStatus(.empty, for: probe.serverID, alias: probe.alias)
+                            } else {
+                                await pager.recordServerStatus(.ready(toolCount: tools.count), for: probe.serverID, alias: probe.alias)
+                            }
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            await pager.recordServerStatus(.error(reason: error.localizedDescription), for: probe.serverID, alias: probe.alias)
+                            if !faultTolerant { throw error }
+                        }
+                    }
+                }
+                try await group.waitForAll()
+            }
+        }
+        if discoverTools { try await discover() }
+        return MCPRuntimeResolution(pager: pager, configurations: resolved, discover: discover)
     }
 
     private static func authentication(for account: ProviderAccountConfiguration, credentials: any CredentialStore, environment: [String: String]) async throws -> ProviderAuthentication {

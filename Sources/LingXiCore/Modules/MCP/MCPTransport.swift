@@ -221,6 +221,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
         throw CoreError(code: .mcpDiscoveryLimitExceeded, message: "MCP tools/list exceeded page limit")
     }
     private func request(method: String, parameters: [String: Any]) async throws -> Data {
+        try Task.checkCancellation()
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
         guard let command = configuration.command, command.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
         var environment = EnvironmentSanitizer.sanitized()
@@ -234,10 +235,10 @@ public struct MCPStdioTransport: MCPToolInvoker {
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+        // Server diagnostics must never fill an unread pipe or enter the JSON-RPC stream.
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -247,6 +248,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
 
         let stdinHandle = stdinPipe.fileHandleForWriting
         let stdoutHandle = stdoutPipe.fileHandleForReading
+        try stdoutPipe.fileHandleForWriting.close()
         let timeoutSeconds = configuration.timeoutSeconds > 0 ? configuration.timeoutSeconds : 30.0
         let reqId = UUID().uuidString
 
@@ -275,20 +277,28 @@ public struct MCPStdioTransport: MCPToolInvoker {
         ]
         let targetReqData = try JSONSerialization.data(withJSONObject: targetReq)
 
-        final class TimeoutBox: @unchecked Sendable {
-            var timedOut = false
+        let startTime = ContinuousClock().now
+        let (chunks, continuation) = AsyncStream<Data>.makeStream()
+        stdoutHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                continuation.finish()
+            } else {
+                continuation.yield(data)
+            }
         }
-        let timeoutBox = TimeoutBox()
 
         let watchdog = Task {
-            try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-            if process.isRunning {
-                timeoutBox.timedOut = true
-                process.terminate()
-            }
+            do { try await Task.sleep(for: .seconds(timeoutSeconds)) }
+            catch { return }
+            continuation.finish()
         }
         defer {
             watchdog.cancel()
+            stdoutHandle.readabilityHandler = nil
+            continuation.finish()
+            try? stdinHandle.close()
             if process.isRunning {
                 process.terminate()
             }
@@ -301,12 +311,12 @@ public struct MCPStdioTransport: MCPToolInvoker {
         var initCompleted = false
         var targetResultData: Data?
 
-        while targetResultData == nil {
-            let chunk = stdoutHandle.availableData
-            if chunk.isEmpty {
-                break
-            }
+        for await chunk in chunks {
+            try Task.checkCancellation()
             buffer.append(chunk)
+            guard buffer.count <= 8 * 1_024 * 1_024 else {
+                throw CoreError(code: .mcpDiscoveryLimitExceeded, message: "MCP stdio response exceeded 8 MiB")
+            }
 
             while let newlineRange = buffer.range(of: Data("\n".utf8)) {
                 let lineData = buffer.subdata(in: 0..<newlineRange.lowerBound)
@@ -339,12 +349,14 @@ public struct MCPStdioTransport: MCPToolInvoker {
                     break
                 }
             }
+            if targetResultData != nil { break }
         }
 
-        try? stdinHandle.close()
+        try Task.checkCancellation()
 
         guard let finalData = targetResultData else {
-            if timeoutBox.timedOut {
+            let elapsed = ContinuousClock().now - startTime
+            if elapsed >= .seconds(timeoutSeconds) {
                 throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
             }
             throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method)")
