@@ -18,7 +18,9 @@ let package = Package(
             name: "LingXiCore",
             dependencies: ["LingXiProtocol"],
             resources: [
-                .copy("Resources/Configuration")
+                .copy("Resources/Configuration"),
+                .copy("Provider/Products"),
+                .copy("Provider/Protocols")
             ]
         ),
         // Client：所有客户端访问 Core 的正式入口。仅依赖 Protocol。

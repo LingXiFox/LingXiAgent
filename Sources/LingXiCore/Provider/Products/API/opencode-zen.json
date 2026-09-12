@@ -1,0 +1,17 @@
+{
+  "id": "opencode-zen",
+  "vendor": "opencode",
+  "displayName": "OpenCode Zen",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openCodeZenModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiResponses",
+    "openaiChat",
+    "anthropicMessages"
+  ]
+}

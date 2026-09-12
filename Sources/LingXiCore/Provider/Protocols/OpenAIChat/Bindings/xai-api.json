@@ -1,0 +1,9 @@
+{
+  "productID": "xai-api",
+  "protocol": "openaiChat",
+  "baseURL": "https://api.x.ai/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "xaiExtensions"
+  ]
+}

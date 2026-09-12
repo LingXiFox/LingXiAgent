@@ -1,0 +1,16 @@
+{
+  "id": "qwen-coding-plan",
+  "vendor": "alibaba",
+  "displayName": "Qwen Coding Plan",
+  "credentialKind": "subscriptionKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "noModelDiscovery",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "anthropicMessages"
+  ]
+}

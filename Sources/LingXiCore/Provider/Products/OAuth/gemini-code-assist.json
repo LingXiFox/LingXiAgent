@@ -1,0 +1,22 @@
+{
+  "id": "gemini-code-assist",
+  "vendor": "google",
+  "displayName": "Gemini Code Assist",
+  "credentialKind": "oauth",
+  "authStrategy": "oauthGoogle",
+  "discoveryStrategy": "noModelDiscovery",
+  "distribution": {
+    "cn": "hidden",
+    "global": "hidden"
+  },
+  "protocolBindings": [
+    "googleCodeAssistNative"
+  ],
+  "oauth": {
+    "authURL": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenURL": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+  }
+}

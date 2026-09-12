@@ -1,0 +1,17 @@
+{
+  "id": "opencode-go",
+  "vendor": "opencode",
+  "displayName": "OpenCode Go",
+  "credentialKind": "subscriptionKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openCodeGoModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiResponses",
+    "openaiChat",
+    "anthropicMessages"
+  ]
+}

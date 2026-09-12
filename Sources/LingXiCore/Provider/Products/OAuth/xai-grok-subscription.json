@@ -1,0 +1,16 @@
+{
+  "id": "xai-grok-subscription",
+  "vendor": "xai",
+  "displayName": "Grok Subscription",
+  "credentialKind": "oauth",
+  "authStrategy": "oauthXAI",
+  "discoveryStrategy": "noModelDiscovery",
+  "distribution": {
+    "cn": "disabled",
+    "global": "disabled"
+  },
+  "protocolBindings": [
+    "openaiResponses",
+    "openaiChat"
+  ]
+}

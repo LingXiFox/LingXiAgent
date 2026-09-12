@@ -1,0 +1,10 @@
+{
+  "productID": "opencode-go",
+  "protocol": "openaiResponses",
+  "baseURL": "https://opencode.ai/zen/go/v1",
+  "path": "/responses",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "modelLevelProtocolRouting"
+  ]
+}

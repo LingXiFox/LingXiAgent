@@ -1,0 +1,9 @@
+{
+  "productID": "deepseek-api",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://api.deepseek.com/anthropic",
+  "path": "/v1/messages",
+  "quirks": [
+    "modelAliasMapping"
+  ]
+}

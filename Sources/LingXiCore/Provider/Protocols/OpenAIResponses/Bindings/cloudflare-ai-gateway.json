@@ -1,0 +1,10 @@
+{
+  "productID": "cloudflare-ai-gateway",
+  "protocol": "openaiResponses",
+  "baseURL": "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}",
+  "path": "/responses",
+  "quirks": [
+    "accountGatewayPathParams",
+    "providerPassthrough"
+  ]
+}

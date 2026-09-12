@@ -1,0 +1,18 @@
+{
+  "id": "mimo-coding-plan",
+  "vendor": "xiaomi",
+  "displayName": "MiMo Token Plan",
+  "credentialKind": "subscriptionKey",
+  "authStrategy": "apiKeyHeader",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses",
+    "anthropicMessages"
+  ],
+  "authHeader": "api-key"
+}

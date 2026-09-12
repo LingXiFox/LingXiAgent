@@ -1,0 +1,20 @@
+{
+  "id": "deepseek-api",
+  "vendor": "deepseek",
+  "displayName": "DeepSeek API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses",
+    "anthropicMessages"
+  ],
+  "quirks": [
+    "statelessContinuationOnly"
+  ]
+}

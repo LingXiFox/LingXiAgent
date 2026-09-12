@@ -1,0 +1,15 @@
+{
+  "id": "ollama-cloud",
+  "vendor": "ollama",
+  "displayName": "Ollama Cloud",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "ollamaTags",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "ollamaNative"
+  ]
+}

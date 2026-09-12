@@ -1,0 +1,9 @@
+{
+  "productID": "xai-grok-subscription",
+  "protocol": "openaiResponses",
+  "baseURL": "https://cli-chat-proxy.grok.com/v1",
+  "path": "/responses",
+  "quirks": [
+    "thirdPartyObservedProxyOnly"
+  ]
+}

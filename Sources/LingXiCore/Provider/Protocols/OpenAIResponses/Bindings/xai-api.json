@@ -1,0 +1,9 @@
+{
+  "productID": "xai-api",
+  "protocol": "openaiResponses",
+  "baseURL": "https://api.x.ai/v1",
+  "path": "/responses",
+  "quirks": [
+    "xaiExtensions"
+  ]
+}

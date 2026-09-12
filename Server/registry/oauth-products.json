@@ -7,7 +7,10 @@
       "displayName": "Claude Subscription",
       "type": "subscription",
       "authStrategy": "oauth",
-      "authMethods": ["oauthUser", "subscription"],
+      "authMethods": [
+        "oauthUser",
+        "subscription"
+      ],
       "protocolFamily": "anthropic_messages",
       "discoveryStrategy": "authenticatedRemote",
       "discoveryImplementation": {
@@ -24,7 +27,9 @@
           "id": "anthropic-claude-subscription@2026-09",
           "version": "2026-09",
           "compatibilityMode": "conservative",
-          "requiredHeaders": { "anthropic-version": "2023-06-01" }
+          "requiredHeaders": {
+            "anthropic-version": "2023-06-01"
+          }
         }
       }
     },
@@ -34,7 +39,9 @@
       "displayName": "OpenAI Codex",
       "type": "subscription",
       "authStrategy": "oauth",
-      "authMethods": ["oauthUser"],
+      "authMethods": [
+        "oauthUser"
+      ],
       "protocolFamily": "openai_responses",
       "discoveryStrategy": "authenticatedRemote",
       "discoveryImplementation": {
@@ -50,7 +57,12 @@
         "clientID": "app_EMoamEEZ73f0CkXaXp7hrann",
         "authURL": "https://auth.openai.com/oauth/authorize",
         "tokenURL": "https://auth.openai.com/oauth/token",
-        "scopes": ["openid", "profile", "email", "offline_access"],
+        "scopes": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access"
+        ],
         "usePKCE": true,
         "redirectURI": "http://localhost:1455/auth/callback",
         "requestProfileID": "openai-codex@2026-09"
@@ -61,7 +73,9 @@
           "id": "openai-codex@2026-09",
           "version": "2026-09",
           "compatibilityMode": "conservative",
-          "requiredHeaders": { "OpenAI-Beta": "assistants=v2" },
+          "requiredHeaders": {
+            "OpenAI-Beta": "assistants=v2"
+          },
           "userAgentProfile": "LingXiAgent-OAuth/2.0 (macOS)"
         }
       }
@@ -72,7 +86,10 @@
       "displayName": "Gemini Code Assist",
       "type": "subscription",
       "authStrategy": "oauth",
-      "authMethods": ["oauthUser", "subscription"],
+      "authMethods": [
+        "oauthUser",
+        "subscription"
+      ],
       "protocolFamily": "openai_chat",
       "discoveryStrategy": "authenticatedRemote",
       "discoveryImplementation": {
@@ -88,7 +105,9 @@
         "clientID": "lingxiagent-gca-client",
         "authURL": "https://accounts.google.com/o/oauth2/v2/auth",
         "tokenURL": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+        "scopes": [
+          "https://www.googleapis.com/auth/cloud-platform"
+        ],
         "usePKCE": true,
         "requestProfileID": "gemini-code-assist@2026-09"
       },
@@ -107,7 +126,9 @@
       "displayName": "Antigravity",
       "type": "subscription",
       "authStrategy": "oauth",
-      "authMethods": ["oauthUser"],
+      "authMethods": [
+        "oauthUser"
+      ],
       "protocolFamily": "openai_chat",
       "discoveryStrategy": "authenticatedRemote",
       "discoveryImplementation": {
@@ -127,46 +148,15 @@
       }
     },
     {
-      "id": "opencode-zen",
-      "vendorID": "opencode",
-      "displayName": "OpenCode Zen",
-      "type": "gateway",
-      "authStrategy": "gateway",
-      "authMethods": ["gateway", "apiKey"],
-      "protocolFamily": "openai_chat",
-      "discoveryStrategy": "custom",
-      "discoveryImplementation": {
-        "status": "implemented",
-        "backend": "custom"
-      },
-      "namingVerification": "verified",
-      "runtimeSupport": "partial",
-      "verificationStatus": "partial"
-    },
-    {
-      "id": "opencode-go",
-      "vendorID": "opencode",
-      "displayName": "OpenCode Go",
-      "type": "subscription",
-      "authStrategy": "oauth",
-      "authMethods": ["subscription"],
-      "protocolFamily": "openai_chat",
-      "discoveryStrategy": "authenticatedRemote",
-      "discoveryImplementation": {
-        "status": "missing",
-        "backend": "none"
-      },
-      "namingVerification": "unverified",
-      "runtimeSupport": "partial",
-      "verificationStatus": "partial"
-    },
-    {
       "id": "xai-grok-subscription",
       "vendorID": "xai",
       "displayName": "Grok Subscription",
       "type": "subscription",
       "authStrategy": "oauth",
-      "authMethods": ["oauthUser", "subscription"],
+      "authMethods": [
+        "oauthUser",
+        "subscription"
+      ],
       "protocolFamily": "openai_responses",
       "discoveryStrategy": "authenticatedRemote",
       "discoveryImplementation": {
@@ -176,74 +166,6 @@
       "namingVerification": "unverified",
       "runtimeSupport": "partial",
       "verificationStatus": "nonOfficialRunnableEvidence"
-    },
-    {
-      "id": "minimax-token-plan",
-      "vendorID": "minimax",
-      "displayName": "MiniMax Token Plan",
-      "type": "subscription",
-      "authStrategy": "oauth",
-      "authMethods": ["subscription"],
-      "protocolFamily": "openai_chat",
-      "discoveryStrategy": "authenticatedRemote",
-      "discoveryImplementation": {
-        "status": "missing",
-        "backend": "none"
-      },
-      "namingVerification": "unverified",
-      "runtimeSupport": "partial",
-      "verificationStatus": "partial"
-    },
-    {
-      "id": "zhipu-coding-plan",
-      "vendorID": "zai",
-      "displayName": "GLM Coding Plan",
-      "type": "subscription",
-      "authStrategy": "oauth",
-      "authMethods": ["subscription"],
-      "protocolFamily": "openai_chat",
-      "discoveryStrategy": "authenticatedRemote",
-      "discoveryImplementation": {
-        "status": "missing",
-        "backend": "none"
-      },
-      "namingVerification": "unverified",
-      "runtimeSupport": "partial",
-      "verificationStatus": "partial"
-    },
-    {
-      "id": "mimo-coding-plan",
-      "vendorID": "xiaomi",
-      "displayName": "MiMo Token Plan",
-      "type": "subscription",
-      "authStrategy": "oauth",
-      "authMethods": ["subscription"],
-      "protocolFamily": "openai_chat",
-      "discoveryStrategy": "authenticatedRemote",
-      "discoveryImplementation": {
-        "status": "missing",
-        "backend": "none"
-      },
-      "namingVerification": "unverified",
-      "runtimeSupport": "partial",
-      "verificationStatus": "partial"
-    },
-    {
-      "id": "qwen-coding-plan",
-      "vendorID": "alibaba",
-      "displayName": "Qwen Coding Plan",
-      "type": "subscription",
-      "authStrategy": "oauth",
-      "authMethods": ["subscription"],
-      "protocolFamily": "openai_chat",
-      "discoveryStrategy": "authenticatedRemote",
-      "discoveryImplementation": {
-        "status": "missing",
-        "backend": "none"
-      },
-      "namingVerification": "unverified",
-      "runtimeSupport": "unsupported",
-      "verificationStatus": "unverified"
     }
   ]
 }

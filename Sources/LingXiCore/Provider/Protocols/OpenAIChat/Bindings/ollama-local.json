@@ -1,0 +1,9 @@
+{
+  "productID": "ollama-local",
+  "protocol": "openaiChat",
+  "baseURL": "http://127.0.0.1:11434/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "localInstanceBound"
+  ]
+}

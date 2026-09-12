@@ -1,0 +1,9 @@
+{
+  "productID": "ollama-local",
+  "protocol": "ollamaNative",
+  "baseURL": "http://127.0.0.1:11434",
+  "path": "/api/chat",
+  "quirks": [
+    "localInstanceBound"
+  ]
+}

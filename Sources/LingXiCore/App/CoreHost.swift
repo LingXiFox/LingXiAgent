@@ -1078,7 +1078,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         for providerID in snapshot.providers.providers.keys.sorted() {
             guard let provider = snapshot.providers.providers[providerID] else { continue }
 
-            if let product = catalog?.product(id: providerID) {
+            if let product = catalog?.product(id: providerID) ?? BuiltinProviderCatalog.registryProduct(id: providerID) {
                 let accountModels = await accountDiscoveredModels(
                     product: product,
                     providerID: providerID
@@ -1089,8 +1089,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                     accountModels: accountModels,
                     isConfigured: true
                 )
-                results.append(contentsOf: outcome.models)
-                continue
+                if !outcome.models.isEmpty {
+                    results.append(contentsOf: outcome.models)
+                    continue
+                }
             }
 
             // The registry does not describe this product — an older or custom
@@ -1100,17 +1102,16 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
         // Products the registry publishes but which the user has not configured
         // yet are still listed, so they can be discovered and connected.
-        if let catalog {
-            for product in catalog.products where !configuredProviders.contains(product.id) {
-                guard product.runtime.isRunnable else { continue }
-                let outcome = ModelAvailabilityResolver.resolve(
-                    product: product,
-                    registryModels: catalog.models(productID: product.id),
-                    accountModels: [],
-                    isConfigured: false
-                )
-                results.append(contentsOf: outcome.models)
-            }
+        let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
+        for product in availableProducts where !configuredProviders.contains(product.id) {
+            guard product.runtime.isRunnable else { continue }
+            let outcome = ModelAvailabilityResolver.resolve(
+                product: product,
+                registryModels: catalog?.models(productID: product.id) ?? [],
+                accountModels: [],
+                isConfigured: false
+            )
+            results.append(contentsOf: outcome.models)
         }
 
         return results
@@ -1157,10 +1158,20 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: $0)
         } ?? providerID
 
-        let cached = await AccountScopedCatalogCache.shared.load(
+        var cached = await AccountScopedCatalogCache.shared.load(
             productID: providerID,
             accountRef: accountRef
         )
+        if cached == nil || cached?.models.isEmpty == true {
+            let availableAccounts = await AccountScopedCatalogCache.shared.listAccounts(productID: providerID)
+            for acc in availableAccounts {
+                if let record = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: acc), !record.models.isEmpty {
+                    cached = record
+                    break
+                }
+            }
+        }
+
         if let cached, !cached.models.isEmpty, !cached.isExpired {
             // Still fresh: serve it and let the next refresh happen in the
             // background rather than blocking a model listing on the network.
@@ -1198,7 +1209,16 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             productID: providerID,
             accountRef: accountRef
         )
-        return stored?.models ?? []
+        if let stored, !stored.models.isEmpty {
+            return stored.models
+        }
+        let availableAccounts = await AccountScopedCatalogCache.shared.listAccounts(productID: providerID)
+        for acc in availableAccounts {
+            if let record = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: acc), !record.models.isEmpty {
+                return record.models
+            }
+        }
+        return []
     }
 
     /// Reads whichever credential this product authenticates with. Returns nil

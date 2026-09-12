@@ -1,0 +1,9 @@
+{
+  "productID": "anthropic-claude-subscription",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://api.anthropic.com",
+  "path": "/v1/messages",
+  "quirks": [
+    "thirdPartyPolicyRestricted"
+  ]
+}

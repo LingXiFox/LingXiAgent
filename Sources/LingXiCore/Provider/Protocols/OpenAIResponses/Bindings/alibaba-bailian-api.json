@@ -1,0 +1,9 @@
+{
+  "productID": "alibaba-bailian-api",
+  "protocol": "openaiResponses",
+  "baseURL": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "path": "/responses",
+  "quirks": [
+    "modelDependentResponses"
+  ]
+}

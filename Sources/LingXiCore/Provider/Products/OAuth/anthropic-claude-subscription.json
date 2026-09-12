@@ -1,0 +1,15 @@
+{
+  "id": "anthropic-claude-subscription",
+  "vendor": "anthropic",
+  "displayName": "Claude Subscription",
+  "credentialKind": "oauth",
+  "authStrategy": "oauthClaude",
+  "discoveryStrategy": "noModelDiscovery",
+  "distribution": {
+    "cn": "disabled",
+    "global": "disabled"
+  },
+  "protocolBindings": [
+    "anthropicMessages"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "productID": "gemini-api",
+  "protocol": "geminiNative",
+  "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+  "path": "/models",
+  "quirks": []
+}

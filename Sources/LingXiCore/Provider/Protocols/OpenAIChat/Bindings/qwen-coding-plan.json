@@ -1,0 +1,10 @@
+{
+  "productID": "qwen-coding-plan",
+  "protocol": "openaiChat",
+  "baseURL": "https://coding.dashscope.aliyuncs.com/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "codingPlanDedicatedEndpoint"
+  ]
+}

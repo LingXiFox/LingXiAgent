@@ -1,0 +1,10 @@
+{
+  "productID": "zhipu-coding-plan",
+  "protocol": "openaiChat",
+  "baseURL": "https://api.z.ai/api/coding/paas/v4",
+  "path": "/chat/completions",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "codingAgentPolicyNotice"
+  ]
+}

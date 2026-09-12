@@ -1,0 +1,10 @@
+{
+  "productID": "openrouter",
+  "protocol": "openaiChat",
+  "baseURL": "https://openrouter.ai/api/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "gatewayRoutingSuffix",
+    "vendorModelNaming"
+  ]
+}

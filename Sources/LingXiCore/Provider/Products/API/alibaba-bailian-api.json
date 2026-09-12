@@ -1,0 +1,17 @@
+{
+  "id": "alibaba-bailian-api",
+  "vendor": "alibaba",
+  "displayName": "Alibaba Bailian API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "alibabaModelStudio",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses",
+    "anthropicMessages"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "productID": "mimo-coding-plan",
+  "protocol": "openaiChat",
+  "baseURL": "https://token-plan-cn.xiaomimimo.com/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "subscriptionKeyOnly"
+  ]
+}

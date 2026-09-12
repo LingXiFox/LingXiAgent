@@ -1,0 +1,9 @@
+{
+  "productID": "anthropic-api",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://api.anthropic.com",
+  "path": "/v1/messages",
+  "quirks": [
+    "requiresAnthropicVersionHeader"
+  ]
+}

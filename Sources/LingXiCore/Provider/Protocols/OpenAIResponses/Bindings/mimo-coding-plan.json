@@ -1,0 +1,10 @@
+{
+  "productID": "mimo-coding-plan",
+  "protocol": "openaiResponses",
+  "baseURL": "https://token-plan-cn.xiaomimimo.com/v1",
+  "path": "/responses",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "noBackgroundResponses"
+  ]
+}

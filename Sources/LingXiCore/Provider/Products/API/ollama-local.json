@@ -1,0 +1,20 @@
+{
+  "id": "ollama-local",
+  "vendor": "ollama",
+  "displayName": "Ollama",
+  "credentialKind": "none",
+  "authStrategy": "none",
+  "discoveryStrategy": "ollamaTags",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "ollamaNative",
+    "openaiChat",
+    "openaiResponses"
+  ],
+  "quirks": [
+    "localRuntime"
+  ]
+}

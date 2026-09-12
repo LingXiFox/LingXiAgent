@@ -1,0 +1,10 @@
+{
+  "productID": "gemini-api",
+  "protocol": "openaiChat",
+  "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "path": "/chat/completions",
+  "quirks": [
+    "betaOpenAICompatibility",
+    "reasoningEffortOrThinkingConfig"
+  ]
+}

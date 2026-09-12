@@ -1,0 +1,10 @@
+{
+  "productID": "alibaba-bailian-api",
+  "protocol": "openaiChat",
+  "baseURL": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "regionWorkspaceBound",
+    "requiresWorkspaceId"
+  ]
+}

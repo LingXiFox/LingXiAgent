@@ -1,0 +1,16 @@
+{
+  "id": "cloudflare-ai-gateway",
+  "vendor": "cloudflare",
+  "displayName": "Cloudflare AI Gateway",
+  "credentialKind": "gatewayToken",
+  "authStrategy": "gatewayToken",
+  "discoveryStrategy": "noModelDiscovery",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "productID": "opencode-go",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://opencode.ai/zen/go/v1",
+  "path": "/messages",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "modelLevelProtocolRouting"
+  ]
+}

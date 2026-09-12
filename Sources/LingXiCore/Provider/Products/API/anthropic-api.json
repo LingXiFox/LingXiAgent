@@ -1,0 +1,19 @@
+{
+  "id": "anthropic-api",
+  "vendor": "anthropic",
+  "displayName": "Anthropic API",
+  "credentialKind": "apiKey",
+  "authStrategy": "apiKeyHeader",
+  "discoveryStrategy": "anthropicModels",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "anthropicMessages"
+  ],
+  "authHeader": "x-api-key",
+  "quirks": [
+    "requiresAnthropicVersionHeader"
+  ]
+}

@@ -53,7 +53,9 @@
       "auth": "apiKeyHeader",
       "public": false,
       "sourceAuthorityKind": "vendorFirstParty",
-      "headers": { "anthropic-version": "2023-06-01" },
+      "headers": {
+        "anthropic-version": "2023-06-01"
+      },
       "cacheTTL": "6h"
     },
     {
@@ -70,15 +72,6 @@
       "id": "alibaba-bailian-models",
       "kind": "openai-models",
       "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-      "auth": "bearer",
-      "public": false,
-      "sourceAuthorityKind": "vendorFirstParty",
-      "cacheTTL": "6h"
-    },
-    {
-      "id": "zai-api-models",
-      "kind": "openai-models",
-      "url": "https://api.z.ai/api/paas/v4/models",
       "auth": "bearer",
       "public": false,
       "sourceAuthorityKind": "vendorFirstParty",

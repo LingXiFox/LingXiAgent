@@ -1,0 +1,10 @@
+{
+  "productID": "mimo-api",
+  "protocol": "openaiResponses",
+  "baseURL": "https://api.xiaomimimo.com/v1",
+  "path": "/responses",
+  "quirks": [
+    "noBackgroundResponses",
+    "noRemoteStateContinuation"
+  ]
+}

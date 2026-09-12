@@ -1,0 +1,154 @@
+{
+	# The admin API stays reachable, but only over a loopback Unix socket owned
+	# by the caddy user with mode 0600 — no TCP port, no network exposure. This
+	# is what lets configuration changes be applied with `systemctl reload caddy`
+	# (a hot reload with no dropped connections) instead of a restart.
+	admin unix//run/caddy/admin.sock|0600
+
+	debug
+	email lingxifox@gmail.com
+}
+
+http://lingxifox.cn, http://www.lingxifox.cn {
+	redir https://www.lingxifox.cn{uri} permanent
+}
+
+www.lingxifox.cn {
+	tls {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
+			}
+		}
+	}
+
+	encode zstd gzip
+
+	handle {
+		reverse_proxy 127.0.0.1:3000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/lingxifox-access.log
+		format console
+	}
+}
+
+lingxifox.cn {
+	redir https://www.lingxifox.cn{uri} permanent
+}
+
+http://lingxiagent.lingxifox.cn {
+	handle {
+		root * /var/www/lingxiagent
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		-Server
+	}
+
+	header Cache-Control "public, max-age=3600"
+}
+
+lingxiagent.lingxifox.cn {
+	tls {
+		ca https://acme.zerossl.com/v2/DV90
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
+			}
+		}
+	}
+
+	handle {
+		root * /var/www/lingxiagent
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	header Cache-Control "public, max-age=3600"
+
+	log {
+		output file /var/log/caddy/lingxiagent-access.log
+		format console
+	}
+}
+
+http://models.lingxifox.cn {
+	handle {
+		root * /var/www/models.lingxifox.cn
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		-Server
+	}
+}
+
+models.lingxifox.cn {
+	tls {
+		ca https://acme.zerossl.com/v2/DV90
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
+			}
+		}
+	}
+
+	handle {
+		root * /var/www/models.lingxifox.cn
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	header /models.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
+	header /summary.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
+
+	log {
+		output file /var/log/caddy/models-access.log
+		format console
+	}
+}

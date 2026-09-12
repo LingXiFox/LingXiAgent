@@ -1,0 +1,9 @@
+{
+  "productID": "opencode-zen",
+  "protocol": "openaiChat",
+  "baseURL": "https://opencode.ai/zen/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "modelLevelProtocolRouting"
+  ]
+}

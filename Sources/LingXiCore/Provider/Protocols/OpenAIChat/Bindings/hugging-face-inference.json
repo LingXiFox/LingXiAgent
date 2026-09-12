@@ -1,0 +1,10 @@
+{
+  "productID": "hugging-face-inference",
+  "protocol": "openaiChat",
+  "baseURL": "https://router.huggingface.co/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "repoIdNaming",
+    "routerRoutingSuffix"
+  ]
+}

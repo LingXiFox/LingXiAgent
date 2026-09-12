@@ -1,0 +1,18 @@
+{
+  "id": "mimo-api",
+  "vendor": "xiaomi",
+  "displayName": "MiMo API",
+  "credentialKind": "apiKey",
+  "authStrategy": "apiKeyHeader",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses",
+    "anthropicMessages"
+  ],
+  "authHeader": "api-key"
+}

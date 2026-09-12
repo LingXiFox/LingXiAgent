@@ -1,0 +1,16 @@
+{
+  "id": "minimax-api",
+  "vendor": "minimax",
+  "displayName": "MiniMax API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "anthropicMessages"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "gemini-api",
+  "vendor": "google",
+  "displayName": "Gemini API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "geminiOpenAIModels",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "geminiNative"
+  ]
+}

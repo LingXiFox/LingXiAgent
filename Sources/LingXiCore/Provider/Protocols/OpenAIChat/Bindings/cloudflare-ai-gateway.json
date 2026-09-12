@@ -1,0 +1,10 @@
+{
+  "productID": "cloudflare-ai-gateway",
+  "protocol": "openaiChat",
+  "baseURL": "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}",
+  "path": "/chat/completions",
+  "quirks": [
+    "accountGatewayPathParams",
+    "providerPassthrough"
+  ]
+}

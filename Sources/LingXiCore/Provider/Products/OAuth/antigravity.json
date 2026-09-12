@@ -1,0 +1,22 @@
+{
+  "id": "antigravity",
+  "vendor": "google",
+  "displayName": "Antigravity",
+  "credentialKind": "oauth",
+  "authStrategy": "oauthGoogle",
+  "discoveryStrategy": "antigravityFetchAvailableModels",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "antigravityNative"
+  ],
+  "oauth": {
+    "authURL": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenURL": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+  }
+}

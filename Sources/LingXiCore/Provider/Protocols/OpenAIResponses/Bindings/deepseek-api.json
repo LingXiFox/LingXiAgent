@@ -1,0 +1,10 @@
+{
+  "productID": "deepseek-api",
+  "protocol": "openaiResponses",
+  "baseURL": "https://api.deepseek.com",
+  "path": "/responses",
+  "quirks": [
+    "statelessContinuationOnly",
+    "noRemoteState"
+  ]
+}

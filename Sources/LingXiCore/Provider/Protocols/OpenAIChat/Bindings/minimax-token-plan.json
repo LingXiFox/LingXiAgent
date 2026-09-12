@@ -1,0 +1,9 @@
+{
+  "productID": "minimax-token-plan",
+  "protocol": "openaiChat",
+  "baseURL": "https://api.minimaxi.com/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "subscriptionKeyOnly"
+  ]
+}

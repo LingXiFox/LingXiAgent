@@ -1,0 +1,9 @@
+{
+  "productID": "ollama-local",
+  "protocol": "openaiResponses",
+  "baseURL": "http://127.0.0.1:11434/v1",
+  "path": "/responses",
+  "quirks": [
+    "localInstanceBound"
+  ]
+}

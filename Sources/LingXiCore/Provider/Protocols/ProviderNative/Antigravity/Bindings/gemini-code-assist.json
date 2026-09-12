@@ -1,0 +1,9 @@
+{
+  "productID": "gemini-code-assist",
+  "protocol": "googleCodeAssistNative",
+  "baseURL": "https://cloudcode-pa.googleapis.com/v1internal",
+  "path": "",
+  "quirks": [
+    "projectSemanticsUnverified"
+  ]
+}

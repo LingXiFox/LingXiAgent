@@ -1,0 +1,10 @@
+{
+  "productID": "opencode-go",
+  "protocol": "openaiChat",
+  "baseURL": "https://opencode.ai/zen/go/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "modelLevelProtocolRouting"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "xai-api",
+  "vendor": "xai",
+  "displayName": "xAI API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiResponses",
+    "openaiChat"
+  ],
+  "quirks": [
+    "statelessContinuationOnly"
+  ]
+}

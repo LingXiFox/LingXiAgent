@@ -1,0 +1,10 @@
+{
+  "productID": "antigravity",
+  "protocol": "antigravityNative",
+  "baseURL": "https://cloudcode-pa.googleapis.com",
+  "path": "/v1internal",
+  "quirks": [
+    "antigravityObservedRPC",
+    "projectBootstrap"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "productID": "openai-api",
+  "protocol": "openaiChat",
+  "baseURL": "https://api.openai.com/v1",
+  "path": "/chat/completions",
+  "quirks": []
+}

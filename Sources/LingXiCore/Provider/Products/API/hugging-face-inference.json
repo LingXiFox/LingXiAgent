@@ -1,0 +1,16 @@
+{
+  "id": "hugging-face-inference",
+  "vendor": "hugging-face",
+  "displayName": "Hugging Face Inference Providers",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "huggingFaceModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses"
+  ]
+}

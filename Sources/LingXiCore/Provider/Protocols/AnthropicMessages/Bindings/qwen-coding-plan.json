@@ -1,0 +1,10 @@
+{
+  "productID": "qwen-coding-plan",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+  "path": "/v1/messages",
+  "quirks": [
+    "subscriptionKeyOnly",
+    "codingPlanDedicatedEndpoint"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "productID": "ollama-cloud",
+  "protocol": "ollamaNative",
+  "baseURL": "https://ollama.com/api",
+  "path": "/chat",
+  "quirks": [
+    "aggregatorAuthority"
+  ]
+}

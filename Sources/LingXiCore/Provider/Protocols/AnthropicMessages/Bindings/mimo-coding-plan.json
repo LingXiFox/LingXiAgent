@@ -1,0 +1,9 @@
+{
+  "productID": "mimo-coding-plan",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://token-plan-cn.xiaomimimo.com/anthropic",
+  "path": "/v1/messages",
+  "quirks": [
+    "subscriptionKeyOnly"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "openai-api",
+  "vendor": "openai",
+  "displayName": "OpenAI API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiResponses",
+    "openaiChat"
+  ]
+}

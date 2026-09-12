@@ -1,0 +1,9 @@
+{
+  "productID": "zai-api",
+  "protocol": "openaiChat",
+  "baseURL": "https://api.z.ai/api/paas/v4",
+  "path": "/chat/completions",
+  "quirks": [
+    "noPublicModelsEndpoint"
+  ]
+}

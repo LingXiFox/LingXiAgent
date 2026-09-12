@@ -1,0 +1,7 @@
+{
+  "productID": "deepseek-api",
+  "protocol": "openaiChat",
+  "baseURL": "https://api.deepseek.com",
+  "path": "/chat/completions",
+  "quirks": []
+}

@@ -1,0 +1,9 @@
+{
+  "productID": "lm-studio-local",
+  "protocol": "openaiChat",
+  "baseURL": "http://127.0.0.1:1234/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "localInstanceBound"
+  ]
+}

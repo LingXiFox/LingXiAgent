@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import LingXiCore
 @testable import LingXiProtocol
+@testable import LingXiClient
 
 /// Tests for the unified model registry: dynamic discovery, overlay semantics,
 /// the registry/account split, and the guarantees the previous design broke.
@@ -689,5 +690,78 @@ struct UnifiedModelRegistryTests {
         #expect(catalog.models(productID: "anthropic-claude-subscription").isEmpty)
         #expect(catalog.product(id: "anthropic-claude-subscription")?.discoveryImplementation?.status == "missing")
         #expect(catalog.product(id: "anthropic-claude-subscription")?.namingVerification == "unverified")
+    }
+
+    @Test func testCoreHostDiscoversOAuthModelsWithoutRemoteCatalog() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let configStore = try ConfigurationStore(dataRoot: tempDir)
+        _ = try await configStore.load()
+        let providersConfig = ProvidersConfiguration(
+            schema: "https://lingxiagent.lingxifox.cn/schema/providers.json",
+            version: 1,
+            model: "openai-codex/gpt-6-astra",
+            providers: [
+                "openai-codex": PublicProviderConfiguration(
+                    name: "OpenAI Codex",
+                    adapter: "openai-compatible",
+                    options: PublicProviderOptions(baseURL: "https://api.openai.com/v1"),
+                    models: [:]
+                ),
+                "bai": PublicProviderConfiguration(
+                    name: "BAI",
+                    adapter: "openai-compatible",
+                    options: PublicProviderOptions(baseURL: "https://token.sensenova.cn/v1"),
+                    models: [
+                        "deepseek-v4-flash": PublicModelConfiguration(
+                            name: "Deepseek v4 Flash",
+                            limit: PublicModelLimit(context: 1000000, output: 100000)
+                        )
+                    ]
+                )
+            ]
+        )
+        try await configStore.saveProviders(providersConfig)
+        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase")
+        
+        // Seed OAuth token into credential store
+        let oauthSecret = "mock-oauth-token-with-sub"
+        let tokenRef = CredentialRef("provider-openai-codex-oauth")
+        try await credStore.setSecret(oauthSecret, for: tokenRef)
+
+        // Seed account discovery cache
+        let accountRef = AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: oauthSecret)
+        let discoveredModels = [
+            DiscoveredRemoteModel(id: "gpt-6-astra", displayName: "GPT-6-Astra", visibility: "list"),
+            DiscoveredRemoteModel(id: "gpt-reserve", displayName: "GPT-Reserve", visibility: "hide"),
+            DiscoveredRemoteModel(id: "gpt-5.6-sol", displayName: "GPT-5.6-Sol", visibility: "list")
+        ]
+        try await AccountScopedCatalogCache.shared.save(
+            productID: "openai-codex",
+            accountRef: accountRef,
+            models: discoveredModels
+        )
+
+        let host = try CoreHost(
+            configurationStore: configStore,
+            credentialStore: credStore
+        )
+        await host.start()
+        defer { Task { await host.shutdown() } }
+
+        let client = LingXiClient.inProcess(endpoint: host)
+        let models = try await client.listProviderModels()
+
+        // Must include configured bai custom model
+        #expect(models.contains(where: { $0.id == "bai/deepseek-v4-flash" && $0.configured }))
+
+        // Must include discovered openai-codex models with visibility: "list"
+        #expect(models.contains(where: { $0.id == "openai-codex/gpt-6-astra" && $0.configured }))
+        #expect(models.contains(where: { $0.id == "openai-codex/gpt-5.6-sol" && $0.configured }))
+
+        // Must filter out hidden model
+        #expect(!models.contains(where: { $0.id == "openai-codex/gpt-reserve" }))
     }
 }

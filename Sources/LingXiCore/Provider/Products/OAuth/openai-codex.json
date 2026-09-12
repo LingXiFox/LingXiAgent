@@ -1,0 +1,26 @@
+{
+  "id": "openai-codex",
+  "vendor": "openai",
+  "displayName": "OpenAI Codex",
+  "credentialKind": "oauth",
+  "authStrategy": "oauthPKCE",
+  "discoveryStrategy": "codexAuthenticatedCatalog",
+  "distribution": {
+    "cn": "hidden",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiResponses"
+  ],
+  "oauth": {
+    "authURL": "https://auth.openai.com/oauth/authorize",
+    "tokenURL": "https://auth.openai.com/oauth/token",
+    "clientID": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "scopes": [
+      "openid",
+      "profile",
+      "email",
+      "offline_access"
+    ]
+  }
+}

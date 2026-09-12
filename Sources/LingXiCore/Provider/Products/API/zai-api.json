@@ -1,0 +1,15 @@
+{
+  "id": "zai-api",
+  "vendor": "zai",
+  "displayName": "Z.AI API",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "noModelDiscovery",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat"
+  ]
+}

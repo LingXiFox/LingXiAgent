@@ -1,0 +1,9 @@
+{
+  "productID": "llama-cpp-local",
+  "protocol": "openaiChat",
+  "baseURL": "http://127.0.0.1:8080/v1",
+  "path": "/chat/completions",
+  "quirks": [
+    "localInstanceBound"
+  ]
+}

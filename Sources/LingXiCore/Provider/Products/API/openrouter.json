@@ -1,0 +1,16 @@
+{
+  "id": "openrouter",
+  "vendor": "openrouter",
+  "displayName": "OpenRouter",
+  "credentialKind": "apiKey",
+  "authStrategy": "bearer",
+  "discoveryStrategy": "openrouterModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses"
+  ]
+}

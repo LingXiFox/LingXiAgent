@@ -1,0 +1,9 @@
+{
+  "productID": "opencode-zen",
+  "protocol": "openaiResponses",
+  "baseURL": "https://opencode.ai/zen/v1",
+  "path": "/responses",
+  "quirks": [
+    "modelLevelProtocolRouting"
+  ]
+}

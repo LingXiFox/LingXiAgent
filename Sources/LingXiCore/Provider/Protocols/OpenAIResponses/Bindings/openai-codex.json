@@ -1,0 +1,10 @@
+{
+  "productID": "openai-codex",
+  "protocol": "openaiResponses",
+  "baseURL": "https://chatgpt.com/backend-api/codex",
+  "path": "/responses",
+  "quirks": [
+    "codexClientHeaders",
+    "chatgptAccountId"
+  ]
+}

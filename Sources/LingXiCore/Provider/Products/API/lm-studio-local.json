@@ -1,0 +1,20 @@
+{
+  "id": "lm-studio-local",
+  "vendor": "lm-studio",
+  "displayName": "LM Studio",
+  "credentialKind": "optionalKey",
+  "authStrategy": "optionalBearer",
+  "discoveryStrategy": "lmStudioNative",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses",
+    "anthropicMessages"
+  ],
+  "quirks": [
+    "localRuntime"
+  ]
+}

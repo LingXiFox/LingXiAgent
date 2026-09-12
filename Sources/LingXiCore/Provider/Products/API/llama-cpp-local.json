@@ -1,0 +1,20 @@
+{
+  "id": "llama-cpp-local",
+  "vendor": "llama-cpp",
+  "displayName": "llama.cpp",
+  "credentialKind": "optionalKey",
+  "authStrategy": "optionalBearer",
+  "discoveryStrategy": "openaiModels",
+  "distribution": {
+    "cn": "default",
+    "global": "default"
+  },
+  "protocolBindings": [
+    "openaiChat",
+    "openaiResponses",
+    "anthropicMessages"
+  ],
+  "quirks": [
+    "localRuntime"
+  ]
+}

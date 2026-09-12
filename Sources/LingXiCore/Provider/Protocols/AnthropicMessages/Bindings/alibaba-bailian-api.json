@@ -1,0 +1,9 @@
+{
+  "productID": "alibaba-bailian-api",
+  "protocol": "anthropicMessages",
+  "baseURL": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+  "path": "/v1/messages",
+  "quirks": [
+    "regionWorkspaceBound"
+  ]
+}
