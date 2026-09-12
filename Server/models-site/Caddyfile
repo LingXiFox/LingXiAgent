@@ -152,3 +152,58 @@ models.lingxifox.cn {
 		format console
 	}
 }
+
+http://agent.lingxifox.cn {
+	handle {
+		root * /var/www/agent.lingxifox.cn
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		-Server
+	}
+
+	header /install Content-Type "text/plain; charset=utf-8"
+	header /install.sh Content-Type "text/plain; charset=utf-8"
+	header Cache-Control "public, max-age=300"
+}
+
+agent.lingxifox.cn {
+	tls {
+		ca https://acme.zerossl.com/v2/DV90
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
+			}
+		}
+	}
+
+	handle {
+		root * /var/www/agent.lingxifox.cn
+		encode zstd gzip
+		file_server
+	}
+
+	header {
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	header /install Content-Type "text/plain; charset=utf-8"
+	header /install.sh Content-Type "text/plain; charset=utf-8"
+	header Cache-Control "public, max-age=300"
+
+	log {
+		output file /var/log/caddy/agent-access.log
+		format console
+	}
+}
