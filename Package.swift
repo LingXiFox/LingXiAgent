@@ -54,5 +54,6 @@ let package = Package(
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
