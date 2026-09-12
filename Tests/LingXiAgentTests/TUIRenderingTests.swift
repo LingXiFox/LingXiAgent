@@ -644,7 +644,8 @@ struct TUIRenderingTests {
 
         let frame = app.render(size: TUISize(width: 90, height: 24), overlay: nil)
         let allText = frame.cells.map { String($0.character) }.joined()
-        #expect(allText.contains("deepseek-v4-flash DeepSeek (high)"))
+        #expect(allText.contains("DeepSeek/deepseek-v4-flash (high)"))
+        #expect(!allText.contains("DeepSeek/deepseek-v4-flash DeepSeek"))
 
         // Width of box should be 86 (or widened up to 88)
         let heroMetaCells = frame.cells.filter { $0.style == .heroBoxMeta }

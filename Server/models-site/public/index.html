@@ -29,110 +29,188 @@
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
     code, pre { font-family: 'Fira Code', monospace; }
     .glass {
-      background: rgba(24, 24, 27, 0.85);
+      background: rgba(18, 18, 20, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
     }
     .custom-scrollbar::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
+      width: 5px;
+      height: 5px;
     }
     .custom-scrollbar::-webkit-scrollbar-thumb {
       background: #3f3f46;
       border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #52525b;
     }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col selection:bg-purple-500 selection:text-white">
 
   <!-- Header -->
-  <header class="sticky top-0 z-40 border-b border-zinc-800 glass">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+  <header class="sticky top-0 z-40 border-b border-zinc-800/80 glass">
+    <div class="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
       <div class="flex items-center space-x-3">
         <span class="text-2xl">🦊</span>
         <div>
-          <span class="font-bold text-lg bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-amber-300">LingXi Models</span>
-          <span class="hidden sm:inline-block ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800">Swift Edition</span>
+          <span class="font-bold text-lg bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">LingXi Models</span>
+          <span class="hidden sm:inline-block ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800 font-medium">Swift Edition</span>
         </div>
       </div>
 
       <div class="flex items-center space-x-3 text-sm">
-        <a href="/models.json" target="_blank" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors border border-zinc-700">
+        <a href="/models.json" target="_blank" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 transition-colors border border-zinc-800">
           <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
           <span class="font-mono text-xs">models.json</span>
         </a>
-        <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="p-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors border border-zinc-700">
+        <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 transition-colors border border-zinc-800" title="GitHub Repository">
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
         </a>
       </div>
     </div>
   </header>
 
-  <!-- Hero Banner -->
-  <div class="border-b border-zinc-800/80 bg-gradient-to-b from-purple-950/20 via-zinc-950 to-zinc-950 py-10 px-4 sm:px-6 lg:px-8">
-    <div class="max-w-7xl mx-auto text-center">
-      <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-white">
-        为 <span class="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">Swift 智能体生态</span> 打造的模型索引
-      </h1>
-      <p class="mt-3 text-sm sm:text-base text-zinc-400 max-w-2xl mx-auto">
-        每日自动同步并提纯开源元数据。无论在 macOS、iOS 还是 Linux，一行 Swift 代码即插即用，零配置调度全球大模型。
-      </p>
-      
-      <!-- Stats Bar -->
-      <div id="stats-bar" class="mt-6 flex items-center justify-center space-x-6 text-xs text-zinc-400">
-        <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span>已接入 <strong id="stat-providers" class="text-zinc-200 mx-1">-</strong> 家提供商</span>
-        <span>•</span>
-        <span>收录 <strong id="stat-models" class="text-zinc-200 mx-1">-</strong> 个模型</span>
-        <span>•</span>
-        <span>更新于 <span id="stat-updated" class="text-zinc-300">-</span></span>
-      </div>
-    </div>
-  </div>
+  <!-- Two-Column Main Layout (Left: 厂商选择 | Right: 具体模型) -->
+  <div class="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full flex flex-col lg:flex-row gap-6">
 
-  <!-- Main Content Area -->
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-    
-    <!-- Controls: Search & Filters -->
-    <div class="flex flex-col md:flex-row gap-4 mb-6">
-      <div class="relative flex-1">
-        <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+    <!-- Left Sidebar: 厂商选择 (Models.dev Style Provider Navigator) -->
+    <aside class="w-full lg:w-72 xl:w-80 shrink-0">
+      <div class="lg:sticky lg:top-20 bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-3.5 backdrop-blur flex flex-col lg:h-[calc(100vh-6.5rem)]">
+        
+        <!-- Sidebar Header -->
+        <div class="px-2 py-1 flex items-center justify-between border-b border-zinc-800/80 pb-3 mb-3">
+          <div class="flex items-center space-x-2">
+            <span class="text-sm font-bold text-zinc-100 flex items-center gap-1.5">
+              <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+              厂商选择
+            </span>
+            <span id="stat-provider-count" class="text-[11px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 font-mono">-</span>
+          </div>
+          <button id="reset-provider-btn" class="text-xs text-zinc-400 hover:text-purple-300 transition-colors hidden">重置</button>
         </div>
-        <input 
-          id="search-input" 
-          type="text" 
-          placeholder="搜索模型名称、ID、厂商 (例如: deepseek-r1, claude, opencode, glm)..." 
-          class="w-full pl-10 pr-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors"
-        >
+
+        <!-- Search Provider Filter -->
+        <div class="relative mb-3 px-1">
+          <div class="absolute inset-y-0 left-3 pl-0.5 flex items-center pointer-events-none text-zinc-500">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          </div>
+          <input 
+            id="provider-search-input" 
+            type="text" 
+            placeholder="搜索厂商 (例如: openai, claude)..." 
+            class="w-full pl-8 pr-3 py-1.5 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors"
+          >
+        </div>
+
+        <!-- "All Providers" Special Item -->
+        <div class="px-1 mb-1.5">
+          <button 
+            id="btn-all-providers" 
+            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between transition-all bg-purple-600 text-white shadow-lg shadow-purple-950/40"
+          >
+            <span class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-white"></span>
+              全部厂商
+            </span>
+            <span id="all-models-badge" class="px-2 py-0.5 rounded-full bg-purple-700/80 text-[11px] font-mono">-</span>
+          </button>
+        </div>
+
+        <!-- Vertical Scrollable Provider List -->
+        <div id="provider-list" class="overflow-y-auto space-y-1 custom-scrollbar px-1 flex-1 pr-1.5">
+          <div class="py-8 text-center text-xs text-zinc-500">正在加载厂商列表...</div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- Right Main Content: 具体模型 (Hero + Filters + Models Grid) -->
+    <main class="flex-1 min-w-0">
+
+      <!-- Hero Banner -->
+      <div class="rounded-2xl border border-zinc-800/80 bg-gradient-to-br from-purple-950/20 via-zinc-900/60 to-zinc-950 p-6 sm:p-7 mb-6 relative overflow-hidden">
+        <div class="relative z-10">
+          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+                为 <span class="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">Swift 智能体生态</span> 打造的模型索引
+              </h1>
+              <p class="mt-2 text-xs sm:text-sm text-zinc-400 max-w-2xl leading-relaxed">
+                每日自动同步并提纯开源元数据。无论在 macOS、iOS 还是 Linux，一行 Swift 代码即插即用，零配置调度全球大模型。
+              </p>
+            </div>
+
+            <!-- Stats Badge Group -->
+            <div id="stats-bar" class="flex flex-wrap items-center gap-2 sm:gap-3 text-xs shrink-0">
+              <div class="px-3 py-1.5 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span>
+                <span>接入 <strong id="stat-providers" class="text-zinc-100 font-bold mx-1">-</strong> 家提供商</span>
+              </div>
+              <div class="px-3 py-1.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-zinc-300">
+                收录 <strong id="stat-models" class="text-zinc-100 font-bold mx-1">-</strong> 个模型
+              </div>
+              <div class="px-3 py-1.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-zinc-400">
+                更新于 <span id="stat-updated" class="text-zinc-300 font-mono ml-1">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- Capability Chips -->
-      <div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-        <button data-cap="all" class="cap-btn px-3 py-2 rounded-lg bg-purple-600 text-white font-medium whitespace-nowrap transition-colors">全部</button>
-        <button data-cap="reasoning" class="cap-btn px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🧠 深度思考</button>
-        <button data-cap="attachment" class="cap-btn px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">👁 视觉多模态</button>
-        <button data-cap="toolCall" class="cap-btn px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🛠 工具调用</button>
-        <button data-cap="largeContext" class="cap-btn px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">⚡️ ≥128k 窗口</button>
+      <!-- Search & Capability Filter Bar -->
+      <div class="flex flex-col md:flex-row gap-3 mb-6 items-stretch md:items-center">
+        <!-- Search Input -->
+        <div class="relative flex-1">
+          <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          </div>
+          <input 
+            id="search-input" 
+            type="text" 
+            placeholder="搜索模型名称、ID、厂商 (例如: deepseek-r1, claude, opencode, glm)..." 
+            class="w-full pl-10 pr-4 py-2.5 bg-zinc-900/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors"
+          >
+        </div>
+
+        <!-- Capability Filter Chips -->
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 text-xs shrink-0 custom-scrollbar">
+          <button data-cap="all" class="cap-btn px-3 py-2 rounded-xl bg-purple-600 text-white font-medium whitespace-nowrap transition-all shadow-md shadow-purple-950/30">全部</button>
+          <button data-cap="reasoning" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🧠 深度思考</button>
+          <button data-cap="attachment" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">👁 视觉多模态</button>
+          <button data-cap="toolCall" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🛠 工具调用</button>
+          <button data-cap="largeContext" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">⚡️ ≥128k 窗口</button>
+        </div>
       </div>
-    </div>
 
-    <!-- Provider Pills Horizontal Scroll -->
-    <div id="provider-pills" class="flex gap-2 overflow-x-auto pb-3 mb-6 custom-scrollbar text-xs">
-      <button data-provider="all" class="prov-pill px-3 py-1.5 rounded-full bg-zinc-800 text-zinc-200 border border-zinc-700 whitespace-nowrap">全部厂商</button>
-    </div>
-
-    <!-- Models Grid -->
-    <div id="models-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <div class="col-span-full py-16 text-center text-zinc-500">
-        <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-zinc-700 border-t-purple-500 mb-3"></div>
-        <p>正在读取模型数据...</p>
+      <!-- Current Selected Provider Hint Bar -->
+      <div id="active-provider-banner" class="hidden mb-4 px-4 py-2.5 rounded-xl bg-purple-950/30 border border-purple-800/40 flex items-center justify-between text-xs">
+        <div class="flex items-center gap-2">
+          <span class="text-zinc-400">当前厂商筛选：</span>
+          <span id="active-provider-name" class="font-semibold text-purple-300"></span>
+          <span id="active-provider-count" class="text-zinc-500 font-mono"></span>
+        </div>
+        <button id="clear-provider-filter" class="text-purple-400 hover:text-purple-200 underline">查看全部厂商</button>
       </div>
-    </div>
 
-    <!-- Pagination / Result Count -->
-    <div id="footer-count" class="mt-8 text-center text-xs text-zinc-500"></div>
+      <!-- Specific Models Grid (具体模型) -->
+      <div id="models-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div class="col-span-full py-20 text-center text-zinc-500">
+          <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-zinc-700 border-t-purple-500 mb-3"></div>
+          <p>正在读取模型数据...</p>
+        </div>
+      </div>
 
-  </main>
+      <!-- Load More / Result Count -->
+      <div class="mt-8 flex flex-col items-center justify-center gap-3">
+        <div id="footer-count" class="text-xs text-zinc-500 font-mono"></div>
+        <button id="load-more-btn" class="hidden px-5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 font-medium transition-colors">
+          加载更多模型
+        </button>
+      </div>
+
+    </main>
+  </div>
 
   <!-- Swift Code Modal -->
   <div id="code-modal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden flex items-center justify-center p-4">
@@ -162,6 +240,11 @@
     </div>
   </div>
 
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 bg-zinc-800 text-white text-xs px-4 py-2.5 rounded-xl shadow-xl border border-zinc-700 transition-opacity duration-300 opacity-0 pointer-events-none">
+    已复制到剪贴板
+  </div>
+
   <!-- Footer -->
   <footer class="border-t border-zinc-900 bg-zinc-950 py-6 text-center text-xs text-zinc-600">
     <p>© 2026 LingXiFox (灵犀狐). Powered by LingXiAgent & Open Models Ecosystem.</p>
@@ -169,11 +252,17 @@
 
   <script>
     let allModels = [];
+    let providerMap = new Map(); // providerId -> { id, name, count }
     let currentFilterCap = 'all';
     let currentFilterProv = 'all';
     let searchQuery = '';
+    let providerSearchQuery = '';
+    let renderLimit = 120;
 
-    const POPULAR_PROVIDERS = ['opencode', 'zai', 'alibaba-coding-plan', 'openai', 'anthropic', 'google', 'deepseek', 'cloudflare-ai-gateway', 'siliconflow-cn'];
+    const POPULAR_PROVIDERS = [
+      'opencode', 'openai', 'anthropic', 'google', 'deepseek', 
+      'zai', 'alibaba-coding-plan', 'cloudflare-ai-gateway', 'siliconflow-cn'
+    ];
 
     async function init() {
       try {
@@ -183,10 +272,14 @@
 
         allModels = data.models || [];
         document.getElementById('stat-providers').textContent = data.totalProviders || '-';
+        document.getElementById('stat-provider-count').textContent = `${data.totalProviders || 0} 家`;
         document.getElementById('stat-models').textContent = data.totalModels ? Number(data.totalModels).toLocaleString() : '-';
+        document.getElementById('all-models-badge').textContent = data.totalModels ? Number(data.totalModels).toLocaleString() : '-';
         document.getElementById('stat-updated').textContent = (data.updatedAt || '').split('T')[0] || 'Today';
 
-        buildProviderPills();
+        // Extract and aggregate providers
+        extractProviders();
+        renderProviderList();
         renderModels();
       } catch (err) {
         console.error('Failed to load summary.json', err);
@@ -199,41 +292,95 @@
       }
     }
 
-    function buildProviderPills() {
-      const container = document.getElementById('provider-pills');
-      const counts = {};
+    function extractProviders() {
+      providerMap.clear();
       allModels.forEach(m => {
-        counts[m.providerId] = (counts[m.providerId] || 0) + 1;
+        const pid = m.providerId;
+        const pname = m.providerName || pid;
+        if (!providerMap.has(pid)) {
+          providerMap.set(pid, { id: pid, name: pname, count: 0 });
+        }
+        providerMap.get(pid).count++;
       });
+    }
 
-      // Sort popular first, then by count
-      const sortedProviders = Object.keys(counts).sort((a, b) => {
-        const aPop = POPULAR_PROVIDERS.indexOf(a);
-        const bPop = POPULAR_PROVIDERS.indexOf(b);
+    function renderProviderList() {
+      const container = document.getElementById('provider-list');
+      const q = providerSearchQuery.toLowerCase().trim();
+      
+      let list = Array.from(providerMap.values());
+      if (q) {
+        list = list.filter(p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
+      }
+
+      // Sort popular first, then by count descending
+      list.sort((a, b) => {
+        const aPop = POPULAR_PROVIDERS.indexOf(a.id);
+        const bPop = POPULAR_PROVIDERS.indexOf(b.id);
         if (aPop !== -1 && bPop !== -1) return aPop - bPop;
         if (aPop !== -1) return -1;
         if (bPop !== -1) return 1;
-        return counts[b] - counts[a];
+        return b.count - a.count;
       });
 
-      let html = '<button data-provider="all" class="prov-pill px-3 py-1.5 rounded-full bg-purple-600 text-white font-medium whitespace-nowrap">全部厂商</button>';
-      sortedProviders.slice(0, 30).forEach(pid => {
-        const sample = allModels.find(m => m.providerId === pid);
-        const name = sample ? sample.providerName : pid;
-        html += `<button data-provider="${pid}" class="prov-pill px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">${name} (${counts[pid]})</button>`;
-      });
-      container.innerHTML = html;
+      if (list.length === 0) {
+        container.innerHTML = '<div class="py-6 text-center text-xs text-zinc-500">无匹配厂商</div>';
+        return;
+      }
 
-      container.querySelectorAll('.prov-pill').forEach(btn => {
+      container.innerHTML = list.map(p => {
+        const isSelected = currentFilterProv === p.id;
+        const btnClass = isSelected 
+          ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-950/30' 
+          : 'bg-zinc-900/50 hover:bg-zinc-800 text-zinc-300 hover:text-white';
+        const badgeClass = isSelected 
+          ? 'bg-purple-700/80 text-white' 
+          : 'bg-zinc-800/80 text-zinc-400';
+
+        return `
+          <button 
+            data-pid="${escapeAttr(p.id)}" 
+            class="sidebar-prov-btn w-full px-3 py-2 rounded-xl text-left text-xs flex items-center justify-between transition-all ${btnClass}"
+            title="${escapeAttr(p.name)} (${p.id})"
+          >
+            <span class="truncate pr-2">${escapeHtml(p.name)}</span>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-mono shrink-0 ${badgeClass}">${p.count}</span>
+          </button>
+        `;
+      }).join('');
+
+      container.querySelectorAll('.sidebar-prov-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          container.querySelectorAll('.prov-pill').forEach(b => {
-            b.className = 'prov-pill px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors';
-          });
-          btn.className = 'prov-pill px-3 py-1.5 rounded-full bg-purple-600 text-white font-medium whitespace-nowrap';
-          currentFilterProv = btn.dataset.provider;
-          renderModels();
+          selectProvider(btn.dataset.pid);
         });
       });
+    }
+
+    function selectProvider(pid) {
+      currentFilterProv = pid;
+      renderLimit = 120; // reset pagination limit
+
+      // Update "All Providers" button state
+      const allBtn = document.getElementById('btn-all-providers');
+      const resetBtn = document.getElementById('reset-provider-btn');
+      const banner = document.getElementById('active-provider-banner');
+
+      if (pid === 'all') {
+        allBtn.className = 'w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between transition-all bg-purple-600 text-white shadow-lg shadow-purple-950/40';
+        resetBtn.classList.add('hidden');
+        banner.classList.add('hidden');
+      } else {
+        allBtn.className = 'w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between transition-all bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200';
+        resetBtn.classList.remove('hidden');
+        banner.classList.remove('hidden');
+
+        const prov = providerMap.get(pid);
+        document.getElementById('active-provider-name').textContent = prov ? prov.name : pid;
+        document.getElementById('active-provider-count').textContent = prov ? `(${prov.count} 个模型)` : '';
+      }
+
+      renderProviderList();
+      renderModels();
     }
 
     function filterModels() {
@@ -268,31 +415,49 @@
       const filtered = filterModels();
       const container = document.getElementById('models-list');
       const footerCount = document.getElementById('footer-count');
+      const loadMoreBtn = document.getElementById('load-more-btn');
 
-      footerCount.textContent = `共展示 ${filtered.length.toLocaleString()} 个模型 (总计 ${allModels.length.toLocaleString()})`;
+      footerCount.textContent = `共展示 ${Math.min(renderLimit, filtered.length).toLocaleString()} / ${filtered.length.toLocaleString()} 个模型 (总计 ${allModels.length.toLocaleString()})`;
+
+      if (filtered.length > renderLimit) {
+        loadMoreBtn.classList.remove('hidden');
+        loadMoreBtn.textContent = `加载更多模型 (剩余 ${(filtered.length - renderLimit).toLocaleString()} 个)`;
+      } else {
+        loadMoreBtn.classList.add('hidden');
+      }
 
       if (filtered.length === 0) {
         container.innerHTML = `
           <div class="col-span-full py-16 text-center text-zinc-500">
             <svg class="w-10 h-10 mx-auto mb-2 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            <p>未找到符合条件的模型</p>
+            <p>未找到符合条件的具体模型</p>
           </div>
         `;
         return;
       }
 
-      // Render top 120 models for performance
-      const slice = filtered.slice(0, 120);
-      container.innerHTML = slice.map((m, idx) => {
+      const slice = filtered.slice(0, renderLimit);
+      container.innerHTML = slice.map((m) => {
         return `
-          <div class="bg-zinc-900/90 border border-zinc-800/80 hover:border-purple-500/50 rounded-2xl p-5 flex flex-col justify-between transition-all hover:shadow-xl hover:shadow-purple-950/20 group">
+          <div class="bg-zinc-900/80 border border-zinc-800/80 hover:border-purple-500/50 rounded-2xl p-5 flex flex-col justify-between transition-all hover:shadow-xl hover:shadow-purple-950/20 group">
             <div>
               <div class="flex items-start justify-between gap-2 mb-2">
-                <span class="text-xs px-2.5 py-0.5 rounded-full bg-zinc-800 text-zinc-300 font-medium border border-zinc-700/60">${escapeHtml(m.providerName)}</span>
+                <button 
+                  onclick="selectProvider('${escapeAttr(m.providerId)}')" 
+                  class="text-xs px-2.5 py-0.5 rounded-full bg-zinc-800 hover:bg-purple-900/50 text-zinc-300 hover:text-purple-200 font-medium border border-zinc-700/60 transition-colors"
+                  title="点击仅筛选此厂商"
+                >
+                  ${escapeHtml(m.providerName)}
+                </button>
                 <span class="text-[11px] text-zinc-500 font-mono">${escapeHtml(m.swiftDriver || 'openaiChat')}</span>
               </div>
               <h3 class="font-bold text-base text-zinc-100 group-hover:text-purple-300 transition-colors line-clamp-1" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</h3>
-              <p class="text-xs text-zinc-400 font-mono mt-0.5 line-clamp-1">${escapeHtml(m.modelId)}</p>
+              <div class="flex items-center gap-1.5 mt-0.5">
+                <p class="text-xs text-zinc-400 font-mono line-clamp-1 flex-1" title="${escapeHtml(m.modelId)}">${escapeHtml(m.modelId)}</p>
+                <button onclick="copyModelID('${escapeAttr(m.modelId)}')" class="text-zinc-500 hover:text-zinc-300 p-0.5 rounded" title="复制模型ID">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                </button>
+              </div>
               
               <div class="flex flex-wrap gap-1.5 mt-3 text-[11px]">
                 ${m.context ? `<span class="px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-300 border border-zinc-700/50">⚡️ ${formatNumber(m.context)} ctx</span>` : ''}
@@ -326,6 +491,23 @@
     function escapeAttr(str) {
       if (!str) return '';
       return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    window.copyModelID = function(modelId) {
+      navigator.clipboard.writeText(modelId).then(() => {
+        showToast(`已复制模型ID: ${modelId}`);
+      });
+    };
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.remove('opacity-0');
+      toast.classList.add('opacity-100');
+      setTimeout(() => {
+        toast.classList.remove('opacity-100');
+        toast.classList.add('opacity-0');
+      }, 2000);
     }
 
     window.showSwiftCode = function(providerId, modelId, modelName, baseURL) {
@@ -379,12 +561,30 @@ for try await chunk in session.stream("Hello, LingXi!") {
       });
     });
 
-    // Search input
+    // Provider sidebar interaction
+    document.getElementById('btn-all-providers').addEventListener('click', () => {
+      selectProvider('all');
+    });
+    document.getElementById('reset-provider-btn').addEventListener('click', () => {
+      selectProvider('all');
+    });
+    document.getElementById('clear-provider-filter').addEventListener('click', () => {
+      selectProvider('all');
+    });
+
+    // Provider search input
+    document.getElementById('provider-search-input').addEventListener('input', (e) => {
+      providerSearchQuery = e.target.value;
+      renderProviderList();
+    });
+
+    // Model search input
     let debounceTimer;
     document.getElementById('search-input').addEventListener('input', (e) => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         searchQuery = e.target.value;
+        renderLimit = 120;
         renderModels();
       }, 150);
     });
@@ -393,12 +593,19 @@ for try await chunk in session.stream("Hello, LingXi!") {
     document.querySelectorAll('.cap-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.cap-btn').forEach(b => {
-          b.className = 'cap-btn px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors';
+          b.className = 'cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors';
         });
-        btn.className = 'cap-btn px-3 py-2 rounded-lg bg-purple-600 text-white font-medium whitespace-nowrap transition-colors';
+        btn.className = 'cap-btn px-3 py-2 rounded-xl bg-purple-600 text-white font-medium whitespace-nowrap transition-all shadow-md shadow-purple-950/30';
         currentFilterCap = btn.dataset.cap;
+        renderLimit = 120;
         renderModels();
       });
+    });
+
+    // Load More Button
+    document.getElementById('load-more-btn').addEventListener('click', () => {
+      renderLimit += 120;
+      renderModels();
     });
 
     init();

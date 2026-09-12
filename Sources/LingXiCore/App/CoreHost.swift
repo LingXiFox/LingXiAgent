@@ -2570,7 +2570,9 @@ extension CoreHost {
         let adapter = providerConfig.adapter.lowercased()
 
         let wireProtocol: ModelWireProtocol
-        if adapter == "openai-responses" || profile?.protocolFamily == "openai_responses" {
+        if selection.providerID == "openai-codex" {
+            wireProtocol = .responses
+        } else if adapter == "openai-responses" || profile?.protocolFamily == "openai_responses" {
             wireProtocol = .responses
         } else if adapter == "anthropic-messages" || profile?.protocolFamily == "anthropic_messages" {
             wireProtocol = .anthropicMessages
@@ -2578,7 +2580,12 @@ extension CoreHost {
             wireProtocol = .chatCompletions
         }
 
-        let baseURLStr = providerConfig.options.baseURL.isEmpty ? (profile?.endpoint ?? "https://api.openai.com/v1") : providerConfig.options.baseURL
+        let baseURLStr: String
+        if selection.providerID == "openai-codex" {
+            baseURLStr = "https://chatgpt.com/backend-api/codex"
+        } else {
+            baseURLStr = providerConfig.options.baseURL.isEmpty ? (profile?.endpoint ?? "https://api.openai.com/v1") : providerConfig.options.baseURL
+        }
         guard let baseURL = URL(string: baseURLStr) else {
             throw CoreError(code: .provider, message: "无效的 baseURL: \(baseURLStr)")
         }
@@ -2623,6 +2630,22 @@ extension CoreHost {
             auth = .none
         }
 
+        var requiredHeaders = providerConfig.options.headers
+        if selection.providerID == "openai-codex" {
+            if requiredHeaders["OpenAI-Beta"] == nil {
+                requiredHeaders["OpenAI-Beta"] = "responses=v1"
+            }
+            if requiredHeaders["User-Agent"] == nil {
+                requiredHeaders["User-Agent"] = "codex-cli/0.154.0 (darwin; arm64)"
+            }
+            if requiredHeaders["originator"] == nil {
+                requiredHeaders["originator"] = "codex-cli"
+            }
+            if let token = authToken, let accountID = CodexRemoteModelDiscovery.extractChatGPTAccountID(from: token) {
+                requiredHeaders["chatgpt-account-id"] = accountID
+            }
+        }
+
         let contextWindow = (try? await modelContextWindow(for: fullModelValue)) ?? 128_000
         let maxOutput = 4_096
         let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow, maxOutputTokens: maxOutput, source: "dynamic:\(fullModelValue)")
@@ -2636,7 +2659,7 @@ extension CoreHost {
             performanceDiagnosticsEnabled: false,
             remoteStateEnabled: wireProtocol == .responses,
             maxOutputTokens: maxOutput,
-            requiredHeaders: providerConfig.options.headers
+            requiredHeaders: requiredHeaders
         )
 
         let provenance = ProviderProvenanceStore(directory: dataRootURL?.appendingPathComponent("provider-provenance", isDirectory: true))

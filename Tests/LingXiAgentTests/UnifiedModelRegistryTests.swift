@@ -764,4 +764,13 @@ struct UnifiedModelRegistryTests {
         // Must filter out hidden model
         #expect(!models.contains(where: { $0.id == "openai-codex/gpt-reserve" }))
     }
+
+    @Test func testOpenAICodexAccountIDExtraction() {
+        // Mock JWT with chatgpt_account_id in auth payload: {"https://api.openai.com/auth":{"chatgpt_account_id":"acct-123456"}}
+        let header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        let payload = "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xMjM0NTYifX0"
+        let token = "\(header).\(payload).signature"
+        let extracted = CodexRemoteModelDiscovery.extractChatGPTAccountID(from: token)
+        #expect(extracted == "acct-123456")
+    }
 }

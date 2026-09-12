@@ -2307,7 +2307,15 @@ public final class TUIApp {
 
             // 4. Model / Provider / Reasoning Effort
             let effortText = hero.reasoningEffort.map { " (\($0))" } ?? ""
-            let metaText = " · \(hero.modelName) \(hero.providerName)\(effortText)"
+            let displayModelText: String
+            if hero.modelName.contains("/") {
+                displayModelText = hero.modelName
+            } else if !hero.providerName.isEmpty {
+                displayModelText = "\(hero.providerName)/\(hero.modelName)"
+            } else {
+                displayModelText = hero.modelName
+            }
+            let metaText = " · \(displayModelText)\(effortText)"
             let remainingWidth = max(0, (boxX + boxWidth - 2) - metaX)
             if remainingWidth > 0 {
                 frame.write(metaText, at: TUIPoint(x: metaX, y: metaY), maxWidth: remainingWidth, style: .heroBoxMeta)
