@@ -5,7 +5,7 @@
 
 set -e
 
-REMOTE_HOST="${1:-vps}"
+REMOTE_HOST="${1:-aliyun}"
 REMOTE_DIR="/var/www/agent.lingxifox.cn"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PUBLIC_DIR="$SCRIPT_DIR/public"
