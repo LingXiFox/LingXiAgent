@@ -185,4 +185,23 @@ struct ResponsesAdapterTests {
         #expect(error.message.contains("param=requests"))
         #expect(error.message.contains("Please retry later"))
     }
+
+    @Test func codexBackendForcesStoreFalse() throws {
+        let config = ProviderConfig(
+            baseURL: URL(string: "https://chatgpt.com/backend-api/codex")!,
+            apiKey: "mock-token",
+            model: "gpt-5.6-luna",
+            wireProtocol: .responses,
+            remoteStateEnabled: true // Even if mistakenly set to true, codex backend must force store to false
+        )
+        let provider = OpenAIResponsesProvider(config: config)
+        let request = ModelRequest(
+            model: ModelID("gpt-5.6-luna"),
+            messages: [ModelMessage(role: .user, content: "Hello")]
+        )
+        let urlRequest = try provider.makeURLRequest(request)
+        let bodyData = try #require(urlRequest.httpBody)
+        let json = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
+        #expect(json?["store"] as? Bool == false)
+    }
 }

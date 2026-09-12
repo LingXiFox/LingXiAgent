@@ -94,11 +94,13 @@ public struct OpenAIResponsesProvider: ModelProvider {
         for (name, value) in config.requiredHeaders where urlRequest.value(forHTTPHeaderField: name) == nil {
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
+        let isCodexBackend = config.baseURL.host?.contains("chatgpt.com") == true
+        let effectiveStore = isCodexBackend ? false : config.remoteStateEnabled
         urlRequest.httpBody = try Self.makeRequestBody(
             request,
             continuation: continuation,
-            previousResponseID: config.remoteStateEnabled ? previousResponseID : nil,
-            store: config.remoteStateEnabled
+            previousResponseID: effectiveStore ? previousResponseID : nil,
+            store: effectiveStore
         )
         return urlRequest
     }

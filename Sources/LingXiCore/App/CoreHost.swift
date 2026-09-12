@@ -2740,7 +2740,7 @@ extension CoreHost {
             wireProtocol: wireProtocol,
             diagnosticsEnabled: false,
             performanceDiagnosticsEnabled: false,
-            remoteStateEnabled: wireProtocol == .responses,
+            remoteStateEnabled: false,
             maxOutputTokens: maxOutput,
             requiredHeaders: requiredHeaders
         )
@@ -2844,7 +2844,7 @@ extension CoreHost {
             wireProtocol: wireProtocol,
             diagnosticsEnabled: false,
             performanceDiagnosticsEnabled: false,
-            remoteStateEnabled: wireProtocol == .responses,
+            remoteStateEnabled: false,
             maxOutputTokens: maxOutput,
             requiredHeaders: providerConfig.options.headers
         )
