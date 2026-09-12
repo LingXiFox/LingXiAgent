@@ -2223,7 +2223,7 @@ public final class TUIApp {
             let bannerWidth = 43
             let logoX = max(1, (size.width - bannerWidth) / 2)
 
-            // 灵犀小狐狸像素吉祥物（萌萌长尖狐耳、灵犀灵动面容、捧着极光闪电、毛茸茸大狐尾）
+            // 泠溪小狐狸像素吉祥物（萌萌长尖狐耳、灵动面容、捧着极光闪电、毛茸茸大狐尾）
             let logoY: Int
             if size.height >= 24, overlay == nil {
                 let mascotY = max(y + 1, (size.height / 2) - 8)
@@ -2231,7 +2231,7 @@ public final class TUIApp {
                 let faceText = " (  • ᴥ • ) "
                 let bodyText = "o(   ⚡   )o"
                 let tailText = "  (_______) ~彡✦"
-                let tag1 = "✦ LingXi Fox · 灵犀小狐狸 ✦"
+                let tag1 = "✦ LingXi Fox · 泠溪 ✦"
                 let tag2 = "「随时为主人效劳，代码与奇迹共生~」"
 
                 let mascotBlockWidth = 48
@@ -2247,7 +2247,7 @@ public final class TUIApp {
                 frame.write(tailText, at: TUIPoint(x: mascotX, y: mascotY + 3), style: .mascotSpark)
                 logoY = mascotY + 5
             } else {
-                let tag1 = "✦ LingXi Fox · 灵犀小狐狸 ✦"
+                let tag1 = "✦ LingXi Fox · 泠溪 ✦"
                 let tag1X = max(1, (size.width - TUIDisplayWidth.width(of: tag1)) / 2)
                 let compactY = max(y + 1, (size.height / 2) - 6)
                 frame.write(tag1, at: TUIPoint(x: tag1X, y: compactY), style: .mascotTag)

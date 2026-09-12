@@ -480,7 +480,7 @@ struct RealProviderSmokeTests {
         let sessionID = try await client.createSession()
 
         // 构造一个约 3000 tokens 的稳定长前缀内容
-        let longPrefix = String(repeating: "灵犀Agent核心前缀缓存测试长文本上下文。包含架构定义、三级缓存L1/L2/L3分层调度、OpenTUI渲染器及工具安全审批流。\n", count: 35)
+        let longPrefix = String(repeating: "LingXiAgent 核心前缀缓存测试长文本上下文。包含架构定义、三级缓存L1/L2/L3分层调度、OpenTUI渲染器及工具安全审批流。\n", count: 35)
 
         print("[PrefixCacheSmoke] ========== Turn 1 (Cold Start) ==========")
         let stream1 = try await client.sendMessage(sessionID: sessionID, content: "\(longPrefix)\n问题1：请只回答数字 101。")

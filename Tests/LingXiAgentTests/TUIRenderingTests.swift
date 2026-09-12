@@ -1102,7 +1102,7 @@ struct TUIRenderingTests {
         let yoloCells = frame.cells.filter { $0.style == .badgeYolo }
         #expect(!yoloCells.isEmpty)
 
-        // 2. 验证灵犀小狐狸吉祥物立绘及专属标语完整展现
+        // 2. 验证 泠溪 (LingXi Fox) 小狐狸吉祥物立绘及专属标语完整展现
         #expect(cleanText.contains("LingXi Fox"))
         #expect(cleanText.contains("随时为主人效劳"))
         #expect(cleanText.contains("/\\___/\\"))

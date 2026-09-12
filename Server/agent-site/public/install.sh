@@ -21,7 +21,7 @@ echo -e "${PURPLE}"
 cat << "EOF"
   /\_/\  
  ( o.o )  🦊 LingXiAgent — Native Swift AI Coding Agent
-  > ^ <   赛博灵犀 · 终端 AI 编程智能体 一键安装部署器
+  > ^ <   LingXiAgent · Terminal AI Coding Agent Installer
 EOF
 echo -e "${RESET}"
 

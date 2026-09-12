@@ -274,7 +274,7 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
             OpenTUIColorValue(red: red * 257, green: green * 257, blue: blue * 257)
         }
 
-        // 赛博极光星夜狐美学调色板 (基于灵犀狐娘原画提炼：曜石暗夜、极光薄荷青、梦幻樱落紫、软萌樱粉)
+        // 赛博极光星夜狐美学调色板 (基于 泠溪 (LingXi Fox) 原画提炼：曜石暗夜、极光薄荷青、梦幻樱落紫、软萌樱粉)
         let pageBg = rgb(19, 17, 28)              // #13111C 深邃纯净曜石暗夜底板 (彻底消灭灰泥浑浊感，通透高级)
         let cardBg = rgb(30, 27, 41)              // #1E1B29 晶体曜紫卡片底板 (与底板拉开清晰对比)
         let textWarm = rgb(248, 250, 252)         // #F8FAFC 珍珠雪夜白文字 (银白紫发灵感，极高清晰度与对比度)

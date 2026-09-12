@@ -178,7 +178,7 @@ import Foundation
 
         let provider = ScriptedFakeProvider(script: [
             // Turn 1:
-            [.textDelta("你好呀！我是灵犀，很高兴为你提供帮助。有什么我可以协助你的吗？"), .completed(.stop)],
+            [.textDelta("你好呀！我是 LingXi，很高兴为你提供帮助。有什么我可以协助你的吗？"), .completed(.stop)],
             // Turn 2:
             [.textDelta("Swift Concurrency 引入了基于协程的结构化并发模型，核心概念包括 async/await 语法糖、Actor 状态隔离与 Task 生命周期管理。"), .completed(.stop)]
         ])
