@@ -161,6 +161,11 @@ http://models.lingxifox.cn {
 		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
 		-Server
 	}
+
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 }
 
 models.lingxifox.cn {
@@ -189,6 +194,10 @@ models.lingxifox.cn {
 		-Server
 	}
 
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /models.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
 	header /summary.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
 
@@ -212,9 +221,16 @@ http://agent.lingxifox.cn {
 		-Server
 	}
 
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /install Content-Type "text/plain; charset=utf-8"
 	header /install.sh Content-Type "text/plain; charset=utf-8"
-	header Cache-Control "public, max-age=300"
+	header /install.ps1 Content-Type "text/plain; charset=utf-8"
+	header /install Cache-Control "public, max-age=60, must-revalidate"
+	header /install.sh Cache-Control "public, max-age=60, must-revalidate"
+	header /install.ps1 Cache-Control "public, max-age=60, must-revalidate"
 }
 
 agent.lingxifox.cn {
@@ -243,9 +259,16 @@ agent.lingxifox.cn {
 		-Server
 	}
 
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /install Content-Type "text/plain; charset=utf-8"
 	header /install.sh Content-Type "text/plain; charset=utf-8"
-	header Cache-Control "public, max-age=300"
+	header /install.ps1 Content-Type "text/plain; charset=utf-8"
+	header /install Cache-Control "public, max-age=60, must-revalidate"
+	header /install.sh Cache-Control "public, max-age=60, must-revalidate"
+	header /install.ps1 Cache-Control "public, max-age=60, must-revalidate"
 
 	log {
 		output file /var/log/caddy/agent-access.log

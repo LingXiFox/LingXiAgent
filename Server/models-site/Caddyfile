@@ -3,6 +3,10 @@
 	# by the caddy user with mode 0600 — no TCP port, no network exposure. This
 	# is what lets configuration changes be applied with `systemctl reload caddy`
 	# (a hot reload with no dropped connections) instead of a restart.
+	#
+	# `admin off` was the previous setting and made hot reload impossible: every
+	# Caddyfile change required restarting the process, briefly interrupting
+	# every site it serves.
 	admin unix//run/caddy/admin.sock|0600
 
 	debug
@@ -53,8 +57,29 @@ lingxifox.cn {
 }
 
 http://lingxiagent.lingxifox.cn {
+	# Unified Model Registry. The catalog service owns /v1/*; the static file
+	# root remains for the JSON schemas and for the deprecated /models/* files
+	# that are still served read-only during the client migration.
+	@static {
+		not path /v1/*
+	}
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
 	handle {
 		root * /var/www/lingxiagent
+
+		@models {
+			path_regexp model ^/models/([a-zA-Z0-9_\-]+)/?$
+		}
+		rewrite @models /models/{re.model.1}.json
+
 		encode zstd gzip
 		file_server
 	}
@@ -66,7 +91,9 @@ http://lingxiagent.lingxifox.cn {
 		-Server
 	}
 
-	header Cache-Control "public, max-age=3600"
+	# Static files keep the long TTL they had before. The catalog service sets
+	# its own, much shorter, Cache-Control and revalidates on ETag.
+	header @static Cache-Control "public, max-age=3600"
 }
 
 lingxiagent.lingxifox.cn {
@@ -80,8 +107,26 @@ lingxiagent.lingxifox.cn {
 		}
 	}
 
+	@static {
+		not path /v1/*
+	}
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
 	handle {
 		root * /var/www/lingxiagent
+
+		@models {
+			path_regexp model ^/models/([a-zA-Z0-9_\-]+)/?$
+		}
+		rewrite @models /models/{re.model.1}.json
+
 		encode zstd gzip
 		file_server
 	}
@@ -95,7 +140,7 @@ lingxiagent.lingxifox.cn {
 		-Server
 	}
 
-	header Cache-Control "public, max-age=3600"
+	header @static Cache-Control "public, max-age=3600"
 
 	log {
 		output file /var/log/caddy/lingxiagent-access.log
@@ -116,6 +161,11 @@ http://models.lingxifox.cn {
 		Access-Control-Allow-Headers "Content-Type, Authorization, If-None-Match, If-Modified-Since"
 		-Server
 	}
+
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 }
 
 models.lingxifox.cn {
@@ -144,6 +194,10 @@ models.lingxifox.cn {
 		-Server
 	}
 
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /models.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
 	header /summary.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
 
@@ -167,9 +221,16 @@ http://agent.lingxifox.cn {
 		-Server
 	}
 
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /install Content-Type "text/plain; charset=utf-8"
 	header /install.sh Content-Type "text/plain; charset=utf-8"
-	header Cache-Control "public, max-age=300"
+	header /install.ps1 Content-Type "text/plain; charset=utf-8"
+	header /install Cache-Control "public, max-age=60, must-revalidate"
+	header /install.sh Cache-Control "public, max-age=60, must-revalidate"
+	header /install.ps1 Cache-Control "public, max-age=60, must-revalidate"
 }
 
 agent.lingxifox.cn {
@@ -198,9 +259,16 @@ agent.lingxifox.cn {
 		-Server
 	}
 
+	@html {
+		path / /index.html
+	}
+	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /install Content-Type "text/plain; charset=utf-8"
 	header /install.sh Content-Type "text/plain; charset=utf-8"
-	header Cache-Control "public, max-age=300"
+	header /install.ps1 Content-Type "text/plain; charset=utf-8"
+	header /install Cache-Control "public, max-age=60, must-revalidate"
+	header /install.sh Cache-Control "public, max-age=60, must-revalidate"
+	header /install.ps1 Cache-Control "public, max-age=60, must-revalidate"
 
 	log {
 		output file /var/log/caddy/agent-access.log
