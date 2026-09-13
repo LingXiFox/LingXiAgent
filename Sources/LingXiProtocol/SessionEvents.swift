@@ -125,7 +125,7 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
     case subagentTerminal(runID: RunID, terminalReason: TerminalReason)
 
     // MARK: - Provider
-    case providerRequestStateChanged(requestID: ProviderRequestID, state: ProviderRequestState)
+    case providerRequestStateChanged(requestID: ProviderRequestID, state: ProviderRequestState, detail: String? = nil, statusCode: Int? = nil)
 
     // MARK: - Context
     case contextStateChanged(ContextStateSnapshot)
@@ -143,7 +143,7 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
         case toolInvocation, callID, permissionID, stdoutStreamID, stderrStreamID, toolResult, stdoutFinalIndex, stderrFinalIndex
         case interaction, interactionID, resolution
         case parentRunID, status
-        case requestID, providerState
+        case requestID, providerState, detail, statusCode
         case contextState, contextPolicy, contextCompacted
         case rawValue
     }
@@ -280,7 +280,9 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
         case "providerRequestStateChanged":
             let requestID = try container.decode(ProviderRequestID.self, forKey: .requestID)
             let state = try container.decode(ProviderRequestState.self, forKey: .providerState)
-            self = .providerRequestStateChanged(requestID: requestID, state: state)
+            let detail = try container.decodeIfPresent(String.self, forKey: .detail)
+            let statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode)
+            self = .providerRequestStateChanged(requestID: requestID, state: state, detail: detail, statusCode: statusCode)
 
         // Context
         case "contextStateChanged":
@@ -435,10 +437,12 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
             try container.encode(reason, forKey: .terminalReason)
 
         // Provider
-        case let .providerRequestStateChanged(requestID, state):
+        case let .providerRequestStateChanged(requestID, state, detail, statusCode):
             try container.encode("providerRequestStateChanged", forKey: .kind)
             try container.encode(requestID, forKey: .requestID)
             try container.encode(state, forKey: .providerState)
+            try container.encodeIfPresent(detail, forKey: .detail)
+            try container.encodeIfPresent(statusCode, forKey: .statusCode)
 
         // Context
         case let .contextStateChanged(snapshot):

@@ -228,6 +228,9 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> {
         try await underlying.deleteSession(envelope: envelope)
     }
+    public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> {
+        try await underlying.revertLastTurn(envelope: envelope)
+    }
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> {
         try await underlying.setSessionReasoningEffort(envelope: envelope)
     }

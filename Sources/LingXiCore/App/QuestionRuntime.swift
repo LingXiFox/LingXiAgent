@@ -74,6 +74,18 @@ public actor QuestionRuntime {
         pending.removeAll()
     }
 
+    public func cancelPending(sessionID: SessionID, reason: PendingInteractionCancelReason = .sessionReverted) {
+        let targets = pending.filter {
+            $0.value.request.originSessionID == sessionID ||
+            $0.value.request.parentSessionID == sessionID ||
+            $0.value.request.rootSessionID == sessionID
+        }
+        for (id, waiting) in targets {
+            pending.removeValue(forKey: id)
+            waiting.continuation?.resume(throwing: CoreError(code: .interactionExpired, message: "交互已随会话撤回失效 (\(reason.rawValue))"))
+        }
+    }
+
     private func cancel(_ questionID: QuestionID) {
         guard let waiting = pending.removeValue(forKey: questionID) else { return }
         waiting.continuation?.resume(throwing: CancellationError())

@@ -158,7 +158,11 @@ public struct AgentEnvironmentFacts: Sendable, Equatable {
 enum AgentBehaviorInstructions {
     static let runtimeGuidelines = """
     Agent Runtime Guidelines:
+    - File Operations Protocol (CRITICAL):
+      * Always use dedicated file mutation tools: `write_file` (for creating new files or full overwrites) and `edit_file` or `apply_patch` (for surgical edits and patches).
+      * NEVER use shell/bash commands (such as `cat <<EOF`, `echo >`, `sed`, `awk`, or redirection scripts) to write, create, or modify files. Shell execution is strictly reserved for compilation, testing, package management, git commands, and process execution.
     - Task Planning: For multi-step tasks, investigations, or refactoring, proactively use `todo` (action: 'add') to establish a checklist, and update task status ('in_progress', 'completed', 'failed') as you advance to keep the sidebar updated.
+    - Parallel Tool Calling: When you need to read multiple files, inspect directories, grep across files, or perform independent read-only investigations, emit multiple tool calls in parallel within the same turn instead of waiting for sequential round-trips. The runtime executes independent tool calls concurrently.
     - Tool Discovery: Builtin tools are always available for filesystem, grep, and execution. If `search_tools` returns no matches or a diagnostic notice (empty/error), do not retry searching; proceed with builtin tools.
     - Execution & Truthfulness: Inspect before mutating, run verification after changes, and report obstacles truthfully without hallucination.
     """

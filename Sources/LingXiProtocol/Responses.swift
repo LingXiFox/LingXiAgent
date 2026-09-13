@@ -136,6 +136,7 @@ public struct CoreError: Sendable, Equatable, Error {
         case subagentDepthExceeded
         case agentRunNotFound
         case contextProfileNotViable
+        case interactionExpired
     }
 
     public let code: Code
@@ -145,6 +146,12 @@ public struct CoreError: Sendable, Equatable, Error {
         self.code = code
         self.message = message
     }
+}
+
+public enum PendingInteractionCancelReason: String, Sendable, Equatable, Codable {
+    case sessionReverted
+    case sessionDeleted
+    case runCancelled
 }
 
 extension CoreError: LocalizedError {

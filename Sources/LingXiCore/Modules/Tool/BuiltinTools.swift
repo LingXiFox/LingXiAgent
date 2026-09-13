@@ -17,14 +17,22 @@ public struct WorkspaceRoot: Sendable {
     }
 
     public func resolve(_ path: String, profile: ExecutionProfile = .workspace) throws -> URL {
-        let expandedPath: String
+        var cleanPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if (cleanPath.hasPrefix("\"") && cleanPath.hasSuffix("\"")) || (cleanPath.hasPrefix("'") && cleanPath.hasSuffix("'")), cleanPath.count >= 2 {
+            cleanPath = String(cleanPath.dropFirst().dropLast())
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path == "~" {
+        let expandedPath: String
+        if cleanPath == "~" || cleanPath == "$HOME" || cleanPath == "${HOME}" {
             expandedPath = home
-        } else if path.hasPrefix("~/") {
-            expandedPath = home + "/" + String(path.dropFirst(2))
+        } else if cleanPath.hasPrefix("~/") {
+            expandedPath = home + "/" + String(cleanPath.dropFirst(2))
+        } else if cleanPath.hasPrefix("$HOME/") {
+            expandedPath = home + "/" + String(cleanPath.dropFirst(6))
+        } else if cleanPath.hasPrefix("${HOME}/") {
+            expandedPath = home + "/" + String(cleanPath.dropFirst(8))
         } else {
-            expandedPath = path
+            expandedPath = cleanPath
         }
         let input = URL(fileURLWithPath: expandedPath, relativeTo: expandedPath.hasPrefix("/") ? nil : url)
         let candidate = input.standardizedFileURL.resolvingSymlinksInPath()
@@ -54,7 +62,7 @@ private func decodeArguments<T: Decodable>(_ arguments: String, as type: T.Type 
 
 private func json<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     return String(decoding: try encoder.encode(value), as: UTF8.self)
 }
 
@@ -165,7 +173,44 @@ private struct WriteArguments: Decodable {
     let expectedHash: String?
     let expectedVersion: String?
     let overwrite: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case path, content, expectedHash, expectedVersion, overwrite
+        case targetFile = "target_file", targetFileCamel = "targetFile"
+        case filePath = "file_path", filePathCamel = "filePath"
+        case absolutePath = "absolute_path", absolutePathCamel = "AbsolutePath"
+        case codeContent = "code_content", codeContentCamel = "codeContent"
+        case targetContent = "target_content", targetContentCamel = "TargetContent"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let p = try c.decodeIfPresent(String.self, forKey: .path) {
+            path = p
+        } else if let p = try c.decodeIfPresent(String.self, forKey: .targetFile) ?? c.decodeIfPresent(String.self, forKey: .targetFileCamel) {
+            path = p
+        } else if let p = try c.decodeIfPresent(String.self, forKey: .filePath) ?? c.decodeIfPresent(String.self, forKey: .filePathCamel) {
+            path = p
+        } else if let p = try c.decodeIfPresent(String.self, forKey: .absolutePath) ?? c.decodeIfPresent(String.self, forKey: .absolutePathCamel) {
+            path = p
+        } else {
+            path = try c.decode(String.self, forKey: .path)
+        }
+
+        if let cnt = try c.decodeIfPresent(String.self, forKey: .content) {
+            content = cnt
+        } else if let cnt = try c.decodeIfPresent(String.self, forKey: .codeContent) ?? c.decodeIfPresent(String.self, forKey: .codeContentCamel) {
+            content = cnt
+        } else {
+            content = try c.decode(String.self, forKey: .content)
+        }
+
+        expectedHash = try c.decodeIfPresent(String.self, forKey: .expectedHash)
+        expectedVersion = try c.decodeIfPresent(String.self, forKey: .expectedVersion)
+        overwrite = try c.decodeIfPresent(Bool.self, forKey: .overwrite)
+    }
 }
+
 private struct EditArguments: Decodable {
     let path: String
     let oldString: String
@@ -174,6 +219,51 @@ private struct EditArguments: Decodable {
     let expectedHash: String?
     let expectedVersion: String?
     let overwrite: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case path, oldString, newString, replaceAll, expectedHash, expectedVersion, overwrite
+        case targetFile = "target_file", targetFileCamel = "targetFile"
+        case filePath = "file_path", filePathCamel = "filePath"
+        case absolutePath = "absolute_path", absolutePathCamel = "AbsolutePath"
+        case targetContent = "target_content", targetContentCamel = "TargetContent"
+        case replacementContent = "replacement_content", replacementContentCamel = "ReplacementContent"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let p = try c.decodeIfPresent(String.self, forKey: .path) {
+            path = p
+        } else if let p = try c.decodeIfPresent(String.self, forKey: .targetFile) ?? c.decodeIfPresent(String.self, forKey: .targetFileCamel) {
+            path = p
+        } else if let p = try c.decodeIfPresent(String.self, forKey: .filePath) ?? c.decodeIfPresent(String.self, forKey: .filePathCamel) {
+            path = p
+        } else if let p = try c.decodeIfPresent(String.self, forKey: .absolutePath) ?? c.decodeIfPresent(String.self, forKey: .absolutePathCamel) {
+            path = p
+        } else {
+            path = try c.decode(String.self, forKey: .path)
+        }
+
+        if let old = try c.decodeIfPresent(String.self, forKey: .oldString) {
+            oldString = old
+        } else if let old = try c.decodeIfPresent(String.self, forKey: .targetContent) ?? c.decodeIfPresent(String.self, forKey: .targetContentCamel) {
+            oldString = old
+        } else {
+            oldString = try c.decode(String.self, forKey: .oldString)
+        }
+
+        if let nw = try c.decodeIfPresent(String.self, forKey: .newString) {
+            newString = nw
+        } else if let nw = try c.decodeIfPresent(String.self, forKey: .replacementContent) ?? c.decodeIfPresent(String.self, forKey: .replacementContentCamel) {
+            newString = nw
+        } else {
+            newString = try c.decode(String.self, forKey: .newString)
+        }
+
+        replaceAll = try c.decodeIfPresent(Bool.self, forKey: .replaceAll)
+        expectedHash = try c.decodeIfPresent(String.self, forKey: .expectedHash)
+        expectedVersion = try c.decodeIfPresent(String.self, forKey: .expectedVersion)
+        overwrite = try c.decodeIfPresent(Bool.self, forKey: .overwrite)
+    }
 }
 private struct GlobArguments: Decodable {
     let pattern: String
@@ -315,6 +405,83 @@ public struct ReadFileTool: ToolExecutor {
             return try json(readPage(file, workspace: workspace, input: input))
         }
         return try readText(file, operation: "read_file")
+    }
+}
+
+public struct ContextRecallTool: ToolExecutor {
+    private let ecoreStore: ECoreObjectStore?
+    private let sessionID: SessionID?
+
+    public init(ecoreStore: ECoreObjectStore? = nil, sessionID: SessionID? = nil) {
+        self.ecoreStore = ecoreStore
+        self.sessionID = sessionID
+    }
+
+    public let definition = ToolDefinition(
+        id: ToolID("context_recall"),
+        description: "Recall observation content by object ID and byte offset",
+        inputSchema: ToolInputSchema(
+            properties: [
+                "id": ToolInputProperty(type: .string, description: "Context object ID"),
+                "offset": ToolInputProperty(type: .integer, description: "Start byte offset"),
+                "limit_bytes": ToolInputProperty(type: .integer, description: "Max bytes (default 16KB)"),
+                "limit_lines": ToolInputProperty(type: .integer, description: "Max lines (default 400)"),
+                "session_id": ToolInputProperty(type: .string, description: "Target session ID (optional)")
+            ],
+            required: ["id"]
+        ),
+        capability: ToolCapability(readOnly: true)
+    )
+
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        ""
+    }
+
+    public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
+        [.projectRead]
+    }
+
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        struct Input: Decodable {
+            let id: String
+            let offset: Int?
+            let limitBytes: Int?
+            let limitLines: Int?
+            let sessionId: String?
+        }
+        let input: Input = try decodeArguments(arguments)
+        let objectID: ContextObjectID
+        do {
+            objectID = try ContextObjectID(input.id)
+        } catch {
+            return "Error: Invalid ContextObjectID format '\(input.id)'"
+        }
+
+        guard let store = ecoreStore else {
+            return "Error: E-Core object store is not configured."
+        }
+
+        let sID = input.sessionId.map(SessionID.init) ?? self.sessionID ?? ToolExecutionContext.sessionID ?? SessionID("default")
+        let chunk = try await store.recall(
+            sessionID: sID,
+            objectID: objectID,
+            offsetBytes: max(0, input.offset ?? 0),
+            limitBytes: input.limitBytes,
+            limitLines: input.limitLines
+        )
+
+        guard let chunk else {
+            return "Context object '\(objectID.rawValue)' not found in session '\(sID.rawValue)'."
+        }
+
+        return """
+        [Context Object Slice: \(chunk.objectID.rawValue)]
+        Lines: \(chunk.startLine) - \(chunk.endLine) of \(chunk.totalLines)
+        Bytes: \(chunk.offsetBytes) - \(chunk.offsetBytes + chunk.lengthBytes) of \(chunk.totalBytes)
+        Has More: \(chunk.hasMore ? "true" : "false")
+        --- Content ---
+        \(chunk.content)
+        """
     }
 }
 
@@ -623,9 +790,9 @@ public struct WriteFileTool: ToolExecutor {
     private let workspace: WorkspaceRoot
     public init(workspace: WorkspaceRoot) { self.workspace = workspace }
     public let definition = ToolDefinition(
-        id: ToolID("write_file"), description: "Write UTF-8 text to a workspace file.",
+        id: ToolID("write_file"), description: "Write UTF-8 text to a file. Supports workspace-relative paths, absolute paths, ~, and $HOME (e.g. ~/Desktop/file.txt).",
         inputSchema: ToolInputSchema(properties: [
-            "path": ToolInputProperty(type: .string, description: "Workspace-relative file path"),
+            "path": ToolInputProperty(type: .string, description: "File path (supports workspace-relative, absolute, ~, and $HOME)"),
             "content": ToolInputProperty(type: .string, description: "Replacement file content"),
             "expected_hash": ToolInputProperty(type: .string, description: "Current SHA-256 required before writing"),
             "expected_version": ToolInputProperty(type: .string, description: "Current version required before writing"),
@@ -655,9 +822,9 @@ public struct EditFileTool: ToolExecutor {
     private let workspace: WorkspaceRoot
     public init(workspace: WorkspaceRoot) { self.workspace = workspace }
     public let definition = ToolDefinition(
-        id: ToolID("edit_file"), description: "Replace exact text in a UTF-8 workspace file.",
+        id: ToolID("edit_file"), description: "Replace exact text in a UTF-8 file. Supports workspace-relative paths, absolute paths, ~, and $HOME.",
         inputSchema: ToolInputSchema(properties: [
-            "path": ToolInputProperty(type: .string, description: "Workspace-relative file path"),
+            "path": ToolInputProperty(type: .string, description: "File path (supports workspace-relative, absolute, ~, and $HOME)"),
             "old_string": ToolInputProperty(type: .string, description: "Text to replace"),
             "new_string": ToolInputProperty(type: .string, description: "Replacement text"),
             "replace_all": ToolInputProperty(type: .boolean, description: "Replace every occurrence"),
@@ -1453,6 +1620,7 @@ public extension BuiltInToolProvider {
         } ?? []
         self.init(tools: [
             ReadFileTool(workspace: workspace),
+            ContextRecallTool(ecoreStore: cacheController?.ecoreStore),
             ListDirectoryTool(workspace: workspace),
             GlobTool(workspace: workspace),
             GrepTool(workspace: workspace),

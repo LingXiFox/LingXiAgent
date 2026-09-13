@@ -193,9 +193,11 @@ public struct ToolExchangeBatch: Sendable, Equatable {
     public let providerStep: Int
     public let state: ToolExchangeBatchState
     public let estimatedTokens: Int
+    public let revision: UInt64?
+    public let turnID: TurnID?
     public var isComplete: Bool { Set(toolCalls.map(\.callID)) == Set(toolResults.map(\.callID)) && toolCalls.count == toolResults.count }
 
-    public init(batchID: String, sessionID: SessionID, assistantMessageID: MessageID, resultMessageID: MessageID? = nil, toolCalls: [ToolCall], toolResults: [ToolResult] = [], toolCallStates: [DurableToolCall]? = nil, continuationRequestID: ModelRequestID? = nil, providerStep: Int, state: ToolExchangeBatchState, estimatedTokens: Int) {
+    public init(batchID: String, sessionID: SessionID, assistantMessageID: MessageID, resultMessageID: MessageID? = nil, toolCalls: [ToolCall], toolResults: [ToolResult] = [], toolCallStates: [DurableToolCall]? = nil, continuationRequestID: ModelRequestID? = nil, providerStep: Int, state: ToolExchangeBatchState, estimatedTokens: Int, revision: UInt64? = nil, turnID: TurnID? = nil) {
         self.batchID = batchID
         self.sessionID = sessionID
         self.assistantMessageID = assistantMessageID
@@ -207,10 +209,12 @@ public struct ToolExchangeBatch: Sendable, Equatable {
         self.providerStep = providerStep
         self.state = state
         self.estimatedTokens = estimatedTokens
+        self.revision = revision
+        self.turnID = turnID
     }
 
-    public func with(state: ToolExchangeBatchState, resultMessageID: MessageID? = nil, toolResults: [ToolResult]? = nil, toolCallStates: [DurableToolCall]? = nil, estimatedTokens: Int? = nil) -> ToolExchangeBatch {
-        ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessageID, resultMessageID: resultMessageID ?? self.resultMessageID, toolCalls: toolCalls, toolResults: toolResults ?? self.toolResults, toolCallStates: toolCallStates ?? self.toolCallStates, continuationRequestID: continuationRequestID, providerStep: providerStep, state: state, estimatedTokens: estimatedTokens ?? self.estimatedTokens)
+    public func with(state: ToolExchangeBatchState, resultMessageID: MessageID? = nil, toolResults: [ToolResult]? = nil, toolCallStates: [DurableToolCall]? = nil, estimatedTokens: Int? = nil, revision: UInt64? = nil, turnID: TurnID? = nil) -> ToolExchangeBatch {
+        ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessageID, resultMessageID: resultMessageID ?? self.resultMessageID, toolCalls: toolCalls, toolResults: toolResults ?? self.toolResults, toolCallStates: toolCallStates ?? self.toolCallStates, continuationRequestID: continuationRequestID, providerStep: providerStep, state: state, estimatedTokens: estimatedTokens ?? self.estimatedTokens, revision: revision ?? self.revision, turnID: turnID ?? self.turnID)
     }
 }
 
@@ -328,6 +332,10 @@ public actor DerivedContextStore {
         (l2.values.reduce(0) { $0 + $1.count }, pages.values.reduce(0) { $0 + $1.count }, pageOutCount, pageInCount, pages.values.flatMap { $0 }.filter { $0.sourceKind == .historicalTool }.count, l3Hits, l2Hits, l2Promotions)
     }
     public func pages(sessionID: SessionID) -> [DerivedContextPage] { pages[sessionID] ?? [] }
+    public func clear(sessionID: SessionID) {
+        pages.removeValue(forKey: sessionID)
+        l2.removeValue(forKey: sessionID)
+    }
 }
 
 public enum CompactionTrigger: String, Sendable { case automaticHighWater, manual, emergencyHardLimit }
@@ -357,6 +365,10 @@ public actor ContextCompactor {
     public func restoreDerived() async throws { try await derivedStore.restore() }
     public func restoreResidencies(sessionID: SessionID, values: [ContextUnitDebugSnapshot]) {
         unitResidencies[sessionID] = Dictionary(uniqueKeysWithValues: values.map { ($0.messageID, $0) })
+    }
+    public func reset(sessionID: SessionID) async {
+        unitResidencies.removeValue(forKey: sessionID)
+        await derivedStore.clear(sessionID: sessionID)
     }
     private struct Unit {
         let indices: [Int]

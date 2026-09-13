@@ -116,6 +116,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.rename", envelope.payload) }
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.set_reasoning_effort", envelope.payload) }
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("session.delete", envelope.payload) }
+    public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> { try await command("session.revert_last_turn", envelope.payload) }
     public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> { try await response("session.get", envelope.payload) }
     public func listSessions(envelope: QueryEnvelope<PageRequest>) async throws -> ResponseEnvelope<Page<SessionSummary>> { try await response("session.list", envelope.payload) }
     public func getSessionSnapshot(envelope: QueryEnvelope<GetSessionSnapshotRequest>) async throws -> ResponseEnvelope<SessionSnapshot> { try await response("session.snapshot", envelope.payload) }
@@ -303,9 +304,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     }
 
     private static func resolveCorePath(_ value: String?) -> String {
-        if let value { return value }
-        if let env = ProcessInfo.processInfo.environment["LINGXI_CORE_PATH"] { return env }
-        return URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("LingXiCoreHost").path
+        LingXiClient.resolveCorePath(value)
     }
 }
 

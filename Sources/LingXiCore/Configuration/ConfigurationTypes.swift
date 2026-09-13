@@ -151,6 +151,54 @@ public struct ContextCacheL3Configuration: Codable, Sendable, Equatable {
     }
 }
 
+public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
+    public var ecoreStorageEnabled: Bool
+    public var observationProjectionEnabled: Bool
+    public var contextRecallEnabled: Bool
+    public var objectizationThreshold: Int
+    public var fullSendCount: Int
+    public var placeholderExcerpt: Int
+    public var recallMaxBytes: Int
+    public var recallMaxLines: Int
+
+    public init(
+        ecoreStorageEnabled: Bool = true,
+        observationProjectionEnabled: Bool = true,
+        contextRecallEnabled: Bool = true,
+        objectizationThreshold: Int = 10_240, // 10KB
+        fullSendCount: Int = 2,
+        placeholderExcerpt: Int = 1_024,      // 1KB
+        recallMaxBytes: Int = 16_384,         // 16KB
+        recallMaxLines: Int = 400
+    ) {
+        self.ecoreStorageEnabled = ecoreStorageEnabled
+        self.observationProjectionEnabled = observationProjectionEnabled
+        self.contextRecallEnabled = contextRecallEnabled
+        self.objectizationThreshold = objectizationThreshold
+        self.fullSendCount = fullSendCount
+        self.placeholderExcerpt = placeholderExcerpt
+        self.recallMaxBytes = recallMaxBytes
+        self.recallMaxLines = recallMaxLines
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ecoreStorageEnabled, observationProjectionEnabled, contextRecallEnabled,
+             objectizationThreshold, fullSendCount, placeholderExcerpt, recallMaxBytes, recallMaxLines
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        ecoreStorageEnabled = try values.decodeIfPresent(Bool.self, forKey: .ecoreStorageEnabled) ?? true
+        observationProjectionEnabled = try values.decodeIfPresent(Bool.self, forKey: .observationProjectionEnabled) ?? true
+        contextRecallEnabled = try values.decodeIfPresent(Bool.self, forKey: .contextRecallEnabled) ?? true
+        objectizationThreshold = try values.decodeIfPresent(Int.self, forKey: .objectizationThreshold) ?? 10_240
+        fullSendCount = try values.decodeIfPresent(Int.self, forKey: .fullSendCount) ?? 2
+        placeholderExcerpt = try values.decodeIfPresent(Int.self, forKey: .placeholderExcerpt) ?? 1_024
+        recallMaxBytes = try values.decodeIfPresent(Int.self, forKey: .recallMaxBytes) ?? 16_384
+        recallMaxLines = try values.decodeIfPresent(Int.self, forKey: .recallMaxLines) ?? 400
+    }
+}
+
 public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
     public var addressableBudget: Int
     public var l1: ContextCacheL1Configuration
@@ -158,6 +206,7 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
     public var l3: ContextCacheL3Configuration
     public var reserve: Int
     public var economicThreshold: Int?
+    public var fabric: ContextObjectFabricConfiguration
 
     public init(
         addressableBudget: Int = 1_048_576,
@@ -165,7 +214,8 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
         l2: ContextCacheL2Configuration = ContextCacheL2Configuration(),
         l3: ContextCacheL3Configuration = ContextCacheL3Configuration(),
         reserve: Int = 22_000,
-        economicThreshold: Int? = 272_000
+        economicThreshold: Int? = 272_000,
+        fabric: ContextObjectFabricConfiguration = ContextObjectFabricConfiguration()
     ) {
         self.addressableBudget = addressableBudget
         self.l1 = l1
@@ -173,9 +223,10 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
         self.l3 = l3
         self.reserve = reserve
         self.economicThreshold = economicThreshold
+        self.fabric = fabric
     }
 
-    private enum CodingKeys: String, CodingKey { case addressableBudget, l1, l2, l3, reserve, economicThreshold }
+    private enum CodingKeys: String, CodingKey { case addressableBudget, l1, l2, l3, reserve, economicThreshold, fabric }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -185,6 +236,7 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
         l3 = try values.decodeIfPresent(ContextCacheL3Configuration.self, forKey: .l3) ?? ContextCacheL3Configuration()
         reserve = try values.decodeIfPresent(Int.self, forKey: .reserve) ?? 22_000
         economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold) ?? 272_000
+        fabric = try values.decodeIfPresent(ContextObjectFabricConfiguration.self, forKey: .fabric) ?? ContextObjectFabricConfiguration()
     }
 }
 

@@ -108,43 +108,105 @@ public struct OpenAICompatibleProvider: ModelProvider {
         for (name, value) in config.requiredHeaders {
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
-        urlRequest.httpBody = try Self.makeRequestBody(request, continuation: continuation)
+        urlRequest.httpBody = try Self.makeRequestBody(request, continuation: continuation, parallelToolCalls: config.parallelToolCalling ?? true)
         return urlRequest
     }
 
     /// 可测试：Domain 请求 → wire JSON。
-    public static func makeRequestBody(_ request: ModelRequest) throws -> Data {
-        try makeRequestBody(request, continuation: nil)
+    public static func makeRequestBody(_ request: ModelRequest, parallelToolCalls: Bool? = nil) throws -> Data {
+        try makeRequestBody(request, continuation: nil, parallelToolCalls: parallelToolCalls)
     }
 
-    private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?) throws -> Data {
+    private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?, parallelToolCalls: Bool? = nil) throws -> Data {
         var messages: [ChatRequestBody.Message] = []
         let orderedTools: [ToolDefinition]
         if let plan = request.cachePlan {
             if let system = plan.immutableBase.systemPrompt, !system.isEmpty {
                 messages.append(Message(role: "system", content: system))
             }
-            messages.append(contentsOf: plan.appendOnlyContext.messages.flatMap { providerMessages($0, continuation: continuation) })
+            let contextMsgs = plan.appendOnlyContext.messages.flatMap { providerMessages($0, continuation: continuation) }
+            if messages.contains(where: { $0.role == "system" }) {
+                // 已有系统提示词，严格剔除后续重复的 system 消息，确保 KV Cache 前缀严格命中
+                messages.append(contentsOf: contextMsgs.filter { $0.role != "system" })
+            } else {
+                messages.append(contentsOf: contextMsgs)
+            }
             orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
         } else {
             if let system = request.system, !system.isEmpty {
                 messages.append(Message(role: "system", content: system))
             }
-            messages.append(contentsOf: request.messages.flatMap { providerMessages($0, continuation: continuation) })
+            let contextMsgs = request.messages.flatMap { providerMessages($0, continuation: continuation) }
+            if messages.contains(where: { $0.role == "system" }) {
+                messages.append(contentsOf: contextMsgs.filter { $0.role != "system" })
+            } else {
+                messages.append(contentsOf: contextMsgs)
+            }
             let coreIDs = ToolRuntime.coreToolIDs
             let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
             let dynamic = request.tools.filter { !coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
             orderedTools = core + dynamic
         }
+        let enableParallel = orderedTools.isEmpty ? nil : ((parallelToolCalls ?? true) ? true : nil)
+        let sanitizedMessages = sanitizeMessagesForContract(messages)
         let body = ChatRequestBody(
             model: request.model.rawValue,
             stream: true,
-            messages: messages,
-            tools: orderedTools.isEmpty ? nil : orderedTools.map(ProviderTool.init)
+            messages: sanitizedMessages,
+            tools: orderedTools.isEmpty ? nil : orderedTools.map(ProviderTool.init),
+            parallelToolCalls: enableParallel,
+            streamOptions: ChatRequestBody.StreamOptions(includeUsage: true)
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(body)
+    }
+
+    /// 保证送往上游模型的历史消息严格符合 OpenAI API 规范：
+    /// 1. 任何带有 tool_calls 的 assistant 消息，必须紧随其声明的所有 tool 结果消息；
+    ///    若后续 tool 结果丢失或被截断，自动剔除孤儿 tool_call；
+    /// 2. 任何 tool 角色消息如果前面缺少声明其 call_id 的 assistant 消息，坚决剔除；
+    /// 3. 若 assistant 的所有 tool_calls 均被修剪且无内容，整条丢弃，杜绝发送空消息引发 400 或模型死循环。
+    static func sanitizeMessagesForContract(_ rawMessages: [ChatRequestBody.Message]) -> [ChatRequestBody.Message] {
+        var result: [ChatRequestBody.Message] = []
+        var i = 0
+        while i < rawMessages.count {
+            let msg = rawMessages[i]
+            if msg.role == "assistant", let toolCalls = msg.toolCalls, !toolCalls.isEmpty {
+                var toolResults: [ChatRequestBody.Message] = []
+                var j = i + 1
+                while j < rawMessages.count && rawMessages[j].role == "tool" {
+                    toolResults.append(rawMessages[j])
+                    j += 1
+                }
+                let answeredIDs = Set(toolResults.compactMap(\.toolCallID))
+                let validCalls = toolCalls.filter { answeredIDs.contains($0.id) }
+                let validCallIDs = Set(validCalls.map(\.id))
+                let validToolResults = toolResults.filter { m in
+                    guard let id = m.toolCallID else { return false }
+                    return validCallIDs.contains(id)
+                }
+
+                if !validCalls.isEmpty {
+                    result.append(Message(
+                        role: "assistant",
+                        content: (msg.content?.isEmpty ?? true) ? nil : msg.content,
+                        toolCalls: validCalls
+                    ))
+                    result.append(contentsOf: validToolResults)
+                } else if let content = msg.content, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result.append(Message(role: "assistant", content: content))
+                }
+                i = j
+            } else if msg.role == "tool" {
+                // 孤儿 tool 消息，跳过
+                i += 1
+            } else {
+                result.append(msg)
+                i += 1
+            }
+        }
+        return result
     }
 
     private static func providerMessages(_ message: ModelMessage, continuation: ProviderContinuation?) -> [ChatRequestBody.Message] {
@@ -279,14 +341,32 @@ public struct OpenAICompatibleProvider: ModelProvider {
         }
     }
 
+    private static func extractCachedTokens(from raw: SSEUsage) -> Int? {
+        let detailsList = [
+            raw.promptTokensDetails,
+            raw.promptTokenDetails,
+            raw.inputTokensDetails,
+            raw.inputTokenDetails
+        ]
+        for d in detailsList {
+            if let t = d?.cachedTokens ?? d?.cachedPromptTokens ?? d?.cacheReadTokens {
+                return t
+            }
+        }
+        if let direct = raw.cachedTokens ?? raw.cachedPromptTokens ?? raw.cacheReadTokens {
+            return direct
+        }
+        return raw.promptCacheHitTokens ?? raw.cacheReadInputTokens
+    }
+
     private static func usage(from raw: SSEUsage) -> ModelUsage {
-        let cached = raw.promptTokensDetails?.cachedTokens ?? raw.promptCacheHitTokens
+        let cached = extractCachedTokens(from: raw)
         return ModelUsage(
             inputTokens: raw.promptTokens,
             outputTokens: raw.completionTokens,
             reasoningTokens: raw.completionTokensDetails?.reasoningTokens,
             cacheReadTokens: cached,
-            cacheWriteTokens: nil
+            cacheWriteTokens: raw.cacheCreationInputTokens
         )
     }
 
@@ -452,7 +532,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
     }
 }
 
-private extension OpenAICompatibleProvider {
+extension OpenAICompatibleProvider {
     struct ChatRequestBody: Encodable {
         struct Message: Encodable {
             let role: String
@@ -474,10 +554,26 @@ private extension OpenAICompatibleProvider {
             }
         }
 
+        struct StreamOptions: Encodable {
+            let includeUsage: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case includeUsage = "include_usage"
+            }
+        }
+
         let model: String
         let stream: Bool
         let messages: [Message]
         let tools: [ProviderTool]?
+        let parallelToolCalls: Bool?
+        let streamOptions: StreamOptions?
+
+        enum CodingKeys: String, CodingKey {
+            case model, stream, messages, tools
+            case parallelToolCalls = "parallel_tool_calls"
+            case streamOptions = "stream_options"
+        }
     }
 
     typealias Message = ChatRequestBody.Message
@@ -611,8 +707,12 @@ private extension OpenAICompatibleProvider {
 
         struct PromptDetails: Decodable {
             let cachedTokens: Int?
+            let cachedPromptTokens: Int?
+            let cacheReadTokens: Int?
             enum CodingKeys: String, CodingKey {
                 case cachedTokens = "cached_tokens"
+                case cachedPromptTokens = "cached_prompt_tokens"
+                case cacheReadTokens = "cache_read_tokens"
             }
         }
 
@@ -620,16 +720,32 @@ private extension OpenAICompatibleProvider {
         let completionTokens: Int?
         let completionTokensDetails: CompletionDetails?
         let promptTokensDetails: PromptDetails?
+        let promptTokenDetails: PromptDetails?
+        let inputTokensDetails: PromptDetails?
+        let inputTokenDetails: PromptDetails?
+        let cachedTokens: Int?
+        let cachedPromptTokens: Int?
+        let cacheReadTokens: Int?
         let promptCacheHitTokens: Int?
         let promptCacheMissTokens: Int?
+        let cacheReadInputTokens: Int?
+        let cacheCreationInputTokens: Int?
 
         enum CodingKeys: String, CodingKey {
             case promptTokens = "prompt_tokens"
             case completionTokens = "completion_tokens"
             case completionTokensDetails = "completion_tokens_details"
             case promptTokensDetails = "prompt_tokens_details"
+            case promptTokenDetails = "prompt_token_details"
+            case inputTokensDetails = "input_tokens_details"
+            case inputTokenDetails = "input_token_details"
+            case cachedTokens = "cached_tokens"
+            case cachedPromptTokens = "cached_prompt_tokens"
+            case cacheReadTokens = "cache_read_tokens"
             case promptCacheHitTokens = "prompt_cache_hit_tokens"
             case promptCacheMissTokens = "prompt_cache_miss_tokens"
+            case cacheReadInputTokens = "cache_read_input_tokens"
+            case cacheCreationInputTokens = "cache_creation_input_tokens"
         }
     }
 
@@ -637,11 +753,22 @@ private extension OpenAICompatibleProvider {
         struct Function: Decodable {
             let name: String?
             let arguments: String?
+
+            init(name: String? = nil, arguments: String? = nil) {
+                self.name = name
+                self.arguments = arguments
+            }
         }
 
         let index: Int
         let id: String?
         let function: Function?
+
+        init(index: Int, id: String? = nil, function: Function? = nil) {
+            self.index = index
+            self.id = id
+            self.function = function
+        }
     }
 
     struct ToolCallBuffer {
@@ -683,12 +810,12 @@ private extension OpenAICompatibleProvider {
                 if let arguments = delta.function?.arguments, !arguments.isEmpty {
                     partial.arguments += arguments
                 }
-                if let id = partial.id, !id.isEmpty, let name = partial.name, !name.isEmpty, !partial.started {
+                if let id = partial.id, !id.isEmpty, let rawName = partial.name?.trimmingCharacters(in: .whitespacesAndNewlines), !rawName.isEmpty, !partial.started {
                     let domainID = ToolCallID("lingxi:\(requestID.rawValue):\(delta.index)")
                     domainIDs[delta.index] = domainID
                     references.append(ProviderToolCallReference(wire: .chatCompletions, domainCallID: domainID, externalCallID: id))
                     partial.started = true
-                    events.append(.toolCallStarted(callID: domainID, toolID: ToolID(name)))
+                    events.append(.toolCallStarted(callID: domainID, toolID: ToolID(rawName)))
                 }
                 if partial.started, let domainID = domainIDs[delta.index], partial.emittedArgumentCount < partial.arguments.count {
                     let arguments = String(partial.arguments.dropFirst(partial.emittedArgumentCount))
@@ -704,14 +831,17 @@ private extension OpenAICompatibleProvider {
             defer { calls.removeAll() }
             return try calls.keys.sorted().map { index in
                 var call = calls[index] ?? Partial()
-                if let id = call.id, !id.isEmpty, let name = call.name, !name.isEmpty, !call.started {
+                if let id = call.id, !id.isEmpty, let rawName = call.name?.trimmingCharacters(in: .whitespacesAndNewlines), !rawName.isEmpty, !call.started {
                     let domainID = ToolCallID("lingxi:\(requestID.rawValue):\(index)")
                     domainIDs[index] = domainID
                     references.append(ProviderToolCallReference(wire: .chatCompletions, domainCallID: domainID, externalCallID: id))
                     call.started = true
                 }
-                guard let domainID = domainIDs[index], let name = call.name, !name.isEmpty, call.started else {
+                guard let domainID = domainIDs[index], let name = call.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty, call.started else {
                     throw CoreError(code: .modelStream, message: "Tool Call 信息不完整: tool name 为空")
+                }
+                guard name != "Tool" && name != "{}" && name != "unknown" else {
+                    throw CoreError(code: .modelStream, message: "模型返回了无效的 Tool Name: '\(name)'")
                 }
                 guard let data = call.arguments.data(using: .utf8),
                       (try? JSONSerialization.jsonObject(with: data)) is [String: Any]

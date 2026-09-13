@@ -399,7 +399,6 @@ struct RealProviderSmokeTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let userHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent", isDirectory: true)
         let config = ProviderConfig(
             baseURL: URL(string: "https://token.sensenova.cn/v1")!,
             apiKey: apiKey,

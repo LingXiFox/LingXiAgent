@@ -23,10 +23,36 @@ public actor SessionTurnCoordinator {
         self.eventLog = eventLog
     }
 
+    /// 撤回（undo）操作后的全量状态重置与重新水合
+    public func resetForRevert(remainingMessages: [Message]) async {
+        activeRootRunID = nil
+        queuedTurns.removeAll()
+        turns.removeAll()
+        runs.removeAll()
+        interactions.removeAll()
+        modelSteps.removeAll()
+        toolInvocations.removeAll()
+        streamFrames.removeAll()
+
+        await eventLog.resetToEvents([])
+        await hydrateHistoricalMessages(remainingMessages)
+    }
+
     /// 从持久化消息流中水合还原历史 turns 和 timeline events
     public func hydrateHistoricalMessages(_ messages: [Message]) async {
         guard turns.isEmpty, !messages.isEmpty else { return }
 
+        // 预先建立 callID 到 toolResult 的全局索引，杜绝历史工具水合产生孤儿悬空 running 状态
+        var toolResultsByCallID: [ToolCallID: ToolResult] = [:]
+        for msg in messages {
+            for part in msg.parts {
+                if case let .toolResult(res) = part {
+                    toolResultsByCallID[res.callID] = res
+                }
+            }
+        }
+
+        var completedCallIDs: Set<ToolCallID> = []
         var currentTurnID: TurnID?
         for msg in messages {
             let causal = CausalContext(sessionID: sessionID, turnID: currentTurnID)
@@ -61,16 +87,39 @@ public actor SessionTurnCoordinator {
                     case let .text(txt):
                         textContent += txt
                     case let .toolCall(tc):
+                        let hasResult = toolResultsByCallID[tc.callID] != nil
                         let invocation = ToolInvocationSnapshot(
                             callID: tc.callID,
                             toolID: tc.toolID,
                             displayName: tc.toolName,
                             argumentsSummary: tc.arguments,
-                            state: .completed
+                            state: hasResult ? .completed : .cancelled
                         )
                         toolInvocations[tc.callID] = invocation
                         await eventLog.append(causal: causal, payload: .toolRequested(invocation))
-                        await eventLog.append(causal: causal, payload: .toolRunning(callID: tc.callID, stdoutStreamID: nil, stderrStreamID: nil))
+                        if let res = toolResultsByCallID[tc.callID] {
+                            let summaryText = res.summary.isEmpty ? (res.content.count > 100 ? String(res.content.prefix(100)) + "..." : res.content) : res.summary
+                            let resSnap = ToolResultSnapshot(
+                                callID: res.callID,
+                                toolName: res.toolName,
+                                success: res.success,
+                                summary: summaryText
+                            )
+                            await eventLog.append(causal: causal, payload: .toolCompleted(
+                                callID: res.callID,
+                                result: resSnap,
+                                stdoutFinalIndex: nil,
+                                stderrFinalIndex: nil
+                            ))
+                            completedCallIDs.insert(tc.callID)
+                        } else {
+                            await eventLog.append(causal: causal, payload: .toolCancelled(
+                                callID: tc.callID,
+                                stdoutFinalIndex: nil,
+                                stderrFinalIndex: nil
+                            ))
+                            completedCallIDs.insert(tc.callID)
+                        }
                     case .toolResult:
                         break
                     }
@@ -88,10 +137,11 @@ public actor SessionTurnCoordinator {
 
             case .tool:
                 for part in msg.parts {
-                    if case let .toolResult(res) = part {
+                    if case let .toolResult(res) = part, !completedCallIDs.contains(res.callID) {
                         let summaryText = res.summary.isEmpty ? (res.content.count > 100 ? String(res.content.prefix(100)) + "..." : res.content) : res.summary
                         let resSnap = ToolResultSnapshot(
                             callID: res.callID,
+                            toolName: res.toolName,
                             success: res.success,
                             summary: summaryText
                         )
@@ -101,6 +151,7 @@ public actor SessionTurnCoordinator {
                             stdoutFinalIndex: nil,
                             stderrFinalIndex: nil
                         ))
+                        completedCallIDs.insert(res.callID)
                     }
                 }
             }
@@ -600,8 +651,19 @@ public actor SessionTurnCoordinator {
         ))
     }
 
-    public func recordProviderRequestState(requestID: ProviderRequestID, state: ProviderRequestState, causal: CausalContext) async {
-        await eventLog.append(causal: causal, payload: .providerRequestStateChanged(requestID: requestID, state: state))
+    public func recordProviderRequestState(
+        requestID: ProviderRequestID,
+        state: ProviderRequestState,
+        detail: String? = nil,
+        statusCode: Int? = nil,
+        causal: CausalContext
+    ) async {
+        await eventLog.append(causal: causal, payload: .providerRequestStateChanged(
+            requestID: requestID,
+            state: state,
+            detail: detail,
+            statusCode: statusCode
+        ))
     }
 
     public func recordContextStateChanged(_ snapshot: ContextStateSnapshot, causal: CausalContext) async {
@@ -637,13 +699,14 @@ public actor SessionTurnCoordinator {
             return true
         }
         let terminalIndex = streamTerminalIndices[streamID]
-        let lastReplayIndex = replay.last?.index
 
         return AsyncStream { continuation in
             for frame in replay {
                 continuation.yield(frame)
             }
-            if let terminalIndex, let lastReplayIndex, lastReplayIndex >= terminalIndex {
+            if terminalIndex != nil {
+                // Once the stream has terminated, no future frames can ever be emitted.
+                // Replaying available frames and finishing immediately prevents deadlocks.
                 continuation.finish()
                 return
             }

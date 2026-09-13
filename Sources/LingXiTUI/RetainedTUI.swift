@@ -14,7 +14,7 @@ private enum UIEvent: Sendable {
 }
 
 private enum CommandAction: Sendable {
-    case model, connect, providers, newSession, resume, history, rename
+    case model, connect, providers, newSession, resume, history, rename, undo
     case status, context, compact, perf, mode, permissions
     case subagents, mcp, skills, plugins, hooks, diff, ps, stop, clear, help, quit
 }
@@ -135,10 +135,11 @@ final class RetainedTUI: @unchecked Sendable {
         CommandDescriptor(name: "providers", aliases: [], description: "查看 Provider", category: "Provider", argumentSchema: "", action: .providers),
         CommandDescriptor(name: "new", aliases: [], description: "新建 Session", category: "Session", argumentSchema: "", action: .newSession),
         CommandDescriptor(name: "resume", aliases: [], description: "恢复 Session", category: "Session", argumentSchema: "", action: .resume),
+        CommandDescriptor(name: "undo", aliases: ["rewind", "pop"], description: "撤回上一轮会话并回填输入框", category: "Session", argumentSchema: "", action: .undo, availability: .requiresSession),
         CommandDescriptor(name: "history", aliases: [], description: "查看当前 transcript", category: "Session", argumentSchema: "", action: .history, availability: .requiresSession),
         CommandDescriptor(name: "rename", aliases: [], description: "重命名 Session", category: "Session", argumentSchema: "<title>", action: .rename, availability: .requiresSession),
         CommandDescriptor(name: "status", aliases: [], description: "查看运行状态", category: "Runtime", argumentSchema: "", action: .status, availability: .requiresSession),
-        CommandDescriptor(name: "context", aliases: [], description: "查看 L1/L2/L3 context", category: "Runtime", argumentSchema: "", action: .context, availability: .requiresSession),
+        CommandDescriptor(name: "context", aliases: [], description: "查看 P-Core / E-Core 双核心上下文状态", category: "Runtime", argumentSchema: "", action: .context, availability: .requiresSession),
         CommandDescriptor(name: "compact", aliases: [], description: "压缩当前 context", category: "Runtime", argumentSchema: "", action: .compact, availability: .requiresSession),
         CommandDescriptor(name: "perf", aliases: [], description: "查看性能报告", category: "Runtime", argumentSchema: "", action: .perf, availability: .requiresSession),
         CommandDescriptor(name: "mode", aliases: [], description: "切换 Agent 行为模式", category: "Runtime", argumentSchema: "build|plan|explore", action: .mode),
@@ -536,9 +537,31 @@ final class RetainedTUI: @unchecked Sendable {
         case .diff: await diffCommand()
         case .ps: await psCommand()
         case .stop: await stopCommand(args)
+        case .undo: await undoCommand()
         case .clear: projector.reset()
         case .help: append(.result, registry.map { "/\($0.name)  \($0.description)" }.joined(separator: "\n"))
         case .quit: shouldQuit = true
+        }
+    }
+
+    private func undoCommand() async {
+        guard let client, let sessionID else { return }
+        do {
+            let result = try await client.revertLastTurn(sessionID: sessionID)
+            if let text = result.revertedPrompt {
+                composer = text
+                app.composer.setText(text)
+            }
+            projector.reset()
+            if let legacy = try? await client.session(sessionID: sessionID) {
+                projector.consume(persistedMessages: legacy.messages)
+                app.transcript.replaceTimeline(projector.items)
+            }
+            working = false
+            workingPhase = .idle
+            append(.result, "已撤回上一轮会话 (\(result.removedCount) 条消息)")
+        } catch {
+            append(.error, "撤回失败: \(error.localizedDescription)")
         }
     }
 
@@ -796,45 +819,37 @@ final class RetainedTUI: @unchecked Sendable {
         let pg = projection.paging
 
         var lines: [String] = []
-        lines.append("Context")
+        lines.append("Context · P-Core & E-Core Architecture")
         lines.append("")
-        lines.append(String(format: "%-22@ %@", "Addressable Budget", TokenFormatter.format(p.addressableBudget)))
         lines.append(String(format: "%-22@ %@", "Model Window", TokenFormatter.format(p.modelWindow)))
         if let economic = p.economicThreshold {
             lines.append(String(format: "%-22@ %@", "Economic Threshold", TokenFormatter.format(economic)))
         }
         lines.append(String(format: "%-22@ %@", "Reserve", TokenFormatter.format(p.reserve)))
         lines.append("")
-        lines.append("L1 · Hot Working Set")
-        let l1Usage = l1.usageTokens == 0 ? "0" : TokenFormatter.format(l1.usageTokens)
-        lines.append(String(format: "  %-20@ %@", "Usage", l1Usage))
+        lines.append("P-Core · Context Projection & Scheduler")
+        let pCoreUsage = projection.pCoreTokens.map { TokenFormatter.format($0) } ?? (l1.usageTokens == 0 ? "0" : TokenFormatter.format(l1.usageTokens))
+        lines.append(String(format: "  %-20@ %@", "Active Projection", pCoreUsage))
         if let lastInput = projection.lastProviderInputTokens {
             lines.append(String(format: "  %-20@ %@", "Last Provider Input", TokenFormatter.format(lastInput)))
         }
-        lines.append(String(format: "  %-20@ %@", "Target", TokenFormatter.format(p.l1Target)))
         lines.append(String(format: "  %-20@ %@", "Soft Limit", TokenFormatter.format(p.l1SoftLimit)))
         lines.append(String(format: "  %-20@ %@", "Hard Limit", TokenFormatter.format(p.l1HardLimit)))
-        lines.append(String(format: "  %-20@ %d", "Entries", l1.entryCount))
+        lines.append(String(format: "  %-20@ %d", "Cache Debt", projection.cacheDebt ?? 0))
         lines.append("")
-        lines.append("L2 · Warm Cache")
-        let l2Usage = l2.usageTokens == 0 ? "0" : TokenFormatter.format(l2.usageTokens)
-        lines.append(String(format: "  %-20@ %@ / %@", "Usage", l2Usage, TokenFormatter.format(l2.capacityTokens)))
-        lines.append(String(format: "  %-20@ %d", "Entries", l2.entryCount))
+        lines.append("E-Core · Context Object Fabric")
+        let eCoreBytes = projection.eCoreTotalBytes ?? 0
+        lines.append(String(format: "  %-20@ %d objs", "Stored Objects", projection.eCoreObjectCount ?? 0))
+        lines.append(String(format: "  %-20@ %@", "Fabric Storage", TokenFormatter.formatBytes(eCoreBytes)))
+        lines.append(String(format: "  %-20@ %@", "Recall Tool", "context_recall (precision slicing)"))
         lines.append("")
-        lines.append("L3 · Cold Cache")
-        if l3.state == .unavailable {
-            lines.append("  State                off")
+        lines.append("Prefix Cache Stability")
+        if let telemetry = projection.cacheTelemetry {
+            lines.append(String(format: "  %-20@ %@", "Cached Tokens", TokenFormatter.format(telemetry.cachedPromptTokens)))
+            lines.append(String(format: "  %-20@ %.1f%%", "Hit Rate", telemetry.effectiveHitRate * 100.0))
         } else {
-            let l3Usage = l3.usageTokens == 0 ? "0" : TokenFormatter.format(l3.usageTokens)
-            lines.append(String(format: "  %-20@ %@ / %@", "Usage", l3Usage, TokenFormatter.format(l3.capacityTokens)))
-            lines.append(String(format: "  %-20@ %d", "Entries", l3.entryCount))
+            lines.append("  Status               active")
         }
-        lines.append("")
-        lines.append("Paging")
-        lines.append(String(format: "  %-20@ %d", "Page-ins", pg.pageIns))
-        lines.append(String(format: "  %-20@ %d", "Page-outs", pg.pageOuts))
-        lines.append(String(format: "  %-20@ %d", "Promotions", pg.promotions))
-        lines.append(String(format: "  %-20@ %d", "Demotions", pg.demotions))
 
         return lines.joined(separator: "\n")
     }
@@ -1125,13 +1140,6 @@ final class RetainedTUI: @unchecked Sendable {
             await routeCommand("/\(candidates[commandSelection].name)")
         default: break
         }
-    }
-    private func layerCompact(name: String, _ layer: ContextLayerStatus?) -> String {
-        guard let layer else {
-            let cap = name == "L1" ? 220_000 : (name == "L2" ? 350_000 : 456_576)
-            return "\(name) 0/\(TokenFormatter.format(cap))"
-        }
-        return TokenFormatter.formatLayer(layer: name, usage: layer.usageTokens, capacity: layer.capacityTokens, state: layer.state)
     }
     private func detectGitBranch() -> String {
         let process = Process()

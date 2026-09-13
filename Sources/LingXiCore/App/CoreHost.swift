@@ -17,7 +17,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let interactive: Bool
     public let questions: QuestionRuntime
     private let processes: ToolProcessStore
-    private let sessionStore: any SessionStore
+    public let sessionStore: any SessionStore
     /// nil 表示显式的 ephemeral Core；调用方传入 dataRoot 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
     public let workspaceURL: URL
@@ -31,8 +31,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private let projectScanner: ProjectScanner
-    private let compactor: ContextCompactor
-    private let cacheController: ContextCacheController
+    public let compactor: ContextCompactor
+    public let cacheController: ContextCacheController
     private let budgetPlanner: ContextBudgetPlanner
     private let diagnosticsEnabled: Bool
     private let configurationStore: ConfigurationStore?
@@ -110,6 +110,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let idempotencyJournal: IdempotencyJournal
     public let commandWAL: DurableCommandWAL
     public let contentStore: ContentStore
+    public let sessionMutationLock = SessionMutationLock.shared
     private var currentRevision: UInt64 = 1
     public let eventLogStorageDirectory: URL?
     public private(set) var activeFailpoint: CommitFailpoint?
@@ -128,6 +129,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         sessionStore: (any SessionStore)? = nil,
         workspaceRoot: WorkspaceRoot? = nil,
         dataRoot: URL? = nil,
+        persistence: SQLitePersistenceStore? = nil,
         permissionDecision: PermissionDecision? = nil,
         toolRegistry: ToolRegistry? = nil,
         mcpPager: MCPToolPager? = nil,
@@ -194,10 +196,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let effectiveMCPPager = mcpPager ?? MCPToolPager()
         self.mcpPager = effectiveMCPPager
         diagnosticsStore = RuntimeDiagnosticsStore()
-        let persistent = try persistentRoot.map {
+        let persistent = try persistence ?? persistentRoot.map {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
         }
-        persistence = persistent
+        self.persistence = persistent
         self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
         let executionDeadlinePolicy = ExecutionDeadlinePolicy(settings: configuration?.runtime.execution ?? ExecutionTimeoutSettings())
         self.executionDeadlinePolicy = executionDeadlinePolicy
@@ -674,6 +676,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             await coordinator.recordProviderRequestState(
                 requestID: ProviderRequestID(activity.providerRequestID),
                 state: state,
+                detail: activity.detail,
+                statusCode: activity.statusCode,
                 causal: CausalContext(sessionID: activity.sessionID, runID: activity.runID.map(RunID.init))
             )
         case let .toolCallCompleted(call):
@@ -731,7 +735,23 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         case let .toolResult(result):
             guard let sessionID = result.sessionID, let coordinator = try? await coordinator(for: sessionID) else { return }
             let causal = CausalContext(sessionID: sessionID, runID: result.agentRunID.map(RunID.init), modelStepID: result.modelStepID, toolCallID: result.callID)
-            let preview = String(result.content.prefix(240))
+            let preview: String
+            if let data = result.content.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let stdout = json["stdout"] as? String, !stdout.isEmpty {
+                    let clean = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                    preview = String(clean.prefix(240))
+                } else if let stderr = json["stderr"] as? String, !stderr.isEmpty {
+                    let clean = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    preview = String(clean.prefix(240))
+                } else if let summary = json["summary"] as? String, !summary.isEmpty {
+                    preview = String(summary.prefix(240))
+                } else {
+                    preview = String(result.content.prefix(240))
+                }
+            } else {
+                preview = String(result.content.prefix(240))
+            }
             let contentRef = (result.output.truncated ? (result.continuation ?? result.output.outputBlobRef) : nil).map {
                 ContentRef(
                     id: ContentID($0),
@@ -744,6 +764,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 callID: result.callID,
                 result: ToolResultSnapshot(
                     callID: result.callID,
+                    toolName: result.toolName,
                     success: result.success,
                     summary: result.summary,
                     preview: preview.isEmpty ? nil : preview,
@@ -760,17 +781,24 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
     }
 
+    private var contextRefreshSequences: [SessionID: UInt64] = [:]
+
     private func refreshVNextContext(sessionID: SessionID) async {
+        let seq = (contextRefreshSequences[sessionID] ?? 0) + 1
+        contextRefreshSequences[sessionID] = seq
         guard let coordinator = try? await coordinator(for: sessionID) else { return }
+        let snapshot = await buildContextStateSnapshot(sessionID: sessionID)
+        // Ensure this is still the latest scheduled refresh for this session to prevent out-of-order overrides
+        guard contextRefreshSequences[sessionID] == seq else { return }
         await coordinator.recordContextStateChanged(
-            await buildContextStateSnapshot(sessionID: sessionID),
+            snapshot,
             causal: CausalContext(sessionID: sessionID)
         )
     }
 
     private func shouldRefreshVNextContext(for event: CoreEvent) -> Bool {
         switch event {
-        case .turnStarted, .toolResult, .turnCompleted, .turnFailed: return true
+        case .turnCompleted, .turnFailed: return true
         default: return false
         }
     }
@@ -908,6 +936,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             pageOutCount: 0
         )
 
+        let ecoreObjects = await cacheController.ecoreStore.listObjects(sessionID: sessionID)
+        let ecoreCount = ecoreObjects.count
+        let ecoreBytes = ecoreObjects.reduce(0) { $0 + $1.totalBytes }
+        let debtState = await cacheController.scheduler.debtState(for: sessionID)
+
         return ContextCacheProjection(
             sessionID: sessionID,
             policy: ContextCachePolicySnapshot(policy: effectiveContextPolicy),
@@ -919,7 +952,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             compactionGeneration: snapshot.metrics.compactionGeneration,
             latestManifest: manifest,
             lastProviderInputTokens: lastInputTokens,
-            cacheTelemetry: cacheTelemetry
+            cacheTelemetry: cacheTelemetry,
+            pCoreTokens: effectiveL1Usage,
+            eCoreObjectCount: ecoreCount,
+            eCoreTotalBytes: ecoreBytes,
+            cacheDebt: debtState.cacheDebt
         )
     }
 
@@ -1453,6 +1490,18 @@ extension CoreHost {
 
         let cacheRecord = await cacheController.lastProviderCacheRecord(for: sessionID)
         let clientHealth = await cacheController.lastClientHealth(for: sessionID)
+        let ecoreObjects = await cacheController.ecoreStore.listObjects(sessionID: sessionID)
+        let ecoreCount = ecoreObjects.count
+        let ecoreBytes = ecoreObjects.reduce(0) { $0 + $1.totalBytes }
+        let debtState = await cacheController.scheduler.debtState(for: sessionID)
+        let lastInput = await cacheController.lastProviderInputTokens(for: sessionID) ?? 0
+        var pCoreTokens = cacheRecord?.promptTokens ?? max(effectiveL1Usage, lastInput)
+        if pCoreTokens == 0, let histSession = try? await sessionStore.session(sessionID) {
+            let msgTokens = histSession.messages.reduce(0) { $0 + max(1, $1.content.utf8.count / 4) }
+            if msgTokens > 0 { pCoreTokens = msgTokens }
+        }
+
+        let effectivePromptTokens = cacheRecord?.promptTokens ?? (pCoreTokens > 0 ? pCoreTokens : nil)
 
         return ContextStateSnapshot(
             sessionID: sessionID,
@@ -1462,7 +1511,7 @@ extension CoreHost {
             l3Tokens: l3Usage,
             compactionGeneration: generation,
             cacheReadTokens: cacheRecord?.cachedTokens,
-            promptTokens: cacheRecord?.promptTokens,
+            promptTokens: effectivePromptTokens,
             previousPromptTokens: cacheRecord?.previousPromptTokens,
             cacheStatus: cacheRecord?.status,
             cacheEpoch: cacheRecord?.epoch ?? clientHealth?.cacheEpoch,
@@ -1477,7 +1526,11 @@ extension CoreHost {
             observedGranularity: nil,
             clientCausedBusts: clientHealth?.clientCausedBusts,
             comparableRequests: clientHealth?.comparableRequests,
-            appendOnlyViolations: clientHealth?.appendOnlyViolations
+            appendOnlyViolations: clientHealth?.appendOnlyViolations,
+            pCoreTokens: pCoreTokens,
+            eCoreObjectCount: ecoreCount,
+            eCoreTotalBytes: ecoreBytes,
+            cacheDebt: debtState.cacheDebt
         )
     }
 
@@ -1497,15 +1550,28 @@ extension CoreHost {
         }
         // Core 执行必须使用该 Turn 的 frozen executionIntent
         await permissionEngine.setConfiguration(executionIntent.permissionConfiguration)
-        if let model = executionIntent.modelSelection, let selection = try? await modelSelection(for: model) {
-            let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: model)
-            try? await agent?.selectModel(selection, assembly: assembly)
-            if let assembly {
+        var modelResolutionError: Error? = nil
+        if let model = executionIntent.modelSelection {
+            do {
+                let selection = try await modelSelection(for: model)
+                let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
+                try await agent?.selectModel(selection, assembly: assembly)
                 self.currentAssembly = assembly
+            } catch {
+                modelResolutionError = error
             }
         }
         guard let agent, state == .ready, (currentAssembly != nil || gateway.isConfigured) else {
-            let next = await coordinator.finishRun(runID: runID, reason: .completed)
+            let runtimeErr: RuntimeError
+            if let modelResolutionError {
+                let msg = (modelResolutionError as? CoreError)?.message ?? modelResolutionError.localizedDescription
+                runtimeErr = RuntimeError(category: .runtime, code: "modelResolveFailed", message: "模型准备失败: \(msg)", retryability: .none, source: .core)
+            } else if state != .ready {
+                runtimeErr = RuntimeError(category: .runtime, code: "coreNotReady", message: "Core 服务尚未就绪", retryability: .afterDelay, source: .core)
+            } else {
+                runtimeErr = RuntimeError(category: .runtime, code: "noProviderConfigured", message: "未配置可用模型 Provider，请检查 providers.json 或运行 lingxiagent auth", retryability: .none, source: .core)
+            }
+            let next = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
             if let next {
                 let task = Task { [weak self, weak coordinator] () -> Void in
                     await self?.executeTurnRun(
@@ -1674,6 +1740,8 @@ extension CoreHost {
                 _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
                 return
             }
+            let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
+            await coordinator.recordContextStateChanged(freshContextState, causal: CausalContext(sessionID: sessionID))
             let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .completed)
             if let next = nextTurnToRun {
                 let task = Task { [weak self, weak coordinator] () -> Void in
@@ -1759,6 +1827,8 @@ extension CoreHost {
             finalIndex: reasoningFinalIndex,
             outputMetadata: finalMeta
         )
+        let freshContextState = await buildContextStateSnapshot(sessionID: causal.sessionID)
+        await coordinator.recordContextStateChanged(freshContextState, causal: causal)
     }
 
     // MARK: - Runtime
@@ -1985,6 +2055,107 @@ extension CoreHost {
         return receipt
     }
 
+    public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> {
+        let sessionID = envelope.payload.sessionID
+        return try await sessionMutationLock.withExclusiveMutation(sessionID) {
+            let oldRevision = (try? await sessionStore.currentRevision(sessionID)) ?? 0
+            let newRevision = try await sessionStore.bumpRevision(sessionID)
+            FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.begin sessionID=\(sessionID.rawValue) oldRevision=\(oldRevision) newRevision=\(newRevision)\n".utf8))
+
+            cancelActiveTurnTasks(for: sessionID)
+            await permissionEngine.cancelPending(sessionID: sessionID, reason: .sessionReverted)
+            await questions.cancelPending(sessionID: sessionID, reason: .sessionReverted)
+            await agent?.resetSessionForRevert(sessionID)
+
+            // Phase 8: 执行文件逆向回滚（必须在 DB 清理前读取该 Session 的 FileMutations）
+            if let p = persistence {
+                let mutations = (try? await p.loadFileMutations(sessionID: sessionID)) ?? []
+                if !mutations.isEmpty {
+                    let rollbackEngine = FileRollbackEngine()
+                    let report = try? await rollbackEngine.rollbackMutations(mutations, workspaceRoot: workspaceURL)
+                    FileHandle.standardError.write(Data("[CORE_HOST] session.files.reverted sessionID=\(sessionID.rawValue) restored=\(report?.restoredCount ?? 0) deleted=\(report?.deletedCount ?? 0) hasConflicts=\(report?.hasConflicts ?? false)\n".utf8))
+                }
+            }
+
+            let (revertedPrompt, count) = try await sessionStore.revertLastTurn(sessionID, bumpRevision: false)
+
+            let fresh = try? await sessionStore.session(sessionID)
+            let remainingMessages = fresh?.messages ?? []
+
+            let coord = try? await coordinator(for: sessionID)
+            if let coord {
+                await coord.resetForRevert(remainingMessages: remainingMessages)
+            }
+
+            // P-E 双核心架构协同：清理被撤回的 E-Core 对象，精确重估 P-Core (L1) Tokens 并重置缓存调度器
+            await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
+            await compactor.reset(sessionID: sessionID)
+            await contextEngine.reset(for: sessionID)
+
+            var authoritativeSnapshot: SessionSnapshot?
+            if let coord {
+                let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
+                let causal = CausalContext(sessionID: sessionID)
+                await coord.recordContextStateChanged(freshContextState, causal: causal)
+
+                var title = fresh?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if title.isEmpty {
+                    if let firstUser = remainingMessages.first(where: { $0.role == .user })?.content {
+                        let clean = firstUser.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+                        title = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
+                    }
+                }
+                if title.isEmpty { title = "未命名会话" }
+
+                let resolvedDir: String
+                if let p = persistence, let root = try? SQLitePersistenceStore.findProjectDirectory(for: sessionID, dataRoot: p.dataRoot)?.absoluteRoot {
+                    resolvedDir = root
+                } else {
+                    resolvedDir = workspaceURL.path
+                }
+
+                let summary = SessionSummary(
+                    sessionID: sessionID,
+                    title: title,
+                    createdAt: fresh?.createdAt ?? Date(),
+                    updatedAt: fresh?.updatedAt ?? Date(),
+                    turnCount: remainingMessages.filter { $0.role == .user }.count,
+                    mode: .build,
+                    reasoningEffort: fresh?.reasoningEffort ?? .auto,
+                    workingDirectory: resolvedDir,
+                    messageCount: remainingMessages.count
+                )
+                let agentMode = await coord.currentAgentMode()
+                authoritativeSnapshot = await coord.buildSnapshot(
+                    info: summary,
+                    contextState: freshContextState,
+                    permissionConfiguration: await permissionEngine.currentConfiguration(),
+                    agentMode: agentMode,
+                    revision: newRevision
+                )
+            }
+
+            FileHandle.standardError.write(Data("[CORE_HOST] session.snapshot.resynced sessionID=\(sessionID.rawValue) revision=\(newRevision)\n".utf8))
+            FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.completed sessionID=\(sessionID.rawValue) newRevision=\(newRevision) removedCount=\(count)\n".utf8))
+
+            let receipt = CommandReceipt<RevertLastTurnResult>(
+                commandID: envelope.commandID,
+                applied: true,
+                revision: newRevision,
+                observedThrough: [
+                    await runtimeEventLog.currentWatermark()
+                ],
+                result: RevertLastTurnResult(
+                    revertedPrompt: revertedPrompt,
+                    removedCount: count,
+                    snapshot: authoritativeSnapshot,
+                    revision: newRevision
+                )
+            )
+            return receipt
+        }
+    }
+
     public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> {
         let session = try await sessionStore.session(envelope.payload.sessionID)
         let coord = try await coordinator(for: session.id)
@@ -2107,106 +2278,109 @@ extension CoreHost {
 
     // MARK: - Turn / Run
     public func submitTurn(envelope: CommandEnvelope<SubmitTurnRequest>) async throws -> CommandReceipt<SubmitTurnResult> {
-        if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SubmitTurnResult.self) {
-            return cached
-        }
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SubmitTurnResult.self) {
-            return cached
-        }
-
-        if activeFailpoint == .beforeStateMutation {
-            throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
-        }
-
-        await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
-
-        _ = try await sessionStore.session(envelope.payload.sessionID)
-        let coord = try await coordinator(for: envelope.payload.sessionID)
-        let initialRuntimeSeq = await runtimeEventLog.currentSequence()
-        let initialSessionSeq = await coord.eventLog.currentSequence()
-
-        let msg = try await sessionStore.appendMessage(envelope.payload.sessionID, role: .user, content: envelope.payload.input.text)
-        let userSnapshot = MessageSnapshot(
-            messageID: msg.id,
-            role: .user,
-            text: envelope.payload.input.text,
-            attachments: envelope.payload.input.attachments,
-            createdAt: msg.createdAt
-        )
-        let decision = await coord.submitTurn(
-            input: envelope.payload.input,
-            intent: envelope.payload.executionIntent,
-            userMessage: userSnapshot
-        )
-
-        await commandWAL.recordState(
-            commandID: envelope.commandID,
-            createdSessionID: nil,
-            sessionID: envelope.payload.sessionID,
-            turnID: decision.turn.turnID,
-            runID: decision.runID,
-            initialRuntimeSequence: initialRuntimeSeq,
-            initialSessionSequence: initialSessionSeq
-        )
-
-        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
-            fflush(stdout)
-            kill(getpid(), SIGKILL)
-        }
-
-        if activeFailpoint == .afterStateMutationBeforeEventAppend {
-            await coord.rollbackTurn(decision: decision)
-            throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
-        }
-
-        await commandWAL.recordEventsAppended(commandID: envelope.commandID)
-
-        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
-            fflush(stdout)
-            kill(getpid(), SIGKILL)
-        }
-
-        if activeFailpoint == .afterEventAppendBeforeReceipt {
-            await coord.eventLog.rollbackLastAppended()
-            await coord.rollbackTurn(decision: decision)
-            throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
-        }
-
-        let watermark = await coord.eventLog.currentWatermark()
-        let result = SubmitTurnResult(turnID: decision.turn.turnID, status: decision.status, runID: decision.runID)
-        let receipt = CommandReceipt<SubmitTurnResult>(
-            commandID: envelope.commandID,
-            applied: true,
-            revision: nextRevision(),
-            observedThrough: [watermark],
-            result: result
-        )
-        await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
-
-        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
-            fflush(stdout)
-            kill(getpid(), SIGKILL)
-        }
-
-        if activeFailpoint == .afterCommitBeforeResponse {
-            throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
-        }
-
-        if decision.shouldStartExecution, let runID = decision.runID {
-            let task = Task { [weak self, weak coord] () -> Void in
-                await self?.executeTurnRun(
-                    sessionID: envelope.payload.sessionID,
-                    turnID: decision.turn.turnID,
-                    runID: runID,
-                    input: envelope.payload.input,
-                    executionIntent: envelope.payload.executionIntent,
-                    coordinator: coord
-                )
+        let sessionID = envelope.payload.sessionID
+        return try await sessionMutationLock.withExclusiveMutation(sessionID) {
+            if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SubmitTurnResult.self) {
+                return cached
             }
-            registerActiveTurnTask(task, runID: runID, sessionID: envelope.payload.sessionID)
+            if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SubmitTurnResult.self) {
+                return cached
+            }
+
+            if activeFailpoint == .beforeStateMutation {
+                throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
+            }
+
+            await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
+
+            _ = try await sessionStore.session(sessionID)
+            let coord = try await coordinator(for: sessionID)
+            let initialRuntimeSeq = await runtimeEventLog.currentSequence()
+            let initialSessionSeq = await coord.eventLog.currentSequence()
+
+            let msg = try await sessionStore.appendMessage(sessionID, role: .user, content: envelope.payload.input.text)
+            let userSnapshot = MessageSnapshot(
+                messageID: msg.id,
+                role: .user,
+                text: envelope.payload.input.text,
+                attachments: envelope.payload.input.attachments,
+                createdAt: msg.createdAt
+            )
+            let decision = await coord.submitTurn(
+                input: envelope.payload.input,
+                intent: envelope.payload.executionIntent,
+                userMessage: userSnapshot
+            )
+
+            await commandWAL.recordState(
+                commandID: envelope.commandID,
+                createdSessionID: nil,
+                sessionID: sessionID,
+                turnID: decision.turn.turnID,
+                runID: decision.runID,
+                initialRuntimeSequence: initialRuntimeSeq,
+                initialSessionSequence: initialSessionSeq
+            )
+
+            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+                fflush(stdout)
+                kill(getpid(), SIGKILL)
+            }
+
+            if activeFailpoint == .afterStateMutationBeforeEventAppend {
+                await coord.rollbackTurn(decision: decision)
+                throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
+            }
+
+            await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+
+            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+                fflush(stdout)
+                kill(getpid(), SIGKILL)
+            }
+
+            if activeFailpoint == .afterEventAppendBeforeReceipt {
+                await coord.eventLog.rollbackLastAppended()
+                await coord.rollbackTurn(decision: decision)
+                throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
+            }
+
+            let watermark = await coord.eventLog.currentWatermark()
+            let result = SubmitTurnResult(turnID: decision.turn.turnID, status: decision.status, runID: decision.runID)
+            let receipt = CommandReceipt<SubmitTurnResult>(
+                commandID: envelope.commandID,
+                applied: true,
+                revision: nextRevision(),
+                observedThrough: [watermark],
+                result: result
+            )
+            await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+            await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+
+            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+                fflush(stdout)
+                kill(getpid(), SIGKILL)
+            }
+
+            if activeFailpoint == .afterCommitBeforeResponse {
+                throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
+            }
+
+            if decision.shouldStartExecution, let runID = decision.runID {
+                let task = Task { [weak self, weak coord] () -> Void in
+                    await self?.executeTurnRun(
+                        sessionID: sessionID,
+                        turnID: decision.turn.turnID,
+                        runID: runID,
+                        input: envelope.payload.input,
+                        executionIntent: envelope.payload.executionIntent,
+                        coordinator: coord
+                    )
+                }
+                registerActiveTurnTask(task, runID: runID, sessionID: sessionID)
+            }
+            return receipt
         }
-        return receipt
     }
 
     public func cancelTurn(envelope: CommandEnvelope<CancelTurnRequest>) async throws -> CommandReceipt<VoidResult> {

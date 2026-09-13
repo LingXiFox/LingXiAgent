@@ -54,7 +54,11 @@ public actor SQLitePersistenceStore {
         state = stateDB
         try Self.configure(stateDB)
         try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) })
+        _ = try? Self.script(stateDB, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+        Self.ensureAllExistingProjectsHaveSessionRevision(dataRoot: dataRoot)
         try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS persistence_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
+        try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS file_mutation_journal(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_id TEXT NOT NULL, revision INTEGER NOT NULL, tool_call_id TEXT NOT NULL, path TEXT NOT NULL, before_hash TEXT, before_content TEXT, after_hash TEXT, after_content TEXT, created_at REAL NOT NULL)", [])
+        try Self.execute(stateDB, "CREATE INDEX IF NOT EXISTS idx_fmj_session ON file_mutation_journal(session_id)", [])
         blobs = try FileBlobStore(directory: projectDirectory.appendingPathComponent("blobs", isDirectory: true))
         try Self.transaction(catalogDB) {
             try Self.execute(catalogDB, "INSERT OR IGNORE INTO projects(project_id, created_at, updated_at) VALUES(?, ?, ?)", [self.projectID.rawValue, Self.now, Self.now])
@@ -139,34 +143,163 @@ public actor SQLitePersistenceStore {
         try writeSession(session)
     }
 
-    public func appendMessage(sessionID: SessionID, message: Message) throws {
-        let ordinal = try Self.scalar(state, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0
+    public func appendMessage(sessionID: SessionID, message: Message, expectedRevision: UInt64? = nil) throws {
         try Self.transaction(state) {
+            if let expected = expectedRevision {
+                let actual = try Self.scalar(state, "SELECT revision FROM sessions WHERE session_id = ?", [sessionID.rawValue]).flatMap(UInt64.init) ?? 0
+                guard actual == expected else {
+                    throw StaleRunError(sessionID: sessionID, expected: actual, actual: expected)
+                }
+            }
+            let ordinal = try Self.scalar(state, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0
             try Self.insertMessage(state, sessionID: sessionID, message: message, ordinal: ordinal)
         }
     }
 
-    public func appendAssistantMessageAndBatch(sessionID: SessionID, message: Message, batch: ToolExchangeBatch) throws {
+    public func appendAssistantMessageAndBatch(sessionID: SessionID, message: Message, batch: ToolExchangeBatch, expectedRevision: UInt64? = nil) throws {
         let ordinal = try Self.nextMessageOrdinal(state, sessionID)
         try Self.transaction(state) {
+            if let expected = expectedRevision {
+                let actual = try Self.scalar(state, "SELECT revision FROM sessions WHERE session_id = ?", [sessionID.rawValue]).flatMap(UInt64.init) ?? 0
+                guard actual == expected else {
+                    throw StaleRunError(sessionID: sessionID, expected: actual, actual: expected)
+                }
+            }
             try Self.insertMessage(state, sessionID: sessionID, message: message, ordinal: ordinal)
             try Self.writeBatch(state, batch)
         }
     }
 
-    public func appendToolResultMessageAndSettle(sessionID: SessionID, message: Message, batch: ToolExchangeBatch) throws {
+    public func appendToolResultMessageAndSettle(sessionID: SessionID, message: Message, batch: ToolExchangeBatch, expectedRevision: UInt64? = nil) throws {
         let ordinal = try Self.nextMessageOrdinal(state, sessionID)
         try Self.transaction(state) {
+            if let expected = expectedRevision {
+                let actual = try Self.scalar(state, "SELECT revision FROM sessions WHERE session_id = ?", [sessionID.rawValue]).flatMap(UInt64.init) ?? 0
+                guard actual == expected else {
+                    throw StaleRunError(sessionID: sessionID, expected: actual, actual: expected)
+                }
+            }
             try Self.insertMessage(state, sessionID: sessionID, message: message, ordinal: ordinal)
             try Self.writeBatch(state, batch)
         }
+    }
+
+    public func bumpRevision(sessionID: SessionID) throws -> UInt64 {
+        try Self.transaction(state) {
+            try Self.execute(state, "UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE session_id = ?", [Self.now, sessionID.rawValue])
+        }
+        return try currentRevision(sessionID: sessionID)
+    }
+
+    public func currentRevision(sessionID: SessionID) throws -> UInt64 {
+        try Self.scalar(state, "SELECT revision FROM sessions WHERE session_id = ?", [sessionID.rawValue]).flatMap(UInt64.init) ?? 0
+    }
+
+    public func revertLastTurn(sessionID: SessionID, bumpRevision: Bool = true) throws -> (revertedPrompt: String?, removedCount: Int) {
+        let rows = try Self.rows(state, "SELECT message_id, ordinal, role FROM messages WHERE session_id = ? ORDER BY ordinal DESC", [sessionID.rawValue])
+        guard let lastUserRow = rows.first(where: { $0[2] == MessageRole.user.rawValue }),
+              let userOrdinal = Int(lastUserRow[1]) else {
+            return (nil, 0)
+        }
+        let userMessageID = lastUserRow[0]
+        let partRows = try Self.rows(state, "SELECT payload FROM message_parts WHERE message_id = ? ORDER BY ordinal LIMIT 1", [userMessageID])
+        var revertedPrompt: String?
+        if let partJSON = partRows.first?.first,
+           let part = try? JSONDecoder().decode(SessionMessagePart.self, from: Data(partJSON.utf8)),
+           case let .text(text) = part {
+            revertedPrompt = text
+        }
+
+        let toDelete = rows.filter { (Int($0[1]) ?? -1) >= userOrdinal }.map { $0[0] }
+        try Self.transaction(state) {
+            for mID in toDelete {
+                try Self.execute(state, "DELETE FROM message_parts WHERE message_id = ?", [mID])
+                try Self.execute(state, "DELETE FROM tool_exchange_batches WHERE assistant_message_id = ? OR result_message_id = ?", [mID, mID])
+                try Self.execute(state, "DELETE FROM messages WHERE message_id = ?", [mID])
+            }
+            try Self.execute(state, "DELETE FROM compaction_state WHERE session_id = ?", [sessionID.rawValue])
+            try Self.execute(state, "DELETE FROM derived_context WHERE session_id = ?", [sessionID.rawValue])
+            try Self.execute(state, "DELETE FROM file_mutation_journal WHERE session_id = ?", [sessionID.rawValue])
+            if bumpRevision {
+                try Self.execute(state, "UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE session_id = ?", [Self.now, sessionID.rawValue])
+            } else {
+                try Self.execute(state, "UPDATE sessions SET updated_at = ? WHERE session_id = ?", [Self.now, sessionID.rawValue])
+            }
+        }
+        return (revertedPrompt, toDelete.count)
+    }
+
+    public func clearCompactionAndDerived(sessionID: SessionID) throws {
+        try Self.transaction(state) {
+            try Self.execute(state, "DELETE FROM compaction_state WHERE session_id = ?", [sessionID.rawValue])
+            try Self.execute(state, "DELETE FROM derived_context WHERE session_id = ?", [sessionID.rawValue])
+        }
+    }
+
+    public func recordFileMutation(_ mutation: FileMutation) throws {
+        let beforeB64 = mutation.beforeContent?.base64EncodedString() ?? ""
+        let afterB64 = mutation.afterContent?.base64EncodedString() ?? ""
+        try Self.execute(
+            state,
+            "INSERT INTO file_mutation_journal(session_id, turn_id, revision, tool_call_id, path, before_hash, before_content, after_hash, after_content, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                mutation.sessionID.rawValue,
+                mutation.turnID.rawValue,
+                mutation.revision,
+                mutation.toolCallID.rawValue,
+                mutation.path,
+                mutation.beforeHash ?? "",
+                beforeB64,
+                mutation.afterHash ?? "",
+                afterB64,
+                mutation.createdAt.timeIntervalSince1970
+            ]
+        )
+    }
+
+    public func loadFileMutations(sessionID: SessionID) throws -> [FileMutation] {
+        let rows = try Self.rows(
+            state,
+            "SELECT session_id, turn_id, revision, tool_call_id, path, before_hash, before_content, after_hash, after_content, created_at FROM file_mutation_journal WHERE session_id = ? ORDER BY id ASC",
+            [sessionID.rawValue]
+        )
+        return rows.compactMap { row in
+            guard row.count >= 10 else { return nil }
+            let sID = SessionID(row[0])
+            let tID = TurnID(row[1])
+            let rev = UInt64(row[2]) ?? 0
+            let cID = ToolCallID(row[3])
+            let path = row[4]
+            let beforeHash = row[5].isEmpty ? nil : row[5]
+            let beforeContent = row[6].isEmpty ? nil : Data(base64Encoded: row[6])
+            let afterHash = row[7].isEmpty ? nil : row[7]
+            let afterContent = row[8].isEmpty ? nil : Data(base64Encoded: row[8])
+            let created = Double(row[9]).map { Date(timeIntervalSince1970: $0) } ?? Date()
+            return FileMutation(
+                sessionID: sID,
+                turnID: tID,
+                revision: rev,
+                toolCallID: cID,
+                path: path,
+                beforeHash: beforeHash,
+                beforeContent: beforeContent,
+                afterHash: afterHash,
+                afterContent: afterContent,
+                createdAt: created
+            )
+        }
+    }
+
+    public func deleteFileMutations(sessionID: SessionID) throws {
+        try Self.execute(state, "DELETE FROM file_mutation_journal WHERE session_id = ?", [sessionID.rawValue])
     }
 
     public func loadSessions() throws -> [Session] {
-        let sessions = try Self.rows(state, "SELECT session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at FROM sessions WHERE project_id = ? ORDER BY created_at", [projectID.rawValue])
+        let sessions = try Self.rows(state, "SELECT session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, revision FROM sessions WHERE project_id = ? ORDER BY created_at", [projectID.rawValue])
         return try sessions.map { row in
             let id = SessionID(row[0]); let messages = try loadMessages(sessionID: id)
-            return Session(id: id, createdAt: Self.parseDate(row[10]), kind: SessionKind(rawValue: row[2]) ?? .primary, parentSessionID: row[3].isEmpty ? nil : SessionID(row[3]), rootSessionID: SessionID(row[4]), spawnedByRunID: row[5].isEmpty ? nil : AgentRunID(row[5]), spawnedByToolCallID: row[6].isEmpty ? nil : ToolCallID(row[6]), title: row[7].isEmpty ? nil : row[7], projectID: ProjectID(row[1]), cwdRootBindingID: RootBindingID(row[8]), cwdRelativePath: ProjectRelativePath(rawValue: row[9]), updatedAt: Self.parseDate(row[11]), messages: messages)
+            let rev = row.count >= 13 ? (UInt64(row[12]) ?? 0) : 0
+            return Session(id: id, createdAt: Self.parseDate(row[10]), kind: SessionKind(rawValue: row[2]) ?? .primary, parentSessionID: row[3].isEmpty ? nil : SessionID(row[3]), rootSessionID: SessionID(row[4]), spawnedByRunID: row[5].isEmpty ? nil : AgentRunID(row[5]), spawnedByToolCallID: row[6].isEmpty ? nil : ToolCallID(row[6]), title: row[7].isEmpty ? nil : row[7], projectID: ProjectID(row[1]), cwdRootBindingID: RootBindingID(row[8]), cwdRelativePath: ProjectRelativePath(rawValue: row[9]), updatedAt: Self.parseDate(row[11]), revision: rev, messages: messages)
         }
     }
 
@@ -391,7 +524,7 @@ public actor SQLitePersistenceStore {
 
     private func writeSession(_ session: Session) throws {
         guard let root = session.cwdRootBindingID else { throw PersistenceError.missingMainRoot(projectID) }
-        try Self.execute(state, "INSERT INTO sessions(session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, metadata) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')", [session.id.rawValue, projectID.rawValue, session.kind.rawValue, session.parentSessionID?.rawValue ?? NSNull(), session.rootSessionID.rawValue, session.spawnedByRunID?.rawValue ?? NSNull(), session.spawnedByToolCallID?.rawValue ?? NSNull(), session.title ?? NSNull(), root.rawValue, session.cwdRelativePath.rawValue, Self.date(session.createdAt), Self.date(session.createdAt)])
+        try Self.execute(state, "INSERT INTO sessions(session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, revision, metadata) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')", [session.id.rawValue, projectID.rawValue, session.kind.rawValue, session.parentSessionID?.rawValue ?? NSNull(), session.rootSessionID.rawValue, session.spawnedByRunID?.rawValue ?? NSNull(), session.spawnedByToolCallID?.rawValue ?? NSNull(), session.title ?? NSNull(), root.rawValue, session.cwdRelativePath.rawValue, Self.date(session.createdAt), Self.date(session.createdAt), String(session.revision)])
     }
 
     private func consumeAgentRunFailpoint(_ run: AgentRunInfo) throws {
@@ -651,7 +784,22 @@ public actor SQLitePersistenceStore {
     private static func upgradeStateSchemaV4(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE agent_runs ADD COLUMN profile_json TEXT; ALTER TABLE tool_exchange_batches ADD COLUMN continuation_request_id TEXT; PRAGMA user_version = 4") }
     private static func upgradeStateSchemaV5(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS workflows(workflow_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_session_id TEXT NOT NULL REFERENCES sessions(session_id), root_run_id TEXT NOT NULL REFERENCES agent_runs(run_id), status TEXT NOT NULL, checkpoint_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_tasks(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, status TEXT NOT NULL, definition_json TEXT NOT NULL, provenance_json TEXT, result_json TEXT, error_json TEXT, PRIMARY KEY(workflow_id, task_id)); CREATE TABLE IF NOT EXISTS workflow_dependencies(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, dependency_task_id TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id, dependency_task_id)); CREATE TABLE IF NOT EXISTS workflow_pending_inputs(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id)); CREATE INDEX IF NOT EXISTS workflow_status_idx ON workflows(project_id, status); PRAGMA user_version = 5") }
     private static func upgradeStateSchemaV6(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE tool_exchange_batches ADD COLUMN tool_call_states_json TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 6") }
-    private static func createStateSchema(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd_root_binding_id TEXT NOT NULL, cwd_relative_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), ordinal INTEGER NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, ordinal)); CREATE TABLE IF NOT EXISTS message_parts(message_id TEXT NOT NULL REFERENCES messages(message_id), ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(message_id, ordinal)); CREATE TABLE IF NOT EXISTS tool_exchange_batches(batch_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), assistant_message_id TEXT NOT NULL, result_message_id TEXT, provider_step INTEGER NOT NULL, state TEXT NOT NULL, estimated_tokens INTEGER NOT NULL, tool_calls_json TEXT NOT NULL, tool_results_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS derived_context(derived_page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(session_id), source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, inline_content TEXT, blob_ref TEXT, message_id TEXT, token_estimate INTEGER NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL, provenance_json TEXT NOT NULL, metadata_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS compaction_state(session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), generation INTEGER NOT NULL, residency_json TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS project_files(file_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_binding_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL, time_created TEXT NOT NULL, time_updated TEXT NOT NULL, time_last_seen TEXT, UNIQUE(root_binding_id, relative_path)); CREATE TABLE IF NOT EXISTS project_pages(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, characters INTEGER NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_symbols(symbol_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL, page_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_references(reference_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, source_line INTEGER NOT NULL, target_name TEXT NOT NULL, kind TEXT NOT NULL, resolution TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_dependencies(project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, kind TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(project_id, source_file_id, evidence_id)); CREATE TABLE IF NOT EXISTS project_l2(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, score REAL NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS session_l2(derived_page_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version INTEGER NOT NULL); PRAGMA user_version = 1") }
+    private static func createStateSchema(_ db: OpaquePointer) throws {
+        try script(db, "CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd_root_binding_id TEXT NOT NULL, cwd_relative_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), ordinal INTEGER NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, ordinal)); CREATE TABLE IF NOT EXISTS message_parts(message_id TEXT NOT NULL REFERENCES messages(message_id), ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(message_id, ordinal)); CREATE TABLE IF NOT EXISTS tool_exchange_batches(batch_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), assistant_message_id TEXT NOT NULL, result_message_id TEXT, provider_step INTEGER NOT NULL, state TEXT NOT NULL, estimated_tokens INTEGER NOT NULL, tool_calls_json TEXT NOT NULL, tool_results_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS derived_context(derived_page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(session_id), source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, inline_content TEXT, blob_ref TEXT, message_id TEXT, token_estimate INTEGER NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL, provenance_json TEXT NOT NULL, metadata_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS compaction_state(session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), generation INTEGER NOT NULL, residency_json TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS project_files(file_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_binding_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL, time_created TEXT NOT NULL, time_updated TEXT NOT NULL, time_last_seen TEXT, UNIQUE(root_binding_id, relative_path)); CREATE TABLE IF NOT EXISTS project_pages(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, characters INTEGER NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_symbols(symbol_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL, page_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_references(reference_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, source_line INTEGER NOT NULL, target_name TEXT NOT NULL, kind TEXT NOT NULL, resolution TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_dependencies(project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, kind TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(project_id, source_file_id, evidence_id)); CREATE TABLE IF NOT EXISTS project_l2(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, score REAL NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS session_l2(derived_page_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version INTEGER NOT NULL); PRAGMA user_version = 1")
+        _ = try? script(db, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+    }
     private static func decodeRoot(_ row: [String]) -> RootBinding? { guard row.count == 10, let kind = RootBindingKind(rawValue: row[2]), let state = RootBindingLifecycleState(rawValue: row[6]) else { return nil }; return RootBinding(id: RootBindingID(row[0]), projectID: ProjectID(row[1]), kind: kind, absoluteRoot: URL(fileURLWithPath: row[3]), parentBindingID: row[4].isEmpty ? nil : RootBindingID(row[4]), bindingRevision: Int(row[5]) ?? 0, lifecycleState: state, createdAt: parseDate(row[7]), updatedAt: parseDate(row[8]), lastSeenAt: row[9].isEmpty ? nil : parseDate(row[9])) }
     private static func decodeFile(_ row: [String]) -> ProjectFileBinding? { guard row.count == 10 else { return nil }; return ProjectFileBinding(id: ProjectFileID(row[0]), projectID: ProjectID(row[1]), rootBindingID: RootBindingID(row[2]), relativePath: ProjectRelativePath(rawValue: row[3]), contentHash: row[4], version: row[5], state: row[6], createdAt: parseDate(row[7]), updatedAt: parseDate(row[8]), lastSeenAt: row[9].isEmpty ? nil : parseDate(row[9])) }
+    private static func ensureAllExistingProjectsHaveSessionRevision(dataRoot: URL) {
+        let projectsDir = dataRoot.appendingPathComponent("projects", isDirectory: true)
+        guard let projectDirs = try? FileManager.default.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return }
+        for dir in projectDirs {
+            let stateURL = dir.appendingPathComponent("state.sqlite")
+            guard FileManager.default.fileExists(atPath: stateURL.path) else { continue }
+            if let db = try? open(stateURL) {
+                _ = try? script(db, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+                sqlite3_close(db)
+            }
+        }
+    }
 }

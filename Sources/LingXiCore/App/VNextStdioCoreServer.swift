@@ -85,6 +85,7 @@ public struct VNextStdioCoreServer: Sendable {
                 case "session.rename": try await reply(request, try await service.renameSession(envelope: CommandEnvelope(payload: decode(RenameSessionRequest.self, request.payload))), writer)
                 case "session.set_reasoning_effort": try await reply(request, try await service.setSessionReasoningEffort(envelope: CommandEnvelope(payload: decode(SetSessionReasoningEffortRequest.self, request.payload))), writer)
                 case "session.delete": try await reply(request, try await service.deleteSession(envelope: CommandEnvelope(payload: decode(DeleteSessionRequest.self, request.payload))), writer)
+                case "session.revert_last_turn": try await reply(request, try await service.revertLastTurn(envelope: CommandEnvelope(payload: decode(RevertLastTurnRequest.self, request.payload))), writer)
                 case "session.get": try await reply(request, try await service.getSession(envelope: QueryEnvelope(payload: decode(GetSessionRequest.self, request.payload))), writer)
                 case "session.list": try await reply(request, try await service.listSessions(envelope: QueryEnvelope(payload: decode(PageRequest.self, request.payload))), writer)
                 case "session.snapshot": try await reply(request, try await service.getSessionSnapshot(envelope: QueryEnvelope(payload: decode(GetSessionSnapshotRequest.self, request.payload))), writer)

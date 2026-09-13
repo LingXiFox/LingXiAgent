@@ -82,11 +82,25 @@ public struct ToolRegistry: Sendable {
     }
 
     public func tool(for id: ToolID) -> (any ToolExecutor)? {
-        tools[id]
+        if let direct = tools[id] {
+            return direct
+        }
+        switch id.rawValue {
+        case "write_to_file":
+            return tools[ToolID("write_file")]
+        case "replace_file_content":
+            return tools[ToolID("edit_file")]
+        case "patch_file":
+            return tools[ToolID("apply_patch")]
+        case "read_file", "view_file":
+            return tools[ToolID("read_file")] ?? tools[ToolID("read")]
+        default:
+            return nil
+        }
     }
 
     public func tool(named name: String) -> (any ToolExecutor)? {
-        tools[ToolID(name)]
+        tool(for: ToolID(name))
     }
 }
 
@@ -141,7 +155,8 @@ public struct ToolRuntime: Sendable {
         ToolID("web_search"),
         ToolID("web_fetch"),
         ToolID("search_tools"),
-        ToolID("load_tool")
+        ToolID("load_tool"),
+        ToolID("context_recall")
     ]
     public static let coreToolIDs: Set<ToolID> = Set(coreToolOrder)
 
@@ -730,7 +745,7 @@ public struct ToolRuntime: Sendable {
 
     private func category(for call: ToolCall) -> ExecutionTimeoutCategory {
         switch call.toolID.rawValue {
-        case "read_file", "list_directory", "skill": return .quickFilesystem
+        case "read_file", "list_directory", "skill", "context_recall": return .quickFilesystem
         case "glob", "grep", "symbol_lookup", "find_references", "dependency_query", "code_intelligence": return .search
         case "shell", "git", "process": return .foregroundShell
         default: return .foregroundShell

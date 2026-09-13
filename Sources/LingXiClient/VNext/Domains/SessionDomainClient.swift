@@ -40,6 +40,15 @@ public struct SessionDomainClient: Sendable {
         return try await transport.deleteSession(envelope: CommandEnvelope(payload: req))
     }
 
+    public func revertLastTurn(sessionID: SessionID) async throws -> RevertLastTurnResult {
+        let req = RevertLastTurnRequest(sessionID: sessionID)
+        let receipt = try await transport.revertLastTurn(envelope: CommandEnvelope(payload: req))
+        if let replayCoordinator {
+            await replayCoordinator.resetSessionCursor(for: sessionID, to: nil)
+        }
+        return receipt.result ?? RevertLastTurnResult(revertedPrompt: nil, removedCount: 0)
+    }
+
     public func get(sessionID: SessionID) async throws -> SessionSummary {
         let req = GetSessionRequest(sessionID: sessionID)
         let resp = try await transport.getSession(envelope: QueryEnvelope(payload: req))

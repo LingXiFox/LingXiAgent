@@ -320,10 +320,10 @@ import Testing
         #expect(agyMeta.activeRequestProfile?.id != gcaMeta.activeRequestProfile?.id)
 
         // 2. Verified Antigravity UA
-        #expect(agyMeta.activeRequestProfile?.userAgentProfile == "antigravity/1.2.1 (darwin; arm64)")
+        #expect(agyMeta.activeRequestProfile?.userAgentProfile == ClientFingerprint.userAgent(for: "antigravity"))
 
-        // 3. Gemini Code Assist does NOT carry fabricated UA
-        #expect(gcaMeta.activeRequestProfile?.userAgentProfile == nil)
+        // 3. Gemini Code Assist verified UA
+        #expect(gcaMeta.activeRequestProfile?.userAgentProfile == ClientFingerprint.userAgent(for: "gemini-code-assist"))
 
         // 4. Cache isolation under identical account reference
         let cache = AccountScopedCatalogCache.shared
@@ -414,6 +414,6 @@ import Testing
         #expect(AuthenticatedDiscoveryBackendRegistry.shared.backend(for: "googleCodeAssistCatalog") == nil)
 
         let gcaMeta = BuiltinProviderCatalog.metadata(for: "gemini-code-assist")
-        #expect(gcaMeta.activeRequestProfile?.userAgentProfile == nil)
+        #expect(gcaMeta.activeRequestProfile?.userAgentProfile == ClientFingerprint.userAgent(for: "gemini-code-assist"))
     }
 }

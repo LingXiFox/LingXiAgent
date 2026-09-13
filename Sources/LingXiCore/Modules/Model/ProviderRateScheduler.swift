@@ -57,35 +57,33 @@ public struct ProviderRateLimitError: Error, Sendable {
     public let statusCode: Int
     public let retryAfter: Duration?
     public let underlying: CoreError
+    public let classified: ClassifiedProviderError
 
-    public init(statusCode: Int, retryAfter: Duration? = nil, underlying: CoreError) {
+    public init(statusCode: Int, retryAfter: Duration? = nil, underlying: CoreError, classified: ClassifiedProviderError? = nil) {
         self.statusCode = statusCode
         self.retryAfter = retryAfter
         self.underlying = underlying
+        self.classified = classified ?? ProviderErrorClassifier.classify(statusCode: statusCode, headers: [:], body: nil, underlying: underlying)
     }
 
-    static func from(statusCode: Int, headers: [String: String], body: String, underlying: CoreError) -> Error {
-        let normalized = body.lowercased()
-        let exhausted = statusCode == 429
-            || normalized.contains("429001")
-            || normalized.contains("inference tpm exhausted")
-            || (normalized.contains("inference") && normalized.contains("tpm") && normalized.contains("exhaust"))
-        guard exhausted else { return underlying }
-        return ProviderRateLimitError(statusCode: statusCode, retryAfter: retryAfter(headers), underlying: underlying)
-    }
-
-    private static func retryAfter(_ headers: [String: String]) -> Duration? {
-        if let value = headers.first(where: { $0.key.caseInsensitiveCompare("Retry-After-Ms") == .orderedSame })?.value.trimmingCharacters(in: .whitespacesAndNewlines), let milliseconds = Double(value), milliseconds >= 0 {
-            return .milliseconds(Int(milliseconds))
+    public static func from(statusCode: Int, headers: [String: String], body: String, underlying: CoreError) -> Error {
+        let classified = ProviderErrorClassifier.classify(statusCode: statusCode, headers: headers, body: body, underlying: underlying)
+        if classified.category.isRetryable {
+            return ProviderRateLimitError(
+                statusCode: statusCode,
+                retryAfter: classified.retryAfter,
+                underlying: underlying,
+                classified: classified
+            )
+        } else {
+            // 不可重试的永久错误，立即熔断并给出结构化诊断与排障建议
+            var msg = classified.userFacingSummary
+            let diag = classified.diagnostics ?? underlying.message
+            if !diag.isEmpty && !diag.contains(classified.userFacingSummary) {
+                msg += "\n[Wire Diagnostics]\n" + diag
+            }
+            return CoreError(code: .provider, message: msg)
         }
-        guard let value = headers.first(where: { $0.key.caseInsensitiveCompare("Retry-After") == .orderedSame })?.value.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
-        if let seconds = Double(value), seconds >= 0 { return .milliseconds(Int(seconds * 1_000)) }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
-        guard let date = formatter.date(from: value) else { return nil }
-        return .milliseconds(max(0, Int(date.timeIntervalSinceNow * 1_000)))
     }
 }
 

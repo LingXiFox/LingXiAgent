@@ -36,12 +36,12 @@ public enum ProductStatusProjector {
             return .runningSubagents
         }
 
-        if hasRunningTools {
-            return .runningTool
+        if hasActiveThinking || providerRequestState == .streaming {
+            return .thinking
         }
 
-        if hasActiveThinking {
-            return .thinking
+        if hasRunningTools {
+            return .runningTool
         }
 
         if providerRequestState == .scheduled

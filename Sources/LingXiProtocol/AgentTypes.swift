@@ -246,6 +246,8 @@ public enum ProviderActivityState: String, Sendable, Codable {
     case waitingForRateBudget
     case requesting
     case streaming
+    case rateLimited
+    case retryScheduled
     case completed
     case failed
     case cancelled
@@ -261,14 +263,43 @@ public struct ProviderActivitySnapshot: Sendable, Equatable, Codable {
     public let providerRequestID: String
     public let state: ProviderActivityState
     public let model: String?
+    public let detail: String?
+    public let statusCode: Int?
     public let updatedAt: Date
 
-    public init(sessionID: SessionID, runID: AgentRunID?, providerRequestID: String, state: ProviderActivityState, model: String? = nil, updatedAt: Date = .now) {
+    public init(
+        sessionID: SessionID,
+        runID: AgentRunID?,
+        providerRequestID: String,
+        state: ProviderActivityState,
+        model: String? = nil,
+        detail: String? = nil,
+        statusCode: Int? = nil,
+        updatedAt: Date = .now
+    ) {
         self.sessionID = sessionID
         self.runID = runID
         self.providerRequestID = providerRequestID
         self.state = state
         self.model = model
+        self.detail = detail
+        self.statusCode = statusCode
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, runID, providerRequestID, state, model, detail, statusCode, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        self.runID = try container.decodeIfPresent(AgentRunID.self, forKey: .runID)
+        self.providerRequestID = try container.decode(String.self, forKey: .providerRequestID)
+        self.state = try container.decode(ProviderActivityState.self, forKey: .state)
+        self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.detail = try container.decodeIfPresent(String.self, forKey: .detail)
+        self.statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
 }

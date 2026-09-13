@@ -60,7 +60,16 @@ public struct ApplicationState: Sendable, Equatable {
 
     /// 当前生效的推理思考等级
     public var effectiveReasoningEffort: ReasoningEffort {
-        activeSessionState?.reasoningEffort ?? nextTurnReasoningEffort ?? .auto
+        if let sessionEffort = activeSessionState?.reasoningEffort, sessionEffort != .auto {
+            return sessionEffort
+        }
+        if let nextTurnEffort = nextTurnReasoningEffort, nextTurnEffort != .auto {
+            return nextTurnEffort
+        }
+        if let lastEffort = UserPreferencesStore.shared.load().lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:)), lastEffort != .auto {
+            return lastEffort
+        }
+        return activeSessionState?.reasoningEffort ?? nextTurnReasoningEffort ?? .auto
     }
 
     // MARK: - 7. Global Product Status

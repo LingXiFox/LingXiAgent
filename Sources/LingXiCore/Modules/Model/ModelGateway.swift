@@ -47,7 +47,10 @@ public struct ModelGateway: Sendable {
     }
 
     /// Fast Path：进入模型高速总线。
-    public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
+    public func stream(
+        _ request: ModelRequest,
+        onActivityChanged: (@Sendable (ProviderActivitySnapshot) async -> Void)? = nil
+    ) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         guard let provider else {
             throw CoreError(
                 code: .provider,
@@ -65,13 +68,14 @@ public struct ModelGateway: Sendable {
             throw CancellationError()
         }
 
-        await ProviderActivityRegistry.shared.record(
+        let scheduledSnapshot = await ProviderActivityRegistry.shared.record(
             sessionID: sessionID,
             runID: runID,
             providerRequestID: providerRequestID,
             state: .scheduled,
             model: request.model.rawValue
         )
+        await onActivityChanged?(scheduledSnapshot)
 
         let estimate = ConservativeTokenEstimator().estimate(text: request.messages.map(\.content).joined(separator: "\n")) + ConservativeTokenEstimator().estimate(tools: request.tools)
         let policy = endpoint.rateLimits.retryPolicy
@@ -82,21 +86,24 @@ public struct ModelGateway: Sendable {
             if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
                 throw CancellationError()
             }
-            await ProviderActivityRegistry.shared.record(
+            let waitingSnapshot = await ProviderActivityRegistry.shared.record(
                 sessionID: sessionID,
                 runID: runID,
                 providerRequestID: providerRequestID,
                 state: .waitingForRateBudget,
                 model: request.model.rawValue
             )
+            await onActivityChanged?(waitingSnapshot)
             try await rateScheduler.admit(endpoint: endpoint, requestID: request.requestID, estimatedTokens: estimate)
-            await ProviderActivityRegistry.shared.record(
+            let requestingSnapshot = await ProviderActivityRegistry.shared.record(
                 sessionID: sessionID,
                 runID: runID,
                 providerRequestID: providerRequestID,
                 state: .requesting,
-                model: request.model.rawValue
+                model: request.model.rawValue,
+                detail: "等待模型首字响应 [\(request.model.rawValue)]..."
             )
+            await onActivityChanged?(requestingSnapshot)
             do {
                 // Admission intentionally precedes the provider watchdog: queueing must not consume inference, tool, or HITL timeouts.
                 let deadline = deadlinePolicy.deadline(
@@ -113,22 +120,65 @@ public struct ModelGateway: Sendable {
                     requestID: request.requestID,
                     sessionID: sessionID,
                     runID: runID,
-                    providerRequestID: providerRequestID
+                    providerRequestID: providerRequestID,
+                    onActivityChanged: onActivityChanged
                 )
             } catch let error as ProviderRateLimitError {
                 await rateScheduler.release(requestID: request.requestID, endpoint: endpoint)
                 let delay = retryDelay(error.retryAfter, policy: policy, retry: retries + 1)
                 await rateScheduler.recordRateLimit(endpoint: endpoint, requestID: request.requestID, cooldown: delay)
-                guard retries < policy.maxRetries else { throw error.underlying }
+                guard retries < policy.maxRetries else {
+                    let failSnap = await ProviderActivityRegistry.shared.record(
+                        sessionID: sessionID,
+                        runID: runID,
+                        providerRequestID: providerRequestID,
+                        state: .failed,
+                        model: request.model.rawValue,
+                        detail: "已达重试上限 (\(policy.maxRetries) 次) · \(error.classified.userFacingSummary)",
+                        statusCode: error.statusCode
+                    )
+                    await onActivityChanged?(failSnap)
+                    throw error.underlying
+                }
                 retries += 1
                 await rateScheduler.recordRetry(requestID: request.requestID)
-                await ProviderActivityRegistry.shared.record(
+
+                let delaySeconds = Double(delay.components.seconds) + Double(delay.components.attoseconds) / 1e18
+                let delayText = delaySeconds >= 1 ? String(format: "%.1fs", delaySeconds) : "\(Int(delaySeconds * 1000))ms"
+
+                let state: ProviderActivityState
+                let detail: String
+                switch error.classified.category {
+                case .rateLimited:
+                    state = .rateLimited
+                    detail = "上游限流 (429)，等待配额恢复 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                case .gatewayTimeout:
+                    state = .retryScheduled
+                    detail = "上游网关超时 (\(error.statusCode))，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                case .serverOverloaded:
+                    state = .retryScheduled
+                    detail = "上游服务过载 (\(error.statusCode))，退避重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                case .badGateway:
+                    state = .retryScheduled
+                    detail = "上游网关异常 (\(error.statusCode))，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                case .internalServerError:
+                    state = .retryScheduled
+                    detail = "上游服务内部错误 (500)，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                default:
+                    state = .retryScheduled
+                    detail = "\(error.classified.category.userDescription)，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                }
+
+                let retrySnap = await ProviderActivityRegistry.shared.record(
                     sessionID: sessionID,
                     runID: runID,
                     providerRequestID: providerRequestID,
-                    state: .waitingForRateBudget,
-                    model: request.model.rawValue
+                    state: state,
+                    model: request.model.rawValue,
+                    detail: detail,
+                    statusCode: error.statusCode
                 )
+                await onActivityChanged?(retrySnap)
                 try await Task.sleep(for: delay)
                 await rateScheduler.recordWait(requestID: request.requestID, duration: delay)
             } catch {
@@ -144,25 +194,37 @@ public struct ModelGateway: Sendable {
                     retries += 1
                     let delay = retryDelay(nil, policy: policy, retry: retries)
                     await rateScheduler.recordRetry(requestID: request.requestID)
-                    await ProviderActivityRegistry.shared.record(
+
+                    let delaySeconds = Double(delay.components.seconds) + Double(delay.components.attoseconds) / 1e18
+                    let delayText = delaySeconds >= 1 ? String(format: "%.1fs", delaySeconds) : "\(Int(delaySeconds * 1000))ms"
+                    let detail = coreErr?.code == .commandTimedOut
+                        ? "请求超时，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+                        : "网络传输中断，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
+
+                    let retrySnap = await ProviderActivityRegistry.shared.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
-                        state: .scheduled,
-                        model: request.model.rawValue
+                        state: .retryScheduled,
+                        model: request.model.rawValue,
+                        detail: detail,
+                        statusCode: coreErr?.code == .commandTimedOut ? 408 : nil
                     )
+                    await onActivityChanged?(retrySnap)
                     try? await Task.sleep(for: delay)
                     await rateScheduler.recordWait(requestID: request.requestID, duration: delay)
                     continue
                 }
                 let terminalState: ProviderActivityState = isCancelled ? .cancelled : .failed
-                await ProviderActivityRegistry.shared.record(
+                let failSnap = await ProviderActivityRegistry.shared.record(
                     sessionID: sessionID,
                     runID: runID,
                     providerRequestID: providerRequestID,
                     state: terminalState,
-                    model: request.model.rawValue
+                    model: request.model.rawValue,
+                    detail: (error as? CoreError)?.message ?? error.localizedDescription
                 )
+                await onActivityChanged?(failSnap)
                 throw error
             }
         }
@@ -182,7 +244,8 @@ public struct ModelGateway: Sendable {
         requestID: ModelRequestID,
         sessionID: SessionID,
         runID: AgentRunID?,
-        providerRequestID: String
+        providerRequestID: String,
+        onActivityChanged: (@Sendable (ProviderActivitySnapshot) async -> Void)? = nil
     ) -> AsyncThrowingStream<ModelEvent, Error> {
         let doneFlag = StreamDoneFlag()
         return AsyncThrowingStream { continuation in
@@ -200,13 +263,14 @@ public struct ModelGateway: Sendable {
                             doneFlag.markDone()
                             released = true
                             await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
-                            await ProviderActivityRegistry.shared.record(
+                            let snap = await ProviderActivityRegistry.shared.record(
                                 sessionID: sessionID,
                                 runID: runID,
                                 providerRequestID: providerRequestID,
                                 state: .cancelled,
                                 model: endpoint.modelID.rawValue
                             )
+                            await onActivityChanged?(snap)
                             continuation.finish(throwing: CancellationError())
                             return
                         }
@@ -219,13 +283,14 @@ public struct ModelGateway: Sendable {
                         }
                         if !streamedFirstChunk {
                             streamedFirstChunk = true
-                            await ProviderActivityRegistry.shared.record(
+                            let snap = await ProviderActivityRegistry.shared.record(
                                 sessionID: sessionID,
                                 runID: runID,
                                 providerRequestID: providerRequestID,
                                 state: .streaming,
                                 model: endpoint.modelID.rawValue
                             )
+                            await onActivityChanged?(snap)
                         }
                         if case let .usage(usage) = event {
                             await rateScheduler.recordUsage(endpoint: endpoint, requestID: requestID, usage: usage)
@@ -234,13 +299,14 @@ public struct ModelGateway: Sendable {
                     }
                     doneFlag.markDone()
                     await releasePermit()
-                    await ProviderActivityRegistry.shared.record(
+                    let snap = await ProviderActivityRegistry.shared.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
                         state: .completed,
                         model: endpoint.modelID.rawValue
                     )
+                    await onActivityChanged?(snap)
                     continuation.finish()
                 } catch {
                     doneFlag.markDone()
@@ -252,13 +318,15 @@ public struct ModelGateway: Sendable {
                         await releasePermit()
                     }
                     let terminalState: ProviderActivityState = isCancelled ? .cancelled : .failed
-                    await ProviderActivityRegistry.shared.record(
+                    let snap = await ProviderActivityRegistry.shared.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
                         state: terminalState,
-                        model: endpoint.modelID.rawValue
+                        model: endpoint.modelID.rawValue,
+                        detail: (error as? CoreError)?.message ?? error.localizedDescription
                     )
+                    await onActivityChanged?(snap)
                     continuation.finish(throwing: error)
                 }
             }
@@ -268,7 +336,8 @@ public struct ModelGateway: Sendable {
                 pump.cancel()
                 Task {
                     await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
-                    await ProviderActivityRegistry.shared.cancel(providerRequestID: providerRequestID)
+                    let snap = await ProviderActivityRegistry.shared.cancel(providerRequestID: providerRequestID)
+                    if let snap { await onActivityChanged?(snap) }
                 }
             }
         }
@@ -307,8 +376,11 @@ public struct ModelBus: Sendable {
         self.gateway = gateway
     }
 
-    public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
-        let source = try await gateway.stream(request)
+    public func stream(
+        _ request: ModelRequest,
+        onActivityChanged: (@Sendable (ProviderActivitySnapshot) async -> Void)? = nil
+    ) async throws -> AsyncThrowingStream<ModelEvent, Error> {
+        let source = try await gateway.stream(request, onActivityChanged: onActivityChanged)
         return AsyncThrowingStream { continuation in
             let pump = Task {
                 var terminal: ModelFinishReason?

@@ -36,6 +36,7 @@ import Foundation
         #expect(exposedIDs.contains("web_fetch"))
         #expect(exposedIDs.contains("search_tools"))
         #expect(exposedIDs.contains("load_tool"))
+        #expect(exposedIDs.contains("context_recall"))
 
         // Specialized tools must NOT be present in always-on set
         #expect(!exposedIDs.contains("git"))
@@ -45,7 +46,7 @@ import Foundation
         #expect(!exposedIDs.contains("find_references"))
         #expect(!exposedIDs.contains("dependency_query"))
 
-        #expect(exposed.count == 12)
+        #expect(exposed.count == 13)
     }
 
     @Test func specializedToolsCanBeDiscoveredViaSearchAndDynamicallyLeased() async throws {
@@ -154,7 +155,7 @@ import Foundation
 
         // 2. What were the tool schemas sent?
         let req = provider.capturedRequests[0]
-        #expect(req.tools.count == 12) // Stable core tools only, no subagent or specialized bloat
+        #expect(req.tools.count == 13) // Stable core tools only, no subagent or specialized bloat
         #expect(!req.tools.map(\.id.rawValue).contains("subagent"))
         let session = try await client.session(sessionID)
 
@@ -170,8 +171,8 @@ import Foundation
         #expect(trace.reason == "initial_turn_prompt")
         #expect(trace.model == "deepseek-v4-flash")
         #expect(trace.actualUsage?.inputTokens == 742)
-        #expect(trace.toolCount == 12)
-        #expect(trace.toolSchemaTokens < 1200)
+        #expect(trace.toolCount == 13)
+        #expect(trace.toolSchemaTokens < 1300)
         #expect(trace.providerFramingTokens == 256)
         #expect(trace.retryAttempt == 0)
         #expect(trace.cacheTelemetry?.stablePrefixTokens == trace.systemPinnedTokens + trace.toolSchemaTokens)
@@ -228,7 +229,7 @@ import Foundation
 
         // 2. Tools exposed: only core tools, subagent NOT exposed
         let req = provider.capturedRequests[0]
-        #expect(req.tools.count == 12)
+        #expect(req.tools.count == 13)
         #expect(!req.tools.map(\.id.rawValue).contains("subagent"))
 
         // 3. 0 subagent sessions or runs spawned

@@ -177,10 +177,9 @@ public enum BuiltinCommands {
                     dateFormatter.dateFormat = "MM-dd HH:mm"
 
                     var sections: [String] = []
-                    sections.append("可用历史会话 (按项目分组，组内按更新时间倒序，共 \(sessions.count) 个):")
-                    for group in SessionCatalog.groups(sessions, currentDirectory: currentCwd) {
-                        let tag = group.directory == currentCwd ? "[当前项目] " : ""
-                        var lines = ["\(tag)\(group.directory.isEmpty ? "未知项目" : group.directory)"]
+                    sections.append("可用历史会话 (按时间分块，共 \(sessions.count) 个):")
+                    for group in SessionCatalog.timeGroups(sessions) {
+                        var lines = ["[\(group.title)]"]
                         for s in group.sessions {
                             let title = (s.title ?? "未命名会话").components(separatedBy: .newlines).joined(separator: " ")
                             lines.append("  • \(s.sessionID.rawValue.prefix(8)) · \(dateFormatter.string(from: s.updatedAt)) · \(s.messageCount)条 · \(title)")
@@ -209,6 +208,29 @@ public enum BuiltinCommands {
                 let title = ctx.arguments.joined(separator: " ")
                 _ = try await ctx.client.session.rename(sessionID: sessionID, title: title)
                 return ApplicationCommandResult(output: "会话 \(sessionID.rawValue) 重命名为: \(title)")
+            },
+
+            // 6.5 /undo
+            ApplicationCommand(
+                name: "undo",
+                aliases: ["rewind", "pop"],
+                description: "撤回上一轮会话消息与回答",
+                category: "Session",
+                argumentSchema: ""
+            ) { ctx in
+                guard let sessionID = ctx.sessionID else {
+                    return ApplicationCommandResult(output: "当前无活动会话。")
+                }
+                let res = try await ctx.client.session.revertLastTurn(sessionID: sessionID)
+                if let prompt = res.revertedPrompt {
+                    return ApplicationCommandResult(
+                        output: "✓ 已撤回上一轮会话（共清理 \(res.removedCount) 条消息），原内容已填回输入框。",
+                        revertedComposerText: prompt,
+                        snapshot: res.snapshot
+                    )
+                } else {
+                    return ApplicationCommandResult(output: "当前会话没有可以撤回的消息。")
+                }
             },
 
             // 7. /status
@@ -250,12 +272,12 @@ public enum BuiltinCommands {
                 }
                 let snapshot = try await ctx.client.context.getState(sessionID: sessionID)
                 let output = CLIFormatter.renderCard(
-                    title: "上下文分层状态 (/context)",
+                    title: "P-Core / E-Core 双核心上下文状态 (/context)",
                     fields: [
-                        ("预估总 Token", "\(snapshot.estimatedTokens)"),
-                        ("L1 缓存层", "\(snapshot.l1Tokens) tokens"),
-                        ("L2 工作集", "\(snapshot.l2Tokens) tokens"),
-                        ("L3 存储层", "\(snapshot.l3Tokens) tokens")
+                        ("P-Core 活跃投影", "\(snapshot.activePCoreTokens) tokens"),
+                        ("E-Core 观测对象", "\(snapshot.eCoreObjectCount ?? 0) objs (\(TokenFormatter.formatBytes(snapshot.eCoreTotalBytes ?? 0)))"),
+                        ("前缀缓存命中", "\(snapshot.cacheReadTokens ?? 0) tokens (\(snapshot.cacheStatus ?? "active"))"),
+                        ("缓存债务 (Debt)", "\(snapshot.cacheDebt ?? 0)")
                     ],
                     footer: "压缩上下文: /compact",
                     borderStyle: .rounded

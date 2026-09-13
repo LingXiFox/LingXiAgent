@@ -241,6 +241,7 @@ public enum ToolInvocationState: String, Codable, Sendable, Equatable {
 /// Tool 执行结果快照。
 public struct ToolResultSnapshot: Codable, Sendable, Equatable {
     public let callID: ToolCallID
+    public let toolName: String?
     public let success: Bool
     public let summary: String
     public let preview: String?
@@ -250,6 +251,7 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
 
     public init(
         callID: ToolCallID,
+        toolName: String? = nil,
         success: Bool,
         summary: String,
         preview: String? = nil,
@@ -258,6 +260,7 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
         timing: ToolTiming = ToolTiming()
     ) {
         self.callID = callID
+        self.toolName = toolName
         self.success = success
         self.summary = summary
         self.preview = preview
@@ -267,12 +270,13 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, success, summary, preview, contentRef, error, timing
+        case callID, toolName, success, summary, preview, contentRef, error, timing
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         callID = try container.decode(ToolCallID.self, forKey: .callID)
+        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
         success = try container.decode(Bool.self, forKey: .success)
         summary = try container.decode(String.self, forKey: .summary)
         preview = try container.decodeIfPresent(String.self, forKey: .preview)
@@ -432,6 +436,14 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     public let clientCausedBusts: Int?
     public let comparableRequests: Int?
     public let appendOnlyViolations: Int?
+    public let pCoreTokens: Int?
+    public let eCoreObjectCount: Int?
+    public let eCoreTotalBytes: Int?
+    public let cacheDebt: Int?
+
+    public var activePCoreTokens: Int {
+        pCoreTokens ?? promptTokens ?? l1Tokens
+    }
 
     public init(
         sessionID: SessionID,
@@ -456,7 +468,11 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         observedGranularity: Int? = nil,
         clientCausedBusts: Int? = nil,
         comparableRequests: Int? = nil,
-        appendOnlyViolations: Int? = nil
+        appendOnlyViolations: Int? = nil,
+        pCoreTokens: Int? = nil,
+        eCoreObjectCount: Int? = nil,
+        eCoreTotalBytes: Int? = nil,
+        cacheDebt: Int? = nil
     ) {
         self.sessionID = sessionID
         self.estimatedTokens = estimatedTokens
@@ -481,6 +497,10 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         self.clientCausedBusts = clientCausedBusts
         self.comparableRequests = comparableRequests
         self.appendOnlyViolations = appendOnlyViolations
+        self.pCoreTokens = pCoreTokens ?? promptTokens ?? (l1Tokens > 0 ? l1Tokens : nil)
+        self.eCoreObjectCount = eCoreObjectCount
+        self.eCoreTotalBytes = eCoreTotalBytes
+        self.cacheDebt = cacheDebt
     }
 
     /// Prefix Reuse Efficiency = 实际复用旧前缀 token (cacheRead) / 上一轮可复用前缀 token (previousPromptTokens)

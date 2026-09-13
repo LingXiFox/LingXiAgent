@@ -185,6 +185,10 @@ public actor L1ContextEngine {
         latest[sessionID]
     }
 
+    public func reset(for sessionID: SessionID) {
+        latest.removeValue(forKey: sessionID)
+    }
+
     private func contextRole(_ role: MessageRole) -> ContextRole {
         switch role {
         case .user: .user

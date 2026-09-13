@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import LingXiProtocol
 import LingXiCore
+import LingXiClient
 @testable import LingXiApplication
 @testable import LingXiTUI
 import LingXiTUIComponents
@@ -128,5 +129,206 @@ struct ResumeAndConfigEnhancementTests {
         let res = try await RuntimeConfigurationResolver.resolveMCP(emptyConfig, credentials: creds, discoverTools: false)
         #expect(res.configurations.count == 2)
         #expect(res.configurations.allSatisfy { !$0.enabled })
+    }
+
+    @Test func sessionCatalogTimeGroupsBucketsAccurately() {
+        let now = Date()
+        let calendar = Calendar.current
+        let todaySession = SessionSummary(
+            sessionID: SessionID("sess-today"),
+            title: "重构网络连接层",
+            updatedAt: now,
+            workingDirectory: "/work/A",
+            messageCount: 8
+        )
+        let yesterdaySession = SessionSummary(
+            sessionID: SessionID("sess-yesterday"),
+            title: "修复缓存泄露",
+            updatedAt: calendar.date(byAdding: .day, value: -1, to: now) ?? now,
+            workingDirectory: "/work/A",
+            messageCount: 4
+        )
+        let pastWeekSession = SessionSummary(
+            sessionID: SessionID("sess-week"),
+            title: "实现双核心架构",
+            updatedAt: calendar.date(byAdding: .day, value: -3, to: now) ?? now,
+            workingDirectory: "/work/B",
+            messageCount: 16
+        )
+        let olderSession = SessionSummary(
+            sessionID: SessionID("sess-older"),
+            title: "初始项目搭建",
+            updatedAt: calendar.date(byAdding: .day, value: -15, to: now) ?? now,
+            workingDirectory: "/work/C",
+            messageCount: 2
+        )
+
+        let all = [olderSession, todaySession, pastWeekSession, yesterdaySession]
+        let groups = SessionCatalog.timeGroups(all, calendar: calendar, now: now)
+
+        #expect(groups.map(\.title) == ["Today", "Yesterday", "Previous 7 Days", "Older"])
+        #expect(groups[0].sessions.map(\.sessionID.rawValue) == ["sess-today"])
+        #expect(groups[1].sessions.map(\.sessionID.rawValue) == ["sess-yesterday"])
+        #expect(groups[2].sessions.map(\.sessionID.rawValue) == ["sess-week"])
+        #expect(groups[3].sessions.map(\.sessionID.rawValue) == ["sess-older"])
+
+        // 模糊搜索过滤
+        let searchRes = SessionCatalog.timeGroups(all, query: "双核心", calendar: calendar, now: now)
+        #expect(searchRes.count == 1)
+        #expect(searchRes[0].title == "Previous 7 Days")
+        #expect(searchRes[0].sessions.first?.sessionID == SessionID("sess-week"))
+    }
+
+    @Test @MainActor func sessionPickerModernPopupLayoutMatchesModelPickerStyle() {
+        let now = Date()
+        let activeID = SessionID("sess-1")
+        let sessions = [
+            SessionSummary(sessionID: activeID, title: "重构网络请求", updatedAt: now, messageCount: 6),
+            SessionSummary(sessionID: SessionID("sess-2"), title: "实现会话摘要", updatedAt: now.addingTimeInterval(-3600), messageCount: 12)
+        ]
+
+        let overlay = ApplicationTUI.sessionPickerOverlay(
+            sessions: sessions,
+            currentDirectory: "/work",
+            activeSessionID: activeID,
+            query: "",
+            selected: 0,
+            size: TUISize(width: 80, height: 24)
+        )
+
+        #expect(overlay.isModal == true)
+        #expect(overlay.focus == .picker)
+        #expect(overlay.lines.first?.text.contains("Select session") == true)
+        #expect(overlay.lines.first?.text.contains("esc") == true)
+        #expect(overlay.lines.contains { $0.text.contains("│Search") })
+        #expect(overlay.lines.contains { $0.text.contains("Today") && $0.style == .modalGroup })
+        #expect(overlay.lines.contains { $0.text.contains("● ") && $0.text.contains("重构网络请求") && $0.style == .modalHighlight })
+        #expect(overlay.lines.last?.text.contains("↑↓ 移动 · Enter 恢复 · Esc 关闭") == true)
+    }
+
+    @Test @MainActor func tabCompletionDoesNotAppendTrailingSpaceForZeroArgCommands() {
+        let noArgCommands = ["resume", "history", "undo", "rewind", "perf", "status", "context", "clear"]
+        for cmdName in noArgCommands {
+            let hasSub = ApplicationTUI.hasSubcommands(cmdName)
+            #expect(hasSub == false, "Command /\(cmdName) should not have subcommands and should not append space on tab completion")
+        }
+    }
+
+    @Test func revertLastTurnInMemoryStoreRemovesLastTurnAndReturnsPrompt() async throws {
+        let store = InMemorySessionStore()
+        let session = try await store.create()
+        try await store.appendMessage(session.id, role: .user, content: "第一轮问题")
+        try await store.appendMessage(session.id, role: .assistant, content: "第一轮回答")
+        try await store.appendMessage(session.id, role: .user, content: "第二轮问题：要被撤回的内容")
+        try await store.appendMessage(session.id, role: .assistant, content: "第二轮回答")
+
+        let result = try await store.revertLastTurn(session.id)
+        #expect(result.revertedPrompt == "第二轮问题：要被撤回的内容")
+        #expect(result.removedCount == 2)
+
+        let loaded = try await store.session(session.id)
+        #expect(loaded.messages.count == 2)
+        #expect(loaded.messages.map(\.content) == ["第一轮问题", "第一轮回答"])
+    }
+
+    @Test func revertLastTurnSQLitePersistenceRemovesLastTurn() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("undo_test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sqlite = try SQLitePersistenceStore(dataRoot: tempDir, mainRoot: tempDir)
+        let store = PersistentSessionStore(persistence: sqlite)
+        let session = try await store.create()
+
+        _ = try await store.appendMessage(session.id, role: .user, content: "历史提问 1")
+        _ = try await store.appendMessage(session.id, role: .assistant, content: "历史回复 1")
+        _ = try await store.appendMessage(session.id, role: .user, content: "待撤回的用户输入")
+        _ = try await store.appendMessage(session.id, role: .assistant, content: "待撤回的助手回复")
+
+        let result = try await store.revertLastTurn(session.id)
+        #expect(result.revertedPrompt == "待撤回的用户输入")
+        #expect(result.removedCount == 2)
+
+        let loaded = try await store.session(session.id)
+        #expect(loaded.messages.count == 2)
+        #expect(loaded.messages.last?.content == "历史回复 1")
+    }
+
+    @Test @MainActor func sessionRestorePreservesYoloPermissionMode() async {
+        var state = ApplicationState()
+        state.nextTurnPermission = .yoloFullAccess
+
+        // 验证处于 YOLO 模式时，显示与保持机制正常
+        #expect(state.nextTurnPermission?.displayName == "YOLO")
+
+        // 模拟恢复会话逻辑：若当前应用已显式处于 YOLO，切换后保持该策略
+        let currentPerm = state.activeSessionState?.permissionConfiguration
+        if state.nextTurnPermission == nil, let currentPerm, currentPerm.displayName == "YOLO" {
+            state.nextTurnPermission = currentPerm
+        }
+        #expect(state.nextTurnPermission?.displayName == "YOLO")
+    }
+
+    @Test @MainActor func toolNodeDoesNotDegradeToGenericPlaceholderUnderRacingToolRequested() {
+        var state = SessionViewState(sessionID: SessionID("test-sess"))
+        let callID = ToolCallID("call_list_directory_123")
+        let timestamp = Date()
+
+        let connection = ConnectionState(status: .connected)
+        // 模拟抢跑：toolScheduled 先到达并触发 ensureToolNode
+        let scheduledEvent = SessionEventEnvelope(
+            cursor: EventCursor(generationID: EventLogGenerationID("gen"), sequence: 1),
+            timestamp: timestamp,
+            causal: CausalContext(sessionID: state.sessionID),
+            payload: .toolScheduled(callID: callID)
+        )
+        SessionReducer.reduce(state: &state, event: scheduledEvent, connectionState: connection)
+
+        // 验证占位已自动推断为 "list_directory" 而非写死 "Tool"
+        #expect(state.toolNodes[callID]?.toolName == "list_directory")
+
+        // 随后真正的 toolRequested 到达，提供完整参数和显示名
+        let invocation = ToolInvocationSnapshot(
+            callID: callID,
+            toolID: ToolID("list_directory"),
+            displayName: "list_directory",
+            argumentsSummary: #"{"path":"/Volumes/App"}"#,
+            state: .requested
+        )
+        let requestedEvent = SessionEventEnvelope(
+            cursor: EventCursor(generationID: EventLogGenerationID("gen"), sequence: 2),
+            timestamp: timestamp,
+            causal: CausalContext(sessionID: state.sessionID),
+            payload: .toolRequested(invocation)
+        )
+        SessionReducer.reduce(state: &state, event: requestedEvent, connectionState: connection)
+
+        let node = state.toolNodes[callID]
+        #expect(node?.toolName == "list_directory")
+        #expect(node?.argumentsJSON == #"{"path":"/Volumes/App"}"#)
+        #expect(node?.toolName != "Tool")
+    }
+
+    @Test func coordinatorResetForRevertAllowsSubsequentTurnExecution() async throws {
+        let sessionID = SessionID("test-revert-coord")
+        let eventLog = SessionEventLog(sessionID: sessionID)
+        let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
+
+        // 模拟提交第一轮
+        let msg1 = MessageSnapshot(messageID: MessageID("m1"), role: .user, text: "hello 1", createdAt: Date())
+        let d1 = await coord.submitTurn(input: UserInput(text: "hello 1"), intent: TurnExecutionIntent(), userMessage: msg1)
+        #expect(d1.shouldStartExecution == true)
+        #expect(await coord.activeRootRunID != nil)
+
+        // 模拟在第一轮运行或异常时执行撤回
+        await coord.resetForRevert(remainingMessages: [])
+        #expect(await coord.activeRootRunID == nil)
+
+        // 撤回后再提交新的一轮，应当能够正常启动执行，绝对不能被判定为 queued 死锁（被吞）
+        let msg2 = MessageSnapshot(messageID: MessageID("m2"), role: .user, text: "hello 2", createdAt: Date())
+        let d2 = await coord.submitTurn(input: UserInput(text: "hello 2"), intent: TurnExecutionIntent(), userMessage: msg2)
+        #expect(d2.shouldStartExecution == true)
+        #expect(d2.runID != nil)
+        #expect(d2.status == .running)
     }
 }

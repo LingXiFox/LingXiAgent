@@ -105,6 +105,14 @@ public actor PermissionEngine {
 
     public func setResourceRules(_ rules: [PermissionResourceRule]) { resourceRules = rules }
 
+    public func cancelPending(sessionID: SessionID, reason: PendingInteractionCancelReason = .sessionReverted) {
+        let targets = pending.filter { $0.value.request.sessionID == sessionID }
+        for (id, waiting) in targets {
+            pending.removeValue(forKey: id)
+            waiting.continuation?.resume(returning: .deny)
+        }
+    }
+
     private func cancel(_ permissionID: PermissionID) {
         pending.removeValue(forKey: permissionID)?.continuation?.resume(returning: .deny)
     }

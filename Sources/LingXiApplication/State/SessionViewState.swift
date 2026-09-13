@@ -55,6 +55,8 @@ public struct SessionViewState: Sendable, Equatable {
     // MARK: - Provider Request State
     public var activeProviderRequestID: ProviderRequestID?
     public var activeProviderRequestState: ProviderRequestState?
+    public var activeProviderRequestDetail: String?
+    public var activeProviderStatusCode: Int?
 
     // MARK: - Status
     public var hasActiveError: Bool
@@ -103,6 +105,8 @@ public struct SessionViewState: Sendable, Equatable {
         self.isPaging = false
         self.activeProviderRequestID = nil
         self.activeProviderRequestState = nil
+        self.activeProviderRequestDetail = nil
+        self.activeProviderStatusCode = nil
         self.hasActiveError = false
         self.status = .ready
     }
@@ -123,8 +127,16 @@ public struct SessionViewState: Sendable, Equatable {
     }
 
     public mutating func updateNode(id: TimelineNodeID, mutate: (inout TimelineNode) -> Void) {
-        guard let index = timelineIndexByID[id], index < timelineNodes.count else { return }
-        mutate(&timelineNodes[index])
+        if let index = timelineIndexByID[id], index < timelineNodes.count, timelineNodes[index].id == id {
+            mutate(&timelineNodes[index])
+            return
+        }
+        if let idx = timelineNodes.firstIndex(where: { $0.id == id }) {
+            timelineIndexByID[id] = idx
+            mutate(&timelineNodes[idx])
+        } else {
+            timelineIndexByID.removeValue(forKey: id)
+        }
     }
 
     public mutating func updateActiveCell(_ node: TimelineNode) {
@@ -147,6 +159,25 @@ public struct SessionViewState: Sendable, Equatable {
         }
         if activeCell?.id == node.id {
             activeCell = nil
+        }
+    }
+
+    public mutating func removeNode(id: TimelineNodeID) {
+        timelineIndexByID.removeValue(forKey: id)
+        if let idx = timelineNodes.firstIndex(where: { $0.id == id }) {
+            timelineNodes.remove(at: idx)
+            rebuildTimelineIndex()
+        }
+        committedNodes.removeAll { $0.id == id }
+        if activeCell?.id == id {
+            activeCell = nil
+        }
+    }
+
+    public mutating func rebuildTimelineIndex() {
+        timelineIndexByID.removeAll(keepingCapacity: true)
+        for (idx, n) in timelineNodes.enumerated() {
+            timelineIndexByID[n.id] = idx
         }
     }
 

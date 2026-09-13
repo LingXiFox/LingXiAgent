@@ -157,7 +157,21 @@
           "additionalProperties": false
         },
         "reserve": { "type": "integer", "minimum": 0 },
-        "economicThreshold": { "type": ["integer", "null"] }
+        "economicThreshold": { "type": ["integer", "null"] },
+        "fabric": {
+          "type": "object",
+          "properties": {
+            "ecoreStorageEnabled": { "type": "boolean" },
+            "observationProjectionEnabled": { "type": "boolean" },
+            "contextRecallEnabled": { "type": "boolean" },
+            "objectizationThreshold": { "type": "integer", "minimum": 1 },
+            "fullSendCount": { "type": "integer", "minimum": 1 },
+            "placeholderExcerpt": { "type": "integer", "minimum": 1 },
+            "recallMaxBytes": { "type": "integer", "minimum": 1 },
+            "recallMaxLines": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     }

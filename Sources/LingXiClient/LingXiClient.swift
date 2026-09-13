@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 import LingXiProtocol
 
 /// 所有客户端访问 Core 的正式入口。
@@ -283,14 +286,70 @@ public struct LingXiClient: Sendable {
         return response
     }
 
-    private static func resolveCorePath(_ explicit: String?) -> String {
-        if let explicit { return explicit }
-        if let env = ProcessInfo.processInfo.environment["LINGXI_CORE_PATH"], !env.isEmpty {
+    public static func resolveCorePath(_ explicit: String? = nil) -> String {
+        let fm = FileManager.default
+
+        if let explicit, !explicit.isEmpty, fm.isExecutableFile(atPath: explicit) {
+            return explicit
+        }
+        if let env = ProcessInfo.processInfo.environment["LINGXI_CORE_PATH"], !env.isEmpty, fm.isExecutableFile(atPath: env) {
             return env
         }
-        let executableDir = URL(fileURLWithPath: CommandLine.arguments[0])
-            .deletingLastPathComponent()
-        return executableDir.appendingPathComponent("LingXiCoreHost").path
+
+        var candidateDirs: [URL] = []
+        if let bundleExec = Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent() {
+            candidateDirs.append(bundleExec)
+        }
+        #if canImport(Darwin)
+        var size: UInt32 = 0
+        _NSGetExecutablePath(nil, &size)
+        if size > 0 {
+            var buffer = [CChar](repeating: 0, count: Int(size))
+            if _NSGetExecutablePath(&buffer, &size) == 0 {
+                let path = String(cString: buffer)
+                let dir = URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent()
+                candidateDirs.append(dir)
+            }
+        }
+        #endif
+
+        let arg0 = CommandLine.arguments[0]
+        if arg0.contains("/") {
+            let argDir = URL(fileURLWithPath: arg0).resolvingSymlinksInPath().deletingLastPathComponent()
+            candidateDirs.append(argDir)
+        }
+
+        for dir in candidateDirs {
+            let coreURL = dir.appendingPathComponent("LingXiCoreHost")
+            if fm.isExecutableFile(atPath: coreURL.path) {
+                return coreURL.path
+            }
+        }
+
+        let standardInstalled = fm.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent/bin/LingXiCoreHost")
+        if fm.isExecutableFile(atPath: standardInstalled.path) {
+            return standardInstalled.path
+        }
+
+        let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
+        let devCandidates = [
+            cwd.appendingPathComponent(".build/debug/LingXiCoreHost"),
+            cwd.appendingPathComponent(".build/release/LingXiCoreHost"),
+            cwd.appendingPathComponent(".build/arm64-apple-macosx/debug/LingXiCoreHost"),
+            cwd.appendingPathComponent(".build/arm64-apple-macosx/release/LingXiCoreHost"),
+            cwd.appendingPathComponent(".build/x86_64-apple-macosx/debug/LingXiCoreHost"),
+            cwd.appendingPathComponent(".build/x86_64-apple-macosx/release/LingXiCoreHost")
+        ]
+        for devURL in devCandidates {
+            if fm.isExecutableFile(atPath: devURL.path) {
+                return devURL.path
+            }
+        }
+
+        if let firstDir = candidateDirs.first {
+            return firstDir.appendingPathComponent("LingXiCoreHost").path
+        }
+        return standardInstalled.path
     }
 }
 

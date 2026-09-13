@@ -33,6 +33,7 @@ public struct ProviderConfig: Sendable {
     public let remoteStateEnabled: Bool
     public let maxOutputTokens: Int?
     public let requiredHeaders: [String: String]
+    public let parallelToolCalling: Bool?
 
     public init(
         baseURL: URL,
@@ -43,7 +44,8 @@ public struct ProviderConfig: Sendable {
         performanceDiagnosticsEnabled: Bool = false,
         remoteStateEnabled: Bool = false,
         maxOutputTokens: Int? = nil,
-        requiredHeaders: [String: String] = [:]
+        requiredHeaders: [String: String] = [:],
+        parallelToolCalling: Bool? = true
     ) {
         self.baseURL = baseURL
         authentication = apiKey.map(ProviderAuthentication.bearer) ?? .none
@@ -54,6 +56,7 @@ public struct ProviderConfig: Sendable {
         self.remoteStateEnabled = remoteStateEnabled
         self.maxOutputTokens = maxOutputTokens
         self.requiredHeaders = requiredHeaders
+        self.parallelToolCalling = parallelToolCalling
     }
 
     public init(
@@ -65,7 +68,8 @@ public struct ProviderConfig: Sendable {
         performanceDiagnosticsEnabled: Bool = false,
         remoteStateEnabled: Bool = false,
         maxOutputTokens: Int? = nil,
-        requiredHeaders: [String: String] = [:]
+        requiredHeaders: [String: String] = [:],
+        parallelToolCalling: Bool? = true
     ) {
         self.baseURL = baseURL
         self.authentication = authentication
@@ -76,6 +80,7 @@ public struct ProviderConfig: Sendable {
         self.remoteStateEnabled = remoteStateEnabled
         self.maxOutputTokens = maxOutputTokens
         self.requiredHeaders = requiredHeaders
+        self.parallelToolCalling = parallelToolCalling
     }
 
     /// OpenAI-compatible chat completions 端点。

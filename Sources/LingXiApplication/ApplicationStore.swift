@@ -169,9 +169,22 @@ public actor ApplicationStore {
                 if let activeTurnID = state.activeSessionState?.activeTurnID {
                     _ = try? await client.turn.cancelTurn(sessionID: sID, turnID: activeTurnID)
                 }
+                if let turns = state.activeSessionState?.turns.values {
+                    for turn in turns {
+                        if turn.status == .running || turn.status == .queued {
+                            _ = try? await client.turn.cancelTurn(sessionID: sID, turnID: turn.turnID)
+                        }
+                    }
+                }
                 for pending in state.activeSessionState?.pendingInteractions ?? [] {
                     _ = try? await client.interaction.resolve(sessionID: sID, interactionID: pending.interactionID, resolution: .permission(.deny))
                 }
+                state.activeSessionState?.activeRootRunID = nil
+                state.activeSessionState?.activeTurnID = nil
+                state.activeSessionState?.queuedTurns.removeAll()
+                state.activeSessionState?.status = .ready
+                state.recalculateStatus()
+                notifyStateChanged()
             }
 
         case let .setMode(mode):
@@ -215,16 +228,25 @@ public actor ApplicationStore {
 
         // MARK: 5. Provider & Model
         case let .selectModel(modelID):
-            UserPreferencesStore.shared.update(modelID: modelID)
             do {
                 let receipt = try await client.model.select(model: modelID)
                 state.currentModelID = modelID
+                UserPreferencesStore.shared.update(modelID: modelID)
                 if let sel = receipt.result {
                     state.selectedModel = sel
                 }
                 notifyStateChanged()
             } catch {
                 debug("selectModel.failed: \(error)")
+                let errMsg = (error as? CoreError)?.message ?? error.localizedDescription
+                if state.activeSessionID != nil {
+                    let errID = RuntimeErrorID()
+                    let errNodeID = TimelineNodeID.error(errID)
+                    state.activeSessionState?.appendNode(
+                        TimelineNode(id: errNodeID, timestamp: Date(), kind: .error(ErrorNode(errorID: errID, code: "modelSelectFailed", message: "切换模型失败: \(errMsg)")))
+                    )
+                }
+                notifyStateChanged()
             }
 
         case .listProviders:
@@ -350,6 +372,24 @@ public actor ApplicationStore {
         if let newEffort = result.nextTurnReasoningEffort {
             await handleSetReasoningEffort(newEffort)
         }
+        if result.revertedComposerText != nil, let sID = state.activeSessionID {
+            let currentEffort = state.effectiveReasoningEffort
+            state.status = .ready
+            state.activeSessionState?.status = .ready
+            state.activeSessionState?.activeTurnID = nil
+            state.activeSessionState?.activeRootRunID = nil
+            state.activeSessionState?.activeProviderRequestState = nil
+            state.activeSessionState?.activeProviderRequestID = nil
+            if let snapshot = result.snapshot {
+                RootReducer.reduce(state: &state, action: ._snapshotResynced(snapshot))
+            }
+            state.nextTurnReasoningEffort = currentEffort
+            state.activeSessionState?.reasoningEffort = currentEffort
+            if currentEffort != .auto {
+                _ = try? await client.session.setReasoningEffort(sessionID: sID, effort: currentEffort)
+            }
+            notifyStateChanged()
+        }
         return result
     }
 
@@ -370,23 +410,56 @@ public actor ApplicationStore {
 
     // MARK: - Prompt 处理
     private func handleSubmitPrompt(_ prompt: String) async {
+        debug("handleSubmitPrompt.begin prompt=\(prompt.prefix(20))")
         var sessionID = state.activeSessionID
         let nextMode = state.nextTurnMode ?? state.activeSessionState?.mode ?? .build
         let nextPerm = state.nextTurnPermission ?? state.activeSessionState?.permissionConfiguration ?? .askWorkspace
         let nextEffort = state.nextTurnReasoningEffort ?? state.activeSessionState?.reasoningEffort ?? .auto
 
         if sessionID == nil {
-            let receipt = try? await client.session.create(defaultMode: nextMode, defaultPermissionConfiguration: nextPerm)
-            sessionID = receipt?.result?.sessionID
+            debug("handleSubmitPrompt.sessionID.nil calling create")
+            do {
+                let receipt = try await client.session.create(defaultMode: nextMode, defaultPermissionConfiguration: nextPerm)
+                debug("handleSubmitPrompt.session.create.done receipt=\(receipt.applied), sID=\(String(describing: receipt.result?.sessionID))")
+                sessionID = receipt.result?.sessionID
+            } catch {
+                debug("handleSubmitPrompt.session.create.failed error=\(error)")
+                let errID = RuntimeErrorID()
+                let errNodeID = TimelineNodeID.error(errID)
+                let errMsg = (error as? RuntimeError)?.message ?? (error as? CoreError)?.message ?? error.localizedDescription
+                if state.activeSessionState == nil {
+                    let fallbackSID = SessionID("failed-session")
+                    state.activeSessionID = fallbackSID
+                    state.activeSessionState = SessionViewState(sessionID: fallbackSID)
+                }
+                state.activeSessionState?.appendNode(TimelineNode(id: errNodeID, timestamp: Date(), kind: .error(ErrorNode(errorID: errID, code: "createSessionFailed", message: "创建会话失败: \(errMsg)"))))
+                notifyStateChanged()
+                return
+            }
             if let newID = sessionID {
+                debug("handleSubmitPrompt.calling switchToSession")
                 await switchToSession(newID)
+                debug("handleSubmitPrompt.switchToSession returned")
                 if nextEffort != .auto {
                     _ = try? await client.session.setReasoningEffort(sessionID: newID, effort: nextEffort)
                     state.activeSessionState?.reasoningEffort = nextEffort
                 }
             }
         }
-        guard let validSessionID = sessionID else { return }
+        guard let validSessionID = sessionID else {
+            debug("handleSubmitPrompt.sessionID.stillNil! ABORTING!")
+            let errID = RuntimeErrorID()
+            let errNodeID = TimelineNodeID.error(errID)
+            if state.activeSessionState == nil {
+                let fallbackSID = SessionID("failed-session")
+                state.activeSessionID = fallbackSID
+                state.activeSessionState = SessionViewState(sessionID: fallbackSID)
+            }
+            state.activeSessionState?.appendNode(TimelineNode(id: errNodeID, timestamp: Date(), kind: .error(ErrorNode(errorID: errID, code: "noSessionID", message: "无法创建或获取有效会话 ID"))))
+            notifyStateChanged()
+            return
+        }
+        debug("handleSubmitPrompt.validSessionID=\(validSessionID)")
 
         // 自动重命名会话：若当前会话标题为空或为未命名，提取首条 Prompt 生成有意义的摘要标题
         let currentTitle = state.activeSessionState?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -431,15 +504,40 @@ public actor ApplicationStore {
         notifyStateChanged()
 
         let input = UserInput(text: prompt)
+        // 乐观呈现用户消息气泡：消除回车后的等待空白，带来原生即时响应体验
+        let optimisticMessageID = MessageID("opt:\(UUID().uuidString)")
+        let optimisticNodeID = TimelineNodeID.message(optimisticMessageID)
+        let optimisticNode = TimelineNode(
+            id: optimisticNodeID,
+            timestamp: Date(),
+            kind: .message(MessageNode(
+                messageID: optimisticMessageID,
+                role: .user,
+                content: prompt,
+                isStreaming: false,
+                isFinal: true
+            ))
+        )
+        state.activeSessionState?.appendNode(optimisticNode)
+        notifyStateChanged()
+
+        debug("handleSubmitPrompt.calling submitTurn sessionID=\(validSessionID)")
         do {
             _ = try await client.turn.submitTurn(
                 sessionID: validSessionID,
                 input: input,
                 executionIntent: intent
             )
+            debug("handleSubmitPrompt.submitTurn.done")
         } catch {
+            debug("handleSubmitPrompt.submitTurn.failed error=\(error)")
+            state.activeSessionState?.removeNode(id: optimisticNodeID)
             state.activeSessionState?.recalculateStatus(connectionState: state.connectionState)
             state.recalculateStatus()
+            let errID = RuntimeErrorID()
+            let errNodeID = TimelineNodeID.error(errID)
+            let errMsg = (error as? RuntimeError)?.message ?? (error as? CoreError)?.message ?? error.localizedDescription
+            state.activeSessionState?.appendNode(TimelineNode(id: errNodeID, timestamp: Date(), kind: .error(ErrorNode(errorID: errID, code: "submitFailed", message: "发送失败: \(errMsg)"))))
             notifyStateChanged()
         }
     }
@@ -462,27 +560,24 @@ public actor ApplicationStore {
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) {
                 while let url = enumerator.nextObject() as? URL {
-                    if Task.isCancelled { break }
-                    if ["node_modules", "build", "dist", "coverage"].contains(url.lastPathComponent) {
-                        enumerator.skipDescendants()
-                        continue
+                    if candidates.count >= 1000 { break }
+                    let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                    if !relative.isEmpty {
+                        candidates.append(relative)
                     }
-                    candidates.append(String(url.path.dropFirst(root.path.count + 1)))
-                    if candidates.count >= 500 { break }
                 }
             }
             return candidates
         }
-        let candidates = await withTaskCancellationHandler { await scan.value } onCancel: { scan.cancel() }
-        guard !Task.isCancelled,
-              rootPath == (state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath) else { return [] }
+        let result = await scan.value
         cachedReferenceRoot = rootPath
-        cachedReferenceCandidates = candidates
-        return candidates
+        cachedReferenceCandidates = result
+        return result
     }
 
     // MARK: - 会话切换与订阅
     public func switchToSession(_ sessionID: SessionID) async {
+        debug("switchToSession.begin sessionID=\(sessionID)")
         sessionEventsTask?.cancel()
         sessionEventsTask = nil
         for task in activeStreamTasks.values {
@@ -491,13 +586,37 @@ public actor ApplicationStore {
         activeStreamTasks.removeAll()
 
         state.activeSessionID = sessionID
-        if state.activeSessionState?.sessionID != sessionID {
-            state.activeSessionState = SessionViewState(sessionID: sessionID)
-        }
+        state.activeSessionState = SessionViewState(sessionID: sessionID)
 
         // 1. 同步完整权威快照
+        var authoritativeCursor: EventCursor?
+        debug("switchToSession.calling snapshot")
         if let snapshot = try? await client.session.snapshot(sessionID: sessionID) {
+            debug("switchToSession.snapshot success")
+            authoritativeCursor = snapshot.eventCursor
             RootReducer.reduce(state: &state, action: ._snapshotResynced(snapshot))
+
+            // 保持工作区权限配置：若当前应用已明确设定 nextTurnPermission（如 YOLO 模式），恢复会话后必须维持该策略，杜绝被服务端默认 Ask 冲刷
+            if let preservedPerm = state.nextTurnPermission {
+                state.activeSessionState?.permissionConfiguration = preservedPerm
+                _ = try? await client.runtime.updateTypedSetting(key: "permissionConfiguration", value: preservedPerm.displayName)
+            } else if let currentPerm = state.activeSessionState?.permissionConfiguration {
+                state.nextTurnPermission = currentPerm
+            }
+
+            // 保持工作区模式设定
+            if let preservedMode = state.nextTurnMode {
+                state.activeSessionState?.mode = preservedMode
+            }
+
+            // 保持 Reasoning Effort 思考等级设定：防止快照默认 auto 冲刷用户配置的等级
+            let preservedEffort = state.nextTurnReasoningEffort
+                ?? (UserPreferencesStore.shared.load().lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:)))
+            if let effort = preservedEffort, effort != .auto {
+                state.nextTurnReasoningEffort = effort
+                state.activeSessionState?.reasoningEffort = effort
+                _ = try? await client.session.setReasoningEffort(sessionID: sessionID, effort: effort)
+            }
 
             // 若恢复的会话属于其它工作目录，自动切换当前工作文件夹
             if let targetDir = snapshot.info.workingDirectory,
@@ -511,7 +630,7 @@ public actor ApplicationStore {
         let task = Task { [weak self] in
             guard let self = self else { return }
             do {
-                let stream = try await self.client.session.events(sessionID: sessionID)
+                let stream = try await self.client.session.events(sessionID: sessionID, after: authoritativeCursor)
                 for await event in stream {
                     await self.dispatch(._sessionEventReceived(event))
                 }
@@ -573,7 +692,9 @@ public actor ApplicationStore {
             state.models = models
         }
         if let selection {
-            state.currentModelID = selection.modelID
+            if state.currentModelID == nil || state.currentModelID?.isEmpty == true {
+                state.currentModelID = selection.modelID
+            }
             state.selectedModel = selection
         }
         if let providers {

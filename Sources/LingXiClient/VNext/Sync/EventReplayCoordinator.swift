@@ -71,6 +71,11 @@ public actor EventReplayCoordinator {
         await sync.recordObserved(scope: .runtime, cursor: envelope.cursor)
     }
 
+    public func resetSessionCursor(for sessionID: SessionID, to cursor: EventCursor? = nil) async {
+        lastSessionCursors[sessionID] = cursor
+        await sync.resetCursor(for: .session(sessionID), to: cursor)
+    }
+
     /// 订阅 Session 事件，支持断线重放、去重、Stream finalIndex barrier 与 Snapshot fallback
     public func subscribeSessionEvents(
         sessionID: SessionID,
@@ -83,6 +88,12 @@ public actor EventReplayCoordinator {
         let sync = self.sync
         let transport = self.transport
 
+        // 若显式传入了 after 游标且当前本地游标大于 after（如撤回/对齐时时间倒流），则对齐重置本地游标基线
+        if let after, let existing = lastSessionCursors[sessionID], existing > after {
+            lastSessionCursors[sessionID] = after
+            await sync.resetCursor(for: .session(sessionID), to: after)
+        }
+
         Task { [weak self] in
             var currentCursor = after
             if currentCursor == nil { currentCursor = await self?.getLastSessionCursor(for: sessionID) }
@@ -93,9 +104,11 @@ public actor EventReplayCoordinator {
                     let rawStream = try await transport.subscribeSessionEvents(sessionID: sessionID, after: currentCursor)
                     for await envelope in rawStream {
                         guard let self else { return }
-                        if let last = await self.getLastSessionCursor(for: sessionID), envelope.cursor <= last {
-                            // 不重：丢弃重放区间内已消费过的重复事件
-                            continue
+                        if let last = await self.getLastSessionCursor(for: sessionID) {
+                            // 仅当 Generation 相同且 Sequence <= last 时才判定为重复事件丢弃；若 Generation 变更则绝不丢弃
+                            if envelope.cursor.generationID == last.generationID && envelope.cursor.sequence <= last.sequence {
+                                continue
+                            }
                         }
 
                         if enforceStreamBarrier {
@@ -166,10 +179,19 @@ public actor EventReplayCoordinator {
                     var replayedSuccessfully = false
                     let highest = await streamBuffer.highestDeliveredIndex(for: streamID)
                     if let rawReplay = try? await transport.subscribeStreamFrames(streamID: streamID, afterIndex: highest) {
-                        for await frame in rawReplay {
-                            await streamBuffer.pushFrame(frame)
-                            if frame.index >= assistantFinalIndex { break }
+                        let replayTask = Task {
+                            for await frame in rawReplay {
+                                guard !Task.isCancelled else { break }
+                                await streamBuffer.pushFrame(frame)
+                                if frame.index >= assistantFinalIndex { break }
+                            }
                         }
+                        let timeoutTask = Task {
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            replayTask.cancel()
+                        }
+                        await replayTask.value
+                        timeoutTask.cancel()
                         if (try? await streamBuffer.awaitFinalIndex(streamID: streamID, finalIndex: assistantFinalIndex, timeout: 0.1)) != nil {
                             replayedSuccessfully = true
                         }

@@ -71,10 +71,18 @@ INSTALLED=false
 if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null; then
     echo -e "${CYAN}[*] 检测到处于本地源码仓库，正在直接以 Release 模式编译...${RESET}"
     swift build -c release --product lingxiagent
-    RELEASE_PATH="$(swift build -c release --show-bin-path)/lingxiagent"
-    if [ -f "$RELEASE_PATH" ]; then
-        cp -f "$RELEASE_PATH" "$TARGET_BIN"
+    swift build -c release --product LingXiCoreHost
+    BIN_DIR_PATH="$(swift build -c release --show-bin-path)"
+    if [ -f "$BIN_DIR_PATH/lingxiagent" ]; then
+        cp -f "$BIN_DIR_PATH/lingxiagent" "$TARGET_BIN"
         chmod +x "$TARGET_BIN"
+        if [ -f "$BIN_DIR_PATH/LingXiCoreHost" ]; then
+            cp -f "$BIN_DIR_PATH/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
+            chmod +x "$BIN_DIR/LingXiCoreHost"
+        fi
+        if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" ]; then
+            cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+        fi
         INSTALLED=true
         echo -e "${GREEN}[✓] 本地编译并成功安装至 ${TARGET_BIN}${RESET}"
     fi
@@ -99,6 +107,13 @@ if [ "$INSTALLED" = false ]; then
         if [ -f "$TMP_DIR/lingxiagent" ]; then
             cp -f "$TMP_DIR/lingxiagent" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
+            if [ -f "$TMP_DIR/LingXiCoreHost" ]; then
+                cp -f "$TMP_DIR/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
+                chmod +x "$BIN_DIR/LingXiCoreHost"
+            fi
+            if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
+                cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
             INSTALLED=true
             echo -e "${GREEN}[✓] 预编译二进制安装成功!${RESET}"
         fi
@@ -115,9 +130,17 @@ if [ "$INSTALLED" = false ]; then
         (
             cd "$CLONE_DIR"
             swift build -c release --product lingxiagent
-            RELEASE_PATH="$(swift build -c release --show-bin-path)/lingxiagent"
-            cp -f "$RELEASE_PATH" "$TARGET_BIN"
+            swift build -c release --product LingXiCoreHost
+            RELEASE_PATH="$(swift build -c release --show-bin-path)"
+            cp -f "$RELEASE_PATH/lingxiagent" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
+            if [ -f "$RELEASE_PATH/LingXiCoreHost" ]; then
+                cp -f "$RELEASE_PATH/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
+                chmod +x "$BIN_DIR/LingXiCoreHost"
+            fi
+            if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
+                cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
         )
         rm -rf "$CLONE_DIR"
         INSTALLED=true

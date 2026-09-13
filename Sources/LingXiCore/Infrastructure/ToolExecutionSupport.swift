@@ -426,7 +426,9 @@ func runToolProcess(
         await managed.waitForExit()
         try Task.checkCancellation()
         if managed.timedOut {
-            let output = try JSONEncoder().encode(managed.commandResult())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.withoutEscapingSlashes]
+            let output = try encoder.encode(managed.commandResult())
             throw CoreError(code: .commandTimedOut, message: String(decoding: output, as: UTF8.self))
         }
         return managed.commandResult()

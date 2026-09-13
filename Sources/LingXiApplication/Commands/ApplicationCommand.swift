@@ -34,19 +34,25 @@ public struct ApplicationCommandResult: Sendable, Equatable {
     public let nextTurnMode: AgentMode?
     public let nextTurnPermission: PermissionConfiguration?
     public let nextTurnReasoningEffort: ReasoningEffort?
+    public let revertedComposerText: String?
+    public let snapshot: SessionSnapshot?
 
     public init(
         output: String,
         sessionIDToSwitch: SessionID? = nil,
         nextTurnMode: AgentMode? = nil,
         nextTurnPermission: PermissionConfiguration? = nil,
-        nextTurnReasoningEffort: ReasoningEffort? = nil
+        nextTurnReasoningEffort: ReasoningEffort? = nil,
+        revertedComposerText: String? = nil,
+        snapshot: SessionSnapshot? = nil
     ) {
         self.output = output
         self.sessionIDToSwitch = sessionIDToSwitch
         self.nextTurnMode = nextTurnMode
         self.nextTurnPermission = nextTurnPermission
         self.nextTurnReasoningEffort = nextTurnReasoningEffort
+        self.revertedComposerText = revertedComposerText
+        self.snapshot = snapshot
     }
 }
 

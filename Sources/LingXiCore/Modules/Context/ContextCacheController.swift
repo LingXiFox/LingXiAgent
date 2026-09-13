@@ -92,6 +92,8 @@ public struct WarmL2Entry: Sendable, Equatable {
 /// 模型只负责声明检索意图 (context_search)，调度决策完全由 Cache Controller 驱动。
 public actor ContextCacheController {
     public let policy: EffectiveContextPolicy
+    public nonisolated let ecoreStore: ECoreObjectStore
+    public nonisolated let scheduler: CacheAwareContextScheduler
     private let weights: CachePriorityWeights
     private let contextPager: ContextPager
     private let scanner: ProjectScanner
@@ -123,13 +125,17 @@ public actor ContextCacheController {
         scanner: ProjectScanner,
         compactor: ContextCompactor? = nil,
         policy: EffectiveContextPolicy = EffectiveContextPolicy(),
-        weights: CachePriorityWeights = CachePriorityWeights()
+        weights: CachePriorityWeights = CachePriorityWeights(),
+        ecoreStore: ECoreObjectStore? = nil,
+        scheduler: CacheAwareContextScheduler? = nil
     ) {
         self.contextPager = contextPager
         self.scanner = scanner
         self.compactor = compactor
         self.policy = policy
         self.weights = weights
+        self.ecoreStore = ecoreStore ?? ECoreObjectStore()
+        self.scheduler = scheduler ?? CacheAwareContextScheduler()
     }
 
     // Convenience initializer preserving existing calls
@@ -138,7 +144,9 @@ public actor ContextCacheController {
         scanner: ProjectScanner,
         compactor: ContextCompactor? = nil,
         maxL1ResidentCharacters: Int,
-        weights: CachePriorityWeights = CachePriorityWeights()
+        weights: CachePriorityWeights = CachePriorityWeights(),
+        ecoreStore: ECoreObjectStore? = nil,
+        scheduler: CacheAwareContextScheduler? = nil
     ) {
         self.contextPager = contextPager
         self.scanner = scanner
@@ -155,6 +163,8 @@ public actor ContextCacheController {
             l3Capacity: 456_576
         )
         self.weights = weights
+        self.ecoreStore = ecoreStore ?? ECoreObjectStore()
+        self.scheduler = scheduler ?? CacheAwareContextScheduler()
     }
 
     /// 记录指定 Session 的基础 L1 token 数与条目数（当前 resident working set）
@@ -177,6 +187,10 @@ public actor ContextCacheController {
         public var epochReason: String?
         public var stablePrefixHash: String?
         public var missDiagnostics: String?
+        public var provider: String?
+        public var model: String?
+        public var cacheWriteTokens: Int?
+        public var contextGrowthDelta: Int?
 
         public init(
             cachedTokens: Int,
@@ -186,7 +200,11 @@ public actor ContextCacheController {
             epoch: Int = 1,
             epochReason: String? = nil,
             stablePrefixHash: String? = nil,
-            missDiagnostics: String? = nil
+            missDiagnostics: String? = nil,
+            provider: String? = nil,
+            model: String? = nil,
+            cacheWriteTokens: Int? = nil,
+            contextGrowthDelta: Int? = nil
         ) {
             self.cachedTokens = cachedTokens
             self.promptTokens = promptTokens
@@ -196,6 +214,10 @@ public actor ContextCacheController {
             self.epochReason = epochReason
             self.stablePrefixHash = stablePrefixHash
             self.missDiagnostics = missDiagnostics
+            self.provider = provider
+            self.model = model
+            self.cacheWriteTokens = cacheWriteTokens
+            self.contextGrowthDelta = contextGrowthDelta ?? previousPromptTokens.map { promptTokens - $0 }
         }
     }
 
@@ -280,7 +302,15 @@ public actor ContextCacheController {
     }
 
     /// 记录最近一次 Provider 推理返回的真实 Prefix Cache 命中情况
-    public func recordProviderCacheHit(sessionID: SessionID, cachedTokens: Int, promptTokens: Int, isUnavailable: Bool = false) {
+    public func recordProviderCacheHit(
+        sessionID: SessionID,
+        cachedTokens: Int,
+        promptTokens: Int,
+        cacheWriteTokens: Int? = nil,
+        provider: String? = nil,
+        model: String? = nil,
+        isUnavailable: Bool = false
+    ) async {
         let epoch = sessionEpochs[sessionID] ?? 1
         let reason = sessionEpochReasons[sessionID] ?? "initial_turn"
         let prev = previousPromptTokensBySession[sessionID]
@@ -301,8 +331,18 @@ public actor ContextCacheController {
             status = "active"
             if let prev, prev > 0 {
                 let reuseEfficiency = Double(cachedTokens) / Double(prev)
-                if reuseEfficiency < 0.9 {
+                let isSignificantHit = cachedTokens >= 1024 || reuseEfficiency >= 0.5
+                if !isSignificantHit {
                     missDiagnostics = generateMissDiagnostics(old: lastFP, new: currentFP, prevTokens: prev, cachedTokens: cachedTokens)
+                    let isClientBust = (lastFP != nil && currentFP != nil && lastFP?.stablePrefixHash != currentFP?.stablePrefixHash)
+                    if isClientBust {
+                        await scheduler.recordBust(sessionID: sessionID)
+                    }
+                } else {
+                    if reuseEfficiency < 0.9 {
+                        missDiagnostics = generateMissDiagnostics(old: lastFP, new: currentFP, prevTokens: prev, cachedTokens: cachedTokens)
+                    }
+                    await scheduler.recordHit(sessionID: sessionID)
                 }
             }
         }
@@ -315,9 +355,14 @@ public actor ContextCacheController {
             epoch: epoch,
             epochReason: reason,
             stablePrefixHash: currentFP?.stablePrefixHash,
-            missDiagnostics: missDiagnostics
+            missDiagnostics: missDiagnostics,
+            provider: provider,
+            model: model,
+            cacheWriteTokens: cacheWriteTokens
         )
         sessionCacheRecords[sessionID] = record
+        let currentDebt = await scheduler.debtState(for: sessionID).cacheDebt
+        savePersistedTelemetry(sessionID: sessionID, record: record, debt: currentDebt)
         lastPromptCacheHitBySession[sessionID] = (cachedTokens, promptTokens)
 
         // 为下一轮更新上一轮理论可复用 token 数及上一轮指纹
@@ -362,7 +407,97 @@ public actor ContextCacheController {
 
     /// 获取最近一次 Provider 推理返回的真实详细 Cache 记录
     public func lastProviderCacheRecord(for sessionID: SessionID) -> SessionCacheRecord? {
-        sessionCacheRecords[sessionID]
+        if let record = sessionCacheRecords[sessionID] {
+            return record
+        }
+        if let hydrated = loadPersistedTelemetry(sessionID: sessionID) {
+            sessionCacheRecords[sessionID] = hydrated
+            return hydrated
+        }
+        return nil
+    }
+
+    private func telemetryFileURL(sessionID: SessionID) -> URL {
+        let safeSessionID = sessionID.rawValue.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+        let dir = ecoreStore.baseDirectory.appendingPathComponent(safeSessionID, isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir.appendingPathComponent("telemetry.json", isDirectory: false)
+    }
+
+    private func savePersistedTelemetry(sessionID: SessionID, record: SessionCacheRecord, debt: Int) {
+        struct DTO: Codable {
+            let cachedTokens: Int
+            let promptTokens: Int
+            let previousPromptTokens: Int?
+            let status: String
+            let epoch: Int
+            let epochReason: String?
+            let stablePrefixHash: String?
+            let missDiagnostics: String?
+            let provider: String?
+            let model: String?
+            let cacheWriteTokens: Int?
+            let cacheDebt: Int
+        }
+        let dto = DTO(
+            cachedTokens: record.cachedTokens,
+            promptTokens: record.promptTokens,
+            previousPromptTokens: record.previousPromptTokens,
+            status: record.status,
+            epoch: record.epoch,
+            epochReason: record.epochReason,
+            stablePrefixHash: record.stablePrefixHash,
+            missDiagnostics: record.missDiagnostics,
+            provider: record.provider,
+            model: record.model,
+            cacheWriteTokens: record.cacheWriteTokens,
+            cacheDebt: debt
+        )
+        if let data = try? JSONEncoder().encode(dto) {
+            let url = telemetryFileURL(sessionID: sessionID)
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    private func loadPersistedTelemetry(sessionID: SessionID) -> SessionCacheRecord? {
+        struct DTO: Codable {
+            let cachedTokens: Int
+            let promptTokens: Int
+            let previousPromptTokens: Int?
+            let status: String
+            let epoch: Int
+            let epochReason: String?
+            let stablePrefixHash: String?
+            let missDiagnostics: String?
+            let provider: String?
+            let model: String?
+            let cacheWriteTokens: Int?
+            let cacheDebt: Int?
+        }
+        let url = telemetryFileURL(sessionID: sessionID)
+        guard let data = try? Data(contentsOf: url),
+              let dto = try? JSONDecoder().decode(DTO.self, from: data) else {
+            return nil
+        }
+        let record = SessionCacheRecord(
+            cachedTokens: dto.cachedTokens,
+            promptTokens: dto.promptTokens,
+            previousPromptTokens: dto.previousPromptTokens,
+            status: dto.status,
+            epoch: dto.epoch,
+            epochReason: dto.epochReason,
+            stablePrefixHash: dto.stablePrefixHash,
+            missDiagnostics: dto.missDiagnostics,
+            provider: dto.provider,
+            model: dto.model,
+            cacheWriteTokens: dto.cacheWriteTokens
+        )
+        if let debt = dto.cacheDebt, debt > 0 {
+            Task { await scheduler.restoreDebtState(sessionID: sessionID, debt: debt) }
+        }
+        return record
     }
 
     /// 获取最近一次 Provider 推理返回的真实 Prefix Cache 命中情况（兼容旧调用）
@@ -389,27 +524,47 @@ public actor ContextCacheController {
         return dynamicCount + baseCount
     }
 
-    /// L2 当前占用 token 数
+    /// P-Core 活跃上下文 Token 数
+    public func pCoreUsageTokens(for sessionID: SessionID) -> Int {
+        lastProviderCacheRecord(for: sessionID)?.promptTokens ?? l1UsageTokens(for: sessionID)
+    }
+
+    /// E-Core 对象织物估算 Token 数（按 4 字节约 1 Token 换算）
+    public func eCoreUsageTokens(for sessionID: SessionID) async -> Int {
+        let objects = await ecoreStore.listObjects(sessionID: sessionID)
+        return objects.reduce(0) { $0 + $1.totalBytes } / 4
+    }
+
+    /// E-Core 对象总数
+    public func eCoreObjectCount(for sessionID: SessionID) async -> Int {
+        let objects = await ecoreStore.listObjects(sessionID: sessionID)
+        return objects.count
+    }
+
+    /// E-Core 存储总字节数
+    public func eCoreTotalBytes(for sessionID: SessionID) async -> Int {
+        let objects = await ecoreStore.listObjects(sessionID: sessionID)
+        return objects.reduce(0) { $0 + $1.totalBytes }
+    }
+
+    /// [Legacy Compatibility] 旧 L2 工作集占用数
     public func l2UsageTokens(for sessionID: SessionID) -> Int {
         warmL2EntriesBySession[sessionID]?.values.reduce(0) { $0 + $1.tokens } ?? 0
     }
 
-    /// L2 条目数
+    /// [Legacy Compatibility] 旧 L2 条目数
     public func l2Count(for sessionID: SessionID) -> Int {
         warmL2EntriesBySession[sessionID]?.count ?? 0
     }
 
-    /// L3 当前占用 token 数
+    /// [Legacy Compatibility] 旧 L3 占用数
     public func l3UsageTokens(for sessionID: SessionID) async -> Int {
-        guard let compactor else { return 0 }
-        let pages = await compactor.derivedStore.pages(sessionID: sessionID)
-        return pages.reduce(0) { $0 + $1.tokenEstimate }
+        0
     }
 
-    /// L3 条目数
+    /// [Legacy Compatibility] 旧 L3 条目数
     public func l3Count(for sessionID: SessionID) async -> Int {
-        guard let compactor else { return 0 }
-        return await compactor.derivedStore.pages(sessionID: sessionID).count
+        0
     }
 
     /// 调度统计指标
@@ -679,8 +834,94 @@ public actor ContextCacheController {
         return Array(pages.values)
     }
 
+    /// 撤回（undo）操作后对齐 P-E 双核心架构状态与缓存基线
+    public func reconcileAfterRevert(sessionID: SessionID, remainingMessages: [Message]) async {
+        // 1. 提取剩余消息中所有有效的 ToolCallID
+        var validToolCallIDs = Set<ToolCallID>()
+        for msg in remainingMessages {
+            for part in msg.parts {
+                if case let .toolCall(tc) = part {
+                    validToolCallIDs.insert(tc.callID)
+                }
+                if case let .toolResult(res) = part {
+                    validToolCallIDs.insert(res.callID)
+                }
+            }
+        }
+
+        // 2. E-Core 存储裁剪：清理已被撤回的 Tool 所生成的大对象文件
+        await ecoreStore.prune(sessionID: sessionID, keepingToolCallIDs: validToolCallIDs)
+
+        // 3. P-Core (L1) 状态重置：撤回导致上一次 Provider 调用的 Cache Record 失效
+        lastProviderInputTokensBySession.removeValue(forKey: sessionID)
+        previousPromptTokensBySession.removeValue(forKey: sessionID)
+        currentTurnFingerprintBySession.removeValue(forKey: sessionID)
+        lastTurnFingerprintBySession.removeValue(forKey: sessionID)
+        sessionCacheRecords.removeValue(forKey: sessionID)
+        residentDerivedPagesBySession.removeValue(forKey: sessionID)
+        sessionEpochs[sessionID] = (sessionEpochs[sessionID] ?? 1) + 1
+        sessionEpochReasons[sessionID] = "revert_turn"
+
+        // 4. 重新基于剩余有效消息精确估算 L1 / P-Core 常驻 Tokens
+        if remainingMessages.isEmpty {
+            sessionL1BaseTokens.removeValue(forKey: sessionID)
+            sessionL1BaseCount.removeValue(forKey: sessionID)
+            residentPagesBySession.removeValue(forKey: sessionID)
+        } else {
+            let estimator = ConservativeTokenEstimator()
+            var entries: [ContextEntry] = []
+            for msg in remainingMessages {
+                let ctxRole: ContextRole
+                let src: ContextSource
+                switch msg.role {
+                case .user: ctxRole = .user; src = .userMessage
+                case .assistant: ctxRole = .assistant; src = .assistantMessage
+                case .tool: ctxRole = .tool; src = .toolResult
+                }
+                for part in msg.parts {
+                    entries.append(ContextEntry(
+                        messageID: msg.id,
+                        role: ctxRole,
+                        source: src,
+                        part: part
+                    ))
+                }
+            }
+            let tokens = estimator.estimate(entries: entries)
+            sessionL1BaseTokens[sessionID] = tokens
+            sessionL1BaseCount[sessionID] = entries.count
+            previousPromptTokensBySession[sessionID] = tokens
+            lastProviderInputTokensBySession[sessionID] = tokens
+
+            // 建立撤回后的合成基线记录，确保前缀复用与 P-Core 状态平滑衔接，不发生归零或乱跳
+            let revertEpoch = sessionEpochs[sessionID] ?? 1
+            let revertRecord = SessionCacheRecord(
+                cachedTokens: 0,
+                promptTokens: tokens,
+                previousPromptTokens: tokens,
+                status: "coldNewEpoch",
+                epoch: revertEpoch,
+                epochReason: "revert_turn",
+                stablePrefixHash: nil,
+                missDiagnostics: nil,
+                provider: nil,
+                model: nil,
+                cacheWriteTokens: nil
+            )
+            sessionCacheRecords[sessionID] = revertRecord
+            savePersistedTelemetry(sessionID: sessionID, record: revertRecord, debt: 0)
+        }
+
+        // 5. 调度器经济学债务状态对齐
+        await scheduler.reset(sessionID: sessionID)
+        if remainingMessages.isEmpty {
+            let url = telemetryFileURL(sessionID: sessionID)
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     /// 重置指定 Session 的所有级别缓存（用于 /new 或 session 清理）
-    public func resetSession(_ sessionID: SessionID) {
+    public func resetSession(_ sessionID: SessionID) async {
         residentPagesBySession.removeValue(forKey: sessionID)
         residentDerivedPagesBySession.removeValue(forKey: sessionID)
         sessionL1BaseTokens.removeValue(forKey: sessionID)
@@ -691,5 +932,9 @@ public actor ContextCacheController {
         pageOutsBySession.removeValue(forKey: sessionID)
         promotionsBySession.removeValue(forKey: sessionID)
         demotionsBySession.removeValue(forKey: sessionID)
+        await scheduler.reset(sessionID: sessionID)
+        await ecoreStore.cleanSession(sessionID: sessionID)
+        let url = telemetryFileURL(sessionID: sessionID)
+        try? FileManager.default.removeItem(at: url)
     }
 }

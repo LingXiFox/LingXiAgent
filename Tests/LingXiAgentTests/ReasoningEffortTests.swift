@@ -161,3 +161,4 @@ import Testing
         #expect(frame.cells.count == 80 * 24)
     }
 }
+

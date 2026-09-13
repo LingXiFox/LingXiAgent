@@ -162,6 +162,28 @@ public actor SessionEventLog {
         }
     }
 
+    public func resetToEvents(_ newEvents: [SessionEventEnvelope]) {
+        self.events = newEvents
+        self.sequence = newEvents.last?.cursor.sequence ?? 0
+        if let dir = storageDirectory {
+            let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
+            let metaURL = sessionDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL)
+            }
+            let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
+            var newContent = ""
+            for env in events {
+                if let envData = try? JSONEncoder().encode(env),
+                   let s = String(data: envData, encoding: .utf8) {
+                    newContent += s + "\n"
+                }
+            }
+            try? Data(newContent.utf8).write(to: eventsURL)
+        }
+    }
+
     public func subscribe(after: EventCursor?) throws -> AsyncStream<SessionEventEnvelope> {
         var replayEvents: [SessionEventEnvelope] = []
         if let after {

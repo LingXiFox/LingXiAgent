@@ -359,4 +359,60 @@ struct ApplicationProjectionTests {
             Issue.record("Tool node missing")
         }
     }
+
+    @Test func statusProjectorPrioritizesStreamingOverRunningTools() {
+        let status = ProductStatusProjector.projectStatus(
+            connectionState: connection,
+            activeInteraction: nil,
+            pendingInteractions: [],
+            providerRequestState: .streaming,
+            activeSubagentsCount: 0,
+            hasRunningTools: true,
+            hasActiveThinking: false,
+            isPaging: false,
+            hasActiveError: false
+        )
+        #expect(status == .thinking, "Streaming text must project as thinking, not runningTool")
+    }
+
+    @Test func assistantTextConvergesOrphanRunningTools() {
+        var viewState = SessionViewState(sessionID: sessionID)
+        let toolCallID = ToolCallID("call-orphan-1")
+        let toolInvSnap = ToolInvocationSnapshot(callID: toolCallID, toolID: ToolID("read_file"), displayName: "read_file", argumentsSummary: "{}", state: .running)
+        
+        SessionReducer.reduce(state: &viewState, event: event(1, .toolRequested(toolInvSnap)), connectionState: connection)
+        SessionReducer.reduce(state: &viewState, event: event(2, .toolRunning(callID: toolCallID, stdoutStreamID: nil, stderrStreamID: nil)), connectionState: connection)
+        
+        #expect(viewState.toolNodes[toolCallID]?.phase == .running)
+        #expect(viewState.activeToolCallIDs.contains(toolCallID))
+
+        // 模型输出正文文本流帧
+        let frame = StreamFrame(
+            streamID: StreamID("stream-1"),
+            owner: CausalContext(sessionID: sessionID, runID: RunID("run-1"), modelStepID: ModelStepID("step-2")),
+            index: 0,
+            kind: .assistantText,
+            text: "结论输出中..."
+        )
+        SessionReducer.reduceStreamFrame(state: &viewState, frame: frame, connectionState: connection)
+
+        #expect(viewState.toolNodes[toolCallID]?.phase == .cancelled || viewState.toolNodes[toolCallID]?.phase == .completed)
+        #expect(viewState.activeToolCallIDs.isEmpty, "Orphan active tool call IDs must be converged")
+    }
+
+    @Test func toolFailedStateCarriesRealError() {
+        var viewState = SessionViewState(sessionID: sessionID)
+        let toolCallID = ToolCallID("call-fail-1")
+        let toolInvSnap = ToolInvocationSnapshot(callID: toolCallID, toolID: ToolID("view_file"), displayName: "view_file", argumentsSummary: #"{"path":"/path/to/missing.txt"}"#, state: .running)
+        
+        SessionReducer.reduce(state: &viewState, event: event(1, .toolRequested(toolInvSnap)), connectionState: connection)
+        
+        let error = RuntimeError(category: .tool, code: "fileNotFound", message: "File not found at path: /path/to/missing.txt", retryability: .none, source: .tool)
+        SessionReducer.reduce(state: &viewState, event: event(2, .toolFailed(callID: toolCallID, error: error, stdoutFinalIndex: nil, stderrFinalIndex: nil)), connectionState: connection)
+
+        let node = viewState.toolNodes[toolCallID]
+        #expect(node?.phase == .failed)
+        #expect(node?.error?.message == "File not found at path: /path/to/missing.txt")
+        #expect(viewState.activeToolCallIDs.isEmpty)
+    }
 }

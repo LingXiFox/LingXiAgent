@@ -367,8 +367,10 @@ public actor SessionRuntime {
 
         do {
             try ensureExecuting(executionID)
-            let userTurnID = try await store.session(sessionID).messages.last(where: { $0.role == .user })?.id
+            let currentSession = try await store.session(sessionID)
+            let userTurnID = currentSession.messages.last(where: { $0.role == .user })?.id
                 ?? MessageID("recovery:\(sessionID.rawValue):\(runID?.rawValue ?? "session")")
+            let runLease = RunLease(sessionID: sessionID, turnID: TurnID(userTurnID.rawValue), runID: runID.map { RunID($0.rawValue) }, revision: currentSession.revision)
             if resume {
                 let session = try await store.session(sessionID)
                 try await settleDurableBatches(session: session, deadline: deadline, profiler: profiler)
@@ -411,7 +413,70 @@ public actor SessionRuntime {
                 // Dynamic pages enter L1 ONLY via Cache Controller explicit retrieval.
                 let residentPages = await cacheController.residentPages(for: sessionID)
                 let allEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
-                let compacted = try await compactor.compact(sessionID: sessionID, entries: allEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)))
+                // P-Core Context Projection (Phase 1B):
+                let projection = ContextProjection(configuration: cacheController.ecoreStore.configuration)
+                let projectedEntries = await projection.project(
+                    entries: allEntries,
+                    session: session,
+                    ecoreStore: cacheController.ecoreStore
+                )
+                // Phase 3: Cache-Aware Economic Compact & Debt Scheduler
+                let rawTokens = ConservativeTokenEstimator().estimate(entries: projectedEntries)
+                let economicThreshold = cacheController.policy.economicThreshold ?? 272_000
+                let remainingHorizon = max(1, maximumAgentSteps - step)
+                let decision = await cacheController.scheduler.evaluate(
+                    sessionID: sessionID,
+                    currentTokens: rawTokens,
+                    hardLimit: budget.hardInputLimit,
+                    economicThreshold: economicThreshold,
+                    estimatedEvictionTokens: max(1, rawTokens - budget.lowWaterTokens),
+                    stablePrefixTokens: max(1, budget.lowWaterTokens / 2),
+                    remainingHorizon: remainingHorizon
+                )
+
+                let compacted: CompactionResult
+                switch decision {
+                case .skip:
+                    compacted = CompactionResult(
+                        entries: projectedEntries,
+                        beforeTokens: rawTokens,
+                        afterTokens: rawTokens,
+                        pagedOut: 0,
+                        derivedCreated: 0,
+                        triggered: false,
+                        triggerSource: .automaticHighWater,
+                        mandatoryFloor: 0,
+                        unitsKept: projectedEntries.count,
+                        historicalToolBatchesPagedOut: 0,
+                        projectBackedOffloads: 0,
+                        redundantDrops: 0,
+                        emergencyTrims: 0,
+                        noEligibleReduction: true
+                    )
+                case .economicCompact:
+                    compacted = try await compactor.compact(
+                        sessionID: sessionID,
+                        entries: projectedEntries,
+                        budget: budget,
+                        batches: toolBatches,
+                        projectBackedContents: Set(residentPages.map(\.content))
+                    )
+                    if compacted.triggered {
+                        await cacheController.scheduler.recordCompactionOccurred(sessionID: sessionID, step: step + 1)
+                    }
+                case .emergencyWindowProtection:
+                    compacted = try await compactor.compact(
+                        sessionID: sessionID,
+                        entries: projectedEntries,
+                        budget: budget,
+                        batches: toolBatches,
+                        projectBackedContents: Set(residentPages.map(\.content)),
+                        trigger: .automaticHighWater
+                    )
+                    if compacted.triggered {
+                        await cacheController.scheduler.recordCompactionOccurred(sessionID: sessionID, step: step + 1)
+                    }
+                }
                 profiler.recordCompaction(compacted, budget: budget)
                 if compacted.triggered { compactionGeneration += 1 }
                 if compacted.triggered { try await persistCompaction() }
@@ -641,7 +706,9 @@ public actor SessionRuntime {
 
                 let events: AsyncThrowingStream<ModelEvent, Error>
                 do {
-                    events = try await modelBus.stream(request)
+                    events = try await modelBus.stream(request) { [weak self] snapshot in
+                        await self?.eventSink(.providerActivityChanged(snapshot))
+                    }
                 } catch {
                     let failedActivity = ProviderActivitySnapshot(
                         sessionID: sessionID,
@@ -649,6 +716,8 @@ public actor SessionRuntime {
                         providerRequestID: "local:\(request.requestID.rawValue)",
                         state: .failed,
                         model: request.model.rawValue,
+                        detail: (error as? CoreError)?.message ?? error.localizedDescription,
+                        statusCode: (error as? ProviderRateLimitError)?.statusCode,
                         updatedAt: Date()
                     )
                     await eventSink(.providerActivityChanged(failedActivity))
@@ -685,6 +754,10 @@ public actor SessionRuntime {
                 try await withTaskCancellationHandler {
                     for try await event in cancellableEvents {
                         if Task.isCancelled || shuttingDown { throw CancellationError() }
+                        if let currentRev = try? await store.currentRevision(sessionID), currentRev != runLease.revision {
+                            logDiagnostic("session.stale_event_dropped eventType=streaming_delta sessionID=\(sessionID.rawValue) eventRevision=\(runLease.revision) currentRevision=\(currentRev)")
+                            throw StaleRunError(sessionID: sessionID, expected: currentRev, actual: runLease.revision)
+                        }
                         if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
                             throw CancellationError()
                         }
@@ -723,10 +796,14 @@ public actor SessionRuntime {
                             if let input = usage.inputTokens {
                                 let hasCacheReport = (usage.cacheReadTokens != nil)
                                 let cached = usage.cacheReadTokens ?? 0
+                                let currentModel = (try? modelID())?.rawValue
                                 await cacheController.recordProviderCacheHit(
                                     sessionID: sessionID,
                                     cachedTokens: cached,
                                     promptTokens: input,
+                                    cacheWriteTokens: usage.cacheWriteTokens,
+                                    provider: modelBus.gateway.endpoint?.providerID,
+                                    model: currentModel,
                                     isUnavailable: !hasCacheReport
                                 )
                                 if let record = await cacheController.lastProviderCacheRecord(for: sessionID),
@@ -790,7 +867,8 @@ public actor SessionRuntime {
                         finishReason: finalReason,
                         usage: finalUsage,
                         profiler: profiler,
-                        executionID: executionID
+                        executionID: executionID,
+                        lease: runLease
                     )
                     return
                 }
@@ -803,13 +881,19 @@ public actor SessionRuntime {
                 guard Set(calls.map(\.callID)).count == calls.count else {
                     throw CoreError(code: .modelStream, message: "Tool batch 含重复 toolCallID")
                 }
+                for call in calls {
+                    let rawName = call.toolID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !rawName.isEmpty && rawName != "Tool" && rawName != "{}" && rawName != "unknown" else {
+                        throw CoreError(code: .modelStream, message: "模型返回了无效的 Tool Name: '\(call.toolID.rawValue)'")
+                    }
+                }
                 trace("session.parts.append.begin", step: step + 1, toolCount: calls.count)
                 let assistantMessage: Message
                 if persistence != nil { assistantMessage = Message(id: MessageID(UUID().uuidString), role: .assistant, parts: assistantParts, createdAt: .now) }
-                else { assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts) }
+                else { assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts, expectedRevision: runLease.revision) }
                 let batchID = UUID().uuidString
-                let batch = ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, toolCallStates: calls.map { DurableToolCall(call: $0, provenance: ToolCallProvenance(batchID: batchID, sessionID: sessionID, agentRunID: runID, providerRequestID: request.requestID, providerStep: step + 1)) }, continuationRequestID: request.requestID, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }))
-                if let persistence { try await persistence.appendAssistantMessageAndBatch(sessionID: sessionID, message: assistantMessage, batch: batch) }
+                let batch = ToolExchangeBatch(batchID: batchID, sessionID: sessionID, assistantMessageID: assistantMessage.id, toolCalls: calls, toolCallStates: calls.map { DurableToolCall(call: $0, provenance: ToolCallProvenance(batchID: batchID, sessionID: sessionID, agentRunID: runID, providerRequestID: request.requestID, providerStep: step + 1)) }, continuationRequestID: request.requestID, providerStep: step + 1, state: .pending, estimatedTokens: ConservativeTokenEstimator().estimate(entries: assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }), revision: runLease.revision, turnID: runLease.turnID)
+                if let persistence { try await persistence.appendAssistantMessageAndBatch(sessionID: sessionID, message: assistantMessage, batch: batch, expectedRevision: runLease.revision) }
                 toolBatches.append(batch)
                 let assistantEntries = assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }
                 var updatedEntries = currentActiveEntries
@@ -828,9 +912,15 @@ public actor SessionRuntime {
                     await eventSink(.toolCallCompleted(call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)))
                     trace("tool.execute.begin", step: step + 1, toolCallID: call.callID)
                     if let signature = signatures[offset], let previous = lastSuccessfulRead, previous.signature == signature {
-                        outcomes[offset] = duplicateOutcome(for: call, signature: signature, content: previous.content)
+                        let outcome = duplicateOutcome(for: call, signature: signature, content: previous.content)
+                        outcomes[offset] = outcome
+                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                        publishedOutcomes.insert(offset)
                     } else if let failureSignature = deterministicFailures[failureKey(for: call)] {
-                        outcomes[offset] = repeatedFailureOutcome(for: call, signature: failureSignature)
+                        let outcome = repeatedFailureOutcome(for: call, signature: failureSignature)
+                        outcomes[offset] = outcome
+                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                        publishedOutcomes.insert(offset)
                     } else if let signature = signatures[offset], let primary = primaryBySignature[signature] {
                         primaryByIndex[offset] = primary
                     } else {
@@ -865,6 +955,22 @@ public actor SessionRuntime {
                         trace("tool.execute.end", step: step + 1, toolCallID: calls[offset].callID)
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
                         publishedOutcomes.insert(offset)
+
+                        // 关键：当 primary tool 产出结果时，同批次复用它的 secondary tool 立即发布完成，杜绝幽灵旋转
+                        for sec in calls.indices where primaryByIndex[sec] == offset && sec != offset && outcomes[sec] == nil {
+                            let secondaryCall = calls[sec]
+                            let secOutcome = duplicateOutcome(
+                                for: secondaryCall,
+                                signature: signatures[sec]!,
+                                content: outcome.result.content,
+                                timing: outcome.result.timing,
+                                execution: outcome.execution
+                            )
+                            outcomes[sec] = secOutcome
+                            trace("tool.execute.end", step: step + 1, toolCallID: secondaryCall.callID)
+                            await publishCompletedTool(secOutcome, batchID: batchID, modelStepID: currentModelStepID)
+                            publishedOutcomes.insert(sec)
+                        }
                     }
                 }
                 try Task.checkCancellation()
@@ -873,7 +979,16 @@ public actor SessionRuntime {
                     guard let primary = primaryByIndex[offset], let previous = outcomes[primary] else {
                         throw CoreError(code: .modelStream, message: "Tool batch settlement 缺少结果: \(call.callID.rawValue)")
                     }
-                    outcomes[offset] = duplicateOutcome(for: call, signature: signatures[offset]!, content: previous.result.content)
+                    let outcome = duplicateOutcome(
+                        for: call,
+                        signature: signatures[offset]!,
+                        content: previous.result.content,
+                        timing: previous.result.timing,
+                        execution: previous.execution
+                    )
+                    outcomes[offset] = outcome
+                    await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                    publishedOutcomes.insert(offset)
                 }
 
                 let settled = outcomes.compactMap { $0 }
@@ -898,10 +1013,22 @@ public actor SessionRuntime {
                     }
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
+                // Phase 1A E-Core Sidecar Storage (Fail-Open):
+                for outcome in settled {
+                    let res = outcome.result
+                    if res.content.utf8.count >= cacheController.ecoreStore.configuration.objectizationThreshold {
+                        await cacheController.ecoreStore.store(
+                            sessionID: sessionID,
+                            toolCallID: res.callID,
+                            toolName: res.toolName ?? "unknown",
+                            content: res.content
+                        )
+                    }
+                }
                 let resultMessage: Message
                 if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: settled.map { .toolResult($0.result) }, createdAt: .now) }
-                else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }) }
-                try await settleBatch(batchID: batchID, resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage)
+                else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }, expectedRevision: runLease.revision) }
+                try await settleBatch(batchID: batchID, resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage, lease: runLease)
                 await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
                 let hasCancelledTool = settled.contains {
                     $0.result.outcome == .cancelled ||
@@ -986,6 +1113,11 @@ public actor SessionRuntime {
                 code: .agentStepLimitReached,
                 message: "Agent Tool Loop 超过上限 (\(maximumAgentSteps) steps) · 当前 step: \(maximumAgentSteps) · 最后 ToolCall: \(lastCallDesc) · 最后 observation: \(lastObsDesc)"
             )
+        } catch let error as StaleRunError {
+            logDiagnostic("session.stale_run_dropped sessionID=\(error.sessionID.rawValue) expected=\(error.expected) actual=\(error.actual)")
+            await toolRuntime.abortMCPTurn(sessionID: sessionID)
+            _ = await finishExecution(executionID)
+            sink.finish()
         } catch let error as CoreError {
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
@@ -1031,12 +1163,28 @@ public actor SessionRuntime {
         }
     }
 
-    private func duplicateOutcome(for call: ToolCall, signature: ToolRuntime.ReadOnlySignature, content: String) -> ToolRuntime.ExecutionOutcome {
-        ToolRuntime.ExecutionOutcome(
-            result: ToolResult(callID: call.callID, success: false, content: content, error: ToolError(code: "duplicateToolCall", message: "连续重复调用已复用前一成功结果"), toolName: signature.toolName),
+    private func duplicateOutcome(
+        for call: ToolCall,
+        signature: ToolRuntime.ReadOnlySignature,
+        content: String,
+        timing: ToolTiming? = nil,
+        execution: Duration = .zero
+    ) -> ToolRuntime.ExecutionOutcome {
+        let executionMs = max(1.0, timing?.executionMilliseconds ?? Double(execution.components.seconds * 1000))
+        let queueMs = timing?.queueMilliseconds ?? 0
+        let inheritedTiming = ToolTiming(milliseconds: executionMs, queueMilliseconds: queueMs, executionMilliseconds: executionMs)
+        return ToolRuntime.ExecutionOutcome(
+            result: ToolResult(
+                callID: call.callID,
+                success: false,
+                content: content,
+                error: ToolError(code: "duplicateToolCall", message: "连续重复调用已复用前一成功结果"),
+                toolName: signature.toolName,
+                timing: inheritedTiming
+            ),
             permissionWait: .zero,
             permissionAsked: false,
-            execution: .zero,
+            execution: execution == .zero ? .milliseconds(Int64(executionMs)) : execution,
             toolName: signature.toolName,
             resource: signature.resource
         )
@@ -1188,10 +1336,17 @@ public actor SessionRuntime {
         }
     }
 
-    private func settleBatch(batchID: String, resultMessageID: MessageID, results: [ToolResult], resultMessage: Message) async throws {
+    private func settleBatch(batchID: String, resultMessageID: MessageID, results: [ToolResult], resultMessage: Message, lease: RunLease? = nil) async throws {
+        if let lease {
+            let current = try await store.currentRevision(lease.sessionID)
+            guard current == lease.revision else {
+                logDiagnostic("session.stale_event_dropped eventType=tool_batch_settle sessionID=\(lease.sessionID.rawValue) eventRevision=\(lease.revision) currentRevision=\(current)")
+                throw StaleRunError(sessionID: lease.sessionID, expected: current, actual: lease.revision)
+            }
+        }
         guard let index = toolBatches.firstIndex(where: { $0.batchID == batchID }), toolBatches[index].resultMessageID == nil, toolBatches[index].state == .pending || toolBatches[index].state == .recoveryRequired else { return }
-        toolBatches[index] = toolBatches[index].with(state: .settledAwaitingConsumption, resultMessageID: resultMessageID, toolResults: results)
-        if let persistence { try await persistence.appendToolResultMessageAndSettle(sessionID: sessionID, message: resultMessage, batch: toolBatches[index]) }
+        toolBatches[index] = toolBatches[index].with(state: .settledAwaitingConsumption, resultMessageID: resultMessageID, toolResults: results, revision: lease?.revision, turnID: lease?.turnID)
+        if let persistence { try await persistence.appendToolResultMessageAndSettle(sessionID: sessionID, message: resultMessage, batch: toolBatches[index], expectedRevision: lease?.revision) }
     }
 
     private func waitingForHuman(batchID: String, callID: ToolCallID, request: ToolCallHumanRequest) async {
@@ -1254,13 +1409,23 @@ public actor SessionRuntime {
         finishReason: ModelFinishReason?,
         usage: ModelUsage?,
         profiler: TurnProfiler,
-        executionID: UUID
+        executionID: UUID,
+        lease: RunLease? = nil
     ) async {
         defer { Task { await dataPlane.finishAgentStream(handle.streamID) } }
         do {
             guard isExecuting(executionID) else { return }
             if let runID, await ProviderActivityRegistry.shared.isRunCancelled(runID) { return }
-            let message = try await store.appendMessage(handle.sessionID, role: .assistant, content: content)
+            if let lease {
+                let current = try await store.currentRevision(lease.sessionID)
+                guard current == lease.revision else {
+                    logDiagnostic("session.stale_event_dropped eventType=complete_turn sessionID=\(lease.sessionID.rawValue) eventRevision=\(lease.revision) currentRevision=\(current)")
+                    _ = await finishExecution(executionID)
+                    sink.finish()
+                    return
+                }
+            }
+            let message = try await store.appendMessage(handle.sessionID, role: .assistant, content: content, expectedRevision: lease?.revision)
             let assistantEntry = ContextEntry(messageID: message.id, role: .assistant, source: .assistantMessage, part: .text(content))
             var updatedEntries = currentActiveEntries
             if !updatedEntries.contains(where: { $0.messageID == message.id }) {
@@ -1286,6 +1451,13 @@ public actor SessionRuntime {
                 finishReason: finishReason,
                 usage: usage
             )))
+            Task { [sessionID = handle.sessionID] in
+                await self.summarizeSessionIfNeeded(sessionID: sessionID)
+            }
+        } catch let error as StaleRunError {
+            logDiagnostic("session.stale_run_dropped sessionID=\(error.sessionID.rawValue) expected=\(error.expected) actual=\(error.actual)")
+            _ = await finishExecution(executionID)
+            sink.finish()
         } catch let error as CoreError {
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
         } catch {
@@ -1388,5 +1560,78 @@ public actor SessionRuntime {
 
     private func lifecycle(_ event: String, waitingOn: String) {
         ExecutionLifecycleTrace.log(event, category: runID == nil ? .agentRun : .subagent, waitingOn: waitingOn)
+    }
+
+    private func logDiagnostic(_ message: String) {
+        FileHandle.standardError.write(Data("[SESSION_RUNTIME] \(message)\n".utf8))
+    }
+
+    private var isRunningInTestEnvironment: Bool {
+        NSClassFromString("XCTest") != nil ||
+        ProcessInfo.processInfo.processName.contains("Testing") ||
+        ProcessInfo.processInfo.processName.contains("xctest") ||
+        CommandLine.arguments.contains(where: {
+            $0.contains("Testing") || $0.contains("xctest") || $0.contains("swift-testing") || $0.contains("test")
+        })
+    }
+
+    private func summarizeSessionIfNeeded(sessionID: SessionID) async {
+        guard !isRunningInTestEnvironment else { return }
+        guard runID == nil, persistence != nil else { return }
+        guard let session = try? await store.session(sessionID) else { return }
+        let userTurns = session.messages.filter { $0.role == .user }
+        guard !userTurns.isEmpty else { return }
+
+        // 当标题为空，或者当前仍为默认未命名/首句截断时，且对话在前 3 轮内，触发小模型智能摘要
+        let isDefaultOrEmpty = session.title == nil || session.title?.isEmpty == true || session.title == "未命名会话" || session.title?.hasSuffix("...") == true
+        guard isDefaultOrEmpty || userTurns.count <= 2 else { return }
+
+        let relevantMessages = session.messages.filter { $0.role == .user || $0.role == .assistant }
+        guard !relevantMessages.isEmpty else { return }
+        let snippet = relevantMessages.prefix(4).map { msg in
+            let role = msg.role == .user ? "用户" : "助手"
+            let text = msg.content.prefix(160).replacingOccurrences(of: "\n", with: " ")
+            return "\(role): \(text)"
+        }.joined(separator: "\n")
+
+        guard let model = modelBus.gateway.modelID else { return }
+        let prompt = "请根据以下简短对话，用一句话（18个汉字以内）概括会话的核心任务，不要标点、引号或前缀，直接输出标题：\n\(snippet)"
+        let request = ModelRequest(
+            model: model,
+            messages: [
+                ModelMessage(role: .system, content: "你是会话摘要生成助手。请严格输出18个汉字以内的精准中文任务摘要，不包含标点符号、引号或解释。"),
+                ModelMessage(role: .user, content: prompt)
+            ],
+            tools: [],
+            reasoning: nil,
+            overallTimeoutSeconds: 6.0
+        )
+
+        var summaryText = ""
+        do {
+            let stream = try await modelBus.stream(request)
+            for try await event in stream {
+                if case let .textDelta(delta) = event {
+                    summaryText += delta
+                }
+            }
+        } catch {
+            return
+        }
+
+        let clean = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "“", with: "")
+            .replacingOccurrences(of: "”", with: "")
+            .replacingOccurrences(of: "《", with: "")
+            .replacingOccurrences(of: "》", with: "")
+            .replacingOccurrences(of: "。", with: "")
+            .replacingOccurrences(of: "：", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .replacingOccurrences(of: "\n", with: " ")
+
+        if !clean.isEmpty && clean.count <= 35 {
+            _ = try? await store.updateTitle(sessionID, title: clean)
+        }
     }
 }

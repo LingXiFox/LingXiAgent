@@ -107,7 +107,7 @@ struct AgentToolLoopTests {
 
         let requests = provider.recorder.requests
         #expect(requests.count == 2)
-        #expect(requests[0].tools.map(\.id.rawValue) == ["shell", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "glob", "grep", "web_search", "web_fetch", "search_tools", "load_tool"].sorted())
+        #expect(requests[0].tools.map(\.id.rawValue) == ["shell", "read_file", "write_file", "edit_file", "apply_patch", "list_directory", "glob", "grep", "web_search", "web_fetch", "search_tools", "load_tool", "context_recall"].sorted())
         #expect(requests[1].messages.map(\.role) == [.user, .assistant, .tool, .system])
         #expect(requests[1].messages[1].parts.contains(.toolCall(call())))
         let toolResult = try #require(requests[1].messages[2].parts.compactMap { part in

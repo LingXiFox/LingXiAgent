@@ -166,7 +166,8 @@ public enum RuntimeConfigurationResolver {
             performanceDiagnosticsEnabled: performanceDiagnosticsEnabled,
             remoteStateEnabled: profile.remoteStateEnabled,
             maxOutputTokens: profile.maxOutputTokens,
-            requiredHeaders: endpoint?.requiredHeaders ?? requiredHeaders
+            requiredHeaders: endpoint?.requiredHeaders ?? requiredHeaders,
+            parallelToolCalling: profile.capabilities.parallelToolCalling
         )
         let provider: any ModelProvider
         switch wireProtocol {

@@ -22,6 +22,16 @@ public enum SessionReducer {
                 state.turnOrder.append(snapshot.turnID)
             }
             let message = snapshot.userMessage
+            // 清理对应的前端乐观节点，平滑过渡至权威节点
+            let optNodes = state.timelineNodes.filter { node in
+                if case let .message(msg) = node.kind, msg.messageID.rawValue.hasPrefix("opt:"), msg.content == message.text {
+                    return true
+                }
+                return false
+            }
+            for opt in optNodes {
+                state.removeNode(id: opt.id)
+            }
             state.appendCommittedNode(TimelineNode(
                 id: .message(message.messageID),
                 timestamp: message.createdAt,
@@ -45,6 +55,15 @@ public enum SessionReducer {
 
         case let .userMessageCommitted(message):
             let nodeID = TimelineNodeID.message(message.messageID)
+            let optNodes = state.timelineNodes.filter { node in
+                if case let .message(msg) = node.kind, msg.messageID.rawValue.hasPrefix("opt:"), msg.content == message.text {
+                    return true
+                }
+                return false
+            }
+            for opt in optNodes {
+                state.removeNode(id: opt.id)
+            }
             let msgNode = MessageNode(
                 messageID: message.messageID,
                 role: message.role,
@@ -60,6 +79,7 @@ public enum SessionReducer {
             // committed message determines its semantic position in the timeline.
 
         case let .assistantMessageCommitted(messageID, content, _):
+            convergeAllActiveTools(state: &state)
             let modelStepID = event.causal.modelStepID
             let nodeID = TimelineNodeID.message(messageID, modelStepID: modelStepID)
             let fallbackNodeID = TimelineNodeID.message(messageID)
@@ -167,6 +187,8 @@ public enum SessionReducer {
             }
             state.activeProviderRequestState = nil
             state.activeProviderRequestID = nil
+            state.activeProviderRequestDetail = nil
+            state.activeProviderStatusCode = nil
             state.activeSubagentRunIDs.remove(runID)
             finalizeActiveTools(state: &state)
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
@@ -186,6 +208,8 @@ public enum SessionReducer {
             }
             state.activeProviderRequestState = nil
             state.activeProviderRequestID = nil
+            state.activeProviderRequestDetail = nil
+            state.activeProviderStatusCode = nil
             state.activeSubagentRunIDs.remove(runID)
             finalizeActiveTools(state: &state)
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
@@ -206,6 +230,8 @@ public enum SessionReducer {
             }
             state.activeProviderRequestState = nil
             state.activeProviderRequestID = nil
+            state.activeProviderRequestDetail = nil
+            state.activeProviderStatusCode = nil
             state.activeSubagentRunIDs.remove(runID)
             finalizeActiveTools(state: &state)
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
@@ -214,6 +240,7 @@ public enum SessionReducer {
 
         // MARK: 3. ModelStep & Thinking
         case let .modelStepStarted(stepID, visibleReasoningStreamID, _):
+            convergeStaleTools(state: &state, beforeStepID: stepID)
             if state.thinkingNodes[stepID]?.isComplete == true {
                 break
             }
@@ -228,6 +255,7 @@ public enum SessionReducer {
             }
 
         case let .modelStepCompleted(stepID, _, metadata):
+            convergeStaleTools(state: &state, beforeStepID: stepID)
             if var thinking = state.thinkingNodes[stepID] {
                 thinking.isStreaming = false
                 thinking.isComplete = true
@@ -301,8 +329,14 @@ public enum SessionReducer {
                 modelStepID: modelStepID,
                 requestedAt: event.timestamp
             )
-            toolNode.modelStepID = modelStepID
-            toolNode.requestedAt = event.timestamp
+            toolNode.toolName = invocation.displayName
+            toolNode.argumentsJSON = invocation.argumentsSummary
+            if toolNode.modelStepID == nil {
+                toolNode.modelStepID = modelStepID
+            }
+            if toolNode.requestedAt == nil {
+                toolNode.requestedAt = event.timestamp
+            }
             state.toolNodes[callID] = toolNode
             state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .tool(toolNode), modelStepID: modelStepID))
 
@@ -352,9 +386,12 @@ public enum SessionReducer {
             let modelStepID = event.causal.modelStepID ?? state.toolNodes[callID]?.modelStepID
             let nodeID = TimelineNodeID.tool(callID, modelStepID: modelStepID)
             state.activeToolCallIDs.remove(callID)
-            var tool = ensureToolNode(state: &state, callID: callID, timestamp: event.timestamp, modelStepID: modelStepID)
+            var tool = ensureToolNode(state: &state, callID: callID, timestamp: event.timestamp, modelStepID: modelStepID, hintToolName: result.toolName)
             tool.phase = .completed
             tool.result = result
+            if let realName = result.toolName, !realName.isEmpty, (tool.toolName == "Tool" || tool.toolName.isEmpty) {
+                tool.toolName = realName
+            }
             tool.executorFinishedAt = event.timestamp
             tool.resultCommittedAt = event.timestamp
             tool.projectionReceivedAt = event.timestamp
@@ -462,7 +499,8 @@ public enum SessionReducer {
 
         // MARK: 7. Context
         case let .contextStateChanged(snapshot):
-            state.contextState = snapshot
+            let hasMessages = !state.timelineNodes.isEmpty || !state.turns.isEmpty
+            state.contextState = mergeContextState(existing: state.contextState, incoming: snapshot, hasMessages: hasMessages)
             state.isPaging = false
 
         case let .contextPolicyChanged(snapshot):
@@ -473,9 +511,11 @@ public enum SessionReducer {
             state.isPaging = false
 
         // MARK: 8. Provider Request
-        case let .providerRequestStateChanged(requestID, pState):
+        case let .providerRequestStateChanged(requestID, pState, detail, statusCode):
             state.activeProviderRequestID = requestID
             state.activeProviderRequestState = pState
+            state.activeProviderRequestDetail = detail
+            state.activeProviderStatusCode = statusCode
 
         case .unknown:
             break
@@ -494,6 +534,7 @@ public enum SessionReducer {
         guard let text = frame.textPayload, !text.isEmpty else { return }
         switch frame.kind {
         case .assistantText:
+            convergeAllActiveTools(state: &state)
             if let stepID = frame.owner.modelStepID ?? state.activeThinkingStepID {
                 completeThinking(state: &state, stepID: stepID, timestamp: Date())
             }
@@ -600,16 +641,26 @@ public enum SessionReducer {
     ) {
         // Snapshot replaces every projection fact. Timeline is rebuilt only from the
         // snapshot's authoritative semantic activity window, never local timestamps.
+        let effectiveEffort: ReasoningEffort
+        if snapshot.info.reasoningEffort != .auto {
+            effectiveEffort = snapshot.info.reasoningEffort
+        } else if state.reasoningEffort != .auto {
+            effectiveEffort = state.reasoningEffort
+        } else {
+            effectiveEffort = .auto
+        }
+        let existingContextState = (state.sessionID == snapshot.sessionID) ? state.contextState : nil
         state = SessionViewState(
             sessionID: snapshot.sessionID,
             title: snapshot.info.title,
             mode: snapshot.agentMode,
             createdAt: snapshot.info.createdAt,
             updatedAt: snapshot.info.updatedAt,
-            reasoningEffort: snapshot.info.reasoningEffort
+            reasoningEffort: effectiveEffort
         )
-        state.contextState = snapshot.contextState
-            state.pendingInteractions = snapshot.pendingInteractions
+        let hasMessages = !snapshot.recentTurns.isEmpty
+        state.contextState = mergeContextState(existing: existingContextState, incoming: snapshot.contextState, hasMessages: hasMessages)
+        state.pendingInteractions = snapshot.pendingInteractions
             state.activeInteraction = snapshot.pendingInteractions.first
             state.permissionConfiguration = snapshot.permissionConfiguration
 
@@ -657,6 +708,35 @@ public enum SessionReducer {
         for event in snapshot.recentEvents {
             reduce(state: &state, event: event, connectionState: connectionState)
         }
+        // 关键修复：事件重放完毕后，必须以权威快照中的 activeRootRun 最终矫正 activeRootRunID 和 activeTurnID！
+        // 杜绝历史事件中的 turnCreated 假阳性污染已空闲的会话，导致 hasActiveTurn 永远为 true。
+        state.activeRootRunID = snapshot.activeRootRun?.runID
+        state.activeTurnID = snapshot.activeRootRun?.turnID
+        if snapshot.activeRootRun == nil {
+            state.activeProviderRequestState = nil
+            state.activeProviderRequestID = nil
+            state.activeProviderRequestDetail = nil
+            state.activeProviderStatusCode = nil
+            finalizeActiveTools(state: &state)
+            finalizeActiveThinking(state: &state, timestamp: snapshot.info.updatedAt)
+
+            // 彻底杜绝撤回后 Tool 空转与孤儿节点污染：
+            // 若快照无活动运行，任何不在快照中的 toolInvocation 或处于未完成状态的孤儿 ToolNode 均全量清除
+            let snapshotInvocations = Set(snapshot.recentToolInvocations.map(\.callID))
+            let orphanTools = state.toolNodes.filter { callID, tool in
+                !snapshotInvocations.contains(callID) && (tool.result == nil || tool.phase != .completed)
+            }.map(\.key)
+            for callID in orphanTools {
+                state.toolNodes.removeValue(forKey: callID)
+                state.timelineNodes.removeAll { node in
+                    if case let .tool(tool) = node.kind, tool.callID == callID { return true }
+                    return false
+                }
+            }
+            state.rebuildTimelineIndex()
+            state.activeToolCallIDs.removeAll()
+            convergeAllActiveTools(state: &state)
+        }
         state.updatedAt = snapshot.info.updatedAt
         state.recalculateStatus(connectionState: connectionState)
     }
@@ -687,16 +767,47 @@ public enum SessionReducer {
         state: inout SessionViewState,
         callID: ToolCallID,
         timestamp: Date,
-        modelStepID: ModelStepID? = nil
+        modelStepID: ModelStepID? = nil,
+        hintToolName: String? = nil
     ) -> ToolNode {
-        if let tool = state.toolNodes[callID] {
+        if var tool = state.toolNodes[callID] {
+            if let hint = hintToolName, !hint.isEmpty, (tool.toolName == "Tool" || tool.toolName.isEmpty) {
+                tool.toolName = hint
+                state.toolNodes[callID] = tool
+                let nodeID = TimelineNodeID.tool(callID, modelStepID: modelStepID ?? tool.modelStepID)
+                state.updateNode(id: nodeID) { n in n.kind = .tool(tool) }
+            }
             return tool
         }
-        var tool = ToolNode(callID: callID, toolName: "Tool")
+        let targetNodeID = TimelineNodeID.tool(callID, modelStepID: modelStepID)
+        if let existingNode = state.timelineNodes.first(where: { $0.id == targetNodeID }), case var .tool(existingTool) = existingNode.kind {
+            if let hint = hintToolName, !hint.isEmpty, (existingTool.toolName == "Tool" || existingTool.toolName.isEmpty) {
+                existingTool.toolName = hint
+            }
+            state.toolNodes[callID] = existingTool
+            state.updateNode(id: targetNodeID) { n in n.kind = .tool(existingTool) }
+            return existingTool
+        }
+        var defaultName = hintToolName ?? "Tool"
+        let rawID = callID.rawValue
+        if defaultName == "Tool" && rawID.hasPrefix("call_") {
+            var sub = rawID.dropFirst("call_".count)
+            if let lastUnderscore = sub.lastIndex(of: "_") {
+                let suffix = sub[sub.index(after: lastUnderscore)...]
+                if suffix.allSatisfy({ $0.isNumber || $0.isHexDigit }) || suffix.count >= 8 {
+                    sub = sub[..<lastUnderscore]
+                }
+            }
+            if !sub.isEmpty {
+                defaultName = String(sub)
+            }
+        }
+        var tool = ToolNode(callID: callID, toolName: defaultName)
         tool.modelStepID = modelStepID
         tool.requestedAt = timestamp
         state.toolNodes[callID] = tool
-        state.appendNode(TimelineNode(id: .tool(callID, modelStepID: modelStepID), timestamp: timestamp, kind: .tool(tool), modelStepID: modelStepID))
+        let nodeID = TimelineNodeID.tool(callID, modelStepID: modelStepID)
+        state.appendNode(TimelineNode(id: nodeID, timestamp: timestamp, kind: .tool(tool), modelStepID: modelStepID))
         return tool
     }
 
@@ -721,16 +832,59 @@ public enum SessionReducer {
     }
 
     private static func finalizeActiveTools(state: inout SessionViewState) {
-        for callID in state.activeToolCallIDs {
-            guard var tool = state.toolNodes[callID], tool.phase == .running else { continue }
-            tool.phase = .cancelled
-            state.toolNodes[callID] = tool
-            let nodeID = TimelineNodeID.tool(callID, modelStepID: tool.modelStepID)
-            state.updateNode(id: nodeID) { node in
-                node.kind = .tool(tool)
+        let activePhases: Set<ToolExecutionPhase> = [.requested, .waitingPermission, .scheduled, .running]
+        for (callID, var tool) in state.toolNodes {
+            if activePhases.contains(tool.phase) {
+                tool.phase = .cancelled
+                state.toolNodes[callID] = tool
+                let nodeID = TimelineNodeID.tool(callID, modelStepID: tool.modelStepID)
+                state.updateNode(id: nodeID) { node in
+                    node.kind = .tool(tool)
+                }
             }
         }
         state.activeToolCallIDs.removeAll()
+
+        // 彻底清理无名无参数且未产出结果的幽灵占位 Tool 节点，杜绝时间轴空转污染
+        let ghostCallIDs = state.toolNodes.filter { _, tool in
+            (tool.toolName == "Tool" || tool.toolName.isEmpty)
+                && (tool.argumentsJSON.isEmpty || tool.argumentsJSON == "{}")
+                && tool.result == nil
+        }.map(\.key)
+        for gID in ghostCallIDs {
+            state.toolNodes.removeValue(forKey: gID)
+            state.removeNode(id: TimelineNodeID.tool(gID))
+        }
+    }
+
+    private static func convergeStaleTools(state: inout SessionViewState, beforeStepID: ModelStepID) {
+        let activePhases: Set<ToolExecutionPhase> = [.requested, .waitingPermission, .scheduled, .running]
+        for (callID, var tool) in state.toolNodes {
+            if activePhases.contains(tool.phase), let toolStep = tool.modelStepID, toolStep != beforeStepID {
+                tool.phase = tool.result != nil ? .completed : .cancelled
+                state.toolNodes[callID] = tool
+                state.activeToolCallIDs.remove(callID)
+                let nodeID = TimelineNodeID.tool(callID, modelStepID: tool.modelStepID)
+                state.updateNode(id: nodeID) { node in
+                    node.kind = .tool(tool)
+                }
+            }
+        }
+    }
+
+    private static func convergeAllActiveTools(state: inout SessionViewState) {
+        let activePhases: Set<ToolExecutionPhase> = [.requested, .waitingPermission, .scheduled, .running]
+        for (callID, var tool) in state.toolNodes {
+            if activePhases.contains(tool.phase) {
+                tool.phase = tool.result != nil ? .completed : .cancelled
+                state.toolNodes[callID] = tool
+                state.activeToolCallIDs.remove(callID)
+                let nodeID = TimelineNodeID.tool(callID, modelStepID: tool.modelStepID)
+                state.updateNode(id: nodeID) { node in
+                    node.kind = .tool(tool)
+                }
+            }
+        }
     }
 
     private static func completeThinking(state: inout SessionViewState, stepID: ModelStepID, timestamp: Date) {
@@ -759,5 +913,87 @@ public enum SessionReducer {
         for (stepID, thinking) in state.thinkingNodes where !thinking.isComplete {
             completeThinking(state: &state, stepID: stepID, timestamp: timestamp)
         }
+    }
+
+    /// 上下文状态快照平滑合并：引入高水位线单调性保护，防止中间瞬态计算或无序事件冲刷导致侧边栏 4 项指标归零或跳动
+    public static func mergeContextState(
+        existing: ContextStateSnapshot?,
+        incoming: ContextStateSnapshot,
+        hasMessages: Bool
+    ) -> ContextStateSnapshot {
+        guard let existing, existing.sessionID == incoming.sessionID, hasMessages else {
+            return incoming
+        }
+
+        // 1. P-Core 高水位与防归零保护
+        let existingPCore = existing.activePCoreTokens
+        let incomingPCore = incoming.activePCoreTokens
+        let resolvedPCoreTokens: Int?
+        if incomingPCore == 0 && existingPCore > 0 {
+            // 中间态丢失了真实用量，平滑继承既有有效高水位
+            resolvedPCoreTokens = existing.pCoreTokens ?? existingPCore
+        } else if incomingPCore < existingPCore / 4 && incoming.compactionGeneration <= existing.compactionGeneration {
+            // 异常跌落（例如仅算纯消息文本，丢失了工具定义等系统前缀），维持既有数值
+            resolvedPCoreTokens = existing.pCoreTokens ?? existingPCore
+        } else {
+            resolvedPCoreTokens = incoming.pCoreTokens ?? (incomingPCore > 0 ? incomingPCore : existing.pCoreTokens)
+        }
+
+        // 2. E-Core 存储平滑保护
+        let existingCount = existing.eCoreObjectCount ?? 0
+        let incomingCount = incoming.eCoreObjectCount ?? 0
+        let resolvedEcoreCount: Int?
+        let resolvedEcoreBytes: Int?
+        if incomingCount == 0 && existingCount > 0 {
+            // 中间态尚未从磁盘完成读取或尚未 settle，平滑继承已沉淀的对象信息
+            resolvedEcoreCount = existing.eCoreObjectCount
+            resolvedEcoreBytes = existing.eCoreTotalBytes
+        } else {
+            resolvedEcoreCount = incoming.eCoreObjectCount
+            resolvedEcoreBytes = incoming.eCoreTotalBytes
+        }
+
+        // 3. Cache Read / Prompt / 前缀复用统计平滑保护
+        let resolvedPromptTokens = incoming.promptTokens ?? existing.promptTokens ?? resolvedPCoreTokens
+        let resolvedCacheReadTokens = incoming.cacheReadTokens ?? existing.cacheReadTokens
+        let resolvedPreviousPromptTokens = incoming.previousPromptTokens ?? existing.previousPromptTokens
+        let resolvedCacheStatus = incoming.cacheStatus ?? existing.cacheStatus
+        let resolvedCacheEpoch = incoming.cacheEpoch ?? existing.cacheEpoch
+        let resolvedEpochReason = incoming.epochReason ?? existing.epochReason
+        let resolvedMissDiag = incoming.missDiagnostics ?? existing.missDiagnostics
+        let resolvedClientHealth = incoming.clientHealthStatus ?? existing.clientHealthStatus
+        let resolvedBustRate = incoming.clientCausedBustRate ?? existing.clientCausedBustRate
+        let resolvedBusts = incoming.clientCausedBusts ?? existing.clientCausedBusts
+        let resolvedComparable = incoming.comparableRequests ?? existing.comparableRequests
+
+        return ContextStateSnapshot(
+            sessionID: incoming.sessionID,
+            estimatedTokens: max(incoming.estimatedTokens, resolvedPCoreTokens ?? 0),
+            l1Tokens: max(incoming.l1Tokens, resolvedPCoreTokens ?? 0),
+            l2Tokens: incoming.l2Tokens,
+            l3Tokens: incoming.l3Tokens,
+            compactionGeneration: max(incoming.compactionGeneration, existing.compactionGeneration),
+            cacheReadTokens: resolvedCacheReadTokens,
+            promptTokens: resolvedPromptTokens,
+            previousPromptTokens: resolvedPreviousPromptTokens,
+            cacheStatus: resolvedCacheStatus,
+            cacheEpoch: resolvedCacheEpoch,
+            epochReason: resolvedEpochReason,
+            stablePrefixHash: incoming.stablePrefixHash ?? existing.stablePrefixHash,
+            missDiagnostics: resolvedMissDiag,
+            structuralPrefixStability: incoming.structuralPrefixStability ?? existing.structuralPrefixStability,
+            clientCausedBustRate: resolvedBustRate,
+            appendOnlyContextRatio: incoming.appendOnlyContextRatio ?? existing.appendOnlyContextRatio,
+            volatileTailBytes: incoming.volatileTailBytes ?? existing.volatileTailBytes,
+            clientHealthStatus: resolvedClientHealth,
+            observedGranularity: incoming.observedGranularity ?? existing.observedGranularity,
+            clientCausedBusts: resolvedBusts,
+            comparableRequests: resolvedComparable,
+            appendOnlyViolations: incoming.appendOnlyViolations ?? existing.appendOnlyViolations,
+            pCoreTokens: resolvedPCoreTokens,
+            eCoreObjectCount: resolvedEcoreCount,
+            eCoreTotalBytes: resolvedEcoreBytes,
+            cacheDebt: incoming.cacheDebt ?? existing.cacheDebt
+        )
     }
 }

@@ -219,6 +219,18 @@ public enum TokenFormatter {
         let capacityStr = format(capacity)
         return "\(layer) \(usageStr)/\(capacityStr)"
     }
+
+    public static func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1_024 {
+            return "\(bytes)B"
+        } else if bytes < 1_024 * 1_024 {
+            let kb = Double(bytes) / 1024.0
+            return String(format: "%.1fKB", kb)
+        } else {
+            let mb = Double(bytes) / (1024.0 * 1024.0)
+            return String(format: "%.1fMB", mb)
+        }
+    }
 }
 
 public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
@@ -439,6 +451,10 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
     public let latestManifest: ProviderContextManifest?
     public let lastProviderInputTokens: Int?
     public let cacheTelemetry: ProviderCacheTelemetry?
+    public let pCoreTokens: Int?
+    public let eCoreObjectCount: Int?
+    public let eCoreTotalBytes: Int?
+    public let cacheDebt: Int?
 
     public init(
         sessionID: SessionID,
@@ -451,7 +467,11 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
         compactionGeneration: Int = 0,
         latestManifest: ProviderContextManifest? = nil,
         lastProviderInputTokens: Int? = nil,
-        cacheTelemetry: ProviderCacheTelemetry? = nil
+        cacheTelemetry: ProviderCacheTelemetry? = nil,
+        pCoreTokens: Int? = nil,
+        eCoreObjectCount: Int? = nil,
+        eCoreTotalBytes: Int? = nil,
+        cacheDebt: Int? = nil
     ) {
         self.sessionID = sessionID
         self.policy = policy
@@ -464,10 +484,15 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
         self.latestManifest = latestManifest
         self.lastProviderInputTokens = lastProviderInputTokens
         self.cacheTelemetry = cacheTelemetry
+        self.pCoreTokens = pCoreTokens
+        self.eCoreObjectCount = eCoreObjectCount
+        self.eCoreTotalBytes = eCoreTotalBytes
+        self.cacheDebt = cacheDebt
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionID, policy, l1, l2, l3, paging, pagingActivity, compactionGeneration, latestManifest, lastProviderInputTokens, cacheTelemetry
+        case pCoreTokens, eCoreObjectCount, eCoreTotalBytes, cacheDebt
     }
 
     public init(from decoder: Decoder) throws {
@@ -483,6 +508,10 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
         latestManifest = try container.decodeIfPresent(ProviderContextManifest.self, forKey: .latestManifest)
         lastProviderInputTokens = try container.decodeIfPresent(Int.self, forKey: .lastProviderInputTokens)
         cacheTelemetry = try container.decodeIfPresent(ProviderCacheTelemetry.self, forKey: .cacheTelemetry)
+        pCoreTokens = try container.decodeIfPresent(Int.self, forKey: .pCoreTokens)
+        eCoreObjectCount = try container.decodeIfPresent(Int.self, forKey: .eCoreObjectCount)
+        eCoreTotalBytes = try container.decodeIfPresent(Int.self, forKey: .eCoreTotalBytes)
+        cacheDebt = try container.decodeIfPresent(Int.self, forKey: .cacheDebt)
     }
 }
 

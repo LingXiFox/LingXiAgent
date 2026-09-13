@@ -62,10 +62,14 @@ public actor WatermarkSynchronizer {
         observedCursors[scope]
     }
 
-    /// 重置或更新游标（例如 Snapshot fallback 之后）
-    public func resetCursor(for scope: EventStreamScope, to cursor: EventCursor) {
-        observedCursors[scope] = cursor
-        checkWaiters(for: scope)
+    /// 重置或更新游标（例如 Snapshot fallback 或 Revert 之后）
+    public func resetCursor(for scope: EventStreamScope, to cursor: EventCursor?) {
+        if let cursor {
+            observedCursors[scope] = cursor
+            checkWaiters(for: scope)
+        } else {
+            observedCursors.removeValue(forKey: scope)
+        }
     }
 
     /// 等待指定作用域的事件游标被观察到（>= targetCursor）

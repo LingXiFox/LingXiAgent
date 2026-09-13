@@ -49,6 +49,7 @@ public struct Session: Sendable, Equatable {
     public let cwdRelativePath: ProjectRelativePath
     public let createdAt: Date
     public private(set) var updatedAt: Date
+    public private(set) var revision: UInt64
     public private(set) var messages: [Message]
 
     public init(
@@ -65,6 +66,7 @@ public struct Session: Sendable, Equatable {
         cwdRootBindingID: RootBindingID? = nil,
         cwdRelativePath: ProjectRelativePath = .root,
         updatedAt: Date? = nil,
+        revision: UInt64 = 0,
         messages: [Message] = []
     ) {
         self.id = id
@@ -80,12 +82,35 @@ public struct Session: Sendable, Equatable {
         self.cwdRelativePath = cwdRelativePath
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+        self.revision = revision
         self.messages = messages
     }
 
     public mutating func append(_ message: Message) {
         messages.append(message)
         updatedAt = message.createdAt
+    }
+
+    @discardableResult
+    public mutating func bumpRevision() -> UInt64 {
+        revision += 1
+        updatedAt = Date()
+        return revision
+    }
+
+    public mutating func revertLastTurn(bumpRevision: Bool = true) -> (revertedPrompt: String?, removedCount: Int) {
+        guard let lastUserIdx = messages.lastIndex(where: { $0.role == .user }) else {
+            return (nil, 0)
+        }
+        let userMsg = messages[lastUserIdx]
+        let prompt = userMsg.content
+        let removed = messages.count - lastUserIdx
+        messages.removeSubrange(lastUserIdx...)
+        if bumpRevision {
+            revision += 1
+        }
+        updatedAt = Date()
+        return (prompt, removed)
     }
 
     public mutating func setReasoningEffort(_ effort: ReasoningEffort) {

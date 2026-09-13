@@ -123,8 +123,10 @@ public actor AgentRuntime {
                 let calls = try await persistence.toolBatches(sessionID: run.sessionID).flatMap(\.toolCallStates).filter { $0.provenance.agentRunID == run.runID }
                 if !calls.isEmpty {
                     let waiting = calls.contains { $0.state == .waitingForHuman || ($0.request != nil && $0.reply == nil) }
-                    run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: waiting ? .waitingForUser : .waitingForTool, modelSelection: run.modelSelection, startedAt: run.startedAt, latestActivityAt: .now, usage: run.usage, title: run.title)
-                    activeSessions.insert(run.sessionID)
+                    run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: waiting ? .waitingForUser : .recoveryRequired, modelSelection: run.modelSelection, startedAt: run.startedAt, latestActivityAt: .now, usage: run.usage, title: run.title)
+                    if waiting {
+                        activeSessions.insert(run.sessionID)
+                    }
                     try await persistence.saveAgentRun(run)
                 } else {
                     run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: .recoveryRequired, modelSelection: run.modelSelection, startedAt: run.startedAt, finishedAt: .now, latestActivityAt: .now, error: CoreError(code: .toolCancelled, message: "Core 重启，运行需要恢复"), usage: run.usage, title: run.title)
@@ -137,7 +139,30 @@ public actor AgentRuntime {
         }
         for run in runs.values where run.status == .waitingForUser {
             guard !shuttingDown else { return }
-            _ = try await runtime(for: run.sessionID, run: run)
+            do {
+                _ = try await runtime(for: run.sessionID, run: run)
+            } catch {
+                logDiagnostic("Failed to restore runtime for run=\(run.runID.rawValue) session=\(run.sessionID.rawValue): \(error)")
+                activeSessions.remove(run.sessionID)
+                let failedRun = AgentRunInfo(
+                    runID: run.runID,
+                    sessionID: run.sessionID,
+                    projectID: run.projectID,
+                    parentRunID: run.parentRunID,
+                    rootRunID: run.rootRunID,
+                    agentKind: run.agentKind,
+                    status: .recoveryRequired,
+                    modelSelection: run.modelSelection,
+                    startedAt: run.startedAt,
+                    finishedAt: .now,
+                    latestActivityAt: .now,
+                    error: (error as? CoreError) ?? CoreError(code: .provider, message: "恢复会话模型失败: \(error.localizedDescription)"),
+                    usage: run.usage,
+                    title: run.title
+                )
+                runs[run.runID] = failedRun
+                try? await persistence.saveAgentRun(failedRun)
+            }
         }
         await restoreScheduler?.markReady()
     }
@@ -445,6 +470,33 @@ public actor AgentRuntime {
         }
     }
 
+    /// 撤回时彻底重置并释放该 Session 的运行时实例，消除脏缓存与残留任务，并递归取消所有子 Subagent
+    public func resetSessionForRevert(_ sessionID: SessionID) async {
+        await cancelDescendants(parentSessionID: sessionID)
+        activeSessions.remove(sessionID)
+        if let runtime = runtimes.removeValue(forKey: sessionID) {
+            await runtime.shutdown()
+        }
+    }
+
+    public func cancelDescendants(parentSessionID: SessionID) async {
+        let matchingRuns = runs.values.filter { run in
+            run.sessionID == parentSessionID
+        }
+        for run in matchingRuns {
+            try? await cancelAgentRun(run.runID, descendants: true)
+        }
+        if let allSessions = try? await store.listSessions() {
+            let childSessions = allSessions.filter { $0.parentSessionID == parentSessionID || $0.rootSessionID == parentSessionID }
+            for child in childSessions {
+                activeSessions.remove(child.id)
+                if let runtime = runtimes.removeValue(forKey: child.id) {
+                    await runtime.shutdown()
+                }
+            }
+        }
+    }
+
     public func cancelAgentRun(_ runID: AgentRunID, requester: AgentRunID) async throws {
         let run = try agentRun(runID)
         try requireSameTree(run, requester: requester)
@@ -551,7 +603,18 @@ public actor AgentRuntime {
         let resolved = try await (resolvedModel != nil ? resolvedModel! : modelResolver.resolve(requestedModel, subagent: session.kind == .subagent))
         let id = AgentRunID(UUID().uuidString)
         let root = parentRunID.flatMap { runs[$0]?.rootRunID } ?? id
-        let run = AgentRunInfo(runID: id, sessionID: session.id, projectID: session.projectID, parentRunID: parentRunID, rootRunID: root, agentKind: session.kind, status: .starting, modelSelection: resolved.selection, startedAt: .now, latestActivityAt: .now, title: title)
+        var selection = resolved.selection
+        if selection.reasoning == nil, session.reasoningEffort != .auto {
+            selection = ModelSelection(
+                providerID: selection.providerID,
+                accountID: selection.accountID,
+                profileID: selection.profileID,
+                modelID: selection.modelID,
+                reasoning: session.reasoningEffort.rawValue,
+                contextProfile: selection.contextProfile
+            )
+        }
+        let run = AgentRunInfo(runID: id, sessionID: session.id, projectID: session.projectID, parentRunID: parentRunID, rootRunID: root, agentKind: session.kind, status: .starting, modelSelection: selection, startedAt: .now, latestActivityAt: .now, title: title)
         runs[id] = run
         runDeadlines[id] = deadlinePolicy.deadline(for: session.kind == .subagent ? .subagent : .agentRun, requested: effectiveProfile?.timeoutSeconds.map { .seconds($0) }, parent: parentRunID.flatMap { runDeadlines[$0] })
         if let effectiveProfile { executionProfiles[id] = effectiveProfile }

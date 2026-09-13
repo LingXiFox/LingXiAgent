@@ -138,6 +138,7 @@ public enum TUIStyle: Equatable, Sendable {
     case mascotEar
     case mascotSpark
     case mascotTag
+    case systemNotice
 }
 
 public struct TUIRGB: Equatable, Sendable {
@@ -1044,8 +1045,11 @@ public enum TUIMarkdownRenderer {
                 continue
             }
 
-            // 3. 空行
+            // 3. 空行（紧凑优化：连续空行最多允许 1 行，且首部不出现空行）
             if trimmed.isEmpty {
+                if result.isEmpty || result.last?.text.isEmpty == true {
+                    continue
+                }
                 result.append(TUIStyledLine("", style: defaultStyle))
                 continue
             }
@@ -1137,6 +1141,10 @@ public enum TUIMarkdownRenderer {
 
         if inCodeBlock {
             flushCodeBlock()
+        }
+
+        while result.last?.text.isEmpty == true {
+            result.removeLast()
         }
 
         return result
@@ -1619,7 +1627,14 @@ public final class TranscriptViewport {
             }
         } else {
             // Assistant 文本及其他消息：优雅 Markdown 结构化解析（代码块、标题、列表、引用）
-            let style: TUIStyle = entry.kind == .assistant ? .assistantText : entry.style
+            let style: TUIStyle
+            if entry.kind == .assistant {
+                style = .assistantText
+            } else if (entry.kind == .system || entry.kind == .result) && entry.style == .normal {
+                style = .systemNotice
+            } else {
+                style = entry.style
+            }
             let mdLines = TUIMarkdownRenderer.render(entry.text, width: width, defaultStyle: style)
             result = mdLines
 
@@ -1651,8 +1666,12 @@ public final class TranscriptViewport {
         var spans: [TUIStyledSpan] = []
         let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
 
-        if rawLine.hasPrefix("• ") || rawLine.hasPrefix("⠋ ") || rawLine.hasPrefix("▶ ") {
-            let isSpinner = rawLine.hasPrefix("⠋ ")
+        let spinnerFrames: Set<Character> = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let firstChar = rawLine.first
+        let isSpinner = firstChar.map { spinnerFrames.contains($0) } ?? false
+        let isDot = rawLine.hasPrefix("● ") || rawLine.hasPrefix("• ") || rawLine.hasPrefix("○ ") || rawLine.hasPrefix("▶ ")
+
+        if isSpinner || isDot {
             let dotMarker = String(rawLine.prefix(2))
             let remainder = String(rawLine.dropFirst(2))
 
@@ -1661,11 +1680,43 @@ public final class TranscriptViewport {
                 dotStyle = .toolDotActive
             } else if rawLine.localizedCaseInsensitiveContains("fail") || rawLine.localizedCaseInsensitiveContains("error") || defaultStyle == .error {
                 dotStyle = .toolDotError
+            } else if defaultStyle == .accent || rawLine.contains("[running]") {
+                dotStyle = .toolDotActive
             } else {
                 dotStyle = .toolDotSuccess
             }
             spans.append(TUIStyledSpan(dotMarker, style: dotStyle))
 
+            // Standard format: ToolName(Argument) (duration) or ToolName(Argument)
+            if let openParen = remainder.firstIndex(of: "(") {
+                let toolName = String(remainder[..<openParen])
+                spans.append(TUIStyledSpan(toolName, style: .toolAction))
+
+                let afterOpen = remainder[remainder.index(after: openParen)...]
+                if let closeParenRange = afterOpen.range(of: ") (", options: .backwards) {
+                    let arg = String(afterOpen[..<closeParenRange.lowerBound])
+                    let dur = String(afterOpen[closeParenRange.lowerBound...]) // ") (duration)"
+                    spans.append(TUIStyledSpan("(", style: .toolTree))
+                    spans.append(TUIStyledSpan(arg, style: .toolArg))
+                    spans.append(TUIStyledSpan(")", style: .toolTree))
+                    spans.append(TUIStyledSpan(String(dur.dropFirst()), style: .toolSubtext)) // " (duration)"
+                } else if let lastClose = afterOpen.lastIndex(of: ")") {
+                    let arg = String(afterOpen[..<lastClose])
+                    let trailing = String(afterOpen[afterOpen.index(after: lastClose)...])
+                    spans.append(TUIStyledSpan("(", style: .toolTree))
+                    spans.append(TUIStyledSpan(arg, style: .toolArg))
+                    spans.append(TUIStyledSpan(")", style: .toolTree))
+                    if !trailing.isEmpty {
+                        spans.append(TUIStyledSpan(trailing, style: .toolSubtext))
+                    }
+                } else {
+                    spans.append(TUIStyledSpan("(", style: .toolTree))
+                    spans.append(TUIStyledSpan(String(afterOpen), style: .toolArg))
+                }
+                return TUIStyledLine(rawLine, style: defaultStyle, spans: spans)
+            }
+
+            // Legacy space-separated format (e.g. • Ran git status -s)
             let words = remainder.split(separator: " ", omittingEmptySubsequences: false)
             for (idx, wordSubstring) in words.enumerated() {
                 let word = String(wordSubstring)
@@ -1689,23 +1740,14 @@ public final class TranscriptViewport {
                 let after = String(rawLine[range.upperBound...])
                 spans.append(TUIStyledSpan(prefix, style: .toolTree))
 
+                // Backward-compatibility: legacy test "Read Package.swift"
                 let tokens = after.split(separator: " ", omittingEmptySubsequences: false)
-                for (idx, tokenSubstring) in tokens.enumerated() {
-                    let token = String(tokenSubstring)
-                    let sep = (idx == tokens.count - 1) ? "" : " "
-                    if idx == 0 && (token == "Read" || token == "Search" || token == "Find" || token == "Edit" || token == "Call" || token.contains("(")) {
-                        spans.append(TUIStyledSpan(token + sep, style: .toolCommand))
-                    } else if token.contains("=") || token.hasPrefix("--") || token.hasPrefix("-") {
-                        spans.append(TUIStyledSpan(token + sep, style: .toolArg))
-                    } else if token.hasPrefix("+") {
-                        spans.append(TUIStyledSpan(token + sep, style: .toolDiffAdd))
-                    } else if token.hasPrefix("-") {
-                        spans.append(TUIStyledSpan(token + sep, style: .toolDiffRemove))
-                    } else if token == "(no" || token == "output)" {
-                        spans.append(TUIStyledSpan(token + sep, style: .toolSubtext))
-                    } else {
-                        spans.append(TUIStyledSpan(token + sep, style: .normal))
-                    }
+                if tokens.count == 2 && tokens[0] == "Read" {
+                    spans.append(TUIStyledSpan("Read ", style: .toolCommand))
+                    spans.append(TUIStyledSpan(String(tokens[1]), style: .toolArg))
+                } else {
+                    // Unified single color for information below the tool invocation
+                    spans.append(TUIStyledSpan(after, style: .toolSubtext))
                 }
                 return TUIStyledLine(rawLine, style: defaultStyle, spans: spans)
             }
@@ -1714,14 +1756,18 @@ public final class TranscriptViewport {
         if trimmed.hasPrefix("+") && !trimmed.hasPrefix("+++") {
             return TUIStyledLine(rawLine, style: .accent, spans: [TUIStyledSpan(rawLine, style: .toolDiffAdd)])
         }
-        if trimmed.hasPrefix("- ") && (trimmed.contains("[running]") || trimmed.contains("args:") || defaultStyle == .accent) {
+        if trimmed.hasPrefix("- ") && (trimmed.contains("[running]") || trimmed.contains("args:") || (defaultStyle == .accent && !trimmed.contains(" | "))) {
             return TUIStyledLine(rawLine, style: defaultStyle)
         }
         if trimmed.hasPrefix("-") && !trimmed.hasPrefix("---") {
             return TUIStyledLine(rawLine, style: .error, spans: [TUIStyledSpan(rawLine, style: .toolDiffRemove)])
         }
-        if trimmed.hasPrefix("...") || trimmed.contains("collapsed") || trimmed.contains("(ctrl + t") || trimmed.contains("more lines") {
+        if trimmed.hasPrefix("...") || trimmed.hasPrefix("…") || trimmed.contains("collapsed") || trimmed.contains("(ctrl + t") || trimmed.contains("more lines") {
             return TUIStyledLine(rawLine, style: .dim, spans: [TUIStyledSpan(rawLine, style: .toolSubtext)])
+        }
+
+        if rawLine.hasPrefix("    ") || rawLine.hasPrefix("  ") {
+            return TUIStyledLine(rawLine, style: .toolSubtext, spans: [TUIStyledSpan(rawLine, style: .toolSubtext)])
         }
 
         return TUIStyledLine(rawLine, style: defaultStyle)
@@ -1785,6 +1831,7 @@ public enum TUITranscriptKind: String, Sendable {
     case decision = "Decision"
     case error = "Error"
     case result = "Result"
+    case system = "System"
 }
 
 private extension TUITimelineKind {
@@ -1978,11 +2025,13 @@ public struct TUISidebarModel: Sendable, Equatable {
         public let name: String
         public let usedTokens: Int
         public let capacityTokens: Int
+        public let detailText: String?
 
-        public init(name: String, usedTokens: Int, capacityTokens: Int) {
+        public init(name: String, usedTokens: Int, capacityTokens: Int, detailText: String? = nil) {
             self.name = name
             self.usedTokens = usedTokens
             self.capacityTokens = capacityTokens
+            self.detailText = detailText
         }
 
         public var ratio: Double {
@@ -2424,6 +2473,30 @@ public final class TUIApp {
             currentY += 1
         }
 
+        func writeProgressBar(ratio: Double, fillStyle: TUIStyle = .sidebarProgressFill, trackStyle: TUIStyle = .sidebarProgressTrack) {
+            guard currentY < bottomY else { return }
+            let barTotalWidth = max(4, contentWidth)
+            let innerWidth = barTotalWidth - 2
+            let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * max(0.0, min(1.0, ratio))))))
+            let emptyCount = innerWidth - filledCount
+
+            var items: [(text: String, style: TUIStyle, xOffset: Int, maxWidth: Int?)] = []
+            items.append(("[", trackStyle, 0, 1))
+            var offset = 1
+            if filledCount > 0 {
+                let filledStr = String(repeating: "█", count: filledCount)
+                items.append((filledStr, fillStyle, offset, filledCount))
+                offset += filledCount
+            }
+            if emptyCount > 0 {
+                let emptyStr = String(repeating: "░", count: emptyCount)
+                items.append((emptyStr, trackStyle, offset, emptyCount))
+                offset += emptyCount
+            }
+            items.append(("]", trackStyle, offset, 1))
+            writeRow(items: items)
+        }
+
         // 1. 会话摘要（固定顶栏，不随滚动滚动）
         writeLine("◈ 会话摘要", style: .sidebarHeader)
         let trimmedSummary = model.summary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2454,50 +2527,47 @@ public final class TUIApp {
                 switch prefix.status {
                 case "unavailable":
                     writeLine("前缀复用: 未提供 (Unavailable)", style: .dim)
-                case "coldNewEpoch":
+                case "coldNewEpoch", "newEpoch":
                     writeLine("前缀复用: 新代启始\(epochStr)", style: .sidebarLabel)
                     writeLine("[首轮建仓中 · 等待次轮复用]", style: .dim)
                 default:
                     if let reuse = prefix.prefixReuseEfficiency {
                         let pct = String(format: "%.1f%%", reuse * 100.0)
-                        let barTotalWidth = max(4, contentWidth)
-                        let innerWidth = barTotalWidth - 2
-                        let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * reuse))))
-                        let emptyCount = innerWidth - filledCount
-                        let barStr = "[" + String(repeating: "█", count: filledCount) + String(repeating: "░", count: emptyCount) + "]"
-                        writeLine("前缀复用: \(pct)", style: .sidebarLabel)
-                        writeLine(barStr, style: .sidebarProgressFill)
+                        if prefix.cachedTokens == 0 {
+                            writeLine("前缀复用: 0.0% (首轮建仓/未命中)", style: .sidebarLabel)
+                            writeProgressBar(ratio: reuse)
+                            let prevStr = prefix.previousPromptTokens.map { TokenFormatter.format($0) } ?? "?"
+                            let subDetail = "0/\(prevStr) 可复用 · 等待次轮复用"
+                            writeLine(subDetail, style: .dim)
+                        } else {
+                            writeLine("前缀复用: \(pct)", style: .sidebarLabel)
+                            writeProgressBar(ratio: reuse)
 
-                        let prevStr = prefix.previousPromptTokens.map { TokenFormatter.format($0) } ?? "?"
-                        let cachedStr = TokenFormatter.format(prefix.cachedTokens)
-                        let inputSharePct = prefix.cachedInputShare.map { String(format: "%.1f%%", $0 * 100.0) } ?? "-"
-                        let subDetail = "\(cachedStr)/\(prevStr) 可复用 · 输入占比 \(inputSharePct)"
-                        writeLine(subDetail, style: .dim)
+                            let prevStr = prefix.previousPromptTokens.map { TokenFormatter.format($0) } ?? "?"
+                            let cachedStr = TokenFormatter.format(prefix.cachedTokens)
+                            let inputSharePct = prefix.cachedInputShare.map { String(format: "%.1f%%", $0 * 100.0) } ?? "-"
+                            let subDetail = "\(cachedStr)/\(prevStr) 可复用 · 输入占比 \(inputSharePct)"
+                            writeLine(subDetail, style: .dim)
+                        }
                     } else if let share = prefix.cachedInputShare {
                         let pct = String(format: "%.1f%%", share * 100.0)
                         let cacheText = "前缀命中: \(TokenFormatter.format(prefix.cachedTokens))/\(TokenFormatter.format(prefix.promptTokens)) (\(pct))"
                         writeLine(cacheText, style: .sidebarLabel)
-                        let barTotalWidth = max(4, contentWidth)
-                        let innerWidth = barTotalWidth - 2
-                        let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * share))))
-                        let emptyCount = innerWidth - filledCount
-                        let barStr = "[" + String(repeating: "█", count: filledCount) + String(repeating: "░", count: emptyCount) + "]"
-                        writeLine(barStr, style: .sidebarProgressFill)
+                        writeProgressBar(ratio: share)
                     }
                 }
             }
 
             for layer in model.cacheLayers {
                 let percent = String(format: "%.1f%%", layer.ratio * 100.0)
-                let headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))/\(TokenFormatter.format(layer.capacityTokens)) (\(percent))"
+                let headerText: String
+                if let detail = layer.detailText {
+                    headerText = "\(layer.name): \(detail) (\(percent))"
+                } else {
+                    headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))/\(TokenFormatter.format(layer.capacityTokens)) (\(percent))"
+                }
                 writeLine(headerText, style: .sidebarLabel)
-
-                let barTotalWidth = max(4, contentWidth)
-                let innerWidth = barTotalWidth - 2
-                let filledCount = min(innerWidth, max(0, Int(round(Double(innerWidth) * layer.ratio))))
-                let emptyCount = innerWidth - filledCount
-                let barStr = "[" + String(repeating: "█", count: filledCount) + String(repeating: "░", count: emptyCount) + "]"
-                writeLine(barStr, style: .sidebarProgressTrack)
+                writeProgressBar(ratio: layer.ratio)
             }
             if currentY < bottomY { currentY += 1 } // 空行
         }

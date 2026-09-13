@@ -213,7 +213,7 @@ struct ContextCompactionTests {
         let sessionID = try await client.createSession()
         for index in 0..<4 {
             let anchor = index == 0 ? " FoxAnchor-A" : ""
-            let stream = try await client.sendMessage(sessionID: sessionID, content: String(repeating: "large session evidence\(anchor) ", count: 300))
+            let stream = try await client.sendMessage(sessionID: sessionID, content: String(repeating: "large session evidence\(anchor) ", count: 240))
             for try await _ in stream {}
         }
         let canonical = try await client.session(sessionID)

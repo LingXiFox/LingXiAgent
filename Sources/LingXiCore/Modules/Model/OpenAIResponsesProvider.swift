@@ -525,13 +525,24 @@ public struct ResponsesStreamStateMachine: Sendable {
     }
 
     private static func parseUsage(_ value: [String: Any]) -> ModelUsage {
-        let outputDetails = value["output_tokens_details"] as? [String: Any]
-        let inputDetails = value["input_tokens_details"] as? [String: Any]
+        let outputDetails = (value["output_tokens_details"] as? [String: Any]) ?? (value["output_token_details"] as? [String: Any])
+        let inputDetails = (value["input_tokens_details"] as? [String: Any])
+            ?? (value["input_token_details"] as? [String: Any])
+            ?? (value["prompt_tokens_details"] as? [String: Any])
+            ?? (value["prompt_token_details"] as? [String: Any])
+        let cached = (inputDetails?["cached_tokens"] as? Int)
+            ?? (inputDetails?["cached_prompt_tokens"] as? Int)
+            ?? (inputDetails?["cache_read_tokens"] as? Int)
+            ?? (value["cached_tokens"] as? Int)
+            ?? (value["cached_prompt_tokens"] as? Int)
+            ?? (value["prompt_cache_hit_tokens"] as? Int)
+            ?? (value["cache_read_input_tokens"] as? Int)
         return ModelUsage(
-            inputTokens: value["input_tokens"] as? Int,
-            outputTokens: value["output_tokens"] as? Int,
+            inputTokens: (value["input_tokens"] as? Int) ?? (value["prompt_tokens"] as? Int),
+            outputTokens: (value["output_tokens"] as? Int) ?? (value["completion_tokens"] as? Int),
             reasoningTokens: outputDetails?["reasoning_tokens"] as? Int,
-            cacheReadTokens: inputDetails?["cached_tokens"] as? Int
+            cacheReadTokens: cached,
+            cacheWriteTokens: (value["cache_creation_input_tokens"] as? Int)
         )
     }
 }

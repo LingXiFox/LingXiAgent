@@ -123,6 +123,10 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.deleteSession(envelope: envelope)
     }
 
+    public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> {
+        try await service.revertLastTurn(envelope: envelope)
+    }
+
     public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> {
         try await service.getSession(envelope: envelope)
     }

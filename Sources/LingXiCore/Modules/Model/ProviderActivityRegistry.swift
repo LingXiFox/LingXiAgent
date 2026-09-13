@@ -16,7 +16,9 @@ public actor ProviderActivityRegistry {
         runID: AgentRunID?,
         providerRequestID: String,
         state: ProviderActivityState,
-        model: String? = nil
+        model: String? = nil,
+        detail: String? = nil,
+        statusCode: Int? = nil
     ) -> ProviderActivitySnapshot {
         let effectiveState: ProviderActivityState
         if let runID, cancelledRunIDs.contains(runID) {
@@ -32,6 +34,8 @@ public actor ProviderActivityRegistry {
             providerRequestID: providerRequestID,
             state: effectiveState,
             model: model,
+            detail: detail,
+            statusCode: statusCode,
             updatedAt: .now
         )
         activities[providerRequestID] = snapshot
@@ -49,6 +53,8 @@ public actor ProviderActivityRegistry {
             providerRequestID: snapshot.providerRequestID,
             state: .cancelled,
             model: snapshot.model,
+            detail: snapshot.detail,
+            statusCode: snapshot.statusCode,
             updatedAt: .now
         )
         activities[providerRequestID] = snapshot
@@ -69,6 +75,8 @@ public actor ProviderActivityRegistry {
                 providerRequestID: snapshot.providerRequestID,
                 state: .cancelled,
                 model: snapshot.model,
+                detail: snapshot.detail,
+                statusCode: snapshot.statusCode,
                 updatedAt: .now
             )
             activities[id] = newSnapshot

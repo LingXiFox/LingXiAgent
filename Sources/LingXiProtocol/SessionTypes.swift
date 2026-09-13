@@ -197,3 +197,34 @@ public struct TurnFailure: Sendable, Equatable, Codable {
         self.error = error
     }
 }
+
+public struct RevertLastTurnRequest: Codable, Sendable, Equatable {
+    public let sessionID: SessionID
+
+    public init(sessionID: SessionID) {
+        self.sessionID = sessionID
+    }
+}
+
+public struct RevertLastTurnResult: Codable, Sendable, Equatable {
+    public let revertedPrompt: String?
+    public let removedCount: Int
+    public let snapshot: SessionSnapshot?
+    public let revision: UInt64?
+
+    public var revertedComposerText: String? {
+        revertedPrompt
+    }
+
+    public init(
+        revertedPrompt: String?,
+        removedCount: Int,
+        snapshot: SessionSnapshot? = nil,
+        revision: UInt64? = nil
+    ) {
+        self.revertedPrompt = revertedPrompt
+        self.removedCount = removedCount
+        self.snapshot = snapshot
+        self.revision = revision
+    }
+}

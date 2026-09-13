@@ -69,6 +69,7 @@ public final class ApplicationTUI {
     private var activityStartedAt: [String: ContinuousClock.Instant] = [:]
     private var activityFinishedDuration: [String: Duration] = [:]
     private var committedEntryCache: [TimelineNodeID: TUITranscriptEntry] = [:]
+    private var lastRenderedNodeCount = 0
     private var userToggledEntries: [String: Bool] = [:]
     private var waitingStartedAt: ContinuousClock.Instant?
     private var selectionStart: TUIPoint?
@@ -88,6 +89,9 @@ public final class ApplicationTUI {
             self.updateStatusLine(self.latestState)
             if self.waitingStartedAt != nil {
                 self.refreshWaitingIndicator()
+            }
+            if self.hasLiveAnimatedContent(self.latestState) {
+                self.refreshView(self.latestState)
             }
         }
         self.render()
@@ -277,6 +281,22 @@ public final class ApplicationTUI {
             shouldQuit = true
             return
         }
+        if event == .escape {
+            let running = isActive(latestState)
+                || waitingStartedAt != nil
+                || !(latestState.activeSessionState?.activeToolCallIDs.isEmpty ?? true)
+
+            if running {
+                Task {
+                    await store.dispatch(.stopCurrentRun)
+                }
+                waitingStartedAt = nil
+                overlay = nil
+                view.transcript.clearSelection()
+                view.setFocus(.composer)
+                return
+            }
+        }
         if latestState.activeInteraction != nil {
             await handleInteraction(event, store: store)
             return
@@ -438,7 +458,7 @@ public final class ApplicationTUI {
                 view.setFocus(.composer)
                 return
             }
-            enqueue { await store.dispatch(.stopCurrentRun) }
+            Task { await store.dispatch(.stopCurrentRun) }
             view.setFocus(.composer)
         default:
             view.setFocus(.composer)
@@ -449,8 +469,9 @@ public final class ApplicationTUI {
                 view.composer.commitHistory()
                 view.composer.clear()
                 overlay = nil
-                view.transcript.scrollToBottom()
-                waitingStartedAt = animationNow
+                let now = animationClock.now
+                animationNow = now
+                waitingStartedAt = now
                 if prompt.hasPrefix("/") {
                     executeLocalOrApplicationCommand(prompt, store: store)
                 } else {
@@ -738,7 +759,7 @@ public final class ApplicationTUI {
     }
 
     private func sessionOptions(query: String) -> [SessionSummary] {
-        SessionCatalog.groups(latestState.sessionCatalog, currentDirectory: currentDirectory, query: query).flatMap(\.sessions)
+        SessionCatalog.timeGroups(latestState.sessionCatalog, query: query).flatMap(\.sessions)
     }
 
     private var currentDirectory: String {
@@ -953,8 +974,20 @@ public final class ApplicationTUI {
     private func executeCommand(_ input: String, store: ApplicationStore) async -> TUITranscriptEntry? {
         do {
             let result = try await store.executeCommand(input)
+            if let reverted = result.revertedComposerText {
+                view.composer.setText(reverted)
+                let now = animationClock.now
+                animationNow = now
+                waitingStartedAt = nil
+                activityStartedAt.removeAll(keepingCapacity: true)
+                activityFinishedDuration.removeAll(keepingCapacity: true)
+                committedEntryCache.removeAll(keepingCapacity: true)
+                userToggledEntries.removeAll(keepingCapacity: true)
+                let fresh = await store.state
+                refreshView(fresh)
+            }
             guard !result.output.isEmpty else { return nil }
-            return TUITranscriptEntry(kind: .result, text: result.output)
+            return TUITranscriptEntry(kind: .result, text: result.output, style: .systemNotice)
         } catch {
             return TUITranscriptEntry(kind: .error, text: String(describing: error), style: .error)
         }
@@ -997,6 +1030,20 @@ public final class ApplicationTUI {
                 guard let self else { return }
                 if let entry = await self.executeCommand(input, store: store) {
                     await self.publishCommandResult(entry)
+                }
+            }
+        case "/undo", "/rewind":
+            enqueue { [weak self] in
+                guard let self else { return }
+                await MainActor.run { self.waitingStartedAt = nil }
+                await store.dispatch(.stopCurrentRun)
+                if let entry = await self.executeCommand(input, store: store) {
+                    await self.publishCommandResult(entry)
+                }
+                let fresh = await store.state
+                await MainActor.run {
+                    self.waitingStartedAt = nil
+                    self.refreshView(fresh)
                 }
             }
         case "/model", "/m":
@@ -1076,7 +1123,7 @@ public final class ApplicationTUI {
                 let items = allCommands.filter { command in
                     query.isEmpty || command.name.localizedCaseInsensitiveContains(query) || command.description.localizedCaseInsensitiveContains(query)
                 }.map { command -> TUICompletionItem in
-                    let hasSubs = hasSubcommands(command.name)
+                    let hasSubs = Self.hasSubcommands(command.name)
                     let completionValue = hasSubs ? "/\(command.name) " : "/\(command.name)"
                     return TUICompletionItem(value: completionValue, label: "/\(command.name)", detail: command.description, kind: .command)
                 }
@@ -1098,13 +1145,14 @@ public final class ApplicationTUI {
         overlay = items.isEmpty ? nil : .completion(tokenStart: at, selected: completionView.selectedIndex)
     }
 
-    private func hasSubcommands(_ commandName: String) -> Bool {
+    static func hasSubcommands(_ commandName: String) -> Bool {
         let name = commandName.lowercased()
-        if ["permissions", "permission", "mode", "connect", "resume"].contains(name) {
+        if ["permissions", "permission", "mode", "connect"].contains(name) {
             return true
         }
-        if let cmd = allCommands.first(where: { $0.name.lowercased() == name || $0.aliases.contains(name) }) {
-            return cmd.argumentSchema.contains("|")
+        if let cmd = BuiltinCommands.all.first(where: { $0.name.lowercased() == name || $0.aliases.contains(name) }) {
+            let schema = cmd.argumentSchema
+            return schema.contains("|") && !schema.hasPrefix("[")
         }
         return false
     }
@@ -1145,22 +1193,6 @@ public final class ApplicationTUI {
                 // discovery has not completed. A canned roster here would offer
                 // models this account may not be able to reach at all.
                 rawOptions = []
-            }
-        case "resume":
-            let currentCwd = FileManager.default.currentDirectoryPath
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "MM-dd HH:mm"
-            let sortedCatalog = latestState.sessionCatalog.sorted(by: { $0.updatedAt > $1.updatedAt })
-            rawOptions = sortedCatalog.map { s in
-                let isCurrent = (s.workingDirectory == currentCwd)
-                let dirName = URL(fileURLWithPath: s.workingDirectory ?? currentCwd).lastPathComponent
-                let dirTag = isCurrent ? "[当前] " : "[\(dirName)] "
-                let timeStr = dateFormatter.string(from: s.updatedAt)
-                let shortID = String(s.sessionID.rawValue.prefix(8))
-                let msgs = "\(s.messageCount)条消息"
-                let label = "\(dirTag)\(shortID) · \(timeStr) (\(msgs))"
-                let detail = "\(s.title ?? "未命名") · \(s.workingDirectory ?? "")"
-                return (s.sessionID.rawValue, label, detail)
             }
         default:
             if let cmd = allCommands.first(where: { $0.name.lowercased() == normalizedCommand || $0.aliases.contains(normalizedCommand) }),
@@ -1225,6 +1257,12 @@ public final class ApplicationTUI {
 
         let session = state.activeSessionState
         let nodes = session?.timelineNodes ?? []
+        if nodes.count < lastRenderedNodeCount {
+            committedEntryCache.removeAll(keepingCapacity: true)
+            activityStartedAt.removeAll(keepingCapacity: true)
+            activityFinishedDuration.removeAll(keepingCapacity: true)
+            userToggledEntries.removeAll(keepingCapacity: true)
+        }
 
         var entries: [TUITranscriptEntry] = []
         entries.reserveCapacity(nodes.count + commandEntries.count + 1)
@@ -1244,18 +1282,21 @@ public final class ApplicationTUI {
             case let .thinking(th):
                 if th.isStreaming || !th.isComplete { hasActiveStreamingNode = true }
             case let .tool(tl):
-                if [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase) { hasActiveStreamingNode = true }
+                if [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase) && tl.result == nil && tl.error == nil { hasActiveStreamingNode = true }
             case .interaction, .subagent, .error, .runTerminal:
                 break
             }
         }
 
         let isRateLimited = state.status == .rateLimited || state.activeSessionState?.status == .rateLimited
+        let hasActiveTurn = state.activeSessionState?.activeTurnID != nil || state.activeSessionState?.activeRootRunID != nil || (state.activeSessionState?.queuedTurns.count ?? 0) > 0
         let isWaitingForProvider = !hasActiveStreamingNode && isActive(state) && !nodes.isEmpty && (
             state.status == .waitingForProvider ||
             state.activeSessionState?.status == .waitingForProvider ||
+            state.status == .thinking ||
+            state.activeSessionState?.status == .thinking ||
             isRateLimited ||
-            (state.status == .ready && (state.activeSessionState?.activeRootRunID != nil || (state.activeSessionState?.queuedTurns.count ?? 0) > 0))
+            (state.status == .ready && hasActiveTurn)
         )
         let isSessionIdle = !hasActiveStreamingNode && !isWaitingForProvider && !isActive(state)
 
@@ -1271,7 +1312,7 @@ public final class ApplicationTUI {
             case let .thinking(th):
                 isMutable = th.isStreaming || !th.isComplete
             case let .tool(tl):
-                isMutable = [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase)
+                isMutable = [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase) && tl.result == nil && tl.error == nil
             case .interaction, .subagent, .error, .runTerminal:
                 isMutable = false
             }
@@ -1294,7 +1335,9 @@ public final class ApplicationTUI {
             let spinnerChar = spinnerFrames[spinnerIndex % spinnerFrames.count]
             let modelID = state.currentModelID ?? "model"
             let waitingText: String
-            if isRateLimited {
+            if let detail = state.activeSessionState?.activeProviderRequestDetail, !detail.isEmpty {
+                waitingText = "\(spinnerChar) \(detail) (\(elapsed)s)..."
+            } else if isRateLimited {
                 waitingText = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
             } else {
                 waitingText = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
@@ -1351,6 +1394,7 @@ public final class ApplicationTUI {
             view.heroConfig = nil
             view.sidebarModel = (prefs.showSidebar ?? true) ? buildSidebarModel(from: state) : nil
         }
+        lastRenderedNodeCount = nodes.count
     }
 
     private func currentPermissionDisplayName(from state: ApplicationState?) -> String {
@@ -1383,17 +1427,27 @@ public final class ApplicationTUI {
             }
         }
 
-        // 2. 三级缓存用量 (L1, L2, L3)
-        let l1Capacity = 220_000
-        let l2Capacity = 350_000
-        let l3Capacity = 456_576
-        let l1Used = session?.contextState?.l1Tokens ?? 0
-        let l2Used = session?.contextState?.l2Tokens ?? 0
-        let l3Used = session?.contextState?.l3Tokens ?? 0
+        // 2. P-Core / E-Core 双核心架构用量与缓存状态
+        let ctx = session?.contextState
+        let pCoreUsed = ctx?.activePCoreTokens ?? 0
+        let pCoreCapacity = 128_000
+        let pCoreDetail = "\(TokenFormatter.format(pCoreUsed))/\(TokenFormatter.format(pCoreCapacity))"
+
+        let eCoreBytes = ctx?.eCoreTotalBytes ?? 0
+        let eCoreCount = ctx?.eCoreObjectCount ?? 0
+        let eCoreTokens = eCoreBytes / 4
+        let eCoreCapacity = 100_000
+        let eCoreDetail = "\(eCoreCount) objs · \(TokenFormatter.formatBytes(eCoreBytes))"
+
+        let cacheRead = ctx?.cacheReadTokens ?? 0
+        let cachePrompt = ctx?.promptTokens ?? max(1, pCoreUsed)
+        let cacheDebt = ctx?.cacheDebt ?? 0
+        let cacheDetail = "Read \(TokenFormatter.format(cacheRead)) · Debt \(cacheDebt)"
+
         let cacheLayers = [
-            TUISidebarModel.CacheLayer(name: "L1", usedTokens: l1Used, capacityTokens: l1Capacity),
-            TUISidebarModel.CacheLayer(name: "L2", usedTokens: l2Used, capacityTokens: l2Capacity),
-            TUISidebarModel.CacheLayer(name: "L3", usedTokens: l3Used, capacityTokens: l3Capacity)
+            TUISidebarModel.CacheLayer(name: "P-Core", usedTokens: pCoreUsed, capacityTokens: pCoreCapacity, detailText: pCoreDetail),
+            TUISidebarModel.CacheLayer(name: "E-Core", usedTokens: eCoreTokens, capacityTokens: eCoreCapacity, detailText: eCoreDetail),
+            TUISidebarModel.CacheLayer(name: "Cache", usedTokens: cacheRead, capacityTokens: max(1, cachePrompt), detailText: cacheDetail)
         ]
 
         // 从 timelineNodes 动态提取运行时失败或不可用的 MCP 服务
@@ -1504,13 +1558,6 @@ public final class ApplicationTUI {
             }
         }
 
-        if taskItems.isEmpty, let activeIDs = session?.activeToolCallIDs, !activeIDs.isEmpty {
-            for id in activeIDs {
-                let toolName = session?.toolNodes[id]?.toolName ?? "工具"
-                taskItems.append(TUISidebarModel.TaskItem(id: id.rawValue, title: "运行工具: \(toolName)", status: .inProgress))
-            }
-        }
-
         // 5. 子代理摘要
         var subagentItems: [TUISidebarModel.SubagentItem] = []
         if let subMap = session?.subagents {
@@ -1606,9 +1653,36 @@ public final class ApplicationTUI {
         return !hasAgentStartedWork(state)
     }
 
+    private func hasLiveAnimatedContent(_ state: ApplicationState) -> Bool {
+        guard let session = state.activeSessionState else { return false }
+        if session.timelineNodes.contains(where: { node in
+            switch node.kind {
+            case let .message(msg):
+                return msg.isStreaming
+            case let .thinking(th):
+                return th.isStreaming || !th.isComplete
+            case let .tool(tl):
+                return [.requested, .waitingPermission, .scheduled, .running].contains(tl.phase)
+            case .interaction, .subagent, .error, .runTerminal:
+                return false
+            }
+        }) {
+            return true
+        }
+        if state.status == .waitingForProvider ||
+            session.status == .waitingForProvider ||
+            state.status == .thinking ||
+            session.status == .thinking ||
+            state.status == .rateLimited ||
+            session.status == .rateLimited {
+            return true
+        }
+        return false
+    }
+
     private func animationTick(_ tick: TUIAnimationTick) {
-        guard isActive else { return }
         animationNow = tick.timestamp
+        guard isActive else { return }
         spinnerIndex = Int(tick.sequence % 10)
         frameScheduler.markDirty(.animation)
     }
@@ -1621,7 +1695,9 @@ public final class ApplicationTUI {
         let modelID = latestState.currentModelID ?? "model"
         let isRateLimited = latestState.status == .rateLimited || latestState.activeSessionState?.status == .rateLimited
         let text: String
-        if isRateLimited {
+        if let detail = latestState.activeSessionState?.activeProviderRequestDetail, !detail.isEmpty {
+            text = "\(spinnerChar) \(detail) (\(elapsed)s)..."
+        } else if isRateLimited {
             text = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
         } else {
             text = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
@@ -1819,49 +1895,168 @@ public final class ApplicationTUI {
 
     static func sessionPickerOverlay(sessions: [SessionSummary], currentDirectory: String, activeSessionID: SessionID?,
                                      query: String, selected: Int, size: TUISize) -> TUIOverlayModel {
-        let width = max(4, min(90, size.width - 2))
-        let innerWidth = max(1, width - 4)
-        let rowCount = max(3, min(16, size.height - 8))
-        let groups = SessionCatalog.groups(sessions, currentDirectory: currentDirectory, query: query)
-        let count = groups.reduce(0) { $0 + $1.sessions.count }
-        let selection = max(0, min(selected, count - 1))
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        var rows: [TUIStyledLine] = []
-        var selectedRow = 0
-        var index = 0
-        var groupRows: [Int] = []
-        for group in groups {
-            groupRows.append(rows.count)
-            let current = group.directory == URL(fileURLWithPath: currentDirectory).standardizedFileURL.path
-            let directory = group.directory.isEmpty ? "未知项目" : group.directory
-            rows.append(TUIStyledLine("\(current ? "[当前项目] " : "[项目] ")\(directory)", style: .modalGroup))
+        let timeGroups = SessionCatalog.timeGroups(sessions, query: query)
+        let items = timeGroups.flatMap(\.sessions)
+        let totalWidth = max(28, min(78, size.width - 4))
+        let innerWidth = max(1, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header: Select session ... esc
+        let titleLeft = "Select session"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - titleLeft.count - titleRight.count)
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Search box
+        let searchContent = query.isEmpty ? "│Search" : "\(query)│"
+        let searchStyle: TUIStyle = query.isEmpty ? .modalSearchPlaceholder : .modalItem
+        lines.append(TUIStyledLine(searchContent, style: searchStyle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Time Groups & Items (平铺视口，固定内容行数，彻底杜绝上下抽搐)
+        let contentRowCount = max(3, min(13, size.height - 8))
+        let safeSelected = items.isEmpty ? 0 : max(0, min(items.count - 1, selected))
+
+        enum SessionDisplayRow {
+            case group(String)
+            case item(actualIndex: Int, session: SessionSummary)
+        }
+
+        var allRows: [SessionDisplayRow] = []
+        var groupIndices: [Int] = []
+        var actualCounter = 0
+        for group in timeGroups {
+            groupIndices.append(allRows.count)
+            allRows.append(.group(group.title))
             for session in group.sessions {
-                if index == selection { selectedRow = rows.count }
-                let marker = index == selection ? "> " : "  "
-                let active = session.sessionID == activeSessionID ? "● " : ""
-                rows.append(TUIStyledLine("\(marker)\(active)\(session.title ?? "未命名会话")",
-                                           style: index == selection ? .modalHighlight : .modalItem))
-                rows.append(TUIStyledLine("  \(formatter.string(from: session.updatedAt)) · \(session.messageCount)条 · \(session.sessionID.rawValue.prefix(8))",
-                                           style: .modalItemDim))
-                index += 1
+                allRows.append(.item(actualIndex: actualCounter, session: session))
+                actualCounter += 1
             }
         }
-        if rows.isEmpty { rows.append(TUIStyledLine("暂无匹配的历史会话", style: .modalItemDim)) }
-        let start = max(0, min(selectedRow - rowCount / 2, max(0, rows.count - rowCount)))
-        var visible = Array(rows.dropFirst(start).prefix(rowCount))
-        // Keep the project label visible when scrolling through a large group.
-        if !groupRows.contains(start), let header = groupRows.last(where: { $0 < start }) {
-            visible = [rows[header]] + Array(rows.dropFirst(start).prefix(rowCount - 1))
+
+        let selectedRowIdx = allRows.firstIndex(where: {
+            if case let .item(idx, _) = $0 { return idx == safeSelected }
+            return false
+        }) ?? 0
+
+        let visibleRows: [SessionDisplayRow]
+        if allRows.count <= contentRowCount {
+            visibleRows = allRows
+        } else {
+            let groupHeaderIdx = groupIndices.last(where: { $0 <= selectedRowIdx }) ?? 0
+            var offset = max(0, min(selectedRowIdx - contentRowCount / 2, allRows.count - contentRowCount))
+
+            if offset > groupHeaderIdx {
+                let remainingSlots = contentRowCount - 1
+                let pinnedHeader = allRows[groupHeaderIdx]
+                var dataStart = max(groupHeaderIdx + 1, min(selectedRowIdx - remainingSlots / 2, allRows.count - remainingSlots))
+                if selectedRowIdx >= dataStart + remainingSlots {
+                    dataStart = selectedRowIdx - remainingSlots + 1
+                }
+                if selectedRowIdx < dataStart {
+                    dataStart = selectedRowIdx
+                }
+                let dataRows = Array(allRows[dataStart ..< min(allRows.count, dataStart + remainingSlots)])
+                visibleRows = [pinnedHeader] + dataRows
+            } else {
+                if selectedRowIdx >= offset + contentRowCount {
+                    offset = selectedRowIdx - contentRowCount + 1
+                }
+                if selectedRowIdx < offset {
+                    offset = selectedRowIdx
+                }
+                visibleRows = Array(allRows[offset ..< min(allRows.count, offset + contentRowCount)])
+            }
         }
-        var lines = [
-            TUIStyledLine("恢复会话 · 当前项目优先 / 最近更新在前", style: .modalTitle),
-            TUIStyledLine(query.isEmpty ? "搜索标题、会话 ID 或项目路径…" : query + "│", style: .modalSearchPlaceholder)
-        ]
-        lines += visible
-        lines.append(TUIStyledLine("\(count == 0 ? 0 : selection + 1)/\(count) · ↑↓ 移动 · Enter 恢复 · Esc 关闭", style: .modalItemDim))
-        lines = lines.map { TUIStyledLine(modalText($0.text, width: innerWidth), style: $0.style) }
-        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: width, modalHeight: lines.count + 2)
+
+        let timeFormatter = DateFormatter()
+        let calendar = Calendar.current
+        let now = Date()
+
+        var renderedCount = 0
+        if items.isEmpty {
+            lines.append(TUIStyledLine("  No matching sessions", style: .modalItemDim))
+            renderedCount += 1
+        } else {
+            for row in visibleRows {
+                switch row {
+                case let .group(groupTitle):
+                    lines.append(TUIStyledLine(groupTitle, style: .modalGroup))
+                case let .item(actualIdx, session):
+                    let isSelected = actualIdx == safeSelected
+                    let isActive = session.sessionID == activeSessionID
+                    let dot = isActive ? "● " : "  "
+                    let title = (session.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? session.title! : "未命名会话")
+                        .replacingOccurrences(of: "\n", with: " ")
+
+                    let dateStr: String
+                    if calendar.isDateInToday(session.updatedAt) {
+                        timeFormatter.dateFormat = "HH:mm"
+                        dateStr = timeFormatter.string(from: session.updatedAt)
+                    } else if calendar.isDateInYesterday(session.updatedAt) {
+                        dateStr = "昨天"
+                    } else if let days = calendar.dateComponents([.day], from: session.updatedAt, to: now).day, days < 7 {
+                        timeFormatter.dateFormat = "E"
+                        dateStr = timeFormatter.string(from: session.updatedAt)
+                    } else {
+                        timeFormatter.dateFormat = "MM-dd"
+                        dateStr = timeFormatter.string(from: session.updatedAt)
+                    }
+
+                    let right = "\(session.messageCount)条 · \(dateStr)"
+                    let rightW = TUIDisplayWidth.width(of: right)
+                    let leftPrefixW = TUIDisplayWidth.width(of: dot)
+                    let availableForTitle = max(4, innerWidth - rightW - leftPrefixW - 2)
+                    let displayTitle = truncateToWidth(title, width: availableForTitle)
+                    let left = "\(dot)\(displayTitle)"
+                    let leftW = TUIDisplayWidth.width(of: left)
+                    let pad = max(1, innerWidth - leftW - rightW)
+                    let rowText = left + String(repeating: " ", count: pad) + right
+
+                    if isSelected {
+                        lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+                    } else {
+                        lines.append(TUIStyledLine(rowText, style: isActive ? .modalActiveDot : .modalItem))
+                    }
+                }
+                renderedCount += 1
+            }
+        }
+
+        while renderedCount < contentRowCount {
+            lines.append(TUIStyledLine("", style: .modalBackground))
+            renderedCount += 1
+        }
+
+        // 4. Footer
+        lines.append(TUIStyledLine("", style: .modalBackground))
+        let footerLeft = "\(items.count) sessions"
+        let footerRight = "↑↓ 移动 · Enter 恢复 · Esc 关闭"
+        let leftW = TUIDisplayWidth.width(of: footerLeft)
+        let rightW = TUIDisplayWidth.width(of: footerRight)
+        let footerPad = max(1, innerWidth - leftW - rightW)
+        let footer = footerLeft + String(repeating: " ", count: footerPad) + footerRight
+        lines.append(TUIStyledLine(footer, style: .modalItemDim))
+
+        lines = lines.map { TUIStyledLine(truncateToWidth($0.text, width: innerWidth), style: $0.style) }
+        let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private static func truncateToWidth(_ text: String, width: Int) -> String {
+        var current = ""
+        var w = 0
+        for ch in text {
+            let chW = TUIDisplayWidth.width(of: String(ch))
+            if w + chW > width { break }
+            current.append(ch)
+            w += chW
+        }
+        if w < width {
+            current += String(repeating: " ", count: width - w)
+        }
+        return current
     }
 
     private static func modalText(_ text: String, width: Int) -> String {
@@ -1973,7 +2168,9 @@ public final class ApplicationTUI {
             waitingElapsedText = ""
         }
         let isRateLimited = state.status == .rateLimited || state.activeSessionState?.status == .rateLimited
-        if isRateLimited {
+        if let detail = state.activeSessionState?.activeProviderRequestDetail, !detail.isEmpty {
+            baseStatus = "\(detail)\(waitingElapsedText)"
+        } else if isRateLimited {
             baseStatus = "Rate limited (retrying)\(waitingElapsedText)"
         } else if state.status == .ready && (hasActiveWork || queuedCount > 0) && !hasActiveError {
             baseStatus = "Waiting for provider\(waitingElapsedText)"
@@ -2163,7 +2360,7 @@ public final class ApplicationTUI {
             var content = message.content
             if message.role == .assistant && !message.isStreaming && !content.isEmpty && isTerminalAssistant {
                 let params = formatSessionParams(node: node, message: message)
-                content += "\n\n" + params
+                content += "\n" + params
             }
             return TUITranscriptEntry(id: id, kind: kind, text: content, timestamp: node.timestamp)
         case let .thinking(thinking):
@@ -2192,6 +2389,9 @@ public final class ApplicationTUI {
             }
             let contentBody = thinking.content.trimmingCharacters(in: .whitespacesAndNewlines)
             let isStreaming = thinking.isStreaming && !thinking.isComplete
+            if contentBody.isEmpty && (!isStreaming || thinking.isComplete) {
+                return nil
+            }
             let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
             let marker = isStreaming ? "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) " : "• "
             let firstLine = isStreaming ? "Thinking..." : "Thought for \(durationText)"
@@ -2208,7 +2408,11 @@ public final class ApplicationTUI {
             }
             return TUITranscriptEntry(id: id, kind: .thinking, text: text, style: .dim, collapsed: isCollapsed, timestamp: node.timestamp)
         case let .tool(tool):
-            let active = [.requested, .waitingPermission, .scheduled, .running].contains(tool.phase)
+            let sessionState = latestState.activeSessionState
+            let isSessionIdle = (sessionState?.activeRootRunID == nil && sessionState?.activeTurnID == nil && (sessionState?.status == .ready || latestState.status == .ready))
+            let isExplicitlyActive = sessionState?.activeToolCallIDs.contains(tool.callID) ?? false
+            let rawActive = [.requested, .waitingPermission, .scheduled, .running].contains(tool.phase) && tool.result == nil && tool.error == nil
+            let active = rawActive && !isSessionIdle && isExplicitlyActive
             return formatModernToolCall(tool: tool, id: id, active: active, timestamp: node.timestamp)
         case let .interaction(interaction):
             let detail = interaction.permissionRequest?.description ?? interaction.questionRequest?.question ?? interaction.decisionRequest?.question ?? "Action required"
@@ -2235,91 +2439,548 @@ public final class ApplicationTUI {
         ToolNode.summarizeArguments(argumentsJSON, toolName: toolName)
     }
 
-    private func formatModernToolCall(tool: ToolNode, id: String, active: Bool, timestamp: Date) -> TUITranscriptEntry {
-        let isError = tool.phase == .failed || tool.result?.success == false || tool.result?.error != nil
-        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        let dotMarker = active ? "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) " : "• "
+    private func unwrapOutputText(_ raw: String) -> String {
+        let cleanRaw = raw.replacingOccurrences(of: "\\/", with: "/")
+        let trimmed = cleanRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if (trimmed.hasPrefix("{") && trimmed.hasSuffix("}")) || (trimmed.hasPrefix("[") && trimmed.hasSuffix("]")),
+           let data = trimmed.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let stdout = dict["stdout"] as? String, !stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return stdout.replacingOccurrences(of: "\\/", with: "/")
+            }
+            if let stderr = dict["stderr"] as? String, !stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return stderr.replacingOccurrences(of: "\\/", with: "/")
+            }
+            if let summary = dict["summary"] as? String, !summary.isEmpty {
+                return summary.replacingOccurrences(of: "\\/", with: "/")
+            }
+            if let message = dict["message"] as? String, !message.isEmpty {
+                return message.replacingOccurrences(of: "\\/", with: "/")
+            }
+            if let error = dict["error"] as? String, !error.isEmpty {
+                return error.replacingOccurrences(of: "\\/", with: "/")
+            }
+            if let exitCode = (dict["exit_code"] as? NSNumber)?.intValue ?? (dict["exitCode"] as? NSNumber)?.intValue {
+                return exitCode == 0 ? "(no output)" : "exit code \(exitCode)"
+            }
+            return cleanRaw
+        }
 
-        let argsDict: [String: Any] = (tool.argumentsJSON.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:]
-
-        var lines: [String] = []
-        let toolName = tool.toolName
-
-        if toolName == "run_command" || toolName == "bash" || toolName == "shell" || toolName == "exec" {
-            let command = (argsDict["CommandLine"] as? String) ?? (argsDict["command"] as? String) ?? tool.argumentsJSON
-            lines.append("\(dotMarker)Ran \(command)")
-
-            let rawOutput = [tool.stdout, tool.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
-            if rawOutput.isEmpty {
-                if let summary = tool.result?.summary, !summary.isEmpty {
-                    lines.append("  └ \(summary)")
-                } else {
-                    lines.append("  └ (no output)")
+        // 针对因字符截断未闭合的 JSON，智能提取 stdout
+        if trimmed.contains("\"stdout\"") {
+            if let regex = try? NSRegularExpression(pattern: #""stdout"\s*:\s*"((?:[^"\\]|\\.)*)"#),
+               let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+               let range = Range(match.range(at: 1), in: trimmed) {
+                let extracted = String(trimmed[range])
+                    .replacingOccurrences(of: "\\n", with: "\n")
+                    .replacingOccurrences(of: "\\t", with: "\t")
+                    .replacingOccurrences(of: "\\\"", with: "\"")
+                    .replacingOccurrences(of: "\\/", with: "/")
+                if !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return extracted
                 }
-            } else {
-                let outLines = rawOutput.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-                if outLines.count <= 6 {
-                    for (i, l) in outLines.enumerated() {
-                        lines.append(i == 0 ? "  └ \(l)" : "    \(l)")
+            }
+        }
+        return cleanRaw
+    }
+
+    private func compactToolPath(_ path: String, maxLength: Int = 45) -> String {
+        var p = path.replacingOccurrences(of: "\\/", with: "/").trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty { return "file" }
+        if p.hasPrefix("$HOME/") {
+            p = String(p.dropFirst(6))
+        } else if p.hasPrefix("${HOME}/") {
+            p = String(p.dropFirst(8))
+        } else if p.hasPrefix("~/") {
+            p = String(p.dropFirst(2))
+        }
+        let commonPrefixes = [
+            "/Volumes/Development/Projects/projects/LingXiAgent/",
+            "/Volumes/Development/Projects/",
+            NSHomeDirectory() + "/"
+        ]
+        for prefix in commonPrefixes {
+            if p.hasPrefix(prefix) {
+                p = String(p.dropFirst(prefix.count))
+                break
+            }
+        }
+        if p.hasPrefix("/") {
+            return p.split(separator: "/").last.map(String.init) ?? p
+        }
+        if p.count <= maxLength { return p }
+        let parts = p.split(separator: "/")
+        if parts.count >= 2 {
+            let candidate = ".../" + parts.suffix(2).joined(separator: "/")
+            if candidate.count <= maxLength { return candidate }
+        }
+        return parts.last.map(String.init) ?? p
+    }
+
+    private func capitalizeToolName(_ rawName: String) -> String {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "Tool" || trimmed == "unknown" { return "Tool" }
+        let parts = trimmed.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." })
+        let capitalized = parts.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined()
+        return capitalized.isEmpty ? trimmed : capitalized
+    }
+
+    private func leftPad(_ text: String, toLength length: Int, pad: Character = " ") -> String {
+        if text.count >= length { return text }
+        return String(repeating: pad, count: length - text.count) + text
+    }
+
+    private func formatGitAddLines(content: String, maxVisible: Int = 12) -> [String] {
+        let rawLines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard !rawLines.isEmpty else { return [] }
+
+        var result: [String] = []
+        let total = rawLines.count
+        let numWidth = max(2, String(total).count)
+
+        if total <= maxVisible {
+            for (idx, line) in rawLines.enumerated() {
+                let numStr = leftPad(String(idx + 1), toLength: numWidth)
+                result.append("     + \(numStr) | \(line)")
+            }
+        } else {
+            let headCount = 5
+            let tailCount = 3
+            for i in 0..<headCount {
+                let numStr = leftPad(String(i + 1), toLength: numWidth)
+                result.append("     + \(numStr) | \(rawLines[i])")
+            }
+            let collapsed = total - headCount - tailCount
+            result.append("     ... +\(collapsed) lines (ctrl + t to view transcript)")
+            for i in (total - tailCount)..<total {
+                let numStr = leftPad(String(i + 1), toLength: numWidth)
+                result.append("     + \(numStr) | \(rawLines[i])")
+            }
+        }
+        return result
+    }
+
+    private func formatGitPatchLines(oldString: String, newString: String, maxVisible: Int = 16) -> [String] {
+        let oldLines = oldString.isEmpty ? [] : oldString.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let newLines = newString.isEmpty ? [] : newString.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var result: [String] = []
+
+        let maxNum = max(oldLines.count, newLines.count)
+        let numWidth = max(2, String(maxNum).count)
+        let half = maxVisible / 2
+
+        if oldLines.count <= half || newLines.isEmpty {
+            for (idx, line) in oldLines.enumerated() {
+                let numStr = leftPad(String(idx + 1), toLength: numWidth)
+                result.append("     - \(numStr) | \(line)")
+            }
+        } else {
+            for i in 0..<min(3, oldLines.count) {
+                let numStr = leftPad(String(i + 1), toLength: numWidth)
+                result.append("     - \(numStr) | \(oldLines[i])")
+            }
+            let collapsed = oldLines.count - 4
+            if collapsed > 0 {
+                result.append("     ... -\(collapsed) lines")
+            }
+            if let last = oldLines.last, oldLines.count > 3 {
+                let numStr = leftPad(String(oldLines.count), toLength: numWidth)
+                result.append("     - \(numStr) | \(last)")
+            }
+        }
+
+        if newLines.count <= half || oldLines.isEmpty {
+            for (idx, line) in newLines.enumerated() {
+                let numStr = leftPad(String(idx + 1), toLength: numWidth)
+                result.append("     + \(numStr) | \(line)")
+            }
+        } else {
+            for i in 0..<min(3, newLines.count) {
+                let numStr = leftPad(String(i + 1), toLength: numWidth)
+                result.append("     + \(numStr) | \(newLines[i])")
+            }
+            let collapsed = newLines.count - 4
+            if collapsed > 0 {
+                result.append("     ... +\(collapsed) lines")
+            }
+            if let last = newLines.last, newLines.count > 3 {
+                let numStr = leftPad(String(newLines.count), toLength: numWidth)
+                result.append("     + \(numStr) | \(last)")
+            }
+        }
+
+        return result
+    }
+
+    private func formatGitApplyPatch(_ patch: String, maxVisible: Int = 16) -> (lines: [String], summary: String) {
+        let rawLines = patch.components(separatedBy: "\n")
+        var addCount = 0
+        var delCount = 0
+        var diffLines: [String] = []
+
+        for line in rawLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("+") && !trimmed.hasPrefix("+++") {
+                addCount += 1
+                diffLines.append("     \(line)")
+            } else if trimmed.hasPrefix("-") && !trimmed.hasPrefix("---") {
+                delCount += 1
+                diffLines.append("     \(line)")
+            }
+        }
+
+        let summary = "+\(addCount) / -\(delCount) lines"
+        if diffLines.count <= maxVisible {
+            return (diffLines, summary)
+        } else {
+            var collapsed: [String] = []
+            collapsed.append(contentsOf: diffLines.prefix(6))
+            let rem = diffLines.count - 9
+            collapsed.append("     ... +\(rem) lines (ctrl + t to view transcript)")
+            collapsed.append(contentsOf: diffLines.suffix(3))
+            return (collapsed, summary)
+        }
+    }
+
+    private func parseBashFileWrite(command: String) -> (path: String, content: String)? {
+        let trimmedCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCmd.isEmpty else { return nil }
+
+        let lines = trimmedCmd.components(separatedBy: "\n")
+        guard let firstLine = lines.first else { return nil }
+
+        var targetPath: String?
+        var delimiter: String?
+
+        if firstLine.contains("cat") && firstLine.contains("<<") {
+            if let delimRange = firstLine.range(of: "<<") {
+                let afterDelim = firstLine[delimRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                let delimWord = afterDelim.components(separatedBy: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ">"))).first ?? ""
+                let cleanDelim = delimWord.trimmingCharacters(in: CharacterSet(charactersIn: "'\"\\"))
+                if !cleanDelim.isEmpty {
+                    delimiter = cleanDelim
+                }
+            }
+            if let redirRange = firstLine.range(of: ">") {
+                let afterRedir = firstLine[redirRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                if afterRedir.hasPrefix("\"") {
+                    let sub = afterRedir.dropFirst()
+                    if let endQuote = sub.firstIndex(of: "\"") {
+                        targetPath = String(sub[..<endQuote])
+                    }
+                } else if afterRedir.hasPrefix("'") {
+                    let sub = afterRedir.dropFirst()
+                    if let endQuote = sub.firstIndex(of: "'") {
+                        targetPath = String(sub[..<endQuote])
                     }
                 } else {
-                    lines.append("  └ \(outLines[0])")
-                    lines.append("    \(outLines[1])")
-                    let collapsedCount = outLines.count - 4
-                    lines.append("    ... +\(collapsedCount) lines (ctrl + t to view transcript)")
-                    lines.append("    \(outLines[outLines.count - 2])")
-                    lines.append("    \(outLines[outLines.count - 1])")
+                    let candidate = afterRedir.components(separatedBy: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "<"))).first ?? ""
+                    if !candidate.isEmpty {
+                        targetPath = candidate
+                    }
+                }
+            }
+        } else if firstLine.contains("tee ") && firstLine.contains("<<") {
+            if let delimRange = firstLine.range(of: "<<") {
+                let afterDelim = firstLine[delimRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                let delimWord = afterDelim.components(separatedBy: .whitespaces).first ?? ""
+                let cleanDelim = delimWord.trimmingCharacters(in: CharacterSet(charactersIn: "'\"\\"))
+                if !cleanDelim.isEmpty {
+                    delimiter = cleanDelim
+                }
+            }
+            let parts = firstLine.components(separatedBy: .whitespaces)
+            if let teeIdx = parts.firstIndex(of: "tee"), teeIdx + 1 < parts.count {
+                var candidate = parts[teeIdx + 1]
+                if candidate == "-a" && teeIdx + 2 < parts.count {
+                    candidate = parts[teeIdx + 2]
+                }
+                if !candidate.hasPrefix("<") {
+                    targetPath = candidate.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+                }
+            }
+        }
+
+        guard let path = targetPath, !path.isEmpty, let delim = delimiter, !delim.isEmpty else {
+            return nil
+        }
+
+        guard lines.count > 1 else { return nil }
+        var contentLines: [String] = []
+        for line in lines.dropFirst() {
+            if line.trimmingCharacters(in: .whitespaces) == delim {
+                break
+            }
+            contentLines.append(line)
+        }
+
+        return (path: path, content: contentLines.joined(separator: "\n"))
+    }
+
+    func formatModernToolCall(tool: ToolNode, id: String, active: Bool, timestamp: Date) -> TUITranscriptEntry {
+        let isDuplicateReuse = (tool.result?.error?.code == "duplicateToolCall")
+        let isError = (tool.phase == .failed || tool.result?.success == false || tool.result?.error != nil) && !isDuplicateReuse
+        let rawErrorMsg = isDuplicateReuse ? nil : (tool.error?.message ?? tool.result?.error?.message)
+        let errorMsg = rawErrorMsg?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let effectiveActive = active && tool.result == nil && tool.error == nil
+        let dotMarker = effectiveActive ? "\(spinnerFrames[spinnerIndex % spinnerFrames.count]) " : "● "
+        let durText: String
+        if !effectiveActive {
+            if let dur = tool.executionDuration {
+                durText = " (\(formatDuration(dur)))"
+            } else if let ms = tool.result?.timing.executionMilliseconds, ms > 0 {
+                durText = " (\(formatDuration(Duration.milliseconds(Int64(ms)))))"
+            } else if let dur = activityFinishedDuration[id] {
+                durText = " (\(formatDuration(dur)))"
+            } else if let started = activityStartedAt.removeValue(forKey: id) {
+                let dur = started.duration(to: animationNow)
+                activityFinishedDuration[id] = dur
+                durText = " (\(formatDuration(dur)))"
+            } else {
+                durText = ""
+            }
+        } else {
+            durText = ""
+        }
+
+        let argsDict: [String: Any] = (tool.argumentsJSON.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:]
+        let previewDict: [String: Any]? = (tool.result?.preview?.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+
+        var lines: [String] = []
+        var toolName = tool.toolName
+
+        if toolName.isEmpty || toolName == "Tool" || toolName == "unknown" {
+            if argsDict["CommandLine"] != nil || argsDict["command"] != nil || previewDict?["exit_code"] != nil || previewDict?["command"] != nil {
+                toolName = "run_command"
+            } else if argsDict["TargetContent"] != nil || (argsDict["TargetFile"] != nil && argsDict["ReplacementContent"] != nil) || argsDict["old_string"] != nil {
+                toolName = "replace_file_content"
+            } else if argsDict["CodeContent"] != nil || (argsDict["path"] != nil && argsDict["content"] != nil) {
+                toolName = "write_file"
+            } else if argsDict["patch"] != nil {
+                toolName = "apply_patch"
+            } else if argsDict["AbsolutePath"] != nil || (argsDict["path"] != nil && argsDict["StartLine"] != nil) {
+                toolName = "view_file"
+            } else if argsDict["Pattern"] != nil || argsDict["SearchDirectory"] != nil {
+                toolName = "find_by_name"
+            } else if argsDict["Query"] != nil || argsDict["SearchPath"] != nil {
+                toolName = "grep_search"
+            }
+        }
+
+        if toolName == "run_command" || toolName == "bash" || toolName == "shell" || toolName == "exec" {
+            var command = (argsDict["CommandLine"] as? String) ?? (argsDict["command"] as? String)
+            if command == nil, let pCmd = previewDict?["command"] as? String {
+                command = pCmd
+            }
+            let rawArgs = tool.argumentsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayCommand = command ?? (!rawArgs.isEmpty && rawArgs != "{}" ? rawArgs : "command")
+
+            if let bashWrite = parseBashFileWrite(command: displayCommand) {
+                let shortPath = compactToolPath(bashWrite.path)
+                lines.append("\(dotMarker)Write(\(shortPath))\(durText)")
+
+                if isError {
+                    let msg = errorMsg?.isEmpty == false ? errorMsg! : "Write failed"
+                    lines.append("  └  \(msg)")
+                } else {
+                    let count = bashWrite.content.split(separator: "\n", omittingEmptySubsequences: false).count
+                    lines.append("  └  +\(count) lines")
+                    lines.append(contentsOf: formatGitAddLines(content: bashWrite.content))
+                }
+            } else {
+                let singleLineCmd = displayCommand.split(separator: "\n").first.map(String.init) ?? displayCommand
+                let cleanCmd = singleLineCmd.count > 65 ? String(singleLineCmd.prefix(62)) + "..." : singleLineCmd
+                lines.append("\(dotMarker)Bash(\(cleanCmd))\(durText)")
+
+                var rawOutput = [tool.stdout, tool.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+                if rawOutput.isEmpty {
+                    if isError, let errorMsg, !errorMsg.isEmpty {
+                        rawOutput = errorMsg
+                    } else if let preview = tool.result?.preview, !preview.isEmpty {
+                        rawOutput = unwrapOutputText(preview)
+                    } else if let summary = tool.result?.summary, !summary.isEmpty {
+                        rawOutput = summary
+                    }
+                } else {
+                    rawOutput = unwrapOutputText(rawOutput)
+                }
+
+                let trimmedOutput = rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmedOutput.isEmpty || trimmedOutput == "(no output)" {
+                    if !effectiveActive {
+                        lines.append("  └  (no output)")
+                    }
+                } else {
+                    let outLines = trimmedOutput.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                    if outLines.count <= 5 {
+                        for (i, l) in outLines.enumerated() {
+                            lines.append(i == 0 ? "  └  \(l)" : "     \(l)")
+                        }
+                    } else {
+                        lines.append("  └  \(outLines[0])")
+                        lines.append("     \(outLines[1])")
+                        let collapsedCount = outLines.count - 3
+                        lines.append("     ... +\(collapsedCount) lines (ctrl + t to view transcript)")
+                        lines.append("     \(outLines[outLines.count - 1])")
+                    }
                 }
             }
         } else if toolName == "view_file" || toolName == "read_file" || toolName == "read" {
-            lines.append("\(dotMarker)Explored")
             let path = (argsDict["AbsolutePath"] as? String) ?? (argsDict["path"] as? String) ?? (argsDict["TargetFile"] as? String) ?? ""
-            let fileName = path.split(separator: "/").last.map(String.init) ?? path
-            lines.append("  └ Read \(fileName.isEmpty ? "file" : fileName)")
-        } else if toolName == "grep" || toolName == "grep_search" || toolName == "search_code" {
-            lines.append("\(dotMarker)Explored")
-            let query = (argsDict["pattern"] as? String) ?? (argsDict["Query"] as? String) ?? (argsDict["query"] as? String) ?? ""
-            let path = (argsDict["path"] as? String) ?? (argsDict["SearchPath"] as? String) ?? ""
-            let shortPath = path.split(separator: "/").last.map(String.init) ?? "workspace"
-            lines.append("  └ Search \(query) in \(shortPath.isEmpty ? "workspace" : shortPath)")
-        } else if toolName == "glob" || toolName == "find_by_name" {
-            lines.append("\(dotMarker)Explored")
-            let pattern = (argsDict["pattern"] as? String) ?? (argsDict["Pattern"] as? String) ?? ""
-            let dir = (argsDict["path"] as? String) ?? (argsDict["SearchDirectory"] as? String) ?? ""
-            let shortDir = dir.split(separator: "/").last.map(String.init) ?? "workspace"
-            lines.append("  └ Find \(pattern) in \(shortDir.isEmpty ? "workspace" : shortDir)")
-        } else if toolName == "replace_file_content" || toolName == "write_to_file" || toolName == "write_file" {
-            let path = (argsDict["TargetFile"] as? String) ?? (argsDict["path"] as? String) ?? ""
-            let shortPath = path.split(separator: "/").last.map(String.init) ?? path
-            lines.append("\(dotMarker)Edit(\(shortPath))")
+            let shortPath = compactToolPath(path)
+            lines.append("\(dotMarker)Read(\(shortPath))\(durText)")
 
-            if toolName == "replace_file_content" {
-                let target = (argsDict["TargetContent"] as? String) ?? ""
-                let repl = (argsDict["ReplacementContent"] as? String) ?? ""
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Read failed"
+                lines.append("  └  \(msg)")
+            } else if let summary = tool.result?.summary, !summary.isEmpty {
+                lines.append("  └  \(summary)")
+            } else if !tool.stdout.isEmpty {
+                let count = tool.stdout.split(separator: "\n", omittingEmptySubsequences: false).count
+                lines.append("  └  Read \(count) lines")
+            } else if let start = argsDict["StartLine"] as? Int, let end = argsDict["EndLine"] as? Int {
+                let count = max(1, end - start + 1)
+                lines.append("  └  Read \(count) lines")
+            } else {
+                lines.append("  └  Read file")
+            }
+        } else if toolName == "grep" || toolName == "grep_search" || toolName == "search_code" {
+            let query = (argsDict["Query"] as? String) ?? (argsDict["query"] as? String) ?? (argsDict["pattern"] as? String) ?? ""
+            let path = (argsDict["SearchPath"] as? String) ?? (argsDict["path"] as? String) ?? ""
+            let shortPath = compactToolPath(path, maxLength: 30)
+            let argText = shortPath.isEmpty || shortPath == "file" ? query : "\(query) in \(shortPath)"
+            let cleanArg = argText.count > 60 ? String(argText.prefix(57)) + "..." : argText
+            lines.append("\(dotMarker)Search(\(cleanArg.isEmpty ? "code" : cleanArg))\(durText)")
+
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Search failed"
+                lines.append("  └  \(msg)")
+            } else if let summary = tool.result?.summary, !summary.isEmpty {
+                lines.append("  └  \(summary)")
+            } else if !tool.stdout.isEmpty {
+                let count = tool.stdout.split(separator: "\n", omittingEmptySubsequences: false).count
+                lines.append("  └  Found \(count) matches")
+            } else {
+                lines.append("  └  Search completed")
+            }
+        } else if toolName == "glob" || toolName == "find_by_name" {
+            let pattern = (argsDict["Pattern"] as? String) ?? (argsDict["pattern"] as? String) ?? ""
+            let dir = (argsDict["SearchDirectory"] as? String) ?? (argsDict["path"] as? String) ?? ""
+            let shortDir = compactToolPath(dir, maxLength: 30)
+            let argText = shortDir.isEmpty || shortDir == "file" ? pattern : "\(pattern) in \(shortDir)"
+            let cleanArg = argText.count > 60 ? String(argText.prefix(57)) + "..." : argText
+            lines.append("\(dotMarker)Search(\(cleanArg.isEmpty ? "files" : cleanArg))\(durText)")
+
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Find failed"
+                lines.append("  └  \(msg)")
+            } else if let summary = tool.result?.summary, !summary.isEmpty {
+                lines.append("  └  \(summary)")
+            } else {
+                lines.append("  └  Find completed")
+            }
+        } else if toolName == "write_file" || toolName == "write_to_file" {
+            let path = (argsDict["path"] as? String) ?? (argsDict["TargetFile"] as? String) ?? (argsDict["target_file"] as? String) ?? (argsDict["AbsolutePath"] as? String) ?? ""
+            let code = (argsDict["content"] as? String) ?? (argsDict["CodeContent"] as? String) ?? (argsDict["code_content"] as? String) ?? ""
+            let shortPath = compactToolPath(path)
+            lines.append("\(dotMarker)Write(\(shortPath))\(durText)")
+
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Write failed"
+                lines.append("  └  \(msg)")
+            } else {
+                let count = code.split(separator: "\n", omittingEmptySubsequences: false).count
+                lines.append("  └  +\(count) lines")
+                lines.append(contentsOf: formatGitAddLines(content: code))
+            }
+        } else if toolName == "replace_file_content" || toolName == "edit_file" {
+            let path = (argsDict["TargetFile"] as? String) ?? (argsDict["path"] as? String) ?? (argsDict["target_file"] as? String) ?? (argsDict["AbsolutePath"] as? String) ?? ""
+            let shortPath = compactToolPath(path)
+            lines.append("\(dotMarker)Edit(\(shortPath))\(durText)")
+
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Edit failed"
+                lines.append("  └  \(msg)")
+            } else {
+                let target = (argsDict["TargetContent"] as? String) ?? (argsDict["old_string"] as? String) ?? (argsDict["target_content"] as? String) ?? ""
+                let repl = (argsDict["ReplacementContent"] as? String) ?? (argsDict["new_string"] as? String) ?? (argsDict["replacement_content"] as? String) ?? ""
                 let targetLines = target.split(separator: "\n", omittingEmptySubsequences: false).count
                 let replLines = repl.split(separator: "\n", omittingEmptySubsequences: false).count
-                lines.append("  └ +\(replLines) / -\(targetLines) lines")
+                lines.append("  └  +\(replLines) / -\(targetLines) lines")
+                lines.append(contentsOf: formatGitPatchLines(oldString: target, newString: repl))
+            }
+        } else if toolName == "apply_patch" || toolName == "patch_file" {
+            let patchText = (argsDict["patch"] as? String) ?? ""
+            var path = ""
+            for line in patchText.components(separatedBy: "\n") {
+                if line.hasPrefix("*** Update File: ") {
+                    path = String(line.dropFirst("*** Update File: ".count)).trimmingCharacters(in: .whitespaces)
+                    break
+                } else if line.hasPrefix("*** Add File: ") {
+                    path = String(line.dropFirst("*** Add File: ".count)).trimmingCharacters(in: .whitespaces)
+                    break
+                } else if line.hasPrefix("*** Delete File: ") {
+                    path = String(line.dropFirst("*** Delete File: ".count)).trimmingCharacters(in: .whitespaces)
+                    break
+                }
+            }
+            let shortPath = compactToolPath(path.isEmpty ? "file" : path)
+            lines.append("\(dotMarker)Patch(\(shortPath))\(durText)")
+
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Patch failed"
+                lines.append("  └  \(msg)")
             } else {
-                let code = (argsDict["CodeContent"] as? String) ?? (argsDict["content"] as? String) ?? ""
-                let count = code.split(separator: "\n", omittingEmptySubsequences: false).count
-                lines.append("  └ +\(count) lines")
+                let (patchDiffLines, patchSummary) = formatGitApplyPatch(patchText)
+                lines.append("  └  \(patchSummary)")
+                lines.append(contentsOf: patchDiffLines)
+            }
+        } else if toolName == "todo" {
+            let action = (argsDict["action"] as? String) ?? "manage"
+            let title = (argsDict["title"] as? String) ?? ""
+            let arg = title.isEmpty ? action : "\(action) \(title)"
+            lines.append("\(dotMarker)Todo(\(arg))\(durText)")
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Todo failed"
+                lines.append("  └  \(msg)")
+            } else if let summary = tool.result?.summary, !summary.isEmpty {
+                lines.append("  └  \(summary)")
             }
         } else {
-            lines.append("\(dotMarker)Called")
-            let cleanSummary = argumentSummary(tool.argumentsJSON, toolName: tool.toolName)
-            lines.append("  └ \(tool.toolName)(\(cleanSummary))")
-            if let result = tool.result {
+            let isMcp = toolName == "call_mcp_tool"
+            let canonicalName: String
+            if isMcp, let mcpName = argsDict["ToolName"] as? String, !mcpName.isEmpty {
+                canonicalName = capitalizeToolName(mcpName)
+            } else if toolName.isEmpty || toolName == "Tool" || toolName == "unknown" {
+                canonicalName = "Tool"
+            } else {
+                canonicalName = capitalizeToolName(toolName)
+            }
+
+            let cleanSummary = argumentSummary(tool.argumentsJSON, toolName: toolName)
+            let hasArgs = !cleanSummary.isEmpty && cleanSummary != "{}"
+            if canonicalName == "Tool" && !hasArgs {
+                lines.append("\(dotMarker)Tool\(durText)")
+            } else {
+                let argDisplay = hasArgs ? cleanSummary : ""
+                let truncatedArg = argDisplay.count > 60 ? String(argDisplay.prefix(57)) + "..." : argDisplay
+                lines.append("\(dotMarker)\(canonicalName)(\(truncatedArg))\(durText)")
+            }
+
+            if isError {
+                let msg = errorMsg?.isEmpty == false ? errorMsg! : "Tool failed"
+                lines.append("  └  \(msg)")
+            } else if let result = tool.result {
                 let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-                let isMetaTool = toolName == "load_tool" || toolName == "todo"
                 if !summary.isEmpty {
-                    lines.append("    \(summary)")
-                } else if !isMetaTool, let preview = result.preview?.trimmingCharacters(in: .whitespacesAndNewlines), !preview.isEmpty {
-                    let isRawJsonMeta = (preview.hasPrefix("{") || preview.hasPrefix("[")) && (preview.contains("\"status\"") || preview.contains("\"provider_name\"") || preview.contains("\"availability\""))
-                    if !isRawJsonMeta || isError {
-                        let previewLines = preview.split(separator: "\n", omittingEmptySubsequences: false).prefix(3)
-                        for pl in previewLines {
-                            lines.append("    \(pl)")
-                        }
+                    lines.append("  └  \(summary.replacingOccurrences(of: "\t", with: "  "))")
+                } else if let preview = result.preview?.trimmingCharacters(in: .whitespacesAndNewlines), !preview.isEmpty {
+                    let unwrapped = unwrapOutputText(preview)
+                    let previewLines = unwrapped.split(separator: "\n", omittingEmptySubsequences: false).prefix(3)
+                    for (idx, pl) in previewLines.enumerated() {
+                        let cleanL = pl.replacingOccurrences(of: "\t", with: "  ")
+                        lines.append(idx == 0 ? "  └  \(cleanL)" : "     \(cleanL)")
                     }
                 }
             }

@@ -41,9 +41,18 @@ public protocol ProviderHTTPTransport: Sendable {
 }
 
 public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
+    public static let sharedSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.httpMaximumConnectionsPerHost = 16
+        config.timeoutIntervalForRequest = 45
+        config.timeoutIntervalForResource = 300
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = URLSessionProviderHTTPTransport.sharedSession) {
         self.session = session
     }
 
