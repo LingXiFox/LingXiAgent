@@ -210,6 +210,12 @@ models.lingxifox.cn {
 http://agent.lingxifox.cn {
 	handle {
 		root * /var/www/agent.lingxifox.cn
+
+		@docs {
+			path /docs /docs/
+		}
+		rewrite @docs /docs.html
+
 		encode zstd gzip
 		file_server
 	}
@@ -222,7 +228,7 @@ http://agent.lingxifox.cn {
 	}
 
 	@html {
-		path / /index.html
+		path / /index.html /docs /docs/ /docs.html
 	}
 	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /install Content-Type "text/plain; charset=utf-8"
@@ -246,6 +252,12 @@ agent.lingxifox.cn {
 
 	handle {
 		root * /var/www/agent.lingxifox.cn
+
+		@docs {
+			path /docs /docs/
+		}
+		rewrite @docs /docs.html
+
 		encode zstd gzip
 		file_server
 	}
@@ -260,7 +272,7 @@ agent.lingxifox.cn {
 	}
 
 	@html {
-		path / /index.html
+		path / /index.html /docs /docs/ /docs.html
 	}
 	header @html Cache-Control "public, max-age=60, must-revalidate"
 	header /install Content-Type "text/plain; charset=utf-8"

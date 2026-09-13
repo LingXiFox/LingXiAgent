@@ -146,10 +146,10 @@
 
       <!-- Subtitle -->
       <p class="max-w-3xl mx-auto text-base sm:text-xl text-zinc-400 mb-10 leading-relaxed">
-        纯 Swift 原生 + OpenTUI C ABI 驱动，毫秒级冷启动。打通官方订阅（ChatGPT Plus/Pro、Claude Code、Antigravity）与 75+ 通用大模型，配备动态平台反封锁伪装与三级智能上下文流控。
+        纯 Swift 原生 + OpenTUI C ABI 驱动，毫秒级冷启动。基于 <strong class="text-zinc-200 font-semibold">P-Core (推理总线)</strong> 与 <strong class="text-zinc-200 font-semibold">E-Core (执行存储)</strong> 异构双核架构，全面适配 macOS · Linux · Windows，直连官方订阅与 75+ 通用大模型。
       </p>
 
-      <!-- The 1-Line Installer Box (OpenCode Style) -->
+      <!-- The 1-Line Installer Box -->
       <div id="install" class="max-w-2xl mx-auto mb-16">
         <div class="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-2 shadow-2xl backdrop-blur">
           <!-- Install Tabs -->
@@ -157,10 +157,11 @@
             <div class="flex space-x-1" id="install-tabs">
               <button onclick="switchTab('curl')" class="tab-btn active px-3 py-1 rounded-md text-xs font-medium bg-zinc-800 text-zinc-100 transition-colors" data-tab="curl">macOS / Linux</button>
               <button onclick="switchTab('powershell')" class="tab-btn px-3 py-1 rounded-md text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors" data-tab="powershell">Windows (PowerShell)</button>
-              <button onclick="switchTab('build')" class="tab-btn px-3 py-1 rounded-md text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors" data-tab="build">源码构建</button>
-              <button onclick="switchTab('release')" class="tab-btn px-3 py-1 rounded-md text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors" data-tab="release">二进制下载</button>
             </div>
-            <span class="text-[11px] text-zinc-500 font-mono">全面原生支持 macOS · Linux · Windows</span>
+            <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="text-[11px] text-purple-400 hover:text-purple-300 font-mono flex items-center gap-1 transition-colors">
+              <span>GitHub 源码仓库</span>
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+            </a>
           </div>
 
           <!-- Tab Content: curl (macOS / Linux) -->
@@ -193,32 +194,9 @@
               <span class="copy-text hidden sm:inline">复制</span>
             </button>
           </div>
-
-          <!-- Tab Content: build -->
-          <div id="tab-build" class="tab-content hidden flex items-center justify-between px-4 py-3.5 bg-black/40 rounded-xl mt-1.5">
-            <div class="flex items-center space-x-2 font-mono text-sm text-left overflow-x-auto text-zinc-300 custom-scrollbar">
-              <span class="text-purple-400 select-none">$</span>
-              <span>git clone https://github.com/LingXiFox/LingXiAgent.git && cd LingXiAgent && swift build -c release</span>
-            </div>
-            <button onclick="copyCommand('git clone https://github.com/LingXiFox/LingXiAgent.git && cd LingXiAgent && swift build -c release', this)" class="ml-3 shrink-0 p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors flex items-center space-x-1 text-xs">
-              <svg class="w-4 h-4 copy-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-              <span class="copy-text hidden sm:inline">复制</span>
-            </button>
-          </div>
-
-          <!-- Tab Content: release -->
-          <div id="tab-release" class="tab-content hidden flex items-center justify-between px-4 py-3.5 bg-black/40 rounded-xl mt-1.5">
-            <div class="flex items-center space-x-2 font-mono text-sm text-left overflow-x-auto text-zinc-300 custom-scrollbar">
-              <span class="text-purple-400 select-none">$</span>
-              <span>下载 GitHub Releases 预编译包 (macOS / Linux / Windows) 放入 PATH</span>
-            </div>
-            <a href="https://github.com/LingXiFox/LingXiAgent/releases" target="_blank" class="ml-3 shrink-0 p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors flex items-center space-x-1 text-xs">
-              <span>前往发布页</span>
-            </a>
-          </div>
         </div>
         <p class="text-xs text-zinc-500 mt-2.5">
-          安装脚本全自动识别 CPU 架构并配置环境变量（macOS/Linux: <code class="text-zinc-400">PATH</code>，Windows: <code class="text-zinc-400">User PATH</code>），安装后新开终端直接输入 <code class="text-purple-300 font-bold">lingxiagent</code> 即可启动。
+          官方安装器自动探测 CPU 架构并配置环境。安装后新开终端直接输入 <code class="text-purple-300 font-bold">lingxiagent</code> 即可秒级开启终端会话。
         </p>
       </div>
 
@@ -339,9 +317,9 @@
           <div class="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 mb-4 text-xl">
             ⚡
           </div>
-          <h3 class="text-lg font-bold text-white mb-2">Swift 原生双核极速引擎</h3>
+          <h3 class="text-lg font-bold text-white mb-2">macOS · Linux · Windows 原生跨平台引擎</h3>
           <p class="text-sm text-zinc-400 leading-relaxed">
-            告别臃肿缓慢的 Node.js 与 Electron。纯 Swift 6 原生编译，结合 OpenTUI C ABI，冷启动仅需 10ms，内存消耗降低 90%，在 60FPS 下提供行云流水的终端渲染。
+            告别臃肿缓慢的 Node.js 与 Electron。纯 Swift 原生打造，由底层独立模块 <code class="text-purple-300 font-mono">LingXiPlatform</code> 提供 Darwin、Linux Bubblewrap 容器沙箱与 Win32 控制台 VT100 原生抽象，冷启动仅 10ms，内存低至 35MB。
           </p>
         </div>
 
@@ -372,9 +350,9 @@
           <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-4 text-xl">
             🧠
           </div>
-          <h3 class="text-lg font-bold text-white mb-2">L1/L2/L3 三级上下文智能流控</h3>
+          <h3 class="text-lg font-bold text-white mb-2">P-Core / E-Core 双核总线与旁路隔离</h3>
           <p class="text-sm text-zinc-400 leading-relaxed">
-            拥有 220K 紧凑工作集 (L1)、持久项目索引 (L2) 与超长对话降级池 (L3)。面对 128k 到 1M 上下文大模型动态精准剪枝，避免爆 Token 导致会话中断或天价计费。
+            P-Core 专精高密语义推理与 Token 压缩，E-Core 专精执行引擎与持久化存储。数十 KB 的海量工具结果自动旁路隔离至对象池，结合 L1/L2/L3 智能流控，彻底解决长文本遗忘与 Token 爆炸。
           </p>
         </div>
 
@@ -456,11 +434,18 @@
               <td class="py-4 px-5 text-emerald-400 font-bold">✓ 支持通用 API</td>
             </tr>
             <tr>
-              <td class="py-4 px-5 text-zinc-300 font-sans font-medium">上下文智能流控缓存</td>
-              <td class="py-4 px-5 text-emerald-400 font-bold bg-purple-950/20 border-x border-purple-800/40">✓ L1/L2/L3 三级动态剪枝</td>
-              <td class="py-4 px-5 text-zinc-400">基础滑动窗口</td>
+              <td class="py-4 px-5 text-zinc-300 font-sans font-medium">系统总线与上下文架构</td>
+              <td class="py-4 px-5 text-emerald-400 font-bold bg-purple-950/20 border-x border-purple-800/40">✓ P/E 双核旁路 + 三级流控</td>
+              <td class="py-4 px-5 text-zinc-400">单体线性上下文</td>
               <td class="py-4 px-5 text-zinc-400">官方 Prompt 缓存</td>
               <td class="py-4 px-5 text-zinc-400">简单文件引用</td>
+            </tr>
+            <tr>
+              <td class="py-4 px-5 text-zinc-300 font-sans font-medium">跨平台原生系统层适配</td>
+              <td class="py-4 px-5 text-emerald-400 font-bold bg-purple-950/20 border-x border-purple-800/40">✓ macOS · Linux · Win 三端原生</td>
+              <td class="py-4 px-5 text-zinc-400">跨平台 (Bun)</td>
+              <td class="py-4 px-5 text-zinc-400">跨平台 (Node.js)</td>
+              <td class="py-4 px-5 text-zinc-400">跨平台 (Electron/Python)</td>
             </tr>
             <tr>
               <td class="py-4 px-5 text-zinc-300 font-sans font-medium">数据隐私与离线保护</td>
@@ -480,12 +465,18 @@
   <!-- ========================================================================= -->
   <section id="docs" class="py-20 border-b border-zinc-800/80 bg-zinc-950">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center space-x-3 mb-8">
-        <span class="text-3xl">📖</span>
-        <div>
-          <h2 class="text-2xl sm:text-4xl font-extrabold text-white">LingXiAgent 官方文档中心</h2>
-          <p class="text-sm text-zinc-400 mt-1">涵盖快速上手、架构设计、提供商配置、TUI 快捷键与反风控伪装规范</p>
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+        <div class="flex items-center space-x-3">
+          <span class="text-3xl">📖</span>
+          <div>
+            <h2 class="text-2xl sm:text-4xl font-extrabold text-white">LingXiAgent 官方文档中心</h2>
+            <p class="text-sm text-zinc-400 mt-1">涵盖快速上手、双核架构、内置工具链、MCP 生态与跨平台规范</p>
+          </div>
         </div>
+        <a href="/docs" class="shrink-0 px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-medium text-sm transition-all shadow-lg shadow-purple-600/30 flex items-center space-x-2">
+          <span>进入完整独立文档中心 ↗</span>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+        </a>
       </div>
 
       <!-- Docs Two-Column Layout -->
