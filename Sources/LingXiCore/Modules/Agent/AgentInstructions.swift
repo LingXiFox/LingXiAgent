@@ -105,17 +105,7 @@ public struct AgentEnvironmentFacts: Sendable, Equatable {
     public let accessScope: String
 
     public init(
-        platform: String = {
-            #if os(macOS)
-            return "macOS"
-            #elseif os(Linux)
-            return "Linux"
-            #elseif os(Windows)
-            return "Windows"
-            #else
-            return "unknown"
-            #endif
-        }(),
+        platform: String = LingXiPlatform.system.osName,
         workspaceRoot: String,
         currentDirectory: String = FileManager.default.currentDirectoryPath,
         homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,

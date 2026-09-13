@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 /// Centralized client fingerprinting and official client camouflage utility.
 ///
@@ -35,19 +36,14 @@ public enum ClientFingerprint {
             osName = customOS.lowercased()
             capitalizedOS = customOS.prefix(1).uppercased() + customOS.dropFirst()
         } else {
-            #if os(macOS)
-            osName = "darwin"
-            capitalizedOS = "Darwin"
-            #elseif os(Linux)
-            osName = "linux"
-            capitalizedOS = "Linux"
-            #elseif os(Windows)
-            osName = "windows"
-            capitalizedOS = "Windows"
-            #else
-            osName = "darwin"
-            capitalizedOS = "Darwin"
-            #endif
+            let platformOS = LingXiPlatform.system.osName.lowercased()
+            if platformOS == "macos" {
+                osName = "darwin"
+                capitalizedOS = "Darwin"
+            } else {
+                osName = platformOS
+                capitalizedOS = LingXiPlatform.system.osName
+            }
         }
 
         let arch: String

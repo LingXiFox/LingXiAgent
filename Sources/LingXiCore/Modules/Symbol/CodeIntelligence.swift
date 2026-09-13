@@ -94,8 +94,17 @@ public final class SourceKitLSPTransport: @unchecked Sendable, LSPTransport {
 
     private static func discoverExecutable() -> String? {
         let environment = ProcessInfo.processInfo.environment
-        let candidates = [environment["LINGXI_SOURCEKIT_LSP"], environment["DEVELOPER_DIR"].map { "\($0)/Toolchains/XcodeDefault.xctoolchain/usr/bin/sourcekit-lsp" }, "/usr/bin/sourcekit-lsp", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/sourcekit-lsp", "/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/sourcekit-lsp"].compactMap { $0 }
-        return candidates.first(where: FileManager.default.isExecutableFile(atPath:))
+        if let custom = environment["LINGXI_SOURCEKIT_LSP"], FileManager.default.isExecutableFile(atPath: custom) {
+            return custom
+        }
+        let customPaths = [
+            environment["DEVELOPER_DIR"].map { "\($0)/Toolchains/XcodeDefault.xctoolchain/usr/bin" },
+            "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+            "/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+            "/usr/bin",
+            "/usr/local/bin"
+        ].compactMap { $0 }
+        return LingXiPlatform.process.resolveExecutable(named: "sourcekit-lsp", customSearchPaths: customPaths)
     }
 }
 

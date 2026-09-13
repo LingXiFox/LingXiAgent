@@ -71,28 +71,15 @@ public enum DoctorCLI {
         configStore: ConfigurationStore
     ) async -> HealthReport {
         // 1. OS & Platform
-        #if os(macOS)
-        let osName = "macOS"
-        #elseif os(Linux)
-        let osName = "Linux"
-        #else
-        let osName = "Unknown OS"
-        #endif
-        #if arch(arm64)
-        let archName = "Apple Silicon (arm64)"
-        #elseif arch(x86_64)
-        let archName = "x86_64"
-        #else
-        let archName = "Unknown Arch"
-        #endif
-        let systemStatus = "\(osName) · \(archName)"
+        let systemStatus = "\(LingXiPlatform.system.osName) · \(LingXiPlatform.system.archName)"
 
         // 2. Git
         var gitStatus = "Non-git directory: \(projectRoot.path)"
         let gitDir = projectRoot.appendingPathComponent(".git")
         if FileManager.default.fileExists(atPath: gitDir.path) {
-            let branch = runQuickProcess(executable: "/usr/bin/git", arguments: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: projectRoot) ?? "unknown"
-            let dirty = runQuickProcess(executable: "/usr/bin/git", arguments: ["status", "-s"], cwd: projectRoot) ?? ""
+            let gitExe = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) ?? "/usr/bin/git"
+            let branch = runQuickProcess(executable: gitExe, arguments: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: projectRoot) ?? "unknown"
+            let dirty = runQuickProcess(executable: gitExe, arguments: ["status", "-s"], cwd: projectRoot) ?? ""
             let dirtyCount = dirty.split(separator: "\n").count
             gitStatus = "Git repo (branch: \(branch), uncommitted: \(dirtyCount) files)"
         }

@@ -1027,8 +1027,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func workspaceDiff() async throws -> String {
+        let gitExe = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) ?? "/usr/bin/git"
         let result = try await runToolProcess(
-            invocation: ToolProcessInvocation(executable: "/usr/bin/git", arguments: ["diff", "--no-ext-diff", "--no-textconv", "--"]),
+            invocation: ToolProcessInvocation(executable: gitExe, arguments: ["diff", "--no-ext-diff", "--no-textconv", "--"]),
             cwd: extensionPlatform.projectRoot,
             environment: EnvironmentSanitizer.sanitized(),
             timeoutMilliseconds: 5_000

@@ -3,7 +3,7 @@ import LingXiApplication
 import LingXiTUIComponents
 
 @MainActor
-public final class ApplicationTUI {
+public final class ApplicationTUI: Frontend {
     private enum UIEvent: Sendable {
         case input(TUIInputEvent)
         case stateUpdate(ApplicationState)
@@ -137,134 +137,103 @@ public final class ApplicationTUI {
         return Self.localCommands + appItems
     }
 
+    /// 挂载到由外部 Composition Root 装配好的 ApplicationStore 并启动前端界面
+    public func run(with store: ApplicationStore) async throws {
+        debug("run.begin")
+        if let workDir = options.initialWorkingDir, !workDir.isEmpty {
+            FileManager.default.changeCurrentDirectoryPath(workDir)
+        }
+        debug("terminal.start.begin")
+        try terminal.start()
+        debug("terminal.start.end")
+        defer { terminal.stop() }
+
+        debug("connecting.frame.begin")
+        let initialWorkspace = FileManager.default.currentDirectoryPath.split(separator: "/").last.map(String.init) ?? "LingXiAgent"
+        view.header.subtitle = options.isYoloMode ? "⚡ YOLO · Connecting" : "Connecting"
+        view.statusLine.setParts(left: "● 正在连接...", right: "📂 \(initialWorkspace)")
+        render()
+        debug("connecting.frame.end")
+
+        self.store = store
+        commands = await store.commandRegistry.allCommands
+
+        let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self)
+        uiEventContinuation = eventContinuation
+
+        let updates = Task { [store] in
+            for await state in await store.stateUpdates {
+                eventContinuation.yield(.stateUpdate(state))
+            }
+        }
+        defer { updates.cancel() }
+        defer { actionTail?.cancel() }
+        defer { referenceScanTask?.cancel() }
+
+        let animationUpdates = Task { [weak self] in
+            guard let self else { return }
+            for await tick in self.animationTicker.stream() {
+                self.animationTick(tick)
+            }
+        }
+        defer { animationUpdates.cancel() }
+
+        let inputReader = Task.detached { [terminal] in
+            while !Task.isCancelled {
+                if let event = terminal.nextInput() {
+                    eventContinuation.yield(.input(event))
+                    if case .quit = event { break }
+                    if case .interrupt = event { break }
+                }
+            }
+        }
+        defer { inputReader.cancel() }
+
+        debug("event.loop.begin")
+
+        eventLoop: for await event in eventStream {
+            switch event {
+            case let .input(inputEvent):
+                await handle(inputEvent, store: store)
+                if case .tick = inputEvent {
+                } else {
+                    frameScheduler.markDirty(.input)
+                }
+                if shouldQuit {
+                    frameScheduler.flush()
+                    eventContinuation.finish()
+                    break eventLoop
+                }
+            case let .stateUpdate(state):
+                if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
+                    referenceScanTask?.cancel()
+                    referenceCandidates = []
+                    referenceScanTask = Task { [weak self, store] in
+                        let candidates = await store.workspaceReferenceCandidates()
+                        guard !Task.isCancelled else { return }
+                        self?.referenceCandidates = candidates
+                        self?.frameScheduler.markDirty(.content)
+                    }
+                }
+                latestState = state
+                if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
+                    enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+                }
+                frameScheduler.markDirty(.content)
+            case let .commandResult(entry):
+                commandEntries.append(entry)
+                latestState = await store.state
+                frameScheduler.markDirty(.content)
+            }
+        }
+        uiEventContinuation = nil
+    }
+
+    /// 便捷入口：由内置默认 AppCompositionRoot 装配 Stdio Core 并运行
     public func run() async {
         do {
-            debug("run.begin")
-            if let workDir = options.initialWorkingDir, !workDir.isEmpty {
-                FileManager.default.changeCurrentDirectoryPath(workDir)
-            }
-            debug("terminal.start.begin")
-            try terminal.start()
-            debug("terminal.start.end")
-            defer { terminal.stop() }
-
-            debug("connecting.frame.begin")
-            let initialWorkspace = FileManager.default.currentDirectoryPath.split(separator: "/").last.map(String.init) ?? "LingXiAgent"
-            view.header.subtitle = options.isYoloMode ? "⚡ YOLO · Connecting" : "Connecting"
-            view.statusLine.setParts(left: "● 正在连接...", right: "📂 \(initialWorkspace)")
-            render()
-            debug("connecting.frame.end")
-
-            debug("store.create.begin")
-            store = try await ApplicationStore.stdio(autoConnect: false)
-            debug("store.create.end")
-            guard let store else { return }
-            commands = await store.commandRegistry.allCommands
-
-            let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self)
-            uiEventContinuation = eventContinuation
-
-            let updates = Task { [store] in
-                for await state in await store.stateUpdates {
-                    eventContinuation.yield(.stateUpdate(state))
-                }
-            }
-            defer { updates.cancel() }
-            defer { actionTail?.cancel() }
-            defer { referenceScanTask?.cancel() }
-
-            let animationUpdates = Task { [weak self] in
-                guard let self else { return }
-                for await tick in self.animationTicker.stream() {
-                    self.animationTick(tick)
-                }
-            }
-            defer { animationUpdates.cancel() }
-
-            let inputReader = Task.detached { [terminal] in
-                while !Task.isCancelled {
-                    if let event = terminal.nextInput() {
-                        eventContinuation.yield(.input(event))
-                        if case .quit = event { break }
-                        if case .interrupt = event { break }
-                    }
-                }
-            }
-            defer { inputReader.cancel() }
-
-            let connection = Task { [weak self, store] in
-                do {
-                    self?.debug("connect.begin")
-                    try await store.connect()
-                    self?.debug("connect.end")
-                    await store.dispatch(.listSessions)
-                    self?.debug("sessions.list.end")
-
-                    if let self {
-                        let prefs = UserPreferencesStore.shared.load()
-                        if let resumeID = self.options.resumeSessionID, !resumeID.isEmpty {
-                            await store.dispatch(.switchSession(SessionID(resumeID)))
-                        }
-                        if self.options.isYoloMode {
-                            await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
-                        }
-                        let targetModel = self.options.initialModelID ?? prefs.lastModelID
-                        if let modelID = targetModel, !modelID.isEmpty {
-                            await store.dispatch(.selectModel(modelID))
-                        }
-                        let targetEffort = self.options.reasoningEffort ?? prefs.lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:))
-                        if let effort = targetEffort {
-                            await store.dispatch(.setReasoningEffort(effort))
-                        }
-                        if let prompt = self.options.initialPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            await store.dispatch(.submitPrompt(prompt))
-                        }
-                    }
-                } catch {
-                    self?.debug("connect.failed error=\(error)")
-                }
-            }
-            defer { connection.cancel() }
-
-            debug("event.loop.begin")
-
-            eventLoop: for await event in eventStream {
-                switch event {
-                case let .input(inputEvent):
-                    await handle(inputEvent, store: store)
-                    if case .tick = inputEvent {
-                    } else {
-                        frameScheduler.markDirty(.input)
-                    }
-                    if shouldQuit {
-                        frameScheduler.flush()
-                        eventContinuation.finish()
-                        break eventLoop
-                    }
-                case let .stateUpdate(state):
-                    if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
-                        referenceScanTask?.cancel()
-                        referenceCandidates = []
-                        referenceScanTask = Task { [weak self, store] in
-                            let candidates = await store.workspaceReferenceCandidates()
-                            guard !Task.isCancelled else { return }
-                            self?.referenceCandidates = candidates
-                            self?.frameScheduler.markDirty(.content)
-                        }
-                    }
-                    latestState = state
-                    if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
-                        enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
-                    }
-                    frameScheduler.markDirty(.content)
-                case let .commandResult(entry):
-                    commandEntries.append(entry)
-                    latestState = await store.state
-                    frameScheduler.markDirty(.content)
-                }
-            }
-            await store.dispatch(.disconnect)
-            uiEventContinuation = nil
+            let root = AppCompositionRoot(configuration: options.applicationConfiguration)
+            try await root.launch(with: self)
         } catch {
             print("LingXiTUI 启动失败: \(error)")
         }

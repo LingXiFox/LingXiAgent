@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 public struct TUISize: Equatable, Sendable {
     public let width: Int
@@ -2200,18 +2201,8 @@ public enum ClipboardSupport {
         let osc52 = "\u{1B}]52;c;\(base64)\u{07}"
         FileHandle.standardOutput.write(Data(osc52.utf8))
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pbcopy")
-        let inPipe = Pipe()
-        process.standardInput = inPipe
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            inPipe.fileHandleForWriting.write(Data(text.utf8))
-            try inPipe.fileHandleForWriting.close()
-            process.waitUntilExit()
-        } catch {}
+        // 跨平台调用系统剪贴板工具
+        LingXiPlatform.system.copyToClipboard(text)
     }
 }
 

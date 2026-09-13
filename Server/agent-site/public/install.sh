@@ -29,21 +29,39 @@ echo -e "${RESET}"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-if [ "$OS" != "Darwin" ]; then
-    echo -e "${RED}[ERROR] 抱歉，LingXiAgent 当前版本专为 macOS (Apple Silicon & Intel) 原生打造，暂未支持 ${OS}。${RESET}"
-    echo -e "${GRAY}系统深度集成了 macOS Keychain 安全凭据体系与 Darwin 原生网络层。${RESET}"
-    echo -e "${AMBER}Linux 等多平台支持正在筹备与适配中，敬请期待！${RESET}"
-    echo -e "${GRAY}项目主页: https://agent.lingxifox.cn | GitHub: https://github.com/LingXiFox/LingXiAgent${RESET}"
-    exit 1
-fi
-PLATFORM="macos"
+case "$OS" in
+    Darwin)
+        PLATFORM="macos"
+        PLATFORM_NAME="macOS"
+        ;;
+    Linux)
+        PLATFORM="linux"
+        PLATFORM_NAME="Linux"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        echo -e "${AMBER}[!] 检测到 Windows 仿真环境。${RESET}"
+        echo -e "${CYAN}建议直接在原生 Windows PowerShell 中运行官方安装脚本：${RESET}"
+        echo -e "${BOLD}irm https://agent.lingxifox.cn/install.ps1 | iex${RESET}"
+        echo -e "${GRAY}或: irm https://raw.githubusercontent.com/LingXiFox/LingXiAgent/main/install.ps1 | iex${RESET}"
+        exit 0
+        ;;
+    *)
+        echo -e "${RED}[ERROR] 抱歉，LingXiAgent 当前支持 macOS 与 Linux，暂未直接支持 ${OS}。${RESET}"
+        echo -e "${AMBER}若您使用的是 Windows，请在 PowerShell 中运行官方安装脚本：${RESET}"
+        echo -e "${CYAN}irm https://agent.lingxifox.cn/install.ps1 | iex${RESET}"
+        echo -e "${GRAY}项目主页: https://agent.lingxifox.cn | GitHub: https://github.com/LingXiFox/LingXiAgent${RESET}"
+        exit 1
+        ;;
+esac
 
 case "$ARCH" in
     arm64|aarch64)
         CPU_ARCH="arm64"
+        ALT_ARCH="aarch64"
         ;;
     x86_64|amd64)
         CPU_ARCH="x86_64"
+        ALT_ARCH="x86_64"
         ;;
     *)
         echo -e "${RED}[ERROR] 暂不支持的处理器架构: ${ARCH}${RESET}"
@@ -51,7 +69,7 @@ case "$ARCH" in
         ;;
 esac
 
-echo -e "${GRAY}[1/5] 检测到系统环境: ${BOLD}macOS (${CPU_ARCH})${RESET}"
+echo -e "${GRAY}[1/5] 检测到系统环境: ${BOLD}${PLATFORM_NAME} (${CPU_ARCH})${RESET}"
 
 # 2. 准备安装目录
 INSTALL_ROOT="$HOME/.lingxiagent"
@@ -71,10 +89,18 @@ INSTALLED=false
 if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null; then
     echo -e "${CYAN}[*] 检测到处于本地源码仓库，正在直接以 Release 模式编译...${RESET}"
     swift build -c release --product lingxiagent
-    RELEASE_PATH="$(swift build -c release --show-bin-path)/lingxiagent"
-    if [ -f "$RELEASE_PATH" ]; then
-        cp -f "$RELEASE_PATH" "$TARGET_BIN"
+    swift build -c release --product LingXiCoreHost
+    BIN_DIR_PATH="$(swift build -c release --show-bin-path)"
+    if [ -f "$BIN_DIR_PATH/lingxiagent" ]; then
+        cp -f "$BIN_DIR_PATH/lingxiagent" "$TARGET_BIN"
         chmod +x "$TARGET_BIN"
+        if [ -f "$BIN_DIR_PATH/LingXiCoreHost" ]; then
+            cp -f "$BIN_DIR_PATH/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
+            chmod +x "$BIN_DIR/LingXiCoreHost"
+        fi
+        if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" ]; then
+            cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+        fi
         INSTALLED=true
         echo -e "${GREEN}[✓] 本地编译并成功安装至 ${TARGET_BIN}${RESET}"
     fi
@@ -82,15 +108,17 @@ fi
 
 # 场景 B: 从 GitHub Releases 获取预编译 Release 包
 if [ "$INSTALLED" = false ]; then
-    RELEASE_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-macos-${CPU_ARCH}.tar.gz"
-    FALLBACK_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-macos-universal.tar.gz"
+    RELEASE_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-${PLATFORM}-${CPU_ARCH}.tar.gz"
+    FALLBACK_URL="https://github.com/LingXiFox/LingXiAgent/releases/latest/download/lingxiagent-${PLATFORM}-${ALT_ARCH}.tar.gz"
     echo -e "${GRAY}[3/5] 正在从 GitHub Releases 下载预编译发布包...${RESET}"
     TMP_DIR="$(mktemp -d /tmp/lingxiagent-install.XXXXXX)"
     
     HTTP_CODE=$(curl -s -L -o "$TMP_DIR/release.tar.gz" -w "%{http_code}" "$RELEASE_URL" || true)
     if [ "$HTTP_CODE" != "200" ] || [ ! -s "$TMP_DIR/release.tar.gz" ]; then
-        echo -e "${AMBER}[!] 尝试获取通用发布包 (Universal)...${RESET}"
-        HTTP_CODE=$(curl -s -L -o "$TMP_DIR/release.tar.gz" -w "%{http_code}" "$FALLBACK_URL" || true)
+        if [ "$CPU_ARCH" != "$ALT_ARCH" ]; then
+            echo -e "${AMBER}[!] 尝试备用架构发布包 (${ALT_ARCH})...${RESET}"
+            HTTP_CODE=$(curl -s -L -o "$TMP_DIR/release.tar.gz" -w "%{http_code}" "$FALLBACK_URL" || true)
+        fi
     fi
 
     if [ "$HTTP_CODE" = "200" ] && [ -s "$TMP_DIR/release.tar.gz" ]; then
@@ -99,6 +127,13 @@ if [ "$INSTALLED" = false ]; then
         if [ -f "$TMP_DIR/lingxiagent" ]; then
             cp -f "$TMP_DIR/lingxiagent" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
+            if [ -f "$TMP_DIR/LingXiCoreHost" ]; then
+                cp -f "$TMP_DIR/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
+                chmod +x "$BIN_DIR/LingXiCoreHost"
+            fi
+            if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
+                cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
             INSTALLED=true
             echo -e "${GREEN}[✓] 预编译二进制安装成功!${RESET}"
         fi
@@ -115,16 +150,28 @@ if [ "$INSTALLED" = false ]; then
         (
             cd "$CLONE_DIR"
             swift build -c release --product lingxiagent
-            RELEASE_PATH="$(swift build -c release --show-bin-path)/lingxiagent"
-            cp -f "$RELEASE_PATH" "$TARGET_BIN"
+            swift build -c release --product LingXiCoreHost
+            RELEASE_PATH="$(swift build -c release --show-bin-path)"
+            cp -f "$RELEASE_PATH/lingxiagent" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
+            if [ -f "$RELEASE_PATH/LingXiCoreHost" ]; then
+                cp -f "$RELEASE_PATH/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
+                chmod +x "$BIN_DIR/LingXiCoreHost"
+            fi
+            if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
+                cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
         )
         rm -rf "$CLONE_DIR"
         INSTALLED=true
         echo -e "${GREEN}[✓] 源码构建并安装成功!${RESET}"
     else
         echo -e "${RED}[ERROR] 未检测到 Swift 运行环境且未找到预编译二进制。${RESET}"
-        echo -e "${GRAY}请先安装 Xcode Command Line Tools (macOS: xcode-select --install) 或 Swift 工具链。${RESET}"
+        if [ "$PLATFORM" = "macos" ]; then
+            echo -e "${GRAY}请先安装 Xcode Command Line Tools (xcode-select --install) 或前往 https://www.swift.org 安装 Swift。${RESET}"
+        else
+            echo -e "${GRAY}请先安装 Swift 工具链 (推荐使用 Swiftly: https://swift-server.github.io/swiftly/)。${RESET}"
+        fi
         exit 1
     fi
 fi
@@ -156,6 +203,21 @@ if [ -f "$HOME/.bashrc" ]; then
     add_path_to_rc "$HOME/.bashrc" "export PATH=\"\$HOME/.lingxiagent/bin:\$PATH\""
 elif [ -f "$HOME/.bash_profile" ]; then
     add_path_to_rc "$HOME/.bash_profile" "export PATH=\"\$HOME/.lingxiagent/bin:\$PATH\""
+fi
+
+# 检测 profile (Linux 通用)
+if [ -f "$HOME/.profile" ]; then
+    add_path_to_rc "$HOME/.profile" "export PATH=\"\$HOME/.lingxiagent/bin:\$PATH\""
+fi
+
+# Linux 依赖环境友好提示
+if [ "$PLATFORM" = "linux" ]; then
+    if ! command -v bwrap >/dev/null 2>&1; then
+        echo -e "${GRAY}[提示] 检测到未安装 bubblewrap，建议安装以获得最佳本地沙箱隔离保护 (如 sudo apt install bubblewrap 或 pacman -S bubblewrap)${RESET}"
+    fi
+    if ! command -v wl-copy >/dev/null 2>&1 && ! command -v xclip >/dev/null 2>&1 && ! command -v xsel >/dev/null 2>&1; then
+        echo -e "${GRAY}[提示] 建议安装系统剪贴板工具 (Wayland: wl-clipboard, X11: xclip / xsel)${RESET}"
+    fi
 fi
 
 # 检测 fish

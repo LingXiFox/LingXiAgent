@@ -1,6 +1,6 @@
-import Darwin
 import Foundation
 import LingXiTUIComponents
+import LingXiPlatform
 
 protocol TerminalBackend: AnyObject, Sendable {
     var size: TUISize { get }
@@ -11,7 +11,7 @@ protocol TerminalBackend: AnyObject, Sendable {
 }
 
 final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
-    private var original: termios?
+    private var rawToken: Any?
     private var openTUI: OpenTUIRenderer?
     private(set) var size = TUISize(width: 80, height: 24)
     private var lastSize = TUISize(width: 80, height: 24)
@@ -24,17 +24,13 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
 
     func start() throws {
         debug("start.begin")
-        var state = termios()
-        guard tcgetattr(STDIN_FILENO, &state) == 0 else { throw POSIXError(.EIO) }
-        debug("start.tcgetattr.done")
-        original = state
-        cfmakeraw(&state)
-        guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &state) == 0 else { throw POSIXError(.EIO) }
+        rawToken = try LingXiPlatform.terminal.enableRawMode()
+        debug("start.rawMode.done")
         updateSize()
         debug("start.size width=\(size.width) height=\(size.height)")
         debug("start.renderer.create.begin")
-        openTUI = try OpenTUIRenderer(width: size.width, height: size.height)
-        debug("start.renderer.create.end")
+        openTUI = try? OpenTUIRenderer(width: size.width, height: size.height)
+        debug("start.renderer.create.end (available: \(openTUI != nil))")
         if let bufferSize = openTUI?.nextBufferSize() {
             debug("start.buffer size=\(bufferSize.width)x\(bufferSize.height)")
         }
@@ -59,26 +55,20 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
             openTUI?.restoreTerminalModes()
         }
         openTUI = nil
-        if let original {
-            var state = original
-            _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &state)
+        if let token = rawToken {
+            LingXiPlatform.terminal.restoreTerminalMode(token: token)
+            rawToken = nil
         }
         debug("stop.end")
     }
 
     func nextInput() -> TUIInputEvent? {
-        // OpenTUI 0.5.10 exposes terminal output/rendering, but no stdin event
-        // decoder. Keep the POSIX parser as the source of TUIInputEvent.
         updateSize()
         if size != lastSize {
             lastSize = size
             return .resize(size)
         }
-        var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
-        let result = Darwin.poll(&descriptor, 1, 20)
-        if result == 0 { return nil }
-        guard result > 0, descriptor.revents & Int16(POLLIN) != 0 else { return nil }
-        guard let byte = readByte() else { return nil }
+        guard let byte = readByte(after: 20) else { return nil }
         switch byte {
         case 3: return .interrupt
         case 4: return .quit
@@ -120,25 +110,13 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
     }
 
     private func updateSize() {
-        var window = winsize()
-        guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 else { return }
-        size = TUISize(width: max(40, Int(window.ws_col)), height: max(12, Int(window.ws_row)))
+        if let dims = LingXiPlatform.terminal.getTerminalDimensions() {
+            size = TUISize(width: dims.columns, height: dims.rows)
+        }
     }
 
-    private func readByte() -> UInt8? {
-        var byte: UInt8 = 0
-        guard Darwin.read(STDIN_FILENO, &byte, 1) == 1 else { return nil }
-        return byte
-    }
-
-    private func readByte(after milliseconds: Int32) -> UInt8? {
-        guard waitForInput(milliseconds: milliseconds) else { return nil }
-        return readByte()
-    }
-
-    private func waitForInput(milliseconds: Int32) -> Bool {
-        var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
-        return Darwin.poll(&descriptor, 1, milliseconds) > 0 && descriptor.revents & Int16(POLLIN) != 0
+    private func readByte(after milliseconds: Int32 = 0) -> UInt8? {
+        LingXiPlatform.terminal.readByte(timeoutMilliseconds: milliseconds)
     }
 
     private func readUTF8Character(firstByte: UInt8) -> Character? {
@@ -159,11 +137,11 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
     }
 
     private func readEscapeSequence() -> TUIInputEvent {
-        guard waitForInput(milliseconds: 40), let second = readByte() else { return .escape }
+        guard let second = readByte(after: 40) else { return .escape }
         switch second {
         case 91: break // CSI '['
         case 79: // SS3 'O' (macOS and application cursor mode: \eOA, \eOB, \eOC, \eOD, \eOH, \eOF)
-            guard waitForInput(milliseconds: 40), let third = readByte() else { return .escape }
+            guard let third = readByte(after: 40) else { return .escape }
             switch third {
             case 65: return .up
             case 66: return .down
@@ -178,7 +156,7 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         default: return .escape
         }
         var sequence: [UInt8] = []
-        while waitForInput(milliseconds: 40), let byte = readByte() {
+        while let byte = readByte(after: 40) {
             sequence.append(byte)
             if byte >= 0x40, byte <= 0x7E { break }
             if sequence.count > 32 { break }
@@ -254,7 +232,7 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
     private func readPaste() -> TUIInputEvent {
         var bytes: [UInt8] = []
         let terminator = Array("\u{1B}[201~".utf8)
-        while waitForInput(milliseconds: 40), let byte = readByte() {
+        while let byte = readByte(after: 40) {
             bytes.append(byte)
             if bytes.count >= terminator.count, bytes.suffix(terminator.count).elementsEqual(terminator) {
                 bytes.removeLast(terminator.count)

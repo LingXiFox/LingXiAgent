@@ -1,7 +1,7 @@
-import CoreFoundation
-import CryptoKit
 import Foundation
+import CryptoKit
 import LingXiProtocol
+import LingXiPlatform
 
 /// Autonomous vault key provider that manages high-entropy protected local keys
 /// without relying on operating-system-specific keychains or secret services.
@@ -29,17 +29,7 @@ public struct AutonomousVaultKeyProvider: Sendable {
             }
         } else {
             // Generate 32 bytes (256-bit) cryptographically secure random entropy
-            var bytes = [UInt8](repeating: 0, count: 32)
-            #if canImport(Security)
-            let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-            if status != errSecSuccess {
-                bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max) }
-            }
-            #else
-            bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max) }
-            #endif
-
-            let freshEntropy = Data(bytes)
+            let freshEntropy = LingXiPlatform.secureStorage.generateSecureRandomBytes(count: 32)
             try freshEntropy.write(to: keyURL, options: .atomic)
             try permissions.secureFile(at: keyURL)
             rawEntropy = freshEntropy

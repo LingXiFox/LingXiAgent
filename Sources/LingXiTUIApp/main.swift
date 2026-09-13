@@ -2,4 +2,6 @@ import Foundation
 import LingXiApplication
 import LingXiTUI
 
-await ApplicationTUI().run()
+let root = AppCompositionRoot()
+let tui = ApplicationTUI()
+try await root.launch(with: tui)

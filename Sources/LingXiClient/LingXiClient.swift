@@ -1,8 +1,6 @@
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#endif
 import LingXiProtocol
+import LingXiPlatform
 
 /// 所有客户端访问 Core 的正式入口。
 /// 面向未来 GUI 复用：不含任何 Terminal 概念。
@@ -300,18 +298,9 @@ public struct LingXiClient: Sendable {
         if let bundleExec = Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent() {
             candidateDirs.append(bundleExec)
         }
-        #if canImport(Darwin)
-        var size: UInt32 = 0
-        _NSGetExecutablePath(nil, &size)
-        if size > 0 {
-            var buffer = [CChar](repeating: 0, count: Int(size))
-            if _NSGetExecutablePath(&buffer, &size) == 0 {
-                let path = String(cString: buffer)
-                let dir = URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent()
-                candidateDirs.append(dir)
-            }
+        if let currentExec = LingXiPlatform.process.currentExecutablePath() {
+            candidateDirs.append(currentExec.deletingLastPathComponent())
         }
-        #endif
 
         let arg0 = CommandLine.arguments[0]
         if arg0.contains("/") {

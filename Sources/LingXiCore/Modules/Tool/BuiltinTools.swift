@@ -625,8 +625,7 @@ private struct GrepMatch: Codable { let path: String; let line: Int; let content
 private struct SearchResult<T: Codable>: Codable { let matches: [T]; let truncated: Bool }
 
 private func ripgrepExecutable() throws -> String {
-    let candidates = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"]
-    guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+    guard let executable = LingXiPlatform.process.resolveExecutable(named: "rg", customSearchPaths: ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]) else {
         throw CoreError(code: .toolExecutionFailed, message: "未找到受支持的 ripgrep (rg) 可执行文件")
     }
     return executable
@@ -1146,7 +1145,14 @@ public struct ShellTool: ToolExecutor {
         let input: ShellArguments = try decodeArguments(arguments)
         let command: (String, [String])
         if let shell = input.command {
-            command = ("/bin/sh", ["-c", shell])
+            #if os(Windows)
+            let shellExe = LingXiPlatform.process.resolveExecutable(named: "powershell.exe", customSearchPaths: nil) ?? "C:\\Windows\\System32\\cmd.exe"
+            let shellArgs = shellExe.lowercased().contains("powershell") ? ["-NoProfile", "-NonInteractive", "-Command", shell] : ["/c", shell]
+            command = (shellExe, shellArgs)
+            #else
+            let shellExe = LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: ["/bin", "/usr/bin"]) ?? "/bin/sh"
+            command = (shellExe, ["-c", shell])
+            #endif
         } else if let executable = input.executable {
             command = (executable, input.arguments ?? [])
         } else {
@@ -1221,7 +1227,9 @@ public struct GitTool: ToolExecutor {
         _ = try capabilities(for: arguments, profile: profile)
         let (_, command) = try gitCommand(input)
         let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
-        let gitExecutable = ["/Library/Developer/CommandLineTools/usr/bin/git", "/usr/bin/git"].first(where: FileManager.default.isExecutableFile(atPath:))!
+        guard let gitExecutable = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/Library/Developer/CommandLineTools/usr/bin", "/usr/bin", "/usr/local/bin"]) else {
+            throw CoreError(code: .gitError, message: "未找到可执行的 git 命令")
+        }
         let setup = try processSetup(executable: gitExecutable, arguments: command, workspace: workspace, cwd: directory, profile: profile)
         let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: 60_000, lifecycleTrace: ToolExecutionContext.lifecycleTrace)
         guard result.exitCode == 0 else { throw CoreError(code: .gitError, message: try json(result)) }

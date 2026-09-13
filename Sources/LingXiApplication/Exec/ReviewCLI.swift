@@ -1,4 +1,5 @@
 import Foundation
+import LingXiPlatform
 
 public enum ReviewCLI {
 
@@ -64,17 +65,18 @@ public enum ReviewCLI {
             diffArgs = ["diff", "HEAD"]
         }
 
-        var diffContent = runProcess("/usr/bin/git", arguments: diffArgs) ?? ""
+        let gitExe = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) ?? "/usr/bin/git"
+        var diffContent = runProcess(gitExe, arguments: diffArgs) ?? ""
 
         // If git diff HEAD is empty, check unstaged or untracked changes
         if diffContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let status = runProcess("/usr/bin/git", arguments: ["status", "-s"]) ?? ""
+            let status = runProcess(gitExe, arguments: ["status", "-s"]) ?? ""
             if status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 print("✓ No uncommitted changes detected in working tree. Nothing to review.")
                 return
             }
             // Try regular git diff
-            diffContent = runProcess("/usr/bin/git", arguments: ["diff"]) ?? ""
+            diffContent = runProcess(gitExe, arguments: ["diff"]) ?? ""
         }
 
         if diffContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

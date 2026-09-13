@@ -1,4 +1,5 @@
 import Foundation
+import LingXiPlatform
 
 public protocol FilePermissionAdapter: Sendable {
     func secureDirectory(at url: URL) throws
@@ -9,15 +10,11 @@ public struct PlatformFilePermissionAdapter: FilePermissionAdapter {
     public init() {}
 
     public func secureDirectory(at url: URL) throws {
-        #if !os(Windows)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-        #endif
+        try LingXiPlatform.secureStorage.secureDirectory(at: url)
     }
 
     public func secureFile(at url: URL) throws {
-        #if !os(Windows)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        #endif
+        try LingXiPlatform.secureStorage.secureFile(at: url)
     }
 }
 

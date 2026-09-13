@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import LingXiProtocol
+import LingXiPlatform
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -392,13 +393,8 @@ public enum MCPOAuthClient {
         return token
     }
 
-    /// Automatically opens a URL in the default browser on macOS
+    /// 自动在系统默认浏览器中打开授权 URL
     public static func openURLInBrowser(_ url: URL) {
-        #if os(macOS)
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = [url.absoluteString]
-        try? proc.run()
-        #endif
+        LingXiPlatform.system.openBrowser(at: url)
     }
 }

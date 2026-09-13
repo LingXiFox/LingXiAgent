@@ -29,7 +29,9 @@ case let .tui(options):
     for skill in options.skillDisables {
         _ = try? await SkillsCLI.run(arguments: ["disable", skill])
     }
-    await ApplicationTUI(options: options).run()
+    let root = AppCompositionRoot(configuration: options.applicationConfiguration)
+    let tui = ApplicationTUI(options: options)
+    try await root.launch(with: tui)
     exit(0)
 
 case let .auth(authArgs):
@@ -99,7 +101,10 @@ case let .resume(resumeArgs):
                 print("🔄 正在切换工作目录至: \(targetDir)")
                 FileManager.default.changeCurrentDirectoryPath(targetDir)
             }
-            await ApplicationTUI(options: TUILaunchOptions(resumeSessionID: sessionID)).run()
+            let resumeOptions = TUILaunchOptions(resumeSessionID: sessionID)
+            let root = AppCompositionRoot(configuration: resumeOptions.applicationConfiguration)
+            let tui = ApplicationTUI(options: resumeOptions)
+            try await root.launch(with: tui)
             exit(0)
         case let .output(msg):
             print(msg)

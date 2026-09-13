@@ -1,13 +1,27 @@
 #include "OpenTUIShim.h"
 
-#include <dlfcn.h>
 #include <stdio.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+static HMODULE image;
+#define DLOPEN(p) LoadLibraryA(p)
+#define DLSYM(h, n) (void *)GetProcAddress(h, n)
+#define DLCLOSE(h) FreeLibrary(h)
+#define DLERROR() "LoadLibrary failed"
+#else
+#include <dlfcn.h>
 static void *image;
+#define DLOPEN(p) dlopen(p, RTLD_NOW | RTLD_LOCAL)
+#define DLSYM(h, n) dlsym(h, n)
+#define DLCLOSE(h) dlclose(h)
+#define DLERROR() dlerror()
+#endif
+
 static char error_message[256];
 
 static void *symbol(const char *name) {
-    void *value = dlsym(image, name);
+    void *value = DLSYM(image, name);
     if (!value) {
         snprintf(error_message, sizeof(error_message), "missing OpenTUI symbol: %s", name);
     }
@@ -16,13 +30,38 @@ static void *symbol(const char *name) {
 
 bool opentui_load(const char *path) {
     if (image) return true;
-    const char *library = path;
-    if (!library || !library[0]) library = "Vendor/OpenTUI/0.5.10/libopentui.dylib";
-    image = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+
+    const char *candidates[] = {
+#if defined(_WIN32)
+        path,
+        "Vendor\\OpenTUI\\0.5.10\\opentui.dll",
+        "opentui.dll"
+#elif defined(__APPLE__)
+        path,
+        "Vendor/OpenTUI/0.5.10/libopentui.dylib",
+        "/usr/local/lib/libopentui.dylib",
+        "libopentui.dylib"
+#else // Linux / POSIX
+        path,
+        "Vendor/OpenTUI/0.5.10/libopentui.so",
+        "/usr/local/lib/libopentui.so",
+        "/usr/lib/libopentui.so",
+        "libopentui.so"
+#endif
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        const char *candidate = candidates[i];
+        if (!candidate || !candidate[0]) continue;
+        image = DLOPEN(candidate);
+        if (image) break;
+    }
+
     if (!image) {
-        snprintf(error_message, sizeof(error_message), "OpenTUI dlopen failed: %s", dlerror());
+        snprintf(error_message, sizeof(error_message), "OpenTUI dynamic load failed: %s", DLERROR());
         return false;
     }
+
     const char *required[] = {
         "createRenderer", "destroyRenderer", "render", "resizeRenderer",
         "getNextBuffer", "getCurrentBuffer", "bufferClear", "bufferDrawText",
@@ -30,9 +69,9 @@ bool opentui_load(const char *path) {
         "setupTerminal", "enableMouse", "disableMouse", "restoreTerminalModes"
     };
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]); index++) {
-        if (!dlsym(image, required[index])) {
+        if (!DLSYM(image, required[index])) {
             snprintf(error_message, sizeof(error_message), "missing OpenTUI symbol: %s", required[index]);
-            dlclose(image);
+            DLCLOSE(image);
             image = NULL;
             return false;
         }
@@ -43,7 +82,7 @@ bool opentui_load(const char *path) {
 const char *opentui_last_error(void) { return error_message; }
 
 void opentui_unload(void) {
-    if (image) dlclose(image);
+    if (image) DLCLOSE(image);
     image = NULL;
 }
 

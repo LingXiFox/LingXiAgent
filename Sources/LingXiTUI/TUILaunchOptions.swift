@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiApplication
 
 /// TUI 启动配置参数（由 CLI 统一入口传入）。
 public struct TUILaunchOptions: Sendable, Equatable {
@@ -53,4 +54,16 @@ public struct TUILaunchOptions: Sendable, Equatable {
     }
 
     public static let `default` = TUILaunchOptions()
+
+    /// 转换为通用应用层启动配置
+    public var applicationConfiguration: ApplicationLaunchConfiguration {
+        ApplicationLaunchConfiguration(
+            initialPrompt: initialPrompt,
+            initialModelID: initialModelID,
+            initialWorkingDir: initialWorkingDir,
+            isYoloMode: isYoloMode,
+            reasoningEffort: reasoningEffort,
+            resumeSessionID: resumeSessionID
+        )
+    }
 }

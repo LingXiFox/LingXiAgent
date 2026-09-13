@@ -2,8 +2,8 @@
 
 > [!IMPORTANT]
 > **系统平台支持说明（Platform Support）**
-> - **当前支持**：本项目目前**仅支持 macOS**（macOS 13+）。
-> - **暂不支持**：**Linux**、**Windows**、**HarmonyOS**、**ChromeOS**、**Android** 目前暂不支持，未来版本可能视生态成熟度与架构规划逐步评估支持。
+> - **全面支持**：本项目已完成原生跨平台架构重构，全面原生支持 **macOS** (Apple Silicon / Intel)、**Linux** (x86_64 / AArch64) 与 **Windows** (x86_64 / ARM64)。
+> - **底层保障**：由独立的 `LingXiPlatform` 模块提供三平台纯原生抽象，实现无缝平替与沙箱隔离。
 
 LingXiAgent 是以纯 Swift 原生实现的现代化本地自主智能体（Agent Core）。它拥有完整的自主决策树、多级上下文缓存、动态工具调度、敏感权限拦截、多协议模型网关、MCP 服务运行时与本地加密持久化体系；外部模型通信仅在 Provider Adapter 边界做契约映射，严守领域模型的内聚与纯粹。
 
@@ -27,6 +27,22 @@ LingXiAgent 是以纯 Swift 原生实现的现代化本地自主智能体（Agen
   * 内置标准 RFC 9728 & RFC 8414 OAuth 2.1 浏览器自动授权与本地回送服务器；
   * **凭据双重回退**：本地 AES-256-GCM 独立加密保险箱与系统环境变量双向兜底。
 * **统一运维 CLI (`lingxiagent`)**：提供 `doctor` 体系体检、`mcp` 状态与发现、`auth` 密钥与多模型认证等全套运维指令。
+
+---
+
+## ⚡ 快速安装与上手 (Quick Install)
+
+### macOS / Linux (一键安装)
+在终端中执行官方一键脚本（自动识别系统与架构、准备目录并配置 PATH）：
+```bash
+curl -fsSL https://agent.lingxifox.cn/install.sh | bash
+```
+
+### Windows (PowerShell 一键安装)
+在 Windows PowerShell 中直接运行：
+```powershell
+irm https://agent.lingxifox.cn/install.ps1 | iex
+```
 
 ---
 
@@ -85,11 +101,12 @@ flowchart TD
 | Target | 职责定位 | 依赖关系 |
 | :--- | :--- | :--- |
 | **`LingXiProtocol`** | 定义领域类型、消息、事件、流式数据帧（Wire Frame）及错误契约 | 纯原生，零外部依赖 |
-| **`LingXiCore`** | 业务核心、状态权威，内含三级缓存、Tool/MCP/Provider 引擎与持久化 | 仅依赖 `LingXiProtocol` |
-| **`LingXiClient`** | 访问 Core 的客户端 SDK，支持进程内驱动及 stdio 管道传输 | 仅依赖 `LingXiProtocol` |
-| **`LingXiApplication`**| 应用层业务聚合驱动，实现 `/resume`、`/mcp`、`/skills` 等应用命令 | 依赖 `LingXiClient`、`LingXiProtocol` |
-| **`LingXiTUI`** | 现代化终端用户界面，负责双栏渲染、事件消费与交互式输入 | 依赖 `LingXiApplication`、`LingXiTUIComponents` |
-| **`LingXiCoreHost`** | 独立 Core 后台执行体，提供标准输入输出的 JSON Lines 协议服务 | 依赖 `LingXiCore`、`LingXiProtocol` |
+| **`LingXiPlatform`** | 跨平台统一系统调用门面（Darwin/Linux/Windows 专属实现与进程树深度杀灭） | 纯原生系统接口 |
+| **`LingXiCore`** | 业务核心、状态权威，内含三级缓存、Tool/MCP/Provider 引擎与持久化 | 依赖 `LingXiProtocol`、`LingXiPlatform` |
+| **`LingXiClient`** | 访问 Core 的客户端 SDK，支持进程内驱动及 stdio 管道传输 | 依赖 `LingXiProtocol`、`LingXiPlatform` |
+| **`LingXiApplication`**| 应用层业务聚合与表现层契约，实现生命周期装配与命令分发 | 依赖 `LingXiClient`、`LingXiProtocol`、`LingXiPlatform` |
+| **`LingXiTUI`** | 现代化终端用户界面，遵循 `Frontend` 契约，纯粹表现层与视图容器 | 依赖 `LingXiApplication`、`LingXiTUIComponents`、`LingXiPlatform` |
+| **`LingXiCoreHost`** | 独立 Core 后台执行体，提供标准输入输出的 JSON Lines 协议服务 | 依赖 `LingXiCore`、`LingXiProtocol`、`LingXiPlatform` |
 | **`lingxiagent`** | 统一综合命令行入口（运行 TUI、doctor 体检、mcp 诊断、auth 密钥管理） | 整合各层入口 |
 
 ---

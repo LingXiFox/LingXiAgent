@@ -11,23 +11,25 @@ let package = Package(
         .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
     ],
     targets: [
+        // 平台层：跨平台系统抽象（macOS / Linux / Windows）
+        .target(name: "LingXiPlatform", dependencies: ["LingXiProtocol"]),
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
-        .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol"]),
-        // Core：业务能力与状态权威。仅依赖 Protocol。
+        .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol", "LingXiPlatform"]),
+        // Core：业务能力与状态权威。仅依赖 Protocol 与 Platform。
         .target(
             name: "LingXiCore",
-            dependencies: ["LingXiProtocol"],
+            dependencies: ["LingXiProtocol", "LingXiPlatform"],
             resources: [
                 .copy("Resources/Configuration"),
                 .copy("Provider/Products"),
                 .copy("Provider/Protocols")
             ]
         ),
-        // Client：所有客户端访问 Core 的正式入口。仅依赖 Protocol。
-        .target(name: "LingXiClient", dependencies: ["LingXiProtocol"]),
+        // Client：所有客户端访问 Core 的正式入口。
+        .target(name: "LingXiClient", dependencies: ["LingXiProtocol", "LingXiPlatform"]),
         .target(name: "OpenTUIShim"),
-        .target(name: "LingXiTUIComponents", dependencies: ["LingXiProtocol", "OpenTUIShim"]),
+        .target(name: "LingXiTUIComponents", dependencies: ["LingXiProtocol", "OpenTUIShim", "LingXiPlatform"]),
         // Core Host executable：独立启动 Core 进程。
         .executableTarget(
             name: "LingXiCoreHost",
@@ -36,12 +38,12 @@ let package = Package(
         // Unified CLI tool: lingxiagent
         .executableTarget(
             name: "lingxiagent",
-            dependencies: ["LingXiCore", "LingXiProtocol", "LingXiApplication", "LingXiTUI"]
+            dependencies: ["LingXiCore", "LingXiProtocol", "LingXiApplication", "LingXiTUI", "LingXiPlatform"]
         ),
         // TUI：Reference Client 库。禁止依赖 LingXiCore。
         .target(
             name: "LingXiTUI",
-            dependencies: ["LingXiApplication", "LingXiTUIComponents"],
+            dependencies: ["LingXiApplication", "LingXiTUIComponents", "LingXiPlatform"],
             exclude: ["RetainedTUI.swift"]
         ),
         // TUI 可执行封装，供 swift run LingXiTUI 启动
@@ -51,7 +53,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI"],
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform"],
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),
