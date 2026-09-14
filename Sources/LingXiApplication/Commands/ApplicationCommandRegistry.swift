@@ -56,10 +56,16 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
                 if res.isPrompt {
                     return ApplicationCommandResult(
                         output: "🦊 [插件提示词宏 /\(res.name)] 已展开：\n\n\(res.output)",
+                        presentation: .inline,
                         revertedComposerText: res.output
                     )
                 } else {
-                    return ApplicationCommandResult(output: res.output)
+                    let style = CommandPresentationStyle(rawValue: res.presentation) ?? .modal
+                    return ApplicationCommandResult(
+                        output: res.output,
+                        presentation: style,
+                        modalTitle: res.title ?? "/\(res.name)"
+                    )
                 }
             }
             pluginCommands[name] = command

@@ -138,7 +138,7 @@ public actor PluginProcessHost {
             Task {
                 try? await Task.sleep(for: .milliseconds(200))
                 if proc.isRunning {
-                    kill(proc.processIdentifier, SIGKILL)
+                    LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
                 }
             }
         }
