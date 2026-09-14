@@ -550,6 +550,17 @@ public enum BuiltinCommands {
                 argumentSchema: "[key] [value]"
             ) { ctx in
                 try await handleConfig(ctx: ctx)
+            },
+
+            // 24. /tasks
+            ApplicationCommand(
+                name: "tasks",
+                aliases: ["task", "bg"],
+                description: "查看后台任务列表与运行状态 (正在完成、已完成、执行错误)",
+                category: "Execution",
+                argumentSchema: "[task_id | kill <task_id>]"
+            ) { ctx in
+                try await handleTasks(ctx: ctx)
             }
         ]
     }
@@ -648,5 +659,160 @@ public enum BuiltinCommands {
             output += "\n\(note)"
         }
         return ApplicationCommandResult(output: output, nextTurnReasoningEffort: effectiveTarget)
+    }
+
+    private static func handleTasks(ctx: ApplicationCommandContext) async throws -> ApplicationCommandResult {
+        // 1. 终止子命令: /tasks kill <task_id> 或 /tasks stop <task_id>
+        if let first = ctx.arguments.first?.lowercased(), (first == "kill" || first == "stop") {
+            guard ctx.arguments.count > 1 else {
+                throw ApplicationCommandError.invalidArguments("用法: /tasks kill <task_id>")
+            }
+            let targetID = ctx.arguments[1]
+            let success = (try? await ctx.client.runtime.terminateBackgroundTask(id: targetID)) ?? false
+            if success {
+                return ApplicationCommandResult(output: "✓ 已向后台任务 [\(targetID)] 发送终止信号。")
+            } else {
+                return ApplicationCommandResult(output: "⚠️ 终止后台任务 [\(targetID)] 请求未能成功处理。")
+            }
+        }
+
+        // 2. 拉取所有后台任务快照
+        let allTasks = (try? await ctx.client.diagnostics.getBackgroundTasks()) ?? []
+
+        // 3. 单任务详情模式: /tasks <task_id>
+        if let targetID = ctx.arguments.first, targetID != "all" && targetID != "list" {
+            guard let matched = allTasks.first(where: { $0.id == targetID || $0.id.hasPrefix(targetID) }) else {
+                return ApplicationCommandResult(output: "未找到 ID 为 [\(targetID)] 的后台任务。\n输入 /tasks 查看所有后台任务。")
+            }
+
+            var statusStr = ""
+            switch matched.status {
+            case .running:
+                statusStr = "🚀 正在运行 (剩余 \(String(format: "%.1f", matched.remainingTimeoutSeconds))s / 限时 \(matched.timeoutSeconds)s)"
+            case .exited:
+                statusStr = (matched.exitCode == 0) ? "✅ 已完成 (exit: 0)" : "❌ 异常退出 (exit: \(matched.exitCode ?? -1))"
+            case .timedOut:
+                statusStr = "⚠️ 超时强杀 (已超 \(matched.timeoutSeconds)s 强制上限)"
+            case .terminated:
+                statusStr = "⏹ 手动终止"
+            }
+
+            var fields: [(String, String)] = [
+                ("任务 ID", matched.id),
+                ("当前状态", statusStr),
+                ("执行命令", matched.command),
+                ("工作目录", matched.cwd),
+                ("超时上限", "\(matched.timeoutSeconds) 秒"),
+                ("耗时统计", String(format: "%.2f 秒", matched.elapsedSeconds))
+            ]
+            if let pid = matched.pid {
+                fields.append(("进程 PID", "\(pid)"))
+            }
+            if let exitCode = matched.exitCode {
+                fields.append(("退出代码", "\(exitCode)"))
+            }
+            if let desc = matched.description, !desc.isEmpty {
+                fields.append(("任务描述", desc))
+            }
+
+            var sections: [(String, [String])] = []
+            let stdoutLines = matched.stdout.components(separatedBy: "\n").filter { !$0.isEmpty }
+            if !stdoutLines.isEmpty {
+                let tail = stdoutLines.suffix(20).map { "  \($0)" }
+                sections.append(("标准输出 (最近 \(tail.count) 行)", tail))
+            }
+            let stderrLines = matched.stderr.components(separatedBy: "\n").filter { !$0.isEmpty }
+            if !stderrLines.isEmpty {
+                let tail = stderrLines.suffix(20).map { "  \($0)" }
+                sections.append(("标准错误 (最近 \(tail.count) 行)", tail))
+            }
+
+            let card = CLIFormatter.renderCard(
+                title: "后台任务详情 (/tasks)",
+                fields: fields,
+                sections: sections,
+                footer: (matched.status == .running) ? "终止任务: /tasks kill \(matched.id)" : nil,
+                borderStyle: .rounded
+            )
+            return ApplicationCommandResult(output: card)
+        }
+
+        // 4. 空任务处理
+        if allTasks.isEmpty {
+            let card = CLIFormatter.renderCard(
+                title: "后台命令任务状态 (/tasks)",
+                fields: [
+                    ("后台任务总数", "0 (暂无后台任务)"),
+                    ("系统看门狗", "已就绪 (强制超时保护生效中)")
+                ],
+                sections: [
+                    ("提示说明", [
+                        "  • 模型可调用 run_background_command 移交耗时指令到后台运行",
+                        "  • 所有后台指令均被强制要求超时时间 (timeout_seconds)，杜绝卡死",
+                        "  • 任务执行结束或超时，系统将主动巡检并提醒模型与用户"
+                    ])
+                ],
+                footer: "运行指令时模型可使用 run_background_command",
+                borderStyle: .rounded
+            )
+            return ApplicationCommandResult(output: card)
+        }
+
+        // 5. 分类归纳: 正在完成、已完成、执行错误
+        var runningLines: [String] = []
+        var completedLines: [String] = []
+        var failedLines: [String] = []
+
+        for task in allTasks {
+            let cmdShort = task.command.count > 36 ? String(task.command.prefix(33)) + "..." : task.command
+            switch task.status {
+            case .running:
+                let pidStr = task.pid.map { "PID: \($0)" } ?? "PID: -"
+                let timeStr = "\(String(format: "%.1f", task.elapsedSeconds))s/\(task.timeoutSeconds)s"
+                runningLines.append("  • [\(task.id)] \(pidStr) · 耗时 \(timeStr) · `\(cmdShort)`")
+            case .exited:
+                if (task.exitCode ?? 0) == 0 {
+                    let timeStr = String(format: "%.1f", task.elapsedSeconds) + "s"
+                    completedLines.append("  • [\(task.id)] 耗时 \(timeStr) · exit: 0 · `\(cmdShort)`")
+                } else {
+                    let code = task.exitCode.map(String.init) ?? "unknown"
+                    failedLines.append("  • [\(task.id)] 退出码: \(code) · `\(cmdShort)`")
+                }
+            case .timedOut:
+                failedLines.append("  • [\(task.id)] ⚠️ 超时强杀 (\(task.timeoutSeconds)s) · `\(cmdShort)`")
+            case .terminated:
+                failedLines.append("  • [\(task.id)] ⏹ 手动终止 · `\(cmdShort)`")
+            }
+        }
+
+        var sections: [(String, [String])] = []
+        if !runningLines.isEmpty {
+            sections.append(("🚀 正在完成 (\(runningLines.count))", runningLines))
+        } else {
+            sections.append(("🚀 正在完成 (0)", ["  (暂无运行中的任务)"]))
+        }
+
+        if !completedLines.isEmpty {
+            sections.append(("✅ 已完成 (\(completedLines.count))", completedLines))
+        }
+
+        if !failedLines.isEmpty {
+            sections.append(("❌ 执行错误 / 终止 (\(failedLines.count))", failedLines))
+        }
+
+        let fields: [(String, String)] = [
+            ("正在完成", "\(runningLines.count) 个"),
+            ("已完成", "\(completedLines.count) 个"),
+            ("执行错误/终止", "\(failedLines.count) 个")
+        ]
+
+        let card = CLIFormatter.renderCard(
+            title: "后台命令任务状态 (/tasks)",
+            fields: fields,
+            sections: sections,
+            footer: "查看任务详情: /tasks <task_id> · 终止任务: /tasks kill <task_id>",
+            borderStyle: .rounded
+        )
+        return ApplicationCommandResult(output: card)
     }
 }

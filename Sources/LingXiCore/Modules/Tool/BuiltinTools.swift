@@ -1155,10 +1155,30 @@ public struct ShellTool: ToolExecutor {
         let isWrite = !isReadOnlyShellCommand(input.command ?? input.executable ?? "")
         return Set([.processExecute]).union(filesystemCapabilities(try cwd(input.cwd, workspace: workspace, profile: profile), workspace: workspace, write: isWrite))
     }
+    public static func isBackgroundShellCommand(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("&") && !trimmed.hasSuffix("&&") {
+            return true
+        }
+        if let regex = try? NSRegularExpression(pattern: #"(?<![&>])&(?![&>0-9])"#) {
+            let range = NSRange(command.startIndex..<command.endIndex, in: command)
+            if regex.firstMatch(in: command, options: [], range: range) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: ShellArguments = try decodeArguments(arguments)
         let command: (String, [String])
         if let shell = input.command {
+            if Self.isBackgroundShellCommand(shell) {
+                throw CoreError(
+                    code: .toolArgumentInvalid,
+                    message: "禁止在 shell 中直接使用 '&' 盲放后台。长耗时或后台任务必须使用 'run_background_command'（必须指定 timeout_seconds，1~7200 秒），以便由看门狗管理并在完成后主动注入通知。"
+                )
+            }
             #if os(Windows)
             let shellExe = LingXiPlatform.process.resolveExecutable(named: "powershell.exe", customSearchPaths: nil) ?? "C:\\Windows\\System32\\cmd.exe"
             let shellArgs = shellExe.lowercased().contains("powershell") ? ["-NoProfile", "-NonInteractive", "-Command", shell] : ["/c", shell]

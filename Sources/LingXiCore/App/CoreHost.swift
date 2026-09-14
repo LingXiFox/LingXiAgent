@@ -94,6 +94,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
     }
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
+    package var backgroundManagerRef: BackgroundCommandManager { backgroundManager }
     package var workflowRuntimeRef: WorkflowRuntime? { workflows }
     package var performanceStoreRef: PerformanceStore { performanceStore }
     public private(set) var effectiveContextPolicy: EffectiveContextPolicy
@@ -134,11 +135,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         permissionDecision: PermissionDecision? = nil,
         toolRegistry: ToolRegistry? = nil,
         mcpPager: MCPToolPager? = nil,
-        interactive: Bool? = nil
-        , configurationStore: ConfigurationStore? = nil
-        , credentialStore: (any CredentialStore)? = nil,
+        interactive: Bool? = nil,
+        configurationStore: ConfigurationStore? = nil,
+        credentialStore: (any CredentialStore)? = nil,
         restoreScheduler: SessionRestoreScheduler? = nil,
-        extensionPlatform: ExtensionPlatform? = nil
+        extensionPlatform: ExtensionPlatform? = nil,
+        backgroundManager: BackgroundCommandManager? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
         let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
@@ -151,8 +153,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
         self.processes = processes
-        let backgroundManager = BackgroundCommandManager()
-        self.backgroundManager = backgroundManager
+        let bgManager = backgroundManager ?? BackgroundCommandManager()
+        self.backgroundManager = bgManager
         let subagentService = SubagentToolService()
         self.subagentService = subagentService
         info = CoreInfo(
@@ -1071,7 +1073,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             runs: runs,
             workflows: workflows,
             recoveryRequiredRunIDs: runs.filter { $0.status == .recoveryRequired }.map(\.runID),
-            orphanRunIDs: orphanRunIDs
+            orphanRunIDs: orphanRunIDs,
+            backgroundTasks: await backgroundManager.list()
         )
     }
 
@@ -3262,6 +3265,10 @@ extension CoreHost {
                 config = .askWorkspace
             }
             await permissionEngine.setConfiguration(config)
+        } else if key == "background_task.terminate" || key == "background_task.stop" {
+            _ = try? await backgroundManager.terminate(id: value)
+        } else if key == "background_task.terminate_all" {
+            await backgroundManager.terminateAll()
         }
         let watermark = await runtimeEventLog.currentWatermark()
         return CommandReceipt(

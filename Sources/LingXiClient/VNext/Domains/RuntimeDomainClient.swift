@@ -44,4 +44,16 @@ public struct RuntimeDomainClient: Sendable {
         }
         return await transport.subscribeRuntimeEvents(after: after)
     }
+
+    @discardableResult
+    public func terminateBackgroundTask(id: String) async throws -> Bool {
+        let res = try await updateTypedSetting(key: "background_task.terminate", value: id)
+        return res.applied
+    }
+
+    @discardableResult
+    public func terminateAllBackgroundTasks() async throws -> Bool {
+        let res = try await updateTypedSetting(key: "background_task.terminate_all", value: "all")
+        return res.applied
+    }
 }

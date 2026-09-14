@@ -93,8 +93,9 @@ public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
     public let workflows: [WorkflowSnapshot]
     public let recoveryRequiredRunIDs: [AgentRunID]
     public let orphanRunIDs: [AgentRunID]
+    public let backgroundTasks: [BackgroundTaskSnapshot]?
 
-    public init(generatedAt: Date = .now, runtimeVersion: String, protocolVersion: String, configurationSummary: [String: String], trace: [RuntimeTraceEvent], recentErrors: [RuntimeTraceEvent], provider: RuntimeDiagnosticProviderStatus, mcp: RuntimeDiagnosticMCPStatus, runs: [AgentRunInfo], workflows: [WorkflowSnapshot], recoveryRequiredRunIDs: [AgentRunID], orphanRunIDs: [AgentRunID]) {
+    public init(generatedAt: Date = .now, runtimeVersion: String, protocolVersion: String, configurationSummary: [String: String], trace: [RuntimeTraceEvent], recentErrors: [RuntimeTraceEvent], provider: RuntimeDiagnosticProviderStatus, mcp: RuntimeDiagnosticMCPStatus, runs: [AgentRunInfo], workflows: [WorkflowSnapshot], recoveryRequiredRunIDs: [AgentRunID], orphanRunIDs: [AgentRunID], backgroundTasks: [BackgroundTaskSnapshot]? = nil) {
         self.generatedAt = generatedAt
         self.runtimeVersion = runtimeVersion
         self.protocolVersion = protocolVersion
@@ -107,6 +108,7 @@ public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
         self.workflows = workflows
         self.recoveryRequiredRunIDs = recoveryRequiredRunIDs
         self.orphanRunIDs = orphanRunIDs
+        self.backgroundTasks = backgroundTasks
     }
 }
 

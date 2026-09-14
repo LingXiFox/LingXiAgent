@@ -2,6 +2,8 @@ import Foundation
 @testable import LingXiCore
 @testable import LingXiPlatform
 import LingXiProtocol
+import LingXiClient
+import LingXiApplication
 import Testing
 
 @Suite("Background Command System & Watchdog Inspection Tests")
@@ -189,5 +191,74 @@ struct BackgroundCommandTests {
 
         let after = await manager.list()
         #expect(after.isEmpty)
+    }
+
+    @Test("ShellTool rejects background ampersand patterns and accepts valid commands")
+    func testShellToolRejectsBackgroundAmpersand() async throws {
+        let (tempDir, workspace) = try makeTemporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let shellTool = ShellTool(workspace: workspace)
+
+        // 1. Rejects single trailing &
+        await #expect(throws: CoreError.self) {
+            try await shellTool.execute(arguments: #"{"command": "sleep 5 &"}"#, profile: .workspace)
+        }
+
+        // 2. Rejects shell background with redirect
+        await #expect(throws: CoreError.self) {
+            try await shellTool.execute(arguments: #"{"command": "sleep 5 >/dev/null 2>&1 & echo background_pid=$!"}"#, profile: .workspace)
+        }
+
+        // 3. Accepts regular command
+        let normalResult = try await shellTool.execute(arguments: #"{"command": "echo hello-lingxi"}"#, profile: .workspace)
+        #expect(normalResult.contains("hello-lingxi"))
+
+        // 4. Accepts command chain with &&
+        let chainResult = try await shellTool.execute(arguments: #"{"command": "echo a && echo b"}"#, profile: .workspace)
+        #expect(chainResult.contains("a") && chainResult.contains("b"))
+    }
+
+    @Test("Tasks command displays categorized running, completed, and failed tasks and details")
+    func testTasksCommandInspectionAndClassification() async throws {
+        let (tempDir, workspace) = try makeTemporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let registry = ApplicationCommandRegistry()
+        for cmd in BuiltinCommands.createAll() {
+            registry.register(cmd)
+        }
+
+        let manager = BackgroundCommandManager()
+        let coreHost = try CoreHost(workspaceRoot: workspace, backgroundManager: manager)
+        let client = try await LingXiClientVNext(transport: InProcessTransport(service: coreHost))
+        let state = ApplicationState()
+
+        // 1. Initial /tasks with empty list
+        let emptyResult = try await registry.execute(input: "/tasks", sessionID: nil, client: client, state: state)
+        #expect(emptyResult.output.contains("后台命令任务状态 (/tasks)"))
+        #expect(emptyResult.output.contains("暂无后台任务"))
+
+        // 2. Run a background command to have a completed task
+        let runBgTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
+        _ = try await runBgTool.execute(arguments: #"{"command": "echo task-finished-ok", "timeout_seconds": 10, "task_id": "test-task-1"}"#, profile: .workspace)
+
+        // Give it a moment to exit
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // 3. /tasks shows completed task
+        let listResult = try await registry.execute(input: "/tasks", sessionID: nil, client: client, state: state)
+        #expect(listResult.output.contains("test-task-1"))
+        #expect(listResult.output.contains("已完成"))
+
+        // 4. /tasks <task_id> shows detail card with output
+        let detailResult = try await registry.execute(input: "/tasks test-task-1", sessionID: nil, client: client, state: state)
+        #expect(detailResult.output.contains("后台任务详情 (/tasks)"))
+        #expect(detailResult.output.contains("test-task-1"))
+        #expect(detailResult.output.contains("task-finished-ok"))
+
+        // 5. Test kill subcmd
+        let killResult = try await registry.execute(input: "/tasks kill test-task-1", sessionID: nil, client: client, state: state)
+        #expect(killResult.output.contains("已向后台任务 [test-task-1] 发送终止信号"))
     }
 }

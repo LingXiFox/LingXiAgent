@@ -29,4 +29,9 @@ public struct DiagnosticsDomainClient: Sendable {
         let resp = try await transport.getRunTrace(envelope: QueryEnvelope(payload: req))
         return resp.payload
     }
+
+    public func getBackgroundTasks() async throws -> [BackgroundTaskSnapshot] {
+        let bundle = try await getBundle()
+        return bundle.backgroundTasks ?? []
+    }
 }
