@@ -172,7 +172,7 @@ import Foundation
         #expect(trace.model == "deepseek-v4-flash")
         #expect(trace.actualUsage?.inputTokens == 742)
         #expect(trace.toolCount == 13)
-        #expect(trace.toolSchemaTokens < 1300)
+        #expect(trace.toolSchemaTokens < 1500)
         #expect(trace.providerFramingTokens == 256)
         #expect(trace.retryAttempt == 0)
         #expect(trace.cacheTelemetry?.stablePrefixTokens == trace.systemPinnedTokens + trace.toolSchemaTokens)

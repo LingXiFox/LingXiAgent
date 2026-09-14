@@ -310,6 +310,20 @@ private struct ProcessArguments: Decodable {
     let stdoutCursor: Int?
     let stderrCursor: Int?
 }
+private struct RunBackgroundCommandArguments: Decodable {
+    let command: String
+    let timeoutSeconds: Int?
+    let cwd: String?
+    let description: String?
+    let taskId: String?
+}
+private struct ManageBackgroundCommandArguments: Decodable {
+    let action: String
+    let taskId: String?
+    let stdoutCursor: Int?
+    let stderrCursor: Int?
+    let inputText: String?
+}
 private struct QuestionArguments: Decodable { let question: String; let options: [String]?; let multiple: Bool? }
 private struct SymbolArguments: Decodable { let symbol: String; let mode: String?; let direction: String? }
 private struct CodeIntelligenceArguments: Decodable { let action: String; let query: String?; let path: String?; let line: Int?; let character: Int?; let maximumCharacters: Int? }
@@ -1073,7 +1087,7 @@ private func cwd(_ value: String?, workspace: WorkspaceRoot, profile: ExecutionP
     return url
 }
 
-private func processSetup(executable: String, arguments: [String], workspace: WorkspaceRoot, cwd: URL, profile: ExecutionProfile) throws -> (ToolProcessInvocation, [String: String]) {
+func processSetup(executable: String, arguments: [String], workspace: WorkspaceRoot, cwd: URL, profile: ExecutionProfile) throws -> (ToolProcessInvocation, [String: String]) {
     guard executable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: executable) else {
         throw CoreError(code: .toolArgumentInvalid, message: "executable 必须是可执行的绝对路径")
     }
@@ -1318,6 +1332,109 @@ public struct ProcessTool: ToolExecutor {
         return try json(status)
     }
 }
+
+public struct RunBackgroundCommandTool: ToolExecutor {
+    private let workspace: WorkspaceRoot
+    private let manager: BackgroundCommandManager
+
+    public init(workspace: WorkspaceRoot, manager: BackgroundCommandManager) {
+        self.workspace = workspace
+        self.manager = manager
+    }
+
+    public let definition = ToolDefinition(
+        id: ToolID("run_background_command"),
+        description: "Execute a non-conflicting shell command in the background, freeing the foreground to proceed. MANDATORY: `timeout_seconds` must be specified (e.g. 60-3600); commands without timeout will be strictly rejected.",
+        inputSchema: ToolInputSchema(properties: [
+            "command": ToolInputProperty(type: .string, description: "Shell command to run in the background"),
+            "timeout_seconds": ToolInputProperty(type: .integer, description: "Mandatory timeout in seconds (1 to 7200). Commands without timeout are rejected.", minimum: 1, maximum: 7200),
+            "cwd": ToolInputProperty(type: .string, description: "Workspace-relative working directory"),
+            "description": ToolInputProperty(type: .string, description: "Brief description of the background command purpose"),
+            "task_id": ToolInputProperty(type: .string, description: "Optional custom unique task identifier (e.g. 'build-target')")
+        ], required: ["command", "timeout_seconds"]),
+        capability: ToolCapability([.processExecute])
+    )
+
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: RunBackgroundCommandArguments = try decodeArguments(arguments)
+        return try cwd(input.cwd, workspace: workspace, profile: profile).path
+    }
+
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: RunBackgroundCommandArguments = try decodeArguments(arguments)
+        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        let snapshot = try await manager.spawn(
+            command: input.command,
+            timeoutSeconds: input.timeoutSeconds,
+            cwd: directory,
+            workspace: workspace,
+            profile: profile,
+            description: input.description,
+            customID: input.taskId,
+            lifecycleTrace: ToolExecutionContext.lifecycleTrace
+        )
+        return try json(snapshot)
+    }
+}
+
+public struct ManageBackgroundCommandTool: ToolExecutor {
+    private let manager: BackgroundCommandManager
+
+    public init(manager: BackgroundCommandManager) {
+        self.manager = manager
+    }
+
+    public let definition = ToolDefinition(
+        id: ToolID("manage_background_command"),
+        description: "Manage, inspect, supply input to, or terminate running background commands.",
+        inputSchema: ToolInputSchema(properties: [
+            "action": ToolInputProperty(type: .string, description: "poll, input, terminate, or list", enumValues: ["poll", "input", "terminate", "list"]),
+            "task_id": ToolInputProperty(type: .string, description: "Task ID (required for poll, input, terminate)"),
+            "stdout_cursor": ToolInputProperty(type: .integer, description: "Cursor for incremental stdout reading", minimum: 0),
+            "stderr_cursor": ToolInputProperty(type: .integer, description: "Cursor for incremental stderr reading", minimum: 0),
+            "input_text": ToolInputProperty(type: .string, description: "UTF-8 text to send to stdin for action='input'")
+        ], required: ["action"]),
+        capability: ToolCapability([.processExecute])
+    )
+
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: ManageBackgroundCommandArguments = try decodeArguments(arguments)
+        return input.taskId ?? "all"
+    }
+
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: ManageBackgroundCommandArguments = try decodeArguments(arguments)
+        switch input.action {
+        case "poll", "status":
+            guard let id = input.taskId else {
+                throw CoreError(code: .toolArgumentInvalid, message: "manage_background_command action='\(input.action)' 需要 task_id")
+            }
+            let snapshot = try await manager.poll(id: id, stdoutCursor: input.stdoutCursor, stderrCursor: input.stderrCursor)
+            return try json(snapshot)
+        case "input":
+            guard let id = input.taskId else {
+                throw CoreError(code: .toolArgumentInvalid, message: "manage_background_command action='input' 需要 task_id")
+            }
+            guard let text = input.inputText else {
+                throw CoreError(code: .toolArgumentInvalid, message: "manage_background_command action='input' 需要 input_text")
+            }
+            let snapshot = try await manager.input(id: id, text: text, stdoutCursor: input.stdoutCursor, stderrCursor: input.stderrCursor)
+            return try json(snapshot)
+        case "terminate", "stop", "kill":
+            guard let id = input.taskId else {
+                throw CoreError(code: .toolArgumentInvalid, message: "manage_background_command action='terminate' 需要 task_id")
+            }
+            let snapshot = try await manager.terminate(id: id, stdoutCursor: input.stdoutCursor, stderrCursor: input.stderrCursor)
+            return try json(snapshot)
+        case "list":
+            let list = await manager.list()
+            return try json(list)
+        default:
+            throw CoreError(code: .toolArgumentInvalid, message: "未知的 manage_background_command action: \(input.action)")
+        }
+    }
+}
+
 
 public struct QuestionTool: ToolExecutor {
     private let questions: QuestionRuntime?
@@ -1612,7 +1729,7 @@ public struct TodoTool: ToolExecutor {
 }
 
 public extension BuiltInToolProvider {
-    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) {
+    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) {
         let indexTools: [any ToolExecutor]
         if let contextPager, let scanner {
             indexTools = [
@@ -1626,6 +1743,7 @@ public extension BuiltInToolProvider {
         let intelligenceTools: [any ToolExecutor] = codeIntelligence.map { intelligence in
             [CodeIntelligenceTool(definition: ToolDefinition(id: ToolID("code_intelligence"), description: "Structured code intelligence. Prefer this for symbols, definitions, references, diagnostics, repository map, and bounded context; it falls back safely when LSP is unavailable.", inputSchema: ToolInputSchema(properties: ["action": ToolInputProperty(type: .string, description: "symbols, definition, references, document_symbols, diagnostics, repo_map, or context", enumValues: ["symbols", "definition", "references", "document_symbols", "diagnostics", "repo_map", "context"]), "query": ToolInputProperty(type: .string, description: "Symbol or task query"), "path": ToolInputProperty(type: .string, description: "Workspace-relative source path"), "line": ToolInputProperty(type: .integer, description: "One-based line", minimum: 1), "character": ToolInputProperty(type: .integer, description: "Zero-based character", minimum: 0), "maximum_characters": ToolInputProperty(type: .integer, description: "Bounded context character limit", minimum: 0, maximum: 32_768)], required: ["action"]), capability: ToolCapability(readOnly: true)), intelligence: intelligence, workspace: workspace)]
         } ?? []
+        let effectiveBgManager = backgroundManager ?? BackgroundCommandManager()
         self.init(tools: [
             ReadFileTool(workspace: workspace),
             ContextRecallTool(ecoreStore: cacheController?.ecoreStore),
@@ -1636,6 +1754,8 @@ public extension BuiltInToolProvider {
             EditFileTool(workspace: workspace),
             ApplyPatchTool(workspace: workspace),
             ShellTool(workspace: workspace),
+            RunBackgroundCommandTool(workspace: workspace, manager: effectiveBgManager),
+            ManageBackgroundCommandTool(manager: effectiveBgManager),
             WebSearchTool(endpoint: webSearchEndpoint),
             WebFetchTool(),
             ProcessTool(workspace: workspace, store: processes ?? ToolProcessStore()),
@@ -1648,7 +1768,7 @@ public extension BuiltInToolProvider {
 }
 
 public extension ToolRegistry {
-    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) -> ToolRegistry {
-        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint).tools)
+    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) -> ToolRegistry {
+        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint).tools)
     }
 }

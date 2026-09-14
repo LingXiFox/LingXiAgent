@@ -94,6 +94,10 @@ public struct ToolRegistry: Sendable {
             return tools[ToolID("apply_patch")]
         case "read_file", "view_file":
             return tools[ToolID("read_file")] ?? tools[ToolID("read")]
+        case "background_run", "run_background":
+            return tools[ToolID("run_background_command")]
+        case "background_manage", "manage_background":
+            return tools[ToolID("manage_background_command")]
         default:
             return nil
         }

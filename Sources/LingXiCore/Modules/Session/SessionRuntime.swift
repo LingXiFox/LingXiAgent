@@ -74,6 +74,7 @@ public actor SessionRuntime {
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let restoreScheduler: SessionRestoreScheduler?
     private let diagnostics: RuntimeDiagnosticsStore?
+    private let backgroundManager: BackgroundCommandManager
     private var turnRunning = false
     private var activeExecution: ActiveExecution?
     private var shuttingDown = false
@@ -206,7 +207,8 @@ public actor SessionRuntime {
         runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?, AgentTerminalTrace?) async -> Void)? = nil,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
-        diagnostics: RuntimeDiagnosticsStore? = nil
+        diagnostics: RuntimeDiagnosticsStore? = nil,
+        backgroundManager: BackgroundCommandManager? = nil
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -239,6 +241,7 @@ public actor SessionRuntime {
         self.deadlinePolicy = deadlinePolicy
         self.restoreScheduler = restoreScheduler
         self.diagnostics = diagnostics
+        self.backgroundManager = backgroundManager ?? BackgroundCommandManager()
     }
 
     public func restore() async throws {
@@ -412,7 +415,19 @@ public actor SessionRuntime {
                 // Prompt Builder ONLY reads: Pinned Context + L1 Working Set + Current Turn.
                 // Dynamic pages enter L1 ONLY via Cache Controller explicit retrieval.
                 let residentPages = await cacheController.residentPages(for: sessionID)
-                let allEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+                var allEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+
+                // Proactive Background Command Inspection & Anti-Amnesia Notice:
+                if let bgNotice = await backgroundManager.generateSystemNotice(currentStep: currentStepNumber) {
+                    let noticeEntry = ContextEntry(
+                        messageID: nil,
+                        role: .system,
+                        source: .system,
+                        part: .text(bgNotice)
+                    )
+                    allEntries.append(noticeEntry)
+                }
+
                 // P-Core Context Projection (Phase 1B):
                 let projection = ContextProjection(configuration: cacheController.ecoreStore.configuration)
                 let projectedEntries = await projection.project(
@@ -1253,6 +1268,7 @@ public actor SessionRuntime {
 
     public func cancelCurrentTurn() async {
         abortActiveProviderStream()
+        await backgroundManager.terminateAll()
         guard let execution = activeExecution else { turnRunning = false; return }
         execution.task.cancel()
         lifecycle("cancellationRequested", waitingOn: "turnTask")
@@ -1262,6 +1278,7 @@ public actor SessionRuntime {
     public func shutdown() async {
         shuttingDown = true
         abortActiveProviderStream()
+        await backgroundManager.terminateAll()
         guard let execution = activeExecution else { turnRunning = false; return }
         execution.task.cancel()
         lifecycle("cancellationRequested", waitingOn: "turnTask")

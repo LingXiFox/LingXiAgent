@@ -42,6 +42,7 @@ public actor AgentRuntime {
     private var shuttingDown = false
     private let cacheController: ContextCacheController
     private let maxAgentLoopSteps: Int
+    private let backgroundManager: BackgroundCommandManager
 
     init(
         store: any SessionStore,
@@ -70,7 +71,8 @@ public actor AgentRuntime {
         maxAgentLoopSteps: Int = 32,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
-        diagnostics: RuntimeDiagnosticsStore? = nil
+        diagnostics: RuntimeDiagnosticsStore? = nil,
+        backgroundManager: BackgroundCommandManager? = nil
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -99,6 +101,7 @@ public actor AgentRuntime {
         self.deadlinePolicy = deadlinePolicy
         self.restoreScheduler = restoreScheduler
         self.diagnostics = diagnostics
+        self.backgroundManager = backgroundManager ?? BackgroundCommandManager()
     }
 
     // MARK: - Session 生命周期
@@ -170,6 +173,7 @@ public actor AgentRuntime {
     public func shutdown() async {
         shuttingDown = true
         for runtime in runtimes.values { await runtime.shutdown() }
+        await backgroundManager.terminateAll()
     }
 
     public func listSessions() async throws -> [SessionInfo] {
@@ -575,7 +579,8 @@ public actor AgentRuntime {
             },
             deadlinePolicy: deadlinePolicy,
             restoreScheduler: restoreScheduler,
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            backgroundManager: backgroundManager
         )
     }
 

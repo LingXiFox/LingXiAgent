@@ -17,6 +17,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let interactive: Bool
     public let questions: QuestionRuntime
     private let processes: ToolProcessStore
+    private let backgroundManager: BackgroundCommandManager
     public let sessionStore: any SessionStore
     /// nil 表示显式的 ephemeral Core；调用方传入 dataRoot 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
@@ -150,6 +151,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         questions = QuestionRuntime(interactive: supportsInteraction)
         let processes = ToolProcessStore()
         self.processes = processes
+        let backgroundManager = BackgroundCommandManager()
+        self.backgroundManager = backgroundManager
         let subagentService = SubagentToolService()
         self.subagentService = subagentService
         info = CoreInfo(
@@ -257,7 +260,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.cacheController = cacheController
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
         toolRuntime = ToolRuntime(
-            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:))),
+            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:))),
             permissions: permissions,
             mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
             outputArchive: ToolOutputArchive(persistence: persistent),
@@ -536,7 +539,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             maxAgentLoopSteps: agentSettings.maxAgentLoopSteps,
             deadlinePolicy: executionDeadlinePolicy,
             restoreScheduler: restoreScheduler,
-            diagnostics: diagnosticsStore
+            diagnostics: diagnosticsStore,
+            backgroundManager: backgroundManager
         )
         self.agent = agent
         let workflows = await agent.makeWorkflowRuntime()
@@ -590,6 +594,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         lifecycle("cleanupCompleted", waitingOn: "questions")
         lifecycle("cleanupStarted", waitingOn: "processes")
         await processes.stopAll()
+        await backgroundManager.terminateAll()
         lifecycle("cleanupCompleted", waitingOn: "processes")
         await ProviderActivityRegistry.shared.reset()
         agent = nil
