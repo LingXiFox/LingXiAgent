@@ -28,8 +28,16 @@ public struct ApplicationCommandContext: Sendable {
     }
 }
 
+/// 命令在客户端的呈现形态。
+public enum CommandPresentationStyle: String, Sendable, Equatable, Codable {
+    case inline
+    case modal
+}
+
 public struct ApplicationCommandResult: Sendable, Equatable {
     public let output: String
+    public let presentation: CommandPresentationStyle
+    public let modalTitle: String?
     public let sessionIDToSwitch: SessionID?
     public let nextTurnMode: AgentMode?
     public let nextTurnPermission: PermissionConfiguration?
@@ -39,6 +47,8 @@ public struct ApplicationCommandResult: Sendable, Equatable {
 
     public init(
         output: String,
+        presentation: CommandPresentationStyle = .inline,
+        modalTitle: String? = nil,
         sessionIDToSwitch: SessionID? = nil,
         nextTurnMode: AgentMode? = nil,
         nextTurnPermission: PermissionConfiguration? = nil,
@@ -47,6 +57,8 @@ public struct ApplicationCommandResult: Sendable, Equatable {
         snapshot: SessionSnapshot? = nil
     ) {
         self.output = output
+        self.presentation = presentation
+        self.modalTitle = modalTitle
         self.sessionIDToSwitch = sessionIDToSwitch
         self.nextTurnMode = nextTurnMode
         self.nextTurnPermission = nextTurnPermission

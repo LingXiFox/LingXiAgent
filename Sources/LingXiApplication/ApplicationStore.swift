@@ -7,7 +7,7 @@ import LingXiClient
 /// 严格保证对外只暴露 ApplicationState、ApplicationAction 与 ApplicationStore。
 public actor ApplicationStore {
     private let client: LingXiClientVNext
-    public let commandRegistry: ApplicationCommandRegistry
+    public nonisolated let commandRegistry: ApplicationCommandRegistry
     public private(set) var state: ApplicationState
 
     private var stateContinuations: [UUID: AsyncStream<ApplicationState>.Continuation] = [:]
@@ -273,6 +273,7 @@ public actor ApplicationStore {
         case .refreshExtensions:
             if let exts = try? await client.extensionDomain.list() {
                 state.extensions = exts
+                commandRegistry.syncPluginCommands(from: exts, client: client)
             }
             notifyStateChanged()
 
@@ -725,6 +726,7 @@ public actor ApplicationStore {
         }
         if let extensions {
             state.extensions = extensions
+            commandRegistry.syncPluginCommands(from: extensions, client: client)
         }
         if let ws {
             state.currentWorkspace = ws

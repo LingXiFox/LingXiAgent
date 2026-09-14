@@ -9,17 +9,27 @@ let package = Package(
         .executable(name: "lingxiagent", targets: ["lingxiagent"]),
         .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
         .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
+        .library(name: "LingXiPluginSDK", targets: ["LingXiPluginSDK"]),
+        .executable(name: "FoxPlugin", targets: ["FoxPlugin"]),
     ],
     targets: [
+        // 演示与参考插件：FoxPlugin
+        .executableTarget(
+            name: "FoxPlugin",
+            dependencies: ["LingXiPluginSDK"],
+            path: "Plugins/FoxPlugin"
+        ),
+        // 插件 SDK：供外部开发者开发 Swift 插件的标准库
+        .target(name: "LingXiPluginSDK", dependencies: ["LingXiProtocol"]),
         // 平台层：跨平台系统抽象（macOS / Linux / Windows）
         .target(name: "LingXiPlatform", dependencies: ["LingXiProtocol"]),
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
         .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol", "LingXiPlatform"]),
-        // Core：业务能力与状态权威。仅依赖 Protocol 与 Platform。
+        // Core：业务能力与状态权威。仅依赖 Protocol、Platform 与 PluginSDK 核心。
         .target(
             name: "LingXiCore",
-            dependencies: ["LingXiProtocol", "LingXiPlatform"],
+            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiPluginSDK"],
             resources: [
                 .copy("Resources/Configuration"),
                 .copy("Provider/Products"),
@@ -53,7 +63,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform"],
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK"],
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),

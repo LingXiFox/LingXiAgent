@@ -54,4 +54,15 @@ public struct ExtensionDomainClient: Sendable {
         let req = ConfigureExtensionRequest(id: id, configuration: configuration)
         return try await transport.configureExtension(envelope: CommandEnvelope(payload: req))
     }
+
+    public func executeCommand(name: String, arguments: [String] = [], sessionID: String? = nil) async throws -> ExtensionCommandExecutionResult {
+        let req = ExecuteExtensionCommandRequest(name: name, arguments: arguments, sessionID: sessionID)
+        let resp = try await transport.executeExtensionCommand(envelope: CommandEnvelope(payload: req))
+        guard let res = resp.result else {
+            throw RuntimeError(category: .runtime, code: "emptyResult", message: "Extension command returned no result", retryability: .none, source: .client)
+        }
+        return res
+    }
 }
+
+

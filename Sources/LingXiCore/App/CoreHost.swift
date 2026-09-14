@@ -597,6 +597,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         lifecycle("cleanupStarted", waitingOn: "processes")
         await processes.stopAll()
         await backgroundManager.terminateAll()
+        await extensionPlatform.terminatePlugins()
         lifecycle("cleanupCompleted", waitingOn: "processes")
         await ProviderActivityRegistry.shared.reset()
         agent = nil
@@ -968,10 +969,26 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func extensionInfos(kind: ExtensionKind?) async -> [ExtensionInfo] {
-        if kind == nil || kind == .skill || kind == .command { _ = await extensionPlatform.discover() }
+        if kind == nil || kind == .skill || kind == .command || kind == .plugin { _ = await extensionPlatform.discover() }
         let coreKind = kind.flatMap { ExtensionType(rawValue: $0.rawValue) }
+        let activePlugins = await extensionPlatform.activePlugins()
+        var pluginCommandSummaries: [String: String] = [:]
+        for plugin in activePlugins {
+            for cmd in plugin.commands {
+                pluginCommandSummaries[cmd.name.lowercased()] = cmd.description
+            }
+        }
         var result = await extensionPlatform.list(type: coreKind).map { descriptor in
-            ExtensionInfo(id: descriptor.id, version: descriptor.version, kind: ExtensionKind(rawValue: descriptor.type.rawValue) ?? .plugin, scope: descriptor.scope.rawValue, enabled: descriptor.enabled, lifecycleState: descriptor.lifecycleState.rawValue)
+            let summary = descriptor.type == .command ? pluginCommandSummaries[descriptor.id.lowercased()] : nil
+            return ExtensionInfo(
+                id: descriptor.id,
+                version: descriptor.version,
+                kind: ExtensionKind(rawValue: descriptor.type.rawValue) ?? .plugin,
+                scope: descriptor.scope.rawValue,
+                enabled: descriptor.enabled,
+                lifecycleState: descriptor.lifecycleState.rawValue,
+                summary: summary
+            )
         }
         if kind == nil || kind == .mcp {
             if let config = try? await configurationStore?.load() {
@@ -3441,7 +3458,7 @@ extension CoreHost {
     public func installExtension(envelope: CommandEnvelope<InstallExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
         let watermark = await runtimeEventLog.currentWatermark()
         let info = ExtensionInfo(
-            id: "ext-\(envelope.payload.name)",
+            id: envelope.payload.name,
             version: "1.0.0",
             kind: .plugin,
             scope: "project",
@@ -3449,6 +3466,7 @@ extension CoreHost {
             lifecycleState: "active"
         )
         runtimeExtensions[info.id] = info
+        await notifyExtensionCatalogChanged()
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,
@@ -3460,7 +3478,9 @@ extension CoreHost {
 
     public func uninstallExtension(envelope: CommandEnvelope<UninstallExtensionRequest>) async throws -> CommandReceipt<VoidResult> {
         runtimeExtensions.removeValue(forKey: envelope.payload.id)
+        try? await extensionPlatform.uninstallPlugin(id: envelope.payload.id)
         let watermark = await runtimeEventLog.currentWatermark()
+        await notifyExtensionCatalogChanged()
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,
@@ -3472,15 +3492,18 @@ extension CoreHost {
 
     public func enableExtension(envelope: CommandEnvelope<EnableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
         let watermark = await runtimeEventLog.currentWatermark()
+        try? await extensionPlatform.enable(id: envelope.payload.id)
+        let desc = await extensionPlatform.registry.descriptor(id: envelope.payload.id)
         let info = ExtensionInfo(
             id: envelope.payload.id,
-            version: "1.0.0",
-            kind: .plugin,
-            scope: "project",
+            version: desc?.version ?? "1.0.0",
+            kind: desc.flatMap { ExtensionKind(rawValue: $0.type.rawValue) } ?? .plugin,
+            scope: desc?.scope.rawValue ?? "project",
             enabled: true,
-            lifecycleState: "active"
+            lifecycleState: "enabled"
         )
         runtimeExtensions[info.id] = info
+        await notifyExtensionCatalogChanged()
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,
@@ -3492,15 +3515,18 @@ extension CoreHost {
 
     public func disableExtension(envelope: CommandEnvelope<DisableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
         let watermark = await runtimeEventLog.currentWatermark()
+        try? await extensionPlatform.disable(id: envelope.payload.id)
+        let desc = await extensionPlatform.registry.descriptor(id: envelope.payload.id)
         let info = ExtensionInfo(
             id: envelope.payload.id,
-            version: "1.0.0",
-            kind: .plugin,
-            scope: "project",
+            version: desc?.version ?? "1.0.0",
+            kind: desc.flatMap { ExtensionKind(rawValue: $0.type.rawValue) } ?? .plugin,
+            scope: desc?.scope.rawValue ?? "project",
             enabled: false,
             lifecycleState: "disabled"
         )
         runtimeExtensions[info.id] = info
+        await notifyExtensionCatalogChanged()
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,
@@ -3515,8 +3541,9 @@ extension CoreHost {
     }
 
     public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
-        await extensionPlatform.restore()
+        _ = await extensionPlatform.discover()
         let watermark = await runtimeEventLog.currentWatermark()
+        await notifyExtensionCatalogChanged()
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,
@@ -3545,6 +3572,33 @@ extension CoreHost {
             result: info
         )
     }
+
+    public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
+        let watermark = await runtimeEventLog.currentWatermark()
+        let result = try await extensionPlatform.executePluginCommand(
+            name: envelope.payload.name,
+            arguments: envelope.payload.arguments,
+            sessionID: envelope.payload.sessionID
+        )
+        let execResult = ExtensionCommandExecutionResult(
+            name: envelope.payload.name,
+            output: result.text,
+            isPrompt: result.isPrompt,
+            presentation: result.presentation,
+            title: result.title
+        )
+        let receipt = CommandReceipt<ExtensionCommandExecutionResult>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [watermark],
+            result: execResult
+        )
+        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        return receipt
+    }
+
+
 
     public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
         try await getWorkspaceSummary(envelope: envelope)

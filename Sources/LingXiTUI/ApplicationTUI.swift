@@ -44,6 +44,7 @@ public final class ApplicationTUI: Frontend {
         case sessionPicker(query: String, selected: Int)
         case configModal(selected: Int)
         case tasksModal(selected: Int, tasks: [BackgroundTaskSnapshot], expandedDetail: Bool)
+        case commandModal(title: String, content: String, scrollOffset: Int)
     }
 
     public let options: TUILaunchOptions
@@ -128,11 +129,12 @@ public final class ApplicationTUI: Frontend {
     }
 
     private var allCommands: [FrontendCommandItem] {
+        let currentCommands = store?.commandRegistry.allCommands ?? commands
         var map: [String: FrontendCommandItem] = [:]
         for item in Self.localCommands {
             map[item.name] = item
         }
-        for cmd in commands {
+        for cmd in currentCommands {
             let existing = map[cmd.name]
             let mergedAliases = Array(Set((existing?.aliases ?? []) + cmd.aliases)).sorted()
             let hasChinese = cmd.description.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
@@ -153,7 +155,7 @@ public final class ApplicationTUI: Frontend {
                 seen.insert(item.name)
             }
         }
-        for cmd in commands {
+        for cmd in currentCommands {
             if let merged = map[cmd.name], !seen.contains(cmd.name) {
                 result.append(merged)
                 seen.insert(cmd.name)
@@ -161,6 +163,7 @@ public final class ApplicationTUI: Frontend {
         }
         return result
     }
+
 
     /// 挂载到由外部 Composition Root 装配好的 ApplicationStore 并启动前端界面
     public func run(with store: ApplicationStore) async throws {
@@ -181,7 +184,7 @@ public final class ApplicationTUI: Frontend {
         debug("connecting.frame.end")
 
         self.store = store
-        commands = await store.commandRegistry.allCommands
+        commands = store.commandRegistry.allCommands
 
         let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self)
         uiEventContinuation = eventContinuation
@@ -330,6 +333,11 @@ public final class ApplicationTUI: Frontend {
 
         if case .tasksModal = overlay {
             await handleTasksModal(event, store: store)
+            return
+        }
+
+        if case .commandModal = overlay {
+            await handleCommandModal(event)
             return
         }
 
@@ -523,8 +531,11 @@ public final class ApplicationTUI: Frontend {
     private func handleCompletion(_ event: TUIInputEvent, store: ApplicationStore) async {
         guard case let .completion(tokenStart, selected) = overlay else { return }
         let input = view.composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstToken = input.split(whereSeparator: \.isWhitespace).first.map(String.init)?.lowercased() ?? input.lowercased()
+
+        // 1. 如果用户敲了 Enter，且首个 token 已经构成已知命令，直接提交整条命令
         if event == .enter, tokenStart == 0, allCommands.contains(where: {
-            (["/" + $0.name] + $0.aliases.map { "/" + $0 }).contains(input.lowercased())
+            (["/" + $0.name] + $0.aliases.map { "/" + $0 }).contains(firstToken)
         }) {
             view.composer.commitHistory()
             view.composer.clear()
@@ -533,10 +544,30 @@ public final class ApplicationTUI: Frontend {
             executeLocalOrApplicationCommand(input, store: store)
             return
         }
+
         switch event {
         case .up, .down, .pageUp, .pageDown:
             completionView.handle(event)
-        case .tab, .enter:
+        case .enter:
+            if let item = completionView.selectedItem {
+                let target = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if item.value.hasSuffix(" ") {
+                    let end = view.composer.cursor
+                    view.composer.replaceRange(start: tokenStart, end: end, with: item.value)
+                    view.setFocus(.composer)
+                    updateCompletion()
+                } else {
+                    view.composer.commitHistory()
+                    view.composer.clear()
+                    overlay = nil
+                    view.setFocus(.composer)
+                    executeLocalOrApplicationCommand(target, store: store)
+                }
+            } else {
+                overlay = nil
+                view.setFocus(.composer)
+            }
+        case .tab:
             if let item = completionView.selectedItem {
                 let end = view.composer.cursor
                 view.composer.replaceRange(start: tokenStart, end: end, with: item.value)
@@ -561,6 +592,7 @@ public final class ApplicationTUI: Frontend {
             overlay = .completion(tokenStart: tokenStart, selected: completionView.selectedIndex)
         }
     }
+
 
     // MARK: - Model Picker & Variant Modal
 
@@ -928,6 +960,51 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
+    // MARK: - Command Modal (/plugins & Plugin Commands)
+
+    private func openCommandModal(title: String, content: String) {
+        overlay = .commandModal(title: title, content: content, scrollOffset: 0)
+        refreshView(latestState)
+        frameScheduler.markDirty(.content)
+    }
+
+    private func handleCommandModal(_ event: TUIInputEvent) async {
+        guard case let .commandModal(title, content, scrollOffset) = overlay else { return }
+        let totalLines = content.components(separatedBy: .newlines).count
+        let viewportHeight = max(6, min(18, terminal.size.height - 10))
+        let maxScroll = max(0, totalLines - viewportHeight)
+
+        switch event {
+        case .up, .scrollUp, .character("k"), .character("K"):
+            let nextOffset = max(0, scrollOffset - 1)
+            overlay = .commandModal(title: title, content: content, scrollOffset: nextOffset)
+            refreshView(latestState)
+            frameScheduler.markDirty(.input)
+        case .down, .scrollDown, .character("j"), .character("J"):
+            let nextOffset = min(maxScroll, scrollOffset + 1)
+            overlay = .commandModal(title: title, content: content, scrollOffset: nextOffset)
+            refreshView(latestState)
+            frameScheduler.markDirty(.input)
+        case .pageUp:
+            let nextOffset = max(0, scrollOffset - 5)
+            overlay = .commandModal(title: title, content: content, scrollOffset: nextOffset)
+            refreshView(latestState)
+            frameScheduler.markDirty(.input)
+        case .pageDown:
+            let nextOffset = min(maxScroll, scrollOffset + 5)
+            overlay = .commandModal(title: title, content: content, scrollOffset: nextOffset)
+            refreshView(latestState)
+            frameScheduler.markDirty(.input)
+        case .escape, .enter, .character("q"), .character("Q"):
+            overlay = nil
+            view.setFocus(.composer)
+            refreshView(latestState)
+            frameScheduler.markDirty(.input)
+        default:
+            break
+        }
+    }
+
     private func handleInteraction(_ event: TUIInputEvent, store: ApplicationStore) async {
         guard let interaction = latestState.activeInteraction else { return }
         switch event {
@@ -1040,6 +1117,15 @@ public final class ApplicationTUI: Frontend {
                 userToggledEntries.removeAll(keepingCapacity: true)
                 let fresh = await store.state
                 refreshView(fresh)
+            }
+            if result.presentation == .modal {
+                await MainActor.run {
+                    self.openCommandModal(
+                        title: result.modalTitle ?? "命令输出",
+                        content: result.output
+                    )
+                }
+                return nil
             }
             guard !result.output.isEmpty else { return nil }
             return TUITranscriptEntry(kind: .result, text: result.output, style: .systemNotice)
@@ -1194,11 +1280,23 @@ public final class ApplicationTUI: Frontend {
                 }.map { command -> TUICompletionItem in
                     let hasSubs = Self.hasSubcommands(command.name)
                     let completionValue = hasSubs ? "/\(command.name) " : "/\(command.name)"
-                    return TUICompletionItem(value: completionValue, label: "/\(command.name)", detail: command.description, kind: .command)
+                    let badge: String
+                    switch command.category.lowercased() {
+                    case "plugin": badge = " · 插件"
+                    case "custom": badge = " · 自定义"
+                    default: badge = ""
+                    }
+                    return TUICompletionItem(
+                        value: completionValue,
+                        label: "/\(command.name)\(badge)",
+                        detail: command.description,
+                        kind: .command
+                    )
                 }
                 completionView.update(items: items, query: query, selectedIndex: completionView.selectedIndex)
                 overlay = items.isEmpty ? nil : .completion(tokenStart: 0, selected: completionView.selectedIndex)
                 return
+
             }
         }
 
@@ -1722,11 +1820,13 @@ public final class ApplicationTUI: Frontend {
 
     private func hasAgentStartedWork(_ state: ApplicationState) -> Bool {
         let hasTimeline = !(state.activeSessionState?.timelineNodes.isEmpty ?? true)
+        let hasCommandEntries = !commandEntries.isEmpty
         let hasActiveWork = state.activeSessionState?.activeTurnID != nil || state.activeSessionState?.activeRootRunID != nil
         let isBusyWorking = [.thinking, .waitingForProvider, .runningTool, .runningSubagents].contains(state.status)
         let hasInteraction = state.activeInteraction != nil
-        return hasTimeline || hasActiveWork || isBusyWorking || hasInteraction
+        return hasTimeline || hasCommandEntries || hasActiveWork || isBusyWorking || hasInteraction
     }
+
 
     private func isHeroEmptyState(_ state: ApplicationState) -> Bool {
         return !hasAgentStartedWork(state)
@@ -1832,6 +1932,8 @@ public final class ApplicationTUI: Frontend {
             return renderConfigModalOverlay(selected: selected)
         case let .tasksModal(selected, tasks, expandedDetail):
             return renderTasksModalOverlay(selected: selected, tasks: tasks, expandedDetail: expandedDetail)
+        case let .commandModal(title, content, scrollOffset):
+            return renderCommandModalOverlay(title: title, content: content, scrollOffset: scrollOffset)
         case nil:
             return nil
         }
@@ -2306,6 +2408,49 @@ public final class ApplicationTUI: Frontend {
 
         lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
         let totalModalHeight = min(size.height - 2, lines.count + 2)
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private func renderCommandModalOverlay(title: String, content: String, scrollOffset: Int) -> TUIOverlayModel {
+        let totalWidth = min(max(58, terminal.size.width - 4), 78)
+        let innerWidth = max(10, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header
+        let titleLeft = title.hasPrefix("🦊") ? title : "🦊 \(title)"
+        let titleRight = "esc / q"
+        let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Content lines
+        let rawLines = content.components(separatedBy: .newlines)
+        let viewportHeight = max(6, min(16, terminal.size.height - 8))
+        let maxScroll = max(0, rawLines.count - viewportHeight)
+        let safeOffset = max(0, min(maxScroll, scrollOffset))
+        let visibleLines = rawLines.dropFirst(safeOffset).prefix(viewportHeight)
+
+        var renderedCount = 0
+        for line in visibleLines {
+            let padded = Self.truncateToWidth(line, width: innerWidth)
+            lines.append(TUIStyledLine(padded, style: .modalItem))
+            renderedCount += 1
+        }
+        while renderedCount < viewportHeight {
+            lines.append(TUIStyledLine(String(repeating: " ", count: innerWidth), style: .modalBackground))
+            renderedCount += 1
+        }
+
+        // 3. Footer
+        lines.append(TUIStyledLine("", style: .modalBackground))
+        let footerLeft = "↑↓/jk 滚动 · Esc/Enter/q 关闭"
+        let footerRight = rawLines.count > viewportHeight ? "[\(safeOffset + 1)-\(min(rawLines.count, safeOffset + viewportHeight))/\(rawLines.count)]" : ""
+        let pad = max(1, innerWidth - TUIDisplayWidth.width(of: footerLeft) - TUIDisplayWidth.width(of: footerRight))
+        let footer = footerLeft + String(repeating: " ", count: pad) + footerRight
+        lines.append(TUIStyledLine(footer, style: .modalItemDim))
+
+        lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
+        let totalModalHeight = min(terminal.size.height - 2, lines.count + 2)
         return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
     }
 

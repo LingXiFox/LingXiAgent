@@ -446,14 +446,84 @@ public enum BuiltinCommands {
             ApplicationCommand(
                 name: "plugins",
                 aliases: [],
-                description: "查看已安装 Plugins",
-                category: "Extensions"
+                description: "管理与查看外部 Swift 插件",
+                category: "Extensions",
+                argumentSchema: "[list|reload|enable <id>|disable <id>]"
             ) { ctx in
-                let extensions = (try? await ctx.client.extensionDomain.list(kind: .plugin)) ?? []
-                var output = "插件列表 (\(extensions.count)):"
-                for ext in extensions {
-                    output += "\n  • [\(ext.id)] v\(ext.version)"
+                let subcmd = ctx.arguments.first?.lowercased() ?? "list"
+                switch subcmd {
+                case "reload":
+                    _ = try? await ctx.client.extensionDomain.reload()
+                    let list = (try? await ctx.client.extensionDomain.list(kind: .plugin)) ?? []
+                    return ApplicationCommandResult(output: "✓ 插件目录重新扫描完成，当前就绪插件: \(list.count) 个")
+                case "enable":
+                    guard ctx.arguments.count > 1 else {
+                        return ApplicationCommandResult(output: "用法: /plugins enable <plugin_id>")
+                    }
+                    let targetID = ctx.arguments[1]
+                    _ = try? await ctx.client.extensionDomain.enable(id: targetID)
+                    return ApplicationCommandResult(output: "✓ 插件 '\(targetID)' 已启用")
+                case "disable":
+                    guard ctx.arguments.count > 1 else {
+                        return ApplicationCommandResult(output: "用法: /plugins disable <plugin_id>")
+                    }
+                    let targetID = ctx.arguments[1]
+                    _ = try? await ctx.client.extensionDomain.disable(id: targetID)
+                    return ApplicationCommandResult(output: "○ 插件 '\(targetID)' 已禁用")
+                default:
+                    let extensions = (try? await ctx.client.extensionDomain.list(kind: .plugin)) ?? []
+                    if extensions.isEmpty {
+                        return ApplicationCommandResult(
+                            output: "当前暂无已加载插件。\n\n提示: 将基于 LingXiPluginSDK 编译后的 Swift 插件二进制\n直接复制进 ~/.lingxiagent/plugins/ 或 .lingxi/plugins/ 即可自动加载！",
+                            presentation: .modal,
+                            modalTitle: "已加载外部插件 (/plugins)"
+                        )
+                    }
+                    var fields: [(String, String)] = []
+                    for ext in extensions {
+                        let statusIcon = ext.enabled ? "✓" : "○"
+                        fields.append(("\(statusIcon) [\(ext.id)]", "v\(ext.version) (\(ext.scope)) [\(ext.lifecycleState)]"))
+                    }
+                    let output = CLIFormatter.renderCard(
+                        title: "已加载外部插件 (/plugins)",
+                        fields: fields,
+                        footer: "重新扫描: /plugins reload · 启停: /plugins enable|disable <id>",
+                        borderStyle: .rounded
+                    )
+                    return ApplicationCommandResult(
+                        output: output,
+                        presentation: .modal,
+                        modalTitle: "已加载外部插件 (/plugins)"
+                    )
                 }
+            },
+
+            // 16.5 /commands
+            ApplicationCommand(
+                name: "commands",
+                aliases: ["cmds"],
+                description: "查看当前所有可用命令（内建、自定义与插件）",
+                category: "General"
+            ) { ctx in
+                let builtins = BuiltinCommands.all.map { cmd -> String in
+                    let aliasText = cmd.aliases.isEmpty ? "" : " (别名: \(cmd.aliases.joined(separator: ", ")))"
+                    return "/\(cmd.name)\(aliasText) - \(cmd.description)"
+                }
+                let extCmds = ctx.state.extensions.filter { $0.kind == .command }.map { "/\($0.id) (\($0.scope))" }
+
+                var fields: [(String, String)] = [
+                    ("内建核心命令 (\(builtins.count))", builtins.prefix(12).joined(separator: "\n") + (builtins.count > 12 ? "\n... 更多输入 / 查看" : ""))
+                ]
+                if !extCmds.isEmpty {
+                    fields.append(("自定义/插件命令 (\(extCmds.count))", extCmds.joined(separator: "\n")))
+                }
+
+                let output = CLIFormatter.renderCard(
+                    title: "可用命令总览 (/commands)",
+                    fields: fields,
+                    footer: "输入 / 触发交互式自动补全",
+                    borderStyle: .rounded
+                )
                 return ApplicationCommandResult(output: output)
             },
 

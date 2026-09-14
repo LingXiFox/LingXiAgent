@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LingXiPluginSDK | Apple Developer Documentation 风格官方指南</title>
+  <meta name="description" content="LingXiAgent 官方 LingXiPluginSDK 权威开发者文档：原生 Swift 插件接口规范、进程级安全沙箱、只读 INFO 高维感知、自定义 Tools、Slash Commands 与生命周期 Hooks 开发指南。">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            apple: {
+              bg: '#161617',
+              panel: '#1c1c1e',
+              card: '#242426',
+              border: '#333336',
+              blue: '#2997ff',
+              blueHover: '#147ce5',
+              purple: '#a37cfc',
+              orange: '#f0883e',
+              green: '#30d158',
+              grayText: '#86868b',
+              lightGray: '#d2d2d7'
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"SF Pro Display"', 'Inter', 'sans-serif'],
+            mono: ['"SF Mono"', 'Menlo', 'Monaco', 'Consolas', '"Fira Code"', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Apple Developer Documentation Design System */
+    body {
+      background-color: #161617;
+      color: #f5f5f7;
+      font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Apple Glassmorphism Header */
+    .apple-nav {
+      background: rgba(22, 22, 23, 0.82);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    /* Apple Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.16);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    /* Xcode Syntax Highlighting */
+    .token-keyword { color: #ff7ab2; font-weight: 600; }
+    .token-type { color: #6bdfff; }
+    .token-func { color: #5dd897; }
+    .token-string { color: #ff8170; }
+    .token-comment { color: #7f8c98; font-style: italic; }
+    .token-attr { color: #d0a8ff; }
+    .token-number { color: #daba8b; }
+
+    /* Symbol Badge Icons */
+    .symbol-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.15rem;
+      height: 1.15rem;
+      border-radius: 0.25rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .badge-f { background-color: rgba(163, 124, 252, 0.18); color: #c099ff; border: 1px solid rgba(163, 124, 252, 0.35); }
+    .badge-p { background-color: rgba(255, 122, 178, 0.18); color: #ff7ab2; border: 1px solid rgba(255, 122, 178, 0.35); }
+    .badge-s { background-color: rgba(41, 151, 255, 0.18); color: #6bdfff; border: 1px solid rgba(41, 151, 255, 0.35); }
+    .badge-e { background-color: rgba(240, 136, 62, 0.18); color: #f0883e; border: 1px solid rgba(240, 136, 62, 0.35); }
+    .badge-m { background-color: rgba(48, 209, 88, 0.18); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.35); }
+    .badge-c { background-color: rgba(255, 159, 10, 0.18); color: #ff9f0a; border: 1px solid rgba(255, 159, 10, 0.35); }
+
+    /* Apple Callout Boxes */
+    .apple-callout {
+      position: relative;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      background: rgba(36, 36, 38, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+    .apple-callout::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 4px;
+    }
+    .apple-callout-note::before { background-color: #2997ff; }
+    .apple-callout-important::before { background-color: #ff9f0a; }
+
+    /* Topic Symbol Card Hover */
+    .topic-card {
+      transition: all 0.15s ease-in-out;
+      background: rgba(28, 28, 30, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .topic-card:hover {
+      background: rgba(44, 44, 46, 0.85);
+      border-color: rgba(255, 255, 255, 0.14);
+      transform: translateY(-1px);
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+
+  <!-- Apple Top Navigation Bar -->
+  <header class="apple-nav sticky top-0 z-50 h-13 flex items-center">
+    <div class="w-full max-w-[1720px] mx-auto px-4 sm:px-6 flex items-center justify-between">
+      
+      <!-- Left: Navigator Toggle & Apple Developer Brand -->
+      <div class="flex items-center space-x-3">
+        <button id="sidebarToggle" class="p-1.5 rounded-md hover:bg-white/10 text-apple-grayText hover:text-white transition-colors lg:hidden" title="切换目录导航">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+
+        <a href="/" class="flex items-center space-x-2 text-sm font-semibold tracking-tight text-white hover:opacity-85 transition-opacity">
+          <span class="text-xl">🦊</span>
+          <span>LingXi Developer</span>
+        </a>
+
+        <span class="text-zinc-600 hidden sm:inline">/</span>
+
+        <span class="text-xs text-apple-grayText hidden sm:inline font-mono">Documentation</span>
+      </div>
+
+      <!-- Center: Quick Search Filter (⌘K) -->
+      <div class="hidden md:flex items-center flex-1 max-w-md mx-6">
+        <div class="relative w-full">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-500">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          </span>
+          <input 
+            type="text" 
+            id="quickSearch"
+            placeholder="搜索 API、协议、结构体或方法 (⌘K)..." 
+            class="w-full pl-9 pr-12 py-1.5 bg-black/40 border border-white/10 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-apple-blue focus:ring-1 focus:ring-apple-blue transition-all"
+          >
+          <span class="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-[10px] text-zinc-500 font-mono">⌘K</span>
+        </div>
+      </div>
+
+      <!-- Right: Language Selector & External Links -->
+      <div class="flex items-center space-x-3 text-xs">
+        <!-- Language Pill (Apple Style) -->
+        <div class="hidden sm:flex items-center bg-black/50 border border-white/10 rounded-full p-0.5 text-[11px] font-medium">
+          <button id="langSwiftBtn" onclick="switchLanguage('swift')" class="px-2.5 py-0.5 rounded-full bg-apple-blue text-white shadow-sm transition-all">Swift 6.0</button>
+          <button id="langJsonRpcBtn" onclick="switchLanguage('jsonrpc')" class="px-2.5 py-0.5 rounded-full text-zinc-400 hover:text-white transition-all">JSON-RPC</button>
+        </div>
+
+        <a href="/docs.html" class="px-2.5 py-1 text-apple-grayText hover:text-white transition-colors hidden sm:block">系统架构</a>
+        <a href="/" class="px-2.5 py-1 text-apple-grayText hover:text-white transition-colors">主页</a>
+
+        <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="p-1.5 rounded-md hover:bg-white/10 text-apple-grayText hover:text-white transition-colors" title="GitHub 源码">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        </a>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- Three-Column Doc Layout -->
+  <div class="w-full max-w-[1720px] mx-auto flex-1 flex">
+
+    <!-- Left: Apple-Style Navigator Sidebar -->
+    <aside id="navigatorSidebar" class="fixed inset-y-0 left-0 z-40 w-72 bg-[#161617] border-r border-white/10 lg:static lg:block transform -translate-x-full lg:translate-x-0 transition-transform duration-200 ease-in-out shrink-0 overflow-y-auto">
+      <div class="p-4 space-y-4">
+        
+        <!-- Filter Box (Xcode Style) -->
+        <div class="relative">
+          <input 
+            type="text" 
+            id="navFilter" 
+            placeholder="Filter" 
+            class="w-full px-2.5 py-1.5 bg-black/50 border border-white/10 rounded-md text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-apple-blue"
+          >
+        </div>
+
+        <!-- Navigator Tree Structure -->
+        <nav id="navTree" class="space-y-4 text-xs">
+          
+          <!-- Root Framework Node -->
+          <div>
+            <a href="#framework-root" class="flex items-center space-x-2 px-2 py-1.5 rounded-md bg-apple-blue/15 text-apple-blue font-semibold">
+              <span class="symbol-badge badge-f">F</span>
+              <span>LingXiPluginSDK</span>
+            </a>
+          </div>
+
+          <!-- Section: Essentials & Guides -->
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-apple-grayText px-2 py-1">Guides</div>
+            <a href="#overview" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">📄</span>
+              <span>Overview & Philosophy</span>
+            </a>
+            <a href="#quickstart" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">⚡</span>
+              <span>Quick Start in 5 Minutes</span>
+            </a>
+            <a href="#security-sandboxing" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">🛡️</span>
+              <span>Security & Sandboxing</span>
+            </a>
+            <a href="#delivery" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">📦</span>
+              <span>Packaging & Delivery</span>
+            </a>
+            <a href="#jsonrpc-spec" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">🔌</span>
+              <span>JSON-RPC IPC Specification</span>
+            </a>
+          </div>
+
+          <!-- Section: Protocols -->
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-apple-grayText px-2 py-1">Protocols</div>
+            <a href="#protocol-lingxiplugin" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-p">P</span>
+              <span class="font-mono">LingXiPlugin</span>
+            </a>
+            <a href="#protocol-plugincommand" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-p">P</span>
+              <span class="font-mono">PluginCommand</span>
+            </a>
+            <a href="#protocol-plugintool" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-p">P</span>
+              <span class="font-mono">PluginTool</span>
+            </a>
+          </div>
+
+          <!-- Section: Structures -->
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-apple-grayText px-2 py-1">Structures</div>
+            <a href="#struct-pluginmanifest" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-s">S</span>
+              <span class="font-mono">PluginManifest</span>
+            </a>
+            <a href="#struct-plugininfohub" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-s">S</span>
+              <span class="font-mono">PluginInfoHub</span>
+            </a>
+            <a href="#struct-commandexecutioncontext" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-s">S</span>
+              <span class="font-mono">CommandExecutionContext</span>
+            </a>
+            <a href="#struct-toolexecutioncontext" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-s">S</span>
+              <span class="font-mono">ToolExecutionContext</span>
+            </a>
+          </div>
+
+          <!-- Section: Enumerations -->
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-apple-grayText px-2 py-1">Enumerations</div>
+            <a href="#enum-pluginpresentationstyle" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-e">E</span>
+              <span class="font-mono">PluginPresentationStyle</span>
+            </a>
+            <a href="#enum-plugincommandresult" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-e">E</span>
+              <span class="font-mono">PluginCommandResult</span>
+            </a>
+            <a href="#enum-plugincapability" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-e">E</span>
+              <span class="font-mono">PluginCapability</span>
+            </a>
+          </div>
+
+          <!-- Section: Info Hub Methods -->
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-apple-grayText px-2 py-1">Context Sensing Methods</div>
+            <a href="#method-pecore" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-m">M</span>
+              <span class="font-mono">getPECoreInfo()</span>
+            </a>
+            <a href="#method-context" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-m">M</span>
+              <span class="font-mono">getContextState()</span>
+            </a>
+            <a href="#method-perf" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-m">M</span>
+              <span class="font-mono">getPerformanceInfo()</span>
+            </a>
+            <a href="#method-workspace" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="symbol-badge badge-m">M</span>
+              <span class="font-mono">getWorkspaceInfo()</span>
+            </a>
+          </div>
+
+        </nav>
+      </div>
+    </aside>
+
+    <!-- Center: Main Apple Documentation Article -->
+    <main class="flex-1 min-w-0 px-6 sm:px-12 py-8 space-y-14">
+
+      <!-- Breadcrumbs (Apple Style) -->
+      <nav class="flex items-center space-x-2 text-xs text-apple-grayText">
+        <a href="/" class="hover:text-apple-blue transition-colors">LingXiAgent</a>
+        <span>›</span>
+        <span>Documentation</span>
+        <span>›</span>
+        <span class="text-zinc-200">LingXiPluginSDK</span>
+      </nav>
+
+      <!-- Document Header -->
+      <section id="framework-root" class="space-y-4">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wider text-apple-purple bg-apple-purple/10 border border-apple-purple/20 px-2.5 py-0.5 rounded-full">
+            Framework
+          </span>
+        </div>
+
+        <h1 class="text-4xl sm:text-5xl font-bold tracking-tight text-white">
+          LingXiPluginSDK
+        </h1>
+
+        <p class="text-lg sm:text-xl text-apple-grayText leading-relaxed max-w-4xl">
+          为 LingXiAgent 打造物理进程隔离的高性能原生 Swift 扩展。声明交互式 Slash 命令、扩展模型自主 Tools、感知双核能效与上下文高维指标，在极致安全边界下扩展 Agent 核心能力。
+        </p>
+
+        <!-- Apple Availability Bar -->
+        <div class="pt-4 border-t border-white/10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-apple-grayText font-mono">
+          <div><span class="text-zinc-400">macOS:</span> 14.0+</div>
+          <div><span class="text-zinc-400">Linux:</span> glibc 2.34+ (x86_64 / aarch64)</div>
+          <div><span class="text-zinc-400">Swift:</span> 6.0+</div>
+          <div><span class="text-zinc-400">Xcode:</span> 16.0+</div>
+        </div>
+      </section>
+
+      <!-- Declaration Block (Apple Style) -->
+      <section class="space-y-3">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-apple-grayText">Declaration</h2>
+        <div class="relative group">
+          <pre class="bg-black/70 border border-white/10 rounded-xl p-4 sm:p-5 text-sm font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-keyword">import</span> <span class="token-type">LingXiPluginSDK</span></code></pre>
+          <button onclick="copyCode(this, 'import LingXiPluginSDK')" class="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs text-zinc-300 transition-colors opacity-0 group-hover:opacity-100 flex items-center gap-1">
+            <span>Copy</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Overview Section -->
+      <section id="overview" class="space-y-6">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Overview</h2>
+        
+        <div class="space-y-4 text-sm sm:text-base text-apple-lightGray leading-relaxed max-w-4xl">
+          <p>
+            <code class="text-apple-purple font-mono">LingXiPluginSDK</code> 是 LingXiAgent 系统的官方扩展开发套件。与简单的提示词包装或脚本解释器不同，LingXiPluginSDK 允许开发者直接使用现代 Swift 编写经由类型安全检查的原生可执行二进制。
+          </p>
+
+          <p>
+            在架构设计上，SDK 遵循两大不可动摇的黄金原则：
+          </p>
+
+          <ul class="space-y-2 list-disc list-inside text-sm text-zinc-300">
+            <li><strong class="text-white">进程级物理隔离沙箱 (Process Sandboxing)</strong>：插件以独立子进程运行，Core 与 Plugin 之间通过标准 IPC（JSON-RPC 载荷）在标准输入输出中通信，绝不使用 <code class="text-apple-purple font-mono">dlopen</code> 动态共享内存，彻底封死 API Key 与内存凭据被窃取的通道；</li>
+            <li><strong class="text-white">“多开放 INFO 感知，少开放执行控制”</strong>：插件拥有高维的只读系统感知能力（会话 Token 水位、P-Core / E-Core 双核负载、耗时指标），但严禁篡改 Agent 核心调度机制与会话状态，避免插件凌驾于主驾驶员（Client / TUI）之上。</li>
+          </ul>
+
+          <!-- Apple Note Callout -->
+          <div class="apple-callout apple-callout-note space-y-1 text-xs sm:text-sm">
+            <div class="font-bold text-apple-blue flex items-center gap-1.5">
+              <span>Note</span>
+            </div>
+            <div class="text-zinc-300 leading-relaxed">
+              外部二进制插件编译后只需直接放入工作区 <code class="text-zinc-200 font-mono">.lingxi/plugins/</code> 或用户全局目录 <code class="text-zinc-200 font-mono">~/.lingxiagent/plugins/</code>，LingXiAgent 即可自动感知、校验清单并在沙箱中按需激活。
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Quick Start Section -->
+      <section id="quickstart" class="space-y-6">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Quick Start</h2>
+        <p class="text-sm text-apple-grayText">只需 3 步，即可完成一个生产级 Swift 插件的开发与部署。</p>
+
+        <div class="space-y-6 max-w-4xl">
+          
+          <!-- Step 1 -->
+          <div class="space-y-2">
+            <h3 class="text-sm font-bold text-white flex items-center gap-2">
+              <span class="w-5 h-5 rounded-full bg-apple-blue text-white flex items-center justify-center text-xs">1</span>
+              <span>创建 Swift Package 并引入 LingXiAgent 依赖</span>
+            </h3>
+            <div class="relative group">
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-comment">// swift-tools-version:6.0</span>
+<span class="token-keyword">import</span> <span class="token-type">PackageDescription</span>
+
+<span class="token-keyword">let</span> package = <span class="token-type">Package</span>(
+    name: <span class="token-string">"MyFirstPlugin"</span>,
+    platforms: [.macOS(.v14)],
+    dependencies: [
+        .package(url: <span class="token-string">"https://github.com/LingXiFox/LingXiAgent.git"</span>, branch: <span class="token-string">"main"</span>)
+    ],
+    targets: [
+        .executableTarget(
+            name: <span class="token-string">"my-plugin"</span>,
+            dependencies: [
+                .product(name: <span class="token-string">"LingXiPluginSDK"</span>, package: <span class="token-string">"LingXiAgent"</span>)
+            ]
+        )
+    ]
+)</code></pre>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="space-y-2">
+            <h3 class="text-sm font-bold text-white flex items-center gap-2">
+              <span class="w-5 h-5 rounded-full bg-apple-blue text-white flex items-center justify-center text-xs">2</span>
+              <span>编写 main.swift：实现 LingXiPlugin 协议</span>
+            </h3>
+            <div class="relative group">
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-keyword">import</span> <span class="token-type">LingXiPluginSDK</span>
+
+<span class="token-attr">@main</span>
+<span class="token-keyword">struct</span> <span class="token-type">MyFirstPlugin</span>: <span class="token-type">LingXiPlugin</span> {
+    <span class="token-keyword">var</span> manifest: <span class="token-type">PluginManifest</span> {
+        <span class="token-type">PluginManifest</span>(
+            id: <span class="token-string">"my-first-plugin"</span>,
+            name: <span class="token-string">"小狐狸状态管家"</span>,
+            version: <span class="token-string">"1.0.0"</span>,
+            description: <span class="token-string">"演示高维系统状态感知与弹出式 TUI 命令"</span>,
+            capabilities: [.projectRead]
+        )
+    }
+
+    <span class="token-keyword">func</span> <span class="token-func">activate</span>(context: <span class="token-type">PluginContext</span>) <span class="token-keyword">async</span> <span class="token-keyword">throws</span> {
+        <span class="token-comment">// 注册 Slash 命令: /fox-status</span>
+        context.registerCommand(<span class="token-type">FoxStatusCommand</span>())
+    }
+}
+
+<span class="token-keyword">struct</span> <span class="token-type">FoxStatusCommand</span>: <span class="token-type">PluginCommand</span> {
+    <span class="token-keyword">let</span> name = <span class="token-string">"fox-status"</span>
+    <span class="token-keyword">let</span> description = <span class="token-string">"弹出查看双核运行负载与会话指标"</span>
+
+    <span class="token-keyword">func</span> <span class="token-func">execute</span>(args: [<span class="token-type">String</span>], context: <span class="token-type">CommandExecutionContext</span>) <span class="token-keyword">async</span> <span class="token-keyword">throws</span> -> <span class="token-type">PluginCommandResult</span> {
+        <span class="token-keyword">let</span> pe = <span class="token-keyword">try</span> <span class="token-keyword">await</span> context.info.getPECoreInfo()
+        <span class="token-keyword">let</span> ws = <span class="token-keyword">try</span> <span class="token-keyword">await</span> context.info.getWorkspaceInfo()
+
+        <span class="token-keyword">let</span> card = <span class="token-string">"""
+        • 工作区路径: \(ws.rootPath)
+        • Git 当前分支: \(ws.currentGitBranch ?? "无")
+        • P-Core 状态: \(pe.pCoreRole)
+        • E-Core 状态: \(pe.eCoreRole)
+        • 思考深度等级: \(pe.reasoningEffort)
+        """</span>
+
+        <span class="token-comment">// 开发者可选择 .modal 弹出式浮层展示，或 .inline 行内展示</span>
+        <span class="token-keyword">return</span> .message(card, presentation: .modal, title: <span class="token-string">"双核健康体检"</span>)
+    }
+}</code></pre>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div id="delivery" class="space-y-2">
+            <h3 class="text-sm font-bold text-white flex items-center gap-2">
+              <span class="w-5 h-5 rounded-full bg-apple-blue text-white flex items-center justify-center text-xs">3</span>
+              <span>编译并一键投递二进制到插件目录</span>
+            </h3>
+            <div class="relative group">
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-comment"># 编译 Release 二进制</span>
+swift build -c release
+
+<span class="token-comment"># 投递到 LingXiAgent 全局插件目录（或当前项目 .lingxi/plugins/）</span>
+mkdir -p ~/.lingxiagent/plugins
+cp .build/release/my-plugin ~/.lingxiagent/plugins/
+
+<span class="token-comment"># 在 TUI 终端中输入 /plugins 查看加载状态，敲击 /fox-status 体验居中弹出窗口！</span></code></pre>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Topics Section (Apple Developer Soul Design) -->
+      <section class="space-y-8">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Topics</h2>
+
+        <!-- Topic Group: Lifecycle -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-bold uppercase tracking-wider text-apple-grayText">Plugin Lifecycle & Manifest</h3>
+          
+          <div class="grid grid-cols-1 gap-2 max-w-4xl">
+            
+            <a href="#protocol-lingxiplugin" id="protocol-lingxiplugin" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-p">P</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">protocol LingXiPlugin</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  外部插件的入口协议。声明插件元数据，并在 <code class="font-mono">activate(context:)</code> 中注册 Commands、Tools 与 Hooks。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#struct-pluginmanifest" id="struct-pluginmanifest" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-s">S</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct PluginManifest</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  包含插件 ID、显示名称、语义化版本号、作者以及申请的权限能力列表。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#enum-plugincapability" id="enum-plugincapability" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-e">E</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">enum PluginCapability</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  声明插件所需的权限能力：<code class="font-mono">.projectRead</code>（只读工作区）、<code class="font-mono">.projectWrite</code>、<code class="font-mono">.networkAccess</code> 等。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+          </div>
+        </div>
+
+        <!-- Topic Group: Slash Commands & Presentation -->
+        <div class="space-y-3 pt-4">
+          <h3 class="text-sm font-bold uppercase tracking-wider text-apple-grayText">Slash Commands & Presentation</h3>
+          
+          <div class="grid grid-cols-1 gap-2 max-w-4xl">
+            
+            <a href="#protocol-plugincommand" id="protocol-plugincommand" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-p">P</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">protocol PluginCommand</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  扩展用户在终端交互输入框直接敲击的斜杠命令（例如 <code class="font-mono">/fox-info</code>），支持入参、别名与分类。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#enum-pluginpresentationstyle" id="enum-pluginpresentationstyle" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-e">E</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">enum PluginPresentationStyle</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  控制命令执行结果在客户端呈现的物理形态：<code class="text-apple-blue font-mono">.modal</code>（居中独立弹出浮层，支持上下滚动与 Esc 关闭）或 <code class="text-apple-blue font-mono">.inline</code>（行内时间轴卡片）。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#enum-plugincommandresult" id="enum-plugincommandresult" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-e">E</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">enum PluginCommandResult</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  命令执行的返回值：<code class="font-mono">.message(text, presentation:, title:)</code> 本地卡片免消耗 Token 输出，或 <code class="font-mono">.prompt(text)</code> 动态构造指令唤醒 Agent 思考。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+          </div>
+        </div>
+
+        <!-- Topic Group: Info Hub -->
+        <div class="space-y-3 pt-4">
+          <h3 class="text-sm font-bold uppercase tracking-wider text-apple-purple">High-Dimensional Context Sensing (Read-Only Info Hub)</h3>
+          
+          <div class="grid grid-cols-1 gap-2 max-w-4xl">
+            
+            <a href="#struct-plugininfohub" id="struct-plugininfohub" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-s">S</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct PluginInfoHub</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  系统的全局只读高维感知中枢。通过 <code class="font-mono">context.info</code> 访问，严密受权限系统保护，只读不写。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#method-pecore" id="method-pecore" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-m">M</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getPECoreInfo() async throws -> PECoreInfo</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  获取 P-Core（决策核）与 E-Core（执行核）的双核协同分工状态、思考等级、双核耗时比与后台任务水位。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#method-context" id="method-context" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-m">M</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getContextState() async throws -> ContextStateInfo</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  感知当前会话的模型 ID、Token 累计消耗、上下文窗口使用率、轮次数及是否触发过滑动窗口压缩。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#method-perf" id="method-perf" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-m">M</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getPerformanceInfo() async throws -> PerformanceMetricsInfo</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  获取首字延迟 (TTFT)、思考耗时、工具执行总耗时及 Provider 接口平均延迟指标。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#method-workspace" id="method-workspace" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-m">M</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getWorkspaceInfo() async throws -> WorkspaceSnapshotInfo</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  获取当前工程工作区根路径、当前 Git 分支名、未暂存脏文件计数与 Core 内核版本号。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+          </div>
+        </div>
+
+        <!-- Topic Group: Tools -->
+        <div class="space-y-3 pt-4">
+          <h3 class="text-sm font-bold uppercase tracking-wider text-apple-grayText">Extending Autonomous Model Tools</h3>
+          
+          <div class="grid grid-cols-1 gap-2 max-w-4xl">
+            
+            <a href="#protocol-plugintool" id="protocol-plugintool" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-p">P</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">protocol PluginTool</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  声明供大模型在 ReAct 思考与工具循环中自主决策调用的 Native Tool。需提供 JSON Schema 参数规范。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#struct-toolexecutioncontext" id="struct-toolexecutioncontext" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-s">S</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct ToolExecutionContext</span>
+                </div>
+                <p class="text-xs text-apple-grayText">
+                  工具调用的执行上下文，携带调用 ID、会话 ID、InfoHub 访问句柄及结构化 Logger。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Security Sandboxing Section -->
+      <section id="security-sandboxing" class="space-y-6 pt-4 border-t border-white/10">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Security & Sandboxing</h2>
+        
+        <div class="space-y-4 text-sm text-apple-lightGray leading-relaxed max-w-4xl">
+          <p>
+            为杜绝恶意插件或第三方依赖危害开发者的工作站安全，LingXiAgent 在内核层筑牢了四大安全防线：
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+              <div class="text-xs font-bold text-apple-orange uppercase tracking-wide">防线一 · 物理地址空间隔离</div>
+              <p class="text-xs text-apple-grayText leading-relaxed">
+                插件以独立子进程运行，杜绝使用 <code class="text-zinc-300 font-mono">dlopen</code> 加载未知动态库。插件无法读取主进程堆栈与环境变量中的任何 API Key。
+              </p>
+            </div>
+
+            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+              <div class="text-xs font-bold text-apple-blue uppercase tracking-wide">防线二 · 零信任清单声明</div>
+              <p class="text-xs text-apple-grayText leading-relaxed">
+                插件必须在 Manifest 中显式声明所需 Capabilities。未申请的敏感操作直接被内核权限仲裁器（PermissionEngine）即时拦截。
+              </p>
+            </div>
+
+            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+              <div class="text-xs font-bold text-apple-green uppercase tracking-wide">防线三 · IPC 强类型契约</div>
+              <p class="text-xs text-apple-grayText leading-relaxed">
+                Core 与 Plugin 仅通过标准输入输出传输符合 Swift Codable 契约的数据包。单次调用超时（默认 10s）自动截断，防止子进程卡死。
+              </p>
+            </div>
+
+            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+              <div class="text-xs font-bold text-apple-purple uppercase tracking-wide">防线四 · 权力边界与纯读原则</div>
+              <p class="text-xs text-apple-grayText leading-relaxed">
+                SDK 严格遵循“重 INFO，轻 Control”。插件无法随意操纵主循环状态机，确保 Client 前端始终拥有唯一最高驾驶权。
+              </p>
+            </div>
+          </div>
+
+          <!-- Apple Important Callout -->
+          <div class="apple-callout apple-callout-important space-y-1 text-xs sm:text-sm">
+            <div class="font-bold text-apple-orange flex items-center gap-1.5">
+              <span>Important</span>
+            </div>
+            <div class="text-zinc-300 leading-relaxed">
+              严禁在插件中尝试读取 <code class="text-zinc-200 font-mono">~/.ssh</code>、<code class="text-zinc-200 font-mono">~/.aws</code> 或未声明的项目外部路径。任何违反 Capability 声明的越界访问都将被 LingXiAgent 记入安全审计日志并立即停用该插件。
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- JSON-RPC IPC Protocol Specification Section (Any Language) -->
+      <section id="jsonrpc-spec" class="space-y-6 pt-4 border-t border-white/10">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wider text-apple-green bg-apple-green/10 border border-apple-green/20 px-2.5 py-0.5 rounded-full">
+            Language-Agnostic IPC
+          </span>
+        </div>
+
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">JSON-RPC IPC 跨语言底层通信协议规范</h2>
+        
+        <p class="text-sm text-apple-grayText leading-relaxed max-w-4xl">
+          虽然官方提供了基于 Swift 6.0 的强类型 SDK，但 LingXiAgent 的插件内核基于标准进程隔离设计。这意味着开发者<strong>可以使用 Rust、Go、Python、C++ 或任意语言编写独立二进制插件</strong>，只要遵循以下标准输入输出（stdio）JSON-RPC 契约即可无缝接入。
+        </p>
+
+        <div class="space-y-6 max-w-4xl">
+
+          <!-- IPC Model -->
+          <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-3">
+            <h3 class="text-xs font-bold uppercase tracking-wide text-apple-blue">1. 通信机制与生命周期</h3>
+            <ul class="text-xs text-apple-lightGray space-y-2 list-disc list-inside leading-relaxed">
+              <li><strong>载体通道</strong>：Core 主进程通过标准管道（<code class="text-zinc-200 font-mono">stdin / stdout</code>）与插件进程通信，无须开启网络端口；</li>
+              <li><strong>报文分帧</strong>：单次 RPC 交互传输标准 JSON 对象，以换行符（<code class="text-zinc-200 font-mono">\n</code>）为分包定界符；</li>
+              <li><strong>请求结构</strong>：<code class="text-apple-purple font-mono">{"id": "...", "method": "...", "params": {...}}</code></li>
+              <li><strong>响应结构</strong>：<code class="text-apple-purple font-mono">{"id": "...", "result": {...}, "error": null}</code></li>
+            </ul>
+          </div>
+
+          <!-- RPC Methods -->
+          <div class="space-y-4">
+            <h3 class="text-xs font-bold uppercase tracking-wide text-apple-blue">2. 核心 RPC 方法与数据载荷</h3>
+
+            <!-- plugin.initialize -->
+            <div class="space-y-2">
+              <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
+                <span>plugin.initialize (进程启动握手)</span>
+              </div>
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code><span class="token-comment">// 1. Core 发送初始化握手请求</span>
+{"id": "init-1", "method": "plugin.initialize"}
+
+<span class="token-comment">// 2. 插件子进程回包宣告清单与贡献项</span>
+{
+  "id": "init-1",
+  "result": {
+    "manifest": {
+      "id": "my-rust-plugin",
+      "name": "Rust 诊断扩展",
+      "version": "1.0.0",
+      "capabilities": ["projectRead"]
+    },
+    "tools": [
+      {
+        "name": "rust_audit",
+        "description": "调用 Rust 本地分析引擎进行安全体检",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"
+      }
+    ],
+    "commands": [
+      {
+        "name": "rust-info",
+        "description": "弹出查看 Rust 插件运行状态",
+        "category": "Diagnostics"
+      }
+    ]
+  },
+  "error": null
+}</code></pre>
+            </div>
+
+            <!-- command.execute -->
+            <div class="space-y-2">
+              <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
+                <span>command.execute (执行斜杠命令)</span>
+              </div>
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code><span class="token-comment">// 1. 用户在终端输入 /rust-info --verbose</span>
+{
+  "id": "cmd-42",
+  "method": "command.execute",
+  "params": {
+    "commandName": "rust-info",
+    "arguments": ["--verbose"],
+    "sessionID": "sess-abc-123"
+  }
+}
+
+<span class="token-comment">// 2. 插件返回展示模式（支持 "modal" 居中弹出浮层 或 "inline" 行内卡片）</span>
+{
+  "id": "cmd-42",
+  "result": {
+    "isPrompt": false,
+    "text": "• 引擎版本: v1.82 (Rust native)\n• 内存常驻: 4.2 MB\n• 安全评分: 98/100",
+    "presentation": "modal",
+    "title": "Rust 审计诊断报告"
+  },
+  "error": null
+}</code></pre>
+            </div>
+
+            <!-- tool.call -->
+            <div class="space-y-2">
+              <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
+                <span>tool.call (模型自主调度工具)</span>
+              </div>
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code><span class="token-comment">// 1. 大模型在 ReAct 循环中自主调用插件工具</span>
+{
+  "id": "tool-88",
+  "method": "tool.call",
+  "params": {
+    "toolName": "rust_audit",
+    "arguments": "{\"path\":\"Sources/\"}",
+    "sessionID": "sess-abc-123",
+    "toolCallID": "call_9901"
+  }
+}
+
+<span class="token-comment">// 2. 插件子进程执行本地逻辑并返回纯文本或 JSON 结论</span>
+{
+  "id": "tool-88",
+  "result": "{\"issues\": 0, \"scannedFiles\": 42, \"status\": \"clean\"}",
+  "error": null
+}</code></pre>
+            </div>
+
+          </div>
+
+        </div>
+      </section>
+
+      <!-- See Also Section -->
+      <section class="space-y-4 pt-4 border-t border-white/10">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-apple-grayText">See Also</h2>
+        <div class="space-y-2 max-w-4xl text-sm">
+          <a href="/docs.html" class="flex items-center justify-between p-3 rounded-lg border border-white/5 hover:border-white/15 bg-white/5 hover:bg-white/10 transition-colors group">
+            <span class="text-apple-blue group-hover:underline">LingXiAgent 系统架构设计与双核机制</span>
+            <span class="text-zinc-500">›</span>
+          </a>
+          <a href="https://github.com/LingXiFox/LingXiAgent/tree/main/Plugins/FoxPlugin" target="_blank" class="flex items-center justify-between p-3 rounded-lg border border-white/5 hover:border-white/15 bg-white/5 hover:bg-white/10 transition-colors group">
+            <span class="text-apple-blue group-hover:underline">FoxPlugin 官方参考插件完整实现源码</span>
+            <span class="text-zinc-500">›</span>
+          </a>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Right: "On This Page" Table of Contents (Apple Style) -->
+    <aside class="hidden xl:block w-64 shrink-0 py-8 pr-6 pl-4 text-xs">
+      <div class="sticky top-20 space-y-3">
+        <div class="font-bold text-zinc-400 uppercase tracking-wider text-[10px]">On This Page</div>
+        <nav id="tocNav" class="space-y-1 border-l border-white/10 pl-3">
+          <a href="#framework-root" class="block py-1 text-apple-blue font-medium hover:text-white transition-colors">Declaration</a>
+          <a href="#overview" class="block py-1 text-apple-grayText hover:text-white transition-colors">Overview</a>
+          <a href="#quickstart" class="block py-1 text-apple-grayText hover:text-white transition-colors">Quick Start</a>
+          <a href="#protocol-lingxiplugin" class="block py-1 text-apple-grayText hover:text-white transition-colors">Plugin Lifecycle</a>
+          <a href="#protocol-plugincommand" class="block py-1 text-apple-grayText hover:text-white transition-colors">Slash Commands</a>
+          <a href="#struct-plugininfohub" class="block py-1 text-apple-grayText hover:text-white transition-colors">Context Sensing</a>
+          <a href="#protocol-plugintool" class="block py-1 text-apple-grayText hover:text-white transition-colors">Model Tools</a>
+          <a href="#security-sandboxing" class="block py-1 text-apple-grayText hover:text-white transition-colors">Security & Sandboxing</a>
+          <a href="#delivery" class="block py-1 text-apple-grayText hover:text-white transition-colors">Packaging & Delivery</a>
+          <a href="#jsonrpc-spec" class="block py-1 text-apple-grayText hover:text-white transition-colors">JSON-RPC IPC</a>
+        </nav>
+
+        <div class="pt-6 border-t border-white/10 space-y-2">
+          <div class="text-[10px] text-zinc-500 uppercase tracking-wider font-bold">Feedback</div>
+          <a href="https://github.com/LingXiFox/LingXiAgent/issues" target="_blank" class="block text-apple-grayText hover:text-apple-blue transition-colors">
+            在 GitHub 提交 API 建议与 Issue ›
+          </a>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Apple Minimal Footer -->
+  <footer class="mt-auto border-t border-white/10 bg-[#161617] py-8 text-xs text-apple-grayText">
+    <div class="max-w-[1720px] mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center space-x-2">
+        <span class="text-base">🦊</span>
+        <span>Copyright © 2026 LingXiAgent. Designed with Apple Human Interface Guidelines.</span>
+      </div>
+      <div class="flex items-center space-x-4">
+        <a href="/" class="hover:text-zinc-200 transition-colors">主页</a>
+        <a href="/docs.html" class="hover:text-zinc-200 transition-colors">技术文档</a>
+        <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="hover:text-zinc-200 transition-colors">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Interactive Search & TOC Highlighter Script -->
+  <script>
+    // Copy Code Button
+    function copyCode(button, text) {
+      navigator.clipboard.writeText(text).then(() => {
+        const span = button.querySelector('span');
+        const oldText = span.innerText;
+        span.innerText = 'Copied!';
+        setTimeout(() => { span.innerText = oldText; }, 1500);
+      });
+    }
+
+    // Sidebar Toggle for Mobile
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const navigatorSidebar = document.getElementById('navigatorSidebar');
+    if (sidebarToggle && navigatorSidebar) {
+      sidebarToggle.addEventListener('click', () => {
+        navigatorSidebar.classList.toggle('-translate-x-full');
+      });
+    }
+
+    // Filter Navigator Items (Filter input)
+    const navFilter = document.getElementById('navFilter');
+    const quickSearch = document.getElementById('quickSearch');
+    
+    function filterItems(query) {
+      const q = query.toLowerCase().trim();
+      const navItems = document.querySelectorAll('.nav-item');
+      navItems.forEach(item => {
+        const text = item.innerText.toLowerCase();
+        if (!q || text.includes(q)) {
+          item.style.display = 'flex';
+        } else {
+          item.style.display = 'none';
+        }
+      });
+    }
+
+    if (navFilter) {
+      navFilter.addEventListener('input', (e) => filterItems(e.target.value));
+    }
+    if (quickSearch) {
+      quickSearch.addEventListener('input', (e) => {
+        filterItems(e.target.value);
+        if (navFilter) navFilter.value = e.target.value;
+      });
+    }
+
+    // ⌘K Shortcut to Focus Search
+    window.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        if (quickSearch) {
+          quickSearch.focus();
+        } else if (navFilter) {
+          navFilter.focus();
+        }
+      }
+    });
+
+    // TOC Active Highlight on Scroll
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const id = entry.target.getAttribute('id');
+          if (!id) return;
+          const links = document.querySelectorAll('#tocNav a');
+          links.forEach(link => {
+            if (link.getAttribute('href') === `#${id}`) {
+              link.classList.remove('text-apple-grayText');
+              link.classList.add('text-apple-blue', 'font-medium');
+            } else {
+              link.classList.add('text-apple-grayText');
+              link.classList.remove('text-apple-blue', 'font-medium');
+            }
+          });
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+
+    document.querySelectorAll('section[id]').forEach(section => {
+      observer.observe(section);
+    });
+
+    // Language Selector Switcher
+    function switchLanguage(lang) {
+      const swiftBtn = document.getElementById('langSwiftBtn');
+      const jsonRpcBtn = document.getElementById('langJsonRpcBtn');
+      if (lang === 'jsonrpc') {
+        if (jsonRpcBtn) {
+          jsonRpcBtn.className = 'px-2.5 py-0.5 rounded-full bg-apple-blue text-white shadow-sm transition-all';
+        }
+        if (swiftBtn) {
+          swiftBtn.className = 'px-2.5 py-0.5 rounded-full text-zinc-400 hover:text-white transition-all';
+        }
+        const target = document.getElementById('jsonrpc-spec');
+        if (target) target.scrollIntoView({ behavior: 'smooth' });
+      } else {
+        if (swiftBtn) {
+          swiftBtn.className = 'px-2.5 py-0.5 rounded-full bg-apple-blue text-white shadow-sm transition-all';
+        }
+        if (jsonRpcBtn) {
+          jsonRpcBtn.className = 'px-2.5 py-0.5 rounded-full text-zinc-400 hover:text-white transition-all';
+        }
+        const target = document.getElementById('framework-root');
+        if (target) target.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+
+    if (window.location.hash === '#jsonrpc-spec') {
+      switchLanguage('jsonrpc');
+    }
+  </script>
+
+</body>
+</html>

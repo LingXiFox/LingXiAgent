@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPluginSDK
 
 public enum ExtensionType: String, Codable, Sendable, CaseIterable {
     case skill, command, hook, plugin, mcp
@@ -271,6 +272,7 @@ public actor ExtensionPlatform {
     public let registry: ExtensionRegistry
     public let globalRoot: URL
     public let projectRoot: URL
+    public let pluginSupervisor: PluginHostSupervisor
     private let permissions: PermissionEngine
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let coreVersion: String
@@ -284,6 +286,7 @@ public actor ExtensionPlatform {
         self.registry = registry
         self.deadlinePolicy = deadlinePolicy
         self.coreVersion = coreVersion
+        self.pluginSupervisor = PluginHostSupervisor(globalRoot: globalRoot, projectRoot: projectRoot, permissions: permissions)
     }
 
     public func restore() async {
@@ -301,7 +304,51 @@ public actor ExtensionPlatform {
     public func discover() async -> ExtensionDiscoveryResult {
         let skills = ExtensionDiscovery.skills(globalRoot: globalRoot, projectRoot: projectRoot, coreVersion: coreVersion)
         let commands = ExtensionDiscovery.commands(globalRoot: globalRoot, projectRoot: projectRoot, coreVersion: coreVersion)
-        let result = ExtensionDiscoveryResult(extensions: skills.extensions + commands.extensions, diagnostics: skills.diagnostics + commands.diagnostics)
+
+        // 发现并拉起可执行二进制插件
+        let binaryPlugins = await pluginSupervisor.discoverAndStartAll()
+        var pluginDescriptors: [ExtensionDescriptor] = []
+        for bp in binaryPlugins {
+            let caps = Set(bp.manifest.capabilities.map { cap -> ToolCapabilityKind in
+                switch cap {
+                case .projectRead: return .projectRead
+                case .projectWrite: return .projectWrite
+                case .processExecution: return .processExecute
+                case .networkAccess: return .networkAccess
+                }
+            })
+            let desc = ExtensionDescriptor(
+                id: bp.manifest.id,
+                version: bp.manifest.version,
+                type: .plugin,
+                source: "binary:\(bp.manifest.id)",
+                scope: .project,
+                enabled: true,
+                capabilities: caps,
+                lifecycleState: .enabled
+            )
+            pluginDescriptors.append(desc)
+
+            // 登记插件贡献的 Commands 到扩展表
+            for cmd in bp.commands {
+                let cmdDesc = ExtensionDescriptor(
+                    id: cmd.name,
+                    version: bp.manifest.version,
+                    type: .command,
+                    source: "plugin:\(bp.manifest.id):\(cmd.name)",
+                    scope: .project,
+                    enabled: true,
+                    capabilities: caps,
+                    lifecycleState: .enabled
+                )
+                pluginDescriptors.append(cmdDesc)
+            }
+        }
+
+        let result = ExtensionDiscoveryResult(
+            extensions: skills.extensions + commands.extensions + pluginDescriptors,
+            diagnostics: skills.diagnostics + commands.diagnostics
+        )
         let existing = await registry.all()
         let existingByKey = Dictionary(uniqueKeysWithValues: existing.map { ($0.key, $0) })
         let mergedExtensions = result.extensions.map { ext -> ExtensionDescriptor in
@@ -311,10 +358,26 @@ public actor ExtensionPlatform {
             updated.lifecycleState = previous.lifecycleState
             return updated
         }
-        let preserved = existing.filter { $0.type != .skill && $0.type != .command }
+        let preserved = existing.filter { $0.type != .skill && $0.type != .command && $0.type != .plugin }
         await registry.replace(preserved + mergedExtensions, diagnostics: result.diagnostics, coreVersion: coreVersion)
         await persist()
         return result
+    }
+
+    public func activePlugins() async -> [PluginHandshakeResult] {
+        await pluginSupervisor.activePlugins()
+    }
+
+    public func executePluginTool(name: String, arguments: String, sessionID: String, toolCallID: String) async throws -> String {
+        try await pluginSupervisor.executeTool(name: name, arguments: arguments, sessionID: sessionID, toolCallID: toolCallID)
+    }
+
+    public func executePluginCommand(name: String, arguments: [String], sessionID: String?) async throws -> PluginCommandCallResult {
+        try await pluginSupervisor.executeCommand(name: name, arguments: arguments, sessionID: sessionID)
+    }
+
+    public func terminatePlugins() async {
+        await pluginSupervisor.terminateAll()
     }
 
     public func list(type: ExtensionType? = nil) async -> [ExtensionDescriptor] {

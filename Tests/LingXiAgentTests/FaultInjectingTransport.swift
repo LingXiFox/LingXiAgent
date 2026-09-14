@@ -360,6 +360,10 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func configureExtension(envelope: CommandEnvelope<ConfigureExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
         try await underlying.configureExtension(envelope: envelope)
     }
+    public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
+        try await underlying.executeExtensionCommand(envelope: envelope)
+    }
+
     public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
         try await underlying.getWorkspace(envelope: envelope)
     }

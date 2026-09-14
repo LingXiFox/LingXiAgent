@@ -127,6 +127,7 @@ public struct VNextStdioCoreServer: Sendable {
                 case "extension.disable": try await reply(request, try await service.disableExtension(envelope: CommandEnvelope(payload: decode(DisableExtensionRequest.self, request.payload))), writer)
                 case "extension.reload": try await reply(request, try await service.reloadExtensions(envelope: CommandEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
                 case "extension.configure": try await reply(request, try await service.configureExtension(envelope: CommandEnvelope(payload: decode(ConfigureExtensionRequest.self, request.payload))), writer)
+                case "extension.executeCommand": try await reply(request, try await service.executeExtensionCommand(envelope: CommandEnvelope(payload: decode(ExecuteExtensionCommandRequest.self, request.payload))), writer)
                 case "workspace.get": try await reply(request, try await service.getWorkspace(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
                 case "workspace.set": try await reply(request, try await service.setWorkspace(envelope: CommandEnvelope(payload: decode(SetWorkspaceRequest.self, request.payload))), writer)
                 case "workspace.diff": try await reply(request, try await service.getWorkspaceDiffSummary(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)

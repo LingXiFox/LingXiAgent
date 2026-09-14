@@ -166,6 +166,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func disableExtension(envelope: CommandEnvelope<DisableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.disable", envelope.payload) }
     public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("extension.reload", envelope.payload) }
     public func configureExtension(envelope: CommandEnvelope<ConfigureExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.configure", envelope.payload) }
+    public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> { try await command("extension.executeCommand", envelope.payload) }
 
     public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope.payload) }
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> { try await command("workspace.set", envelope.payload) }

@@ -302,6 +302,10 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.configureExtension(envelope: envelope)
     }
 
+    public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
+        try await service.executeExtensionCommand(envelope: envelope)
+    }
+
     // MARK: - LingXiProtocolService: 10. Workspace
     public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
         try await service.getWorkspace(envelope: envelope)
