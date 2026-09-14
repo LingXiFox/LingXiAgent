@@ -1,274 +1,258 @@
 # LingXiAgent
 
-> [!IMPORTANT]
-> **系统平台支持说明（Platform Support）**
-> - **全面支持**：本项目已完成原生跨平台架构重构，全面原生支持 **macOS** (Apple Silicon / Intel)、**Linux** (x86_64 / AArch64) 与 **Windows** (x86_64 / ARM64)。
-> - **底层保障**：由独立的 `LingXiPlatform` 模块提供三平台纯原生抽象，实现无缝平替与沙箱隔离。
+<p align="center">
+  <span style="font-size: 64px;">🦊</span><br/>
+  <strong>Native Swift AI Coding Agent with Heterogeneous Dual-Core Architecture</strong><br/>
+  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · 全面支持 macOS · Linux · Windows</em>
+</p>
 
-LingXiAgent 是以纯 Swift 原生实现的现代化本地自主智能体（Agent Core）。它拥有完整的自主决策树、多级上下文缓存、动态工具调度、敏感权限拦截、多协议模型网关、MCP 服务运行时与本地加密持久化体系；外部模型通信仅在 Provider Adapter 边界做契约映射，严守领域模型的内聚与纯粹。
+<p align="center">
+  <a href="https://agent.lingxifox.cn"><img src="https://img.shields.io/badge/Official%20Site-agent.lingxifox.cn-8b5cf6?style=flat-square&logo=safari" alt="Website"></a>
+  <a href="https://agent.lingxifox.cn/docs"><img src="https://img.shields.io/badge/Docs-官方文档中心-ec4899?style=flat-square&logo=bookstack" alt="Docs"></a>
+  <a href="https://models.lingxifox.cn"><img src="https://img.shields.io/badge/Models%20Hub-models.lingxifox.cn-10b981?style=flat-square&logo=speedtest" alt="Models"></a>
+  <a href="https://github.com/LingXiFox/LingXiAgent/releases"><img src="https://img.shields.io/github/v/release/LingXiFox/LingXiAgent?style=flat-square&color=blue" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-amber?style=flat-square" alt="License"></a>
+</p>
 
 ---
 
-## 🌟 核心特性概览
-
-* **极速原生响应**：全系统基于 Swift 6 现代并发（Concurrency & Actors）构建，内存占用低至数十兆，毫秒级启动与调度。
-* **独创三级上下文缓存（L1 / L2 / L3）**：
-  * **L1 Hot Working Set**：直接参与大模型推理的高热活跃工作集，受上下文预算（Context Budget）与软限制严格守护；
-  * **L2 Warm Cache**：内存未压缩页面池，L1 超载时按 LRU 与相关度加权淘汰降级至 L2；再次命中时秒级提拔（Promote）回 L1；
-  * **L3 Cold Store**：会话高水位自动压缩（Compaction）归档、历史工具大批次提炼摘要（`DerivedContextPage`）及全量 MCP 工具元数据池。
-* **沉浸式现代终端界面（LingXiTUI）**：
-  * 双栏布局：左侧实时状态监控看板（L1/L2/L3 缓存用量进度条、大模型服务端真实 Prompt Cache 命中率、活跃 MCP 与 Skills 计数、子代理树）；
-  * 右侧主交互区：完整支持流式打字机渲染、代码高亮、交互式权限确认拦截与结构化问答弹窗；
-  * **精准性能脚标**：每轮问答结束末尾自动输出暗调遥测参数：`⚡️ <model> · 耗时 <dur> · 首字 <latency> · <tokens/s> · <timestamp>`；
-  * **跨工作区 `/resume` 会话恢复**：自动聚合扫描全盘会话并按工作目录层级分类，当前目录自动置顶，智能提取首行提示词摘要，跨目录切换时自动 `cd` 并完整水合恢复历史时间线。
-* **全功能 MCP (Model Context Protocol) 运行时**：
-  * 支持 `stdio` 与现代 `streamableHTTP` 双通道；
-  * 自动工具发现、分页拉取与 Schema 按需短租约（Lease）；
-  * 内置标准 RFC 9728 & RFC 8414 OAuth 2.1 浏览器自动授权与本地回送服务器；
-  * **凭据双重回退**：本地 AES-256-GCM 独立加密保险箱与系统环境变量双向兜底。
-* **统一运维 CLI (`lingxiagent`)**：提供 `doctor` 体系体检、`mcp` 状态与发现、`auth` 密钥与多模型认证等全套运维指令。
+> [!IMPORTANT]
+> **全平台原生支持 (Platform Support)**
+> - **全面支持**：本项目已完成原生跨平台重构，全面支持 **macOS** (Apple Silicon / Intel)、**Linux** (Ubuntu / Debian / Arch，x86_64 与 AArch64) 与 **Windows** (x86_64 与 ARM64)。
+> - **底层保障**：由独立底座模块 `LingXiPlatform` 负责三平台纯原生系统调用抽象、Bubblewrap 容器沙箱、Win32 控制台虚拟终端处理与进程树级联深度灭活。
 
 ---
 
 ## ⚡ 快速安装与上手 (Quick Install)
 
 ### macOS / Linux (一键安装)
-在终端中执行官方一键脚本（自动识别系统与架构、准备目录并配置 PATH）：
+在终端中执行官方一键安装器（自动检测系统架构、配置环境并部署二进制）：
 ```bash
 curl -fsSL https://agent.lingxifox.cn/install.sh | bash
 ```
 
 ### Windows (PowerShell 一键安装)
-在 Windows PowerShell 中直接运行：
+在原生 Windows PowerShell 中直接运行：
 ```powershell
 irm https://agent.lingxifox.cn/install.ps1 | iex
 ```
 
+安装完成后，新开终端直接输入 `lingxiagent` 即可秒级开启会话。完整使用手册与高级配置，请参阅 **[LingXiAgent 官方技术文档中心](https://agent.lingxifox.cn/docs)**。
+
 ---
 
-## 🏛️ 系统架构设计
+## 🌟 核心特性概览
+
+* **⚡ 极致原生性能与轻量占用**：全系统基于 Swift 6 现代并发（Concurrency & Actors）构建，冷启动仅需 ~10ms，运行期内存低至 ~35MB，告别高昂的 Node.js/Electron 运行时开销。
+* **🧠 P-Core / E-Core 异构双核架构**：
+  * **P-Core (Prompt-Driven 推理总线)**：守护纯净高密的推理工作集，严格控制上下文预算，保持模型 100% 的注意力聚焦与超高的服务端 Prompt Cache 命中率；
+  * **E-Core (Execution Storage 执行存储)**：承载大规模工具执行产物。当测试日志、代码块或分析结果大于 10KB 时，**自动旁路沉淀**入专用对象池，仅向推理层提交紧凑语义引用，彻底根治 Token 爆炸与遗忘。
+* **🖥️ 表现层与核心彻底解耦 (Frontend 契约)**：
+  * TUI 全面降维为纯受控客户端，遵循 `@MainActor Frontend` 协议，不私自启动或管理核心；
+  * 核心生命周期、Stdio IPC 与 Store 装配统一由 `AppCompositionRoot` 统一接管，为未来接入 WebUI、GUI 与远端 RPC 奠定架构基础。
+* **🛡️ 动态宿主感知与反封锁伪装**：
+  * 动态识别底层网络协议栈与平台指纹，让 TLS JA4/TCP 握手特征与应用层 User-Agent 保持 100% 原生一致；
+  * 完整注入官方 Companion Headers，杜绝上游风控封锁与人机验证。
+* **🔑 官方订阅与通用 API 物理隔离双轨制**：
+  * 支持 ChatGPT Plus/Pro (Codex OAuth)、Claude Code 官方订阅免 API 费用直连；
+  * 无缝兼容 75+ 通用商业与开源大模型（OpenAI、DeepSeek、Anthropic、Qwen、SenseNova 等）。
+* **🔌 全功能 MCP (Model Context Protocol) 运行时与 Skills 体系**：
+  * 原生支持 `stdio` 与现代 `streamableHTTP` 双通道；
+  * 内置 RFC 9728 & RFC 8414 OAuth 2.1 浏览器本地回送授权；
+  * 工具 Schema 分页拉取与短租约（Lease）调度；兼容标准 `SKILL.md` 技能动态注入。
+* **🔒 本地加密保险箱 (Vault)**：
+  * 采用 AES-256-GCM 高强度加密，凭据安全落盘于本地保险箱；
+  * 支持 `本地加密保险箱` ⇄ `当前进程环境变量` 双重自动回退。
+
+---
+
+## 🏛️ 系统架构设计 (Architecture Blueprint)
 
 ```mermaid
 flowchart TD
-    subgraph UI_Layer["🖥️ 客户端与交互层"]
-        TUI["LingXiTUI (终端界面 / OpenTUI)"]
-        CLI["lingxiagent CLI (统一运维入口)"]
-        Client["LingXiClient (双工 SDK)"]
+    subgraph UI_Layer["🖥️ 表现层与客户端 (Frontend Layer - Fully Decoupled)"]
+        TUI["LingXiTUI (60FPS OpenTUI / ANSI Fallback)"]
+        CLI["lingxiagent CLI (统一运维与无头执行)"]
+        WebClient["Future WebUI / Remote Frontend"]
     end
 
-    subgraph Protocol_Layer["📜 协议与通信层"]
-        Protocol["LingXiProtocol (强类型领域契约 / Wire)"]
-        StdioIPC["stdio JSON Lines / In-Process Channel"]
+    subgraph Bootstrap_Layer["🚀 装配与生命周期层 (Bootstrap)"]
+        Root["AppCompositionRoot (统一装配根)"]
+        Store["ApplicationStore (单向数据流状态机)"]
     end
 
-    subgraph Core_Host["⚙️ 核心宿主 (LingXiCoreHost / main)"]
-        Host["CoreHost (生命周期与状态权威)"]
+    subgraph Platform_Layer["🌐 跨平台系统底座 (LingXiPlatform)"]
+        PlatformFacade["LingXiPlatform.current (统一门面)"]
+        DarwinAdapter["Darwin Adapter (macOS / Seatbelt)"]
+        LinuxAdapter["Linux Adapter (Bubblewrap bwrap)"]
+        WindowsAdapter["Windows Adapter (Win32 Console VT100 / taskkill)"]
     end
 
-    subgraph Core_Engines["🧠 核心业务引擎 (LingXiCore)"]
-        AgentEngine["Agent & Subagent Runtime\n(Tool Loop / 并行工具结算 / 问答上浮)"]
-        
-        subgraph Context_System["三级上下文缓存系统 (Context Architecture)"]
-            L1["🔥 L1: Hot Working Set\n(推理工作集 / 软限防爆)"]
-            L2["⚡ L2: Warm Cache\n(待命内存池 / 加权秒级回捞)"]
-            L3["❄️ L3: Cold Store\n(历史长会话压缩 / MCP 元数据)"]
-            CacheCtrl["ContextCacheController\n(加权淘汰 / 升降级调度)"]
-            Compactor["ContextCompactor\n(高水位自动摘要压缩)"]
+    subgraph Core_Engines["🧠 异构双核业务引擎 (LingXiCore)"]
+        subgraph P_Core["🔥 P-Core: 推理对话总线 (Prompt-Driven)"]
+            ReasoningLoop["Agent Decision & Tool Loop"]
+            ContextCtrl["三级上下文流控 (L1 Hot / L2 Warm / L3 Cold)"]
+            Compactor["ContextCompactor (高水位智能摘要)"]
         end
 
-        ToolRuntime["Tool & Permission Engine\n(工作区限制 / 敏感路径防护 / 乐观锁)"]
-        MCPRuntime["MCP Runtime\n(stdio / Streamable HTTP / OAuth 2.1)"]
-        ModelGateway["Model Gateway & Telemetry\n(OpenAI / Responses / Anthropic / 首字与速率)"]
+        subgraph E_Core["⚡ E-Core: 执行存储对象池 (Execution-Driven)"]
+            ToolRuntime["Tool Engine & Sandbox Watchdog"]
+            ObjectStore["Bypass Object Store (大工具产物旁路隔离)"]
+            StateDB["SQLite Store (catalog.sqlite / state.sqlite)"]
+        end
+
+        MCPRuntime["MCP 运行时 (stdio / streamableHTTP / OAuth 2.1)"]
+        ModelGateway["多协议模型网关 (Codex / Claude / Universal API)"]
     end
 
     subgraph Persistence["🔒 安全存储与持久化"]
-        Vault["PlatformSecureCredentialStore\n(AES-256-GCM 本地加密保险箱)"]
-        SQLiteState["SQLite Store (catalog.sqlite / state.sqlite)\n(会话时间线 / 派生页面 / 缓存状态)"]
+        Vault["PlatformSecureCredentialStore (AES-256-GCM 本地加密保险箱)"]
         ConfigJSON["JSON Configuration (config / providers / mcp)"]
     end
 
-    UI_Layer --> Protocol_Layer
-    Protocol_Layer --> Core_Host
-    Core_Host --> Core_Engines
+    UI_Layer --> Bootstrap_Layer
+    Bootstrap_Layer --> Platform_Layer
+    Bootstrap_Layer --> Core_Engines
+    Core_Engines --> Platform_Layer
     Core_Engines --> Persistence
-    CacheCtrl <--> L1
-    CacheCtrl <--> L2
-    Compactor <--> L3
+    P_Core <== "语义证据引用 / 旁路隔离总线" ==> E_Core
 ```
 
-### Swift Package 模块边界
+### Swift Package 模块职责定位
 
-| Target | 职责定位 | 依赖关系 |
+| Target | 职责定位 | 核心依赖 |
 | :--- | :--- | :--- |
-| **`LingXiProtocol`** | 定义领域类型、消息、事件、流式数据帧（Wire Frame）及错误契约 | 纯原生，零外部依赖 |
-| **`LingXiPlatform`** | 跨平台统一系统调用门面（Darwin/Linux/Windows 专属实现与进程树深度杀灭） | 纯原生系统接口 |
-| **`LingXiCore`** | 业务核心、状态权威，内含三级缓存、Tool/MCP/Provider 引擎与持久化 | 依赖 `LingXiProtocol`、`LingXiPlatform` |
-| **`LingXiClient`** | 访问 Core 的客户端 SDK，支持进程内驱动及 stdio 管道传输 | 依赖 `LingXiProtocol`、`LingXiPlatform` |
-| **`LingXiApplication`**| 应用层业务聚合与表现层契约，实现生命周期装配与命令分发 | 依赖 `LingXiClient`、`LingXiProtocol`、`LingXiPlatform` |
-| **`LingXiTUI`** | 现代化终端用户界面，遵循 `Frontend` 契约，纯粹表现层与视图容器 | 依赖 `LingXiApplication`、`LingXiTUIComponents`、`LingXiPlatform` |
-| **`LingXiCoreHost`** | 独立 Core 后台执行体，提供标准输入输出的 JSON Lines 协议服务 | 依赖 `LingXiCore`、`LingXiProtocol`、`LingXiPlatform` |
-| **`lingxiagent`** | 统一综合命令行入口（运行 TUI、doctor 体检、mcp 诊断、auth 密钥管理） | 整合各层入口 |
+| **`LingXiProtocol`** | 纯强类型契约层，定义领域实体、流式帧（Wire Frame）、错误码与 RPC 协议 | 纯原生，零外部依赖 |
+| **`LingXiPlatform`** | 跨平台系统调用抽象层（Darwin/Linux/Windows 原生适配、沙箱、进程树级联灭活） | 纯原生系统接口 |
+| **`LingXiCore`** | 业务权威中心，内含 P-Core 推理总线、E-Core 旁路对象池、Tool/MCP/Provider 引擎 | `LingXiProtocol`, `LingXiPlatform` |
+| **`LingXiClient`** | 驱动 Core 的双工客户端 SDK，支持进程内通道及 Stdio JSON Lines 管道通信 | `LingXiProtocol`, `LingXiPlatform` |
+| **`LingXiApplication`**| 应用层业务聚合与表现层契约，定义 `Frontend` 协议与 `AppCompositionRoot` | `LingXiClient`, `LingXiProtocol`, `LingXiPlatform` |
+| **`LingXiTUI`** | 纯表现层受控终端，遵循 `Frontend` 契约，支持双栏渲染与富文本流式交互 | `LingXiApplication`, `LingXiTUIComponents`, `LingXiPlatform` |
+| **`LingXiCoreHost`** | 独立 Core 后台服务执行体，提供标准 Stdio JSON Lines 协议管道 | `LingXiCore`, `LingXiProtocol`, `LingXiPlatform` |
+| **`lingxiagent`** | 统一综合命令行入口（运行 TUI、doctor 体检、mcp 诊断、auth 鉴权管理） | 整合各层入口 |
 
 ---
 
-## 🔄 深度解析：三级上下文缓存（L1 / L2 / L3）机制
+## 🔄 深度解析：P-Core 与 E-Core 双核异构与分级流控
 
-在日常开发与多轮复杂交互中，大模型物理显存（Context Window）极其宝贵。LingXiAgent 并不将历史内容无脑累加，而是设计了严密的**三级温度分层流转模型**：
+在复杂编程工程与多轮长会话中，传统 Agent 将成千上万行代码重构记录、测试输出与报错日志无脑堆入对话上下文，导致模型推理显存被垃圾数据淹没，引发高昂费用与“注意力迷航”。LingXiAgent 设计了严格的**异构双核旁路总线**：
 
 ```mermaid
-flowchart TD
-    Input["用户输入 / 工具返回 / 代码检索"] --> L1
-
-    subgraph L1_Box["🔥 L1: 活跃工作集 (参与单次物理推理)"]
-        L1["System Prompt + 活跃对话历史 + 正在运行的工具批次 + 常驻代码段"]
-    end
-
-    subgraph L2_Box["⚡ L2: 待命缓存池 (内存驻留，不占推理 Token)"]
-        L2["LRU 换出代码页 / 高频备选文件 (保留完整 AST 文本，免磁盘重新扫描)"]
-    end
-
-    subgraph L3_Box["❄️ L3: 冷数据归档 (SQLite / 磁盘持久化)"]
-        L3["历史庞大工具结果压缩摘要 ([Historical tool evidence]) + 长对话提炼 + MCP 42+ Schema 元数据"]
-    end
-
-    L1 -- "Token 突破 L1 SoftLimit (动态加权淘汰)" -->|Demote / Page-out| L2
-    L2 -- "上下文再次命中检索 (加权 +2.0 秒级提拔)" -->|Promote / Page-in| L1
+flowchart LR
+    ToolExec["工具执行产生结果 (Tool Execution)"] --> SizeCheck{"结果体积是否 > 10KB ?"}
     
-    L1 -- "会话超长触碰 High-Water Mark 水位线" -->|ContextCompactor 压缩| L3
-    L3 -- "历史跨度大范围意图召回" -->|Recall / Page-in| L1
+    SizeCheck -- "是 (大产物)" --> Bypass["⚡ 写入 E-Core 旁路对象池"]
+    Bypass --> Digest["提炼紧凑语义摘要 + 分配 Object ID"]
+    Digest --> PCore["🔥 提交至 P-Core 推理上下文"]
+
+    SizeCheck -- "否 (精炼结果)" --> PCore
+    
+    subgraph Context_Flow["P-Core 三级上下文温度分级"]
+        L1["L1 Hot Working Set (单次物理推理工作集)"]
+        L2["L2 Warm Cache (内存未压缩待命池)"]
+        L3["L3 Cold Store (SQLite 持久化与历史压缩归档)"]
+        L1 <--> L2
+        L1 <--> L3
+    end
+
+    PCore --> Context_Flow
 ```
 
-### 1. 各级缓存职责与行为特征
-
-1. **🔥 L1: Hot Working Set（直接物理工作集）**
-   * **作用**：唯一真正构造为本次 API 请求 Payload、直接送入大模型显存的内容。
-   * **容量管理**：由模型的物理窗口（如 200k/1M Tokens）结合动态安全预留（Reserve）、**Target（约88%）**、**SoftLimit（约94%）** 和 **HardLimit** 严格防御。
-   * **初期状态**：新会话开始时，所有内容均在 L1，此时 L2/L3 为 0。
-2. **⚡ L2: Warm Cache（温待命缓存池）**
-   * **作用**：在内存中缓存刚被 L1 挤出的完整代码片段和检索页面，**完全不消耗模型的单次物理推理 Token**。
-   * **流转机制**：当阅读大量源码导致 L1 突破 SoftLimit 时，`ContextCacheController` 根据时间权重、访问频次与任务亲和度算法选出非置顶受害者，将其换出（Page-out）至 L2。如果后续对话重新提及该文件，系统直接从 L2 提拔（Promote）回 L1（获 +2.0 缓存权重加成），无需重新访问磁盘与解析语法树。
-3. **❄️ L3: Cold Store（冷归档与压缩提炼库）**
-   * **作用**：磁盘级持久化。当多轮对话导致历史消息与庞大工具输出（如几千行日志）逼近 High-Water Mark 时，`ContextCompactor` 启动：
-     * 将已消费完的工具执行大包（Historical Tool Batches）精炼压缩为简洁的结构化证据摘要（`[Historical tool evidence]`），原始巨型文本落盘归档，腾出宝贵 L1 空间；
-     * 全量 MCP 服务（如 Notion 的 42 个工具、Excel 的 25 个工具）平日仅将微量元数据存于 L3，仅在模型发起调用意图时按需建立短期 Lease 激活进入工作集。
+### 1. 双核协同机制
+1. **执行大结果旁路隔离**：当执行 `shell` 产出几十 KB 编译日志或大型文件读取时，E-Core 拦截原始数据并存入本地对象存储池，仅向 P-Core 注入结构化证据摘要（`[Tool output archived to E-Core ID: obj_xxx]`），上下文净省 85% 以上空间。
+2. **三级上下文温度流转**：
+   - **🔥 L1 (Hot Working Set)**：直接参与大模型推理的高热活跃工作集，受上下文预算（Context Budget）与动态 SoftLimit 严格防爆守护；
+   - **⚡ L2 (Warm Cache)**：内存未压缩页面池，L1 超载时按 LRU 与相关度加权淘汰降级至 L2；再次命中时秒级提拔（Promote）回 L1；
+   - **❄️ L3 (Cold Store)**：当历史长会话逼近高水位（High-Water Mark）时，`ContextCompactor` 执行语义提炼归档，释放工作集空间。
 
 ---
 
-## 🖥️ 现代化终端界面 (LingXiTUI) 细节
+## 🖥️ 沉浸式终端界面 (LingXiTUI)
 
-启动命令：`swift run lingxiagent`（或直接使用编译产物 `lingxiagent`）
+启动方式：终端执行 `lingxiagent`。
 
-### 1. 侧边栏实时感知看板（Sidebar）
-* **三级缓存计量计**：实时展示 L1 / L2 / L3 当前占用 Token 数与容量上限的动态文本进度条；
-* **真实提供商 Prefix Cache 监控**：直接从底层大模型服务商（DeepSeek、OpenAI、Anthropic 等）返回的 HTTP 遥测中提取，精确展示本轮 Prompt Cache 命中率及复用比例；
-* **环境扩展指示**：实时列出当前启用的 Skills 数量与健康的 MCP 服务器（实时标注故障节点）；
-* **后台任务与子代理树**：展示当前正在并发运行的子代理状态与任务进度。
-
-### 2. 问答性能脚标（Telemetry Footnote）
-每轮 Assistant 回答完毕后，内容末尾会自动附带极具现代极客质感的参数注脚：
 ```text
-⚡️ deepseek-v4-flash · 耗时 1.34s · 首字 0.42s · 86.4 tps · 23:20:15
+┌─ 🦊 LingXiAgent ──────────────────────────┬─ Conversation ────────────────────────────────┐
+│ 🧠 Context Budget (L1/L2/L3):             │ Assistant                                     │
+│   [████████████░░░░░░░░] 62.4k / 200k     │ 我已使用 edit_file 完成了底层协议解耦。       │
+│                                           │ 代码修改已通过本地沙箱单元测试回归验证。      │
+│ ⚡ Prompt Cache Efficiency:                │                                               │
+│   Hit Rate: 82.3% (3,072 / 3,747 tokens)  │ ⚡️ deepseek-chat · 1.2s · 0.3s · 88tps · 22:30 │
+│                                           ├───────────────────────────────────────────────┤
+│ 🔌 Active MCP Servers:                    │ > 请继续为 Linux 平台增加 Bubblewrap 沙箱策略 │
+│   ● openapi-mcp-core  ● notion  ● trivy   │                                               │
+└───────────────────────────────────────────┴───────────────────────────────────────────────┘
 ```
-* **模型名称**：实际承载本次推理的 Provider 模型标识；
-* **总耗时**：端到端完整执行时长；
-* **首字延迟**：发起请求到接收首个 Token 数据帧的真实等待时间（First-token Latency）；
-* **吐字速度**：流式生成期间的平均吞吐率（Tokens Per Second）；
-* **完成时间**：精确到秒的本地时间戳。
 
-### 3. 跨工作目录 `/resume` 智能会话管理器
-在终端输入 `/resume` 命令，即可呼出全屏智能会话选择器：
-* **按工作区层级聚合**：自动扫描所有会话，按所属项目根目录自动分组；
-* **当前目录置顶排序**：当前所在工作区的历史会话自动置于首位优先展示；
-* **会话摘要与时间轴**：自动提取首条 User 提示词的核心意图形成摘要，标注总消息数与最后活跃时间；
-* **无缝工作区切换**：当选中非当前目录的会话时，系统**自动执行 `cd` 切换到对应工作目录**，并从 SQLite 中无损水合（Hydrate）恢复全量交互时间线，完美衔接上下文。
+* **双栏监控看板**：左侧实时展示三级缓存水位、大模型服务端真实 Prompt Cache 命中率、活跃 MCP 服务状态与子代理树；
+* **精准性能注脚**：每轮问答末尾自动输出暗调遥测参数：`⚡️ <model> · 耗时 <dur> · 首字 <latency> · <tokens/s> · <timestamp>`；
+* **跨工作区 `/resume` 会话恢复**：全盘智能扫描会话并按工作目录层级聚合，当前目录自动置顶；跨目录切换时**自动 `cd` 并从 SQLite 完整水合恢复历史时间线**。
 
 ---
 
-## 🔌 MCP 服务运行时与安全保障
-
-LingXiAgent 现已实现极为健壮的 MCP 统一连接机制，当前已全量接入并验证通过 7 大核心服务（100+ 工具）：
-
-| 服务 ID | 传输协议 | 端点 / 命令 | 健康状态 | 工具总数 | 核心能力 |
-| :--- | :--- | :--- | :---: | :---: | :--- |
-| **`openapi-mcp-core`** | stdio | `/opt/homebrew/bin/node` (阿里云桥接) | ✓ Healthy | 15 tools | 阿里云云原生资源查询、CLI 生成与文档深度检索 |
-| **`notion`** | streamableHTTP | `https://mcp.notion.com/mcp` | ✓ Healthy | 42 tools | Notion 页面创建、数据库检索、会话与知识库全功能 |
-| **`excel`** | stdio | `/Users/.../.local/bin/uvx excel-mcp-server` | ✓ Healthy | 25 tools | Excel 表格读取、公式语法校验、数据分析透视 |
-| **`codebase-memory-mcp`** | stdio | `codebase-memory-mcp` | ✓ Healthy | 14 tools | 代码知识图谱、符号关系追踪与代码语义检索 |
-| **`trivy`** | stdio | `/opt/homebrew/bin/trivy` | ✓ Healthy | 6 tools | 本地与镜像文件系统漏洞扫描、许可证审计 |
-| **`context7`** | streamableHTTP | `https://mcp.context7.com/mcp` | ✓ Healthy | 2 tools | 全网主流开发库与框架官方最新技术文档实时检索 |
-| **`penpot`** | streamableHTTP | `https://penpot.macserver...` | ✓ Healthy | 4 tools | 团队自建 Penpot 协同设计插件脚本执行与画板导出 |
-
-### 凭据保险箱与双重回退保障
-针对诸如阿里云 `ALIBABA_CLOUD_ACCESS_KEY_*` 或 Notion Token 等敏感凭证：
-1. **本地加密保险箱（Vault）**：
-   * 采用 AES-256-GCM 高强度加密，主密钥由机器唯一特征结合 PBKDF2（600,000 次）衍生保护；
-   * 凭证安全落盘于 `~/.lingxiagent/credentials.vault`，彻底脱离对系统 Keychain 弹窗或第三方 Shell 环境变量的脆弱依赖。
-2. **双重回退解析机制**：
-   * 运行时解析器在拉取 MCP 环境变量与 Auth Token 时，自动执行**双重兜底**：`本地加密保险箱` ⇄ `当前进程环境变量`。无论从任何终端、桌面启动或非交互环境下执行，均可稳定自洽启动。
-
----
-
-## 🛠️ 统一命令行手册 (`lingxiagent`)
-
-`lingxiagent` 统一编译产物集成了开发、调试、运维全套子命令：
+## 🛠️ 统一命令行运维手册 (`lingxiagent`)
 
 ```bash
-# 1. 启动交互式 TUI 界面
-swift run lingxiagent
-# 或指定工作目录
-swift run lingxiagent --cwd /path/to/project
+# 1. 启动交互式 TUI 终端
+lingxiagent
+lingxiagent -C /path/to/project       # 指定工作目录启动
+lingxiagent -y "运行测试并修复报错"     # YOLO 自动放行模式运行
 
-# 2. 全系统健康体检 (Doctor)
-swift run lingxiagent doctor
+# 2. 全系统健康诊断 (Doctor)
+lingxiagent doctor                    # 一键体检系统环境、沙箱能力、凭据与 MCP
 
-# 3. MCP 服务运维与健康状态探测
-swift run lingxiagent mcp list                  # 查看所有配置服务概览
-swift run lingxiagent mcp status                # 全量在线连通性与工具发现探测
-swift run lingxiagent mcp status <name>         # 单独深度探测指定服务
-swift run lingxiagent mcp login <name>          # 启动 OAuth 2.1 浏览器全自动授权
-swift run lingxiagent mcp auth <name> --bearer <token> # 录入 Bearer Token 存入保险箱
-swift run lingxiagent mcp enable / disable <name>      # 快速启用或禁用指定服务
+# 3. 官方订阅与提供商鉴权管理 (Auth)
+lingxiagent auth list                 # 查看所有 Provider 当前认证状态
+lingxiagent auth login openai-codex   # 登录 OpenAI ChatGPT Plus/Pro (Codex OAuth)
+lingxiagent auth login anthropic-claude-subscription # 登录 Claude Code 订阅
+lingxiagent auth set <KEY> [VALUE]    # 将自定义密钥安全存入本地加密保险箱
+lingxiagent auth matrix               # 查看模型兼容与上下文特性矩阵
 
-# 4. 模型与凭证保险箱管理 (Auth)
-swift run lingxiagent auth list                 # 查看所有 Provider 当前认证状态
-swift run lingxiagent auth status [product]     # 查看模型详情与上下文规格
-swift run lingxiagent auth set <key> [value]    # 将任意自定义凭据安全存入加密保险箱
-swift run lingxiagent auth import-env <NAME>    # 从当前环境抓取变量并写入保险箱
-swift run lingxiagent auth matrix               # 输出全模型特性与协议兼容矩阵
+# 4. MCP 服务运维与健康状态探测 (MCP)
+lingxiagent mcp list                  # 查看已配置的全部 MCP 状态
+lingxiagent mcp status                # 全量在线连通性与工具发现探测
+lingxiagent mcp login <name>          # 启动 RFC 9728 OAuth 2.1 浏览器全自动授权
+lingxiagent mcp enable / disable <name> # 快速启用或禁用指定服务
 
-# 5. 跨目录会话快速恢复
-swift run lingxiagent resume                    # 交互式选择会话
-swift run lingxiagent resume <session-id>       # 直接恢复指定 ID 会话
+# 5. 会话管理与无头执行 (Exec & Resume)
+lingxiagent resume --last             # 恢复上一次未完成的会话
+git diff | lingxiagent exec "代码审查" # 通过管道输入进行无头自动化分析
 ```
 
 ---
 
-## 🛡️ 安全纪律与边界规范
+## 🛡️ 跨平台系统支持与安全规范
 
 LingXiAgent 严格恪守核心纪律准则：
-1. **凭据绝对不可碰**：原始密钥仅在内存中短暂用于建连，绝不进入 Session、AgentRun、上下文、工具归档、协议报文或日志。
-2. **破坏先备份**：任何针对配置文件、数据库与重要代码的破坏性操作前，均自动于工作区进行备份隔离；禁止随意进行无保护的硬清除。
-3. **最小化原则**：非必要勿增依赖，能用系统与现有 Swift 原生能力解决的问题绝不随意引入外部三方包。
-4. **沙箱与权限控制**：
-   * 支持 `Strict`、`Agent`、`YOLO` 权限模式；
-   * 严格实施路径包含校验（Path Containment）、符号链接逃逸检查与版本乐观锁（Optimistic Concurrency Control）。
+1. **凭据绝对不可碰**：原始密钥仅在内存中短暂用于建连，绝不进入 Session、上下文、工具归档、协议报文或日志。
+2. **破坏先备份**：任何针对配置文件、数据库与重要代码的破坏性操作前，均自动于工作区进行备份隔离。
+3. **平台安全防护**：
+   - **macOS (Darwin)**：POSIX 独立进程组隔离、Seatbelt 沙箱 profile、`SecRandomCopyBytes` 密码级强随机数；
+   - **Linux**：集成 Bubblewrap (`bwrap`) 容器命名空间沙箱与只读挂载隔离，`/dev/urandom` 强随机数源；
+   - **Windows**：Win32 控制台虚拟终端 VT100 原生支持，`taskkill /F /T` 级联深度杀灭进程树，严格路径包含防穿透。
 
 ---
 
-## 🧪 构建与测试
+## 🧪 自动化测试套件
 
 ```bash
 # 完整构建所有 Target
 swift build
 
-# 运行全量自动化测试 (包含并发测试、协议契约、三级缓存与 MCP 回放)
+# 运行全量自动化测试 (包含并发测试、协议契约、双核旁路、跨平台抽象与 MCP 回放)
 swift test
 
-# 快速回归核心 MCP 与配置解析测试
-swift test --filter MCP
-swift test --filter Auth
+# 快速运行跨平台与解耦专项测试
+swift test --filter PlatformAbstractionAndDecouplingTests
+swift test --filter ToolRuntimeTests
 ```
 
 ---
 
-LingXiAgent, crafted for effortless coding. 🦊✨
+<p align="center">
+  LingXiAgent, crafted for effortless coding. 🦊✨<br/>
+  <br/>
+  <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" style="color: #71717a; text-decoration: none; font-size: 12px;">ICP备案：苏ICP备2026055395号-1</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32010202012360" target="_blank" rel="noreferrer" style="color: #71717a; text-decoration: none; font-size: 12px;">苏公网安备32010202012360号</a>
+</p>
