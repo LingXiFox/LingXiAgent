@@ -269,9 +269,5 @@ LingXiAgent 采用清晰严密的 **多轨分层许可体系（Multi-Tiered Lice
 ---
 
 <p align="center">
-  LingXiAgent, crafted for effortless coding. 🦊✨<br/>
-  <br/>
-  <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" style="color: #71717a; text-decoration: none; font-size: 12px;">ICP备案：苏ICP备2026055395号-1</a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32010202012360" target="_blank" rel="noreferrer" style="color: #71717a; text-decoration: none; font-size: 12px;">苏公网安备32010202012360号</a>
+  LingXiAgent, crafted for effortless coding. 🦊✨
 </p>
