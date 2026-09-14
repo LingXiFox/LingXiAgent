@@ -6,7 +6,6 @@ import LingXiClient
 import LingXiApplication
 import Testing
 
-@Suite("Background Command System & Watchdog Inspection Tests")
 struct BackgroundCommandTests {
     private func makeTemporaryWorkspace() throws -> (URL, WorkspaceRoot) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-bg-tests-\(UUID().uuidString)")
@@ -15,8 +14,7 @@ struct BackgroundCommandTests {
         return (tempDir, root)
     }
 
-    @Test("Mandatory timeout enforcement rejects missing or zero timeout")
-    func testMandatoryTimeoutEnforcement() async throws {
+    @Test func testMandatoryTimeoutEnforcement() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -48,8 +46,7 @@ struct BackgroundCommandTests {
         }
     }
 
-    @Test("Spawn and poll background task lifecycle with incremental output")
-    func testSpawnAndPollLifecycle() async throws {
+    @Test func testSpawnAndPollLifecycle() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -76,8 +73,7 @@ struct BackgroundCommandTests {
         #expect(pollResult.contains("exited"))
     }
 
-    @Test("Watchdog kills process when timeout_seconds is exceeded")
-    func testWatchdogTimeoutTermination() async throws {
+    @Test func testWatchdogTimeoutTermination() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -101,8 +97,7 @@ struct BackgroundCommandTests {
         #expect(pollResult.contains("timed_out"))
     }
 
-    @Test("Manual termination immediately stops background task")
-    func testManualTermination() async throws {
+    @Test func testManualTermination() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -122,8 +117,7 @@ struct BackgroundCommandTests {
         #expect(termResult.contains("terminated"))
     }
 
-    @Test("Proactive system notices alert when tasks finish and inject cadence reminders")
-    func testProactiveSystemNoticeGeneration() async throws {
+    @Test func testProactiveSystemNoticeGeneration() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -173,8 +167,7 @@ struct BackgroundCommandTests {
         await manager.terminateAll()
     }
 
-    @Test("TerminateAll kills all running tasks and cleans store")
-    func testTerminateAllCleansProcesses() async throws {
+    @Test func testTerminateAllCleansProcesses() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -193,8 +186,7 @@ struct BackgroundCommandTests {
         #expect(after.isEmpty)
     }
 
-    @Test("ShellTool rejects background ampersand patterns and accepts valid commands")
-    func testShellToolRejectsBackgroundAmpersand() async throws {
+    @Test func testShellToolRejectsBackgroundAmpersand() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -219,8 +211,7 @@ struct BackgroundCommandTests {
         #expect(chainResult.contains("a") && chainResult.contains("b"))
     }
 
-    @Test("Tasks command displays categorized running, completed, and failed tasks and details")
-    func testTasksCommandInspectionAndClassification() async throws {
+    @Test func testTasksCommandInspectionAndClassification() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -230,8 +221,9 @@ struct BackgroundCommandTests {
         }
 
         let manager = BackgroundCommandManager()
-        let coreHost = try CoreHost(workspaceRoot: workspace, backgroundManager: manager)
-        let client = try await LingXiClientVNext(transport: InProcessTransport(service: coreHost))
+        let coreHost = try CoreHost(workspaceRoot: workspace, permissionDecision: .allow, backgroundManager: manager)
+        await coreHost.start()
+        let client = try await LingXiClientVNext.connectInProcess(service: coreHost)
         let state = ApplicationState()
 
         // 1. Initial /tasks with empty list
@@ -260,5 +252,43 @@ struct BackgroundCommandTests {
         // 5. Test kill subcmd
         let killResult = try await registry.execute(input: "/tasks kill test-task-1", sessionID: nil, client: client, state: state)
         #expect(killResult.output.contains("已向后台任务 [test-task-1] 发送终止信号"))
+
+        await manager.terminateAll()
+        await client.disconnect()
+        await coreHost.shutdown()
+    }
+
+    @Test func testCoreHostDefaultBackgroundManagerSharingWithoutExternalInjection() async throws {
+        let (tempDir, workspace) = try makeTemporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Initialize CoreHost without passing backgroundManager (default nil in production)
+        let coreHost = try CoreHost(workspaceRoot: workspace, permissionDecision: .allow)
+        await coreHost.start()
+        let client = try await LingXiClientVNext.connectInProcess(service: coreHost)
+
+        // Execute run_background_command via coreHost.toolRuntimeRef
+        let spawnArgs = """
+        {"command": "echo 'singleton-bg-verified'", "timeout_seconds": 15, "task_id": "corehost-bg-singleton-task"}
+        """
+        let toolCall = ToolCall(
+            callID: ToolCallID("call-1"),
+            toolID: ToolID("run_background_command"),
+            arguments: spawnArgs
+        )
+        let execution = await coreHost.toolRuntimeRef.execute(
+            toolCall,
+            sessionID: SessionID("test-session")
+        )
+        #expect(execution.content.contains("corehost-bg-singleton-task"))
+
+        // Query background tasks via Diagnostics RPC
+        let rpcTasks = try await client.diagnostics.getBackgroundTasks()
+        #expect(rpcTasks.contains(where: { $0.id == "corehost-bg-singleton-task" }))
+
+        // Clean up
+        await coreHost.backgroundManagerRef.terminateAll()
+        await client.disconnect()
+        await coreHost.shutdown()
     }
 }

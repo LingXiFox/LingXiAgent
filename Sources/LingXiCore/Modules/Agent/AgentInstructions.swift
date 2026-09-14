@@ -154,7 +154,10 @@ enum AgentBehaviorInstructions {
     - Background Execution Protocol (CRITICAL):
       * When the user requests running commands in the background (e.g. '在后台跑', '移交后台', long processes, watchers, servers, or delay/sleep), or whenever executing long-running operations that should not block the conversation, you MUST call `run_background_command` (specifying mandatory `timeout_seconds`, 1~7200s).
       * NEVER use foreground `shell` to run sleep/delays, daemonize with `&`, or execute blocking commands when asked for background execution.
+      * DO NOT enter a busy-waiting loop calling `manage_background_command(action: 'poll')` repeatedly in the same turn when a task is running.
+      * If a task is still running, IMMEDIATELY inform the user that the task has started in the background (reporting its task ID, timeout, and description) and return control to the user. The runtime will automatically inject system notifications when the background task completes, exits, or produces outputs.
       * You can inspect or manage background tasks using `manage_background_command` (actions: 'poll', 'input', 'terminate', 'list').
+      * The user can monitor or cancel background tasks anytime via the `/tasks` command or status bar in the TUI.
     - Task Planning: For multi-step tasks, investigations, or refactoring, proactively use `todo` (action: 'add') to establish a checklist, and update task status ('in_progress', 'completed', 'failed') as you advance to keep the sidebar updated.
     - Parallel Tool Calling: When you need to read multiple files, inspect directories, grep across files, or perform independent read-only investigations, emit multiple tool calls in parallel within the same turn instead of waiting for sequential round-trips. The runtime executes independent tool calls concurrently.
     - Tool Discovery: Builtin tools are always available for filesystem, grep, and execution. If `search_tools` returns no matches or a diagnostic notice (empty/error), do not retry searching; proceed with builtin tools.

@@ -1364,7 +1364,7 @@ public struct RunBackgroundCommandTool: ToolExecutor {
 
     public let definition = ToolDefinition(
         id: ToolID("run_background_command"),
-        description: "Execute a non-conflicting shell command in the background, freeing the foreground to proceed. MANDATORY: `timeout_seconds` must be specified (e.g. 60-3600); commands without timeout will be strictly rejected.",
+        description: "Execute a non-conflicting shell command in the background, freeing the foreground to proceed. MANDATORY: `timeout_seconds` must be specified (e.g. 60-3600); commands without timeout will be strictly rejected. Note: After launching, do NOT poll repeatedly in the same turn; report task start to user immediately. The system proactively injects status updates when the task finishes.",
         inputSchema: ToolInputSchema(properties: [
             "command": ToolInputProperty(type: .string, description: "Shell command to run in the background"),
             "timeout_seconds": ToolInputProperty(type: .integer, description: "Mandatory timeout in seconds (1 to 7200). Commands without timeout are rejected.", minimum: 1, maximum: 7200),
@@ -1406,7 +1406,7 @@ public struct ManageBackgroundCommandTool: ToolExecutor {
 
     public let definition = ToolDefinition(
         id: ToolID("manage_background_command"),
-        description: "Manage, inspect, supply input to, or terminate running background commands.",
+        description: "Manage, inspect, supply input to, or terminate running background commands. Use action='poll' to inspect output or exit status. If a task is still running, do NOT poll continuously in a busy loop; yield turn and inform the user.",
         inputSchema: ToolInputSchema(properties: [
             "action": ToolInputProperty(type: .string, description: "poll, input, terminate, or list", enumValues: ["poll", "input", "terminate", "list"]),
             "task_id": ToolInputProperty(type: .string, description: "Task ID (required for poll, input, terminate)"),

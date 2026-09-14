@@ -138,7 +138,15 @@ final class ManagedToolProcess: @unchecked Sendable {
     private var stderrDidReachEOF = false
     private var processDidExit = false
     private var exitStatus: Int32?
-    private var waiter: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    deinit {
+        lock.lock()
+        let pending = waiters
+        waiters.removeAll()
+        lock.unlock()
+        pending.forEach { $0.resume() }
+    }
 
     init(invocation: ToolProcessInvocation, cwd: URL, environment: [String: String], lifecycleTrace: ToolLifecycleTrace? = nil) {
         self.lifecycleTrace = lifecycleTrace
@@ -200,7 +208,7 @@ final class ManagedToolProcess: @unchecked Sendable {
                 lock.unlock()
                 continuation.resume()
             } else {
-                waiter = continuation
+                waiters.append(continuation)
                 lock.unlock()
             }
         }
@@ -310,12 +318,12 @@ final class ManagedToolProcess: @unchecked Sendable {
         didFinish = true
         let pid = process.processIdentifier
         let status = exitStatus ?? process.terminationStatus
-        let continuation = waiter
-        waiter = nil
+        let pending = waiters
+        waiters.removeAll()
         lock.unlock()
 
         lifecycleTrace?.record(.processExited, processPID: pid, exitCode: status)
-        continuation?.resume()
+        pending.forEach { $0.resume() }
     }
 }
 

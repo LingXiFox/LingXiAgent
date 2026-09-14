@@ -15,6 +15,7 @@ final class BackgroundTaskRecord: @unchecked Sendable {
     var hasBeenObserved: Bool
     let process: ManagedToolProcess
     var timeoutTask: Task<Void, Never>?
+    var watchExitTask: Task<Void, Never>?
     var cachedExitCode: Int32?
 
     init(
@@ -111,6 +112,12 @@ public actor BackgroundCommandManager {
             await self?.handleTimeout(taskID: taskID, expectedRecord: record)
         }
 
+        record.watchExitTask = Task { [weak self, weak record, taskID] in
+            await record?.process.waitForExit()
+            guard !Task.isCancelled else { return }
+            await self?.handleProcessExit(taskID: taskID, expectedRecord: record)
+        }
+
         tasks[taskID] = record
         taskOrder.append(taskID)
 
@@ -121,10 +128,17 @@ public actor BackgroundCommandManager {
         guard let record = tasks[taskID], record === expectedRecord, record.status == .running else { return }
         record.status = .timedOut
         record.completedAt = Date()
+        record.watchExitTask?.cancel()
+        record.watchExitTask = nil
         record.process.terminate(timedOut: true)
         if let pid = record.process.snapshot(id: taskID, stdoutCursor: nil, stderrCursor: nil).pid {
             LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
         }
+    }
+
+    private func handleProcessExit(taskID: String, expectedRecord: BackgroundTaskRecord?) {
+        guard let record = tasks[taskID], record === expectedRecord, record.status == .running else { return }
+        updateStatusIfExited(record)
     }
 
     public func poll(id: String, stdoutCursor: Int? = nil, stderrCursor: Int? = nil) throws -> BackgroundTaskSnapshot {
@@ -158,6 +172,8 @@ public actor BackgroundCommandManager {
             record.completedAt = Date()
             record.timeoutTask?.cancel()
             record.timeoutTask = nil
+            record.watchExitTask?.cancel()
+            record.watchExitTask = nil
             record.process.terminate()
             if let pid = record.process.snapshot(id: id, stdoutCursor: nil, stderrCursor: nil).pid {
                 LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
@@ -179,6 +195,8 @@ public actor BackgroundCommandManager {
             guard let record = tasks[id] else { continue }
             record.timeoutTask?.cancel()
             record.timeoutTask = nil
+            record.watchExitTask?.cancel()
+            record.watchExitTask = nil
             if record.status == .running {
                 record.status = .terminated
                 record.completedAt = Date()
@@ -256,6 +274,8 @@ public actor BackgroundCommandManager {
             record.cachedExitCode = procSnap.exitCode
             record.timeoutTask?.cancel()
             record.timeoutTask = nil
+            record.watchExitTask?.cancel()
+            record.watchExitTask = nil
         }
     }
 

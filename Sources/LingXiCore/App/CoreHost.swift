@@ -262,7 +262,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.cacheController = cacheController
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
         toolRuntime = ToolRuntime(
-            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:))),
+            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, backgroundManager: bgManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:))),
             permissions: permissions,
             mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
             outputArchive: ToolOutputArchive(persistence: persistent),
@@ -542,7 +542,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             deadlinePolicy: executionDeadlinePolicy,
             restoreScheduler: restoreScheduler,
             diagnostics: diagnosticsStore,
-            backgroundManager: backgroundManager
+            backgroundManager: self.backgroundManager
         )
         self.agent = agent
         let workflows = await agent.makeWorkflowRuntime()
