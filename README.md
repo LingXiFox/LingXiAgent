@@ -69,6 +69,13 @@ irm https://agent.lingxifox.cn/install.ps1 | iex
 * **⌨️ 现代终端编辑与历史健壮水合**：
   * 输入框支持 `Left / Right / Home / End / Up / Down` 字符级精准光标导航；
   * 支持 `/new` 快速新建会话与跨工作区 `/resume` 断点续存，具备历史消息就地去重与空时间线兜底水合能力。
+* **🤝 开放编辑器标准协议支持 (ACP - Agent Client Protocol)**：
+  * 原生实现标准 ACP 协议（JSON-RPC 2.0 over Stdio），支持 `initialize`、`session/new`、`session/load`、`session/prompt` 与 `session/cancel`；
+  * 可直接作为 Agent 后端接入 **Zed IDE**、**JetBrains** 与 **Neovim** 等现代编辑器，后台双向流式转送文本增量、思考流与工具交互。
+* **🔍 多语言 LSP 代码智能语义矩阵 (Language Server Protocol)**：
+  * 内置跨平台语言服务器编排器（`LSPCoordinator`），涵盖 **Swift** (`sourcekit-lsp`)、**Python** (`pyright`/`pylsp`)、**TypeScript/JavaScript** (`vtsls`/`typescript-language-server`)、**Rust** (`rust-analyzer`)、**Go** (`gopls`)、**C/C++** (`clangd`)；
+  * 为 Agent 提供 `definitions`、`references`、`document_symbols`、`diagnostics`、`hover`、`completion` 六大精确代码语义能力；
+  * 具备实时文件同步与环境平滑降级（LSP 未安装或崩溃时安全回退至正则与 Index 引擎），保障 Agent 稳定可靠。
 * **🔒 本地加密保险箱 (Vault)**：
   * 采用 AES-256-GCM 高强度加密，凭据安全落盘于本地保险箱；
   * 支持 `本地加密保险箱` ⇄ `当前进程环境变量` 双重自动回退。
@@ -232,6 +239,29 @@ lingxiagent mcp enable / disable <name> # 快速启用或禁用指定服务
 # 5. 会话管理与无头执行 (Exec & Resume)
 lingxiagent resume --last             # 恢复上一次未完成的会话
 git diff | lingxiagent exec "代码审查" # 通过管道输入进行无头自动化分析
+
+# 6. ACP 模式运行 (用于 Zed / JetBrains / IDE 集成)
+lingxiagent acp                       # 以 Agent Client Protocol 标准服务端启动 (Stdio JSON-RPC 2.0)
+```
+
+#### 接入 Zed IDE (ACP 标准支持)
+在 Zed 的 `settings.json` 中配置外部 Assistant：
+```json
+{
+  "assistant": {
+    "version": "2",
+    "default_model": {
+      "provider": "acp",
+      "model": "LingXiAgent"
+    },
+    "providers": {
+      "acp": {
+        "command": "lingxiagent",
+        "args": ["acp"]
+      }
+    }
+  }
+}
 ```
 
 ---

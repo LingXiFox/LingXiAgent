@@ -365,9 +365,9 @@
           <div class="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-4 text-xl">
             🛠️
           </div>
-          <h3 class="text-lg font-bold text-white mb-2">全栈原生工具链与 MCP 生态</h3>
+          <h3 class="text-lg font-bold text-white mb-2">多语言 LSP、ACP 编辑器标准与 MCP 生态</h3>
           <p class="text-sm text-zinc-400 leading-relaxed">
-            内置精准代码 Patch、全局符号检索、沙箱终端指令执行与上下文折叠。原生兼容 Anthropic Model Context Protocol (MCP)，一键载入任何工具与工作流。
+            内置 Swift、Python、TS、Rust、Go、C++ 语言服务器（LSP）编排器与精准语义操作；原生实现 ACP 协议直连 Zed IDE；全功能兼容 MCP 生态与 Skills 扩展。
           </p>
         </div>
 
@@ -692,16 +692,33 @@
             </div>
           </article>
 
-          <!-- 5. MCP & Extensions -->
+          <!-- 5. ACP, LSP & MCP Extensions -->
           <article id="docs-mcp-extensions" class="glass-card rounded-2xl p-8 border border-zinc-800">
             <h3 class="text-2xl font-bold text-white mb-4 flex items-center space-x-2">
               <span class="text-purple-400">#</span>
-              <span>5. 扩展能力与 MCP 协议 (Extensions & MCP)</span>
+              <span>5. 开放标准：ACP、LSP 与 MCP (Protocols & Extensions)</span>
             </h3>
-            <p class="text-zinc-300 text-sm leading-relaxed mb-6">
-              LingXiAgent 具备完整的 Model Context Protocol (MCP) 支持，可以一键连接数据库、浏览器自动化、文档分析及各类自定义微服务。
+            <p class="text-zinc-300 text-sm leading-relaxed mb-4">
+              LingXiAgent 全面拥抱开放标准生态，原生支持 Agent Client Protocol (ACP)、Language Server Protocol (LSP) 以及 Model Context Protocol (MCP)。
             </p>
-            <h4 class="text-base font-semibold text-zinc-200 mb-2">配置文件 (~/.lingxiagent/mcp.json)</h4>
+
+            <h4 class="text-base font-semibold text-zinc-200 mb-2">⚡ 接入 Zed IDE (ACP 标准协议模式)</h4>
+            <p class="text-zinc-400 text-xs mb-2">
+              执行 <code class="text-purple-300">lingxiagent acp</code> 启动通用 Agent 后端服务。在 Zed 的 <code class="text-zinc-300">settings.json</code> 中配置：
+            </p>
+            <div class="bg-black/60 rounded-xl p-4 font-mono text-xs text-zinc-300 border border-zinc-800 overflow-x-auto mb-6">
+<pre>{
+  "assistant": {
+    "version": "2",
+    "default_model": { "provider": "acp", "model": "LingXiAgent" },
+    "providers": {
+      "acp": { "command": "lingxiagent", "args": ["acp"] }
+    }
+  }
+}</pre>
+            </div>
+
+            <h4 class="text-base font-semibold text-zinc-200 mb-2">🔌 MCP 服务器配置 (~/.lingxiagent/mcp.json)</h4>
             <div class="bg-black/60 rounded-xl p-4 font-mono text-xs text-zinc-300 border border-zinc-800 overflow-x-auto">
 <pre>{
   "mcpServers": {

@@ -140,7 +140,7 @@
             <a href="#tool-edit-patch" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">edit_file / patch (精确替换)</a>
             <a href="#tool-search" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">grep_search / find_by_name</a>
             <a href="#tool-question" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">ask_question (交互问答上浮)</a>
-            <a href="#tool-symbol" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">symbol_intelligence (代码智能)</a>
+            <a href="#tool-symbol" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">code_intelligence (LSP 语义矩阵)</a>
           </nav>
         </div>
 
@@ -153,10 +153,11 @@
           </nav>
         </div>
 
-        <!-- Category: MCP 与 Skills 扩展生态 -->
+        <!-- Category: 协议与扩展生态 -->
         <div>
-          <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">🔌 扩展生态</div>
+          <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">🔌 协议与扩展生态</div>
           <nav class="space-y-0.5 text-xs">
+            <a href="#protocol-acp" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">ACP 协议与 Zed / IDE 集成</a>
             <a href="#mcp-ecosystem" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">MCP 运行时 (stdio / HTTP)</a>
             <a href="#skills-ecosystem" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">Skills 技能体系 (SKILL.md)</a>
           </nav>
@@ -506,6 +507,104 @@
         </p>
       </article>
 
+      <!-- Section: code_intelligence (LSP 语义矩阵) -->
+      <article id="tool-symbol" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Language Server Protocol</span>
+          <h2 class="text-2xl font-bold text-white mt-1">code_intelligence：多语言 LSP 语义能力矩阵</h2>
+        </div>
+
+        <div class="space-y-4 text-xs text-zinc-300 leading-relaxed">
+          <p>
+            LingXiAgent 内置强大的<strong>多语言 LSP 编排器（LSPCoordinator）</strong>，通过标准的 Language Server Protocol（Stdio JSON-RPC）与系统安装的代码语言服务器进行异步通信，为 Agent 提供精准的代码定义、引用跳转、符号表查询、编译期诊断、Hover 文档与智能补全能力。
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 my-4">
+            <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800">
+              <div class="text-purple-400 font-bold font-mono">Swift</div>
+              <div class="text-zinc-400 text-[11px] mt-1">sourcekit-lsp (Xcode / Linux toolchain)</div>
+            </div>
+            <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800">
+              <div class="text-purple-400 font-bold font-mono">Python</div>
+              <div class="text-zinc-400 text-[11px] mt-1">pyright-langserver / basedpyright / pylsp</div>
+            </div>
+            <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800">
+              <div class="text-purple-400 font-bold font-mono">TypeScript / JS</div>
+              <div class="text-zinc-400 text-[11px] mt-1">vtsls / typescript-language-server</div>
+            </div>
+            <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800">
+              <div class="text-purple-400 font-bold font-mono">Rust</div>
+              <div class="text-zinc-400 text-[11px] mt-1">rust-analyzer (Cargo ecosystem)</div>
+            </div>
+            <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800">
+              <div class="text-purple-400 font-bold font-mono">Go</div>
+              <div class="text-zinc-400 text-[11px] mt-1">gopls (Go tools)</div>
+            </div>
+            <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800">
+              <div class="text-purple-400 font-bold font-mono">C / C++</div>
+              <div class="text-zinc-400 text-[11px] mt-1">clangd (LLVM tooling)</div>
+            </div>
+          </div>
+
+          <h3 class="text-sm font-semibold text-zinc-100 pt-2">支持的六大精确语义 Action</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse border border-zinc-800 text-[11px]">
+              <thead>
+                <tr class="bg-zinc-900 text-zinc-300">
+                  <th class="p-2 border border-zinc-800 font-mono">Action</th>
+                  <th class="p-2 border border-zinc-800">LSP 规范方法</th>
+                  <th class="p-2 border border-zinc-800">入参规格</th>
+                  <th class="p-2 border border-zinc-800">能力描述与容灾机制</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-zinc-800 text-zinc-400">
+                <tr>
+                  <td class="p-2 font-mono text-purple-300">definition</td>
+                  <td class="p-2 font-mono text-zinc-500">textDocument/definition</td>
+                  <td class="p-2 font-mono">path, line, character</td>
+                  <td class="p-2">获取目标符号在全工程的精确定义位置与源码切片</td>
+                </tr>
+                <tr>
+                  <td class="p-2 font-mono text-purple-300">references</td>
+                  <td class="p-2 font-mono text-zinc-500">textDocument/references</td>
+                  <td class="p-2 font-mono">path, line, character</td>
+                  <td class="p-2">跨文件查找引用调用方，用于安全重构与影响面分析</td>
+                </tr>
+                <tr>
+                  <td class="p-2 font-mono text-purple-300">document_symbols</td>
+                  <td class="p-2 font-mono text-zinc-500">textDocument/documentSymbol</td>
+                  <td class="p-2 font-mono">path</td>
+                  <td class="p-2">返回单文件符号语法树（Class, Struct, Function, Enum 等）</td>
+                </tr>
+                <tr>
+                  <td class="p-2 font-mono text-purple-300">diagnostics</td>
+                  <td class="p-2 font-mono text-zinc-500">textDocument/publishDiagnostics</td>
+                  <td class="p-2 font-mono">path</td>
+                  <td class="p-2">获取编译器即时语法/类型报错与警告提示</td>
+                </tr>
+                <tr>
+                  <td class="p-2 font-mono text-purple-300">hover</td>
+                  <td class="p-2 font-mono text-zinc-500">textDocument/hover</td>
+                  <td class="p-2 font-mono">path, line, character</td>
+                  <td class="p-2">获取符号的类型签名、DocString 及 Markdown 文档</td>
+                </tr>
+                <tr>
+                  <td class="p-2 font-mono text-purple-300">completion</td>
+                  <td class="p-2 font-mono text-zinc-500">textDocument/completion</td>
+                  <td class="p-2 font-mono">path, line, character</td>
+                  <td class="p-2">获取当前上下文的代码补全候选项与方法补全建议</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-3 bg-purple-950/20 border border-purple-800/40 rounded-xl text-purple-300 text-[11px] flex gap-2 items-start mt-3">
+            <span class="text-base">🛡️</span>
+            <div><strong>优雅平滑降级保障：</strong>当目标语言的 LSP Server 未在宿主机安装或偶发崩溃退出时，LSPCoordinator 会静默自动降级至基于 AST 正则与 Project Index 缓存分析，绝不中断 Agent 正常任务执行流程。</div>
+          </div>
+        </div>
+      </article>
+
       <!-- Section: 官方订阅与通用模型 -->
       <article id="models-oauth" class="scroll-mt-20">
         <div class="border-b border-zinc-800 pb-4 mb-6">
@@ -526,6 +625,56 @@
             <div class="pt-2"><span class="text-zinc-500"># 查看当前所有提供商状态与配额</span></div>
             <div><span class="text-purple-400">$ </span>lingxiagent auth status</div>
           </div>
+        </div>
+      </article>
+
+      <!-- Section: ACP 协议与编辑器集成 -->
+      <article id="protocol-acp" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Agent Client Protocol</span>
+          <h2 class="text-2xl font-bold text-white mt-1">ACP 协议支持与 Zed / IDE 集成</h2>
+        </div>
+
+        <div class="space-y-4 text-xs text-zinc-300 leading-relaxed">
+          <p>
+            LingXiAgent 完整支持<strong>Agent Client Protocol (ACP)</strong>——现代编辑器（如 Zed IDE、JetBrains、Neovim 等）与自主编程智能体通信的开放行业标准协议。
+          </p>
+
+          <h3 class="text-sm font-semibold text-zinc-100 pt-2">启动 ACP 服务端模式</h3>
+          <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono space-y-2">
+            <div><span class="text-zinc-500"># 启动标准 ACP 服务端（基于 Stdio 的 JSON-RPC 2.0 双工通信）</span></div>
+            <div><span class="text-purple-400">$ </span>lingxiagent acp</div>
+          </div>
+
+          <h3 class="text-sm font-semibold text-zinc-100 pt-2">在 Zed IDE 中配置 LingXiAgent</h3>
+          <p class="text-zinc-400">
+            打开 Zed 编辑器设置文件（<code class="text-zinc-300">~/.config/zed/settings.json</code>），在 <code class="text-purple-300">assistant</code> 字段中配置外部 ACP 提供商：
+          </p>
+          <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono text-xs text-zinc-300 overflow-x-auto">
+<pre>{
+  <span class="text-purple-300">"assistant"</span>: {
+    <span class="text-purple-300">"version"</span>: <span class="text-emerald-400">"2"</span>,
+    <span class="text-purple-300">"default_model"</span>: {
+      <span class="text-purple-300">"provider"</span>: <span class="text-emerald-400">"acp"</span>,
+      <span class="text-purple-300">"model"</span>: <span class="text-emerald-400">"LingXiAgent"</span>
+    },
+    <span class="text-purple-300">"providers"</span>: {
+      <span class="text-purple-300">"acp"</span>: {
+        <span class="text-purple-300">"command"</span>: <span class="text-emerald-400">"lingxiagent"</span>,
+        <span class="text-purple-300">"args"</span>: [<span class="text-emerald-400">"acp"</span>]
+      }
+    }
+  }
+}</pre>
+          </div>
+
+          <h3 class="text-sm font-semibold text-zinc-100 pt-2">支持的 ACP 标准指令集</h3>
+          <ul class="list-disc pl-5 space-y-1.5 text-zinc-400">
+            <li><code class="text-purple-300">initialize</code>：握手协商协议版本（<code class="text-zinc-300">2024-11-05</code>）与特性声明（streaming, modes, loadSession）。</li>
+            <li><code class="text-purple-300">session/new</code>：在指定工作目录（cwd）创建全新的会话上下文。</li>
+            <li><code class="text-purple-300">session/prompt</code>：向 Agent 提交 Prompt 任务；后台自动通过 <code class="text-purple-300">session/update</code> 实时流式推送思考块（thoughtChunk）、文本增量（textDelta）与工具调用。</li>
+            <li><code class="text-purple-300">session/cancel</code>：响应用户取消操作，秒级中断正在执行的模型推理与底层进程树。</li>
+          </ul>
         </div>
       </article>
 
@@ -632,7 +781,9 @@
           <a href="#tool-edit-patch" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">edit/patch 修补</a>
           <a href="#tool-search" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">搜索与定位</a>
           <a href="#tool-question" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">交互决策上浮</a>
+          <a href="#tool-symbol" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">LSP 代码语义矩阵</a>
           <a href="#models-oauth" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">官方订阅直连</a>
+          <a href="#protocol-acp" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">ACP 协议与 Zed</a>
           <a href="#tui-shortcuts" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">快捷键速查</a>
           <a href="#cross-platform" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">跨平台适配指南</a>
         </nav>

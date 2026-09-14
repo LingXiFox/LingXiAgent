@@ -26,8 +26,9 @@ public struct LSPLanguageConfig: Sendable {
 
     /// 预置的主流编程语言支持矩阵
     public static var builtinConfigurations: [LSPLanguageConfig] {
-        let env = ProcessInfo.processInfo.environment
         var swiftCustomPaths: [String] = []
+        #if os(macOS)
+        let env = ProcessInfo.processInfo.environment
         if let devDir = env["DEVELOPER_DIR"] {
             swiftCustomPaths.append("\(devDir)/Toolchains/XcodeDefault.xctoolchain/usr/bin")
         }
@@ -37,6 +38,13 @@ public struct LSPLanguageConfig: Sendable {
             "/usr/bin",
             "/usr/local/bin"
         ])
+        #else
+        swiftCustomPaths.append(contentsOf: [
+            "/usr/bin",
+            "/usr/local/bin",
+            "/usr/lib/swift/bin"
+        ])
+        #endif
 
         return [
             // 1. Swift
