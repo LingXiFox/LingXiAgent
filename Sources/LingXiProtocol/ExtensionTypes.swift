@@ -56,5 +56,23 @@ public struct ExtensionCommandExecutionResult: Sendable, Equatable, Codable {
         self.presentation = presentation
         self.title = title
     }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case output
+        case isPrompt
+        case presentation
+        case title
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.output = try container.decode(String.self, forKey: .output)
+        self.isPrompt = try container.decode(Bool.self, forKey: .isPrompt)
+        self.presentation = try container.decodeIfPresent(String.self, forKey: .presentation) ?? "modal"
+        self.title = try container.decodeIfPresent(String.self, forKey: .title)
+    }
 }
+
 

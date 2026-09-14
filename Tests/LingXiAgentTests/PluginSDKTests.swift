@@ -244,6 +244,40 @@ struct PluginSDKTests {
         )
         #expect(!pluginsRes.output.isEmpty)
     }
+
+    @Test func backwardCompatibleDecodingWithoutPresentationField() throws {
+        // 验证旧插件或报文中不含 presentation 字段时，PluginCommandCallResult 正确降级为 "modal"
+        let legacyCallResultJSON = """
+        {
+            "isPrompt": false,
+            "text": "Hello legacy plugin",
+            "title": "Legacy Title"
+        }
+        """.data(using: .utf8)!
+
+        let callResult = try JSONDecoder().decode(PluginCommandCallResult.self, from: legacyCallResultJSON)
+        #expect(callResult.isPrompt == false)
+        #expect(callResult.text == "Hello legacy plugin")
+        #expect(callResult.presentation == "modal")
+        #expect(callResult.title == "Legacy Title")
+
+        // 验证 ExtensionCommandExecutionResult 同样平滑容错
+        let legacyExecResultJSON = """
+        {
+            "name": "fox-info",
+            "output": "Some legacy output",
+            "isPrompt": false
+        }
+        """.data(using: .utf8)!
+
+        let execResult = try JSONDecoder().decode(ExtensionCommandExecutionResult.self, from: legacyExecResultJSON)
+        #expect(execResult.name == "fox-info")
+        #expect(execResult.output == "Some legacy output")
+        #expect(execResult.isPrompt == false)
+        #expect(execResult.presentation == "modal")
+        #expect(execResult.title == nil)
+    }
 }
+
 
 
