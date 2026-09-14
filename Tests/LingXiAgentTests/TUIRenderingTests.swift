@@ -56,6 +56,18 @@ struct TUIRenderingTests {
         let rendered = composer.render(width: 8)
         #expect(rendered.lines.count > 1)
         #expect(rendered.cursor != nil)
+
+        let nav = ChatComposer()
+        nav.setText("hello")
+        let endRender = nav.render(width: 40)
+        #expect(endRender.cursor?.x == 7) // 2 prefix + 5 chars
+        _ = nav.handle(.left)
+        _ = nav.handle(.left)
+        let middleRender = nav.render(width: 40)
+        #expect(middleRender.cursor?.x == 5) // 2 prefix + 3 chars
+        _ = nav.handle(.home)
+        let homeRender = nav.render(width: 40)
+        #expect(homeRender.cursor?.x == 2) // 2 prefix + 0 chars
     }
 
     @Test func composerPreservesHistoryAtInputBoundaries() {

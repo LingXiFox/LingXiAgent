@@ -474,6 +474,14 @@ public enum TUIWrapping {
                             if i < current.count { col += max(1, TUIDisplayWidth.width(of: current[i])) }
                         }
                         cursorColumn = col
+                    } else if let cursor, cursor > spaceEndIndex, cursor <= index {
+                        cursorLine = result.count + 1
+                        var col = 0
+                        let offset = cursor - (spaceEndIndex + 1)
+                        for i in 0..<offset {
+                            if i < carriedChars.count { col += max(1, TUIDisplayWidth.width(of: carriedChars[i])) }
+                        }
+                        cursorColumn = col
                     }
                     flush(lineEndIndex: spaceEndIndex + 1)
                     cursorIndex = spaceEndIndex + 1
@@ -484,10 +492,13 @@ public enum TUIWrapping {
                     lastSpaceInCurrent = nil
                     lastSpaceOrigIndex = nil
                 } else {
-                    if let cursor, cursor >= cursorIndex, cursor <= index { cursorLine = result.count; cursorColumn = currentWidth }
                     flush(lineEndIndex: index)
                     cursorIndex = index
                 }
+            }
+            if cursor == index {
+                cursorLine = result.count
+                cursorColumn = currentWidth
             }
             if character == " " {
                 lastSpaceInCurrent = current.count
@@ -496,7 +507,10 @@ public enum TUIWrapping {
             current.append(character)
             currentWidth += characterWidth
         }
-        if let cursor, cursor >= cursorIndex { cursorLine = result.count; cursorColumn = currentWidth }
+        if let cursor, cursor == characters.count || cursorLine == nil {
+            cursorLine = result.count
+            cursorColumn = currentWidth
+        }
         result.append(TUIWrappedLine(text: String(current), cursorColumn: nil, startIndex: lineStartIndex, endIndex: characters.count))
         if let cursorLine, let cursorColumn, result.indices.contains(cursorLine) {
             let existing = result[cursorLine]

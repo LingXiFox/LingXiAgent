@@ -42,6 +42,10 @@ public actor SessionTurnCoordinator {
     public func hydrateHistoricalMessages(_ messages: [Message]) async {
         guard turns.isEmpty, !messages.isEmpty else { return }
 
+        // 检查 eventLog 是否已从持久化存储（events.jsonl）加载过历史事件；若是，则内存水合只恢复 turns/tools，绝不重复写入 eventLog
+        let existingEvents = await eventLog.recentEvents(count: 1)
+        let hasExistingEvents = !existingEvents.isEmpty
+
         // 预先建立 callID 到 toolResult 的全局索引，杜绝历史工具水合产生孤儿悬空 running 状态
         var toolResultsByCallID: [ToolCallID: ToolResult] = [:]
         for msg in messages {
@@ -86,9 +90,11 @@ public actor SessionTurnCoordinator {
                 )
                 turns[tID] = turnSnap
 
-                let turnCausal = CausalContext(sessionID: sessionID, turnID: tID)
-                await eventLog.append(causal: turnCausal, payload: .turnCreated(turnSnap))
-                await eventLog.append(causal: turnCausal, payload: .userMessageCommitted(snap))
+                if !hasExistingEvents {
+                    let turnCausal = CausalContext(sessionID: sessionID, turnID: tID)
+                    await eventLog.append(causal: turnCausal, payload: .turnCreated(turnSnap))
+                    await eventLog.append(causal: turnCausal, payload: .userMessageCommitted(snap))
+                }
 
             case .assistant:
                 var textContent = ""
@@ -106,43 +112,46 @@ public actor SessionTurnCoordinator {
                             state: hasResult ? .completed : .cancelled
                         )
                         toolInvocations[tc.callID] = invocation
-                        await eventLog.append(causal: causal, payload: .toolRequested(invocation))
-                        if let res = toolResultsByCallID[tc.callID] {
-                            let summaryText = res.summary.isEmpty ? (res.content.count > 100 ? String(res.content.prefix(100)) + "..." : res.content) : res.summary
-                            let resSnap = ToolResultSnapshot(
-                                callID: res.callID,
-                                toolName: res.toolName,
-                                success: res.success,
-                                summary: summaryText
-                            )
-                            await eventLog.append(causal: causal, payload: .toolCompleted(
-                                callID: res.callID,
-                                result: resSnap,
-                                stdoutFinalIndex: nil,
-                                stderrFinalIndex: nil
-                            ))
-                            completedCallIDs.insert(tc.callID)
-                        } else {
-                            await eventLog.append(causal: causal, payload: .toolCancelled(
-                                callID: tc.callID,
-                                stdoutFinalIndex: nil,
-                                stderrFinalIndex: nil
-                            ))
-                            completedCallIDs.insert(tc.callID)
+                        if !hasExistingEvents {
+                            await eventLog.append(causal: causal, payload: .toolRequested(invocation))
+                            if let res = toolResultsByCallID[tc.callID] {
+                                let summaryText = res.summary.isEmpty ? (res.content.count > 100 ? String(res.content.prefix(100)) + "..." : res.content) : res.summary
+                                let resSnap = ToolResultSnapshot(
+                                    callID: res.callID,
+                                    toolName: res.toolName,
+                                    success: res.success,
+                                    summary: summaryText
+                                )
+                                await eventLog.append(causal: causal, payload: .toolCompleted(
+                                    callID: res.callID,
+                                    result: resSnap,
+                                    stdoutFinalIndex: nil,
+                                    stderrFinalIndex: nil
+                                ))
+                            } else {
+                                await eventLog.append(causal: causal, payload: .toolCancelled(
+                                    callID: tc.callID,
+                                    stdoutFinalIndex: nil,
+                                    stderrFinalIndex: nil
+                                ))
+                            }
                         }
+                        completedCallIDs.insert(tc.callID)
                     case .toolResult:
                         break
                     }
                 }
-                if !textContent.isEmpty || !msg.parts.isEmpty {
-                    await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
-                        messageID: msg.id,
-                        content: textContent,
-                        assistantFinalIndex: 0
-                    ))
-                }
-                if let tID = currentTurnID {
-                    await eventLog.append(causal: causal, payload: .turnCompleted(turnID: tID, terminalReason: .completed))
+                if !hasExistingEvents {
+                    if !textContent.isEmpty || !msg.parts.isEmpty {
+                        await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
+                            messageID: msg.id,
+                            content: textContent,
+                            assistantFinalIndex: 0
+                        ))
+                    }
+                    if let tID = currentTurnID {
+                        await eventLog.append(causal: causal, payload: .turnCompleted(turnID: tID, terminalReason: .completed))
+                    }
                 }
 
             case .tool:
@@ -155,12 +164,14 @@ public actor SessionTurnCoordinator {
                             success: res.success,
                             summary: summaryText
                         )
-                        await eventLog.append(causal: causal, payload: .toolCompleted(
-                            callID: res.callID,
-                            result: resSnap,
-                            stdoutFinalIndex: nil,
-                            stderrFinalIndex: nil
-                        ))
+                        if !hasExistingEvents {
+                            await eventLog.append(causal: causal, payload: .toolCompleted(
+                                callID: res.callID,
+                                result: resSnap,
+                                stdoutFinalIndex: nil,
+                                stderrFinalIndex: nil
+                            ))
+                        }
                         completedCallIDs.insert(res.callID)
                     }
                 }

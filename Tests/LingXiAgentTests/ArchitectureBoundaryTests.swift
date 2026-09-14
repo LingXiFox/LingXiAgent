@@ -23,8 +23,8 @@ struct ArchitectureBoundaryTests {
 
     @Test func packageAndImportsPreserveClientBoundary() throws {
         let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
-        #expect(package.contains(#".target(name: "LingXiClient", dependencies: ["LingXiProtocol"])"#))
-        #expect(package.contains(#"dependencies: ["LingXiClient", "LingXiProtocol"]"#))
+        #expect(package.contains(#".target(name: "LingXiClient", dependencies: ["LingXiProtocol", "LingXiPlatform"])"#))
+        #expect(package.contains(#"dependencies: ["LingXiClient", "LingXiProtocol", "LingXiPlatform"]"#))
         for directory in ["Sources/LingXiClient", "Sources/LingXiTUI"] {
             for file in try swiftFiles(in: root.appendingPathComponent(directory)) {
                 let imports = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").filter { $0.hasPrefix("import ") }

@@ -2398,6 +2398,7 @@ extension CoreHost {
         }
         cancelActiveTurnTasks(for: envelope.payload.sessionID)
         await agent?.cancelSession(envelope.payload.sessionID)
+        await backgroundManager.terminateAll()
         let coord = try await coordinator(for: envelope.payload.sessionID)
         try await coord.cancelTurn(turnID: envelope.payload.turnID)
         let watermark = await coord.eventLog.currentWatermark()
@@ -2442,6 +2443,7 @@ extension CoreHost {
         }
         cancelActiveTurnTask(runID: envelope.payload.runID)
         await agent?.cancelSession(envelope.payload.sessionID)
+        await backgroundManager.terminateAll()
         let coord = try await coordinator(for: envelope.payload.sessionID)
         let nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
         try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))

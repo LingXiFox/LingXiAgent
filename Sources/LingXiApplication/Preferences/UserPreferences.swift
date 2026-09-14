@@ -15,19 +15,22 @@ public struct UserPreferences: Codable, Sendable, Equatable {
     public var expandThinking: Bool?
     public var expandTools: Bool?
     public var showSidebar: Bool?
+    public var lastPermissionConfiguration: String?
 
     public init(
         lastModelID: String? = nil,
         lastReasoningEffort: String? = nil,
         expandThinking: Bool? = nil,
         expandTools: Bool? = nil,
-        showSidebar: Bool? = nil
+        showSidebar: Bool? = nil,
+        lastPermissionConfiguration: String? = nil
     ) {
         self.lastModelID = lastModelID
         self.lastReasoningEffort = lastReasoningEffort
         self.expandThinking = expandThinking
         self.expandTools = expandTools
         self.showSidebar = showSidebar
+        self.lastPermissionConfiguration = lastPermissionConfiguration
     }
 }
 
@@ -94,7 +97,8 @@ public final class UserPreferencesStore: @unchecked Sendable {
         reasoningEffort: String? = nil,
         expandThinking: Bool? = nil,
         expandTools: Bool? = nil,
-        showSidebar: Bool? = nil
+        showSidebar: Bool? = nil,
+        permissionConfiguration: String? = nil
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -118,6 +122,10 @@ public final class UserPreferencesStore: @unchecked Sendable {
         }
         if let showSidebar, current.showSidebar != showSidebar {
             current.showSidebar = showSidebar
+            changed = true
+        }
+        if let permissionConfiguration, !permissionConfiguration.isEmpty, current.lastPermissionConfiguration != permissionConfiguration {
+            current.lastPermissionConfiguration = permissionConfiguration
             changed = true
         }
         if changed {

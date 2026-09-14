@@ -132,6 +132,7 @@
           <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">🛠️ 内置工具链</div>
           <nav class="space-y-0.5 text-xs">
             <a href="#tool-shell" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">shell (沙箱执行与看门狗)</a>
+            <a href="#tool-background" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">后台任务与智能休眠联动</a>
             <a href="#tool-file-ops" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">read_file / write_file (版本锁)</a>
             <a href="#tool-edit-patch" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">edit_file / patch (精确替换)</a>
             <a href="#tool-search" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">grep_search / find_by_name</a>
@@ -418,6 +419,26 @@
         </div>
       </article>
 
+      <!-- Section: 后台命令异步执行与模型休眠联动 -->
+      <article id="tool-background" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Built-in Tools</span>
+          <h2 class="text-2xl font-bold text-white mt-1">后台异步任务与模型休眠联动</h2>
+        </div>
+
+        <div class="space-y-4 text-xs text-zinc-300 leading-relaxed">
+          <p>
+            针对长时间编译、测试套件运行或持续服务探活，LingXiAgent 原生提供了<strong>后台命令异步执行引擎</strong>与<strong>智能休眠挂起唤醒机制</strong>：
+          </p>
+          <ul class="list-disc pl-5 space-y-2 text-zinc-400">
+            <li><strong class="text-zinc-200">run_background_command</strong>：启动异步后台任务（必须显式配置有效超时时间 <code class="text-purple-300">timeout_seconds</code>），秒级返回分配的任务 ID（如 <code class="text-purple-300">bg-xxxx</code>）。</li>
+            <li><strong class="text-zinc-200">智能休眠挂起 (Zero Token Idle)</strong>：模型在启动后台任务后，前台回合不终结而是<strong>自动挂起休眠</strong>，彻底避免盲目轮询造成的 Token 巨额浪费。</li>
+            <li><strong class="text-zinc-200">看门狗自动唤醒与结果收尾</strong>：任务正常退出、超时终止或报错时，底层事件总线立即自动唤醒模型，并将任务最新的标准输出（stdout/stderr）作为系统上下文无缝注入，驱动模型直接向用户汇报收尾成果。</li>
+            <li><strong class="text-zinc-200">/tasks 交互管理</strong>：用户可在终端中随时输入 <code class="text-amber-300">/tasks</code> 呼出任务弹窗面板，查看活动任务日志或使用 <code class="text-amber-300">/tasks kill &lt;id&gt;</code> 实施定向强杀。</li>
+          </ul>
+        </div>
+      </article>
+
       <!-- Section: 文件操作工具 -->
       <article id="tool-file-ops" class="scroll-mt-20">
         <div class="border-b border-zinc-800 pb-4 mb-6">
@@ -514,20 +535,32 @@
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
-            <span class="text-zinc-300 font-sans">切换智能体模式</span>
+            <span class="text-zinc-300 font-sans">全局熔断中断一切 (思考/工具/后台命令)</span>
+            <kbd class="px-2 py-1 bg-zinc-800 text-red-300 rounded border border-zinc-700">Esc</kbd>
+          </div>
+          <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
+            <span class="text-zinc-300 font-sans">切换智能体模式 (Normal/Plan/Boost)</span>
             <kbd class="px-2 py-1 bg-zinc-800 text-purple-300 rounded border border-zinc-700">Tab / Shift+Tab</kbd>
           </div>
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
-            <span class="text-zinc-300 font-sans">终止当前思考 / 工具调用</span>
-            <kbd class="px-2 py-1 bg-zinc-800 text-red-300 rounded border border-zinc-700">Ctrl + C</kbd>
+            <span class="text-zinc-300 font-sans">输入框字符级光标移动 / 行首行尾</span>
+            <kbd class="px-2 py-1 bg-zinc-800 text-cyan-300 rounded border border-zinc-700">← / → / Home / End</kbd>
+          </div>
+          <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
+            <span class="text-zinc-300 font-sans">呼出历史输入指令</span>
+            <kbd class="px-2 py-1 bg-zinc-800 text-purple-300 rounded border border-zinc-700">↑ / ↓ 方向键</kbd>
+          </div>
+          <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
+            <span class="text-zinc-300 font-sans">展开 / 折叠思考流 (Thinking)</span>
+            <kbd class="px-2 py-1 bg-zinc-800 text-amber-300 rounded border border-zinc-700">Enter / 鼠标点击</kbd>
           </div>
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
             <span class="text-zinc-300 font-sans">清屏并重置视口</span>
             <kbd class="px-2 py-1 bg-zinc-800 text-purple-300 rounded border border-zinc-700">Ctrl + L</kbd>
           </div>
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
-            <span class="text-zinc-300 font-sans">呼出历史输入指令</span>
-            <kbd class="px-2 py-1 bg-zinc-800 text-purple-300 rounded border border-zinc-700">↑ / ↓ 方向键</kbd>
+            <span class="text-zinc-300 font-sans">退出当前程序</span>
+            <kbd class="px-2 py-1 bg-zinc-800 text-zinc-400 rounded border border-zinc-700">Ctrl + C / Ctrl + D</kbd>
           </div>
         </div>
       </article>

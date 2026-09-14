@@ -162,6 +162,8 @@ public actor ApplicationStore {
             }
 
         case .stopCurrentRun:
+            _ = try? await client.runtime.terminateAllBackgroundTasks()
+            state.backgroundTasks.removeAll()
             if let sID = state.activeSessionID {
                 if let activeRunID = state.activeSessionState?.activeRootRunID {
                     _ = try? await client.run.cancelRun(sessionID: sID, runID: activeRunID, reason: "User stopped")
@@ -200,6 +202,7 @@ public actor ApplicationStore {
                 state.activeSessionState?.permissionConfiguration = perm
                 _ = try? await client.runtime.updateTypedSetting(key: "permissionConfiguration", value: perm.displayName)
             }
+            UserPreferencesStore.shared.update(permissionConfiguration: perm.displayName)
             notifyStateChanged()
 
         case let .setReasoningEffort(effort):
@@ -512,6 +515,7 @@ public actor ApplicationStore {
         )
         state.nextTurnMode = nil
         state.nextTurnPermission = nil
+        state.activeSessionState?.permissionConfiguration = nextPerm
         if state.activeSessionState?.status == .ready {
             state.activeSessionState?.status = .waitingForProvider
             state.recalculateStatus()

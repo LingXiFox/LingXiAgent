@@ -442,7 +442,13 @@ public actor SQLitePersistenceStore {
 
     public func loadMessages(sessionID: SessionID) throws -> [Message] {
         try Self.rows(state, "SELECT message_id, role, created_at FROM messages WHERE session_id = ? ORDER BY ordinal", [sessionID.rawValue]).map { row in
-            let parts = try Self.rows(state, "SELECT payload FROM message_parts WHERE message_id = ? ORDER BY ordinal", [row[0]]).map { try JSONDecoder().decode(SessionMessagePart.self, from: Data($0[0].utf8)) }
+            let parts = (try? Self.rows(state, "SELECT payload FROM message_parts WHERE message_id = ? ORDER BY ordinal", [row[0]]))?.compactMap { partRow -> SessionMessagePart? in
+                guard let rawStr = partRow.first, !rawStr.isEmpty else { return nil }
+                if let decoded = try? JSONDecoder().decode(SessionMessagePart.self, from: Data(rawStr.utf8)) {
+                    return decoded
+                }
+                return .text(rawStr)
+            } ?? []
             guard let role = MessageRole(rawValue: row[1]) else { throw PersistenceError.sqlite("invalid message role") }
             return Message(id: MessageID(row[0]), role: role, parts: parts, createdAt: Self.parseDate(row[2]))
         }

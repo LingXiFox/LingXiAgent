@@ -398,6 +398,9 @@ public actor SessionRuntime {
                 let currentModelStepID = ModelStepID()
                 let currentStepNumber = step + 1
                 trace("agent.step.begin", step: step + 1)
+                if step > 0 {
+                    await runObserver?(.running, nil, nil, nil, nil)
+                }
                 for lifecycle in pendingLifecycleTraces { lifecycle.record(.nextModelStepStarted) }
                 pendingLifecycleTraces.removeAll(keepingCapacity: true)
                 finalUsage = nil
@@ -879,6 +882,36 @@ public actor SessionRuntime {
                 profiler.recordModel(dispatch: dispatch, stream: streamStarted.duration(to: clock.now))
 
                 guard !calls.isEmpty else {
+                    let hasRunningBgTasks = await backgroundManager.hasRunningTasks
+                    if hasRunningBgTasks {
+                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            let assistantMessage: Message
+                            let assistantParts: [SessionMessagePart] = [.text(text)]
+                            if persistence != nil {
+                                assistantMessage = Message(id: MessageID(UUID().uuidString), role: .assistant, parts: assistantParts, createdAt: .now)
+                            } else {
+                                assistantMessage = try await store.appendMessage(sessionID, role: .assistant, parts: assistantParts, expectedRevision: runLease.revision)
+                            }
+                            if let persistence {
+                                try await persistence.appendMessage(sessionID: sessionID, message: assistantMessage, expectedRevision: runLease.revision)
+                            }
+                            let assistantEntries = assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .assistantMessage, part: $0) }
+                            currentActiveEntries.append(contentsOf: assistantEntries)
+                            await syncL1ResidentAccounting(with: currentActiveEntries)
+                        }
+
+                        await runObserver?(.waitingForTool, nil, finalUsage, nil, nil)
+                        logDiagnostic("session.background_sleep sessionID=\(sessionID.rawValue) step=\(step + 1) waiting for background tasks")
+
+                        await backgroundManager.waitForTaskCompletion()
+                        try Task.checkCancellation()
+
+                        logDiagnostic("session.background_wake sessionID=\(sessionID.rawValue) step=\(step + 1) background task completed, waking up model")
+                        text = ""
+                        continue
+                    }
+
                     await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
                     await completeTurn(
                         handle: handle,
@@ -1142,6 +1175,7 @@ public actor SessionRuntime {
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
         } catch is CancellationError {
+            await backgroundManager.terminateAll()
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler, executionID: executionID)
         } catch {

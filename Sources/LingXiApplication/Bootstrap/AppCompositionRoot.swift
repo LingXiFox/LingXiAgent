@@ -72,6 +72,14 @@ public final class AppCompositionRoot: Sendable {
                 }
                 if configuration.isYoloMode {
                     await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
+                } else if let permStr = prefs.lastPermissionConfiguration {
+                    switch permStr.lowercased() {
+                    case "yolo", "yolo_full", "full": await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
+                    case "auto", "auto_workspace": await store.dispatch(.setPermissionConfiguration(.autoWorkspace))
+                    case "ask", "ask_workspace": await store.dispatch(.setPermissionConfiguration(.askWorkspace))
+                    case "ask_full": await store.dispatch(.setPermissionConfiguration(.askFullAccess))
+                    default: break
+                    }
                 }
                 let targetModel = configuration.initialModelID ?? prefs.lastModelID
                 if let modelID = targetModel, !modelID.isEmpty {

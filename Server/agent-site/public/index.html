@@ -548,12 +548,16 @@
             <h4 class="text-base font-semibold text-zinc-200 mb-3">常用快捷键</h4>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono mb-6">
               <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
+                <span class="text-zinc-300">全局熔断中断一切 (思考/工具/后台命令)</span>
+                <kbd class="px-2 py-1 bg-zinc-800 text-red-300 rounded border border-zinc-700">Esc</kbd>
+              </div>
+              <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
                 <span class="text-zinc-300">切换代理模式 (Normal / Plan / Boost)</span>
                 <kbd class="px-2 py-1 bg-zinc-800 text-purple-300 rounded border border-zinc-700">Tab / Shift+Tab</kbd>
               </div>
               <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
-                <span class="text-zinc-300">中断当前思考或工具流</span>
-                <kbd class="px-2 py-1 bg-zinc-800 text-red-300 rounded border border-zinc-700">Ctrl + C</kbd>
+                <span class="text-zinc-300">输入框字符级光标移动 / 行首行尾</span>
+                <kbd class="px-2 py-1 bg-zinc-800 text-cyan-300 rounded border border-zinc-700">← / → / Home / End</kbd>
               </div>
               <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
                 <span class="text-zinc-300">展开 / 折叠思考流 (Thinking)</span>
@@ -563,10 +567,17 @@
                 <span class="text-zinc-300">滚动查看历史会话</span>
                 <kbd class="px-2 py-1 bg-zinc-800 text-emerald-300 rounded border border-zinc-700">PageUp / PageDown</kbd>
               </div>
+              <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
+                <span class="text-zinc-300">退出程序</span>
+                <kbd class="px-2 py-1 bg-zinc-800 text-zinc-400 rounded border border-zinc-700">Ctrl + C / Ctrl + D</kbd>
+              </div>
             </div>
 
             <h4 class="text-base font-semibold text-zinc-200 mb-2">Slash 快捷命令</h4>
             <ul class="space-y-2 text-xs text-zinc-300 font-mono mb-6">
+              <li><strong class="text-purple-400">/tasks</strong> — 实时查看与管理后台异步执行任务，支持状态轮询与定向强杀。</li>
+              <li><strong class="text-purple-400">/new</strong> — 秒级开启全新会话，自动重置视口与聚焦。</li>
+              <li><strong class="text-purple-400">/resume</strong> — 交互式会话选择器，按项目目录聚合，支持一键恢复历史对话。</li>
               <li><strong class="text-purple-400">/model</strong> — 唤起模型选择弹窗，支持在官方订阅模型与自定义 API 模型间毫秒切换。</li>
               <li><strong class="text-purple-400">/auth</strong> — 查看已登录账号状态、额度及重新登录。</li>
               <li><strong class="text-purple-400">/clear</strong> — 清理当前会话上下文并保留核心项目知识库。</li>

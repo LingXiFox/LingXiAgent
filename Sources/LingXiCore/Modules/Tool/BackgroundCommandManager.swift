@@ -13,6 +13,7 @@ final class BackgroundTaskRecord: @unchecked Sendable {
     var status: BackgroundTaskStatus
     var description: String?
     var hasBeenObserved: Bool
+    var noticeCount: Int
     let process: ManagedToolProcess
     var timeoutTask: Task<Void, Never>?
     var watchExitTask: Task<Void, Never>?
@@ -35,6 +36,7 @@ final class BackgroundTaskRecord: @unchecked Sendable {
         self.status = .running
         self.description = description
         self.hasBeenObserved = false
+        self.noticeCount = 0
         self.process = process
     }
 }
@@ -43,8 +45,49 @@ public actor BackgroundCommandManager {
     private var tasks: [String: BackgroundTaskRecord] = [:]
     private var taskOrder: [String] = []
     private var lastRemindedStep: Int = -1
+    private var completionContinuations: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     public init() {}
+
+    public var hasRunningTasks: Bool {
+        for record in tasks.values {
+            updateStatusIfExited(record)
+        }
+        return tasks.values.contains { $0.status == .running }
+    }
+
+    public var runningTasksCount: Int {
+        for record in tasks.values {
+            updateStatusIfExited(record)
+        }
+        return tasks.values.filter { $0.status == .running }.count
+    }
+
+    public func waitForTaskCompletion() async {
+        if !hasRunningTasks { return }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                self.completionContinuations[id] = continuation
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.removeWaiter(id: id)
+            }
+        }
+    }
+
+    private func removeWaiter(id: UUID) {
+        completionContinuations.removeValue(forKey: id)?.resume()
+    }
+
+    private func notifyWaiters() {
+        let waiters = completionContinuations.values
+        completionContinuations.removeAll()
+        for continuation in waiters {
+            continuation.resume()
+        }
+    }
 
     public func spawn(
         command: String,
@@ -134,11 +177,13 @@ public actor BackgroundCommandManager {
         if let pid = record.process.snapshot(id: taskID, stdoutCursor: nil, stderrCursor: nil).pid {
             LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
         }
+        notifyWaiters()
     }
 
     private func handleProcessExit(taskID: String, expectedRecord: BackgroundTaskRecord?) {
         guard let record = tasks[taskID], record === expectedRecord, record.status == .running else { return }
         updateStatusIfExited(record)
+        notifyWaiters()
     }
 
     public func poll(id: String, stdoutCursor: Int? = nil, stderrCursor: Int? = nil) throws -> BackgroundTaskSnapshot {
@@ -178,6 +223,7 @@ public actor BackgroundCommandManager {
             if let pid = record.process.snapshot(id: id, stdoutCursor: nil, stderrCursor: nil).pid {
                 LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
             }
+            notifyWaiters()
         }
         record.hasBeenObserved = true
         return snapshot(for: record, stdoutCursor: stdoutCursor, stderrCursor: stderrCursor)
@@ -211,6 +257,7 @@ public actor BackgroundCommandManager {
         }
         tasks.removeAll()
         taskOrder.removeAll()
+        notifyWaiters()
     }
 
     public func generateSystemNotice(currentStep: Int) -> String? {
@@ -235,6 +282,17 @@ public actor BackgroundCommandManager {
                 let codeStr = task.cachedExitCode.map { "退出码: \($0)" } ?? "无"
                 lines.append("• 任务 [\(task.id)]\(desc): 状态: \(task.status.rawValue) | 耗时: \(dur) | \(codeStr)")
                 lines.append("  命令行: `\(task.command)`")
+                let snap = snapshot(for: task, stdoutCursor: nil, stderrCursor: nil)
+                if !snap.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lines.append("  [标准输出 stdout]:\n```\n\(snap.stdout.prefix(4000))\n```")
+                }
+                if !snap.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lines.append("  [标准错误 stderr]:\n```\n\(snap.stderr.prefix(2000))\n```")
+                }
+                task.noticeCount += 1
+                if task.noticeCount >= 2 {
+                    task.hasBeenObserved = true
+                }
             }
             lines.append("【强制提示】请立即调用 `manage_background_command(action: \"poll\", task_id: \"...\")` 查看输出日志，严禁凭空臆测命令执行结果！")
             return lines.joined(separator: "\n")

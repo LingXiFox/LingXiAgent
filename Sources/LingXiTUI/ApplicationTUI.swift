@@ -276,9 +276,11 @@ public final class ApplicationTUI: Frontend {
             return
         }
         if event == .escape {
+            let hasRunningBg = latestState.backgroundTasks.contains(where: { $0.status == .running })
             let running = isActive(latestState)
                 || waitingStartedAt != nil
                 || !(latestState.activeSessionState?.activeToolCallIDs.isEmpty ?? true)
+                || hasRunningBg
 
             if running {
                 Task {
@@ -425,21 +427,21 @@ public final class ApplicationTUI: Frontend {
                 _ = view.composer.handle(event)
                 frameScheduler.markDirty(.input)
             }
-        case .enter where view.focus == .transcript,
-             .character(" ") where view.focus == .transcript:
+        case .enter where view.focus == .transcript && view.transcript.selectedItemID != nil,
+             .character(" ") where view.focus == .transcript && view.transcript.selectedItemID != nil:
             if let selectedID = view.transcript.selectedItemID {
                 let current = userToggledEntries[selectedID] ?? view.transcript.isCollapsed(id: selectedID)
                 userToggledEntries[selectedID] = !current
                 committedEntryCache.removeValue(forKey: TimelineNodeID(selectedID))
                 refreshView(latestState)
             }
-        case .right where view.focus == .transcript:
+        case .right where view.focus == .transcript && view.transcript.selectedItemID != nil:
             if let selectedID = view.transcript.selectedItemID {
                 userToggledEntries[selectedID] = false
                 committedEntryCache.removeValue(forKey: TimelineNodeID(selectedID))
                 refreshView(latestState)
             }
-        case .left where view.focus == .transcript:
+        case .left where view.focus == .transcript && view.transcript.selectedItemID != nil:
             if let selectedID = view.transcript.selectedItemID {
                 userToggledEntries[selectedID] = true
                 committedEntryCache.removeValue(forKey: TimelineNodeID(selectedID))
@@ -1054,6 +1056,8 @@ public final class ApplicationTUI: Frontend {
         case "/clear":
             commandEntries.removeAll()
             view.transcript.entries.removeAll()
+            view.transcript.clearSelection()
+            view.setFocus(.composer)
             refreshView(latestState)
         case "/expand":
             let nodes = latestState.activeSessionState?.timelineNodes ?? []
@@ -1079,6 +1083,9 @@ public final class ApplicationTUI: Frontend {
             committedEntryCache.removeAll()
             userToggledEntries.removeAll()
             view.transcript.entries.removeAll()
+            view.transcript.clearSelection()
+            view.setFocus(.composer)
+            view.composer.clear()
             enqueue { [weak self] in
                 guard let self else { return }
                 if let entry = await self.executeCommand(input, store: store) {
@@ -1312,6 +1319,8 @@ public final class ApplicationTUI: Frontend {
             activityFinishedDuration.removeAll(keepingCapacity: true)
             userToggledEntries.removeAll(keepingCapacity: true)
             view.transcript.entries.removeAll()
+            view.transcript.clearSelection()
+            view.setFocus(.composer)
         }
         let yoloPrefix = options.isYoloMode ? "⚡ YOLO · " : ""
         view.header.subtitle = "\(yoloPrefix)\(state.activeSessionState?.title ?? state.connectionState.status.rawValue)"
@@ -1321,6 +1330,12 @@ public final class ApplicationTUI: Frontend {
 
         let session = state.activeSessionState
         let nodes = session?.timelineNodes ?? []
+        if (nodes.isEmpty && commandEntries.isEmpty) || view.transcript.entries.isEmpty {
+            if view.focus == .transcript {
+                view.transcript.clearSelection()
+                view.setFocus(.composer)
+            }
+        }
         if nodes.count < lastRenderedNodeCount {
             committedEntryCache.removeAll(keepingCapacity: true)
             activityStartedAt.removeAll(keepingCapacity: true)

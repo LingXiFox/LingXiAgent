@@ -97,14 +97,34 @@ public enum SessionReducer {
                     state.appendCommittedNode(finalNode)
                 }
             } else {
-                let msgNode = MessageNode(
-                    messageID: messageID,
-                    role: .assistant,
-                    content: content,
-                    isStreaming: false,
-                    isFinal: true
-                )
-                state.appendCommittedNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .message(msgNode), modelStepID: modelStepID))
+                // 幂等去重防御：若已存在同一 turn 或文本内容完全相同的 assistant 消息，则就地合并，杜绝历史事件翻倍导致的重复渲染
+                if let existingIndex = state.timelineNodes.lastIndex(where: { node in
+                    if case let .message(m) = node.kind, m.role == .assistant {
+                        if m.content == content || (event.causal.turnID != nil && node.id.rawValue.contains(event.causal.turnID!.rawValue)) {
+                            return true
+                        }
+                    }
+                    return false
+                }) {
+                    let existingID = state.timelineNodes[existingIndex].id
+                    state.updateNode(id: existingID) { node in
+                        if case var .message(m) = node.kind {
+                            m.content = content
+                            m.isStreaming = false
+                            m.isFinal = true
+                            node.kind = .message(m)
+                        }
+                    }
+                } else {
+                    let msgNode = MessageNode(
+                        messageID: messageID,
+                        role: .assistant,
+                        content: content,
+                        isStreaming: false,
+                        isFinal: true
+                    )
+                    state.appendCommittedNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .message(msgNode), modelStepID: modelStepID))
+                }
             }
 
         case let .turnCompleted(turnID, _):
@@ -736,6 +756,25 @@ public enum SessionReducer {
             state.rebuildTimelineIndex()
             state.activeToolCallIDs.removeAll()
             convergeAllActiveTools(state: &state)
+        }
+        // 兜底水合：若事件流未产生任何 timeline 节点，但权威快照包含 turns，则从 turns 中提取用户消息，绝不展示空白界面
+        if state.timelineNodes.isEmpty, !snapshot.recentTurns.isEmpty {
+            for turn in snapshot.recentTurns.sorted(by: { $0.createdAt < $1.createdAt }) {
+                let userMsg = turn.userMessage
+                let userNodeID = TimelineNodeID.message(userMsg.messageID)
+                let userNode = TimelineNode(
+                    id: userNodeID,
+                    timestamp: userMsg.createdAt,
+                    kind: .message(MessageNode(
+                        messageID: userMsg.messageID,
+                        role: .user,
+                        content: userMsg.text,
+                        isStreaming: false,
+                        isFinal: true
+                    ))
+                )
+                state.appendCommittedNode(userNode)
+            }
         }
         state.updatedAt = snapshot.info.updatedAt
         state.recalculateStatus(connectionState: connectionState)

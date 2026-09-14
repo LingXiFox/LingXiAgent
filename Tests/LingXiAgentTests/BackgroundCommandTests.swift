@@ -291,4 +291,73 @@ struct BackgroundCommandTests {
         await client.disconnect()
         await coreHost.shutdown()
     }
+
+    @Test func testWaitForTaskCompletionWakeupOnProcessExit() async throws {
+        let (tempDir, workspace) = try makeTemporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = BackgroundCommandManager()
+        let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
+
+        let spawnArgs = """
+        {"command": "sleep 0.4 && echo 'bg-result-42'", "timeout_seconds": 10, "task_id": "wake-test-task"}
+        """
+        _ = try await runTool.execute(arguments: spawnArgs, profile: .workspace)
+
+        let running = await manager.hasRunningTasks
+        #expect(running == true)
+
+        let startedAt = Date()
+        await manager.waitForTaskCompletion()
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        // It should have waited roughly 0.4s and then been awakened
+        #expect(elapsed >= 0.3)
+        let runningAfter = await manager.hasRunningTasks
+        #expect(runningAfter == false)
+
+        // Notice should now contain stdout
+        let notice = await manager.generateSystemNotice(currentStep: 1)
+        #expect(notice?.contains("bg-result-42") == true)
+
+        await manager.terminateAll()
+    }
+
+    @Test func testEscCancellationKillsAllBackgroundTasksAndAborts() async throws {
+        let (tempDir, workspace) = try makeTemporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let coreHost = try CoreHost(workspaceRoot: workspace, permissionDecision: .allow)
+        await coreHost.start()
+        let client = try await LingXiClientVNext.connectInProcess(service: coreHost)
+
+        let spawnArgs = """
+        {"command": "sleep 60", "timeout_seconds": 120, "task_id": "esc-kill-test-task"}
+        """
+        let toolCall = ToolCall(
+            callID: ToolCallID("call-esc-1"),
+            toolID: ToolID("run_background_command"),
+            arguments: spawnArgs
+        )
+        _ = await coreHost.toolRuntimeRef.execute(
+            toolCall,
+            sessionID: SessionID("test-esc-session")
+        )
+
+        let runningBefore = await coreHost.backgroundManagerRef.hasRunningTasks
+        #expect(runningBefore == true)
+
+        // Simulate Esc dispatch: terminateAllBackgroundTasks via client
+        let success = try await client.runtime.terminateAllBackgroundTasks()
+        #expect(success == true)
+
+        let runningAfter = await coreHost.backgroundManagerRef.hasRunningTasks
+        #expect(runningAfter == false)
+
+        let tasksAfter = await coreHost.backgroundManagerRef.list()
+        #expect(tasksAfter.isEmpty)
+
+        await client.disconnect()
+        await coreHost.shutdown()
+    }
 }

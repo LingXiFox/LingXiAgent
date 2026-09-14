@@ -379,6 +379,7 @@ public enum BuiltinCommands {
                     default:
                         return ApplicationCommandResult(output: "未知权限策略: \(arg)。支持: ask | auto | yolo")
                     }
+                    UserPreferencesStore.shared.update(permissionConfiguration: lower)
                     return ApplicationCommandResult(
                         output: "权限策略已更新为: \(lower)",
                         nextTurnPermission: perm

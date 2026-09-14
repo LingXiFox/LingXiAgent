@@ -415,4 +415,70 @@ struct ApplicationProjectionTests {
         #expect(node?.error?.message == "File not found at path: /path/to/missing.txt")
         #expect(viewState.activeToolCallIDs.isEmpty)
     }
+
+    @Test("SessionReducer deduplicates identical assistant messages across repeated events")
+    func testAssistantDeduplication() {
+        var viewState = SessionViewState(sessionID: sessionID)
+        let msgID1 = MessageID("msg-rand-1")
+        let msgID2 = MessageID("msg-rand-2")
+        let answerText = "✦ 随机数是：**843602**"
+
+        // First assistant message committed
+        SessionReducer.reduce(
+            state: &viewState,
+            event: event(1, .assistantMessageCommitted(messageID: msgID1, content: answerText, assistantFinalIndex: 0)),
+            connectionState: connection
+        )
+
+        // Second assistant message with identical content committed (simulating re-hydration or repeated events)
+        SessionReducer.reduce(
+            state: &viewState,
+            event: event(2, .assistantMessageCommitted(messageID: msgID2, content: answerText, assistantFinalIndex: 0)),
+            connectionState: connection
+        )
+
+        let assistantNodes = viewState.timelineNodes.filter {
+            if case let .message(m) = $0.kind { return m.role == .assistant }
+            return false
+        }
+        #expect(assistantNodes.count == 1, "Duplicate assistant messages with identical content must be merged into one")
+    }
+
+    @Test("SessionReducer falls back to turns when snapshot events are empty, preventing blank resume screen")
+    func testFallbackHydrationFromTurns() {
+        var viewState = SessionViewState(sessionID: sessionID)
+        let t = turn("turn-fallback-1")
+        let summary = SessionSummary(
+            sessionID: sessionID,
+            title: "Test Session",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            turnCount: 1,
+            mode: .build,
+            reasoningEffort: .auto,
+            workingDirectory: "/tmp",
+            messageCount: 1
+        )
+        let snapshot = SessionSnapshot(
+            sessionID: sessionID,
+            info: summary,
+            recentTurns: [t],
+            activeRootRun: nil,
+            activeChildRuns: [],
+            pendingInteractions: [],
+            activeModelSteps: [],
+            recentToolInvocations: [],
+            contextState: ContextStateSnapshot(sessionID: sessionID),
+            permissionConfiguration: .askWorkspace,
+            agentMode: .build,
+            recentEvents: [],
+            historyBeforeCursor: nil,
+            eventCursor: EventCursor(generationID: generationID, sequence: 0),
+            revision: 1
+        )
+
+        SessionReducer.reduceSnapshot(state: &viewState, snapshot: snapshot, connectionState: connection)
+        #expect(!viewState.timelineNodes.isEmpty, "timelineNodes must not be empty when snapshot has turns")
+        #expect(viewState.timelineNodes.first?.id.rawValue.contains(t.userMessage.messageID.rawValue) == true)
+    }
 }
