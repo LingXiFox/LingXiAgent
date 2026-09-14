@@ -1,0 +1,254 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{geometry}
+\geometry{
+    top=15mm,
+    bottom=15mm,
+    left=14mm,
+    right=14mm,
+    headheight=14pt,
+    footskip=10mm
+}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{fontspec}
+\setmonofont{Menlo}[Scale=0.85]
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\small LingXiAgent 本地自主智能体软件 V1.0}
+\fancyfoot[C]{\small 第 \thepage\ 页}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\lstset{
+    basicstyle=\ttfamily\fontsize{7.2pt}{8.9pt}\selectfont,
+    breaklines=true,
+    breakautoindent=true,
+    postbreak=\mbox{\textcolor{gray}{$\hookrightarrow$}\space},
+    tabsize=4,
+    showstringspaces=false,
+    keepspaces=true,
+    columns=flexible,
+    extendedchars=true
+}
+
+% 定义仓库根目录相对路径（默认为相对于 docs/copyright/v1.0/）
+\ifdefined\repoRoot\else
+  \newcommand{\repoRoot}{../../../}
+\fi
+
+\begin{document}
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Agent/AgentRuntime.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Agent/AgentRuntime.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Agent/WorkflowRuntime.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Agent/WorkflowRuntime.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Agent/AgentInstructions.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Agent/AgentInstructions.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Agent/AgentRunRuntime.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Agent/AgentRunRuntime.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Agent/SubagentToolService.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Agent/SubagentToolService.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/L1ContextEngine.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/L1ContextEngine.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/L2WorkingSetPolicy.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/L2WorkingSetPolicy.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ContextCacheController.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ContextCacheController.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/CacheAwareContextScheduler.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/CacheAwareContextScheduler.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ContextCompaction.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ContextCompaction.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ContextPager.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ContextPager.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ContextPageRankingPolicy.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ContextPageRankingPolicy.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ProjectContextDomain.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ProjectContextDomain.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ProjectPageStore.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ProjectPageStore.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ProjectScanner.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ProjectScanner.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ContextProjection.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ContextProjection.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/ContextQuery.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/ContextQuery.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Context/SensitivePathPolicy.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Context/SensitivePathPolicy.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Session/SessionRuntime.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Session/SessionRuntime.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Session/SessionTurnCoordinator.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Session/SessionTurnCoordinator.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Session/SessionStore.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Session/SessionStore.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Session/SessionDomain.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Session/SessionDomain.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Session/RunLease.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Session/RunLease.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Session/SessionMutationLock.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Session/SessionMutationLock.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Tool/ToolRuntime.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Tool/ToolRuntime.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Tool/BuiltinTools.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Tool/BuiltinTools.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Tool/WebTools.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Tool/WebTools.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Tool/ToolMutationCoordinator.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Tool/ToolMutationCoordinator.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Tool/ToolOutputArchive.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Tool/ToolOutputArchive.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Tool/ToolOutputPolicy.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Tool/ToolOutputPolicy.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/MCP/MCPRuntime.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/MCP/MCPRuntime.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/MCP/MCPTransport.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/MCP/MCPTransport.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/MCP/MCPOAuthClient.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/MCP/MCPOAuthClient.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Infrastructure/Persistence/SQLitePersistenceStore.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Infrastructure/Persistence/SQLitePersistenceStore.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Infrastructure/Persistence/ProjectPersistenceDomain.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Infrastructure/Persistence/ProjectPersistenceDomain.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Infrastructure/Persistence/MigrationRunner.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Infrastructure/Persistence/MigrationRunner.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Infrastructure/EventLog/EventLogStore.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Infrastructure/EventLog/EventLogStore.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Infrastructure/EventLog/DurableCommandWAL.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Infrastructure/EventLog/DurableCommandWAL.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ModelGateway.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ModelGateway.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ModelDomain.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ModelDomain.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ModelProvider.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ModelProvider.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/OpenAICompatibleProvider.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/OpenAICompatibleProvider.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/OpenAIResponsesProvider.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/OpenAIResponsesProvider.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/AnthropicMessagesProvider.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/AnthropicMessagesProvider.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ProviderRateScheduler.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ProviderRateScheduler.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ProviderErrorClassifier.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ProviderErrorClassifier.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ProviderConfig.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ProviderConfig.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ProviderHTTPTransport.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ProviderHTTPTransport.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ProviderActivityRegistry.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ProviderActivityRegistry.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/ProviderProvenance.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/ProviderProvenance.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/CanonicalCachePlan.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/CanonicalCachePlan.swift}
+\vspace{8pt}
+
+\noindent\textbf{// File: Sources/LingXiCore/Modules/Model/SSEDecoder.swift}\par\vspace{2pt}
+\lstinputlisting{\repoRoot Sources/LingXiCore/Modules/Model/SSEDecoder.swift}
+\vspace{8pt}
+\end{document}

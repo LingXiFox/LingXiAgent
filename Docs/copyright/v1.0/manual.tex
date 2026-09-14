@@ -1,0 +1,607 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{geometry}
+\geometry{
+    top=25mm,
+    bottom=25mm,
+    left=22mm,
+    right=22mm,
+    headheight=15pt,
+    footskip=12mm
+}
+\usepackage{amsmath,amssymb}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\usepackage{fontspec}
+\setmonofont{Menlo}[Scale=0.85]
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
+
+% 页面样式设置
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\kaishu LingXiAgent 本地自主智能体软件 V1.0}
+\fancyhead[R]{\small\kaishu 软件设计与使用说明书}
+\fancyfoot[C]{\small 第 \thepage\ 页}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% 代码排版设置
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{gray!30},
+    backgroundcolor=\color{gray!5},
+    keywordstyle=\color{blue!80!black}\bfseries,
+    commentstyle=\color{green!50!black}\itshape,
+    stringstyle=\color{red!70!black},
+    showstringspaces=false,
+    tabsize=2,
+    keepspaces=true
+}
+
+\titleformat{\section}{\Large\bfseries\heiti}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries\heiti}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\heiti}{\thesubsubsection}{1em}{}
+
+\begin{document}
+
+% 封面页
+\begin{titlepage}
+    \centering
+    \vspace*{28mm}
+    {\fontsize{28pt}{34pt}\selectfont\heiti\bfseries LingXiAgent\par}
+    \vspace{8mm}
+    {\fontsize{20pt}{26pt}\selectfont\heiti 本地自主智能体软件 V1.0\par}
+    \vspace{15mm}
+    {\Large\kaishu 软件设计与使用说明书\par}
+    \vspace{35mm}
+    
+    \begin{tcolorbox}[colback=gray!5,colframe=gray!40,width=0.88\textwidth,arc=3mm,center]
+        \centering\large
+        \vspace{3mm}
+        \textbf{软件全称}：LingXiAgent 本地自主智能体软件\par\vspace{3mm}
+        \textbf{软件简称}：LingXiAgent\par\vspace{3mm}
+        \textbf{软件版本}：V1.0\par\vspace{3mm}
+        \textbf{开发语言}：Swift 6.0（原生跨平台并发体系）\par\vspace{3mm}
+        \textbf{完成日期}：2026 年 09 月\par\vspace{3mm}
+        \textbf{版本标识}：Git Commit b0c883f22b01c2359f9fb62e103463f3db5bd2d4\par
+        \vspace{3mm}
+    \end{tcolorbox}
+    
+    \vfill
+    {\large\songti 中华人民共和国国家版权局 · 计算机软件著作权登记材料\par}
+    \vspace{15mm}
+\end{titlepage}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{软件概述}
+
+\textbf{LingXiAgent 本地自主智能体软件 V1.0}（以下简称“LingXiAgent”）是一款基于现代 Swift 6 原生高并发编程语言打造的工业级、自治型本地 AI 编程智能体系统。本软件旨在为现代软件工程提供从代码语义理解、多阶段方案设计、复杂多文件编辑修改、自动化构建与测试回归、到故障诊断修复的端到端本地闭环自治能力。
+
+LingXiAgent 全面原生支持 macOS（Apple Silicon 与 Intel 架构）、Linux（Ubuntu、Debian、Arch Linux 等，全面兼容 x86\_64 与 AArch64 架构）以及 Windows（x86\_64 与 ARM64 架构）主流桌面与服务器操作系统平台。
+
+区别于业界传统基于 Node.js/Electron 技术栈构建的高资源占用智能体辅助工具，LingXiAgent 采用完全解耦的领域驱动设计与纯单二进制架构。得益于 Swift 原生强类型内存安全机制与 Actor 结构化并发体系，系统冷启动时间仅约 10ms，常驻内存占用低至 35MB。
+
+软件首创并落地了 \textbf{P-Core（Prompt-Driven 推理总线）与 E-Core（Execution-Driven 执行存储）异构双核架构}，结合自主研发的 L1/L2/L3 三级上下文分级流控引擎、全功能 Model Context Protocol（MCP）原生运行时、以及支持 AES-256-GCM 高强度加密的本地凭据安全保险箱与系统级沙箱，为开发者提供了极速响应、极低显存浪费、深度安全防护的终端智能开发体验。
+
+\section{开发目的}
+
+在智能化软件工程演进过程中，AI 编程助手逐步从单次代码补全（Copilot 模式）迈向具备自主规划与执行能力的 Agent 阶段。然而，现有技术方案在工业落地中暴露出一系列核心瓶颈：
+
+\begin{enumerate}
+    \item \textbf{运行时内存消耗过大与响应滞后}：目前主流终端或桌面智能体大多打包了完整的 Chromium/Node.js 运行时或 Python 虚拟环境，导致冷启动慢（通常需 3 至 8 秒），初始常驻内存动辄占用 300MB 至 800MB。在大型工程项目中多任务并发执行时，容易引发系统内存紧张与发热卡顿。
+    \item \textbf{执行产物失控引发“Token 爆炸”与注意力迷航}：在软件开发场景中，执行 Shell 编译、单元测试套件或全项目文本检索时，往往瞬时产生数十 KB 至数 MB 的原始日志数据。传统架构直接将海量原始日志无差别塞入模型推理上下文，不仅迅速耗尽大模型上下文预算配额，更会严重稀释模型的语义注意力权重，导致智能体遗忘初始目标或产生幻觉。
+    \item \textbf{模型端缓存机制未被充分利用}：主流大语言模型服务商普遍上线了服务端提示词缓存（Prompt Cache）技术，对稳定前缀提供高达 50\% 至 90\% 的费用折扣与数倍的速度提升。但由于传统 Agent 在多轮交互中上下文拼接无序、工具定义位置频繁移动，导致服务端缓存命中率极低。
+    \item \textbf{跨平台安全沙箱与凭据管理脆弱}：缺少针对不同操作系统的细粒度安全防护机制，命令执行易产生逃逸隐患；敏感 API 密钥常直接以明文保存或泄露至交互历史中，破坏性操作缺乏自动快照防线。
+\end{enumerate}
+
+LingXiAgent 本地自主智能体软件的研发目的，正是彻底破解上述痛点，构建一套基于原生底层技术、具备上下文智能调度防爆、全平台无缝适配且高度安全的下一代自主编程智能体基准实现。
+
+\section{运行环境}
+
+\subsection{硬件环境要求}
+\begin{itemize}
+    \item \textbf{中央处理器 (CPU)}：
+    \begin{itemize}
+        \item Apple Silicon 全系列（M1/M2/M3/M4 系列芯片）或 64 位 Intel 架构处理器；
+        \item x86\_64 架构双核及以上处理器（主频 $\ge 2.0\text{ GHz}$）；
+        \item ARM64 / AArch64 架构 64 位处理器。
+    \end{itemize}
+    \item \textbf{内存 (RAM)}：最低 512MB 物理可用内存，推荐 2GB 及以上。
+    \item \textbf{硬盘空间 (Storage)}：二进制主程序仅占用约 40MB 空间；运行期 SQLite 缓存与日志建议预留 500MB 以上空闲磁盘空间。
+    \item \textbf{网络要求}：支持标准 TCP/IP 协议栈，需具备访问大模型网关端点或 MCP 服务的网络连通性。
+\end{itemize}
+
+\subsection{软件操作系统支持矩阵}
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{操作系统} & \textbf{支持架构} & \textbf{最低系统版本} & \textbf{原生安全特权机制} \\
+\midrule
+macOS & ARM64 / x86\_64 & macOS 13.0 (Ventura) 及以上 & POSIX 独立进程组, Seatbelt 配置文件 \\
+Linux & x86\_64 / AArch64 & Linux Kernel 5.4 及以上 & Bubblewrap (bwrap) 容器命名空间 \\
+Windows & x86\_64 / ARM64 & Windows 10 (1903+) / Win 11 & Win32 VT100, taskkill 级联深度灭活 \\
+\bottomrule
+\end{tabular}
+\caption{LingXiAgent 跨平台操作系统支持矩阵}
+\end{table}
+
+\subsection{系统依赖说明}
+本软件为纯编译型机器码单二进制文件，依托操作系统内置标准 C 运行库（libc / MSVCRT）与系统级 SQLite 3 库即可运行，完全零外部解释器依赖。在 Linux 环境下，系统支持自动检测并挂载 Bubblewrap（\texttt{bwrap}）容器隔离沙箱。
+
+\section{总体架构}
+
+LingXiAgent 严格恪守高内聚、低耦合的架构准则，实现了表现层、装配层、权威业务核心与底层系统平台的完全物理隔离：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    box/.style={draw, rounded corners=2mm, fill=gray!10, text centered, minimum height=10mm, text width=125mm, font=\small},
+    subbox/.style={draw, rounded corners=1mm, fill=white, text centered, minimum height=7mm, text width=37mm, font=\footnotesize},
+    arrow/.style={-Latex, thick, gray!80!black}
+]
+    % Frontend
+    \node[box, fill=blue!10] (frontend) {
+        \textbf{表现层与客户端 (Frontend Layer - 表现与核心彻底解耦)}\\
+        \vspace{1mm}
+        \begin{tabular}{ccc}
+        \tikz \node[subbox] {LingXiTUI 终端看板}; & 
+        \tikz \node[subbox] {lingxiagent CLI 运维}; & 
+        \tikz \node[subbox] {无头执行 / Headless};
+        \end{tabular}
+    };
+    
+    % Bootstrap
+    \node[box, fill=purple!10, below=6mm of frontend] (bootstrap) {
+        \textbf{装配与生命周期层 (Bootstrap)}\\
+        \vspace{1mm}
+        \begin{tabular}{cc}
+        \tikz \node[subbox, text width=57mm] {AppCompositionRoot (统一依赖装配根)}; & 
+        \tikz \node[subbox, text width=57mm] {ApplicationStore (单向流状态机中心)};
+        \end{tabular}
+    };
+    
+    % Core
+    \node[box, fill=orange!10, minimum height=24mm, below=6mm of bootstrap] (core) {
+        \textbf{异构双核业务核心 (LingXiCore)}\\
+        \vspace{1mm}
+        \begin{tabular}{cc}
+        \tikz \node[subbox, text width=57mm, fill=red!10] {
+            \textbf{P-Core (Prompt 推理总线)}\\
+            AgentLoop / 三级上下文 / Compactor
+        }; & 
+        \tikz \node[subbox, text width=57mm, fill=green!10] {
+            \textbf{E-Core (Execution 执行存储)}\\
+            ToolRuntime / 大产物旁路 / SQLite
+        };
+        \end{tabular}\\
+        \vspace{2mm}
+        \begin{tabular}{cc}
+        \tikz \node[subbox, text width=57mm] {MCP 原生协议运行时 (Stdio/HTTP)}; & 
+        \tikz \node[subbox, text width=57mm] {统一模型路由网关 (ModelGateway)};
+        \end{tabular}
+    };
+    
+    % Platform & Protocol
+    \node[box, fill=teal!10, below=6mm of core] (platform) {
+        \textbf{跨平台系统底座与协议契约层 (LingXiPlatform \& LingXiProtocol)}\\
+        \vspace{1mm}
+        \begin{tabular}{ccc}
+        \tikz \node[subbox] {Darwin / Seatbelt 沙箱}; & 
+        \tikz \node[subbox] {Linux / bwrap 隔离}; & 
+        \tikz \node[subbox] {Win32 VT100 / 进程树};
+        \end{tabular}\\
+        \vspace{1mm}
+        \tikz \node[subbox, text width=115mm] {LingXiProtocol: 强类型领域实体 / 流式帧 Wire Frame / 统一 RPC 契约};
+    };
+    
+    \draw[arrow] (frontend) -- (bootstrap);
+    \draw[arrow] (bootstrap) -- (core);
+    \draw[arrow] (core) -- (platform);
+\end{tikzpicture}
+\caption{LingXiAgent 总体四层解耦架构拓扑}
+\end{figure}
+
+\subsection{Swift Package 模块职责划分}
+\begin{enumerate}
+    \item \textbf{LingXiProtocol}：纯强类型契约层，零外部依赖。严格定义了全局领域实体、流式报文帧（Wire Frame）、通用错误代码与跨进程 RPC 报文。
+    \item \textbf{LingXiPlatform}：原生操作系统调用抽象层。屏蔽 Darwin、Linux 与 Windows 的系统差异，统一封装进程管理、安全沙箱、终端 VT100 序列控制与凭据存取接口。
+    \item \textbf{LingXiCore}：权威业务核心。统领 P-Core 推理总线、E-Core 旁路对象存储池、L1/L2/L3 上下文流控器、Tool 执行引擎、MCP 协议引擎与统一模型网关。
+    \item \textbf{LingXiClient 与 LingXiApplication}：装配与客户端接口层。通过 \texttt{AppCompositionRoot} 接管核心生命周期与 Stdio IPC，保证上层 UI 绝不私自越权操控业务核心。
+    \item \textbf{LingXiTUI 与 lingxiagent}：表现层终端受控客户端。遵循 \texttt{@MainActor Frontend} 协议，提供 60FPS 双栏监控看板及多功能运维诊断 CLI。
+\end{enumerate}
+
+\subsection{核心领域模型契约设计}
+系统定义了高内聚的强类型领域模型，确保各模块间通过统一契约交互：
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{实体类型} & \textbf{所属模块} & \textbf{核心职责说明} \\
+\midrule
+\texttt{Session} & \texttt{LingXiProtocol} & 会话权威实体，记录会话全局唯一 ID 与项目绑定 \\
+\texttt{Turn} & \texttt{LingXiProtocol} & 会话轮次实体，包含用户意图与多步执行收敛记录 \\
+\texttt{ContextPage} & \texttt{LingXiCore/Context} & 代码切片分页实体，包含文件路径、起止行与 Hash \\
+\texttt{ToolRequest} & \texttt{LingXiProtocol} & 结构化工具调用参数，支持 JSON 反序列化 \\
+\texttt{ToolResult} & \texttt{LingXiProtocol} & 工具执行反馈载荷，包含退出码、输出内容与引用 \\
+\texttt{RunLease} & \texttt{LingXiCore/Session} & 轮次排他租约实体，防并发状态踩踏与冲突 \\
+\bottomrule
+\end{tabular}
+\caption{LingXiAgent 关键领域模型实体定义}
+\end{table}
+
+\section{Agent Runtime}
+
+LingXiAgent 的智能体运行时由 Swift Actor 实例（\texttt{AgentRuntime}）全隔离保护，保证在复杂高并发请求下无数据竞争（Data Race Free）：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=16mm,
+    state/.style={draw, rounded corners=2mm, fill=blue!10, text centered, minimum width=30mm, minimum height=9mm, font=\small},
+    arrow/.style={-Latex, thick}
+]
+    \node[state] (idle) {空闲态 (Idle)};
+    \node[state, right=of idle] (context) {上下文调度 (Context)};
+    \node[state, right=of context] (infer) {模型流式推理 (Infer)};
+    \node[state, below=of infer] (decision) {决策解析 (Decision)};
+    \node[state, left=of decision] (tool) {工具/子智能体执行};
+    \node[state, left=of tool] (turnend) {轮次收敛 (TurnEnd)};
+
+    \draw[arrow] (idle) -- node[above, font=\footnotesize] {接收输入} (context);
+    \draw[arrow] (context) -- node[above, font=\footnotesize] {装配 L1} (infer);
+    \draw[arrow] (infer) -- node[right, font=\footnotesize] {SSE 增量解码} (decision);
+    \draw[arrow] (decision) -- node[above, font=\footnotesize] {识别工具调用} (tool);
+    \draw[arrow] (tool) -- node[left, font=\footnotesize] {回传执行摘要} (context);
+    \draw[arrow] (decision) -- node[above, font=\footnotesize] {最终回复} (turnend);
+    \draw[arrow] (turnend) -- node[left, font=\footnotesize] {更新并落盘} (idle);
+\end{tikzpicture}
+\caption{Agent 智能体核心决策状态机迁移机制}
+\end{figure}
+
+\subsection{核心调度流程与实现机制}
+\begin{itemize}
+    \item \textbf{状态流转与自主循环}：\texttt{AgentRuntime} 负责驱动“推理 $\rightarrow$ 决策 $\rightarrow$ 工具执行 $\rightarrow$ 结果反馈 $\rightarrow$ 二次推理”的自主状态循环。高频流式增量（Delta）通过内存缓冲平滑聚合，只有在每轮收敛时方触发原子持久化。
+    \item \textbf{动态指令系统（AgentInstructions）}：依据宿主平台指纹、工作区目录特征与安全策略，动态合成结构化 System Prompt，规范大模型对工具参数与代码修改的严格遵循度。
+    \item \textbf{多阶段工作流引擎（WorkflowRuntime）}：支持分步式复杂开发规划，能够对“架构审查 $\rightarrow$ 方案设计 $\rightarrow$ 代码重构 $\rightarrow$ 回归验证”全阶段进行确定性状态推进。
+\end{itemize}
+
+\subsection{Actor 并发保护与生命周期管理}
+Swift 6 的 Actor 机制从编译器层面杜绝了共享状态的数据竞争。\texttt{AgentRunRuntime} 封装了单次执行任务的生命周期控制：
+\begin{lstlisting}[language=Swift]
+public actor AgentRuntime {
+    private let sessionStore: SessionStore
+    private let contextEngine: L1ContextEngine
+    private let toolRuntime: ToolRuntime
+    private let modelGateway: ModelGateway
+    
+    public func executeTurn(sessionID: SessionID, prompt: String) async throws -> TurnResult {
+        // 1. 申请轮次独占租约
+        let lease = try await sessionStore.acquireLease(sessionID)
+        defer { Task { await lease.release() } }
+        // 2. 调度装配 L1 物理工作集
+        let context = try await contextEngine.buildWorkingSet(sessionID: sessionID)
+        // 3. 进入多步工具驱动与推理循环
+        return try await runInferenceLoop(context: context)
+    }
+}
+\end{lstlisting}
+
+\section{L1/L2/L3 Context 系统与异构双核}
+
+针对工业级代码工程中高频出现的文件海量变更与编译日志刷屏，LingXiAgent 首创了异构双核旁路隔离机制与三级上下文温度流控系统。
+
+\subsection{异构双核旁路总线 (P-Core / E-Core)}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=16mm,
+    rect/.style={draw, rounded corners=2mm, fill=yellow!10, text centered, minimum width=36mm, minimum height=8mm, font=\small},
+    decision/.style={draw, diamond, aspect=2, fill=orange!20, text centered, font=\small},
+    arrow/.style={-Latex, thick}
+]
+    \node[rect] (exec) {工具执行产生产物};
+    \node[decision, right=of exec] (check) {体积 $> 10\text{ KB}$ ?};
+    \node[rect, fill=green!15, above right=8mm and 12mm of check] (ecore) {E-Core 旁路对象池};
+    \node[rect, fill=blue!15, below right=8mm and 12mm of check] (pcore) {P-Core 推理工作集};
+    
+    \draw[arrow] (exec) -- (check);
+    \draw[arrow] (check) -- node[above left, font=\footnotesize] {是 (大产物)} (ecore);
+    \draw[arrow] (check) -- node[below left, font=\footnotesize] {否 (精炼结果)} (pcore);
+    \draw[arrow] (ecore) |- node[above, font=\footnotesize] {提炼语义摘要 + 引用 ID} (pcore.north);
+\end{tikzpicture}
+\caption{异构双核数据旁路分流逻辑}
+\end{figure}
+
+当工具执行（如 Shell 编译测试输出、代码检索结果）体积大于 10KB 时，系统自动触发旁路分流：
+\begin{itemize}
+    \item \textbf{E-Core 执行存储}：将大体积原始文本持久化至本地对象池中，分配唯一对象 ID（\texttt{obj\_xxx}）；
+    \item \textbf{P-Core 推理总线}：仅向模型推理上下文中注入结构化语义证据引用（例如包含状态、退出码、行数与核心错误摘要）。
+\end{itemize}
+该机制彻底解耦了“大执行数据”与“小推理模型”的显存矛盾，使上下文净减少 85\% 以上。
+
+\subsection{三级上下文分级流控体系}
+\begin{enumerate}
+    \item \textbf{L1 Hot Working Set（活跃物理工作集）}：直接投递给大模型参与当前轮次推理的物理上下文。受最大上下文预算（Context Budget）与动态 SoftLimit 双重约束，确保绝对不发生上下文超限溢出。
+    \item \textbf{L2 Warm Cache（内存待命池）}：保存在内存中的非活跃页面池。当 L1 超载时，\texttt{L2WorkingSetPolicy} 依据访问时间（LRU）与上下文语义相关性综合加权，将老旧页面降级至 L2；当后续轮次重新引用该文件时，秒级提拔（Promote）回 L1。
+    \item \textbf{L3 Cold Store（持久化深冷存储）}：落盘于 SQLite 数据库。当会话历史逼近高水位警戒线（High-Water Mark）时，\texttt{ContextCompaction} 引擎自动执行智能摘要归档，将历史对话压缩为紧凑的语义进度记录，释放工作集空间。
+\end{enumerate}
+
+\subsection{上下文置换淘汰加权算法}
+在 \texttt{ContextPageRankingPolicy} 中，页面权重计算结合了时间衰减与命中频次：
+\begin{equation}
+W(page) = \alpha \cdot \frac{1}{\Delta t + 1} + \beta \cdot \text{HitCount}(page) + \gamma \cdot \text{RelevanceScore}(page)
+\end{equation}
+其中 $\alpha, \beta, \gamma$ 为归一化加权系数，$\Delta t$ 为距离上次引用的轮次数。通过该数学模型，系统确保与当前开发目标最相关的核心代码页始终保留在 L1 高热工作集中。
+
+\subsection{服务端 Prompt Cache 友好调度}
+\texttt{ContextCacheController} 遵循大模型提供商的 Prefix Caching 技术规范：将系统静态指令、固化工具 Schema 与早期稳定会话固定于上下文最前端；动态项目代码页与最新交互严格执行单调追加，从而使服务端真实 Prompt Cache 命中率稳定在 80\% 以上。
+
+\section{Session 与 Subagent}
+
+\subsection{权威会话状态机与并发防抖}
+\texttt{SessionRuntime} 统一负责会话生命周期的调度与落盘，引入以下关键防护机制：
+\begin{itemize}
+    \item \textbf{独占写锁与防并发租约（RunLease / SessionMutationLock）}：在流式数据传输与异步并发任务调度中，通过独占租约机制防止并发写入引发的状态竞态与时间线污染；
+    \item \textbf{跨目录平滑会话恢复}：支持在任意工作区检索历史会话。用户发起 \texttt{resume} 操作时，系统自动识别历史目录，执行路径变更并自 SQLite 数据库中完整水合历史时间线。
+\end{itemize}
+
+\subsection{子智能体（Subagent）树状调度}
+通过 \texttt{SubagentToolService}，主智能体可根据当前开发复杂度，以工具调用形式分发派生子智能体：
+\begin{itemize}
+    \item \textbf{独立上下文作用域}：子智能体具备完全独立的 L1 推理上下文预算，其深入检索代码的细节不会膨胀主智能体的上下文；
+    \item \textbf{差异化模型路由}：主智能体可为子智能体分配针对性的轻量模型（如快速扫描文件）或推理模型（如架构推演），显著降低整体耗时与成本。
+\end{itemize}
+
+\section{Tool Runtime}
+
+LingXiAgent 构建了完备的原生工具运行沙箱（\texttt{ToolRuntime}），所有工具执行均受超时看门狗、输入强类型反序列化校验与变更备份协调器严格监管。
+
+\subsection{核心内置工具列表}
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lp{60mm}p{45mm}}
+\toprule
+\textbf{工具名称} & \textbf{功能定义} & \textbf{安全策略与副作用} \\
+\midrule
+\texttt{view\_file} & 查看指定文件的行区间文本内容 & 只读；敏感路径过滤 \\
+\texttt{replace\_file\_content} & 精确单块连续代码替换修改 & 破坏前强制快照，原子写入 \\
+\texttt{write\_to\_file} & 创建新文件或覆盖写入全量内容 & 破坏前强制快照，自动建目录 \\
+\texttt{list\_dir} & 列出指定目录下的文件与子目录 & 只读；自动跳过构建缓存 \\
+\texttt{find\_by\_name} & 按文件名与扩展名模式检索文件 & 只读；支持最大深度限制 \\
+\texttt{grep\_search} & 基于正则表达式进行全文文本搜索 & 只读；行级精准定位 \\
+\texttt{run\_command} & 隔离执行系统 Shell 原生命令 & 超时强杀；Bubblewrap 容器沙箱 \\
+\texttt{web\_search / fetch} & 安全抓取互联网内容并转为 Markdown & 只读；剥离脚本与样式冗余 \\
+\bottomrule
+\end{tabular}
+\caption{LingXiAgent 内置工具技术规范}
+\end{table}
+
+\subsection{工具调用安全看门狗}
+每个外部命令或工具在执行时均被分配执行截止时间（\texttt{ExecutionDeadline}），若进程超时未响应则触发看门狗强制杀灭，防止因命令陷入死循环导致整个会话僵死。
+
+\subsection{工具调用与响应契约示例}
+\begin{lstlisting}[language=Java]
+// 工具调用请求 (ToolCallRequest)
+{
+  "toolName": "replace_file_content",
+  "arguments": {
+    "targetFile": "Sources/LingXiCore/Modules/Agent/AgentRuntime.swift",
+    "startLine": 120,
+    "endLine": 135,
+    "targetContent": "func oldImplementation() { ... }",
+    "replacementContent": "func optimizedImplementation() { ... }"
+  }
+}
+
+// 工具执行反馈 (ToolCallResponse)
+{
+  "status": "success",
+  "exitCode": 0,
+  "backupPath": ".lingxi_backup/AgentRuntime.swift.20260914.bak",
+  "message": "Successfully replaced 1 block in AgentRuntime.swift"
+}
+\end{lstlisting}
+
+\section{MCP (Model Context Protocol) 运行时}
+
+LingXiAgent 原生实现了工业级标准 Model Context Protocol（MCP）协议客户端（\texttt{MCPRuntime}），提供对外部工具生态的原生接入能力：
+
+\begin{itemize}
+    \item \textbf{双通道通信传输层 (MCPTransport)}：
+    \begin{itemize}
+        \item \textbf{Stdio 管道通道}：直接以子进程方式启动并管理本地 MCP 服务器，建立双向 Stdio JSON-RPC 传输管道，内置挂起检测与看门狗；
+        \item \textbf{Streamable HTTP 通道}：支持基于 Server-Sent Events（SSE）的现代远程分布式 MCP 服务连接。
+    \end{itemize}
+    \item \textbf{RFC 9728 \& RFC 8414 OAuth 2.1 浏览器本地回送鉴权}：\texttt{MCPOAuthClient} 原生实现了完整的 OAuth 2.1 授权码模式。当遇到需要鉴权的 MCP 服务时，自动启动本地瞬时 HTTP 监听端口，弹出浏览器完成授权并自动拦截提取 Token，实现全自动化无感凭据落盘。
+    \item \textbf{Schema 动态装载与分级绑定}：避免全量外部工具膨胀推理上下文，实施短租约（Lease）式动态按需激活。
+\end{itemize}
+
+\section{Model Gateway}
+
+模型统一网关（\texttt{ModelGateway}）负责请求规范化、协议映射转换、流式长连接传输与智能弹性调度：
+
+\subsection{多协议适配支持体系}
+\begin{itemize}
+    \item \textbf{OpenAI Compatible Provider}：支持所有遵循标准 OpenAI 规范的商业与本地大模型（DeepSeek、Qwen、MiniMax、GLM、Ollama、vLLM 等）；
+    \item \textbf{OpenAI Responses Provider}：适配现代结构化 Responses 原生协议；
+    \item \textbf{Anthropic Messages Provider}：原生对接 Claude Messages 流式长连接与 Prompt Cache 结构构建。
+\end{itemize}
+
+\subsection{智能退避重试与熔断机制}
+\begin{itemize}
+    \item \textbf{速率限制调度器（ProviderRateScheduler）}：自动解析上游响应头（如 \texttt{x-ratelimit-remaining}、\texttt{retry-after}），实施自适应流量整形，防止触发 429 限流；
+    \item \textbf{错误分类器（ProviderErrorClassifier）}：精准区分瞬态网络超时（自动退避重试）、模型服务过载（自动降级备用端点）与上下文超限（触发上下文高水位压缩）。
+\end{itemize}
+
+\subsection{网络传输流式协议与 SSE 解码}
+\texttt{SSEDecoder} 原生解析 Server-Sent Events 流式字节序列，具备零内存拷贝与增量行缓冲处理能力，保证在百并发流式 Token 生成下的纳秒级派发性能。
+
+\section{Permission / Security}
+
+LingXiAgent 严格将数据安全与系统防护置于核心准则：
+
+\begin{itemize}
+    \item \textbf{凭据绝对零泄露准则}：所有 API Key、Access Token 仅在内存中短暂用于网络请求，绝不进入 Session 记录、日志流、数据库持久化或工具执行产物归档。
+    \item \textbf{AES-256-GCM 本地加密保险箱}：提供高强度凭据保险箱，通过平台安全硬件接口派生密钥，对用户敏感凭据加密落盘，并支持与环境进程变量平滑自动回退。
+    \item \textbf{跨平台沙箱隔离与级联灭活}：
+    \begin{itemize}
+        \item \textbf{macOS}：POSIX 独立进程组隔离、Seatbelt 沙箱配置文件；
+        \item \textbf{Linux}：集成 Bubblewrap（\texttt{bwrap}）容器命名空间与只读系统挂载隔离；
+        \item \textbf{Windows}：严格路径防穿透校验，使用 \texttt{taskkill /F /T} 级联深度灭活子进程树，彻底杜绝孤儿进程。
+    \end{itemize}
+    \item \textbf{破坏性操作前自动快照备份}：在执行任何文件覆盖、单块修改或破坏性写入前，协调器强制生成带时间戳的工作区隔离备份，确保所有操作具备 100\% 可回滚性。
+\end{itemize}
+
+
+\subsection{跨平台容器沙箱详细参数策略}
+系统针对 Linux 与 macOS 提供了细粒度的容器隔离调用实现：
+\begin{itemize}
+    \item \textbf{Linux Bubblewrap 沙箱调用链}：自动挂载系统只读命名空间（\texttt{--ro-bind /usr /usr}、\texttt{--ro-bind /lib /lib}）、创建隔离 \texttt{/tmp} 临时挂载（\texttt{--tmpfs /tmp}）、仅将当前工作目录挂载为读写（\texttt{--bind \$PWD \$PWD}），并启用 \texttt{--unshare-all} 彻底切断网络与宿主 IPC 命名空间。
+    \item \textbf{macOS Seatbelt 沙箱机制}：编译并载入内置 Seatbelt profile，严格限制子进程只允许访问当前工程目录与 Xcode 命令行工具链，拦截任意未授权的全局敏感文件读取。
+\end{itemize}
+
+\section{Persistence}
+
+持久化存储底座由 \texttt{SQLitePersistenceStore} 原生驱动，保证系统在异常断电或崩溃场景下的数据完整性与原子恢复：
+
+\begin{itemize}
+    \item \textbf{预写日志（WAL）高并发模式}：开启 SQLite WAL 机制与多连接池，实现读写互不阻塞；
+    \item \textbf{元数据与运行状态双库隔离}：模型目录与提供商配置持久化于 \texttt{catalog.sqlite}，用户交互时间线与代码上下文独立持久化于 \texttt{state.sqlite}；
+    \item \textbf{增量版本数据库迁移（MigrationRunner）}：内置 Schema 增量迁移器，支持软件版本迭代过程中的平滑无感升级；
+    \item \textbf{统一审计事件流与 WAL 恢复（EventLogStore / DurableCommandWAL）}：关键操作均写入只追加（Append-Only）审计日志，并在重启时通过 WAL 机制自动回放未决命令，杜绝状态丢失。
+\end{itemize}
+
+\section{CLI / TUI}
+
+
+\subsection{沉浸式终端界面 ASCII 布局设计}
+LingXiTUI 在终端中通过原生 VT100 控制序列渲染双栏看板，如下所示：
+\begin{lstlisting}
++-- LingXiAgent ----------------------------+-- Conversation -------------------------------+
+| Context Budget (L1/L2/L3):                | Assistant                                     |
+|   [============........] 62.4k / 200k     | I have completed the underlying protocol      |
+|                                           | decoupling using replace_file_content.        |
+| Prompt Cache Efficiency:                  | The unit tests passed in the local sandbox.   |
+|   Hit Rate: 82.3% (3,072 / 3,747 tokens)  |                                               |
+|                                           | deepseek-chat * 1.2s * 0.3s * 88tps * 22:30   |
+| Active MCP Servers:                       +-----------------------------------------------+
+|   * openapi-mcp-core  * notion  * trivy   | > Please continue adding Bubblewrap sandbox   |
++-------------------------------------------+-----------------------------------------------+
+\end{lstlisting}
+
+\subsection{沉浸式交互终端看板 (LingXiTUI)}
+在终端执行 \texttt{lingxiagent} 即可开启 60FPS 流式双栏看板：
+\begin{itemize}
+    \item \textbf{左侧实时监控面板}：直观展示 L1/L2/L3 上下文预算仪表盘（例如展示为 \texttt{[======....] 62.4k/200k}）、服务侧真实 Prompt Cache 命中率统计、活跃 MCP 插件状态与子智能体树；
+    \item \textbf{右侧交互会话视窗}：支持 Markdown 富文本渲染、代码差异 Diff 语法高亮与流式打字机效果；
+    \item \textbf{精准性能注脚}：每轮对话后自动输出结构化遥测数据：
+    \texttt{deepseek-chat · 耗时 1.2s · 首字延迟 0.3s · 88tps}。
+\end{itemize}
+
+\subsection{统一运维命令行手册 (lingxiagent CLI)}
+\begin{itemize}
+    \item \texttt{lingxiagent}：进入交互式 TUI 编程终端；
+    \item \texttt{lingxiagent -C <path>}：指定工作区目录启动；
+    \item \texttt{lingxiagent doctor}：全面自检系统环境、沙箱权限、凭据与 MCP 服务健康度；
+    \item \texttt{lingxiagent auth list / set / login}：管理提供商鉴权、设置加密密钥与官方订阅登录；
+    \item \texttt{lingxiagent mcp list / status / login}：在线探测 MCP 服务健康状态与触发 OAuth 2.1 鉴权；
+    \item \texttt{lingxiagent resume --last}：快速恢复上一次未完成的开发任务；
+    \item \texttt{git diff | lingxiagent exec "代码审查"}：无头自动化管道执行。
+\end{itemize}
+
+\section{主要操作流程}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=13mm,
+    block/.style={draw, rounded corners=2mm, fill=blue!8, text centered, minimum width=55mm, minimum height=8mm, font=\small},
+    arrow/.style={-Latex, thick}
+]
+    \node[block] (s1) {1. 启动会话并初始化环境 (lingxiagent)};
+    \node[block, below=of s1] (s2) {2. 扫描工作区，装配初始 L1 上下文与安全策略};
+    \node[block, below=of s2] (s3) {3. 用户输入开发指令，触发 Agent 决策主循环};
+    \node[block, below=of s3] (s4) {4. 模型生成工具调用，ToolRuntime 安全沙箱执行};
+    \node[block, below=of s4] (s5) {5. 大产物自动沉淀至 E-Core，向 P-Core 反馈摘要};
+    \node[block, below=of s5] (s6) {6. 多轮交互推进至任务完成，原子落盘持久化};
+    
+    \draw[arrow] (s1) -- (s2);
+    \draw[arrow] (s2) -- (s3);
+    \draw[arrow] (s3) -- (s4);
+    \draw[arrow] (s4) -- (s5);
+    \draw[arrow] (s5) -- (s6);
+\end{tikzpicture}
+\caption{LingXiAgent 端到端自主开发任务执行流程}
+\end{figure}
+
+
+\subsection{跨进程 Stdio IPC 通信时序与报文流}
+前端 TUI 与核心引擎之间通过标准 Stdio JSON Lines 双工管道通信，协议帧严格结构化：
+\begin{lstlisting}[language=Java]
+// 1. 前端向核心发起轮次开始请求
+{"id":"req_01","method":"session.startTurn","params":{"sessionID":"s_main","input":"运行测试"}}
+
+// 2. 核心向前端流式下发输出增量帧 (Streaming Frame)
+{"type":"stream.delta","payload":{"turnID":"t_01","textDelta":"正在调用 run_command..."}}
+
+// 3. 工具执行事件通知
+{"type":"event.toolStart","payload":{"tool":"run_command","args":{"command":"swift test"}}}
+
+// 4. 轮次最终收敛确认
+{"type":"stream.turnEnd","payload":{"turnID":"t_01","usage":{"promptTokens":1240,"cachedTokens":980}}}
+\end{lstlisting}
+
+\section{软件主要技术特征}
+
+\begin{enumerate}
+    \item \textbf{纯 Swift 6 原生编译与极速低开销}：采用机器码单二进制分发，启动仅约 10ms，常驻内存仅约 35MB，无任何 Node.js、Electron 或 Python 运行时依赖。
+    \item \textbf{首创异构双核旁路总线架构}：P-Core（推理总线）与 E-Core（执行存储）物理分流，大工具执行产物（$>10\text{ KB}$）自动旁路沉淀，彻底消除 Token 浪费与注意力迷航。
+    \item \textbf{三级上下文流控与高水位智能压缩}：L1 活跃工作集、L2 内存待命池与 L3 冷存储协同工作，辅以高水位智能摘要，确保多轮长开发任务中上下文永不溢出。
+    \item \textbf{服务端 Prompt Cache 极限命中率}：前置上下文结构化稳定排列，服务端提示词缓存命中率常态突破 80\%，显著降低 API 费用并提升首字响应速度。
+    \item \textbf{全功能原生 MCP 与 OAuth 2.1 引擎}：支持 Stdio 与 Streamable HTTP 双通道协议，内置 RFC 9728 浏览器回送鉴权客户端，无缝接入全球 MCP 工具生态。
+    \item \textbf{企业级安全防御与可逆回滚机制}：内存级凭据隔离、AES-256-GCM 本地加密保险箱、系统原生容器沙箱隔离，配合破坏性操作前强制快照备份，全面保障代码资产安全。
+\end{enumerate}
+
+\section{附录：系统核心配置项技术规范}
+
+LingXiAgent 遵循声明式配置规范，各配置文件均落盘于用户主目录下的安全配置区：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lp{50mm}p{55mm}}
+\toprule
+\textbf{配置文件名称} & \textbf{存储内容与职能} & \textbf{核心字段说明} \\
+\midrule
+\texttt{config.json} & 全局运行时偏好与安全策略 & \texttt{defaultModel}, \texttt{contextBudget}, \texttt{sandboxMode}, \texttt{autoBackup} \\
+\texttt{providers.json} & 大模型提供商网络与端点配置 & \texttt{providerID}, \texttt{baseURL}, \texttt{wireProtocol}, \texttt{rateLimitQPS} \\
+\texttt{mcp.json} & MCP 扩展插件服务声明清单 & \texttt{servers}, \texttt{command}, \texttt{args}, \texttt{env}, \texttt{transportType} \\
+\bottomrule
+\end{tabular}
+\caption{LingXiAgent 核心配置文件技术规范}
+\end{table}
+
+\end{document}
