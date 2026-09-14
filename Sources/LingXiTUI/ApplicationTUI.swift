@@ -1,5 +1,6 @@
 import Foundation
 import LingXiApplication
+import LingXiProtocol
 import LingXiTUIComponents
 
 @MainActor
@@ -31,6 +32,7 @@ public final class ApplicationTUI: Frontend {
         FrontendCommandItem(name: "clear", description: "Clear current transcript", category: "View"),
         FrontendCommandItem(name: "expand", description: "Expand all collapsed thinking and tool outputs", category: "View"),
         FrontendCommandItem(name: "collapse", description: "Collapse all long thinking and tool outputs", category: "View"),
+        FrontendCommandItem(name: "tasks", aliases: ["task", "bg"], description: "Manage background tasks modal", category: "System"),
         FrontendCommandItem(name: "quit", aliases: ["exit"], description: "Exit LingXi TUI", category: "General")
     ]
 
@@ -41,6 +43,7 @@ public final class ApplicationTUI: Frontend {
         case variantPicker(modelID: String, query: String, selected: Int, variants: [String])
         case sessionPicker(query: String, selected: Int)
         case configModal(selected: Int)
+        case tasksModal(selected: Int, tasks: [BackgroundTaskSnapshot], expandedDetail: Bool)
     }
 
     public let options: TUILaunchOptions
@@ -298,6 +301,11 @@ public final class ApplicationTUI: Frontend {
 
         if case .configModal = overlay {
             await handleConfigModal(event)
+            return
+        }
+
+        if case .tasksModal = overlay {
+            await handleTasksModal(event, store: store)
             return
         }
 
@@ -842,6 +850,56 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
+    // MARK: - Tasks Modal (/tasks)
+
+    private func openTasksModal(store: ApplicationStore) async {
+        let tasks = (try? await store.getBackgroundTasks()) ?? []
+        overlay = .tasksModal(selected: 0, tasks: tasks, expandedDetail: false)
+        refreshView(latestState)
+    }
+
+    private func handleTasksModal(_ event: TUIInputEvent, store: ApplicationStore) async {
+        guard case let .tasksModal(selected, tasks, expandedDetail) = overlay else { return }
+        switch event {
+        case .up, .scrollUp:
+            overlay = .tasksModal(selected: max(0, selected - 1), tasks: tasks, expandedDetail: expandedDetail)
+            refreshView(latestState)
+        case .down, .scrollDown:
+            overlay = .tasksModal(selected: min(max(0, tasks.count - 1), selected + 1), tasks: tasks, expandedDetail: expandedDetail)
+            refreshView(latestState)
+        case .escape:
+            overlay = nil
+            view.setFocus(.composer)
+            refreshView(latestState)
+        case .enter, .character(" "):
+            overlay = .tasksModal(selected: selected, tasks: tasks, expandedDetail: !expandedDetail)
+            refreshView(latestState)
+        case .character("k"), .character("K"), .character("x"), .character("X"):
+            guard tasks.indices.contains(selected) else { return }
+            let task = tasks[selected]
+            if task.status == .running {
+                _ = try? await store.terminateBackgroundTask(id: task.id)
+            }
+            let freshTasks = (try? await store.getBackgroundTasks()) ?? []
+            overlay = .tasksModal(
+                selected: min(selected, max(0, freshTasks.count - 1)),
+                tasks: freshTasks,
+                expandedDetail: expandedDetail
+            )
+            refreshView(latestState)
+        case .character("r"), .character("R"):
+            let freshTasks = (try? await store.getBackgroundTasks()) ?? []
+            overlay = .tasksModal(
+                selected: min(selected, max(0, freshTasks.count - 1)),
+                tasks: freshTasks,
+                expandedDetail: expandedDetail
+            )
+            refreshView(latestState)
+        default:
+            break
+        }
+    }
+
     private func handleInteraction(_ event: TUIInputEvent, store: ApplicationStore) async {
         guard let interaction = latestState.activeInteraction else { return }
         switch event {
@@ -1034,6 +1092,15 @@ public final class ApplicationTUI: Frontend {
             let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
             if parts.count == 1 {
                 openConfigModal()
+                return
+            }
+            fallthrough
+        case "/tasks", "/task", "/bg":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 {
+                Task { [weak self] in
+                    await self?.openTasksModal(store: store)
+                }
                 return
             }
             fallthrough
@@ -1710,6 +1777,8 @@ public final class ApplicationTUI: Frontend {
             return renderSessionPickerOverlay(query: query, selected: selected)
         case let .configModal(selected):
             return renderConfigModalOverlay(selected: selected)
+        case let .tasksModal(selected, tasks, expandedDetail):
+            return renderTasksModalOverlay(selected: selected, tasks: tasks, expandedDetail: expandedDetail)
         case nil:
             return nil
         }
@@ -2082,6 +2151,108 @@ public final class ApplicationTUI: Frontend {
 
         lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
         let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private func renderTasksModalOverlay(selected: Int, tasks: [BackgroundTaskSnapshot], expandedDetail: Bool) -> TUIOverlayModel {
+        Self.tasksModalOverlay(selected: selected, tasks: tasks, expandedDetail: expandedDetail, size: terminal.size)
+    }
+
+    static func tasksModalOverlay(selected: Int, tasks: [BackgroundTaskSnapshot], expandedDetail: Bool, size: TUISize) -> TUIOverlayModel {
+        let totalWidth = max(50, min(80, size.width - 2))
+        let innerWidth = max(1, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header
+        let titleLeft = "后台任务监控 (Background Tasks)"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Tip
+        let tip = "  ↑/↓ 切换 · Enter 详情 · k 终止 · r 刷新 · Esc 退出"
+        lines.append(TUIStyledLine(tip.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Tasks List
+        if tasks.isEmpty {
+            lines.append(TUIStyledLine("  暂无后台任务 (No background tasks)".padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+            lines.append(TUIStyledLine("", style: .modalBackground))
+        } else {
+            let safeSelected = max(0, min(tasks.count - 1, selected))
+            for (i, task) in tasks.enumerated() {
+                let isSelected = i == safeSelected
+                let cursor = isSelected ? "> " : "  "
+
+                let statusBadge: String
+                let statusStyle: TUIStyle
+                switch task.status {
+                case .running:
+                    statusBadge = "[ RUNNING ]"
+                    statusStyle = .accent
+                case .exited:
+                    if let code = task.exitCode, code == 0 {
+                        statusBadge = "[ SUCCESS ]"
+                        statusStyle = .modalActiveDot
+                    } else {
+                        statusBadge = "[ FAILED (\(task.exitCode ?? -1)) ]"
+                        statusStyle = .warning
+                    }
+                case .timedOut:
+                    statusBadge = "[ TIMEOUT ]"
+                    statusStyle = .warning
+                case .terminated:
+                    statusBadge = "[ KILLED ]"
+                    statusStyle = .modalItemDim
+                }
+
+                let pidText = task.pid.map { "PID:\($0)" } ?? ""
+                let elapsedText = String(format: "%.1fs", task.elapsedSeconds)
+                let metaRight = "\(pidText) \(elapsedText) \(statusBadge)".trimmingCharacters(in: .whitespaces)
+
+                let availableLeftWidth = max(5, innerWidth - TUIDisplayWidth.width(of: metaRight) - 2)
+                var cmdShort = "#\(i + 1) \(task.command)"
+                if TUIDisplayWidth.width(of: cursor + cmdShort) > availableLeftWidth {
+                    let maxCmdChars = max(4, availableLeftWidth - cursor.count - 3)
+                    cmdShort = String(cmdShort.prefix(maxCmdChars)) + "..."
+                }
+                let left = "\(cursor)\(cmdShort)"
+
+                let pad = max(1, innerWidth - TUIDisplayWidth.width(of: left) - TUIDisplayWidth.width(of: metaRight))
+                let rowText = left + String(repeating: " ", count: pad) + metaRight
+
+                if isSelected {
+                    lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+                } else {
+                    lines.append(TUIStyledLine(rowText, style: statusStyle))
+                }
+
+                if isSelected && expandedDetail {
+                    lines.append(TUIStyledLine("    Task ID: \(task.id)", style: .modalItemDim))
+                    lines.append(TUIStyledLine("    Command: \(task.command)", style: .modalItem))
+                    lines.append(TUIStyledLine("    Directory: \(task.cwd)", style: .modalItemDim))
+                    lines.append(TUIStyledLine("    Timeout: \(task.timeoutSeconds)s  (Elapsed: \(String(format: "%.1f", task.elapsedSeconds))s)", style: .modalItemDim))
+
+                    let combinedOutput = (task.stdout + (task.stderr.isEmpty ? "" : "\n" + task.stderr)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !combinedOutput.isEmpty {
+                        lines.append(TUIStyledLine("    Log Tail:", style: .modalGroup))
+                        let outputLines = combinedOutput.components(separatedBy: "\n")
+                        let tail = outputLines.suffix(6)
+                        for logLine in tail {
+                            let truncated = logLine.count > innerWidth - 8 ? String(logLine.prefix(innerWidth - 11)) + "..." : logLine
+                            lines.append(TUIStyledLine("      │ \(truncated)", style: .modalItemDim))
+                        }
+                    } else {
+                        lines.append(TUIStyledLine("    (No logs output yet)", style: .modalItemDim))
+                    }
+                    lines.append(TUIStyledLine("", style: .modalBackground))
+                }
+            }
+        }
+
+        lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
+        let totalModalHeight = min(size.height - 2, lines.count + 2)
         return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
     }
 

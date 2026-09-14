@@ -54,7 +54,17 @@ public actor SessionTurnCoordinator {
 
         var completedCallIDs: Set<ToolCallID> = []
         var currentTurnID: TurnID?
+        var lastRole: MessageRole?
+        var lastUserContent: String?
         for msg in messages {
+            if msg.role == .user {
+                if lastRole == .user && lastUserContent == msg.content {
+                    continue
+                }
+                lastUserContent = msg.content
+            }
+            lastRole = msg.role
+
             let causal = CausalContext(sessionID: sessionID, turnID: currentTurnID)
             switch msg.role {
             case .user:

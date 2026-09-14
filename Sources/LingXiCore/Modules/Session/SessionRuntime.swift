@@ -306,8 +306,13 @@ public actor SessionRuntime {
         turnRunning = true
         let profiler = TurnProfiler(sessionID: sessionID, enabled: performanceStore.enabled)
         do {
-            _ = try await store.session(sessionID)
-            let userMessage = try await store.appendMessage(sessionID, role: .user, content: content)
+            let currentSession = try await store.session(sessionID)
+            let userMessage: Message
+            if let last = currentSession.messages.last, last.role == .user && last.content == content {
+                userMessage = last
+            } else {
+                userMessage = try await store.appendMessage(sessionID, role: .user, content: content)
+            }
             let userEntry = ContextEntry(messageID: userMessage.id, role: .user, source: .userMessage, part: .text(content))
             var updatedEntries = currentActiveEntries
             if updatedEntries.isEmpty {

@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import LingXiProtocol
-import LingXiCore
+@testable import LingXiCore
 import LingXiClient
 @testable import LingXiApplication
 @testable import LingXiTUI
@@ -330,5 +330,81 @@ struct ResumeAndConfigEnhancementTests {
         #expect(d2.shouldStartExecution == true)
         #expect(d2.runID != nil)
         #expect(d2.status == .running)
+    }
+
+    @Test func hydrateHistoricalMessagesDeduplicatesConsecutiveIdenticalUserInputs() async {
+        let sessionID = SessionID("sess-dedup")
+        let eventLog = SessionEventLog(sessionID: sessionID)
+        let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
+
+        let duplicateUserMessages = [
+            Message(id: MessageID("m1"), role: .user, content: "帮我看一下代码", createdAt: Date().addingTimeInterval(-10)),
+            Message(id: MessageID("m2"), role: .user, content: "帮我看一下代码", createdAt: Date().addingTimeInterval(-9)),
+            Message(id: MessageID("m3"), role: .assistant, content: "好的，我已经看了", createdAt: Date().addingTimeInterval(-5)),
+            Message(id: MessageID("m4"), role: .user, content: "第二轮问题", createdAt: Date().addingTimeInterval(-2))
+        ]
+
+        await coord.hydrateHistoricalMessages(duplicateUserMessages)
+        let turns = await coord.listTurns(page: PageRequest(limit: 10)).items
+        #expect(turns.count == 2)
+        #expect(turns.first?.userMessage.text == "帮我看一下代码")
+        #expect(turns.last?.userMessage.text == "第二轮问题")
+    }
+
+    @Test @MainActor func tasksModalOverlayRendersHeaderAndTasksCorrectly() {
+        let now = Date()
+        let task1 = BackgroundTaskSnapshot(
+            id: "task-1",
+            command: "sleep 10",
+            cwd: "/tmp",
+            timeoutSeconds: 30,
+            startedAt: now.addingTimeInterval(-5),
+            completedAt: nil,
+            status: .running,
+            pid: 12345,
+            exitCode: nil,
+            description: nil,
+            stdout: "running step 1\nrunning step 2",
+            stderr: "",
+            stdoutCursor: 30,
+            stderrCursor: 0,
+            elapsedSeconds: 5.0,
+            remainingTimeoutSeconds: 25.0
+        )
+        let task2 = BackgroundTaskSnapshot(
+            id: "task-2",
+            command: "git status",
+            cwd: "/tmp",
+            timeoutSeconds: 15,
+            startedAt: now.addingTimeInterval(-20),
+            completedAt: now.addingTimeInterval(-18),
+            status: .exited,
+            pid: 12340,
+            exitCode: 0,
+            description: nil,
+            stdout: "clean",
+            stderr: "",
+            stdoutCursor: 5,
+            stderrCursor: 0,
+            elapsedSeconds: 2.0,
+            remainingTimeoutSeconds: 13.0
+        )
+
+        let overlay = ApplicationTUI.tasksModalOverlay(
+            selected: 0,
+            tasks: [task1, task2],
+            expandedDetail: true,
+            size: TUISize(width: 80, height: 24)
+        )
+
+        #expect(overlay.isModal == true)
+        #expect(overlay.focus == .picker)
+        #expect(overlay.lines.first?.text.contains("后台任务监控") == true)
+        #expect(overlay.lines.first?.text.contains("esc") == true)
+        #expect(overlay.lines.contains { $0.text.contains("↑/↓ 切换 · Enter 详情 · k 终止 · r 刷新 · Esc 退出") })
+        #expect(overlay.lines.contains { $0.text.contains("RUNNING") && $0.text.contains("sleep 10") })
+        #expect(overlay.lines.contains { $0.text.contains("SUCCESS") && $0.text.contains("git status") })
+        #expect(overlay.lines.contains { $0.text.contains("Log Tail:") })
+        #expect(overlay.lines.contains { $0.text.contains("running step 2") })
     }
 }

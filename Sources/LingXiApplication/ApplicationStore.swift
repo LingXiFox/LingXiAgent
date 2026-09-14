@@ -405,7 +405,16 @@ public actor ApplicationStore {
             state.activeSessionState?.reasoningEffort = effort
             _ = try? await client.session.setReasoningEffort(sessionID: activeSessionID, effort: effort)
         }
-        notifyStateChanged()
+    }
+
+    // MARK: - Background Tasks
+    public func getBackgroundTasks() async throws -> [BackgroundTaskSnapshot] {
+        try await client.diagnostics.getBackgroundTasks()
+    }
+
+    @discardableResult
+    public func terminateBackgroundTask(id: String) async throws -> Bool {
+        try await client.runtime.terminateBackgroundTask(id: id)
     }
 
     // MARK: - Prompt 处理
