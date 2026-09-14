@@ -308,26 +308,34 @@ public struct LingXiClient: Sendable {
             candidateDirs.append(argDir)
         }
 
+        #if os(Windows)
+        let binaryName = "LingXiCoreHost.exe"
+        #else
+        let binaryName = "LingXiCoreHost"
+        #endif
+
         for dir in candidateDirs {
-            let coreURL = dir.appendingPathComponent("LingXiCoreHost")
+            let coreURL = dir.appendingPathComponent(binaryName)
             if fm.isExecutableFile(atPath: coreURL.path) {
                 return coreURL.path
             }
         }
 
-        let standardInstalled = fm.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent/bin/LingXiCoreHost")
-        if fm.isExecutableFile(atPath: standardInstalled.path) {
-            return standardInstalled.path
-        }
-
+        // 优先检查当前工程的本地构建产物 (开发调试场景)
         let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
         let devCandidates = [
-            cwd.appendingPathComponent(".build/debug/LingXiCoreHost"),
-            cwd.appendingPathComponent(".build/release/LingXiCoreHost"),
-            cwd.appendingPathComponent(".build/arm64-apple-macosx/debug/LingXiCoreHost"),
-            cwd.appendingPathComponent(".build/arm64-apple-macosx/release/LingXiCoreHost"),
-            cwd.appendingPathComponent(".build/x86_64-apple-macosx/debug/LingXiCoreHost"),
-            cwd.appendingPathComponent(".build/x86_64-apple-macosx/release/LingXiCoreHost")
+            cwd.appendingPathComponent(".build/out/Products/Debug/\(binaryName)"),
+            cwd.appendingPathComponent(".build/out/Products/Release/\(binaryName)"),
+            cwd.appendingPathComponent(".build/debug/\(binaryName)"),
+            cwd.appendingPathComponent(".build/release/\(binaryName)"),
+            cwd.appendingPathComponent(".build/arm64-apple-macosx/debug/\(binaryName)"),
+            cwd.appendingPathComponent(".build/arm64-apple-macosx/release/\(binaryName)"),
+            cwd.appendingPathComponent(".build/x86_64-apple-macosx/debug/\(binaryName)"),
+            cwd.appendingPathComponent(".build/x86_64-apple-macosx/release/\(binaryName)"),
+            cwd.appendingPathComponent(".build/aarch64-unknown-linux-gnu/debug/\(binaryName)"),
+            cwd.appendingPathComponent(".build/aarch64-unknown-linux-gnu/release/\(binaryName)"),
+            cwd.appendingPathComponent(".build/x86_64-unknown-linux-gnu/debug/\(binaryName)"),
+            cwd.appendingPathComponent(".build/x86_64-unknown-linux-gnu/release/\(binaryName)")
         ]
         for devURL in devCandidates {
             if fm.isExecutableFile(atPath: devURL.path) {
@@ -335,10 +343,16 @@ public struct LingXiClient: Sendable {
             }
         }
 
-        if let firstDir = candidateDirs.first {
-            return firstDir.appendingPathComponent("LingXiCoreHost").path
+        let standardInstalled = fm.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent/bin/\(binaryName)")
+        if fm.isExecutableFile(atPath: standardInstalled.path) {
+            return standardInstalled.path
         }
-        return standardInstalled.path
+
+        if let firstDir = candidateDirs.first {
+            return firstDir.appendingPathComponent(binaryName).path
+        }
+
+        return binaryName
     }
 }
 

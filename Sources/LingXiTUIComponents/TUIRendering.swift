@@ -1040,9 +1040,9 @@ public enum TUIMarkdownRenderer {
                 continue
             }
 
-            // 2. 遥测信息行 ⚡️（原样输出，靠左带缩进）
-            if rawLine.contains("⚡️") {
-                result.append(TUIStyledLine("  " + trimmed, style: .dim))
+            // 2. 遥测信息行 ⚡️（原样输出，与首行标记 ✦ / ● 严格左对齐，无多余空格缩进）
+            if rawLine.contains("⚡️") || (rawLine.contains("耗时 ") && rawLine.contains(" · ")) {
+                result.append(TUIStyledLine(trimmed, style: .dim))
                 continue
             }
 
@@ -1917,20 +1917,32 @@ public final class StatusLine {
 
 public final class BottomPane {
     public let composer = ChatComposer()
+    public var activityLine: TUIStyledLine? = nil
 
     public init() {}
 
     public func requiredHeight(overlay: TUIOverlayModel?, width: Int, availableHeight: Int) -> Int {
         let composerHeight = composer.render(width: max(1, width - 4)).lines.count
-        return min(max(3, composerHeight + 2), max(3, availableHeight))
+        let extra = activityLine != nil ? 1 : 0
+        return min(max(3 + extra, composerHeight + 2 + extra), max(3 + extra, availableHeight))
     }
 
     public func render(_ overlay: TUIOverlayModel?, in frame: inout TUIFrame, top: Int, height: Int) -> TUIPoint? {
-        let composerRect = TUIRect(x: 1, y: top, width: max(2, frame.size.width - 2), height: max(2, height))
+        let extra = activityLine != nil ? 1 : 0
+        let composerBoxHeight = max(2, height - extra)
+        let composerRect = TUIRect(x: 1, y: top, width: max(2, frame.size.width - 2), height: composerBoxHeight)
         let composerLines = composer.render(width: max(1, composerRect.width - 2))
         frame.fill(composerRect, style: .composer)
         frame.strokeBox(composerRect, style: .accent, rounded: true)
         frame.writeLines(composerLines.lines, at: TUIPoint(x: composerRect.x + 1, y: composerRect.y + 1), maxWidth: max(1, composerRect.width - 2), maxHeight: max(1, composerRect.height - 2))
+        
+        if let activity = activityLine, extra > 0 {
+            let actY = composerRect.y + composerRect.height
+            if actY < frame.size.height {
+                frame.write(activity.text, at: TUIPoint(x: 1, y: actY), maxWidth: max(1, frame.size.width - 2), style: activity.style)
+            }
+        }
+
         if let overlay { render(overlay, in: &frame, composerRect: composerRect) }
         guard let cursor = composerLines.cursor else { return nil }
         return TUIPoint(x: composerRect.x + 1 + cursor.x, y: composerRect.y + 1 + cursor.y)
@@ -2215,12 +2227,75 @@ public final class TUIApp {
     public private(set) var focus: TUIFocus = .composer
     public var heroConfig: TUIHeroConfig? = nil
     public var sidebarModel: TUISidebarModel? = nil
+    public var backgroundTasks: [BackgroundTaskSnapshot] = []
+    public var backgroundSpinnerIndex: Int = 0
 
     public init() {}
 
     public var composer: ChatComposer { bottomPane.composer }
 
+    public func updateBottomPaneActivity() {
+        bottomPane.activityLine = Self.formatBackgroundActivity(tasks: backgroundTasks, spinnerIndex: backgroundSpinnerIndex)
+    }
+
+    public static func formatBackgroundActivity(
+        tasks: [BackgroundTaskSnapshot],
+        spinnerIndex: Int = 0,
+        now: Date = Date()
+    ) -> TUIStyledLine? {
+        let running = tasks.filter { $0.status == .running }
+        let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let spinner = spinnerFrames[abs(spinnerIndex) % spinnerFrames.count]
+
+        if !running.isEmpty {
+            if running.count == 1 {
+                let task = running[0]
+                let elapsed = max(task.elapsedSeconds, max(0.0, now.timeIntervalSince(task.startedAt)))
+                let elapsedStr = String(format: "%.1fs", elapsed)
+                let pidStr = task.pid.map { " (PID: \($0))" } ?? ""
+                let cmdShort = task.command.count > 36 ? String(task.command.prefix(33)) + "..." : task.command
+                let text = "  \(spinner) [后台] #1 \(cmdShort) · \(elapsedStr) / \(task.timeoutSeconds)s\(pidStr) · [/tasks 管理]"
+                return TUIStyledLine(text, style: .accent)
+            } else {
+                let first = running[0]
+                let elapsed = max(first.elapsedSeconds, max(0.0, now.timeIntervalSince(first.startedAt)))
+                let elapsedStr = String(format: "%.1fs", elapsed)
+                let firstCmd = first.command.count > 24 ? String(first.command.prefix(21)) + "..." : first.command
+                let text = "  \(spinner) [后台] \(running.count) 个任务运行中 · #1 \(firstCmd) (\(elapsedStr)) · [/tasks 查看全部]"
+                return TUIStyledLine(text, style: .accent)
+            }
+        }
+
+        // 检查最近 5 秒内结束的任务
+        let recentFinished = tasks.filter { $0.status != .running && $0.completedAt != nil }
+        if let latestFinished = recentFinished.max(by: { ($0.completedAt ?? Date.distantPast) < ($1.completedAt ?? Date.distantPast) }),
+           let completedAt = latestFinished.completedAt {
+            let elapsedSinceCompletion = now.timeIntervalSince(completedAt)
+            if elapsedSinceCompletion >= 0 && elapsedSinceCompletion <= 5.0 {
+                let cmdShort = latestFinished.command.count > 36 ? String(latestFinished.command.prefix(33)) + "..." : latestFinished.command
+                switch latestFinished.status {
+                case .exited:
+                    if let code = latestFinished.exitCode, code == 0 {
+                        let durStr = String(format: "%.1fs", latestFinished.elapsedSeconds)
+                        return TUIStyledLine("  ✓ [后台] #1 \(cmdShort) 已完成 (耗时 \(durStr)) · [/tasks 查看]", style: .modalActiveDot)
+                    } else {
+                        return TUIStyledLine("  ✗ [后台] #1 \(cmdShort) 退出失败 (\(latestFinished.exitCode ?? -1)) · [/tasks 查看]", style: .error)
+                    }
+                case .timedOut:
+                    return TUIStyledLine("  ⚠ [后台] #1 \(cmdShort) 超时终止 (\(latestFinished.timeoutSeconds)s) · [/tasks 查看]", style: .warning)
+                case .terminated:
+                    return TUIStyledLine("  ✗ [后台] #1 \(cmdShort) 已手动终止 · [/tasks 查看]", style: .overlayItemDim)
+                case .running:
+                    break
+                }
+            }
+        }
+
+        return nil
+    }
+
     public func layout(size: TUISize, overlay: TUIOverlayModel?) -> TUILayout {
+        updateBottomPaneActivity()
         let availableBottom = max(3, size.height / 3)
         let bottomHeight = bottomPane.requiredHeight(overlay: nil, width: size.width, availableHeight: availableBottom)
         let hasSidebar = heroConfig == nil && sidebarModel != nil && size.width >= 80
@@ -2247,6 +2322,7 @@ public final class TUIApp {
         }
         var frame = TUIFrame(size: size)
         frame.clear()
+        updateBottomPaneActivity()
 
         // Hero Centered Mode (第一次启动或 /new 新建会话时输入框居中)
         if let hero = heroConfig {
@@ -2381,12 +2457,23 @@ public final class TUIApp {
                 let shortcuts = "tab agents  ctrl+p commands"
                 frame.write(shortcuts, at: TUIPoint(x: boxX + boxWidth - shortcuts.count, y: boxY + boxHeight), style: .dim)
 
+                var currentBelowY = boxY + boxHeight + 1
+                if let activity = bottomPane.activityLine {
+                    let actX = max(1, (size.width - TUIDisplayWidth.width(of: activity.text)) / 2)
+                    if currentBelowY < size.height - 2 {
+                        frame.write(activity.text, at: TUIPoint(x: actX, y: currentBelowY), maxWidth: size.width - 2, style: activity.style)
+                        currentBelowY += 1
+                    }
+                }
+
                 let tipLeft = "● Tip  "
                 let fullTip = tipLeft + hero.tip
                 let tipX = max(1, (size.width - fullTip.count) / 2)
-                frame.put("●", at: TUIPoint(x: tipX, y: boxY + boxHeight + 2), style: .modalActiveDot)
-                frame.write("Tip", at: TUIPoint(x: tipX + 2, y: boxY + boxHeight + 2), style: .heroTip)
-                frame.write("  \(hero.tip)", at: TUIPoint(x: tipX + 5, y: boxY + boxHeight + 2), style: .dim)
+                if currentBelowY < size.height - 1 {
+                    frame.put("●", at: TUIPoint(x: tipX, y: currentBelowY), style: .modalActiveDot)
+                    frame.write("Tip", at: TUIPoint(x: tipX + 2, y: currentBelowY), style: .heroTip)
+                    frame.write("  \(hero.tip)", at: TUIPoint(x: tipX + 5, y: currentBelowY), style: .dim)
+                }
             }
 
             let statusY = size.height - 1

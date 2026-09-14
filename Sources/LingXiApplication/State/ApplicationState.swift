@@ -52,6 +52,7 @@ public struct ApplicationState: Sendable, Equatable {
     public var workspaceDiff: WorkspaceDiffSummary?
     public var latestDiagnostics: RuntimeDiagnosticsBundle?
     public var workflows: [WorkflowSnapshot]
+    public var backgroundTasks: [BackgroundTaskSnapshot]
 
     // MARK: - 6. Next Turn Intent
     public var nextTurnMode: AgentMode?
@@ -94,6 +95,7 @@ public struct ApplicationState: Sendable, Equatable {
         workspaceDiff: WorkspaceDiffSummary? = nil,
         latestDiagnostics: RuntimeDiagnosticsBundle? = nil,
         workflows: [WorkflowSnapshot] = [],
+        backgroundTasks: [BackgroundTaskSnapshot] = [],
         nextTurnMode: AgentMode? = nil,
         nextTurnPermission: PermissionConfiguration? = nil,
         nextTurnReasoningEffort: ReasoningEffort? = nil,
@@ -117,6 +119,7 @@ public struct ApplicationState: Sendable, Equatable {
         self.workspaceDiff = workspaceDiff
         self.latestDiagnostics = latestDiagnostics
         self.workflows = workflows
+        self.backgroundTasks = backgroundTasks
         self.nextTurnMode = nextTurnMode
         self.nextTurnPermission = nextTurnPermission
         self.nextTurnReasoningEffort = nextTurnReasoningEffort

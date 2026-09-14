@@ -277,6 +277,9 @@ public actor ApplicationStore {
             if let diag = try? await client.diagnostics.getBundle() {
                 state.latestDiagnostics = diag
                 state.workflows = diag.workflows
+                if let tasks = diag.backgroundTasks {
+                    state.backgroundTasks = tasks
+                }
                 notifyStateChanged()
             }
 
@@ -409,7 +412,10 @@ public actor ApplicationStore {
 
     // MARK: - Background Tasks
     public func getBackgroundTasks() async throws -> [BackgroundTaskSnapshot] {
-        try await client.diagnostics.getBackgroundTasks()
+        let tasks = try await client.diagnostics.getBackgroundTasks()
+        state.backgroundTasks = tasks
+        notifyStateChanged()
+        return tasks
     }
 
     @discardableResult
@@ -683,9 +689,10 @@ public actor ApplicationStore {
         async let pStatusTask = try? client.provider.status()
         async let extensionsTask = try? client.extensionDomain.list()
         async let wsTask = try? client.workspace.get()
+        async let diagTask = try? client.diagnostics.getBundle()
 
-        let (info, health, caps, models, selection, providers, pStatus, extensions, ws) = await (
-            infoTask, healthTask, capsTask, modelsTask, selectionTask, providersTask, pStatusTask, extensionsTask, wsTask
+        let (info, health, caps, models, selection, providers, pStatus, extensions, ws, diag) = await (
+            infoTask, healthTask, capsTask, modelsTask, selectionTask, providersTask, pStatusTask, extensionsTask, wsTask, diagTask
         )
 
         if let info {
@@ -717,6 +724,13 @@ public actor ApplicationStore {
         }
         if let ws {
             state.currentWorkspace = ws
+        }
+        if let diag {
+            state.latestDiagnostics = diag
+            state.workflows = diag.workflows
+            if let tasks = diag.backgroundTasks {
+                state.backgroundTasks = tasks
+            }
         }
         debug("refresh.runtime.basics.concurrent.end")
         notifyStateChanged()

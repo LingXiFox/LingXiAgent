@@ -1190,4 +1190,202 @@ struct TUIRenderingTests {
         #expect(summary.contains("project.pbxproj"))
         #expect(!summary.contains("Apple Operation )"))
     }
+
+    // MARK: - Telemetry Left-Alignment & Background Activity Bar Tests
+
+    @Test func sessionTelemetryFooterAlignsStrictlyToLeftEdge() {
+        let viewport = TranscriptViewport()
+        let sampleContent = """
+        已在后台启动指令，约 30 秒后将输出 `OK`。
+
+        ⚡️ openai-codex/gpt-5.6-luna · 耗时 19.1s · 首字 18.4s · 22.0 tok/s · 17:55:05
+        """
+        let entry = TUITranscriptEntry(
+            id: "msg-telemetry-test",
+            kind: .assistant,
+            text: sampleContent,
+            timestamp: Date()
+        )
+
+        viewport.append(entry)
+        let lines = viewport.render(viewportHeight: 20, width: 80)
+
+        // 验证正文第一行以 ✦ 开头
+        let firstLine = lines.first(where: { $0.text.contains("已在后台启动指令") })
+        #expect(firstLine != nil)
+        #expect(firstLine?.text.hasPrefix("✦ ") == true)
+
+        // 验证用时遥测行严格顶格左对齐（无多余两个前置空格），与 ✦ 垂直对齐，样式为 .dim
+        let telemetryLine = lines.first(where: { $0.text.contains("openai-codex/gpt-5.6-luna") })
+        #expect(telemetryLine != nil)
+        #expect(telemetryLine?.text.hasPrefix("⚡️ openai-codex") == true)
+        #expect(telemetryLine?.text.hasPrefix("  ⚡️") == false) // 严禁多余缩进！
+        #expect(telemetryLine?.style == .dim)
+    }
+
+    @Test func backgroundActivityBarFormattingForRunningAndFinishedTasks() {
+        let now = Date()
+        let runningTask = BackgroundTaskSnapshot(
+            id: "task-1",
+            command: "sleep 30; printf 'OK\\n'",
+            cwd: "/Volumes/Development",
+            timeoutSeconds: 30,
+            startedAt: now.addingTimeInterval(-14.2),
+            completedAt: nil,
+            status: .running,
+            pid: 12345,
+            exitCode: nil,
+            description: nil,
+            stdout: "",
+            stderr: "",
+            stdoutCursor: 0,
+            stderrCursor: 0,
+            elapsedSeconds: 14.2,
+            remainingTimeoutSeconds: 15.8
+        )
+
+        // 1. 单个运行中任务
+        let lineSingle = TUIApp.formatBackgroundActivity(tasks: [runningTask], spinnerIndex: 0, now: now)
+        #expect(lineSingle != nil)
+        #expect(lineSingle?.text.contains("[后台] #1 sleep 30") == true)
+        #expect(lineSingle?.text.contains("14.2s / 30s") == true)
+        #expect(lineSingle?.text.contains("PID: 12345") == true)
+        #expect(lineSingle?.text.contains("[/tasks 管理]") == true)
+        #expect(lineSingle?.style == .accent)
+
+        // 2. 多个运行中任务
+        let runningTask2 = BackgroundTaskSnapshot(
+            id: "task-2",
+            command: "make build-all",
+            cwd: "/Volumes/Development",
+            timeoutSeconds: 60,
+            startedAt: now.addingTimeInterval(-5.0),
+            completedAt: nil,
+            status: .running,
+            pid: 12346,
+            exitCode: nil,
+            description: nil,
+            stdout: "",
+            stderr: "",
+            stdoutCursor: 0,
+            stderrCursor: 0,
+            elapsedSeconds: 5.0,
+            remainingTimeoutSeconds: 55.0
+        )
+        let lineMulti = TUIApp.formatBackgroundActivity(tasks: [runningTask, runningTask2], spinnerIndex: 1, now: now)
+        #expect(lineMulti != nil)
+        #expect(lineMulti?.text.contains("2 个任务运行中") == true)
+        #expect(lineMulti?.text.contains("[/tasks 查看全部]") == true)
+
+        // 3. 刚完成任务 (5 秒内)
+        let successTask = BackgroundTaskSnapshot(
+            id: "task-success",
+            command: "printf 'DONE'",
+            cwd: "/Volumes/Development",
+            timeoutSeconds: 10,
+            startedAt: now.addingTimeInterval(-3.0),
+            completedAt: now.addingTimeInterval(-1.0),
+            status: .exited,
+            pid: 12347,
+            exitCode: 0,
+            description: nil,
+            stdout: "DONE",
+            stderr: "",
+            stdoutCursor: 4,
+            stderrCursor: 0,
+            elapsedSeconds: 2.0,
+            remainingTimeoutSeconds: 8.0
+        )
+        let lineSuccess = TUIApp.formatBackgroundActivity(tasks: [successTask], spinnerIndex: 0, now: now)
+        #expect(lineSuccess != nil)
+        #expect(lineSuccess?.text.contains("✓ [后台] #1 printf 'DONE' 已完成") == true)
+        #expect(lineSuccess?.style == .modalActiveDot)
+
+        // 4. 刚超时任务 (5 秒内)
+        let timeoutTask = BackgroundTaskSnapshot(
+            id: "task-timeout",
+            command: "sleep 100",
+            cwd: "/Volumes/Development",
+            timeoutSeconds: 5,
+            startedAt: now.addingTimeInterval(-6.0),
+            completedAt: now.addingTimeInterval(-1.0),
+            status: .timedOut,
+            pid: 12348,
+            exitCode: nil,
+            description: nil,
+            stdout: "",
+            stderr: "",
+            stdoutCursor: 0,
+            stderrCursor: 0,
+            elapsedSeconds: 5.0,
+            remainingTimeoutSeconds: 0.0
+        )
+        let lineTimeout = TUIApp.formatBackgroundActivity(tasks: [timeoutTask], spinnerIndex: 0, now: now)
+        #expect(lineTimeout != nil)
+        #expect(lineTimeout?.text.contains("⚠ [后台] #1 sleep 100 超时终止") == true)
+        #expect(lineTimeout?.style == .warning)
+
+        // 5. 超过 5 秒的已结束任务自动收起 (返回 nil)
+        let oldTask = BackgroundTaskSnapshot(
+            id: "task-old",
+            command: "echo old",
+            cwd: "/Volumes/Development",
+            timeoutSeconds: 10,
+            startedAt: now.addingTimeInterval(-20.0),
+            completedAt: now.addingTimeInterval(-10.0),
+            status: .exited,
+            pid: 12349,
+            exitCode: 0,
+            description: nil,
+            stdout: "old",
+            stderr: "",
+            stdoutCursor: 3,
+            stderrCursor: 0,
+            elapsedSeconds: 10.0,
+            remainingTimeoutSeconds: 0.0
+        )
+        let lineOld = TUIApp.formatBackgroundActivity(tasks: [oldTask], spinnerIndex: 0, now: now)
+        #expect(lineOld == nil)
+    }
+
+    @Test func bottomPaneAndAppLayoutWithBackgroundActivityBar() {
+        let app = TUIApp()
+        let size = TUISize(width: 100, height: 30)
+
+        // 无后台任务时的高度
+        app.backgroundTasks = []
+        let normalLayout = app.layout(size: size, overlay: nil)
+        let normalBottomHeight = normalLayout.bottomPane.height
+
+        // 注入运行中后台任务时，高度自适应增加 1 行用于展示 Activity Bar
+        let now = Date()
+        let task = BackgroundTaskSnapshot(
+            id: "task-active",
+            command: "sleep 30",
+            cwd: "/tmp",
+            timeoutSeconds: 30,
+            startedAt: now,
+            completedAt: nil,
+            status: .running,
+            pid: 9999,
+            exitCode: nil,
+            description: nil,
+            stdout: "",
+            stderr: "",
+            stdoutCursor: 0,
+            stderrCursor: 0,
+            elapsedSeconds: 0.1,
+            remainingTimeoutSeconds: 29.9
+        )
+        app.backgroundTasks = [task]
+        let activeLayout = app.layout(size: size, overlay: nil)
+        #expect(activeLayout.bottomPane.height == normalBottomHeight + 1)
+
+        // 渲染 frame 验证包含活动条文本
+        let frame = app.render(size: size, overlay: nil)
+        let renderedText = frame.text(in: TUIRect(x: 0, y: 0, width: size.width, height: size.height))
+        #expect(renderedText.contains("[后台] #1 sleep 30"))
+        #expect(renderedText.contains("[/tasks 管理]"))
+    }
 }
+

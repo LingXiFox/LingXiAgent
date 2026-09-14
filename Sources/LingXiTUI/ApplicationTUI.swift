@@ -426,7 +426,11 @@ public final class ApplicationTUI: Frontend {
         case .resize:
             break
         case .tick:
-            if isActive { spinnerIndex = (spinnerIndex + 1) % 10 }
+            let hasRunningBg = latestState.backgroundTasks.contains(where: { $0.status == .running })
+            if isActive || hasRunningBg {
+                spinnerIndex = (spinnerIndex + 1) % 10
+                view.backgroundSpinnerIndex = spinnerIndex
+            }
         case .escape:
             if overlay != nil {
                 overlay = nil
@@ -1289,6 +1293,8 @@ public final class ApplicationTUI: Frontend {
         }
         let yoloPrefix = options.isYoloMode ? "⚡ YOLO · " : ""
         view.header.subtitle = "\(yoloPrefix)\(state.activeSessionState?.title ?? state.connectionState.status.rawValue)"
+        view.backgroundTasks = state.backgroundTasks
+        view.backgroundSpinnerIndex = spinnerIndex
         updateStatusLine(state)
 
         let session = state.activeSessionState
@@ -1718,8 +1724,18 @@ public final class ApplicationTUI: Frontend {
 
     private func animationTick(_ tick: TUIAnimationTick) {
         animationNow = tick.timestamp
-        guard isActive else { return }
+        let hasRunningBgTasks = latestState.backgroundTasks.contains(where: { $0.status == .running })
+        guard isActive || hasRunningBgTasks else { return }
         spinnerIndex = Int(tick.sequence % 10)
+        view.backgroundSpinnerIndex = spinnerIndex
+
+        // 后台任务运行中时，每秒触发一次后台任务状态增量同步，无需用户主动操作即可自动刷新
+        if hasRunningBgTasks && tick.sequence % 10 == 0 {
+            Task { [store] in
+                _ = try? await store?.getBackgroundTasks()
+            }
+        }
+
         frameScheduler.markDirty(.animation)
     }
 
