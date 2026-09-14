@@ -149,6 +149,8 @@ public actor DynamicToolLeaseManager {
 public struct ToolRuntime: Sendable {
     public static let coreToolOrder: [ToolID] = [
         ToolID("shell"),
+        ToolID("run_background_command"),
+        ToolID("manage_background_command"),
         ToolID("read_file"),
         ToolID("write_file"),
         ToolID("edit_file"),

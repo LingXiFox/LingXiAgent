@@ -1387,5 +1387,24 @@ struct TUIRenderingTests {
         #expect(renderedText.contains("[后台] #1 sleep 30"))
         #expect(renderedText.contains("[/tasks 管理]"))
     }
+
+    @Test func coreToolsIncludeBackgroundCommandsNatively() {
+        #expect(ToolRuntime.coreToolIDs.contains(ToolID("run_background_command")))
+        #expect(ToolRuntime.coreToolIDs.contains(ToolID("manage_background_command")))
+        #expect(ToolRuntime.coreToolIDs.contains(ToolID("shell")))
+    }
+
+    @Test func agentGuidelinesInstructBackgroundExecutionProtocol() {
+        let emptySet = try! AgentInstructionSet.load(workspace: FileManager.default.temporaryDirectory)
+        let rendered = AgentBehaviorInstructions.render(
+            profile: .build,
+            configured: nil,
+            repository: emptySet,
+            environmentFacts: nil
+        )
+        #expect(rendered != nil)
+        #expect(rendered?.contains("Background Execution Protocol") == true)
+        #expect(rendered?.contains("run_background_command") == true)
+    }
 }
 

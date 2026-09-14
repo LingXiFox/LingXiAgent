@@ -128,16 +128,38 @@ public final class ApplicationTUI: Frontend {
     }
 
     private var allCommands: [FrontendCommandItem] {
-        let appItems = commands.map {
-            FrontendCommandItem(
-                name: $0.name,
-                aliases: $0.aliases,
-                description: $0.description,
-                category: $0.category,
-                argumentSchema: $0.argumentSchema
+        var map: [String: FrontendCommandItem] = [:]
+        for item in Self.localCommands {
+            map[item.name] = item
+        }
+        for cmd in commands {
+            let existing = map[cmd.name]
+            let mergedAliases = Array(Set((existing?.aliases ?? []) + cmd.aliases)).sorted()
+            let hasChinese = cmd.description.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
+            let preferredDesc = hasChinese ? cmd.description : (existing?.description ?? cmd.description)
+            map[cmd.name] = FrontendCommandItem(
+                name: cmd.name,
+                aliases: mergedAliases,
+                description: preferredDesc,
+                category: existing?.category ?? cmd.category,
+                argumentSchema: cmd.argumentSchema
             )
         }
-        return Self.localCommands + appItems
+        var result: [FrontendCommandItem] = []
+        var seen = Set<String>()
+        for item in Self.localCommands {
+            if let merged = map[item.name], !seen.contains(item.name) {
+                result.append(merged)
+                seen.insert(item.name)
+            }
+        }
+        for cmd in commands {
+            if let merged = map[cmd.name], !seen.contains(cmd.name) {
+                result.append(merged)
+                seen.insert(cmd.name)
+            }
+        }
+        return result
     }
 
     /// 挂载到由外部 Composition Root 装配好的 ApplicationStore 并启动前端界面

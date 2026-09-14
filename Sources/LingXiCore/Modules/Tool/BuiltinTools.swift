@@ -1132,7 +1132,7 @@ public struct ShellTool: ToolExecutor {
     private let workspace: WorkspaceRoot
     public init(workspace: WorkspaceRoot) { self.workspace = workspace }
     public let definition = ToolDefinition(
-        id: ToolID("shell"), description: "Run a shell command or absolute executable argv.",
+        id: ToolID("shell"), description: "Run a synchronous foreground shell command. IMPORTANT: Never run long-running tasks, servers, watchers, sleep, or background requests here. For background tasks or commands that shouldn't block the conversation, use 'run_background_command' instead.",
         inputSchema: ToolInputSchema(properties: [
             "command": ToolInputProperty(type: .string, description: "Shell command"),
             "executable": ToolInputProperty(type: .string, description: "Absolute executable path"),
