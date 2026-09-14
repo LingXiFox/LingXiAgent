@@ -238,7 +238,11 @@ struct VCRNormalizer {
 
     private func environmentCompatibilityNormalized(_ value: String) -> String {
         guard value.contains("Environment facts:") else { return value }
-        return value.split(separator: "\n", omittingEmptySubsequences: false).filter {
+        var text = value
+        if let range = text.range(of: "Agent Runtime Guidelines:") {
+            text = String(text[..<range.lowerBound])
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).filter {
             let line = $0.trimmingCharacters(in: .whitespaces)
             return !line.hasPrefix("- currentDirectory:") && !line.hasPrefix("- cwd:")
                 && !line.hasPrefix("- homeDirectory:") && !line.hasPrefix("- userHome:")

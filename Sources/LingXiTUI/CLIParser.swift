@@ -11,6 +11,7 @@ public enum CLIRoute: Equatable, Sendable {
     case doctor([String])
     case resume([String])
     case completion([String])
+    case acp([String])
     case help
     case version
 }
@@ -61,6 +62,9 @@ public struct CLIParser: Sendable {
         }
         if first == "completion" {
             return .completion(arguments)
+        }
+        if first == "acp" || first == "--acp" {
+            return .acp(arguments)
         }
 
         var isYoloMode = false
@@ -234,9 +238,11 @@ public struct CLIParser: Sendable {
           doctor                      诊断系统环境、配置、凭据与扩展生态健康状况
           resume [sessionID]          恢复历史交互式会话 (或使用 --last 恢复最新会话)
           completion <shell>          生成 Shell 自动补全脚本 (zsh, bash, fish)
+          acp                         启动 Agent Client Protocol (ACP) 模式 (用于 Zed / IDE 集成)
 
         EXAMPLES:
           lingxiagent                                 启动交互式 TUI
+          lingxiagent acp                             以 ACP 协议模式运行 (对接 Zed / JetBrains)
           lingxiagent "帮我分析当前项目结构"              启动 TUI 并自动发起首轮对话
           lingxiagent --yolo "运行测试并修复所有报错"       以 YOLO 自动放行模式启动并执行任务
           lingxiagent exec "查找所有未使用的公共方法"       在终端中直接运行无头任务

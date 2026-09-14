@@ -120,6 +120,45 @@ case let .completion(compArgs):
     print(output)
     exit(0)
 
+case .acp:
+    do {
+        let env = ProcessInfo.processInfo.environment
+        let dataRoot = LingXiDataRootResolver.resolve(
+            environment: env,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let configurations = try ConfigurationStore(dataRoot: dataRoot)
+        let snapshot = try await configurations.load()
+        let credentials = try PlatformSecureCredentialStore(dataRoot: dataRoot, passphrase: env["LINGXI_CREDENTIALS_PASSPHRASE"])
+        let providers = try await RuntimeConfigurationResolver.resolveProviders(
+            snapshot.providers,
+            credentials: credentials,
+            provenanceDirectory: dataRoot.appendingPathComponent("provider-provenance", isDirectory: true),
+            diagnosticsEnabled: env["LINGXI_PROVIDER_DIAGNOSTICS"] == "1",
+            performanceDiagnosticsEnabled: env["LINGXI_PERF_DEBUG"] == "1",
+            environment: env
+        )
+        let host = try CoreHost(
+            providerAssembly: providers.assembly,
+            providerMissingRequirements: providers.missingRequirements,
+            modelRuntimes: providers.runtimes,
+            defaultModelSelection: providers.defaultSelection,
+            configuration: snapshot.core,
+            dataRoot: dataRoot,
+            interactive: false,
+            configurationStore: configurations,
+            credentialStore: credentials
+        )
+        await host.start()
+        let server = LingXiACPServer(service: host)
+        try await server.run()
+        await host.shutdown()
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("ACP Server Error: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
+
 case .help:
     print(CLIParser.renderHelp())
     exit(0)

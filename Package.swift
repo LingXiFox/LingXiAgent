@@ -17,7 +17,8 @@ let package = Package(
         .executableTarget(
             name: "FoxPlugin",
             dependencies: ["LingXiPluginSDK"],
-            path: "Plugins/FoxPlugin"
+            path: "Plugins/FoxPlugin",
+            exclude: ["README.md"]
         ),
         // 插件 SDK：供外部开发者开发 Swift 插件的标准库
         .target(name: "LingXiPluginSDK", dependencies: ["LingXiProtocol"]),

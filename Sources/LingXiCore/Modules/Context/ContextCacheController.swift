@@ -408,11 +408,11 @@ public actor ContextCacheController {
     /// 获取最近一次 Provider 推理返回的真实详细 Cache 记录
     public func lastProviderCacheRecord(for sessionID: SessionID) -> SessionCacheRecord? {
         if let record = sessionCacheRecords[sessionID] {
-            return record
+            return record.provider != nil ? record : nil
         }
         if let hydrated = loadPersistedTelemetry(sessionID: sessionID) {
             sessionCacheRecords[sessionID] = hydrated
-            return hydrated
+            return hydrated.provider != nil ? hydrated : nil
         }
         return nil
     }

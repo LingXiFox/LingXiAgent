@@ -146,12 +146,10 @@ public struct OpenAIResponsesProvider: ModelProvider {
             }
         }
         let orderedTools: [ToolDefinition]
-        let instructions: String?
+        let instructions: String? = request.system
         if let plan = request.cachePlan {
-            instructions = plan.immutableBase.systemPrompt ?? request.system
             orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
         } else {
-            instructions = request.system
             let coreIDs = ToolRuntime.coreToolIDs
             let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
             let dynamic = request.tools.filter { !coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })

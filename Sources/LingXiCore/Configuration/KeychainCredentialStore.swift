@@ -17,7 +17,7 @@ public actor KeychainCredentialStore: CredentialStore {
         guard ProcessInfo.processInfo.environment["LINGXI_DISABLE_KEYCHAIN"] != "1" else {
             return nil
         }
-        var query: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: reference.rawValue,

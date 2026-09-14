@@ -67,9 +67,6 @@ public struct ApplicationState: Sendable, Equatable {
         if let nextTurnEffort = nextTurnReasoningEffort, nextTurnEffort != .auto {
             return nextTurnEffort
         }
-        if let lastEffort = UserPreferencesStore.shared.load().lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:)), lastEffort != .auto {
-            return lastEffort
-        }
         return activeSessionState?.reasoningEffort ?? nextTurnReasoningEffort ?? .auto
     }
 

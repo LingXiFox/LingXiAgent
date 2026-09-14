@@ -72,8 +72,8 @@ public final class SourceKitLSPTransport: @unchecked Sendable, LSPTransport {
         var request: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": parameters]
         if let id { request["id"] = id }
         let body = try JSONSerialization.data(withJSONObject: request)
-        input.write(Data("Content-Length: \(body.count)\r\n\r\n".utf8))
-        input.write(body)
+        try input.write(contentsOf: Data("Content-Length: \(body.count)\r\n\r\n".utf8))
+        try input.write(contentsOf: body)
     }
 
     private func readMessage() throws -> Data? {
@@ -173,8 +173,21 @@ public actor CodeIntelligence {
     private let scanner: ProjectScanner
     private let pager: ContextPager
     private let lsp: LSPClient
+    private let coordinator: LSPCoordinator
 
-    public init(workspace: WorkspaceRoot, scanner: ProjectScanner, pager: ContextPager, lsp: LSPClient = LSPClient()) { self.workspace = workspace; self.scanner = scanner; self.pager = pager; self.lsp = lsp }
+    public init(
+        workspace: WorkspaceRoot,
+        scanner: ProjectScanner,
+        pager: ContextPager,
+        lsp: LSPClient = LSPClient(),
+        coordinator: LSPCoordinator? = nil
+    ) {
+        self.workspace = workspace
+        self.scanner = scanner
+        self.pager = pager
+        self.lsp = lsp
+        self.coordinator = coordinator ?? LSPCoordinator(workspaceURL: workspace.url)
+    }
 
     public func status() async -> LSPClientState { await lsp.lifecycle() }
     public func refresh() async { _ = try? await pager.rebuildStaleFiles(using: scanner) }
@@ -182,19 +195,36 @@ public actor CodeIntelligence {
     public func symbols(_ query: String) async -> [CodeIntelligenceSymbol] {
         await refresh()
         await prepareLSP()
+        if let multiSymbols = await coordinator.workspaceSymbols(query: query), !multiSymbols.isEmpty {
+            return multiSymbols.prefix(64).map { symbol in CodeIntelligenceSymbol(name: symbol.name, kind: String(symbol.kind), path: Self.path(symbol.location.uri, workspace: workspace), line: symbol.location.range.start.line + 1, source: "lsp") }
+        }
         if let symbols: [LSPWorkspaceSymbol] = await lsp.request("workspace/symbol", parameters: Self.json(["query": query]), as: [LSPWorkspaceSymbol].self) {
             return symbols.prefix(64).map { symbol in CodeIntelligenceSymbol(name: symbol.name, kind: String(symbol.kind), path: Self.path(symbol.location.uri, workspace: workspace), line: symbol.location.range.start.line + 1, source: "lsp") }
         }
         return (await pager.symbolLookup(projectRoot: workspace.url, query: query, mode: "prefix")).prefix(64).map { CodeIntelligenceSymbol(name: $0.qualifiedName, kind: $0.kind.rawValue, path: $0.path, line: $0.line, source: "index") }
     }
 
-    public func definition(path: String, line: Int, character: Int) async -> [CodeIntelligenceLocation] { await locations(method: "textDocument/definition", path: path, line: line, character: character) }
-    public func references(path: String, line: Int, character: Int) async -> [CodeIntelligenceLocation] { await locations(method: "textDocument/references", path: path, line: line, character: character) }
+    public func definition(path: String, line: Int, character: Int) async -> [CodeIntelligenceLocation] {
+        if let file = try? workspace.resolve(path), let locs = await coordinator.definition(file: file, line: line, character: character), !locs.isEmpty {
+            return locs.prefix(128).map { CodeIntelligenceLocation(path: Self.path($0.uri, workspace: workspace), line: $0.range.start.line + 1, character: $0.range.start.character, source: "lsp") }
+        }
+        return await locations(method: "textDocument/definition", path: path, line: line, character: character)
+    }
+
+    public func references(path: String, line: Int, character: Int) async -> [CodeIntelligenceLocation] {
+        if let file = try? workspace.resolve(path), let locs = await coordinator.references(file: file, line: line, character: character), !locs.isEmpty {
+            return locs.prefix(128).map { CodeIntelligenceLocation(path: Self.path($0.uri, workspace: workspace), line: $0.range.start.line + 1, character: $0.range.start.character, source: "lsp") }
+        }
+        return await locations(method: "textDocument/references", path: path, line: line, character: character)
+    }
 
     public func documentSymbols(path: String) async -> [CodeIntelligenceSymbol] {
         await refresh()
         await prepareLSP()
         let file = try? workspace.resolve(path)
+        if let file, let lspSymbols = await coordinator.documentSymbols(file: file), !lspSymbols.isEmpty {
+            return lspSymbols.flatMap(Self.flatten).map { CodeIntelligenceSymbol(name: $0.name, kind: String($0.kind), path: path, line: $0.selectionRange.start.line + 1, source: "lsp") }
+        }
         if let file, let text = try? String(contentsOf: file, encoding: .utf8) { await lsp.openDocument(file, language: language(for: file), text: text) }
         if let lspSymbols: [LSPDocumentSymbol] = await lsp.request("textDocument/documentSymbol", parameters: Self.json(["textDocument": ["uri": file?.absoluteString ?? ""]]), as: [LSPDocumentSymbol].self) {
             return lspSymbols.flatMap(Self.flatten).map { CodeIntelligenceSymbol(name: $0.name, kind: String($0.kind), path: path, line: $0.selectionRange.start.line + 1, source: "lsp") }
@@ -206,8 +236,46 @@ public actor CodeIntelligence {
         await refresh()
         await prepareLSP()
         guard let file = try? workspace.resolve(path), let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        await coordinator.syncDocument(file: file, text: text)
+        if let diags = await coordinator.diagnostics(file: file) {
+            return diags
+        }
         await lsp.openDocument(file, language: language(for: file), text: text)
         return await lsp.request("textDocument/diagnostic", parameters: Self.json(["textDocument": ["uri": file.absoluteString]]), as: [LSPDiagnostic].self) ?? []
+    }
+
+    public func hover(path: String, line: Int, character: Int) async -> LSPHoverResult? {
+        await refresh()
+        await prepareLSP()
+        guard let file = try? workspace.resolve(path), let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        await coordinator.syncDocument(file: file, text: text)
+        if let h = await coordinator.hover(file: file, line: line, character: character) {
+            return h
+        }
+        // 降级：从上下文 token 尝试查找符号签名
+        let token = Self.token(in: text, line: line, character: character)
+        guard !token.isEmpty else { return nil }
+        let matches = await pager.symbolLookup(projectRoot: workspace.url, query: token, mode: "exact")
+        if let first = matches.first {
+            return LSPHoverResult(contents: "/// \(first.kind.rawValue) \(first.qualifiedName)\n// Defined in \(first.path):\(first.line)")
+        }
+        return nil
+    }
+
+    public func completion(path: String, line: Int, character: Int) async -> [LSPCompletionItem] {
+        await refresh()
+        await prepareLSP()
+        guard let file = try? workspace.resolve(path), let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        await coordinator.syncDocument(file: file, text: text)
+        if let items = await coordinator.completion(file: file, line: line, character: character), !items.isEmpty {
+            return items.prefix(32).map { $0 }
+        }
+        // 降级：基于行内前缀字符从工作区符号表中模糊联想候选
+        let token = Self.token(in: text, line: line, character: character)
+        let candidates = await pager.symbolLookup(projectRoot: workspace.url, query: token, mode: "prefix")
+        return candidates.prefix(16).map {
+            LSPCompletionItem(label: $0.qualifiedName, kind: 1, detail: "\($0.kind.rawValue) in \($0.path)")
+        }
     }
 
     public func context(_ query: String, maximumCharacters: Int) async -> CodeIntelligenceContext {

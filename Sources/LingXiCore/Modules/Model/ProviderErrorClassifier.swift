@@ -573,19 +573,26 @@ public enum ProviderErrorClassifier {
             || (body.contains("inference") && body.contains("rpm") && body.contains("exhaust"))
     }
 
+    public static func sanitizeErrorMessage(_ raw: String) -> String {
+        var cleaned = raw.replacingOccurrences(of: "Bearer [A-Za-z0-9_\\-\\.]+", with: "Bearer [redacted]", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\"([a-zA-Z0-9_-]*(?:api[_-]?key|token|secret|password)[a-zA-Z0-9_-]*)\"\\s*:\\s*\"[^\"]+\"", with: "\"$1\": \"[redacted]\"", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "[A-Za-z0-9_]*(?:SECRET|API_KEY|APIKEY|ACCESS_KEY)[A-Za-z0-9_]*", with: "[redacted]", options: .regularExpression)
+        return cleaned
+    }
+
     private static func parseJSONError(_ body: String?) -> (type: String?, message: String?) {
         guard let body, !body.isEmpty, let data = body.data(using: .utf8) else { return (nil, nil) }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (nil, nil) }
 
         if let errorObj = json["error"] as? [String: Any] {
             let type = errorObj["type"] as? String ?? errorObj["code"] as? String
-            let message = errorObj["message"] as? String
+            let message = (errorObj["message"] as? String).map(sanitizeErrorMessage)
             return (type, message)
         } else if let errorMsg = json["error"] as? String {
-            return (nil, errorMsg)
+            return (nil, sanitizeErrorMessage(errorMsg))
         } else if let message = json["message"] as? String {
             let code = json["code"] as? String ?? (json["code"] as? Int).map(String.init)
-            return (code, message)
+            return (code, sanitizeErrorMessage(message))
         }
         return (nil, nil)
     }

@@ -101,6 +101,6 @@ private actor WireWriter {
 
     func write(_ message: WireMessage) {
         guard let data = try? JSONEncoder().encode(message) else { return }
-        output.write(data + Data("\n".utf8))
+        try? output.write(contentsOf: data + Data("\n".utf8))
     }
 }
