@@ -11,7 +11,7 @@
   <a href="https://agent.lingxifox.cn/docs"><img src="https://img.shields.io/badge/Docs-官方文档中心-ec4899?style=flat-square&logo=bookstack" alt="Docs"></a>
   <a href="https://models.lingxifox.cn"><img src="https://img.shields.io/badge/Models%20Hub-models.lingxifox.cn-10b981?style=flat-square&logo=speedtest" alt="Models"></a>
   <a href="https://github.com/LingXiFox/LingXiAgent/releases"><img src="https://img.shields.io/github/v/release/LingXiFox/LingXiAgent?style=flat-square&color=blue" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-amber?style=flat-square" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Tiered%20License-blueviolet?style=flat-square" alt="License"></a>
 </p>
 
 ---
@@ -246,6 +246,25 @@ swift test
 swift test --filter PlatformAbstractionAndDecouplingTests
 swift test --filter ToolRuntimeTests
 ```
+
+---
+
+## 📜 授权许可与知识产权规范 (Licensing & Terms)
+
+LingXiAgent 采用清晰严密的 **多轨分层许可体系（Multi-Tiered Licensing Scheme）**：
+
+| 组件层级 (Layer) | 覆盖目录 (Directories) | 授权协议 (License) | 本地构建/体验 | 二次分发/镜像/上架 | 商业化/SaaS/代售 |
+| :--- | :--- | :--- | :---: | :---: | :---: |
+| **底座核心 (Core)** | `Sources/LingXiCore`<br/>`Sources/LingXiRuntime`<br/>`Sources/LingXiPlatform`<br/>`Sources/LingXiProtocol`<br/>`Sources/LingXiStorage`<br/>`Sources/LingXiAppCommon` | **[LCSAL-1.0](LICENSE-CORE)**<br/>*(源码可用 / 个人自用)* | ✅ **允许** | ❌ **严禁二次上架或镜像** | ❌ **严禁商业化** |
+| **表现层客户端 (Frontend)** | `Sources/LingXiTUI`<br/>`Sources/LingXiCLI` (表现层入口)<br/>未来的 `LingXiGUI` / `LingXiWebUI` | **[PolyForm Noncommercial 1.0.0](LICENSE-FRONTEND)**<br/>*(源码开放 / 自由分发)* | ✅ **允许** | ✅ **允许自由分发二次上架**<br/>*(须保留署名与非商业声明)* | ❌ **严禁商业化** |
+| **第三方库 (Vendor)** | `Vendor/OpenTUI/` | 各自上游原始开源许可 (GPLv3 等) | 遵循原协议 | 遵循原协议 | 遵循原协议 |
+
+* **个人开发者自用**：欢迎任何人克隆至本地，研究、学习、构建并作为个人开发助手单机体验；
+* **严禁二次分发 Core**：**严禁**将 Core 及其衍生代码制作镜像、二次打包或重新上架至 GitHub、GitLab、Gitee、云盘或三方包管理镜像源；
+* **严禁商业使用**：无论是 Core 还是 Frontend，均**严禁用于任何商业盈利、付费 API/Token 代理或 SaaS/PaaS 托管运营**；
+* **协作规范**：欢迎在 [Issues](https://github.com/LingXiFox/LingXiAgent/issues) 提交反馈与设计讨论；所有 Pull Request 均须通过所有者（@LingXiFox）显式审查批准后方可合并。
+
+详细法律文本请阅读根目录 **[LICENSE](LICENSE)**、**[LICENSE-CORE](LICENSE-CORE)** 与 **[LICENSE-FRONTEND](LICENSE-FRONTEND)**。
 
 ---
 

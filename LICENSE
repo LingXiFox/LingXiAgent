@@ -1,0 +1,107 @@
+# LingXiAgent Multi-Tiered Licensing Architecture
+# 灵犀多轨分层许可体系
+
+Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
+
+本项目采用**多轨分层许可体系（Multi-Tiered Licensing Scheme）**：针对底座核心（Core）与上层表现客户端（Frontend）实施差异化授权策略。在保障个人开发者本地探索自由与前端生态开放的同时，保护底层核心知识产权。
+
+---
+
+## 🧭 模块与授权范围矩阵 (License Scope Matrix)
+
+| 目录与组件 (Directories & Components) | 适用许可协议 (License) | 本地构建/自用 (Local Personal Use) | 公开二次分发/上架 (Redistribution & Re-hosting) | 商业营利使用 (Commercial Exploitation) |
+| :--- | :--- | :---: | :---: | :---: |
+| **Core & Infrastructure 底座与核心**<br/>• `Sources/LingXiCore`<br/>• `Sources/LingXiRuntime`<br/>• `Sources/LingXiPlatform`<br/>• `Sources/LingXiProtocol`<br/>• `Sources/LingXiStorage`<br/>• `Sources/LingXiAppCommon`<br/>• 底座总线及底层核心脚本 | **LingXi Core Source-Available License 1.0 (LCSAL-1.0)**<br/>*(源码可用 · 个人自用 · 禁分发 · 禁商用)* | ✅ **允许**<br/>(可免费下载、本地编译并自用体验) | ❌ **严禁**<br/>(严禁二次上架GitHub、分发副本或制作镜像) | ❌ **严禁**<br/>(严禁商业化、收费代理或SaaS托管) |
+| **Frontend & Clients 表现层与客户端**<br/>• `Sources/LingXiTUI`<br/>• `Sources/LingXiCLI` (表现层接入)<br/>• 未来的 `LingXiGUI` / `LingXiWebUI`<br/>• 前端交互、渲染器适配及主题配置 | **PolyForm Noncommercial License 1.0.0**<br/>*(源码开放 · 允许自由分发 · 严禁商用)* | ✅ **允许** | ✅ **允许**<br/>(可自由二次托管、分发与传播，须附带非商用许可) | ❌ **严禁**<br/>(严禁用于任何营利或收费商业服务) |
+| **Third-Party Vendors 第三方依赖**<br/>• `Vendor/OpenTUI/` | 各自独立开源协议 (GPLv3 / Ghostty / MIT 等) | 遵照原上游许可 | 遵照原上游许可 | 遵照原上游许可 |
+
+---
+
+## Part 1: LingXi Core Source-Available License 1.0 (LCSAL-1.0)
+
+**Applicable Scope**: `Sources/LingXiCore`, `Sources/LingXiRuntime`, `Sources/LingXiPlatform`, `Sources/LingXiProtocol`, `Sources/LingXiStorage`, `Sources/LingXiAppCommon`, and associated core infrastructure.
+
+### 中文法律条款声明
+
+1. **授权范围 (Grant of Rights)**：
+   版权所有者（LingXiFox）特此授予任何合法获取本核心源码的个人非独占、不可转让、不可转授权的权利，仅限于在个人受控的本地计算环境中进行**阅读、学习、研究、本地编译及个人单机非商业运行**（“本地自用”）。
+2. **严禁二次上架与再分发 (Strict Prohibition on Redistribution & Re-Hosting)**：
+   **严禁**任何实体或个人将本核心源码、修改衍生版本、编译产物（包括静态库、动态库、可执行文件）以任何形式公开分发、镜像托管、重新上传或二次上架至包括但不限于 **GitHub、GitLab、Gitee、Bitbucket、云盘、包管理镜像源（Swift Package Index、Homebrew、APT 等）** 或任何公共/私有分发网络。
+3. **严禁商业化使用 (Strict Prohibition on Commercial Use)**：
+   **严禁**将本核心用于任何直接或间接的营利性活动、商业运营、企业生产环境部署、付费技术支持、收费 API / Token 代理中继，亦不得作为 SaaS、PaaS、云服务或外包交付产品的底层组件。
+4. **贡献与合并规范 (Contributing & Collaboration)**：
+   若您对 Core 有改进或缺陷修复意向，必须直接向官方主仓库（https://github.com/LingXiFox/LingXiAgent）发起 Pull Request。PR 的提交即代表您同意将贡献代码遵循本项目许可体系，且所有 PR 必须经由版权所有者（@LingXiFox）亲笔审查核准后方可合并。未经核准的任何分支合并或外部分发均属侵权。
+5. **免责声明 (Disclaimer of Warranty)**：
+   本核心源码按“原样（AS IS）”提供，不提供任何明示或暗示的保证，包括但不限于适销性、特定用途适用性及不侵权保证。在任何情况下，作者均不对因使用本软件引起的任何索赔、损害或其他责任承担法律责任。
+
+### English Legal Text
+
+1. **Grant of Rights**: 
+   The Copyright Holder (LingXiFox) hereby grants to any individual obtaining a copy of the Core source code a non-exclusive, non-transferable, non-sublicensable right to inspect, study, locally compile, and execute the software solely within their private, personal computing environment for personal and non-commercial evaluation ("Personal Local Use").
+2. **Prohibition on Redistribution and Re-Hosting**:
+   You may **NOT** redistribute, republish, mirror, sublicense, package, or host the Core source code, any derived works, or compiled binaries on any public or private network or code hosting platform, including but not limited to **GitHub, GitLab, Gitee, Bitbucket, package registries (Swift Package Index, Homebrew, APT), or CDN mirrors**.
+3. **Prohibition on Commercial Exploitation**:
+   You may **NOT** use the Core software, in whole or in part, for any commercial purpose, monetary gain, enterprise production deployment, paid API proxying/relaying, or as part of any SaaS, PaaS, or cloud-hosted service offering.
+4. **Patches and Contributions**:
+   Any proposed enhancements or fixes must be contributed upstream via Pull Request to the official repository at https://github.com/LingXiFox/LingXiAgent. All contributions are subject to review and explicit approval by @LingXiFox.
+5. **No Warranty**:
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY.
+
+---
+
+## Part 2: PolyForm Noncommercial License 1.0.0
+
+**Applicable Scope**: `Sources/LingXiTUI`, `Sources/LingXiCLI` (presentation entry), future `LingXiGUI`, `LingXiWebUI`, and frontend-exclusive presentation assets.
+
+### Summary / 中文要要
+前端表现层组件遵循 **PolyForm Noncommercial License 1.0.0**：
+- **允许开源与分发**：您可以自由阅读、修改、分发与二次托管前端表现层代码，亦可在遵循本协议前提下二次上架；
+- **严格非商业限制**：任何再分发或使用**绝不能用于任何商业目的或营利性活动**，且必须保留原版权声明与本许可证文本；
+- **底层依赖提示**：前端表现层如需与官方 LingXiCore 协同运行，底层核心仍须遵循上述 LCSAL-1.0 约束。
+
+### Official License Text
+
+```text
+PolyForm Noncommercial License 1.0.0
+https://polyformproject.org/licenses/noncommercial/1.0.0
+
+7. Acceptance
+In order to receive any license under these terms, each recipient must accept them. By accessing, downloading, installing, using, modifying, or distributing the software, each recipient accepts these terms.
+
+2. Copyright License
+The licensor grants each recipient a copyright license to copy, create derivative works of, distribute, and run the software, solely for noncommercial purposes.
+
+3. Patent License
+The licensor grants each recipient a patent license to make, have made, use, sell, offer for sale, and import the software, solely for noncommercial purposes, under patent claims the licensor can license that are necessarily infringed by the software.
+
+4. Noncommercial Purposes
+Any use of the software is for noncommercial purposes if it is not primarily intended for or directed toward commercial advantage or monetary compensation.
+
+5. Notice
+Each recipient must ensure that everyone who receives a copy of any part of the software from them, or of any software that they compile from the software, also receives a copy of these terms, or a link to https://polyformproject.org/licenses/noncommercial/1.0.0, along with all copyright, patent, trademark, and attribution notices from the software.
+
+6. No Sublicensing
+These terms do not permit recipients to sublicense rights to the software to anyone else.
+
+7. No Other Rights
+These terms do not imply or grant any trademark license, or any other license not explicitly granted in these terms.
+
+8. Fair Use
+These terms do not limit any rights under copyright law.
+
+9. Defense of Claims
+If anyone makes a claim against the licensor for patent infringement based on the software, all patent licenses for the software under these terms end immediately.
+
+10. Disclaimer of Warranties
+As far as the law allows, the software comes as is, without any warranty or condition, and no contributor will be liable to anyone for any damages related to the software or these terms, under any kind of legal claim.
+```
+
+---
+
+## Part 3: Contributing & Governance (代码贡献与合并管控)
+
+- **Issues 开放**：欢迎所有开发者在 GitHub Issues 中反馈漏洞、提出架构设计或功能建议；
+- **Pull Requests 严格管控**：
+  - 仓库开启 Pull Request 提交通道，欢迎社区协作；
+  - **合并权限限制**：所有分支均受保护，**禁止任何未经版权所有者（@LingXiFox）亲自代码审查（Code Owner Review Approval）的合并行为**；
+  - 任何未经授权的直接推送（Direct Push）或外部合并已被 GitHub Branch Protection 强制阻断。

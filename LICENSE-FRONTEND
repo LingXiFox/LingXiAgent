@@ -1,0 +1,41 @@
+# PolyForm Noncommercial License 1.0.0
+
+Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
+
+Applicable to:
+- Sources/LingXiTUI
+- Sources/LingXiCLI (presentation layer wrappers)
+- Future Sources/LingXiGUI, Sources/LingXiWebUI
+- Terminal themes, visual layouts, and frontend interactive modules.
+
+Official text: https://polyformproject.org/licenses/noncommercial/1.0.0
+
+1. Acceptance
+In order to receive any license under these terms, each recipient must accept them. By accessing, downloading, installing, using, modifying, or distributing the software, each recipient accepts these terms.
+
+2. Copyright License
+The licensor grants each recipient a copyright license to copy, create derivative works of, distribute, and run the software, solely for noncommercial purposes.
+
+3. Patent License
+The licensor grants each recipient a patent license to make, have made, use, sell, offer for sale, and import the software, solely for noncommercial purposes, under patent claims the licensor can license that are necessarily infringed by the software.
+
+4. Noncommercial Purposes
+Any use of the software is for noncommercial purposes if it is not primarily intended for or directed toward commercial advantage or monetary compensation.
+
+5. Notice
+Each recipient must ensure that everyone who receives a copy of any part of the software from them, or of any software that they compile from the software, also receives a copy of these terms, or a link to https://polyformproject.org/licenses/noncommercial/1.0.0, along with all copyright, patent, trademark, and attribution notices from the software.
+
+6. No Sublicensing
+These terms do not permit recipients to sublicense rights to the software to anyone else.
+
+7. No Other Rights
+These terms do not imply or grant any trademark license, or any other license not explicitly granted in these terms.
+
+8. Fair Use
+These terms do not limit any rights under copyright law.
+
+9. Defense of Claims
+If anyone makes a claim against the licensor for patent infringement based on the software, all patent licenses for the software under these terms end immediately.
+
+10. Disclaimer of Warranties
+As far as the law allows, the software comes as is, without any warranty or condition, and no contributor will be liable to anyone for any damages related to the software or these terms, under any kind of legal claim.

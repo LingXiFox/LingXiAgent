@@ -1,0 +1,5 @@
+# GitHub CODEOWNERS for LingXiAgent
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# All code changes and pull requests require review and approval from @LingXiFox
+* @LingXiFox

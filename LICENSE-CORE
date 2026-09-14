@@ -1,0 +1,50 @@
+# LingXi Core Source-Available License 1.0 (LCSAL-1.0)
+
+Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
+
+Applicable to:
+- Sources/LingXiCore
+- Sources/LingXiRuntime
+- Sources/LingXiPlatform
+- Sources/LingXiProtocol
+- Sources/LingXiStorage
+- Sources/LingXiAppCommon
+- Associated core build, pipeline, and infrastructure scripts.
+
+================================================================================
+中 文 条 款 详 细 规 范
+================================================================================
+
+1. 授权范围 (Grant of Rights)
+   版权所有者（LingXiFox）授予您非独占、不可转让、不可转授权的权利，仅限于在个人受控的本地计算环境中进行源代码的阅读、学习、研究、本地编译及个人单机非商业运行（“本地自用”）。
+
+2. 严禁二次上架与再分发 (Strict Prohibition on Redistribution & Re-Hosting)
+   您不得以任何形式将本核心源码、修改衍生版本、编译产物（包括静态库、动态库、可执行文件）公开分发、镜像托管、重新上传或二次上架至包括但不限于 GitHub、GitLab、Gitee、Bitbucket、云盘、包管理镜像源（Swift Package Index、Homebrew、APT 等）或任何公共/私有分发网络。
+
+3. 严禁商业化使用 (Strict Prohibition on Commercial Use)
+   严禁将本核心用于任何直接或间接的营利性活动、商业运营、企业生产环境部署、付费技术支持、收费 API / Token 代理中继，亦不得作为 SaaS、PaaS、云服务或外包交付产品的底层组件。
+
+4. 贡献与合并规范 (Contributing)
+   若对 Core 有改进或修复意向，必须通过官方仓库（https://github.com/LingXiFox/LingXiAgent）以 Pull Request 形式提交，且必须经版权所有者（@LingXiFox）显式代码审查批准（Code Owner Approval）后方可合并。
+
+5. 免责声明 (Disclaimer)
+   本软件按“原样（AS IS）”提供，不提供任何明示或暗示的保证。作者不对因使用本软件引起的任何责任或损失承担赔偿责任。
+
+================================================================================
+ENGLISH TERMS & CONDITIONS
+================================================================================
+
+1. Grant of Rights:
+   The Copyright Holder (LingXiFox) grants to any individual obtaining a copy of the Core source code a non-exclusive, non-transferable, non-sublicensable right to inspect, study, locally compile, and execute the software solely within their private, personal computing environment for personal and non-commercial evaluation ("Personal Local Use").
+
+2. Prohibition on Redistribution and Re-Hosting:
+   You may NOT redistribute, republish, mirror, sublicense, package, or host the Core source code, any derived works, or compiled binaries on any public or private network or code hosting platform, including but not limited to GitHub, GitLab, Gitee, Bitbucket, package registries (Swift Package Index, Homebrew, APT), or CDN mirrors.
+
+3. Prohibition on Commercial Exploitation:
+   You may NOT use the Core software, in whole or in part, for any commercial purpose, monetary gain, enterprise production deployment, paid API proxying/relaying, or as part of any SaaS, PaaS, or cloud-hosted service offering.
+
+4. Patches and Contributions:
+   Any proposed enhancements or fixes must be contributed upstream via Pull Request to the official repository at https://github.com/LingXiFox/LingXiAgent, subject to review and explicit approval by @LingXiFox.
+
+5. No Warranty:
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY.
