@@ -473,6 +473,11 @@ public actor CodebaseGraphEngine {
         ) else { return [] }
 
         for case let fileURL as URL in enumerator {
+            let last = fileURL.lastPathComponent
+            if last == ".build" || last == "node_modules" || last == ".git" || last == "dist" || last == ".dev-sandbox" {
+                enumerator.skipDescendants()
+                continue
+            }
             let p = fileURL.path
             if p.contains(".build/") || p.contains("node_modules/") || p.contains(".git/") || p.contains("dist/") {
                 continue

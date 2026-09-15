@@ -51,7 +51,7 @@ public actor FormatCoordinator {
             )
         }
 
-        let startTime = CFAbsoluteTimeGetCurrent()
+        let startTime = Date().timeIntervalSinceReferenceDate
         let initialData = (try? Data(contentsOf: fileURL)) ?? Data()
 
         // 尝试主命令
@@ -67,7 +67,7 @@ public actor FormatCoordinator {
             }
         }
 
-        let elapsedMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
+        let elapsedMs = (Date().timeIntervalSinceReferenceDate - startTime) * 1000.0
 
         guard runOutcome.success else {
             return FormatterResult(
@@ -160,7 +160,7 @@ public actor FormatCoordinator {
             let timeoutTask = Task {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
                 if process.isRunning {
-                    process.terminate()
+                    LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
                 }
             }
 
