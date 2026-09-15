@@ -160,9 +160,90 @@ enum AgentBehaviorInstructions {
       * The user can monitor or cancel background tasks anytime via the `/tasks` command or status bar in the TUI.
     - Task Planning: For multi-step tasks, investigations, or refactoring, proactively use `todo` (action: 'add') to establish a checklist, and update task status ('in_progress', 'completed', 'failed') as you advance to keep the sidebar updated.
     - Parallel Tool Calling: When you need to read multiple files, inspect directories, grep across files, or perform independent read-only investigations, emit multiple tool calls in parallel within the same turn instead of waiting for sequential round-trips. The runtime executes independent tool calls concurrently.
+    - Computer & Browser Use Protocol (CRITICAL):
+      * When interacting with GUI applications or web pages, use `computer_batch` (for desktop apps like Safari, TextEdit, etc.) or `browser_navigate`/`browser_act` (for web browser sessions). Always specify `target_app` (e.g. `"target_app": "Safari"`).
+      * Preserve User TUI Visibility (CRITICAL): NEVER force target apps to pop to frontmost or steal focus unless explicitly instructed. By default, `computer_batch` operates non-disruptively in the background via Accessibility API, so the user can continuously observe their TUI in the foreground without being occluded.
+      * Zero-Roundtrip Batching (CRITICAL ANTI-FREEZING): NEVER split a GUI interaction task into multiple repetitive find/inspect roundtrips (e.g. NEVER do turn 1: find, turn 2: inspect, turn 3: click). You MUST combine all steps into a SINGLE `computer_batch` turn using 'element_query' inside 'type' and 'click' actions. The runtime resolves and executes them atomically in milliseconds.
+      * Text-Only Models & Screenshot Avoidance: For non-multimodal/text-only models (such as DeepSeek / ds-v4), NEVER call `screenshot` actions to visually inspect the screen because image pixels cannot be parsed. Rely 100% on `element_query` and the semantic Accessibility DOM tree to locate buttons, text fields, and inputs.
+      * After completing computer or browser interaction tool calls, you MUST provide a final concise summary to the user explaining what actions were performed, their results, and answering any specific questions from the prompt (e.g., reporting the per-step timing breakdown and total elapsed duration).
+    - Model & Provider Configuration Protocol (CRITICAL):
+      * When asked to configure, add, or update LLM models or custom providers (e.g. OpenCode Zen, OpenAI, DeepSeek, Anthropic, or local endpoints):
+        - The canonical configuration file is `~/.lingxiagent/providers.json` (or `.lingxiagent/providers.json` in workspace).
+        - NEVER search the codebase or Swift implementation files to figure out configuration format.
+        - Schema & format:
+          {
+            "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
+            "version": 1,
+            "model": "provider-id/model-id", // optional default selection
+            "providers": {
+              "provider-id": {
+                "name": "Provider Name",
+                "adapter": "openai-responses" | "openai-compatible" | "anthropic-messages",
+                "models": {
+                  "model-id": {
+                    "name": "Model Display Name",
+                    "limit": { "context": 131072, "output": 8192 },
+                    "toolCalling": true,
+                    "parallelToolCalling": true,
+                    "reasoning": true,
+                    "vision": false,
+                    "structuredOutput": false
+                  }
+                },
+                "options": {
+                  "baseURL": "https://api.example.com/v1", // or endpoint without /responses or /chat/completions
+                  "apiKey": "{env:API_KEY_NAME}"
+                }
+              }
+            }
+          }
+    - Goal-Directed Execution & Convergence Protocol (/goal Mode - CRITICAL):
+      * Monotonic Progress Principle: Every single tool action MUST move the task closer to the final tangible deliverable. NEVER wander into speculative, open-ended research when the deliverable can be produced directly.
+      * Anti-Dispersion Circuit Breaker:
+        - NEVER execute more than 2 consecutive exploratory search/grep queries without performing a concrete mutation or delivery action.
+        - As soon as you locate the target file or understand the target data structure (e.g. `providers.json`), STOP searching immediately and perform the modification directly with `edit_file` or `write_file`.
+        - DO NOT deep-dive into compiler internals, Swift protocols, or unrelated framework files when the user only asked for a configuration, script, or feature patch.
+        - When a non-essential tool fails (e.g. web search unavailable, optional documentation missing), DO NOT get sidetracked trying to debug or investigate why the tool failed. Pivot immediately to the shortest local alternative and converge toward the user goal.
+      * Bias for Immediate Completion: Once the required change is written and verified, STOP calling more tools and deliver the final answer concisely to the user. Do NOT perform unnecessary speculative cleanup or unprompted secondary investigations.
     - Tool Discovery: Builtin tools are always available for filesystem, grep, and execution. If `search_tools` returns no matches or a diagnostic notice (empty/error), do not retry searching; proceed with builtin tools.
     - Execution & Truthfulness: Inspect before mutating, run verification after changes, and report obstacles truthfully without hallucination.
     """
+
+    static func renderResidentMCPCatalog() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let mcpFile = home.appendingPathComponent(".lingxiagent/mcp.json")
+        var serversSummary: [String] = []
+
+        if let data = try? Data(contentsOf: mcpFile),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let servers = json["servers"] as? [[String: Any]] {
+            for server in servers where (server["enabled"] as? Bool ?? true) {
+                guard let id = (server["alias"] as? String) ?? (server["id"] as? String), !id.isEmpty else { continue }
+                let transport = server["transport"] as? String ?? "stdio"
+                if let desc = server["description"] as? String, !desc.isEmpty {
+                    serversSummary.append("- **\(id)** (\(transport)): \(desc)")
+                } else {
+                    serversSummary.append("- **\(id)** (transport: \(transport))")
+                }
+            }
+        }
+
+        if serversSummary.isEmpty {
+            return ""
+        }
+
+        return """
+        # Active MCP Servers
+        The following external MCP servers are currently configured and enabled:
+        \(serversSummary.joined(separator: "\n"))
+
+        ## How to Use MCP Tools:
+        1. Discover tools: call `search_tools(query: "<keyword>", server: "<optional_server_alias>")` to discover available tool IDs and their schemas.
+        2. Lease tool: call `load_tool(tool_id: "<tool_name>")` to arm the tool for execution.
+        3. Execute tool: call `execute_tool(tool_id: "<tool_name>", arguments: <arguments_json>)` to invoke the leased tool.
+        4. Prefer specialized MCP tools over manual or speculative exploration when applicable.
+        """
+    }
 
     static func render(
         profile: AgentBehaviorProfile,
@@ -183,6 +264,10 @@ enum AgentBehaviorInstructions {
             entries.append("Explore profile: use read-only search and inspection, report evidence and uncertainty, and do not mutate the repository. Mutation is forbidden by runtime capability policy.")
         }
         entries.append(runtimeGuidelines)
+        let mcpCatalog = renderResidentMCPCatalog()
+        if !mcpCatalog.isEmpty {
+            entries.append(mcpCatalog)
+        }
         if let configured, !configured.isEmpty { entries.append(configured) }
         if let repository = repository.rendered() { entries.append(repository) }
         return entries.joined(separator: "\n\n")

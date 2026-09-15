@@ -36,10 +36,9 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private var runtimeContinuations: [String: AsyncStream<RuntimeEventEnvelope>.Continuation] = [:]
     private var sessionContinuations: [String: AsyncStream<SessionEventEnvelope>.Continuation] = [:]
     private var frameContinuations: [String: AsyncStream<StreamFrame>.Continuation] = [:]
-    private var stateContinuation: AsyncStream<ConnectionState>.Continuation?
+    private var stateContinuations: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
     private var terminalError: CoreError?
     private var currentState = ConnectionState.disconnected
-    private let stateStorage: AsyncStream<ConnectionState>
     public let authorizationContext: ContentAuthorizationContext = .anonymous
 
     public init(corePath: String? = nil, interactive: Bool = true) throws {
@@ -57,9 +56,6 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
         self.process = process
         self.input = inputPipe.fileHandleForWriting
-        var continuation: AsyncStream<ConnectionState>.Continuation!
-        self.stateStorage = AsyncStream { continuation = $0 }
-        self.stateContinuation = continuation
         try process.run()
         Self.trace("process.run.end")
         Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
@@ -68,9 +64,6 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public init(inputHandle: FileHandle, outputPipe: Pipe, process: Process? = nil) {
         self.process = process
         self.input = inputHandle
-        var continuation: AsyncStream<ConnectionState>.Continuation!
-        self.stateStorage = AsyncStream { continuation = $0 }
-        self.stateContinuation = continuation
         Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
@@ -80,7 +73,21 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         }
     }
 
-    public var stateStream: AsyncStream<ConnectionState> { stateStorage }
+    public var stateStream: AsyncStream<ConnectionState> {
+        AsyncStream { continuation in
+            let id = UUID()
+            let current = withLock { () -> ConnectionState in
+                stateContinuations[id] = continuation
+                return currentState
+            }
+            continuation.yield(current)
+            continuation.onTermination = { [weak self] _ in
+                self?.withLock {
+                    _ = self?.stateContinuations.removeValue(forKey: id)
+                }
+            }
+        }
+    }
 
     public func connect() async throws {
         debug("connect.begin")
@@ -288,7 +295,15 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         updateState(.failed(detail: error.message))
     }
 
-    private func updateState(_ value: ConnectionState) { withLock { currentState = value }; stateContinuation?.yield(value) }
+    private func updateState(_ value: ConnectionState) {
+        let listeners = withLock { () -> [AsyncStream<ConnectionState>.Continuation] in
+            currentState = value
+            return Array(stateContinuations.values)
+        }
+        for listener in listeners {
+            listener.yield(value)
+        }
+    }
     private func withLock<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
     private func removeRuntime(_ id: String) { lock.lock(); runtimeContinuations.removeValue(forKey: id)?.finish(); lock.unlock() }
     private func removeSession(_ id: String) { lock.lock(); sessionContinuations.removeValue(forKey: id)?.finish(); lock.unlock() }

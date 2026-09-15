@@ -29,6 +29,8 @@ public final class ApplicationTUI: Frontend {
 
     private static let localCommands: [FrontendCommandItem] = [
         FrontendCommandItem(name: "help", description: "Show help and available commands", category: "General"),
+        FrontendCommandItem(name: "theme", aliases: ["themes"], description: "Switch or list themes (e.g. /theme light, /theme catppuccin)", category: "Appearance"),
+        FrontendCommandItem(name: "keybindings", aliases: ["keys", "shortcuts"], description: "Show active keybindings and shortcuts", category: "General"),
         FrontendCommandItem(name: "clear", description: "Clear current transcript", category: "View"),
         FrontendCommandItem(name: "expand", description: "Expand all collapsed thinking and tool outputs", category: "View"),
         FrontendCommandItem(name: "collapse", description: "Collapse all long thinking and tool outputs", category: "View"),
@@ -126,6 +128,17 @@ public final class ApplicationTUI: Frontend {
             tip: "Press ctrl+p to see all available actions and commands",
             permissionName: initialPermission
         )
+
+        // 注册快捷键配置与主题实时重绘监听
+        KeybindingRegistry.shared.loadFromConfigFile()
+        ThemeManager.shared.addObserver { [weak self] _ in
+            Task { @MainActor in
+                self?.committedEntryCache.removeAll()
+                if let state = self?.latestState {
+                    self?.refreshView(state)
+                }
+            }
+        }
     }
 
     private var allCommands: [FrontendCommandItem] {
@@ -339,6 +352,28 @@ public final class ApplicationTUI: Frontend {
         if case .commandModal = overlay {
             await handleCommandModal(event)
             return
+        }
+
+        // 快捷键引擎拦截与分发
+        if let stroke = KeybindingDispatcher.toKeyStroke(from: event),
+           let action = KeybindingDispatcher.shared.dispatch(stroke: stroke) {
+            switch action {
+            case .toggleTheme:
+                let current = ThemeManager.shared.currentTheme
+                let nextTheme = (current.appearance == .dark) ? BuiltinThemes.pearlFoxLight : BuiltinThemes.cyberFoxDark
+                ThemeManager.shared.setTheme(by: nextTheme.id)
+                commandEntries.append(TUITranscriptEntry(kind: .result, text: "🎨 Toggled theme to '\(nextTheme.name)'", style: .systemNotice))
+                refreshView(latestState)
+                return
+            case .showHelp:
+                executeLocalOrApplicationCommand("/keybindings", store: store)
+                return
+            case .clearScreen:
+                executeLocalOrApplicationCommand("/clear", store: store)
+                return
+            default:
+                break
+            }
         }
 
         switch event {
@@ -606,31 +641,36 @@ public final class ApplicationTUI: Frontend {
 
     private func openModelPicker() {
         overlay = .modelPicker(query: "", selected: 0)
+        if let store = self.store, latestState.models.isEmpty {
+            enqueue { await store.dispatch(.listModels) }
+        }
     }
 
     private func modelOptions(query: String) -> [ModelOptionItem] {
         var base: [ModelOptionItem] = []
-        let currentID = latestState.currentModelID ?? ""
+        let currentID = latestState.currentModelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let catalog = latestState.models
 
-        // 1. Recent / Active 分组（当前使用的活动模型排首位）
-        let activeDisplayName: String
-        let activeProviderID: String
-        if let match = catalog.first(where: { $0.id == currentID || $0.modelID == currentID }) {
-            activeDisplayName = match.displayName.isEmpty ? match.modelID : match.displayName
-            activeProviderID = match.providerID
-        } else {
-            activeDisplayName = currentID.contains("/") ? String(currentID.split(separator: "/").last ?? "") : currentID
-            activeProviderID = currentID.contains("/") ? String(currentID.split(separator: "/").first ?? "Active") : "Active"
-        }
+        // 1. Recent / Active 分组（当前使用的活动模型排首位，仅在当前模型非空时追加）
+        if !currentID.isEmpty {
+            let activeDisplayName: String
+            let activeProviderID: String
+            if let match = catalog.first(where: { $0.id == currentID || $0.modelID == currentID }) {
+                activeDisplayName = match.displayName.isEmpty ? match.modelID : match.displayName
+                activeProviderID = match.providerID
+            } else {
+                activeDisplayName = currentID.contains("/") ? String(currentID.split(separator: "/").last ?? "") : currentID
+                activeProviderID = currentID.contains("/") ? String(currentID.split(separator: "/").first ?? "Active") : "Active"
+            }
 
-        base.append(ModelOptionItem(
-            modelID: currentID,
-            displayName: activeDisplayName,
-            providerID: activeProviderID,
-            group: "Recent",
-            isFree: false
-        ))
+            base.append(ModelOptionItem(
+                modelID: currentID,
+                displayName: activeDisplayName,
+                providerID: activeProviderID,
+                group: "Recent",
+                isFree: false
+            ))
+        }
 
         // Grouping uses whatever display name the registry publishes for the
         // product. No product is special-cased here, so a product added to the
@@ -1139,6 +1179,45 @@ public final class ApplicationTUI: Frontend {
         switch command {
         case "/quit":
             shouldQuit = true
+        case "/theme", "/themes":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 || (parts.count >= 2 && parts[1] == "list") {
+                let current = ThemeManager.shared.currentTheme
+                var listMsg = "🎨 Available Themes (Current: \(current.name) [\(current.id)]):\n"
+                for t in ThemeManager.shared.availableThemes {
+                    let indicator = (t.id == current.id) ? "● " : "○ "
+                    listMsg += "  \(indicator)\(t.id) (\(t.appearance.rawValue)) - \(t.name)\n"
+                }
+                listMsg += "\nSwitch with: /theme <name> (e.g. /theme light, /theme catppuccin, /theme dracula)"
+                commandEntries.append(TUITranscriptEntry(kind: .result, text: listMsg, style: .systemNotice))
+                refreshView(latestState)
+                return
+            }
+            let targetQuery = parts[1...].joined(separator: " ")
+            if ThemeManager.shared.setTheme(by: targetQuery) {
+                let newTheme = ThemeManager.shared.currentTheme
+                committedEntryCache.removeAll()
+                commandEntries.append(TUITranscriptEntry(kind: .result, text: "🎨 Theme switched to '\(newTheme.name)' (\(newTheme.appearance.rawValue))", style: .systemNotice))
+                refreshView(latestState)
+            } else {
+                commandEntries.append(TUITranscriptEntry(kind: .error, text: "Theme '\(targetQuery)' not found. Type /theme list to view all themes.", style: .error))
+                refreshView(latestState)
+            }
+            return
+        case "/keybindings", "/keys", "/shortcuts":
+            var helpText = "⌨️ Active Keybindings & Shortcuts:\n"
+            let rules = KeybindingRegistry.shared.allRules()
+            let grouped = Dictionary(grouping: rules, by: { $0.context.rawValue.capitalized })
+            for (ctx, items) in grouped.sorted(by: { $0.key < $1.key }) {
+                helpText += "\n[\(ctx)]\n"
+                for item in items {
+                    helpText += "  \(item.stroke.description.padding(toLength: 16, withPad: " ", startingAt: 0)) -> \(item.action.displayName)\n"
+                }
+            }
+            helpText += "\nConfiguration: Edit ~/.lingxiagent/keybindings.json to customize bindings."
+            commandEntries.append(TUITranscriptEntry(kind: .result, text: helpText, style: .systemNotice))
+            refreshView(latestState)
+            return
         case "/clear":
             commandEntries.removeAll()
             view.transcript.entries.removeAll()
@@ -1196,6 +1275,7 @@ public final class ApplicationTUI: Frontend {
             let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
             if parts.count == 1 {
                 openModelPicker()
+                enqueue { await store.dispatch(.listModels) }
                 return
             }
             fallthrough
@@ -1987,7 +2067,8 @@ public final class ApplicationTUI: Frontend {
 
         var renderedCount = 0
         if items.isEmpty {
-            lines.append(TUIStyledLine("  No matching models".padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+            let emptyMsg = latestState.models.isEmpty ? "  Loading models..." : "  No matching models"
+            lines.append(TUIStyledLine(emptyMsg.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
             renderedCount += 1
         } else {
             for row in visibleRows {

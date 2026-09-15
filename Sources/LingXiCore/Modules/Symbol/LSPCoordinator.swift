@@ -94,116 +94,47 @@ public struct LSPLanguageConfig: Sendable {
     }
 }
 
-/// 通用进程级 LSP Transport（通过 Stdio 与 Content-Length 头交互）。
+/// 通用进程级 LSP Transport（基于四层 IPC 流水线）。
 public final class GenericProcessLSPTransport: @unchecked Sendable, LSPTransport {
     public let executablePath: String
     public let arguments: [String]
-    private var process: Process?
-    private var input: FileHandle?
-    private var output: FileHandle?
-    private let lock = NSLock()
+    private let peer: JSONRPCPeer
 
     public init(executablePath: String, arguments: [String] = []) {
         self.executablePath = executablePath
         self.arguments = arguments
+        let proc = ManagedProcess(
+            executablePath: executablePath,
+            arguments: arguments,
+            environment: EnvironmentSanitizer.sanitized()
+        )
+        let transport = StdioTransport(managedProcess: proc)
+        let framer = LSPContentLengthFramer()
+        self.peer = JSONRPCPeer(transport: transport, framer: framer)
     }
 
     public func start() throws {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard process == nil else { return }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executablePath)
-        proc.arguments = arguments
-        proc.environment = EnvironmentSanitizer.sanitized()
-
-        let inPipe = Pipe()
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-
-        proc.standardInput = inPipe
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-
-        try proc.run()
-        self.process = proc
-        self.input = inPipe.fileHandleForWriting
-        self.output = outPipe.fileHandleForReading
+        try peer.start()
     }
 
     public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if let proc = process, proc.isRunning {
-            LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
-        }
-        input?.closeFile()
-        output?.closeFile()
-        process = nil
-        input = nil
-        output = nil
+        peer.stop()
     }
 
     public func request(id: Int, method: String, parameters: Data) throws -> Data {
-        try send(id: id, method: method, parameters: parameters)
-        while let message = try readMessage() {
-            guard let object = try JSONSerialization.jsonObject(with: message) as? [String: Any] else { continue }
-            guard (object["id"] as? NSNumber)?.intValue == id else { continue }
-            if object["error"] != nil { throw LSPClientError.crashed }
-            guard let result = object["result"] else { return Data("null".utf8) }
-            return try JSONSerialization.data(withJSONObject: result)
+        do {
+            return try peer.request(id: id, method: method, parameters: parameters)
+        } catch {
+            throw LSPClientError.crashed
         }
-        throw LSPClientError.crashed
     }
 
     public func notify(method: String, parameters: Data) throws {
-        try send(id: nil, method: method, parameters: parameters)
-    }
-
-    private func send(id: Int?, method: String, parameters: Data) throws {
-        lock.lock()
-        guard let proc = process, proc.isRunning, let inHandle = input else {
-            lock.unlock()
+        do {
+            try peer.notify(method: method, parameters: parameters)
+        } catch {
             throw LSPClientError.crashed
         }
-        let inHandleLocal = inHandle
-        lock.unlock()
-
-        let paramObj = (try? JSONSerialization.jsonObject(with: parameters)) ?? [:]
-        var request: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": paramObj]
-        if let id { request["id"] = id }
-        let body = try JSONSerialization.data(withJSONObject: request)
-        let header = "Content-Length: \(body.count)\r\n\r\n"
-        try inHandleLocal.write(contentsOf: Data(header.utf8))
-        try inHandleLocal.write(contentsOf: body)
-    }
-
-    private func readMessage() throws -> Data? {
-        lock.lock()
-        guard let outHandle = output else {
-            lock.unlock()
-            throw LSPClientError.crashed
-        }
-        let outHandleLocal = outHandle
-        lock.unlock()
-
-        var header = Data()
-        while header.suffix(4) != Data("\r\n\r\n".utf8) {
-            let byte = outHandleLocal.readData(ofLength: 1)
-            guard !byte.isEmpty else { return nil }
-            header.append(byte)
-            if header.count > 16 * 1024 { throw LSPClientError.invalidResponse }
-        }
-        let text = String(decoding: header, as: UTF8.self)
-        guard let value = text.split(separator: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") }),
-              let length = Int(value.split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces)) else {
-            throw LSPClientError.invalidResponse
-        }
-        let body = outHandleLocal.readData(ofLength: length)
-        guard body.count == length else { throw LSPClientError.crashed }
-        return body
     }
 }
 

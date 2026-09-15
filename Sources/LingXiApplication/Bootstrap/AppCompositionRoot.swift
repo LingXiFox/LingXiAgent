@@ -57,43 +57,38 @@ public final class AppCompositionRoot: Sendable {
         let store = try await ApplicationStore.stdio(
             corePath: configuration.corePath,
             interactive: true,
-            autoConnect: false
+            autoConnect: true
         )
 
-        // 3. 后台建立连接并派发初态配置
+        // 3. 派发初始业务状态与偏好
         let bootstrapTask = Task { [configuration] in
-            do {
-                try await store.connect()
-                await store.dispatch(.listSessions)
+            await store.dispatch(.listSessions)
 
-                let prefs = UserPreferencesStore.shared.load()
-                if let resumeID = configuration.resumeSessionID, !resumeID.isEmpty {
-                    await store.dispatch(.switchSession(SessionID(resumeID)))
+            let prefs = UserPreferencesStore.shared.load()
+            if let resumeID = configuration.resumeSessionID, !resumeID.isEmpty {
+                await store.dispatch(.switchSession(SessionID(resumeID)))
+            }
+            if configuration.isYoloMode {
+                await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
+            } else if let permStr = prefs.lastPermissionConfiguration {
+                switch permStr.lowercased() {
+                case "yolo", "yolo_full", "full": await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
+                case "auto", "auto_workspace": await store.dispatch(.setPermissionConfiguration(.autoWorkspace))
+                case "ask", "ask_workspace": await store.dispatch(.setPermissionConfiguration(.askWorkspace))
+                case "ask_full": await store.dispatch(.setPermissionConfiguration(.askFullAccess))
+                default: break
                 }
-                if configuration.isYoloMode {
-                    await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
-                } else if let permStr = prefs.lastPermissionConfiguration {
-                    switch permStr.lowercased() {
-                    case "yolo", "yolo_full", "full": await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
-                    case "auto", "auto_workspace": await store.dispatch(.setPermissionConfiguration(.autoWorkspace))
-                    case "ask", "ask_workspace": await store.dispatch(.setPermissionConfiguration(.askWorkspace))
-                    case "ask_full": await store.dispatch(.setPermissionConfiguration(.askFullAccess))
-                    default: break
-                    }
-                }
-                let targetModel = configuration.initialModelID ?? prefs.lastModelID
-                if let modelID = targetModel, !modelID.isEmpty {
-                    await store.dispatch(.selectModel(modelID))
-                }
-                let targetEffort = configuration.reasoningEffort ?? prefs.lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:))
-                if let effort = targetEffort {
-                    await store.dispatch(.setReasoningEffort(effort))
-                }
-                if let prompt = configuration.initialPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    await store.dispatch(.submitPrompt(prompt))
-                }
-            } catch {
-                // 异常日志由 Store 记录，不中断前端视图接入
+            }
+            let targetModel = configuration.initialModelID ?? prefs.lastModelID
+            if let modelID = targetModel, !modelID.isEmpty {
+                await store.dispatch(.selectModel(modelID))
+            }
+            let targetEffort = configuration.reasoningEffort ?? prefs.lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:))
+            if let effort = targetEffort {
+                await store.dispatch(.setReasoningEffort(effort))
+            }
+            if let prompt = configuration.initialPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await store.dispatch(.submitPrompt(prompt))
             }
         }
 

@@ -36,9 +36,10 @@ public enum SessionMessagePart: Sendable, Equatable, Codable {
     case text(String)
     case toolCall(ToolCall)
     case toolResult(ToolResult)
+    case observation(ObservationID)
 
-    private enum Kind: String, Codable { case text, toolCall, toolResult }
-    private enum CodingKeys: String, CodingKey { case kind, text, toolCall, toolResult }
+    private enum Kind: String, Codable { case text, toolCall, toolResult, observation }
+    private enum CodingKeys: String, CodingKey { case kind, text, toolCall, toolResult, observation }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -46,6 +47,7 @@ public enum SessionMessagePart: Sendable, Equatable, Codable {
         case .text: self = .text(try container.decode(String.self, forKey: .text))
         case .toolCall: self = .toolCall(try container.decode(ToolCall.self, forKey: .toolCall))
         case .toolResult: self = .toolResult(try container.decode(ToolResult.self, forKey: .toolResult))
+        case .observation: self = .observation(try container.decode(ObservationID.self, forKey: .observation))
         }
     }
 
@@ -61,6 +63,9 @@ public enum SessionMessagePart: Sendable, Equatable, Codable {
         case let .toolResult(result):
             try container.encode(Kind.toolResult, forKey: .kind)
             try container.encode(result, forKey: .toolResult)
+        case let .observation(id):
+            try container.encode(Kind.observation, forKey: .kind)
+            try container.encode(id, forKey: .observation)
         }
     }
 }

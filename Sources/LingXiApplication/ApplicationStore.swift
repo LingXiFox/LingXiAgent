@@ -26,6 +26,10 @@ public actor ApplicationStore {
         let initialConn = await client.connectionState
         Self.trace("init.connectionState.done state=\(initialConn)")
         self.state = ApplicationState(connectionState: initialConn)
+        let initialPrefs = UserPreferencesStore.shared.load()
+        if let lastModel = initialPrefs.lastModelID, !lastModel.isEmpty {
+            self.state.currentModelID = lastModel
+        }
 
         // 注册全部内建 20 个正式业务命令
         for cmd in BuiltinCommands.createAll() {
@@ -53,6 +57,8 @@ public actor ApplicationStore {
             debug("init.connect.begin")
             try? await client.connect()
             debug("init.connect.end")
+            let conn = await client.connectionState
+            RootReducer.reduce(state: &state, action: ._connectionStateChanged(conn))
             await refreshRuntimeBasics()
         }
     }
@@ -78,6 +84,8 @@ public actor ApplicationStore {
         debug("connect.begin")
         try await client.connect()
         debug("connect.end")
+        let conn = await client.connectionState
+        RootReducer.reduce(state: &state, action: ._connectionStateChanged(conn))
         await refreshRuntimeBasics()
         debug("connect.refreshRuntimeBasics.end")
         notifyStateChanged()

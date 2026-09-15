@@ -37,7 +37,7 @@ public struct WorkspaceRoot: Sendable {
         let input = URL(fileURLWithPath: expandedPath, relativeTo: expandedPath.hasPrefix("/") ? nil : url)
         let candidate = input.standardizedFileURL.resolvingSymlinksInPath()
         let root = url.path.hasSuffix("/") ? url.path : url.path + "/"
-        guard profile == .fullAccess || candidate.path == url.path || candidate.path.hasPrefix(root) else {
+        guard profile == .fullAccess || candidate.path == url.path || candidate.path.hasPrefix(root) || SensitivePathPolicy.isModelConfigurationPath(candidate) else {
             throw CoreError(code: .workspaceViolation, message: "AccessScope=workspace 禁止访问 Workspace 外路径；请先切换到 FullAccess/YOLO")
         }
         guard !sensitivePathPolicy.isSensitive(candidate) else {
@@ -344,10 +344,23 @@ private struct ReadPage: Codable {
 }
 
 private func readPage(_ file: URL, workspace: WorkspaceRoot, input: ReadArguments) throws -> ReadPage {
-    let start = max(1, input.startLine ?? 1)
-    let end = input.endLine
-    if let end, end < start { throw CoreError(code: .toolArgumentInvalid, message: "end_line 必须不小于 start_line") }
-    let count = min(max(1, input.maxLines ?? end.map { $0 - start + 1 } ?? 200), 2_000)
+    var start = max(1, input.startLine ?? 1)
+    var end = input.endLine
+    if let e = end {
+        if e <= 0 {
+            // Negative or 0 end_line means no upper bound or read to EOF
+            end = nil
+        } else if e < start {
+            // Model may have specified relative line count (e.g., start=100, end=50 lines),
+            // or swapped start and end.
+            if e > 0 && e <= 500 && start > e {
+                end = start + e
+            } else {
+                swap(&start, &end!)
+            }
+        }
+    }
+    let count = min(max(1, input.maxLines ?? end.map { max(1, $0 - start + 1) } ?? 200), 2_000)
     let handle = try FileHandle(forReadingFrom: file)
     defer { try? handle.close() }
     var carry = Data()
@@ -651,8 +664,12 @@ private func generatedExcludes(_ includeGenerated: Bool?) -> [String] {
 }
 
 private let sensitiveSearchExcludes = [
-    "!**/.ssh/**", "!**/.aws/**", "!**/.gnupg/**", "!**/.env", "!**/.env.*", "!**/*.pem", "!**/*.key",
-    "!**/*credential*", "!**/*secret*", "!**/*token*"
+    "!**/.ssh/**", "!**/.aws/**", "!**/.gnupg/**", "!**/.netrc", "!**/.npmrc",
+    "!**/.env", "!**/.env.*", "!**/*.env", "!**/*.pem", "!**/*.key",
+    "!**/credentials.vault", "!**/.vault_key", "!**/.master_key",
+    "!**/*-credentials.*", "!**/*_credentials.*", "!**/credential.json", "!**/credentials.json",
+    "!**/*-secret.*", "!**/*_secret.*", "!**/private-secret/**",
+    "!**/*-token.*", "!**/*_token.*"
 ]
 
 private func workspaceIgnoreArguments(root: URL, includeIgnored: Bool?) -> [String] {
@@ -1910,7 +1927,10 @@ public extension BuiltInToolProvider {
             GitTool(workspace: workspace),
             SkillTool(workspace: workspace),
             QuestionTool(questions: questions),
-            TodoTool()
+            TodoTool(),
+            BrowserNavigateTool(),
+            BrowserActTool(),
+            ComputerBatchTool()
         ] + indexTools + intelligenceTools)
     }
 }

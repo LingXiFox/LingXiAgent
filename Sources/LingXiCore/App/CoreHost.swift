@@ -145,7 +145,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let environment = ProcessInfo.processInfo.environment
         let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
         self.interactive = supportsInteraction
-        self.configurationStore = configurationStore
+        self.configurationStore = configurationStore ?? dataRoot.flatMap { try? ConfigurationStore(dataRoot: $0) }
         self.credentialStore = credentialStore
         self.restoreScheduler = restoreScheduler
         self.dataRootURL = dataRoot
@@ -164,7 +164,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
         let baseWorkspace = try workspaceRoot ?? WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
         let persistentRoot = dataRoot
-        let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url, excluding: persistentRoot.map { [$0] } ?? [])
+        let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url)
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
         self.workspaceURL = workspace.url
         let instructions = try AgentInstructionSet.load(workspace: workspace.url)
@@ -1169,13 +1169,22 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
 
         var results: [ProviderModelInfo] = []
-        var handledBuiltinIDs = Set<String>()
+        var customModelIDs = Set<String>()
 
-        // 1. All built-in products are first-class citizens. Their availability and
-        // credentials are managed through CredentialStore/Environment, NEVER by providers.json.
+        // 1. Custom providers configured explicitly by the user in ~/.lingxiagent/providers.json.
+        // User explicit configuration ALWAYS takes precedence over built-in catalog entries.
+        for providerID in snapshot.providers.providers.keys.sorted() {
+            guard let provider = snapshot.providers.providers[providerID] else { continue }
+            let models = configuredModelInfos(providerID: providerID, provider: provider)
+            for m in models {
+                customModelIDs.insert(m.id)
+                results.append(m)
+            }
+        }
+
+        // 2. Built-in products from catalog (co-exist with custom providers; user-defined models take precedence on collision)
         for product in availableProducts {
             guard product.runtime.isRunnable else { continue }
-            handledBuiltinIDs.insert(product.id)
 
             let isConfigured = await isProductConfigured(product: product)
             let accountModels: [DiscoveredRemoteModel]
@@ -1194,14 +1203,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 accountModels: accountModels,
                 isConfigured: isConfigured
             )
-            results.append(contentsOf: outcome.models)
-        }
-
-        // 2. Custom providers configured explicitly by the user in ~/.lingxiagent/providers.json.
-        for providerID in snapshot.providers.providers.keys.sorted() {
-            if handledBuiltinIDs.contains(providerID) { continue }
-            guard let provider = snapshot.providers.providers[providerID] else { continue }
-            results.append(contentsOf: configuredModelInfos(providerID: providerID, provider: provider))
+            for model in outcome.models {
+                if !customModelIDs.contains(model.id) {
+                    results.append(model)
+                }
+            }
         }
 
         return results
@@ -1311,14 +1317,33 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
 
         // Cold cache: discovery is the only way to know what this account can
-        // reach, so this one waits.
-        let result = await AccountModelDiscovery.refresh(
-            product: product,
-            accountRef: accountRef,
-            credential: credential
-        )
-        if case let .success(models) = result, !models.isEmpty {
-            return models
+        // reach. Bound it with a 1.5s timeout so startup and model listings never freeze.
+        let result: [DiscoveredRemoteModel]? = await withTaskGroup(of: [DiscoveredRemoteModel]?.self) { group in
+            group.addTask {
+                let outcome = await AccountModelDiscovery.refresh(
+                    product: product,
+                    accountRef: accountRef,
+                    credential: credential
+                )
+                if case let .success(models) = outcome, !models.isEmpty {
+                    return models
+                }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                return nil
+            }
+            for await item in group {
+                if let item, !item.isEmpty {
+                    group.cancelAll()
+                    return item
+                }
+            }
+            return nil
+        }
+        if let result, !result.isEmpty {
+            return result
         }
         let stored = await AccountScopedCatalogCache.shared.load(
             productID: providerID,

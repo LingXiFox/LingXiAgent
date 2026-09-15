@@ -288,6 +288,30 @@ struct ApplicationProjectionTests {
         #expect(loaded.lastReasoningEffort == "high")
     }
 
+    @Test("ApplicationState model state reflects custom models and preserves active selection")
+    func applicationStateModelSelection() {
+        var appState = ApplicationState()
+        #expect(appState.currentModelID == nil)
+        #expect(appState.models.isEmpty)
+
+        let customModel = ProviderModelInfo(
+            id: "opencode-zen/muse-spark-1.3-contributor-free",
+            providerID: "opencode-zen",
+            modelID: "muse-spark-1.3-contributor-free",
+            displayName: "Muse Spark 1.3 Contributor Free",
+            contextWindow: 131_072,
+            maxOutputTokens: 8192,
+            reasoning: true,
+            configured: true
+        )
+        appState.models = [customModel]
+        appState.currentModelID = customModel.id
+
+        #expect(appState.models.count == 1)
+        #expect(appState.currentModelID == "opencode-zen/muse-spark-1.3-contributor-free")
+        #expect(appState.models.first?.displayName == "Muse Spark 1.3 Contributor Free")
+    }
+
     @Test("Hydrated historical messages properly project into SessionViewState timeline nodes")
     func historicalHydrationProjectsTimelineNodes() {
         let userMsgID = MessageID("user-msg-1")
@@ -480,5 +504,34 @@ struct ApplicationProjectionTests {
         SessionReducer.reduceSnapshot(state: &viewState, snapshot: snapshot, connectionState: connection)
         #expect(!viewState.timelineNodes.isEmpty, "timelineNodes must not be empty when snapshot has turns")
         #expect(viewState.timelineNodes.first?.id.rawValue.contains(t.userMessage.messageID.rawValue) == true)
+    }
+
+    @Test("Status projector retains active execution state without being masked by idle connection state")
+    func testActiveExecutionNotMaskedByConnectionState() {
+        let runningToolStatus = ProductStatusProjector.projectStatus(
+            connectionState: .disconnected,
+            activeInteraction: nil,
+            pendingInteractions: [],
+            providerRequestState: nil,
+            activeSubagentsCount: 0,
+            hasRunningTools: true,
+            hasActiveThinking: false,
+            isPaging: false,
+            hasActiveError: false
+        )
+        #expect(runningToolStatus == .runningTool)
+
+        let thinkingStatus = ProductStatusProjector.projectStatus(
+            connectionState: .disconnected,
+            activeInteraction: nil,
+            pendingInteractions: [],
+            providerRequestState: nil,
+            activeSubagentsCount: 0,
+            hasRunningTools: false,
+            hasActiveThinking: true,
+            isPaging: false,
+            hasActiveError: false
+        )
+        #expect(thinkingStatus == .thinking)
     }
 }

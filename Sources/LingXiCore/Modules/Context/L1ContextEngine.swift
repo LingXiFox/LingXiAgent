@@ -10,6 +10,7 @@ public enum ContextSource: String, Sendable, Equatable, Hashable {
     case toolResult
     case projectPage
     case derivedPage
+    case observation
 }
 
 public enum ContextRole: Sendable, Equatable {
@@ -115,6 +116,7 @@ public struct L1ContextSnapshot: Sendable, Equatable {
         case let .text(text): .text(text)
         case let .toolCall(call): .toolCall(call)
         case let .toolResult(result): .toolResult(result)
+        case let .observation(id): .text("[Observation: \(id.description)]")
         }
     }
 }
@@ -201,6 +203,7 @@ public actor L1ContextEngine {
         switch part {
         case .toolCall: .toolCall
         case .toolResult: .toolResult
+        case .observation: .observation
         case .text:
             switch role {
             case .user: .userMessage
@@ -257,12 +260,15 @@ public actor L1ContextEngine {
             case let .toolCall(call): characters += call.arguments.count
             case let .toolResult(result):
                 characters += result.content.count + (result.error?.message.count ?? 0)
+            case let .observation(id):
+                characters += id.description.count
             }
             let count: Int
             switch entry.part {
             case let .text(text): count = entry.page?.characterCount ?? text.count
             case let .toolCall(call): count = call.arguments.count
             case let .toolResult(result): count = result.content.count + (result.error?.message.count ?? 0)
+            case let .observation(id): count = id.description.count
             }
             if entry.source == .projectPage { projectCharacters += count } else { sessionCharacters += count }
         }
@@ -274,6 +280,11 @@ public actor L1ContextEngine {
     }
 
     private static func characterCount(of part: SessionMessagePart) -> Int {
-        switch part { case let .text(text): text.count; case let .toolCall(call): call.arguments.count; case let .toolResult(result): result.content.count + (result.error?.message.count ?? 0) }
+        switch part {
+        case let .text(text): text.count
+        case let .toolCall(call): call.arguments.count
+        case let .toolResult(result): result.content.count + (result.error?.message.count ?? 0)
+        case let .observation(id): id.description.count
+        }
     }
 }

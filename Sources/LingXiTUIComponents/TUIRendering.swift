@@ -927,6 +927,7 @@ public enum TUITimelineKind: String, Sendable, Equatable {
     case decision = "Decision"
     case error = "Error"
     case result = "Result"
+    case observation = "Observation"
 }
 
 public struct TimelineSequence: Sendable, Equatable, Comparable {
@@ -1249,7 +1250,7 @@ public final class TranscriptViewport {
             return true // Subagent compact by default
         case .error:
             return false // Error expanded
-        case .user, .assistant, .question, .permission, .decision, .result:
+        case .user, .assistant, .question, .permission, .decision, .result, .observation:
             return false
         }
     }
@@ -1856,7 +1857,7 @@ private extension TUITimelineKind {
         case .assistant: .assistant
         case .thinking: .thinking
         case .read, .search, .edit, .patch, .write, .shell, .git, .mcp, .tool: .toolCall
-        case .toolResult: .toolResult
+        case .toolResult, .observation: .toolResult
         case .subagent: .subagent
         case .question: .question
         case .permission: .permission
@@ -3107,6 +3108,18 @@ public final class TUITimelineProjector: @unchecked Sendable {
                             details: details,
                             state: state,
                             collapsed: !isShort
+                        ))
+                    }
+                case let .observation(obsID):
+                    let id = "obs-\(obsID.rawValue.uuidString)"
+                    if !items.contains(where: { $0.id == id }) {
+                        append(TUITimelineItem(
+                            id: id,
+                            kind: .observation,
+                            title: "Observation [\(obsID.rawValue.uuidString.prefix(8))]",
+                            summary: "Environment observation snapshot",
+                            details: [],
+                            state: .completed
                         ))
                     }
                 }

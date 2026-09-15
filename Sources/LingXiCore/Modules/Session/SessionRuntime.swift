@@ -553,10 +553,10 @@ public actor SessionRuntime {
                         origin = entry.messageID?.rawValue ?? "history"
                         inclusionReason = "L1 historical assistant response"
                         cacheProvenance = "l1WorkingSet"
-                    case .toolCall, .toolResult:
+                    case .toolCall, .toolResult, .observation:
                         sourceKind = "L1"
-                        origin = entry.messageID?.rawValue ?? "tool"
-                        inclusionReason = "L1 tool execution record"
+                        origin = entry.messageID?.rawValue ?? "observation"
+                        inclusionReason = "L1 interaction/observation record"
                         cacheProvenance = "l1WorkingSet"
                     case .projectPage:
                         sourceKind = "L1"

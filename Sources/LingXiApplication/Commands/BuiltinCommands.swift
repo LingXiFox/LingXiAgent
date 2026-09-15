@@ -632,6 +632,17 @@ public enum BuiltinCommands {
                 argumentSchema: "[task_id | kill <task_id>]"
             ) { ctx in
                 try await handleTasks(ctx: ctx)
+            },
+
+            // 25. /goal
+            ApplicationCommand(
+                name: "goal",
+                aliases: ["target", "focus"],
+                description: "查看或设定目标收敛模式，强制模型向交付物单向收敛，防止发散",
+                category: "Execution",
+                argumentSchema: "[task_goal]"
+            ) { ctx in
+                try await handleGoal(ctx: ctx)
             }
         ]
     }
@@ -884,6 +895,42 @@ public enum BuiltinCommands {
             footer: "查看任务详情: /tasks <task_id> · 终止任务: /tasks kill <task_id>",
             borderStyle: .rounded
         )
+        return ApplicationCommandResult(output: card)
+    }
+
+    private static func handleGoal(ctx: ApplicationCommandContext) async throws -> ApplicationCommandResult {
+        let goalDescription = ctx.arguments.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSpecified = !goalDescription.isEmpty
+
+        var fields: [(String, String)] = [
+            ("收敛状态", "已激活 (Goal-Directed Mode: Active)"),
+            ("反发散断路器", "强制开启 (连续探索上限: 2 次)"),
+            ("推进策略", "单向收敛 · 最短直达路径 · 交付即停止"),
+        ]
+
+        if isSpecified {
+            fields.append(("当前锚定目标", goalDescription))
+        } else {
+            fields.append(("当前目标", "就地执行最短路径交付物，禁止探索性发散"))
+        }
+
+        let sections: [(String, [String])] = [
+            ("🎯 收敛法则 (Goal Convergence Rules)", [
+                "  1. 目标唯一锚定: 每步工具调用必须直接为目标产生有效产物",
+                "  2. 严禁源码流浪: 修改配置时不读编译器源码，改 Bug 时先跑最小单测",
+                "  3. 异常即时收敛: 遇到工具报错或网络缺失，禁止横向排查，立刻切备选方案",
+                "  4. 验证即时交付: 产物落地并通过校验后，立刻停止发散并向用户汇报"
+            ])
+        ]
+
+        let card = CLIFormatter.renderCard(
+            title: "🎯 目标收敛模式 (/goal)",
+            fields: fields,
+            sections: sections,
+            footer: isSpecified ? "已锁定目标: \(goalDescription)" : "用法: /goal <具体交付目标>",
+            borderStyle: .rounded
+        )
+
         return ApplicationCommandResult(output: card)
     }
 }

@@ -86,6 +86,153 @@ struct ProviderPlatformContractTests {
         }
     }
 
+    @Test func customProviderOverridesUnverifiedBuiltinProduct() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        try await credentials.setSecret("opencode-key", for: CredentialRef("opencode-cred"))
+
+        let config = ProvidersConfiguration(
+            customProviders: [
+                CustomProviderConfiguration(
+                    id: "opencode-zen",
+                    displayName: "OpenCode Zen Custom",
+                    baseURL: "https://opencode.ai/zen/v1",
+                    requiredHeaders: [:]
+                )
+            ],
+            accounts: [
+                ProviderAccountConfiguration(
+                    id: "opencode-zen",
+                    providerID: "opencode-zen",
+                    displayName: "OpenCode Zen",
+                    authentication: .bearer,
+                    credential: CredentialRef("opencode-cred"),
+                    accountType: .apiKey
+                )
+            ],
+            modelProfiles: [
+                ModelProfileConfiguration(
+                    id: "opencode-zen::muse-spark",
+                    providerID: "opencode-zen",
+                    modelID: "muse-spark",
+                    displayName: "Muse Spark",
+                    wireProtocol: .responses,
+                    contextWindow: 131_072
+                )
+            ],
+            defaultSelection: StoredModelSelection(accountID: "opencode-zen", profileID: "opencode-zen::muse-spark")
+        )
+
+        let resolution = try await RuntimeConfigurationResolver.resolveProviders(config, credentials: credentials)
+        #expect(resolution.runtimes["opencode-zen::opencode-zen::muse-spark"] != nil)
+    }
+
+    @Test("CoreHost listModels yields custom configured opencode-zen even if built-in catalog contains unconfigured entry")
+    func coreHostListModelsYieldsCustomConfiguredProvider() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let providersJSON = """
+        {
+          "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
+          "version": 1,
+          "providers": {
+            "opencode-zen": {
+              "name": "OpenCode Zen",
+              "adapter": "openai-responses",
+              "options": {
+                "baseURL": "https://opencode.ai/zen/v1",
+                "apiKey": "{env:OPENCODE_API_KEY}"
+              },
+              "models": {
+                "muse-spark-1.3-contributor-free": {
+                  "name": "Muse Spark 1.3 Contributor Free",
+                  "limit": { "context": 131072, "output": 8192 },
+                  "reasoning": true
+                }
+              }
+            }
+          }
+        }
+        """
+        let provURL = tempDir.appendingPathComponent("providers.json")
+        try providersJSON.data(using: .utf8)?.write(to: provURL)
+
+        let configurations = try ConfigurationStore(dataRoot: tempDir)
+        let host = try CoreHost(
+            workspaceRoot: WorkspaceRoot(path: tempDir.path),
+            dataRoot: tempDir,
+            configurationStore: configurations
+        )
+        let response = try await host.listModels(envelope: QueryEnvelope(payload: VoidResult()))
+        let models = response.payload
+        let found = models.first { $0.id == "opencode-zen/muse-spark-1.3-contributor-free" }
+        #expect(found != nil)
+        #expect(found?.displayName == "Muse Spark 1.3 Contributor Free")
+        #expect(found?.configured == true)
+    }
+
+    @Test("CoreHost listModels yields real user configured models from ~/.lingxiagent/providers.json")
+    func coreHostListModelsYieldsRealUserConfiguredModels() async throws {
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        let userConfigDir = homeDir.appendingPathComponent(".lingxiagent", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: userConfigDir.appendingPathComponent("providers.json").path) else {
+            return
+        }
+        let host = try CoreHost(dataRoot: userConfigDir)
+        let response = try await host.listModels(envelope: QueryEnvelope(payload: VoidResult()))
+        let models = response.payload
+        let hasOpenCode = models.contains { $0.id == "opencode-zen/muse-spark-1.3-contributor-free" }
+        let hasBAI = models.contains { $0.id == "bai/deepseek-v4-flash" }
+        #expect(hasOpenCode)
+        #expect(hasBAI)
+    }
+
+    @Test("CoreHost listModels merges builtin models and custom models for same provider")
+    func coreHostListModelsMergesBuiltinAndCustomModels() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let providersJSON = """
+        {
+          "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
+          "version": 1,
+          "providers": {
+            "llama-cpp-local": {
+              "name": "Local LLaMA Custom",
+              "adapter": "openai-compatible",
+              "options": {
+                "baseURL": "http://127.0.0.1:8080/v1"
+              },
+              "models": {
+                "custom-finetuned": {
+                  "name": "Custom Finetuned Model",
+                  "limit": { "context": 32768, "output": 4096 },
+                  "reasoning": false
+                }
+              }
+            }
+          }
+        }
+        """
+        let provURL = tempDir.appendingPathComponent("providers.json")
+        try providersJSON.data(using: .utf8)?.write(to: provURL)
+
+        let configurations = try ConfigurationStore(dataRoot: tempDir)
+        let host = try CoreHost(
+            workspaceRoot: WorkspaceRoot(path: tempDir.path),
+            dataRoot: tempDir,
+            configurationStore: configurations
+        )
+        let response = try await host.listModels(envelope: QueryEnvelope(payload: VoidResult()))
+        let models = response.payload
+        let hasCustom = models.contains { $0.id == "llama-cpp-local/custom-finetuned" && $0.configured == true }
+        #expect(hasCustom)
+    }
+
     private func configuration(for contract: Contract, credential: CredentialRef?) -> ProvidersConfiguration {
         let local = contract.authentication == .none
         return ProvidersConfiguration(

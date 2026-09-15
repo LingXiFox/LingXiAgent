@@ -250,7 +250,7 @@ public enum ModelRequestProtocolValidator {
                     if let activeAssistantMessageID { completedAssistantMessageIDs.insert(activeAssistantMessageID) }
                     activeAssistantMessageID = nil
                 }
-            case .text:
+            case .text, .observation:
                 guard entry.role != .tool, pending.isEmpty else {
                     throw CoreError(code: .contextProtocolViolation, message: "ToolCall / ToolResult 顺序错误")
                 }
@@ -454,7 +454,7 @@ public actor ContextCompactor {
     public func cacheMetrics(sessionID: SessionID) async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) { await derivedStore.metrics(sessionID: sessionID) }
     public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) { await derivedStore.allMetrics() }
     public func unitStates(sessionID: SessionID) -> [ContextUnitDebugSnapshot] { (unitResidencies[sessionID] ?? [:]).values.sorted { $0.messageID.rawValue < $1.messageID.rawValue } }
-    static func content(of part: SessionMessagePart) -> String { switch part { case let .text(text): text; case let .toolCall(call): call.arguments; case let .toolResult(result): result.content + (result.error?.message ?? "") } }
+    static func content(of part: SessionMessagePart) -> String { switch part { case let .text(text): text; case let .toolCall(call): call.arguments; case let .toolResult(result): result.content + (result.error?.message ?? ""); case let .observation(id): "[Observation: \(id.description)]" } }
 
     private func makeUnits(entries: [ContextEntry], batches: [ToolExchangeBatch]) -> [Unit] {
         let byMessageID = Dictionary(uniqueKeysWithValues: batches.flatMap { batch in
@@ -479,6 +479,7 @@ public actor ContextCompactor {
                 case .assistantMessage: priority = 60
                 case .projectPage, .derivedPage: priority = 40
                 case .toolCall, .toolResult: priority = 1
+                case .observation: priority = 50
                 }
                 result.append(Unit(indices: [index], entries: [entry], batch: nil, priority: priority))
             }

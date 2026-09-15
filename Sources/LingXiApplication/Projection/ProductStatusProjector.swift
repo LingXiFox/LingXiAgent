@@ -15,21 +15,8 @@ public enum ProductStatusProjector {
         isPaging: Bool,
         hasActiveError: Bool
     ) -> ProductRuntimeStatus {
-        switch connectionState.status {
-        case .disconnected, .failed:
-            return .disconnected
-        case .reconnecting, .handshaking, .connecting:
-            return .reconnecting
-        case .connected:
-            break
-        }
-
         if activeInteraction != nil || !pendingInteractions.isEmpty {
             return .actionRequired
-        }
-
-        if providerRequestState == .rateLimited {
-            return .rateLimited
         }
 
         if activeSubagentsCount > 0 {
@@ -42,6 +29,19 @@ public enum ProductStatusProjector {
 
         if hasRunningTools {
             return .runningTool
+        }
+
+        switch connectionState.status {
+        case .disconnected, .failed:
+            return .disconnected
+        case .reconnecting, .handshaking, .connecting:
+            return .reconnecting
+        case .connected:
+            break
+        }
+
+        if providerRequestState == .rateLimited {
+            return .rateLimited
         }
 
         if providerRequestState == .scheduled

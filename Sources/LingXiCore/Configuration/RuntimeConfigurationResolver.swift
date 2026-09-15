@@ -44,7 +44,7 @@ public enum RuntimeConfigurationResolver {
             let profiles = configuration.modelProfiles.filter { $0.providerID == account.providerID }
             guard !profiles.isEmpty else { continue }
             let custom = configuration.customProviders.first(where: { $0.id == account.providerID })
-            let builtin = BuiltinProviderCatalog.definition(id: account.providerID)
+            let builtin = custom == nil ? BuiltinProviderCatalog.definition(id: account.providerID) : nil
             if let builtin, !builtin.verificationStatus.isRuntimeVerified {
                 throw ProviderResolutionError.providerProductUnverified(builtin.id)
             }

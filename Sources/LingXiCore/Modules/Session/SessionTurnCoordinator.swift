@@ -137,7 +137,7 @@ public actor SessionTurnCoordinator {
                             }
                         }
                         completedCallIDs.insert(tc.callID)
-                    case .toolResult:
+                    case .toolResult, .observation:
                         break
                     }
                 }
