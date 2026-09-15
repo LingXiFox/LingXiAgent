@@ -741,13 +741,22 @@ public actor ApplicationStore {
         debug("refresh.runtime.basics.concurrent.end")
         notifyStateChanged()
 
-        // 异步后台拉取 workspace diff，不阻塞 UI 首屏渲染
+        // 异步后台拉取 workspace diff 与图谱索引状态，不阻塞 UI 首屏渲染
         Task { [weak self] in
             guard let self = self else { return }
             if let diff = try? await self.client.workspace.diff() {
                 await self.updateWorkspaceDiff(diff)
             }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            if let latestWs = try? await self.client.workspace.get() {
+                await self.updateWorkspace(latestWs)
+            }
         }
+    }
+
+    private func updateWorkspace(_ ws: WorkspaceSummary) {
+        state.currentWorkspace = ws
+        notifyStateChanged()
     }
 
     private func updateWorkspaceDiff(_ diff: WorkspaceDiffSummary) {

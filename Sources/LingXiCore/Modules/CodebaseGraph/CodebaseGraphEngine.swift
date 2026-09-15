@@ -13,12 +13,40 @@ public actor CodebaseGraphEngine {
     private var edgesByTarget: [String: [GraphEdge]] = [:]
     private var nodesByName: [String: [String]] = [:] // name -> [nodeId]
     private var fileModificationTimes: [String: Date] = [:]
+    private var fileIdentifiers: [String: Set<String>] = [:]
     private var workspaceRootURL: URL?
+    private var isIndexing: Bool = false
+    private var isInitialized: Bool = false
+
+    public var isIndexingInProgress: Bool {
+        isIndexing
+    }
+
+    public var isIndexed: Bool {
+        isInitialized
+    }
+
+    public var nodeCount: Int {
+        nodes.count
+    }
+
+    public var edgeCount: Int {
+        edges.count
+    }
+
+    public var fileCount: Int {
+        fileModificationTimes.count
+    }
 
     public init() {}
 
     /// 索引或增量更新工作区代码图谱
     public func indexWorkspace(workspaceURL: URL, forceReindex: Bool = false) async -> ArchitectureOverview {
+        isIndexing = true
+        defer {
+            isIndexing = false
+            isInitialized = true
+        }
         self.workspaceRootURL = workspaceURL
 
         if forceReindex {
@@ -28,6 +56,7 @@ public actor CodebaseGraphEngine {
             edgesByTarget.removeAll()
             nodesByName.removeAll()
             fileModificationTimes.removeAll()
+            fileIdentifiers.removeAll()
         }
 
         // 尝试从持久化缓存载入
@@ -242,6 +271,7 @@ public actor CodebaseGraphEngine {
                 nodesByName[name] = filtered
             }
         }
+        fileIdentifiers.removeValue(forKey: relPath)
     }
 
     private func parseFile(_ fileURL: URL, root: URL) {
@@ -345,6 +375,9 @@ public actor CodebaseGraphEngine {
                 containerStack.removeLast()
             }
         }
+
+        let words = content.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { $0.count > 2 }
+        fileIdentifiers[relPath] = Set(words)
     }
 
     private struct TypeDeclMatch {
@@ -399,15 +432,15 @@ public actor CodebaseGraphEngine {
     }
 
     private func resolveCrossFileCallEdges() {
-        // 基于 AST 声明的符号名建立跨文件函数互调关联
+        // 基于 AST 声明的符号名建立跨文件函数互调关联 (倒排哈希极速匹配)
         let callableNodes = nodes.values.filter { $0.kind == .function || $0.kind == .method }
-        for caller in callableNodes {
-            guard let fileContent = try? String(contentsOf: URL(fileURLWithPath: (workspaceRootURL?.appendingPathComponent(caller.path).path)!), encoding: .utf8) else {
-                continue
-            }
-            // 扫描当前文件内容中调用的其它符号
-            for (name, calleeIds) in nodesByName where name != caller.name && name.count > 2 {
-                if fileContent.contains("\(name)(") || fileContent.contains("\(name) ") {
+        let callableByFile = Dictionary(grouping: callableNodes, by: \.path)
+
+        for (filePath, callers) in callableByFile {
+            guard let tokens = fileIdentifiers[filePath] else { continue }
+            for token in tokens {
+                guard let calleeIds = nodesByName[token] else { continue }
+                for caller in callers where caller.name != token {
                     for calleeId in calleeIds where calleeId != caller.id {
                         let edge = GraphEdge(sourceId: caller.id, targetId: calleeId, kind: .calls, confidence: 0.85)
                         addEdge(edge)
@@ -504,5 +537,6 @@ public actor CodebaseGraphEngine {
         }
         for node in payload.nodes { addNode(node) }
         for edge in payload.edges { addEdge(edge) }
+        if !payload.nodes.isEmpty { isInitialized = true }
     }
 }

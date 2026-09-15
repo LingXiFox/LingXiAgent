@@ -1813,6 +1813,7 @@ private struct CodebaseGraphArguments: Decodable {
     let direction: String?
     let depth: Int?
     let kind: String?
+    let reindex: Bool?
 }
 
 public struct CodebaseGraphTool: ToolExecutor {
@@ -1822,11 +1823,12 @@ public struct CodebaseGraphTool: ToolExecutor {
         id: ToolID("codebase_graph"),
         description: "Explore the codebase knowledge graph: architecture layers, hotspots, call hierarchy trace (inbound/outbound), and symbol topological search.",
         inputSchema: ToolInputSchema(properties: [
-            "action": ToolInputProperty(type: .string, description: "Action to perform: architecture, trace, search, or refresh", enumValues: ["architecture", "trace", "search", "refresh"]),
+            "action": ToolInputProperty(type: .string, description: "Action to perform: architecture, overview, trace, search, or refresh", enumValues: ["architecture", "overview", "trace", "search", "refresh"]),
             "target": ToolInputProperty(type: .string, description: "Symbol name or query for trace/search"),
             "direction": ToolInputProperty(type: .string, description: "Call trace direction: inbound (who calls target) or outbound (what target calls)", enumValues: ["inbound", "outbound"]),
             "depth": ToolInputProperty(type: .integer, description: "Maximum trace depth (1-5, default 3)", minimum: 1, maximum: 5),
-            "kind": ToolInputProperty(type: .string, description: "Filter symbol kind for search (e.g. class, function, struct, interface)")
+            "kind": ToolInputProperty(type: .string, description: "Filter symbol kind for search (e.g. class, function, struct, interface)"),
+            "reindex": ToolInputProperty(type: .boolean, description: "Whether to force re-indexing rather than using in-memory cached graph")
         ], required: ["action"]),
         capability: ToolCapability(readOnly: true)
     )
@@ -1838,18 +1840,20 @@ public struct CodebaseGraphTool: ToolExecutor {
     }
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: CodebaseGraphArguments = try decodeArguments(arguments)
+        let shouldReindex = input.reindex == true || input.action == "refresh"
+        let isIndexed = await CodebaseGraphEngine.shared.isIndexed
+        if shouldReindex || !isIndexed {
+            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url, forceReindex: shouldReindex)
+        }
+
         switch input.action {
-        case "architecture":
-            let overview = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url)
-            return try json(overview)
-        case "refresh":
-            let overview = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url, forceReindex: true)
+        case "architecture", "overview", "refresh":
+            let overview = await CodebaseGraphEngine.shared.getArchitecture()
             return try json(overview)
         case "trace":
             guard let target = input.target, !target.isEmpty else {
                 throw CoreError(code: .toolArgumentInvalid, message: "Action 'trace' requires 'target' parameter")
             }
-            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url)
             let dir: TraceDirection = (input.direction == "inbound") ? .inbound : .outbound
             let depth = min(max(1, input.depth ?? 3), 5)
             if let report = await CodebaseGraphEngine.shared.traceCallPath(symbolNameOrId: target, direction: dir, maxDepth: depth) {
@@ -1861,7 +1865,6 @@ public struct CodebaseGraphTool: ToolExecutor {
             guard let query = input.target, !query.isEmpty else {
                 throw CoreError(code: .toolArgumentInvalid, message: "Action 'search' requires 'target' parameter")
             }
-            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url)
             let filterKind = input.kind.flatMap { GraphNodeKind(rawValue: $0.lowercased()) }
             let results = await CodebaseGraphEngine.shared.search(query: query, kind: filterKind)
             return try json(results)

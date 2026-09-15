@@ -516,10 +516,14 @@ public struct ConfigureExtensionRequest: Codable, Sendable, Equatable {
 public struct WorkspaceSummary: Codable, Sendable, Equatable {
     public let rootPath: String
     public let isGitRepository: Bool
+    public var codebaseNodes: Int?
+    public var codebaseEdges: Int?
 
-    public init(rootPath: String, isGitRepository: Bool) {
+    public init(rootPath: String, isGitRepository: Bool, codebaseNodes: Int? = nil, codebaseEdges: Int? = nil) {
         self.rootPath = rootPath
         self.isGitRepository = isGitRepository
+        self.codebaseNodes = codebaseNodes
+        self.codebaseEdges = codebaseEdges
     }
 }
 

@@ -313,6 +313,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
         await bus.add(.ping) { _ in .pong }
         scheduleRegistryRefresh()
+        scheduleCodebaseGraphWarmup()
         await bus.add(.getInfo) { [self] _ in .info(info) }
         await bus.add(.getState) { [self] _ in .state(await state) }
         await bus.add(.getProviderStatus) { [self] _ in
@@ -1138,6 +1139,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
             _ = await ModelRegistryClient.shared.fetch()
+        }
+    }
+
+    /// 在后台低优先级异步预热当前工作区代码图谱，不阻塞 Core 启动与首屏交互。
+    private func scheduleCodebaseGraphWarmup() {
+        let wsURL = workspaceURL
+        Task.detached(priority: .background) {
+            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: wsURL)
         }
     }
 
@@ -3157,11 +3166,14 @@ extension CoreHost {
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
         let rootPath = extensionPlatform.projectRoot.path
         let isGit = FileManager.default.fileExists(atPath: extensionPlatform.projectRoot.appendingPathComponent(".git").path)
+        let isIndexed = await CodebaseGraphEngine.shared.isIndexed
+        let nodes = isIndexed ? await CodebaseGraphEngine.shared.nodeCount : nil
+        let edges = isIndexed ? await CodebaseGraphEngine.shared.edgeCount : nil
         return ResponseEnvelope(
             requestID: envelope.requestID,
             revision: currentRevision,
             eventCursor: await runtimeEventLog.currentCursor(),
-            payload: WorkspaceSummary(rootPath: rootPath, isGitRepository: isGit)
+            payload: WorkspaceSummary(rootPath: rootPath, isGitRepository: isGit, codebaseNodes: nodes, codebaseEdges: edges)
         )
     }
 
@@ -3607,7 +3619,14 @@ extension CoreHost {
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> {
         let watermark = await runtimeEventLog.currentWatermark()
         let isGit = FileManager.default.fileExists(atPath: URL(fileURLWithPath: envelope.payload.workspaceRoot).appendingPathComponent(".git").path)
-        let summary = WorkspaceSummary(rootPath: envelope.payload.workspaceRoot, isGitRepository: isGit)
+        let newURL = URL(fileURLWithPath: envelope.payload.workspaceRoot)
+        Task.detached(priority: .background) {
+            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: newURL)
+        }
+        let isIndexed = await CodebaseGraphEngine.shared.isIndexed
+        let nodes = isIndexed ? await CodebaseGraphEngine.shared.nodeCount : nil
+        let edges = isIndexed ? await CodebaseGraphEngine.shared.edgeCount : nil
+        let summary = WorkspaceSummary(rootPath: envelope.payload.workspaceRoot, isGitRepository: isGit, codebaseNodes: nodes, codebaseEdges: edges)
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,

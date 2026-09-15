@@ -2490,7 +2490,8 @@ public final class ApplicationTUI: Frontend {
                 ?? "LingXiAgent"
             let mcpCount = state.activeMCPCount
             let skillCount = state.activeSkillCount
-            return ("📂 \(workspace)", "● \(mcpCount) 激活 MCP · \(skillCount) 激活 Skills\(feedback)")
+            let graphInfo = state.currentWorkspace?.codebaseNodes.map { " · ☊ \($0) 节点" } ?? ""
+            return ("📂 \(workspace)\(graphInfo)", "● \(mcpCount) 激活 MCP · \(skillCount) 激活 Skills\(feedback)")
         }
 
         let queuedCount = state.activeSessionState?.queuedTurns.count ?? 0
@@ -2533,6 +2534,7 @@ public final class ApplicationTUI: Frontend {
         let left = "\(statusIndicator) · \(modelWithEffort)"
 
         let workspace = state.currentWorkspace?.rootPath.split(separator: "/").last.map(String.init) ?? "cwd"
+        let graphSuffix = state.currentWorkspace?.codebaseNodes.map { " · ☊ \($0)n" } ?? ""
         let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
         let currentPermission = state.activeTurnPermissionConfiguration
         let isYolo = (currentPermission?.displayName == "YOLO")
@@ -2546,7 +2548,7 @@ public final class ApplicationTUI: Frontend {
         } else {
             permissions = currentPermissionName
         }
-        let right = "\(workspace) · \(mode) · \(permissions)\(feedback)"
+        let right = "\(workspace)\(graphSuffix) · \(mode) · \(permissions)\(feedback)"
         return (left, right)
     }
 

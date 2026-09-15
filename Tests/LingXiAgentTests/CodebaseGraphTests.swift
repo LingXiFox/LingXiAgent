@@ -97,4 +97,23 @@ import Foundation
         #expect(funcs.count == 1)
         #expect(funcs.first?.name == "parseConfig")
     }
+
+    @Test func testEngineIndexingStatusAndMetadata() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("GraphStatusTest_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleFile = tempDir.appendingPathComponent("Sample.swift")
+        try "public func helloWorld() {}".write(to: sampleFile, atomically: true, encoding: .utf8)
+
+        let engine = CodebaseGraphEngine()
+        #expect(await engine.isIndexed == false)
+        #expect(await engine.isIndexingInProgress == false)
+        #expect(await engine.nodeCount == 0)
+
+        _ = await engine.indexWorkspace(workspaceURL: tempDir)
+        #expect(await engine.isIndexed == true)
+        #expect(await engine.nodeCount >= 2) // file + function
+        #expect(await engine.isIndexingInProgress == false)
+    }
 }
