@@ -141,6 +141,8 @@
             <a href="#tool-search" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">grep_search / find_by_name</a>
             <a href="#tool-question" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">ask_question (交互问答上浮)</a>
             <a href="#tool-symbol" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">code_intelligence (LSP 语义矩阵)</a>
+            <a href="#tool-format" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">format_file (代码格式化引擎)</a>
+            <a href="#tool-graph" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">codebase_graph (代码图谱与拓扑)</a>
           </nav>
         </div>
 
@@ -605,6 +607,138 @@
         </div>
       </article>
 
+      <!-- Section: format_file (代码格式化引擎) -->
+      <article id="tool-format" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Code Formatter</span>
+          <h2 class="text-2xl font-bold text-white mt-1">format_file：多语言代码格式化引擎</h2>
+        </div>
+
+        <div class="space-y-4 text-xs text-zinc-300 leading-relaxed">
+          <p>
+            对标 OpenCode 标准的高性能多语言格式化编排器（<code>FormatCoordinator</code>）。支持在代码写入后<strong>自动触发格式化</strong>，亦支持 Agent 显式调用 <code>format_file</code> 对单个文件或全工作区批量排版。
+          </p>
+
+          <h3 class="text-sm font-semibold text-zinc-100 pt-2">支持的语言矩阵与工具链优先级</h3>
+          <div class="overflow-x-auto border border-zinc-800 rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-zinc-900 border-b border-zinc-800 text-zinc-400 font-mono text-[11px]">
+                  <th class="p-2">语言 / 生态</th>
+                  <th class="p-2">文件扩展名</th>
+                  <th class="p-2">首选格式化器</th>
+                  <th class="p-2">平滑降级备选</th>
+                  <th class="p-2">本地优先探测机制</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-zinc-800/60 font-mono text-[11px]">
+                <tr>
+                  <td class="p-2 text-zinc-200">Swift</td>
+                  <td class="p-2 text-purple-300">.swift</td>
+                  <td class="p-2 text-emerald-400">swift-format</td>
+                  <td class="p-2 text-zinc-500">-</td>
+                  <td class="p-2 text-zinc-400">Xcode Toolchain / 系统 PATH</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-zinc-200">Python</td>
+                  <td class="p-2 text-purple-300">.py, .pyi</td>
+                  <td class="p-2 text-emerald-400">ruff format</td>
+                  <td class="p-2 text-amber-300">black</td>
+                  <td class="p-2 text-zinc-400">.venv/bin/, venv/bin/, PATH</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-zinc-200">TS / JS / Web</td>
+                  <td class="p-2 text-purple-300">.ts, .tsx, .js, .jsx, .json, .md</td>
+                  <td class="p-2 text-emerald-400">prettier --write</td>
+                  <td class="p-2 text-amber-300">biome format</td>
+                  <td class="p-2 text-zinc-400">node_modules/.bin/, npx</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-zinc-200">Rust</td>
+                  <td class="p-2 text-purple-300">.rs</td>
+                  <td class="p-2 text-emerald-400">rustfmt</td>
+                  <td class="p-2 text-zinc-500">-</td>
+                  <td class="p-2 text-zinc-400">~/.cargo/bin/, PATH</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-zinc-200">Go</td>
+                  <td class="p-2 text-purple-300">.go</td>
+                  <td class="p-2 text-emerald-400">gofmt -w</td>
+                  <td class="p-2 text-amber-300">goimports -w</td>
+                  <td class="p-2 text-zinc-400">$GOPATH/bin, PATH</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-zinc-200">C / C++</td>
+                  <td class="p-2 text-purple-300">.c, .cpp, .h, .hpp</td>
+                  <td class="p-2 text-emerald-400">clang-format -i</td>
+                  <td class="p-2 text-zinc-500">-</td>
+                  <td class="p-2 text-zinc-400">系统 PATH</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-3 bg-emerald-950/20 border border-emerald-800/40 rounded-xl text-emerald-300 text-[11px] flex gap-2 items-start mt-3">
+            <span class="text-base">✨</span>
+            <div><strong>写盘即美观 (Auto-format on Save)：</strong>在 <code>write_file</code>、<code>edit_file</code> 或 <code>apply_patch</code> 写入成功后，系统自动后置调用对应语言格式化器，并带有 15 秒看门狗保护。若工具未就绪，仅记录静默警告，绝不破坏生成结果。</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- Section: codebase_graph (代码图谱与拓扑分析) -->
+      <article id="tool-graph" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Knowledge Graph</span>
+          <h2 class="text-2xl font-bold text-white mt-1">codebase_graph：代码图谱与拓扑分析</h2>
+        </div>
+
+        <div class="space-y-4 text-xs text-zinc-300 leading-relaxed">
+          <p>
+            对标 <code>codebase-memory-mcp</code> 架构的高性能原生代码知识图谱引擎（<code>CodebaseGraphEngine</code>）。提取 AST 结构实体与多维调用关系，为 Agent 提供宏观架构认知与微观调用拓扑深度追溯。
+          </p>
+
+          <h3 class="text-sm font-semibold text-zinc-100 pt-2">支持的四大核心动作 (Actions)</h3>
+          <div class="overflow-x-auto border border-zinc-800 rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-zinc-900 border-b border-zinc-800 text-zinc-400 font-mono text-[11px]">
+                  <th class="p-2">动作 (action)</th>
+                  <th class="p-2">核心参数</th>
+                  <th class="p-2">功能与返回说明</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-zinc-800/60 font-mono text-[11px]">
+                <tr>
+                  <td class="p-2 text-purple-300">architecture</td>
+                  <td class="p-2 text-zinc-500">-</td>
+                  <td class="p-2 text-zinc-300">提取系统分层（api / core / infra / test）、模块间依赖边统计与 Top 15 核心热点函数（扇入 Fan-in 排序）</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-purple-300">trace</td>
+                  <td class="p-2 text-amber-300">target, direction, depth</td>
+                  <td class="p-2 text-zinc-300">沿 <code>calls</code> 有向边进行 BFS 拓扑遍历：<code>inbound</code> 追查调用方，<code>outbound</code> 追查下游被调用方（深度 1-5 层）</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-purple-300">search</td>
+                  <td class="p-2 text-amber-300">target, kind</td>
+                  <td class="p-2 text-zinc-300">图节点快速拓扑检索，可按 <code>class</code>、<code>struct</code>、<code>function</code>、<code>interface</code> 进行类别过滤</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-purple-300">refresh</td>
+                  <td class="p-2 text-zinc-500">-</td>
+                  <td class="p-2 text-zinc-300">基于文件修改时间戳（mtime）进行增量极速刷新或全量重建图谱缓存（落盘于 <code>~/.lingxiagent/cache/graph/</code>）</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-3 bg-purple-950/20 border border-purple-800/40 rounded-xl text-purple-300 text-[11px] flex gap-2 items-start mt-3">
+            <span class="text-base">🗺️</span>
+            <div><strong>零依赖本地持久化：</strong>图谱数据完全落盘于本地紧凑缓存，无需额外部署 Neo4j 等外部数据库，秒级完成大型工程的符号与调用关系水合。</div>
+          </div>
+        </div>
+      </article>
+
       <!-- Section: 官方订阅与通用模型 -->
       <article id="models-oauth" class="scroll-mt-20">
         <div class="border-b border-zinc-800 pb-4 mb-6">
@@ -782,6 +916,8 @@
           <a href="#tool-search" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">搜索与定位</a>
           <a href="#tool-question" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">交互决策上浮</a>
           <a href="#tool-symbol" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">LSP 代码语义矩阵</a>
+          <a href="#tool-format" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">format_file 格式化</a>
+          <a href="#tool-graph" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">codebase_graph 图谱</a>
           <a href="#models-oauth" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">官方订阅直连</a>
           <a href="#protocol-acp" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">ACP 协议与 Zed</a>
           <a href="#tui-shortcuts" class="outline-item block hover:text-zinc-200 transition-colors py-0.5">快捷键速查</a>

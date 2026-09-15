@@ -76,6 +76,15 @@ irm https://agent.lingxifox.cn/install.ps1 | iex
   * 内置跨平台语言服务器编排器（`LSPCoordinator`），涵盖 **Swift** (`sourcekit-lsp`)、**Python** (`pyright`/`pylsp`)、**TypeScript/JavaScript** (`vtsls`/`typescript-language-server`)、**Rust** (`rust-analyzer`)、**Go** (`gopls`)、**C/C++** (`clangd`)；
   * 为 Agent 提供 `definitions`、`references`、`document_symbols`、`diagnostics`、`hover`、`completion` 六大精确代码语义能力；
   * 具备实时文件同步与环境平滑降级（LSP 未安装或崩溃时安全回退至正则与 Index 引擎），保障 Agent 稳定可靠。
+* **⚡ 多语言代码格式化引擎 (Code Formatter - 对标 OpenCode 规范)**：
+  * 内置 `format_file` 工具与写盘后置自动格式化（Auto-format on save），写完代码自动保持排版美观；
+  * 自动感知项目本地及全局环境：Swift (`swift-format`)、Python (`ruff`/`black`)、TypeScript/JavaScript/Web (`prettier`/`biome`)、Rust (`rustfmt`)、Go (`gofmt`)、C/C++ (`clang-format`)；
+  * 具备 15 秒超时看门狗与静默平滑降级，格式化器未就绪或报错绝不阻断 Agent 生成流程。
+* **🗺️ 原生代码图谱与拓扑分析引擎 (Codebase Knowledge Graph - 对标 codebase-memory)**：
+  * 内置轻量有向图模型与 AST 拓扑提取器（`codebase_graph` 工具），实现零外部重型依赖的本地代码认知图谱；
+  * 支持 `architecture`：自动提取高层架构分层（api / core / infra / test）、模块依赖拓扑及核心高扇入热点符号（Hotspots）；
+  * 支持 `trace`：沿着 `calls` 关系进行双向 BFS 拓扑遍历（`inbound` 追查调用方，`outbound` 追查被调用方，支持 1-5 级深度追溯）；
+  * 支持 `search` 拓扑符号检索与增量时间戳轻量本地持久化缓存。
 * **🔒 本地加密保险箱 (Vault)**：
   * 采用 AES-256-GCM 高强度加密，凭据安全落盘于本地保险箱；
   * 支持 `本地加密保险箱` ⇄ `当前进程环境变量` 双重自动回退。

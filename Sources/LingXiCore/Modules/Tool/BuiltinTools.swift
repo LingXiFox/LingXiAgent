@@ -827,6 +827,9 @@ public struct WriteFileTool: ToolExecutor {
             try checkExpectedContent(existing, hash: input.expectedHash, version: input.expectedVersion, currentVersion: try fileVersion(file), overwrite: input.overwrite)
         }
         try writeText(input.content, to: file)
+        if await FormatCoordinator.shared.autoFormatEnabled() {
+            _ = await FormatCoordinator.shared.format(fileURL: file, workspaceRoot: workspace.url)
+        }
         return try json(fileWriteResult(for: file, workspace: workspace, content: input.content))
     }
 }
@@ -864,6 +867,9 @@ public struct EditFileTool: ToolExecutor {
         guard input.replaceAll == true || count == 1 else { throw CoreError(code: .ambiguousEdit, message: "匹配到 \(count) 处文本；请使用 replace_all") }
         let updated = input.replaceAll == true ? original.replacingOccurrences(of: input.oldString, with: input.newString) : original.replacingOccurrences(of: input.oldString, with: input.newString, options: [], range: original.range(of: input.oldString))
         try writeText(updated, to: file)
+        if await FormatCoordinator.shared.autoFormatEnabled() {
+            _ = await FormatCoordinator.shared.format(fileURL: file, workspaceRoot: workspace.url)
+        }
         return try json(fileWriteResult(for: file, workspace: workspace, content: updated))
     }
 }
@@ -1056,6 +1062,9 @@ public struct ApplyPatchTool: ToolExecutor {
                 operation += 1
                 if ApplyPatchFailpoint.shouldFail(at: operation) { throw CoreError(code: .toolExecutionFailed, message: "apply_patch failpoint \(operation)") }
                 try writeText(write.content, to: write.url)
+                if await FormatCoordinator.shared.autoFormatEnabled() {
+                    _ = await FormatCoordinator.shared.format(fileURL: write.url, workspaceRoot: workspace.url)
+                }
             }
             for file in plan.deletes {
                 operation += 1
@@ -1750,6 +1759,118 @@ public struct TodoTool: ToolExecutor {
     }
 }
 
+private struct FormatFileArguments: Decodable {
+    let path: String?
+    let paths: [String]?
+}
+
+public struct FormatFileTool: ToolExecutor {
+    private let workspace: WorkspaceRoot
+    public init(workspace: WorkspaceRoot) { self.workspace = workspace }
+    public let definition = ToolDefinition(
+        id: ToolID("format_file"),
+        description: "Format source code files using project or system formatters (swift-format, ruff/black, prettier/biome, rustfmt, gofmt, clang-format). Automatically detects project-local configs.",
+        inputSchema: ToolInputSchema(properties: [
+            "path": ToolInputProperty(type: .string, description: "Workspace-relative or absolute file path to format"),
+            "paths": ToolInputProperty(type: .array, description: "Optional list of file paths to format in batch")
+        ], required: []),
+        capability: ToolCapability(readOnly: false)
+    )
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        let input: FormatFileArguments = try decodeArguments(arguments)
+        if let p = input.path {
+            return try workspace.resolve(p, profile: profile).path
+        }
+        return workspace.url.path
+    }
+    public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
+        [.projectWrite]
+    }
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: FormatFileArguments = try decodeArguments(arguments)
+        if let paths = input.paths, !paths.isEmpty {
+            var urls: [URL] = []
+            for p in paths {
+                if let url = try? workspace.resolve(p, profile: profile) {
+                    urls.append(url)
+                }
+            }
+            let results = await FormatCoordinator.shared.format(files: urls, workspaceRoot: workspace.url)
+            return try json(results)
+        } else if let p = input.path {
+            let url = try workspace.resolve(p, profile: profile)
+            let result = await FormatCoordinator.shared.format(fileURL: url, workspaceRoot: workspace.url)
+            return try json(result)
+        } else {
+            throw CoreError(code: .toolArgumentInvalid, message: "Must provide either 'path' or 'paths'")
+        }
+    }
+}
+
+private struct CodebaseGraphArguments: Decodable {
+    let action: String
+    let target: String?
+    let direction: String?
+    let depth: Int?
+    let kind: String?
+}
+
+public struct CodebaseGraphTool: ToolExecutor {
+    private let workspace: WorkspaceRoot
+    public init(workspace: WorkspaceRoot) { self.workspace = workspace }
+    public let definition = ToolDefinition(
+        id: ToolID("codebase_graph"),
+        description: "Explore the codebase knowledge graph: architecture layers, hotspots, call hierarchy trace (inbound/outbound), and symbol topological search.",
+        inputSchema: ToolInputSchema(properties: [
+            "action": ToolInputProperty(type: .string, description: "Action to perform: architecture, trace, search, or refresh", enumValues: ["architecture", "trace", "search", "refresh"]),
+            "target": ToolInputProperty(type: .string, description: "Symbol name or query for trace/search"),
+            "direction": ToolInputProperty(type: .string, description: "Call trace direction: inbound (who calls target) or outbound (what target calls)", enumValues: ["inbound", "outbound"]),
+            "depth": ToolInputProperty(type: .integer, description: "Maximum trace depth (1-5, default 3)", minimum: 1, maximum: 5),
+            "kind": ToolInputProperty(type: .string, description: "Filter symbol kind for search (e.g. class, function, struct, interface)")
+        ], required: ["action"]),
+        capability: ToolCapability(readOnly: true)
+    )
+    public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
+        workspace.url.path
+    }
+    public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
+        [.projectRead]
+    }
+    public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
+        let input: CodebaseGraphArguments = try decodeArguments(arguments)
+        switch input.action {
+        case "architecture":
+            let overview = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url)
+            return try json(overview)
+        case "refresh":
+            let overview = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url, forceReindex: true)
+            return try json(overview)
+        case "trace":
+            guard let target = input.target, !target.isEmpty else {
+                throw CoreError(code: .toolArgumentInvalid, message: "Action 'trace' requires 'target' parameter")
+            }
+            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url)
+            let dir: TraceDirection = (input.direction == "inbound") ? .inbound : .outbound
+            let depth = min(max(1, input.depth ?? 3), 5)
+            if let report = await CodebaseGraphEngine.shared.traceCallPath(symbolNameOrId: target, direction: dir, maxDepth: depth) {
+                return try json(report)
+            } else {
+                return try json(["status": "not_found", "message": "Symbol '\(target)' not found in codebase graph"])
+            }
+        case "search":
+            guard let query = input.target, !query.isEmpty else {
+                throw CoreError(code: .toolArgumentInvalid, message: "Action 'search' requires 'target' parameter")
+            }
+            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url)
+            let filterKind = input.kind.flatMap { GraphNodeKind(rawValue: $0.lowercased()) }
+            let results = await CodebaseGraphEngine.shared.search(query: query, kind: filterKind)
+            return try json(results)
+        default:
+            throw CoreError(code: .toolArgumentInvalid, message: "Unsupported action '\(input.action)'")
+        }
+    }
+}
+
 public extension BuiltInToolProvider {
     init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) {
         let indexTools: [any ToolExecutor]
@@ -1775,6 +1896,8 @@ public extension BuiltInToolProvider {
             WriteFileTool(workspace: workspace),
             EditFileTool(workspace: workspace),
             ApplyPatchTool(workspace: workspace),
+            FormatFileTool(workspace: workspace),
+            CodebaseGraphTool(workspace: workspace),
             ShellTool(workspace: workspace),
             RunBackgroundCommandTool(workspace: workspace, manager: effectiveBgManager),
             ManageBackgroundCommandTool(manager: effectiveBgManager),
