@@ -552,7 +552,11 @@
             <h4 class="text-base font-semibold text-zinc-200 mb-3">常用快捷键</h4>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono mb-6">
               <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
-                <span class="text-zinc-300">全局熔断中断一切 (思考/工具/后台命令)</span>
+                <span class="text-zinc-300">呼出 TrueColor 配色主题选择器</span>
+                <kbd class="px-2 py-1 bg-zinc-800 text-yellow-300 rounded border border-zinc-700">Ctrl + T</kbd>
+              </div>
+              <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
+                <span class="text-zinc-300">全局熔断中断 / 关闭当前模态浮层</span>
                 <kbd class="px-2 py-1 bg-zinc-800 text-red-300 rounded border border-zinc-700">Esc</kbd>
               </div>
               <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
@@ -568,24 +572,24 @@
                 <kbd class="px-2 py-1 bg-zinc-800 text-amber-300 rounded border border-zinc-700">Enter / 鼠标点击</kbd>
               </div>
               <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
-                <span class="text-zinc-300">滚动查看历史会话</span>
-                <kbd class="px-2 py-1 bg-zinc-800 text-emerald-300 rounded border border-zinc-700">PageUp / PageDown</kbd>
-              </div>
-              <div class="p-3 bg-zinc-900/90 rounded-lg border border-zinc-800 flex justify-between items-center">
                 <span class="text-zinc-300">退出程序</span>
                 <kbd class="px-2 py-1 bg-zinc-800 text-zinc-400 rounded border border-zinc-700">Ctrl + C / Ctrl + D</kbd>
               </div>
             </div>
 
-            <h4 class="text-base font-semibold text-zinc-200 mb-2">Slash 快捷命令</h4>
+            <h4 class="text-base font-semibold text-zinc-200 mb-2">Slash 快捷命令与全套弹出式浮层 (Pickers & Modals)</h4>
             <ul class="space-y-2 text-xs text-zinc-300 font-mono mb-6">
-              <li><strong class="text-purple-400">/tasks</strong> — 实时查看与管理后台异步执行任务，支持状态轮询与定向强杀。</li>
-              <li><strong class="text-purple-400">/new</strong> — 秒级开启全新会话，自动重置视口与聚焦。</li>
-              <li><strong class="text-purple-400">/resume</strong> — 交互式会话选择器，按项目目录聚合，支持一键恢复历史对话。</li>
-              <li><strong class="text-purple-400">/model</strong> — 唤起模型选择弹窗，支持在官方订阅模型与自定义 API 模型间毫秒切换。</li>
-              <li><strong class="text-purple-400">/auth</strong> — 查看已登录账号状态、额度及重新登录。</li>
-              <li><strong class="text-purple-400">/clear</strong> — 清理当前会话上下文并保留核心项目知识库。</li>
-              <li><strong class="text-purple-400">/cost</strong> — 查看本次会话的 Token 消耗、缓存命中率及累计费用预估。</li>
+              <li><strong class="text-purple-400">/theme</strong> — 唤起 24-bit TrueColor 主题选择器，6 套主题支持打字即时过滤与热重载。</li>
+              <li><strong class="text-purple-400">/mode</strong> — 弹出 Agent 模式选择器 (Build / Plan / Explore 方向键直选)。</li>
+              <li><strong class="text-purple-400">/permissions</strong> — 弹出安全策略选择器 (Ask / Auto / YOLO 档位直选)。</li>
+              <li><strong class="text-purple-400">/reasoning</strong> — 弹出思考等级选择器 (Auto / Off / Low / Med / High / Max 直选)。</li>
+              <li><strong class="text-purple-400">/keybindings</strong> — 弹出快捷键速查模态面板，可滚动查阅且不污染会话流。</li>
+              <li><strong class="text-purple-400">/diff</strong> — 弹出工作区 Git 变更审查模态框，支持平滑滚动查阅长篇变更。</li>
+              <li><strong class="text-purple-400">/tasks</strong> — 弹出后台任务管理面板，支持实时监控与定向中断强杀。</li>
+              <li><strong class="text-purple-400">/resume</strong> — 交互式会话选择器，按项目目录聚合，一键恢复历史。</li>
+              <li><strong class="text-purple-400">/model</strong> — 唤起模型选择器，在官方订阅与自定义 API 模型间毫秒切换。</li>
+              <li><strong class="text-purple-400">/status · /context · /perf · /mcp</strong> — 居中模态卡片，瞬态指标查完即走。</li>
+              <li><strong class="text-purple-400">/new</strong> — 秒级开辟全新对话流，自动重置视口与聚焦。</li>
             </ul>
 
             <h4 class="text-base font-semibold text-zinc-200 mb-2">常用 CLI 实用子命令</h4>

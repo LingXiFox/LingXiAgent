@@ -88,6 +88,14 @@ irm https://agent.lingxifox.cn/install.ps1 | iex
 * **🔒 本地加密保险箱 (Vault)**：
   * 采用 AES-256-GCM 高强度加密，凭据安全落盘于本地保险箱；
   * 支持 `本地加密保险箱` ⇄ `当前进程环境变量` 双重自动回退。
+* **🎨 现代交互式 TUI 体系与 24-bit TrueColor 主题引擎**：
+  * 内置 6 套高保真配色主题（LingXi Fox、Night Owl、Dracula、Monokai Pro、Tokyo Night、One Dark），支持 24-bit RGB TrueColor 与 ANSI 动态回退；
+  * 全局快捷键 `Ctrl+T` 或 `/theme` 呼出弹出式**主题选择器 (Theme Picker)**，支持按键即时搜索过滤、光标上下切换与免重启即时热重载；
+  * **交互操作全面浮层化 (Interactive Pickers)**：`/mode` (Build/Plan/Explore 模式直选)、`/permissions` (Ask/Auto/YOLO 权限策略直选)、`/reasoning` (Auto/Off/Low/Medium/High/Max 思考等级直选) 均支持方向键直选即生效，告别手打二级参数；
+  * **大篇幅查阅全面模态化 (Modal Overlays)**：快捷键速查 (`/keybindings`)、代码变更审查 (`/diff`)、技能库清单 (`/skills`)、系统仪表盘 (`/status`)、双核上下文 (`/context`)、性能报表 (`/perf`)、MCP 监视器 (`/mcp`) 均收敛至居中浮动模态卡片，支持 `j`/`k`/上下平滑滚动与 `Esc` 退出，彻底告别终端滚屏刷屏与对话流污染。
+* **🖥️ 浏览器与操作系统级视觉桌面感知 (Browser & Computer Use)**：
+  * 内置高精度双显示器视觉捕获与屏幕坐标计算（`computer_batch`），支持 0 误差动态租借工具调度；
+  * 原生支持无头与有头真实浏览器会话控制，实现端到端自动化。
 
 ---
 
@@ -212,11 +220,18 @@ flowchart LR
 * **双栏监控看板**：左侧实时展示三级缓存水位、大模型服务端真实 Prompt Cache 命中率、活跃 MCP 服务状态与子代理树；
 * **精准性能注脚**：每轮问答末尾自动输出暗调遥测参数：`⚡️ <model> · 耗时 <dur> · 首字 <latency> · <tokens/s> · <timestamp>`；
 * **跨工作区 `/resume` 会话恢复**：全盘智能扫描会话并按工作目录层级聚合，当前目录自动置顶；跨目录切换时**自动 `cd` 并从 SQLite 完整水合恢复历史时间线**；
-* **快捷按键与 Slash 命令**：
-  * `Esc`：全局熔断中断，立即杀死后台进程树并终止当前执行；
-  * `Tab / Shift+Tab`：在 Normal / Plan / Boost 智能体模式间切换；
+* **快捷按键与全套弹出式交互 (Pickers & Modals)**：
+  * `Ctrl + T` 或 `/theme`：呼出**主题选择器**，24-bit TrueColor 即选即换；
+  * `Esc`：关闭当前模态浮层 / 全局熔断中断，杀死后台所有活动进程树；
+  * `Tab / Shift+Tab`：在 Normal / Plan / Boost 模式间快速切换；
   * `← / → / Home / End`：输入框内字符精准游走定位；
-  * `/tasks`：实时列出、检查与终止后台异步任务；
+  * `/mode`：无参弹出 **Agent 模式选择器**（Build / Plan / Explore 上下键直选）；
+  * `/permissions`：无参弹出 **安全与权限策略选择器**（Ask / Auto / YOLO 直选）；
+  * `/reasoning`：无参弹出 **思考等级选择器**（Auto / Off / Low / Med / High / Max 直选）；
+  * `/keybindings`：弹出 **快捷键速查面板**（可滚动查阅，Esc 退出）；
+  * `/diff`：弹出 **工作区 Git 变更审查器**（支持长篇 diff 平滑滚动）；
+  * `/tasks`：弹出 **后台任务监控面板**，支持状态轮询与定向强杀；
+  * `/status` / `/context` / `/perf` / `/mcp` / `/skills`：居中模态卡片查阅，告别行内刷屏；
   * `/new`：秒级开辟全新对话流，自动重置视口与输入焦点。
 
 ---

@@ -104,7 +104,11 @@ public enum BuiltinCommands {
                     footer: "配置 Provider: lingxiagent auth login <provider>",
                     borderStyle: .rounded
                 )
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "Provider 状态 (/providers)"
+                )
             },
 
             // 3. /connect
@@ -123,7 +127,11 @@ public enum BuiltinCommands {
                     footer: "添加新 Provider: lingxiagent auth login <provider>",
                     borderStyle: .rounded
                 )
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "已接入 Provider (/connect)"
+                )
             },
 
             // 4. /new
@@ -257,7 +265,11 @@ public enum BuiltinCommands {
                     ],
                     borderStyle: .rounded
                 )
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "系统运行状态 (/status)"
+                )
             },
 
             // 8. /context
@@ -282,7 +294,11 @@ public enum BuiltinCommands {
                     footer: "压缩上下文: /compact",
                     borderStyle: .rounded
                 )
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "双核心上下文状态 (/context)"
+                )
             },
 
             // 9. /compact
@@ -314,7 +330,11 @@ public enum BuiltinCommands {
                       • Steps: \(perfReport.stepCount)
                       • Characters/sec: \(String(format: "%.1f", perfReport.textCharactersPerSecond ?? 0))
                     """
-                    return ApplicationCommandResult(output: output)
+                    return ApplicationCommandResult(
+                        output: output,
+                        presentation: .modal,
+                        modalTitle: "会话性能诊断报告 (/perf)"
+                    )
                 } else if let bundle = try? await ctx.client.diagnostics.getBundle() {
                     let output = """
                     全局诊断摘要:
@@ -323,9 +343,17 @@ public enum BuiltinCommands {
                       • Trace Count: \(bundle.trace.count)
                       • Error Count: \(bundle.recentErrors.count)
                     """
-                    return ApplicationCommandResult(output: output)
+                    return ApplicationCommandResult(
+                        output: output,
+                        presentation: .modal,
+                        modalTitle: "全局诊断摘要 (/perf)"
+                    )
                 }
-                return ApplicationCommandResult(output: "暂无性能诊断数据")
+                return ApplicationCommandResult(
+                    output: "暂无性能诊断数据",
+                    presentation: .modal,
+                    modalTitle: "性能诊断报告 (/perf)"
+                )
             },
 
             // 11. /mode
@@ -409,7 +437,11 @@ public enum BuiltinCommands {
                 for (runID, sub) in session.subagents {
                     output += "\n  • [\(runID.rawValue)] status: \(sub.status) (parent: \(sub.parentRunID.rawValue))"
                 }
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "子 Agent 树 (/subagents)"
+                )
             },
 
             // 14. /mcp
@@ -424,7 +456,11 @@ public enum BuiltinCommands {
                 for m in mcpExts {
                     output += "\n  • [\(m.id)] v\(m.version) (enabled: \(m.enabled))"
                 }
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "MCP 扩展服务 (/mcp)"
+                )
             },
 
             // 15. /skills
@@ -439,7 +475,11 @@ public enum BuiltinCommands {
                 for sk in skills {
                     output += "\n  • \(sk.id) v\(sk.version) (enabled: \(sk.enabled))"
                 }
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "可用 Skills 列表 (/skills)"
+                )
             },
 
             // 16. /plugins
@@ -524,7 +564,11 @@ public enum BuiltinCommands {
                     footer: "输入 / 触发交互式自动补全",
                     borderStyle: .rounded
                 )
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "可用命令总览 (/commands)"
+                )
             },
 
             // 17. /hooks
@@ -539,7 +583,11 @@ public enum BuiltinCommands {
                 for h in hooks {
                     output += "\n  • [\(h.id)] \(h.lifecycleState) (enabled: \(h.enabled))"
                 }
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "已注册生命周期 Hooks (/hooks)"
+                )
             },
 
             // 18. /diff
@@ -550,9 +598,17 @@ public enum BuiltinCommands {
                 category: "Workspace"
             ) { ctx in
                 if let diffSummary = try? await ctx.client.workspace.diff() {
-                    return ApplicationCommandResult(output: diffSummary.diff.isEmpty ? "工作区无未提交变更" : diffSummary.diff)
+                    return ApplicationCommandResult(
+                        output: diffSummary.diff.isEmpty ? "工作区无未提交变更" : diffSummary.diff,
+                        presentation: .modal,
+                        modalTitle: "工作区变更审查 (/diff)"
+                    )
                 }
-                return ApplicationCommandResult(output: "无活动工作区变更")
+                return ApplicationCommandResult(
+                    output: "无活动工作区变更",
+                    presentation: .modal,
+                    modalTitle: "工作区变更审查 (/diff)"
+                )
             },
 
             // 19. /ps
@@ -568,7 +624,11 @@ public enum BuiltinCommands {
                 var output = "活动 Root Run: \(session.activeRootRunID?.rawValue ?? "无")"
                 output += "\n活动 Subagent Runs: \(session.activeSubagentRunIDs.count)"
                 output += "\n排队中的 Turns: \(session.queuedTurns.count)"
-                return ApplicationCommandResult(output: output)
+                return ApplicationCommandResult(
+                    output: output,
+                    presentation: .modal,
+                    modalTitle: "活动进程与任务队列 (/ps)"
+                )
             },
 
             // 20. /stop
@@ -931,6 +991,10 @@ public enum BuiltinCommands {
             borderStyle: .rounded
         )
 
-        return ApplicationCommandResult(output: card)
+        return ApplicationCommandResult(
+            output: card,
+            presentation: .modal,
+            modalTitle: "🎯 目标收敛模式 (/goal)"
+        )
     }
 }

@@ -821,7 +821,11 @@
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
-            <span class="text-zinc-300 font-sans">全局熔断中断一切 (思考/工具/后台命令)</span>
+            <span class="text-zinc-300 font-sans">呼出 24-bit TrueColor 主题选择器</span>
+            <kbd class="px-2 py-1 bg-zinc-800 text-yellow-300 rounded border border-zinc-700">Ctrl + T</kbd>
+          </div>
+          <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
+            <span class="text-zinc-300 font-sans">全局熔断中断 / 关闭当前模态浮层</span>
             <kbd class="px-2 py-1 bg-zinc-800 text-red-300 rounded border border-zinc-700">Esc</kbd>
           </div>
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
@@ -847,6 +851,36 @@
           <div class="p-3 bg-zinc-900/90 rounded-xl border border-zinc-800 flex justify-between items-center">
             <span class="text-zinc-300 font-sans">退出当前程序</span>
             <kbd class="px-2 py-1 bg-zinc-800 text-zinc-400 rounded border border-zinc-700">Ctrl + C / Ctrl + D</kbd>
+          </div>
+        </div>
+
+        <div class="mt-6 border-t border-zinc-800 pt-6">
+          <h3 class="text-base font-semibold text-zinc-200 mb-3">全套弹出式选择器与模态浮层 (Pickers & Modals)</h3>
+          <div class="space-y-2 text-xs text-zinc-300 font-mono">
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/theme</strong> — 唤起 24-bit TrueColor 主题选择器，支持实时打字过滤与热重载。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/mode</strong> — 弹出 Agent 模式选择器 (Build 全能 / Plan 规划 / Explore 探索，上下键直选)。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/permissions</strong> — 弹出安全策略选择器 (Ask 逐次询问 / Auto 沙箱放行 / YOLO 自由模式)。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/reasoning</strong> — 弹出思考等级选择器 (Auto / Off / Low / Med / High / Max 直选)。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/keybindings</strong> — 弹出快捷键速查模态卡片，支持滚动浏览，Esc 优雅退出。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/diff</strong> — 弹出工作区 Git 变更审查模态框，长篇 Diff 平滑滚动，零污染会话。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/tasks</strong> — 弹出后台任务监控面板，支持实时监控、输出查看与定向终止强杀。
+            </div>
+            <div class="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800">
+              <strong class="text-purple-400">/status · /context · /perf · /skills · /mcp</strong> — 瞬态指标全面模态化，查完即走。
+            </div>
           </div>
         </div>
       </article>

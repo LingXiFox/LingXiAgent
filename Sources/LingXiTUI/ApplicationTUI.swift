@@ -47,6 +47,10 @@ public final class ApplicationTUI: Frontend {
         case configModal(selected: Int)
         case tasksModal(selected: Int, tasks: [BackgroundTaskSnapshot], expandedDetail: Bool)
         case commandModal(title: String, content: String, scrollOffset: Int)
+        case themePicker(query: String, selected: Int)
+        case modePicker(selected: Int)
+        case permissionsPicker(selected: Int)
+        case reasoningPicker(selected: Int)
     }
 
     public let options: TUILaunchOptions
@@ -354,15 +358,32 @@ public final class ApplicationTUI: Frontend {
             return
         }
 
+        if case .themePicker = overlay {
+            await handleThemePicker(event, store: store)
+            return
+        }
+
+        if case .modePicker = overlay {
+            await handleModePicker(event)
+            return
+        }
+
+        if case .permissionsPicker = overlay {
+            await handlePermissionsPicker(event)
+            return
+        }
+
+        if case .reasoningPicker = overlay {
+            await handleReasoningPicker(event)
+            return
+        }
+
         // 快捷键引擎拦截与分发
         if let stroke = KeybindingDispatcher.toKeyStroke(from: event),
            let action = KeybindingDispatcher.shared.dispatch(stroke: stroke) {
             switch action {
             case .toggleTheme:
-                let current = ThemeManager.shared.currentTheme
-                let nextTheme = (current.appearance == .dark) ? BuiltinThemes.pearlFoxLight : BuiltinThemes.cyberFoxDark
-                ThemeManager.shared.setTheme(by: nextTheme.id)
-                commandEntries.append(TUITranscriptEntry(kind: .result, text: "🎨 Toggled theme to '\(nextTheme.name)'", style: .systemNotice))
+                openThemePicker()
                 refreshView(latestState)
                 return
             case .showHelp:
@@ -829,6 +850,317 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
+    // MARK: - Theme Picker Modal (/theme)
+
+    private func openThemePicker() {
+        let currentID = ThemeManager.shared.currentTheme.id
+        let allThemes = ThemeManager.shared.availableThemes
+        let initialSelected = allThemes.firstIndex(where: { $0.id == currentID }) ?? 0
+        overlay = .themePicker(query: "", selected: initialSelected)
+    }
+
+    private func handleThemePicker(_ event: TUIInputEvent, store: ApplicationStore) async {
+        guard case let .themePicker(query, selected) = overlay else { return }
+        let allThemes = ThemeManager.shared.availableThemes
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filteredThemes = q.isEmpty ? allThemes : allThemes.filter {
+            $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q)
+        }
+        let safeSelected = filteredThemes.isEmpty ? 0 : max(0, min(filteredThemes.count - 1, selected))
+
+        switch event {
+        case .up, .scrollUp:
+            overlay = .themePicker(query: query, selected: max(0, safeSelected - 1))
+            refreshView(latestState)
+        case .down, .scrollDown:
+            overlay = .themePicker(query: query, selected: min(max(0, filteredThemes.count - 1), safeSelected + 1))
+            refreshView(latestState)
+        case .pageUp:
+            overlay = .themePicker(query: query, selected: max(0, safeSelected - 5))
+            refreshView(latestState)
+        case .pageDown:
+            overlay = .themePicker(query: query, selected: min(max(0, filteredThemes.count - 1), safeSelected + 5))
+            refreshView(latestState)
+        case .escape:
+            overlay = nil
+            refreshView(latestState)
+        case .backspace:
+            var newQuery = query
+            _ = newQuery.popLast()
+            overlay = .themePicker(query: newQuery, selected: 0)
+            refreshView(latestState)
+        case let .character(c):
+            let newQuery = query + String(c)
+            overlay = .themePicker(query: newQuery, selected: 0)
+            refreshView(latestState)
+        case .enter:
+            guard filteredThemes.indices.contains(safeSelected) else { return }
+            let chosen = filteredThemes[safeSelected]
+            _ = ThemeManager.shared.setTheme(by: chosen.id)
+            committedEntryCache.removeAll()
+            commandEntries.append(TUITranscriptEntry(kind: .result, text: "🎨 Theme switched to '\(chosen.name)' (\(chosen.appearance.rawValue))", style: .systemNotice))
+            overlay = nil
+            refreshView(latestState)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Mode Picker (/mode)
+
+    private struct TUIModeOption {
+        let mode: AgentMode
+        let icon: String
+        let title: String
+        let description: String
+    }
+
+    private var availableModeOptions: [TUIModeOption] {
+        [
+            TUIModeOption(
+                mode: .build,
+                icon: "🔨",
+                title: "Build (构建模式)",
+                description: "全能模式 · 允许代码编写、文件修改、运行终端与执行工具（默认）"
+            ),
+            TUIModeOption(
+                mode: .plan,
+                icon: "📐",
+                title: "Plan (规划模式)",
+                description: "只读模式 · 分析环境、设计架构方案与实施计划，不直接修改代码"
+            ),
+            TUIModeOption(
+                mode: .explore,
+                icon: "🔍",
+                title: "Explore (探索模式)",
+                description: "分析模式 · 专注代码库检索、符号定义与知识图谱探查，快速调研"
+            )
+        ]
+    }
+
+    private func openModePicker() {
+        let currentMode = latestState.nextTurnMode ?? latestState.activeSessionState?.mode ?? .build
+        let idx = availableModeOptions.firstIndex(where: { $0.mode == currentMode }) ?? 0
+        overlay = .modePicker(selected: idx)
+        refreshView(latestState)
+    }
+
+    private func handleModePicker(_ event: TUIInputEvent) async {
+        guard case let .modePicker(selected) = overlay else { return }
+        let options = availableModeOptions
+        let safeSelected = options.isEmpty ? 0 : max(0, min(options.count - 1, selected))
+
+        switch event {
+        case .up, .scrollUp:
+            overlay = .modePicker(selected: max(0, safeSelected - 1))
+            refreshView(latestState)
+        case .down, .scrollDown:
+            overlay = .modePicker(selected: min(max(0, options.count - 1), safeSelected + 1))
+            refreshView(latestState)
+        case .escape:
+            overlay = nil
+            view.setFocus(.composer)
+            refreshView(latestState)
+        case .enter:
+            guard options.indices.contains(safeSelected) else { return }
+            let chosen = options[safeSelected]
+            overlay = nil
+            view.setFocus(.composer)
+            if let store = store {
+                await store.dispatch(.setMode(chosen.mode))
+                commandEntries.append(TUITranscriptEntry(
+                    kind: .result,
+                    text: "✓ Agent 模式已切换为: \(chosen.title)",
+                    style: .systemNotice
+                ))
+                let fresh = await store.state
+                refreshView(fresh)
+            } else {
+                refreshView(latestState)
+            }
+        default:
+            break
+        }
+    }
+
+    // MARK: - Permissions Picker (/permissions)
+
+    private struct TUIPermissionOption {
+        let config: PermissionConfiguration
+        let key: String
+        let icon: String
+        let title: String
+        let description: String
+    }
+
+    private var availablePermissionOptions: [TUIPermissionOption] {
+        [
+            TUIPermissionOption(
+                config: .askWorkspace,
+                key: "ask",
+                icon: "🛡️",
+                title: "Ask (逐次询问)",
+                description: "最高安全 · 工具执行与敏感操作均弹窗确认（默认推荐）"
+            ),
+            TUIPermissionOption(
+                config: .autoWorkspace,
+                key: "auto",
+                icon: "⚡",
+                title: "Auto (工作区沙箱)",
+                description: "平衡实用 · 工作区内读写与安全命令自动放行，跨目录或高危需确认"
+            ),
+            TUIPermissionOption(
+                config: .yoloFullAccess,
+                key: "yolo",
+                icon: "🚀",
+                title: "YOLO (自由执行)",
+                description: "完全自动化 · 跳过所有审批与安全中断，适合全自动流水线无感执行"
+            )
+        ]
+    }
+
+    private func openPermissionsPicker() {
+        let currentProfile = latestState.nextTurnPermission?.profile.rawValue
+            ?? latestState.activeSessionState?.permissionConfiguration.profile.rawValue
+            ?? "ask"
+        let idx = availablePermissionOptions.firstIndex(where: { $0.key == currentProfile }) ?? 0
+        overlay = .permissionsPicker(selected: idx)
+        refreshView(latestState)
+    }
+
+    private func handlePermissionsPicker(_ event: TUIInputEvent) async {
+        guard case let .permissionsPicker(selected) = overlay else { return }
+        let options = availablePermissionOptions
+        let safeSelected = options.isEmpty ? 0 : max(0, min(options.count - 1, selected))
+
+        switch event {
+        case .up, .scrollUp:
+            overlay = .permissionsPicker(selected: max(0, safeSelected - 1))
+            refreshView(latestState)
+        case .down, .scrollDown:
+            overlay = .permissionsPicker(selected: min(max(0, options.count - 1), safeSelected + 1))
+            refreshView(latestState)
+        case .escape:
+            overlay = nil
+            view.setFocus(.composer)
+            refreshView(latestState)
+        case .enter:
+            guard options.indices.contains(safeSelected) else { return }
+            let chosen = options[safeSelected]
+            overlay = nil
+            view.setFocus(.composer)
+            if let store = store {
+                await store.dispatch(.setPermissionConfiguration(chosen.config))
+                commandEntries.append(TUITranscriptEntry(
+                    kind: .result,
+                    text: "✓ 权限策略已更新为: \(chosen.title)",
+                    style: .systemNotice
+                ))
+                let fresh = await store.state
+                refreshView(fresh)
+            } else {
+                refreshView(latestState)
+            }
+        default:
+            break
+        }
+    }
+
+    // MARK: - Reasoning Picker (/reasoning)
+
+    private struct TUIReasoningOption {
+        let effort: ReasoningEffort
+        let icon: String
+        let title: String
+        let description: String
+    }
+
+    private var availableReasoningOptions: [TUIReasoningOption] {
+        [
+            TUIReasoningOption(
+                effort: .auto,
+                icon: "✨",
+                title: "Auto (自适应推荐)",
+                description: "根据当前模型能力和输入复杂度自适应启用最合适的思考等级"
+            ),
+            TUIReasoningOption(
+                effort: .off,
+                icon: "⭕",
+                title: "Off (关闭思考)",
+                description: "完全关闭思维链 (Thought) 生成，获得最快首字响应速度"
+            ),
+            TUIReasoningOption(
+                effort: .low,
+                icon: "🌱",
+                title: "Low (轻度思考)",
+                description: "轻微思考，分配较少 Thought Token，适合简单问答与快速任务"
+            ),
+            TUIReasoningOption(
+                effort: .medium,
+                icon: "🌿",
+                title: "Medium (适度思考)",
+                description: "适度思考预算，平衡推理深度与响应时间"
+            ),
+            TUIReasoningOption(
+                effort: .high,
+                icon: "🧠",
+                title: "High (深度思考)",
+                description: "深度思考预算，适合复杂算法推导、架构重构与跨文件审查"
+            ),
+            TUIReasoningOption(
+                effort: .max,
+                icon: "🔥",
+                title: "Max (极限思考)",
+                description: "顶格思考预算，开启最强推理深度与反思链"
+            )
+        ]
+    }
+
+    private func openReasoningPicker() {
+        let currentEffort = latestState.effectiveReasoningEffort
+        let idx = availableReasoningOptions.firstIndex(where: { $0.effort == currentEffort }) ?? 0
+        overlay = .reasoningPicker(selected: idx)
+        refreshView(latestState)
+    }
+
+    private func handleReasoningPicker(_ event: TUIInputEvent) async {
+        guard case let .reasoningPicker(selected) = overlay else { return }
+        let options = availableReasoningOptions
+        let safeSelected = options.isEmpty ? 0 : max(0, min(options.count - 1, selected))
+
+        switch event {
+        case .up, .scrollUp:
+            overlay = .reasoningPicker(selected: max(0, safeSelected - 1))
+            refreshView(latestState)
+        case .down, .scrollDown:
+            overlay = .reasoningPicker(selected: min(max(0, options.count - 1), safeSelected + 1))
+            refreshView(latestState)
+        case .escape:
+            overlay = nil
+            view.setFocus(.composer)
+            refreshView(latestState)
+        case .enter:
+            guard options.indices.contains(safeSelected) else { return }
+            let chosen = options[safeSelected]
+            overlay = nil
+            view.setFocus(.composer)
+            if let store = store {
+                await store.dispatch(.setReasoningEffort(chosen.effort))
+                commandEntries.append(TUITranscriptEntry(
+                    kind: .result,
+                    text: "✓ 思考等级已切换为: \(chosen.title)",
+                    style: .systemNotice
+                ))
+                let fresh = await store.state
+                refreshView(fresh)
+            } else {
+                refreshView(latestState)
+            }
+        default:
+            break
+        }
+    }
+
     // MARK: - Session Picker Modal (/resume)
 
     private func openSessionPicker() {
@@ -1182,14 +1514,7 @@ public final class ApplicationTUI: Frontend {
         case "/theme", "/themes":
             let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
             if parts.count == 1 || (parts.count >= 2 && parts[1] == "list") {
-                let current = ThemeManager.shared.currentTheme
-                var listMsg = "🎨 Available Themes (Current: \(current.name) [\(current.id)]):\n"
-                for t in ThemeManager.shared.availableThemes {
-                    let indicator = (t.id == current.id) ? "● " : "○ "
-                    listMsg += "  \(indicator)\(t.id) (\(t.appearance.rawValue)) - \(t.name)\n"
-                }
-                listMsg += "\nSwitch with: /theme <name> (e.g. /theme light, /theme catppuccin, /theme dracula)"
-                commandEntries.append(TUITranscriptEntry(kind: .result, text: listMsg, style: .systemNotice))
+                openThemePicker()
                 refreshView(latestState)
                 return
             }
@@ -1200,7 +1525,7 @@ public final class ApplicationTUI: Frontend {
                 commandEntries.append(TUITranscriptEntry(kind: .result, text: "🎨 Theme switched to '\(newTheme.name)' (\(newTheme.appearance.rawValue))", style: .systemNotice))
                 refreshView(latestState)
             } else {
-                commandEntries.append(TUITranscriptEntry(kind: .error, text: "Theme '\(targetQuery)' not found. Type /theme list to view all themes.", style: .error))
+                commandEntries.append(TUITranscriptEntry(kind: .error, text: "Theme '\(targetQuery)' not found. Type /theme to select from list.", style: .error))
                 refreshView(latestState)
             }
             return
@@ -1215,8 +1540,7 @@ public final class ApplicationTUI: Frontend {
                 }
             }
             helpText += "\nConfiguration: Edit ~/.lingxiagent/keybindings.json to customize bindings."
-            commandEntries.append(TUITranscriptEntry(kind: .result, text: helpText, style: .systemNotice))
-            refreshView(latestState)
+            openCommandModal(title: "⌨️ 快捷键速查 (Keybindings & Shortcuts)", content: helpText)
             return
         case "/clear":
             commandEntries.removeAll()
@@ -1239,10 +1563,22 @@ public final class ApplicationTUI: Frontend {
             committedEntryCache.removeAll(keepingCapacity: true)
             refreshView(latestState)
         case "/help":
-            let localNames = Self.localCommands.map { "/\($0.name)" }.joined(separator: "  ")
-            let names = commands.map { "/\($0.name)" }.joined(separator: "  ")
-            commandEntries.append(TUITranscriptEntry(kind: .result, text: "Local: \(localNames)\nAvailable: \(names)"))
-            refreshView(latestState)
+            let localNames = Self.localCommands.map { "• /\($0.name) - \($0.description)" }.joined(separator: "\n  ")
+            let names = commands.map { "• /\($0.name) - \($0.description)" }.joined(separator: "\n  ")
+            let helpContent = """
+            【本地快捷交互指令】
+              \(localNames)
+
+            【已就绪业务核心指令】
+              \(names)
+
+            💡 交互提示:
+              • 输入 '/' 可呼出交互式指令补全与搜索调色板
+              • /mode、/permissions、/reasoning、/theme 均支持弹出快捷浮层直选
+              • 按 Esc 键可随时退出当前模态浮层
+            """
+            openCommandModal(title: "📖 帮助中心与命令指南 (/help)", content: helpContent)
+            return
         case "/new":
             commandEntries.removeAll()
             committedEntryCache.removeAll()
@@ -1300,6 +1636,27 @@ public final class ApplicationTUI: Frontend {
                 Task { [weak self] in
                     await self?.openTasksModal(store: store)
                 }
+                return
+            }
+            fallthrough
+        case "/mode":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 {
+                openModePicker()
+                return
+            }
+            fallthrough
+        case "/permissions", "/permission":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 {
+                openPermissionsPicker()
+                return
+            }
+            fallthrough
+        case "/reasoning", "/think", "/thought":
+            let parts = input.split(whereSeparator: \.isWhitespace).map(String.init)
+            if parts.count == 1 {
+                openReasoningPicker()
                 return
             }
             fallthrough
@@ -2014,6 +2371,14 @@ public final class ApplicationTUI: Frontend {
             return renderTasksModalOverlay(selected: selected, tasks: tasks, expandedDetail: expandedDetail)
         case let .commandModal(title, content, scrollOffset):
             return renderCommandModalOverlay(title: title, content: content, scrollOffset: scrollOffset)
+        case let .themePicker(query, selected):
+            return renderThemePickerOverlay(query: query, selected: selected)
+        case let .modePicker(selected):
+            return renderModePickerOverlay(selected: selected)
+        case let .permissionsPicker(selected):
+            return renderPermissionsPickerOverlay(selected: selected)
+        case let .reasoningPicker(selected):
+            return renderReasoningPickerOverlay(selected: selected)
         case nil:
             return nil
         }
@@ -2158,6 +2523,215 @@ public final class ApplicationTUI: Frontend {
         }
 
         lines.append(TUIStyledLine("", style: .modalBackground))
+        let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private func renderThemePickerOverlay(query: String, selected: Int) -> TUIOverlayModel {
+        let allThemes = ThemeManager.shared.availableThemes
+        let currentThemeID = ThemeManager.shared.currentTheme.id
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filteredThemes = q.isEmpty ? allThemes : allThemes.filter {
+            $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q)
+        }
+
+        let totalWidth = min(max(56, terminal.size.width - 6), 68)
+        let innerWidth = totalWidth - 4
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header: Select Theme ... esc
+        let titleLeft = "Select Theme"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - titleLeft.count - titleRight.count)
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Search box
+        let searchContent = query.isEmpty ? "│Search themes..." : "\(query)│"
+        let searchStyle: TUIStyle = query.isEmpty ? .modalSearchPlaceholder : .modalItem
+        lines.append(TUIStyledLine(searchContent.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: searchStyle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Theme Items
+        let contentRowCount = max(6, min(10, filteredThemes.count))
+        let safeSelected = filteredThemes.isEmpty ? 0 : max(0, min(filteredThemes.count - 1, selected))
+
+        let scrollOffset = max(0, min(safeSelected - contentRowCount / 2, max(0, filteredThemes.count - contentRowCount)))
+        let visibleThemes = filteredThemes.enumerated().dropFirst(scrollOffset).prefix(contentRowCount)
+
+        var renderedCount = 0
+        if filteredThemes.isEmpty {
+            lines.append(TUIStyledLine("  No matching themes".padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+            renderedCount += 1
+        } else {
+            for (idx, theme) in visibleThemes {
+                let isSelected = idx == safeSelected
+                let isActive = theme.id == currentThemeID
+                let dot = isActive ? "● " : "○ "
+                let left = "  \(dot)\(theme.name) (\(theme.id))"
+                let right = "[\(theme.appearance.rawValue.capitalized)]"
+                let pad = max(1, innerWidth - left.count - right.count)
+                let rowText = left + String(repeating: " ", count: pad) + right
+
+                if isSelected {
+                    lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+                } else {
+                    lines.append(TUIStyledLine(rowText, style: isActive ? .modalActiveDot : .modalItem))
+                }
+                renderedCount += 1
+            }
+        }
+
+        while renderedCount < contentRowCount {
+            lines.append(TUIStyledLine("".padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalBackground))
+            renderedCount += 1
+        }
+
+        // 4. Footer
+        lines.append(TUIStyledLine("", style: .modalBackground))
+        let footer = "Enter Confirm · Esc Close · ↑/↓ Navigate"
+        lines.append(TUIStyledLine(footer.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+
+        let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private func renderModePickerOverlay(selected: Int) -> TUIOverlayModel {
+        let options = availableModeOptions
+        let currentMode = latestState.nextTurnMode ?? latestState.activeSessionState?.mode ?? .build
+        let totalWidth = max(50, min(72, terminal.size.width - 4))
+        let innerWidth = max(1, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header: Select Agent Mode ... esc
+        let titleLeft = "切换 Agent 行为模式 (Agent Mode)"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Tip
+        let tip = "  ↑/↓ 选择模式 · Enter 确认切换 · Esc 退出"
+        lines.append(TUIStyledLine(tip.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Options
+        let safeSelected = options.isEmpty ? 0 : max(0, min(options.count - 1, selected))
+        for (i, opt) in options.enumerated() {
+            let isSelected = i == safeSelected
+            let isActive = opt.mode == currentMode
+            let cursor = isSelected ? "> " : "  "
+            let tag = isActive ? "[ ACTIVE ]" : "         "
+            let left = "\(cursor)\(opt.icon) \(opt.title)"
+            let pad = max(1, innerWidth - TUIDisplayWidth.width(of: left) - TUIDisplayWidth.width(of: tag))
+            let rowText = left + String(repeating: " ", count: pad) + tag
+
+            if isSelected {
+                lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+            } else {
+                lines.append(TUIStyledLine(rowText, style: isActive ? .modalActiveDot : .modalItem))
+            }
+
+            let descText = "    \(opt.description)"
+            lines.append(TUIStyledLine(descText.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+            lines.append(TUIStyledLine("", style: .modalBackground))
+        }
+
+        lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
+        let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private func renderPermissionsPickerOverlay(selected: Int) -> TUIOverlayModel {
+        let options = availablePermissionOptions
+        let currentProfile = latestState.nextTurnPermission?.profile.rawValue
+            ?? latestState.activeSessionState?.permissionConfiguration.profile.rawValue
+            ?? "ask"
+        let totalWidth = max(50, min(76, terminal.size.width - 4))
+        let innerWidth = max(1, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header: Select Permission Strategy ... esc
+        let titleLeft = "配置安全与权限策略 (Permission Policy)"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Tip
+        let tip = "  ↑/↓ 选择安全档位 · Enter 确认切换 · Esc 退出"
+        lines.append(TUIStyledLine(tip.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Options
+        let safeSelected = options.isEmpty ? 0 : max(0, min(options.count - 1, selected))
+        for (i, opt) in options.enumerated() {
+            let isSelected = i == safeSelected
+            let isActive = opt.key == currentProfile
+            let cursor = isSelected ? "> " : "  "
+            let tag = isActive ? "[ ACTIVE ]" : "         "
+            let left = "\(cursor)\(opt.icon) \(opt.title)"
+            let pad = max(1, innerWidth - TUIDisplayWidth.width(of: left) - TUIDisplayWidth.width(of: tag))
+            let rowText = left + String(repeating: " ", count: pad) + tag
+
+            if isSelected {
+                lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+            } else {
+                lines.append(TUIStyledLine(rowText, style: isActive ? .modalActiveDot : .modalItem))
+            }
+
+            let descText = "    \(opt.description)"
+            lines.append(TUIStyledLine(descText.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+            lines.append(TUIStyledLine("", style: .modalBackground))
+        }
+
+        lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
+        let totalModalHeight = lines.count + 2
+        return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
+    }
+
+    private func renderReasoningPickerOverlay(selected: Int) -> TUIOverlayModel {
+        let options = availableReasoningOptions
+        let currentEffort = latestState.effectiveReasoningEffort
+        let totalWidth = max(50, min(74, terminal.size.width - 4))
+        let innerWidth = max(1, totalWidth - 4)
+        var lines: [TUIStyledLine] = []
+
+        // 1. Header
+        let titleLeft = "设置思考等级 (Reasoning Effort)"
+        let titleRight = "esc"
+        let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
+        lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 2. Tip
+        let tip = "  ↑/↓ 选择等级 · Enter 确认切换 · Esc 退出"
+        lines.append(TUIStyledLine(tip.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+        lines.append(TUIStyledLine("", style: .modalBackground))
+
+        // 3. Options
+        let safeSelected = options.isEmpty ? 0 : max(0, min(options.count - 1, selected))
+        for (i, opt) in options.enumerated() {
+            let isSelected = i == safeSelected
+            let isActive = opt.effort == currentEffort
+            let cursor = isSelected ? "> " : "  "
+            let tag = isActive ? "[ ACTIVE ]" : "         "
+            let left = "\(cursor)\(opt.icon) \(opt.title)"
+            let pad = max(1, innerWidth - TUIDisplayWidth.width(of: left) - TUIDisplayWidth.width(of: tag))
+            let rowText = left + String(repeating: " ", count: pad) + tag
+
+            if isSelected {
+                lines.append(TUIStyledLine(rowText, style: .modalHighlight))
+            } else {
+                lines.append(TUIStyledLine(rowText, style: isActive ? .modalActiveDot : .modalItem))
+            }
+
+            let descText = "    \(opt.description)"
+            lines.append(TUIStyledLine(descText.padding(toLength: innerWidth, withPad: " ", startingAt: 0), style: .modalItemDim))
+        }
+
+        lines.append(TUIStyledLine("", style: .modalBackground))
+        lines = lines.map { TUIStyledLine(Self.modalText($0.text, width: innerWidth), style: $0.style) }
         let totalModalHeight = lines.count + 2
         return TUIOverlayModel(lines: lines, focus: .picker, isModal: true, modalWidth: totalWidth, modalHeight: totalModalHeight)
     }
