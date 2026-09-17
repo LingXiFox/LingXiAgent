@@ -39,6 +39,9 @@ public final class TUIFrameScheduler {
     }
 
     public func markDirty(_ flags: TUIDirtyFlags) {
+        if flags.contains(.input) {
+            TUIPerformanceMetrics.shared.recordInputEvent()
+        }
         dirtyFlags.insert(flags)
         scheduleNextFrameIfNeeded()
     }
@@ -72,6 +75,7 @@ public final class TUIFrameScheduler {
         isFramePending = false
         guard !dirtyFlags.isEmpty else {
             skippedFrameCount += 1
+            TUIPerformanceMetrics.shared.recordSkippedFrame()
             return
         }
 

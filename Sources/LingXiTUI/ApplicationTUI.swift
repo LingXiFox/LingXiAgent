@@ -1865,6 +1865,7 @@ public final class ApplicationTUI: Frontend {
     }
 
     private func refreshView(_ state: ApplicationState) {
+        let refreshStart = ContinuousClock.now
         let preferences = UserPreferencesStore.shared.load()
         if renderedPreferences != preferences {
             renderedPreferences = preferences
@@ -1908,6 +1909,7 @@ public final class ApplicationTUI: Frontend {
             userToggledEntries.removeAll(keepingCapacity: true)
         }
 
+        let transcriptProjStart = ContinuousClock.now
         var entries: [TUITranscriptEntry] = []
         entries.reserveCapacity(nodes.count + commandEntries.count + 1)
 
@@ -2013,10 +2015,15 @@ public final class ApplicationTUI: Frontend {
         if view.transcript.followsBottom {
             view.transcript.scrollToBottom()
         }
+        if TUIPerformanceMetrics.shared.isEnabled {
+            let transcriptNs = TUIPerformanceMetrics.durationNs(from: transcriptProjStart)
+            TUIPerformanceMetrics.shared.recordTranscriptProjection(durationNs: transcriptNs)
+        }
         latestState = state
 
         let isHero = isHeroEmptyState(state)
         let prefs = UserPreferencesStore.shared.load()
+        let sidebarProjStart = ContinuousClock.now
         if isHero {
             let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
             let model = state.currentModelID ?? prefs.lastModelID ?? ""
@@ -2037,7 +2044,19 @@ public final class ApplicationTUI: Frontend {
             view.sidebarModel = nil
         } else {
             view.heroConfig = nil
-            view.sidebarModel = (prefs.showSidebar ?? true) ? buildSidebarModel(from: state) : nil
+            if prefs.showSidebar ?? true {
+                TUIPerformanceMetrics.shared.recordSidebarRebuild()
+                view.sidebarModel = buildSidebarModel(from: state)
+            } else {
+                view.sidebarModel = nil
+            }
+        }
+        if TUIPerformanceMetrics.shared.isEnabled {
+            let sidebarNs = TUIPerformanceMetrics.durationNs(from: sidebarProjStart)
+            TUIPerformanceMetrics.shared.recordSidebarProjection(durationNs: sidebarNs)
+            let refreshTotalNs = TUIPerformanceMetrics.durationNs(from: refreshStart)
+            TUIPerformanceMetrics.shared.recordRefreshViewTotal(durationNs: refreshTotalNs)
+            TUIPerformanceMetrics.shared.recordRefresh(isFull: true, nodesCount: nodes.count, entriesCount: allEntries.count)
         }
         lastRenderedNodeCount = nodes.count
     }
@@ -2364,15 +2383,31 @@ public final class ApplicationTUI: Frontend {
     }
 
     private func render() {
+        let frameStart = ContinuousClock.now
         renderCount += 1
         if renderCount <= 5 { debug("render.begin count=\(renderCount)") }
         StreamingLatencyTracker.shared.record("frame-\(renderCount)", stage: .frameScheduled)
+
+        let viewRenderStart = ContinuousClock.now
         var frame = view.render(size: terminal.size, overlay: overlayModel())
         if let sel = selectionRect {
             frame.highlightSelection(sel)
         }
         lastRenderedFrame = frame
+        if TUIPerformanceMetrics.shared.isEnabled {
+            let viewRenderNs = TUIPerformanceMetrics.durationNs(from: viewRenderStart)
+            TUIPerformanceMetrics.shared.recordViewRender(durationNs: viewRenderNs)
+        }
+
+        let presentStart = ContinuousClock.now
         terminal.render(frame)
+        if TUIPerformanceMetrics.shared.isEnabled {
+            let presentNs = TUIPerformanceMetrics.durationNs(from: presentStart)
+            TUIPerformanceMetrics.shared.recordTerminalPresent(durationNs: presentNs)
+            let frameTotalNs = TUIPerformanceMetrics.durationNs(from: frameStart)
+            TUIPerformanceMetrics.shared.recordFrameTotal(durationNs: frameTotalNs)
+            TUIPerformanceMetrics.shared.recordFramePresent(changedRows: frame.size.height, changedCells: frame.cells.count)
+        }
         StreamingLatencyTracker.shared.record("frame-\(renderCount)", stage: .openTUIPresented)
         if renderCount <= 5 { debug("render.end count=\(renderCount)") }
     }
