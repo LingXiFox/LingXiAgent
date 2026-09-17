@@ -83,59 +83,137 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         }
     }
 
-    func render(_ frame: TUIFrame) {
-        guard let renderer = openTUI else { return }
-        renderCount += 1
-        if renderCount <= 3 {
-            debug("render.begin count=\(renderCount) size=\(frame.size.width)x\(frame.size.height) cells=\(frame.cells.count)")
+    private var previousFrame: TUIFrame?
+
+    private struct CompiledRun {
+        let text: String
+        let startX: Int
+        let fg: OpenTUIColorValue
+        let bg: OpenTUIColorValue
+    }
+    private var rowRunsCache: [Int: [CompiledRun]] = [:]
+
+    private func isRowEqual(_ row: Int, frameA: TUIFrame, frameB: TUIFrame) -> Bool {
+        let width = frameA.size.width
+        let startIdx = row * width
+        let endIdx = startIdx + width
+        guard startIdx >= 0, endIdx <= frameA.cells.count, endIdx <= frameB.cells.count else {
+            return false
         }
-        renderer.resize(width: frame.size.width, height: frame.size.height)
+        for col in 0..<width {
+            if frameA.cells[startIdx + col] != frameB.cells[startIdx + col] {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func compileRowRuns(row: Int, frame: TUIFrame) -> [CompiledRun] {
+        var runs: [CompiledRun] = []
+        var currentRun = ""
+        var runStartX = 0
+        var currentFg: OpenTUIColorValue?
+        var currentBg: OpenTUIColorValue?
+
+        func flushRun() {
+            guard !currentRun.isEmpty, let fg = currentFg, let bg = currentBg else {
+                currentRun.removeAll(keepingCapacity: true)
+                return
+            }
+            runs.append(CompiledRun(text: currentRun, startX: runStartX, fg: fg, bg: bg))
+            currentRun.removeAll(keepingCapacity: true)
+        }
+
+        let width = frame.size.width
+        let rowStart = row * width
+        for column in 0..<width {
+            let cell = frame.cells[rowStart + column]
+            if cell.continuation { continue }
+
+            let style = color(for: cell.style)
+            let fg = cell.customForeground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.foreground
+            let bg = cell.customBackground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.background
+
+            if fg == currentFg && bg == currentBg {
+                currentRun.append(cell.character)
+            } else {
+                flushRun()
+                currentFg = fg
+                currentBg = bg
+                runStartX = column
+                currentRun.append(cell.character)
+            }
+        }
+        flushRun()
+        return runs
+    }
+
+    func render(_ frame: TUIFrame) {
+        renderCount += 1
+        let isSizeChanged = (previousFrame?.size != frame.size)
+        let isFirstRender = (previousFrame == nil)
+        let prev = previousFrame
+
+        if isSizeChanged {
+            openTUI?.resize(width: frame.size.width, height: frame.size.height)
+            rowRunsCache.removeAll(keepingCapacity: true)
+        }
+
+        // 计算 Changed Rows
+        var changedRows: [Int] = []
+        changedRows.reserveCapacity(frame.size.height)
+
+        if isFirstRender || isSizeChanged {
+            changedRows = Array(0..<frame.size.height)
+        } else if let prevFrame = prev {
+            for row in 0..<frame.size.height {
+                if !isRowEqual(row, frameA: frame, frameB: prevFrame) {
+                    changedRows.append(row)
+                }
+            }
+        }
+
+        // 若整屏完全无可视变化且光标未移动，直接 skip
+        if !isFirstRender && !isSizeChanged && changedRows.isEmpty && frame.cursor == prev?.cursor {
+            TUIPerformanceMetrics.shared.recordSkippedFrame()
+            return
+        }
+
+        // 记录指标
+        TUIPerformanceMetrics.shared.recordFramePresent(
+            changedRows: changedRows.count,
+            changedCells: changedRows.count * frame.size.width
+        )
+
+        guard let renderer = openTUI else {
+            previousFrame = frame
+            return
+        }
+
+        // 仅对发生变化的行重新编译 runs
+        for row in changedRows {
+            rowRunsCache[row] = compileRowRuns(row: row, frame: frame)
+        }
+
         renderer.clear()
 
+        // 提交所有行的 Runs 到 buffer（未改变的行直接复用编译好的 runs）
         for row in 0..<frame.size.height {
-            var currentRun = ""
-            var runStartX = 0
-            var currentFg: OpenTUIColorValue?
-            var currentBg: OpenTUIColorValue?
-
-            func flushRun() {
-                guard !currentRun.isEmpty, let fg = currentFg, let bg = currentBg else {
-                    currentRun.removeAll(keepingCapacity: true)
-                    return
-                }
-                // 若全为空格且背景为纯黑，clear 已处理，无需调用底层绘制
-                let isPureBlank = (bg.red == 0 && bg.green == 0 && bg.blue == 0) && currentRun.allSatisfy { $0 == " " }
-                if !isPureBlank {
-                    renderer.draw(currentRun, x: runStartX, y: row, foreground: fg, background: bg)
-                }
-                currentRun.removeAll(keepingCapacity: true)
-            }
-
-            for column in 0..<frame.size.width {
-                let cell = frame.cells[row * frame.size.width + column]
-                if cell.continuation { continue }
-
-                let style = color(for: cell.style)
-                let fg = cell.customForeground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.foreground
-                let bg = cell.customBackground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.background
-
-                if fg == currentFg && bg == currentBg {
-                    currentRun.append(cell.character)
-                } else {
-                    flushRun()
-                    currentFg = fg
-                    currentBg = bg
-                    runStartX = column
-                    currentRun.append(cell.character)
+            if let runs = rowRunsCache[row] {
+                for run in runs {
+                    let isPureBlank = (run.bg.red == 0 && run.bg.green == 0 && run.bg.blue == 0) && run.text.allSatisfy { $0 == " " }
+                    if !isPureBlank {
+                        renderer.draw(run.text, x: run.startX, y: row, foreground: run.fg, background: run.bg)
+                    }
                 }
             }
-            flushRun()
         }
 
         renderer.setCursor(frame.cursor)
-        let result = renderer.render(force: renderCount == 1)
+        let result = renderer.render(force: isFirstRender || isSizeChanged)
+        previousFrame = frame
         if renderCount <= 3 {
-            debug("render.end count=\(renderCount) nativeResult=\(result)")
+            debug("render.end count=\(renderCount) changedRows=\(changedRows.count) nativeResult=\(result)")
         }
     }
 
