@@ -35,7 +35,14 @@ public struct WorkspaceRoot: Sendable {
             expandedPath = cleanPath
         }
         let input = URL(fileURLWithPath: expandedPath, relativeTo: expandedPath.hasPrefix("/") ? nil : url)
-        let candidate = input.standardizedFileURL.resolvingSymlinksInPath()
+        var candidate = input.standardizedFileURL.resolvingSymlinksInPath()
+
+        // Smart Fuzzy Resolution: if file doesn't exist directly, attempt workspace-scoped unique suffix/nesting resolution
+        if !FileManager.default.fileExists(atPath: candidate.path),
+           let fuzzy = findFuzzyCandidate(for: candidate, originalPath: expandedPath) {
+            candidate = fuzzy
+        }
+
         let root = url.path.hasSuffix("/") ? url.path : url.path + "/"
         guard profile == .fullAccess || candidate.path == url.path || candidate.path.hasPrefix(root) || SensitivePathPolicy.isModelConfigurationPath(candidate) else {
             throw CoreError(code: .workspaceViolation, message: "AccessScope=workspace 禁止访问 Workspace 外路径；请先切换到 FullAccess/YOLO")
@@ -44,6 +51,68 @@ public struct WorkspaceRoot: Sendable {
             throw CoreError(code: .workspaceViolation, message: "不允许访问敏感路径")
         }
         return candidate
+    }
+
+    private func findFuzzyCandidate(for candidate: URL, originalPath: String) -> URL? {
+        let wsPath = url.path
+        let filename = candidate.lastPathComponent
+        guard !filename.isEmpty, filename != "/", filename != "." else { return nil }
+
+        let relComponents: [String] = {
+            if candidate.path.hasPrefix(wsPath) {
+                let suffix = String(candidate.path.dropFirst(wsPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                return suffix.split(separator: "/").map(String.init)
+            } else {
+                return originalPath.split(separator: "/").map(String.init)
+            }
+        }()
+        let suffix2 = relComponents.suffix(2).joined(separator: "/")
+
+        // 1. 同名目录展开尝试（针对多层同名嵌套目录少写一层的场景）
+        let wsDirName = url.lastPathComponent
+        if !wsDirName.isEmpty && candidate.path.contains(wsDirName) {
+            let expandedSegmentPath = candidate.path.replacingOccurrences(
+                of: "\(wsDirName)/\(wsDirName)/",
+                with: "\(wsDirName)/\(wsDirName)/\(wsDirName)/"
+            )
+            if expandedSegmentPath != candidate.path && FileManager.default.fileExists(atPath: expandedSegmentPath) {
+                return URL(fileURLWithPath: expandedSegmentPath).standardizedFileURL
+            }
+        }
+
+        // 2. 工作区内快速搜索唯一匹配（跳过 .git、.build、node_modules 等）
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return nil }
+
+        var matches: [URL] = []
+        let skipDirs: Set<String> = ["node_modules", ".git", ".build", "build", "dist", "deriveddata", ".lingxi"]
+
+        for case let fileURL as URL in enumerator {
+            let lastComponent = fileURL.lastPathComponent
+            if skipDirs.contains(lastComponent.lowercased()) {
+                enumerator.skipDescendants()
+                continue
+            }
+            if lastComponent == filename {
+                let filePath = fileURL.path
+                if !suffix2.isEmpty && filePath.hasSuffix(suffix2) {
+                    matches.append(fileURL)
+                } else if relComponents.count <= 1 {
+                    matches.append(fileURL)
+                }
+            }
+            if matches.count > 1 {
+                return nil // 存在多个候选，避免歧义
+            }
+        }
+
+        if matches.count == 1 {
+            return matches[0].standardizedFileURL
+        }
+        return nil
     }
 }
 
@@ -408,7 +477,7 @@ public struct ReadFileTool: ToolExecutor {
         description: "Read a UTF-8 text file inside the workspace.",
         inputSchema: ToolInputSchema(
             properties: [
-                "path": ToolInputProperty(type: .string, description: "Workspace-relative file path"),
+                "path": ToolInputProperty(type: .string, description: "File path to read (workspace-relative or absolute path)"),
                 "start_line": ToolInputProperty(type: .integer, description: "1-based start line"),
                 "end_line": ToolInputProperty(type: .integer, description: "1-based end line")
             ],
@@ -1927,10 +1996,12 @@ public extension BuiltInToolProvider {
             GitTool(workspace: workspace),
             SkillTool(workspace: workspace),
             QuestionTool(questions: questions),
-            TodoTool(),
-            BrowserNavigateTool(),
-            BrowserActTool(),
-            ComputerBatchTool()
+            TodoTool()
+            // NOTE: Computer Use and Browser Use implementations are frozen and disabled from the default toolcall list per owner directive.
+            // Underlying implementation code (BrowserNavigateTool, BrowserActTool, ComputerBatchTool) is fully preserved.
+            // BrowserNavigateTool(),
+            // BrowserActTool(),
+            // ComputerBatchTool()
         ] + indexTools + intelligenceTools)
     }
 }

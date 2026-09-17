@@ -38,8 +38,8 @@ public struct ExecutionTimeoutSettings: Codable, Sendable, Equatable {
         foregroundShellSeconds: Double = 60,
         buildTestSeconds: Double = 300,
         mcpSeconds: Double = 60,
-        providerSeconds: Double = 120,
-        providerIdleSeconds: Double = 45,
+        providerSeconds: Double = 300,
+        providerIdleSeconds: Double = 120,
         subagentSeconds: Double = 600,
         agentRunSeconds: Double = 1_800,
         maximumSeconds: Double = 3_600
@@ -68,8 +68,8 @@ public struct ExecutionTimeoutSettings: Codable, Sendable, Equatable {
             foregroundShellSeconds: try values.decodeIfPresent(Double.self, forKey: .foregroundShellSeconds) ?? 60,
             buildTestSeconds: try values.decodeIfPresent(Double.self, forKey: .buildTestSeconds) ?? 300,
             mcpSeconds: try values.decodeIfPresent(Double.self, forKey: .mcpSeconds) ?? 60,
-            providerSeconds: try values.decodeIfPresent(Double.self, forKey: .providerSeconds) ?? 120,
-            providerIdleSeconds: try values.decodeIfPresent(Double.self, forKey: .providerIdleSeconds) ?? 45,
+            providerSeconds: try values.decodeIfPresent(Double.self, forKey: .providerSeconds) ?? 300,
+            providerIdleSeconds: try values.decodeIfPresent(Double.self, forKey: .providerIdleSeconds) ?? 120,
             subagentSeconds: try values.decodeIfPresent(Double.self, forKey: .subagentSeconds) ?? 600,
             agentRunSeconds: try values.decodeIfPresent(Double.self, forKey: .agentRunSeconds) ?? 1_800,
             maximumSeconds: try values.decodeIfPresent(Double.self, forKey: .maximumSeconds) ?? 3_600
@@ -89,7 +89,9 @@ public struct ExecutionDeadlinePolicy: Sendable, Equatable {
     }
 
     public func idleTimeout(for category: ExecutionTimeoutCategory) -> Duration? {
-        category == .provider ? .milliseconds(Int(min(settings.providerIdleSeconds, settings.maximumSeconds) * 1_000)) : nil
+        guard category == .provider else { return nil }
+        let effective = max(120.0, min(settings.providerIdleSeconds, settings.maximumSeconds))
+        return .milliseconds(Int(effective * 1_000))
     }
 
     public func deadline(for category: ExecutionTimeoutCategory, requested: Duration? = nil, parent: ExecutionDeadline? = nil) -> ExecutionDeadline {
@@ -106,7 +108,7 @@ public struct ExecutionDeadlinePolicy: Sendable, Equatable {
         case .foregroundShell: settings.foregroundShellSeconds
         case .buildTest: settings.buildTestSeconds
         case .mcp: settings.mcpSeconds
-        case .provider: settings.providerSeconds
+        case .provider: max(300.0, settings.providerSeconds)
         case .subagent: settings.subagentSeconds
         case .agentRun: settings.agentRunSeconds
         }
@@ -208,6 +210,9 @@ public enum ExecutionWatchdog {
                             lifecycle("terminalState", traceID: traceID, category: deadline.category)
                             return
                         }
+                        if event == .heartbeat {
+                            continue
+                        }
                         continuation.yield(event)
                     }
                     if let error = await state.failure() {
@@ -297,9 +302,14 @@ private actor ExecutionWatchdogState {
             return CoreError(code: .commandTimedOut, message: "执行流超过 overall timeout")
         }
         if let idle = deadline.idleTimeout, now >= lastActivity.advanced(by: idle) {
-            return CoreError(code: .idleTimedOut, message: "执行流超过 idle timeout")
+            let idleSecs = Int(Self.seconds(idle))
+            return CoreError(code: .idleTimedOut, message: "模型流式响应超过空闲等待上限 (\(idleSecs)s 无新内容)，请检查网络连接或更换响应更及时的模型")
         }
         return nil
+    }
+
+    private static func seconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
     }
     func complete() {
         guard !completed else { return }

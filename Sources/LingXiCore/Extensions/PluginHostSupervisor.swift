@@ -23,11 +23,9 @@ public actor PluginHostSupervisor {
         self.permissions = permissions
     }
 
-    /// 扫描并加载所有可用插件
+    /// 扫描并加载所有可用插件（并行拉起与握手）
     public func discoverAndStartAll() async -> [PluginHandshakeResult] {
         terminateAll()
-
-        var discoveredResults: [PluginHandshakeResult] = []
 
         // 项目级优先，其次全局级
         let searchDirectories = [
@@ -36,46 +34,84 @@ public actor PluginHostSupervisor {
             (.global, FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent/plugins", isDirectory: true))
         ]
 
-        var seenIDs = Set<String>()
+        struct Candidate: Sendable {
+            let priority: Int
+            let scope: ExtensionScope
+            let binaryURL: URL
+        }
 
-        for (scope, dir) in searchDirectories {
+        var candidates: [Candidate] = []
+        for (priority, (scope, dir)) in searchDirectories.enumerated() {
             guard FileManager.default.fileExists(atPath: dir.path) else { continue }
             let entries = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isExecutableKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
-
             for entry in entries {
-                guard let binaryURL = resolveExecutableBinary(at: entry) else { continue }
-
-                let host = PluginProcessHost(binaryURL: binaryURL, scope: scope, permissions: permissions)
-                do {
-                    let handshake = try await host.start()
-                    let pluginID = handshake.manifest.id
-
-                    // 项目同名覆盖全局
-                    if seenIDs.insert(pluginID).inserted {
-                        hostsByPluginID[pluginID] = host
-
-                        // 登记 Tools
-                        for tool in handshake.tools {
-                            toolToPluginID[tool.name] = pluginID
-                        }
-
-                        // 登记 Commands
-                        for cmd in handshake.commands {
-                            commandToPluginID[cmd.name.lowercased()] = pluginID
-                            for alias in cmd.aliases {
-                                commandToPluginID[alias.lowercased()] = pluginID
-                            }
-                        }
-
-                        discoveredResults.append(handshake)
-                    } else {
-                        // 重复或低优先级，终止
-                        await host.terminate()
-                    }
-                } catch {
-                    // 握手失败直接清理
-                    await host.terminate()
+                if let binaryURL = resolveExecutableBinary(at: entry) {
+                    candidates.append(Candidate(priority: priority, scope: scope, binaryURL: binaryURL))
                 }
+            }
+        }
+
+        guard !candidates.isEmpty else { return [] }
+
+        struct StartResult: Sendable {
+            let priority: Int
+            let host: PluginProcessHost
+            let handshake: PluginHandshakeResult?
+        }
+
+        // 并行拉起所有插件并握手
+        let results: [StartResult] = await withTaskGroup(of: StartResult.self) { group in
+            for candidate in candidates {
+                let permissions = self.permissions
+                group.addTask {
+                    let host = PluginProcessHost(binaryURL: candidate.binaryURL, scope: candidate.scope, permissions: permissions)
+                    do {
+                        let handshake = try await host.start()
+                        return StartResult(priority: candidate.priority, host: host, handshake: handshake)
+                    } catch {
+                        await host.terminate()
+                        return StartResult(priority: candidate.priority, host: host, handshake: nil)
+                    }
+                }
+            }
+
+            var collected: [StartResult] = []
+            for await res in group {
+                collected.append(res)
+            }
+            return collected
+        }
+
+        // 按优先级排序（数字越小优先级越高）
+        let sorted = results.sorted(by: { $0.priority < $1.priority })
+
+        var seenIDs = Set<String>()
+        var discoveredResults: [PluginHandshakeResult] = []
+
+        for item in sorted {
+            guard let handshake = item.handshake else { continue }
+            let pluginID = handshake.manifest.id
+
+            if seenIDs.insert(pluginID).inserted {
+                hostsByPluginID[pluginID] = item.host
+
+                // 登记 Tools
+                for tool in handshake.tools {
+                    toolToPluginID[tool.name] = pluginID
+                }
+
+                // 登记 Commands
+                for cmd in handshake.commands {
+                    commandToPluginID[cmd.name.lowercased()] = pluginID
+                    for alias in cmd.aliases {
+                        commandToPluginID[alias.lowercased()] = pluginID
+                    }
+                }
+
+                discoveredResults.append(handshake)
+            } else {
+                // 重复或低优先级，终止
+                await item.host.terminate()
             }
         }
 

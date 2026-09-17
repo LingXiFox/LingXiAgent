@@ -108,13 +108,10 @@ def transform_data(raw_data: Dict[str, Any]) -> Dict[str, Any]:
             options = mdata.get("options", {})
             reasoning_field = "reasoning_content" if options.get("reasoning_content") else None
 
-            swift_snippet = generate_swift_code(pid, mid, base_url, primary_env)
-
             transformed_models[mid] = {
                 **mdata,
                 "swiftDriver": swift_driver,
                 "reasoningField": reasoning_field,
-                "swiftSnippet": swift_snippet,
             }
 
             all_models_summary.append({
@@ -167,13 +164,13 @@ def main():
     catalog = transform_data(raw_data)
     print(f"[sync] Processed {catalog['totalProviders']} providers and {catalog['totalModels']} models.")
 
-    # 1. Output full models.json
+    # 1. Output full models.json (compact formatting without 19MB indentation blowup)
     models_json_path = os.path.join(output_dir, "models.json")
     with open(models_json_path, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, ensure_ascii=False, indent=2)
+        json.dump(catalog, f, ensure_ascii=False, separators=(",", ":"))
     print(f"[sync] Wrote full catalog to {models_json_path} ({os.path.getsize(models_json_path):,} bytes)")
 
-    # 2. Output lightweight index data for UI
+    # 2. Output lightweight index data for UI and fast client syncing
     summary_path = os.path.join(output_dir, "summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump({
@@ -182,7 +179,7 @@ def main():
             "totalProviders": catalog["totalProviders"],
             "totalModels": catalog["totalModels"],
             "models": catalog["summary"],
-        }, f, ensure_ascii=False)
+        }, f, ensure_ascii=False, separators=(",", ":"))
     print(f"[sync] Wrote summary to {summary_path} ({os.path.getsize(summary_path):,} bytes)")
 
     print("[sync] Complete successfully!")

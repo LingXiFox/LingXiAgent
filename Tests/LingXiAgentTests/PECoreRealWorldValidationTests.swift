@@ -7,7 +7,195 @@ import LingXiClient
 @Suite(.serialized)
 struct PECoreRealWorldValidationTests {
 
+    // MARK: - 1. 离线快速拟真测试 (Sub-second Hermetic Simulation, 零网络零费用零延迟)
+
+    @Test func testPECoreLifecycleHermeticSimulation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("test-pecore-mock-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var coreConfig = CoreConfiguration()
+        coreConfig.context.economicThreshold = 4_500
+        coreConfig.context.fabric.objectizationThreshold = 10_240 // 10KB
+        coreConfig.context.fabric.fullSendCount = 2
+        coreConfig.context.fabric.placeholderExcerpt = 1_024
+        coreConfig.context.fabric.recallMaxBytes = 16_384
+        coreConfig.context.fabric.recallMaxLines = 400
+
+        let scriptedEvents: [[ModelEvent]] = [
+            // Turn 1
+            [.textDelta("[ACK:TURN1_INITIALIZED]"), .completed(.stop)],
+            // Turn 2
+            [.textDelta("[ACK:TURN2_FULL_OBSERVATION_RECEIVED]"), .completed(.stop)],
+            // Turn 3
+            [.textDelta("[ACK:TURN3_ANALYZED]"), .completed(.stop)],
+            // Turn 4
+            [.textDelta("[ACK:TURN4_PROJECTION_ACTIVE]"), .completed(.stop)],
+            // Turn 5
+            [.textDelta("[CODENAME:FoxRelease-PECore-2026-AlphaBeta]"), .completed(.stop)],
+            // Turn 6
+            [.textDelta("[ACK:TURN6_COMPACTED]"), .completed(.stop)],
+            // Turn 7
+            [.textDelta("[ACK:TURN7_HIT_1]"), .completed(.stop)],
+            // Turn 8
+            [.textDelta("[ACK:TURN8_HIT_2]"), .completed(.stop)]
+        ]
+
+        let fakeProvider = ScriptedFakeProvider(script: scriptedEvents)
+        let assembly = ModelRuntimeAssembly(
+            provider: fakeProvider,
+            modelID: ModelID("fake-mock"),
+            contextProfile: ModelContextProfile(contextWindowTokens: 32_000)
+        )
+
+        let host = try CoreHost(
+            providerAssembly: assembly,
+            configuration: coreConfig,
+            workspaceRoot: try WorkspaceRoot(path: root.path),
+            permissionDecision: .allow
+        )
+        await host.start()
+        defer { Task { await host.shutdown() } }
+
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let cacheController = await host.cacheController
+        let sessionStore = await host.sessionStore
+
+        // Stage 1: Cold Start
+        let stream1 = try await client.sendMessage(sessionID: sessionID, content: "Initial Prompt")
+        var reply1 = ""
+        for try await chunk in stream1 where chunk.kind == .text { reply1 += chunk.text }
+        #expect(reply1.contains("TURN1_INITIALIZED"))
+
+        // Stage 2: Large Observation into E-Core
+        var largeLogContent = "=== SYSTEM TRACE LOG BEGIN (12KB) ===\n"
+        var anchorOffset: Int = 0
+        for i in 1...250 {
+            if i == 120 {
+                anchorOffset = largeLogContent.utf8.count
+                largeLogContent += "[LINE \(i)] ANCHOR_RELEASE_CODENAME: FoxRelease-PECore-2026-AlphaBeta\n"
+            } else {
+                largeLogContent += "[LINE \(i)] [TRACE] Component=NetworkWorker status=ok latency=\(i * 3)ms payload_hash=sha256_\(UUID().uuidString.prefix(8))\n"
+            }
+        }
+        largeLogContent += "=== SYSTEM TRACE LOG END ===\n"
+
+        let meta = await cacheController.ecoreStore.store(
+            sessionID: sessionID,
+            toolCallID: ToolCallID("call_trace_log"),
+            toolName: "read_file",
+            content: largeLogContent
+        )
+        let objectID = try #require(meta?.objectID)
+        let hasObject = await cacheController.ecoreStore.hasObject(sessionID: sessionID, objectID: objectID)
+        #expect(hasObject == true)
+
+        _ = try await sessionStore.appendMessage(
+            sessionID,
+            role: .assistant,
+            parts: [.toolCall(ToolCall(callID: ToolCallID("call_trace_log"), toolID: ToolID("read_file"), arguments: "{\"path\":\"trace.log\"}"))]
+        )
+        _ = try await sessionStore.appendMessage(
+            sessionID,
+            role: .tool,
+            parts: [.toolResult(ToolResult(callID: ToolCallID("call_trace_log"), success: true, content: largeLogContent, toolName: "read_file"))]
+        )
+
+        // Turn 2: Full Send 1
+        let stream2 = try await client.sendMessage(sessionID: sessionID, content: "Confirm log received")
+        var reply2 = ""
+        for try await chunk in stream2 where chunk.kind == .text { reply2 += chunk.text }
+        #expect(reply2.contains("TURN2_FULL_OBSERVATION_RECEIVED"))
+
+        // Stage 3: Full Send 2
+        let stream3 = try await client.sendMessage(sessionID: sessionID, content: "Explain latency")
+        var reply3 = ""
+        for try await chunk in stream3 where chunk.kind == .text { reply3 += chunk.text }
+        #expect(reply3.contains("TURN3_ANALYZED"))
+
+        // Stage 4: Projection Active
+        let stream4 = try await client.sendMessage(sessionID: sessionID, content: "Optimize latency")
+        var reply4 = ""
+        for try await chunk in stream4 where chunk.kind == .text { reply4 += chunk.text }
+        #expect(reply4.contains("TURN4_PROJECTION_ACTIVE"))
+
+        let projector = ContextProjection(configuration: coreConfig.context.fabric)
+        let rawSession = try await sessionStore.session(sessionID)
+        let toolMsg = rawSession.messages.first { $0.role == .tool }
+        if let toolMsg, let part = toolMsg.parts.first {
+            let entry = ContextEntry(messageID: toolMsg.id, role: .tool, source: .toolResult, part: part)
+            let projected = await projector.project(entries: [entry], session: rawSession, ecoreStore: cacheController.ecoreStore)
+            if case let .toolResult(res) = projected.first?.part {
+                #expect(res.content.contains("[Context Object:"))
+                #expect(res.metadata["projected"] == "true")
+            }
+        }
+        let s4 = await host.contextStateSnapshot(sessionID: sessionID)
+        #expect((s4.eCoreObjectCount ?? 0) >= 1)
+
+        // Stage 5: Context Recall
+        let recallTool = ContextRecallTool(ecoreStore: cacheController.ecoreStore, sessionID: sessionID)
+        let queryOffset = max(0, anchorOffset - 100)
+        let recallOutcome = try await recallTool.execute(
+            arguments: "{\"id\":\"\(objectID.rawValue)\",\"offset\":\(queryOffset),\"limit_bytes\":1200,\"limit_lines\":20}",
+            profile: .workspace
+        )
+        #expect(recallOutcome.contains("[Context Object Slice:"))
+        #expect(recallOutcome.contains("FoxRelease-PECore-2026-AlphaBeta"))
+
+        let stream5 = try await client.sendMessage(sessionID: sessionID, content: "Extracted codename from slice")
+        var reply5 = ""
+        for try await chunk in stream5 where chunk.kind == .text { reply5 += chunk.text }
+        #expect(reply5.contains("FoxRelease-PECore-2026-AlphaBeta"))
+
+        // Stage 6: Economic Compact
+        let decisionBefore = await cacheController.scheduler.evaluate(
+            sessionID: sessionID,
+            currentTokens: 5_200,
+            hardLimit: 12_000,
+            economicThreshold: 4_500,
+            estimatedEvictionTokens: 2_000,
+            stablePrefixTokens: 1_200,
+            remainingHorizon: 10
+        )
+        #expect(decisionBefore.shouldCompact == true)
+
+        await cacheController.scheduler.recordCompactionOccurred(sessionID: sessionID, step: 6)
+        let debtAfterCompact = await cacheController.scheduler.debtState(for: sessionID)
+        #expect(debtAfterCompact.cacheDebt >= 1)
+
+        let stream6 = try await client.sendMessage(sessionID: sessionID, content: "Check progress")
+        var reply6 = ""
+        for try await chunk in stream6 where chunk.kind == .text { reply6 += chunk.text }
+        #expect(reply6.contains("TURN6_COMPACTED"))
+
+        // Stage 7: Debt Repayment Step 1
+        let stream7 = try await client.sendMessage(sessionID: sessionID, content: "Question 7")
+        var reply7 = ""
+        for try await chunk in stream7 where chunk.kind == .text { reply7 += chunk.text }
+        #expect(reply7.contains("TURN7_HIT_1"))
+        await cacheController.scheduler.recordHit(sessionID: sessionID)
+
+        // Stage 8: Debt Repayment Step 2
+        let stream8 = try await client.sendMessage(sessionID: sessionID, content: "Question 8")
+        var reply8 = ""
+        for try await chunk in stream8 where chunk.kind == .text { reply8 += chunk.text }
+        #expect(reply8.contains("TURN8_HIT_2"))
+        await cacheController.scheduler.recordHit(sessionID: sessionID)
+
+        let debt8 = await cacheController.scheduler.debtState(for: sessionID)
+        #expect(debt8.cacheDebt < debtAfterCompact.cacheDebt || debt8.consecutiveHits > 0)
+    }
+
+    // MARK: - 2. 真实远端网络测试 (Live Remote Endpoint, 默认跳过避免98秒时延与配额消耗)
+
     @Test func testPECoreRealWorldFullLifecycleWithProvider() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_ENABLE_REAL_PROVIDER_TESTS"] == "1" else {
+            print("[PECoreValidation] Real provider tests skipped by default to avoid ~98s latency, memory usage, and quota consumption. Set LINGXI_ENABLE_REAL_PROVIDER_TESTS=1 to run against live remote endpoints.")
+            return
+        }
+
         let dataRoot = LingXiDataRootResolver.resolve(
             environment: ProcessInfo.processInfo.environment,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser

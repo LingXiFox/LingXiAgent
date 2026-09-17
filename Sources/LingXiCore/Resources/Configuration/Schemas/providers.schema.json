@@ -78,6 +78,6 @@
       }
     }
   },
-  "required": ["$schema", "version", "providers"],
+  "required": ["version", "providers"],
   "additionalProperties": false
 }

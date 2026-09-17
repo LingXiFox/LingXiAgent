@@ -937,4 +937,17 @@ public actor ContextCacheController {
         let url = telemetryFileURL(sessionID: sessionID)
         try? FileManager.default.removeItem(at: url)
     }
+
+    /// 获取指定会话的 E-Core 热度调试与可观测性快照（只读旁路接口）
+    /// 架构边界红线：E-Core Hot/Cold 仅属于 E-Core 内部存储与检索优化，
+    /// 绝对禁止操纵 L1/L2 缓存，绝对禁止与 L1/L2 生命周期联动，绝对不影响 Prefix Cache 与 P-Core。
+    public func eCoreHeatSnapshot(sessionID: SessionID, topN: Int = 10) async -> ECoreHeatSnapshot? {
+        await ecoreStore.heatSnapshot(sessionID: sessionID, topN: topN)
+    }
+
+    /// 获取指定会话的 E-Core 观测期指标（只读旁路接口）
+    public func eCoreObservationMetrics(sessionID: SessionID) async -> ECoreObservationMetrics {
+        await ecoreStore.exportObservationMetrics(sessionID: sessionID)
+    }
 }
+

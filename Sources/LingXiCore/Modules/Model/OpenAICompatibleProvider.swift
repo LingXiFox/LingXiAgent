@@ -109,6 +109,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
         urlRequest.httpBody = try Self.makeRequestBody(request, continuation: continuation, parallelToolCalls: config.parallelToolCalling ?? true)
+        OpenCodeHeaderSupport.injectHeadersIfNeeded(into: &urlRequest, modelRequest: request)
         return urlRequest
     }
 
@@ -434,6 +435,9 @@ public struct OpenAICompatibleProvider: ModelProvider {
 
             do {
                 outer: for try await chunk in source {
+                    if !chunk.isEmpty {
+                        continuation.yield(.heartbeat)
+                    }
                     for line in decoder.feed(chunk) {
                         if try handle(line: line, into: &completed, toolCalls: &toolCalls, textChunks: &textChunks, reasoningChunks: &reasoningChunks, toolChunks: &toolChunks) {
                             sawDone = true
@@ -502,8 +506,15 @@ public struct OpenAICompatibleProvider: ModelProvider {
             toolChunks: inout Int
         ) throws -> Bool {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix(":") { return false }
-            guard trimmed.hasPrefix("data:") else { return false } // event:/retry:/id: 忽略
+            if trimmed.isEmpty { return false }
+            if trimmed.hasPrefix(":") {
+                continuation.yield(.heartbeat)
+                return false
+            }
+            guard trimmed.hasPrefix("data:") else {
+                continuation.yield(.heartbeat)
+                return false
+            } // event:/retry:/id: 忽略但仍刷新保活
             let payload = trimmed.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
 
             let unquotedPayload = payload.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\t "))

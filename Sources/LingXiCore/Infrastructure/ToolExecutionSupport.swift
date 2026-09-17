@@ -114,12 +114,12 @@ private final class ByteRingBuffer: @unchecked Sendable {
 
     func value(after cursor: Int?) -> PipeCursor {
         lock.lock()
+        defer { lock.unlock() }
         let requested = cursor ?? startCursor
         let offset = min(max(requested, startCursor), endCursor) - startCursor
-        let output = Data(data.dropFirst(offset))
-        let result = PipeCursor(cursor: endCursor, text: String(decoding: output, as: UTF8.self), truncated: cursor == nil ? startCursor > 0 : requested < startCursor)
-        lock.unlock()
-        return result
+        let slice = data.dropFirst(offset)
+        let text = String(decoding: slice, as: UTF8.self)
+        return PipeCursor(cursor: endCursor, text: text, truncated: cursor == nil ? startCursor > 0 : requested < startCursor)
     }
 }
 

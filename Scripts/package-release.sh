@@ -46,7 +46,7 @@ swift build -c release --product lingxiagent
 swift build -c release --product LingXiCoreHost
 
 BIN_DIR="$(swift build -c release --show-bin-path)"
-VERSION="$(grep 'public static let current = "' Sources/LingXiCore/App/AgentCore.swift 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "vNext")"
+VERSION="${1:-$(grep 'public static let version = "' Sources/LingXiTUI/CLIParser.swift 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "0.2.0-alpha.1")}"
 
 STAGING_DIR="$(mktemp -d /tmp/lingxiagent-pkg.XXXXXX)"
 cleanup() {

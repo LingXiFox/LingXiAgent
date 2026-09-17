@@ -17,7 +17,8 @@ public enum CLIRoute: Equatable, Sendable {
 }
 
 public struct CLIParser: Sendable {
-    public static let version = "0.1.1"
+    public static let version = "0.2.0-alpha.1"
+    public static let releaseName = "Alpha 1"
 
     private static let authCommands: Set<String> = [
         "auth", "login", "logout", "status", "matrix", "compat", "models"
@@ -210,7 +211,7 @@ public struct CLIParser: Sendable {
 
     public static func renderHelp() -> String {
         """
-        LingXiAgent - Native Swift AI Coding Agent (v\(version))
+        LingXiAgent - Native Swift AI Coding Agent (v\(version) · \(releaseName))
 
         USAGE:
           lingxiagent [options] [prompt]

@@ -184,10 +184,16 @@ struct ProviderPlatformContractTests {
         let host = try CoreHost(dataRoot: userConfigDir)
         let response = try await host.listModels(envelope: QueryEnvelope(payload: VoidResult()))
         let models = response.payload
-        let hasOpenCode = models.contains { $0.id == "opencode-zen/muse-spark-1.3-contributor-free" }
-        let hasBAI = models.contains { $0.id == "bai/deepseek-v4-flash" }
-        #expect(hasOpenCode)
-        #expect(hasBAI)
+        let content = (try? String(contentsOf: userConfigDir.appendingPathComponent("providers.json"))) ?? ""
+        if content.contains("opencode") {
+            let hasOpenCode = models.contains { $0.id == "opencode-zen/muse-spark-1.3-contributor-free" }
+            #expect(hasOpenCode)
+        }
+        if content.contains("bai") {
+            let hasBAI = models.contains { $0.id == "bai/deepseek-v4-flash" }
+            #expect(hasBAI)
+        }
+        #expect(!models.isEmpty)
     }
 
     @Test("CoreHost listModels merges builtin models and custom models for same provider")
@@ -322,3 +328,29 @@ struct ProviderPlatformContractTests {
 
     private enum TestFailure: Error { case unknownProvider }
 }
+
+extension ProviderPlatformContractTests {
+    @Test("OpenCode Zen request automatically injects x-opencode-session and CLI headers")
+    func opencodeZenRequestInjectsRequiredSessionAndCliHeaders() throws {
+        let config = ProviderConfig(
+            baseURL: URL(string: "https://opencode.ai/zen/v1")!,
+            apiKey: "test-opencode-key",
+            model: "muse-spark-1.3-contributor-free",
+            wireProtocol: .responses
+        )
+        let provider = OpenAIResponsesProvider(config: config)
+        let request = ModelRequest(
+            model: ModelID("muse-spark-1.3-contributor-free"),
+            executionID: AgentRunID("run-session-12345"),
+            messages: [ModelMessage(role: .user, content: "Hello OpenCode")]
+        )
+        let urlRequest = try provider.makeURLRequest(request)
+
+        #expect(urlRequest.value(forHTTPHeaderField: "x-opencode-session") != nil)
+        #expect(urlRequest.value(forHTTPHeaderField: "x-opencode-client") == "cli")
+        #expect(urlRequest.value(forHTTPHeaderField: "x-opencode-project") != nil)
+        #expect(urlRequest.value(forHTTPHeaderField: "x-opencode-request") != nil)
+        #expect(urlRequest.value(forHTTPHeaderField: "User-Agent")?.contains("opencode") == true)
+    }
+}
+

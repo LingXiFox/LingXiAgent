@@ -88,6 +88,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
             result.setValue(value, forHTTPHeaderField: name)
         }
         result.httpBody = try Self.makeRequestBody(request, maxOutputTokens: config.maxOutputTokens ?? 4_096, continuation: continuation)
+        OpenCodeHeaderSupport.injectHeadersIfNeeded(into: &result, modelRequest: request)
         return result
     }
 
@@ -184,6 +185,9 @@ public struct AnthropicMessagesProvider: ModelProvider {
             continuation.yield(.started)
             do {
                 outer: for try await chunk in source {
+                    if !chunk.isEmpty {
+                        continuation.yield(.heartbeat)
+                    }
                     for line in lines.feed(chunk) {
                         if try emit(line, decoder: &decoder, terminal: &terminal, failed: &failed) { break outer }
                     }

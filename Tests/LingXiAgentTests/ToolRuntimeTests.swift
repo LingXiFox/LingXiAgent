@@ -55,7 +55,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "browser_act", "browser_navigate", "codebase_graph", "computer_batch", "context_recall", "edit_file", "format_file", "git", "glob", "grep", "list_directory", "manage_background_command", "process", "question", "read_file", "run_background_command", "shell", "skill", "todo", "web_fetch", "web_search", "write_file"])
+        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "codebase_graph", "context_recall", "edit_file", "format_file", "git", "glob", "grep", "list_directory", "manage_background_command", "process", "question", "read_file", "run_background_command", "shell", "skill", "todo", "web_fetch", "web_search", "write_file"])
         #expect(await runtime.availableDefinitions().map(\.id.rawValue).contains("search_tools"))
     }
 

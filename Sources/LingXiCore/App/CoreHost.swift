@@ -3,7 +3,7 @@ import LingXiProtocol
 
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
-    public static let coreVersion = "0.1.1"
+    public static let coreVersion = "0.2.0-alpha.1"
     public static let protocolVersion = "1"
 
     public static func stdioInteractive(environment: [String: String]) -> Bool {
@@ -1139,6 +1139,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
             _ = await ModelRegistryClient.shared.fetch()
+            await LingXiModelsCatalogClient.shared.warmup()
         }
     }
 
@@ -1220,22 +1221,64 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         if await providerCredential(providerID: product.id) != nil {
             return true
         }
-        if let envKey = defaultEnvironmentKey(for: product.id),
+        // 检查用户自定义配置 providers.json 中是否存在有效的配置与 apiKey
+        if let configStore = configurationStore,
+           let snapshot = try? await configStore.load(),
+           let customProvider = snapshot.providers.providers[product.id] {
+            if let apiKey = customProvider.options.apiKey, !apiKey.isEmpty {
+                if apiKey.hasPrefix("{env:") && apiKey.hasSuffix("}") {
+                    let envName = String(apiKey.dropFirst(5).dropLast(1))
+                    if let val = ProcessInfo.processInfo.environment[envName], !val.isEmpty {
+                        return true
+                    }
+                } else if !apiKey.hasPrefix("{vault:") && !apiKey.hasPrefix("{oauth:") {
+                    return true
+                }
+            }
+        }
+        if let envKey = resolveEnvironmentKey(for: product.id),
            let envVal = ProcessInfo.processInfo.environment[envKey], !envVal.isEmpty {
             return true
         }
         return false
     }
 
-    private func defaultEnvironmentKey(for productID: String) -> String? {
+    private func defaultEnvironmentKeys(for productID: String) -> [String] {
+        var keys: [String] = []
         switch productID {
-        case "openai-api": return "OPENAI_API_KEY"
-        case "anthropic-api": return "ANTHROPIC_API_KEY"
-        case "gemini-api": return "GEMINI_API_KEY"
-        case "deepseek-api": return "DEEPSEEK_API_KEY"
-        case "xai-api": return "XAI_API_KEY"
-        default: return nil
+        case "openai-api", "openai", "openai-codex": keys.append("OPENAI_API_KEY")
+        case "anthropic-api", "anthropic", "anthropic-claude-subscription": keys.append("ANTHROPIC_API_KEY")
+        case "gemini-api", "google", "gemini": keys.append("GEMINI_API_KEY")
+        case "deepseek-api", "deepseek": keys.append("DEEPSEEK_API_KEY")
+        case "xai-api", "xai", "xai-grok-subscription": keys.append("XAI_API_KEY")
+        case "opencode-zen", "opencode-go", "opencode": keys.append("OPENCODE_API_KEY")
+        case "openrouter": keys.append("OPENROUTER_API_KEY")
+        case "minimax-api", "minimax-token-plan", "minimax": keys.append("MINIMAX_API_KEY")
+        case "zhipu-coding-plan", "zai-api", "zhipu", "zai": keys.append("ZHIPUAI_API_KEY")
+        case "qwen-coding-plan", "alibaba-bailian-api", "qwen", "dashscope": keys.append("DASHSCOPE_API_KEY")
+        case "sensenova", "bai": keys.append("SENSENOVA_API_KEY")
+        case "groq": keys.append("GROQ_API_KEY")
+        case "together": keys.append("TOGETHER_API_KEY")
+        case "mistral": keys.append("MISTRAL_API_KEY")
+        case "huggingface": keys.append(contentsOf: ["HF_TOKEN", "HUGGINGFACE_API_KEY"])
+        default: break
         }
+        let normalized = productID.replacingOccurrences(of: "-", with: "_").uppercased()
+        keys.append("\(normalized)_API_KEY")
+        if normalized.hasSuffix("_API") {
+            let prefix = String(normalized.dropLast(4))
+            keys.append("\(prefix)_API_KEY")
+        }
+        return Array(NSOrderedSet(array: keys).compactMap { $0 as? String })
+    }
+
+    private func resolveEnvironmentKey(for productID: String) -> String? {
+        for key in defaultEnvironmentKeys(for: productID) {
+            if let val = ProcessInfo.processInfo.environment[key], !val.isEmpty {
+                return key
+            }
+        }
+        return nil
     }
 
     /// Models from the user's own configured list, used only for products the
@@ -1379,7 +1422,46 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
 
-        // 1. Built-in products: validate via builtin catalog and credential store.
+        // 1. Custom providers: configured explicitly by user in ~/.lingxiagent/providers.json
+        if let configStore = configurationStore,
+           let snapshot = try? await configStore.load(),
+           let providerConfig = snapshot.providers.providers[providerID] {
+            let hasModelInConfig = providerConfig.models[modelID] != nil
+            let isInheritedFromBuiltin = BuiltinProviderCatalog.connectableProducts().contains(where: { $0.id == providerID })
+                || ProviderRegistry.shared.product(id: providerID) != nil
+            guard hasModelInConfig || isInheritedFromBuiltin else {
+                throw CoreError(code: .provider, message: "模型不可用: \(value)")
+            }
+            let keyRef = CredentialRef("provider-\(providerID)-key")
+            let oauthRef = CredentialRef("provider-\(providerID)-oauth")
+            var hasValidKey = false
+            if let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
+                if apiKey.hasPrefix("{env:") && apiKey.hasSuffix("}") {
+                    let envName = String(apiKey.dropFirst(5).dropLast(1))
+                    hasValidKey = !(ProcessInfo.processInfo.environment[envName]?.isEmpty ?? true)
+                } else if !apiKey.hasPrefix("{vault:") && !apiKey.hasPrefix("{oauth:") {
+                    hasValidKey = true
+                }
+            }
+            var hasStoredKey = false
+            if !hasValidKey, let credStore = try? requireCredentialStore() {
+                hasStoredKey = ((try? await credStore.secret(for: keyRef)) ?? nil) != nil
+            }
+            var hasEnvKey = false
+            if !hasValidKey && !hasStoredKey, let envKey = resolveEnvironmentKey(for: providerID),
+               let val = ProcessInfo.processInfo.environment[envKey], !val.isEmpty {
+                hasEnvKey = true
+            }
+            let hasKey = hasValidKey || hasStoredKey || hasEnvKey
+            let credStore = try? requireCredentialStore()
+            let hasOAuth = ((try? await credStore?.secret(for: oauthRef)) ?? nil) != nil
+            if !hasKey && !hasOAuth {
+                throw CoreError(code: .provider, message: "Provider '\(providerID)' 未配置有效 API Key 或未认证\n请检查 providers.json 中的 apiKey 或环境变量")
+            }
+            return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
+        }
+
+        // 2. Built-in products: validate via builtin catalog and credential store.
         if let product = BuiltinProviderCatalog.registryProduct(id: providerID) ?? ProviderRegistry.shared.product(id: providerID).flatMap({ BuiltinProviderCatalog.registryProduct(id: $0.id) }) {
             let isConfigured = await isProductConfigured(product: product)
             guard isConfigured else {
@@ -1388,24 +1470,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
         }
 
-        // 2. Custom providers: loaded from ~/.lingxiagent/providers.json
-        let snapshot = try await requireConfigurationStore().load()
-        guard let providerConfig = snapshot.providers.providers[providerID] else {
-            throw CoreError(code: .provider, message: "未找到自定义 Provider 配置: \(providerID)")
-        }
-
-        guard providerConfig.models[modelID] != nil else {
-            throw CoreError(code: .provider, message: "模型不可用: \(value)")
-        }
-
-        let keyRef = CredentialRef("provider-\(providerID)-key")
-        let oauthRef = CredentialRef("provider-\(providerID)-oauth")
-        let hasKey = (try? await requireCredentialStore().secret(for: keyRef)) != nil || providerConfig.options.apiKey != nil
-        let hasOAuth = (try? await requireCredentialStore().secret(for: oauthRef)) != nil
-        if !hasKey && !hasOAuth {
-            throw CoreError(code: .provider, message: "Provider '\(providerID)' is not authenticated.\nRun: lingxiagent auth \(providerID)")
-        }
-        return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
+        throw CoreError(code: .provider, message: "未找到 Provider 配置或内置规格: \(providerID)")
     }
 
     private func storeProviderCredential(_ request: ProviderCredentialWriteRequest) async throws -> ProviderCredentialResult {
@@ -1621,7 +1686,7 @@ extension CoreHost {
                 modelResolutionError = error
             }
         }
-        guard let agent, state == .ready, (currentAssembly != nil || gateway.isConfigured) else {
+        guard let agent, state == .ready, modelResolutionError == nil, (currentAssembly != nil || gateway.isConfigured) else {
             let runtimeErr: RuntimeError
             if let modelResolutionError {
                 let msg = (modelResolutionError as? CoreError)?.message ?? modelResolutionError.localizedDescription
@@ -1662,7 +1727,8 @@ extension CoreHost {
         var stepCharsCount: Int = 0
 
         let runModel = await coordinator.getRun(runID: runID)?.model
-        let activeModelName = executionIntent.modelSelection ?? runModel ?? "model"
+        let effectiveModel = currentAssembly.map { "\($0.endpoint.providerID)/\($0.modelID.rawValue)" }
+        let activeModelName = effectiveModel ?? executionIntent.modelSelection ?? runModel ?? "model"
 
         let computeMetadata: (String) -> ModelStepOutputMetadata = { reason in
             let endTime = Date()
@@ -2836,8 +2902,24 @@ extension CoreHost {
             return cached
         }
 
-        // 1. Built-in products: resolved entirely by builtin catalog, specifications,
-        // and CredentialStore/Environment. They NEVER require an entry in providers.json.
+        // 1. Custom providers: configured explicitly by user in ~/.lingxiagent/providers.json.
+        // Takes precedence over builtin defaults so user options (custom endpoints, headers, auth keys) are honored.
+        if let configStore = configurationStore,
+           let snapshot = try? await configStore.load(),
+           let providerConfig = snapshot.providers.providers[selection.providerID] {
+            let assembly = try await resolveCustomRuntimeAssembly(
+                providerID: selection.providerID,
+                providerConfig: providerConfig,
+                selection: selection,
+                fullModelValue: fullModelValue
+            )
+            cachedAssemblies[key] = assembly
+            cachedAssemblies[selection.providerID] = assembly
+            return assembly
+        }
+
+        // 2. Built-in products: resolved by builtin catalog, specifications,
+        // and CredentialStore/Environment when no custom entry exists in providers.json.
         if let builtinProduct = ProviderRegistry.shared.product(id: selection.providerID) ?? BuiltinProviderCatalog.registryProduct(id: selection.providerID).flatMap({ ProviderRegistry.shared.product(id: $0.id) }) {
             let assembly = try await resolveBuiltinRuntimeAssembly(
                 product: builtinProduct,
@@ -2849,24 +2931,7 @@ extension CoreHost {
             return assembly
         }
 
-        // 2. Custom providers: configured explicitly by the user in ~/.lingxiagent/providers.json.
-        guard let configStore = configurationStore else {
-            throw CoreError(code: .provider, message: "ConfigurationStore 未就绪")
-        }
-        let snapshot = try await configStore.load()
-        guard let providerConfig = snapshot.providers.providers[selection.providerID] else {
-            throw CoreError(code: .provider, message: "未找到自定义 Provider 配置: \(selection.providerID)")
-        }
-
-        let assembly = try await resolveCustomRuntimeAssembly(
-            providerID: selection.providerID,
-            providerConfig: providerConfig,
-            selection: selection,
-            fullModelValue: fullModelValue
-        )
-        cachedAssemblies[key] = assembly
-        cachedAssemblies[selection.providerID] = assembly
-        return assembly
+        throw CoreError(code: .provider, message: "未找到 Provider 配置或内置规格: \(selection.providerID)")
     }
 
     private func resolveBuiltinRuntimeAssembly(
@@ -2932,7 +2997,7 @@ extension CoreHost {
                 }
             }
         }
-        if authToken == nil, let envKey = defaultEnvironmentKey(for: productID) {
+        if authToken == nil, let envKey = resolveEnvironmentKey(for: productID) {
             authToken = ProcessInfo.processInfo.environment[envKey]
         }
 
@@ -3046,6 +3111,9 @@ extension CoreHost {
             if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
                 authToken = secret
             }
+        }
+        if authToken == nil, let envKey = resolveEnvironmentKey(for: providerID) {
+            authToken = ProcessInfo.processInfo.environment[envKey]
         }
 
         let auth: ProviderAuthentication

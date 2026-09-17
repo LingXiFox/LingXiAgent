@@ -35,7 +35,9 @@ public final class DarwinSecureStorageAdapter: PlatformSecureStorageProtocol, @u
         if size > 0 {
             var uuid = [CChar](repeating: 0, count: size)
             if sysctlbyname("kern.uuid", &uuid, &size, nil, 0) == 0 {
-                return String(cString: uuid)
+                return uuid.withUnsafeBufferPointer { ptr in
+                    ptr.baseAddress.map { String(cString: $0) } ?? ""
+                }
             }
         }
         return ProcessInfo.processInfo.hostName

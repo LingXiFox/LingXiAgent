@@ -189,4 +189,35 @@ struct CodingToolContractTests {
         let dirMatches = try #require(JSONSerialization.jsonObject(with: Data(dirResult.content.utf8)) as? [[String: Any]])
         #expect(dirMatches.count == 2)
     }
+
+    @Test func smartFuzzyResolutionHandlesMissingOrRedundantDirectorySegments() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Setup deeply nested structure mimicking real-world projects
+        let nestedDir = root.appendingPathComponent("NestedApp/NestedApp/NestedApp/Models", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedDir, withIntermediateDirectories: true)
+        let targetFile = nestedDir.appendingPathComponent("FirmwareRelease.swift")
+        try "struct FirmwareRelease: Sendable {}".write(to: targetFile, atomically: true, encoding: .utf8)
+
+        let tools = try runtime(root: root)
+
+        // Case 1: Model omitted one level of NestedApp in absolute path
+        let wrongAbsPath = root.appendingPathComponent("NestedApp/NestedApp/Models/FirmwareRelease.swift").path
+        let call1 = call("f1", "read_file", #"{"path":"\#(wrongAbsPath)"}"#)
+        let res1 = await tools.execute(call1, sessionID: SessionID("s")) { _ in }
+        #expect(res1.success)
+        #expect(res1.content.contains("FirmwareRelease"))
+
+        // Case 2: Model passed a relative path from the submodule
+        let call2 = call("f2", "read_file", #"{"path":"Models/FirmwareRelease.swift"}"#)
+        let res2 = await tools.execute(call2, sessionID: SessionID("s")) { _ in }
+        #expect(res2.success)
+        #expect(res2.content.contains("FirmwareRelease"))
+
+        // Case 3: Completely nonexistent file should still cleanly fail
+        let call3 = call("f3", "read_file", #"{"path":"Nonexistent.swift"}"#)
+        let res3 = await tools.execute(call3, sessionID: SessionID("s")) { _ in }
+        #expect(!res3.success)
+    }
 }

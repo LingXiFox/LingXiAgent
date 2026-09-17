@@ -241,6 +241,8 @@ public final class ApplicationTUI: Frontend {
             case let .input(inputEvent):
                 await handle(inputEvent, store: store)
                 if case .tick = inputEvent {
+                } else if case .mouseDrag = inputEvent {
+                    // mouseDrag 仅记录坐标，避免高频拖拽划词打爆渲染帧率
                 } else {
                     frameScheduler.markDirty(.input)
                 }
@@ -407,34 +409,54 @@ public final class ApplicationTUI: Frontend {
         case .shiftTab:
             await cycleMode(store: store)
         case let .mouseClick(x, y):
-            lastMousePoint = TUIPoint(x: x, y: y)
-            handleMouseClick(at: TUIPoint(x: x, y: y))
+            let pt = TUIPoint(x: x, y: y)
+            lastMousePoint = pt
+            selectionStart = nil
+            selectionRect = nil
+            handleMouseClick(at: pt)
+            frameScheduler.markDirty(.input)
         case let .mouseDown(x, y):
-            lastMousePoint = TUIPoint(x: x, y: y)
-            selectionStart = TUIPoint(x: x, y: y)
+            let pt = TUIPoint(x: x, y: y)
+            lastMousePoint = pt
+            selectionStart = pt
             selectionRect = nil
         case let .mouseDrag(x, y):
-            lastMousePoint = TUIPoint(x: x, y: y)
+            let pt = TUIPoint(x: x, y: y)
+            lastMousePoint = pt
             if let start = selectionStart {
-                selectionRect = TUIRect(from: start, to: TUIPoint(x: x, y: y))
-                frameScheduler.markDirty(.input)
+                let rect = TUIRect(from: start, to: pt)
+                if rect.width > 0 && rect.height > 0 {
+                    selectionRect = rect
+                    frameScheduler.markDirty(.input)
+                }
             }
         case let .mouseUp(x, y):
-            lastMousePoint = TUIPoint(x: x, y: y)
-            if let _ = selectionStart, let rect = selectionRect, (rect.width > 1 || rect.height > 1) {
+            let pt = TUIPoint(x: x, y: y)
+            lastMousePoint = pt
+            if let rect = selectionRect, (rect.width > 1 || rect.height > 1) {
+                // 用户划词框选结束，自动复制选中文本至剪贴板
                 if let frame = lastRenderedFrame {
                     let text = frame.text(in: rect)
                     if !text.isEmpty {
                         ClipboardSupport.copy(text)
-                        copyFeedback = "✓ 已复制到剪贴板"
+                        copyFeedback = "✓ Copied (\(text.count) chars)"
+                        frameScheduler.markDirty(.input)
+                        Task { @MainActor [weak self] in
+                            try? await Task.sleep(for: .seconds(2.5))
+                            if self?.copyFeedback?.hasPrefix("✓ Copied") == true {
+                                self?.copyFeedback = nil
+                                self?.frameScheduler.markDirty(.input)
+                            }
+                        }
                     }
                 }
+                selectionStart = nil
             } else {
-                handleMouseClick(at: TUIPoint(x: x, y: y))
+                selectionStart = nil
+                selectionRect = nil
+                handleMouseClick(at: pt)
+                frameScheduler.markDirty(.input)
             }
-            selectionStart = nil
-            selectionRect = nil
-            frameScheduler.markDirty(.input)
         case .pageUp, .pageDown, .scrollUp, .scrollDown:
             let layout = view.layout(size: terminal.size, overlay: overlayModel())
             if let lastMouse = selectionStart ?? lastMousePoint,
@@ -520,6 +542,12 @@ public final class ApplicationTUI: Frontend {
                 view.backgroundSpinnerIndex = spinnerIndex
             }
         case .escape:
+            if selectionRect != nil {
+                selectionRect = nil
+                selectionStart = nil
+                frameScheduler.markDirty(.input)
+                return
+            }
             if overlay != nil {
                 overlay = nil
             } else if view.focus == .transcript {
@@ -842,8 +870,10 @@ public final class ApplicationTUI: Frontend {
             overlay = nil
             await store.dispatch(.selectModel(modelID))
             await store.dispatch(.setReasoningEffort(effort))
-            UserPreferencesStore.shared.update(modelID: modelID, reasoningEffort: effort.rawValue)
-            commandEntries.append(TUITranscriptEntry(kind: .result, text: "✓ 已选择模型: \(modelID) · 思考等级: \(effort.rawValue)"))
+            if latestState.currentModelID == modelID {
+                UserPreferencesStore.shared.update(modelID: modelID, reasoningEffort: effort.rawValue)
+                commandEntries.append(TUITranscriptEntry(kind: .result, text: "✓ 已选择模型: \(modelID) · 思考等级: \(effort.rawValue)"))
+            }
             refreshView(latestState)
         default:
             break
@@ -1942,32 +1972,6 @@ public final class ApplicationTUI: Frontend {
             }
         }
 
-        if isWaitingForProvider {
-            if waitingStartedAt == nil { waitingStartedAt = animationNow }
-            let elapsed = Int(waitingStartedAt!.duration(to: animationNow).components.seconds)
-            let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            let spinnerChar = spinnerFrames[spinnerIndex % spinnerFrames.count]
-            let modelID = state.currentModelID ?? "model"
-            let waitingText: String
-            if let detail = state.activeSessionState?.activeProviderRequestDetail, !detail.isEmpty {
-                waitingText = "\(spinnerChar) \(detail) (\(elapsed)s)..."
-            } else if isRateLimited {
-                waitingText = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
-            } else {
-                waitingText = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
-            }
-            entries.append(TUITranscriptEntry(
-                id: "__waiting_for_provider__",
-                kind: .thinking,
-                text: waitingText,
-                style: .accent,
-                collapsed: false,
-                timestamp: Date()
-            ))
-        } else if hasActiveStreamingNode || !isActive(state) {
-            waitingStartedAt = nil
-        }
-
         var allEntries = entries + commandEntries
         if !commandEntries.isEmpty && !entries.isEmpty {
             allEntries.sort { a, b in
@@ -1976,6 +1980,33 @@ public final class ApplicationTUI: Frontend {
                 }
                 return false
             }
+        }
+
+        if isWaitingForProvider {
+            if waitingStartedAt == nil { waitingStartedAt = animationNow }
+            let elapsed = Int(waitingStartedAt!.duration(to: animationNow).components.seconds)
+            let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            let spinnerChar = spinnerFrames[spinnerIndex % spinnerFrames.count]
+            let rawModel = state.currentModelID ?? "model"
+            let modelSlug = rawModel.split(separator: "/").last.map(String.init) ?? rawModel
+            let waitingText: String
+            if let detail = state.activeSessionState?.activeProviderRequestDetail, !detail.isEmpty {
+                waitingText = "\(spinnerChar) \(detail) (\(elapsed)s)..."
+            } else if isRateLimited {
+                waitingText = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
+            } else {
+                waitingText = "\(spinnerChar) 正在思考与整理方案，等待 \(modelSlug) 响应 (\(elapsed)s)..."
+            }
+            allEntries.append(TUITranscriptEntry(
+                id: "__waiting_for_provider__",
+                kind: .thinking,
+                text: waitingText,
+                style: .accent,
+                collapsed: false,
+                timestamp: Date.distantFuture
+            ))
+        } else if hasActiveStreamingNode || !isActive(state) {
+            waitingStartedAt = nil
         }
 
         view.transcript.replace(allEntries)
@@ -2318,7 +2349,8 @@ public final class ApplicationTUI: Frontend {
         let elapsed = Int(started.duration(to: animationNow).components.seconds)
         let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         let spinnerChar = spinnerFrames[spinnerIndex % spinnerFrames.count]
-        let modelID = latestState.currentModelID ?? "model"
+        let rawModel = latestState.currentModelID ?? "model"
+        let modelSlug = rawModel.split(separator: "/").last.map(String.init) ?? rawModel
         let isRateLimited = latestState.status == .rateLimited || latestState.activeSessionState?.status == .rateLimited
         let text: String
         if let detail = latestState.activeSessionState?.activeProviderRequestDetail, !detail.isEmpty {
@@ -2326,7 +2358,7 @@ public final class ApplicationTUI: Frontend {
         } else if isRateLimited {
             text = "\(spinnerChar) 上游限流中 (429)，正在等待恢复重试 (\(elapsed)s)..."
         } else {
-            text = "\(spinnerChar) Waiting for \(modelID) (\(elapsed)s)..."
+            text = "\(spinnerChar) 正在思考与整理方案，等待 \(modelSlug) 响应 (\(elapsed)s)..."
         }
         view.transcript.updateLast(text)
     }

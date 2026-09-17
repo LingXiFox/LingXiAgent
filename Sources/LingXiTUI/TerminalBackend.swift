@@ -42,14 +42,14 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         debug("start.mouse.enable.begin")
         openTUI?.enableMouse()
         debug("start.mouse.enable.end")
-        // 启用扩展鼠标坐标与拖拽追踪（1000h+1002h+1006h），禁用自动换行（7l）
-        FileHandle.standardOutput.write(Data("\u{1B}[?1000h\u{1B}[?1002h\u{1B}[?1006h\u{1B}[?7l".utf8))
+        // 启用扩展鼠标坐标与点击/滚轮（1000h+1006h），启用 1002h 拖拽追踪以支持划选复制，明确关闭 1003h 全量移动避免 hover 时的事件洪泛
+        FileHandle.standardOutput.write(Data("\u{1B}[?1003l\u{1B}[?1000h\u{1B}[?1002h\u{1B}[?1006h\u{1B}[?7l".utf8))
     }
 
     func stop() {
         debug("stop.begin")
         // 恢复终端鼠标模式与自动换行
-        FileHandle.standardOutput.write(Data("\u{1B}[?1002l\u{1B}[?1000l\u{1B}[?1006l\u{1B}[?7h".utf8))
+        FileHandle.standardOutput.write(Data("\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1006l\u{1B}[?7h".utf8))
         openTUI?.disableMouse()
         if !noAltScreen {
             openTUI?.restoreTerminalModes()
@@ -91,17 +91,47 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         }
         renderer.resize(width: frame.size.width, height: frame.size.height)
         renderer.clear()
+
         for row in 0..<frame.size.height {
+            var currentRun = ""
+            var runStartX = 0
+            var currentFg: OpenTUIColorValue?
+            var currentBg: OpenTUIColorValue?
+
+            func flushRun() {
+                guard !currentRun.isEmpty, let fg = currentFg, let bg = currentBg else {
+                    currentRun.removeAll(keepingCapacity: true)
+                    return
+                }
+                // 若全为空格且背景为纯黑，clear 已处理，无需调用底层绘制
+                let isPureBlank = (bg.red == 0 && bg.green == 0 && bg.blue == 0) && currentRun.allSatisfy { $0 == " " }
+                if !isPureBlank {
+                    renderer.draw(currentRun, x: runStartX, y: row, foreground: fg, background: bg)
+                }
+                currentRun.removeAll(keepingCapacity: true)
+            }
+
             for column in 0..<frame.size.width {
                 let cell = frame.cells[row * frame.size.width + column]
                 if cell.continuation { continue }
+
                 let style = color(for: cell.style)
                 let fg = cell.customForeground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.foreground
                 let bg = cell.customBackground.map { OpenTUIColorValue(red: UInt16($0.r) * 257, green: UInt16($0.g) * 257, blue: UInt16($0.b) * 257) } ?? style.background
-                renderer.draw(String(cell.character), x: column, y: row,
-                              foreground: fg, background: bg)
+
+                if fg == currentFg && bg == currentBg {
+                    currentRun.append(cell.character)
+                } else {
+                    flushRun()
+                    currentFg = fg
+                    currentBg = bg
+                    runStartX = column
+                    currentRun.append(cell.character)
+                }
             }
+            flushRun()
         }
+
         renderer.setCursor(frame.cursor)
         let result = renderer.render(force: renderCount == 1)
         if renderCount <= 3 {

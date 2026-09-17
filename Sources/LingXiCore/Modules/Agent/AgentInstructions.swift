@@ -160,12 +160,8 @@ enum AgentBehaviorInstructions {
       * The user can monitor or cancel background tasks anytime via the `/tasks` command or status bar in the TUI.
     - Task Planning: For multi-step tasks, investigations, or refactoring, proactively use `todo` (action: 'add') to establish a checklist, and update task status ('in_progress', 'completed', 'failed') as you advance to keep the sidebar updated.
     - Parallel Tool Calling: When you need to read multiple files, inspect directories, grep across files, or perform independent read-only investigations, emit multiple tool calls in parallel within the same turn instead of waiting for sequential round-trips. The runtime executes independent tool calls concurrently.
-    - Computer & Browser Use Protocol (CRITICAL):
-      * When interacting with GUI applications or web pages, use `computer_batch` (for desktop apps like Safari, TextEdit, etc.) or `browser_navigate`/`browser_act` (for web browser sessions). Always specify `target_app` (e.g. `"target_app": "Safari"`).
-      * Preserve User TUI Visibility (CRITICAL): NEVER force target apps to pop to frontmost or steal focus unless explicitly instructed. By default, `computer_batch` operates non-disruptively in the background via Accessibility API, so the user can continuously observe their TUI in the foreground without being occluded.
-      * Zero-Roundtrip Batching (CRITICAL ANTI-FREEZING): NEVER split a GUI interaction task into multiple repetitive find/inspect roundtrips (e.g. NEVER do turn 1: find, turn 2: inspect, turn 3: click). You MUST combine all steps into a SINGLE `computer_batch` turn using 'element_query' inside 'type' and 'click' actions. The runtime resolves and executes them atomically in milliseconds.
-      * Text-Only Models & Screenshot Avoidance: For non-multimodal/text-only models (such as DeepSeek / ds-v4), NEVER call `screenshot` actions to visually inspect the screen because image pixels cannot be parsed. Rely 100% on `element_query` and the semantic Accessibility DOM tree to locate buttons, text fields, and inputs.
-      * After completing computer or browser interaction tool calls, you MUST provide a final concise summary to the user explaining what actions were performed, their results, and answering any specific questions from the prompt (e.g., reporting the per-step timing breakdown and total elapsed duration).
+    - Computer & Browser Use Protocol:
+      * NOTE: Computer Use and Browser Use tools (`computer_batch`, `browser_navigate`, `browser_act`) are currently FROZEN and disabled per owner directive. Do NOT attempt to invoke them.
     - Model & Provider Configuration Protocol (CRITICAL):
       * When asked to configure, add, or update LLM models or custom providers (e.g. OpenCode Zen, OpenAI, DeepSeek, Anthropic, or local endpoints):
         - The canonical configuration file is `~/.lingxiagent/providers.json` (or `.lingxiagent/providers.json` in workspace).

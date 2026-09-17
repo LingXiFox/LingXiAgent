@@ -123,11 +123,15 @@ public struct RecallChunk: Sendable, Equatable, Codable {
 public actor ECoreObjectStore {
     public let baseDirectory: URL
     public let configuration: ContextObjectFabricConfiguration
+    public let telemetryLogger: ECoreTelemetryLogger
     private var metadataCache: [SessionID: [ContextObjectID: ObservationMetadata]] = [:]
+    private var heatStates: [SessionID: [ContextObjectID: ECoreHeatState]] = [:]
+    private var projectionCounts: [SessionID: [ContextObjectID: Int]] = [:]
 
     public init(
         baseDirectory: URL? = nil,
-        configuration: ContextObjectFabricConfiguration = ContextObjectFabricConfiguration()
+        configuration: ContextObjectFabricConfiguration = ContextObjectFabricConfiguration(),
+        telemetryLogger: ECoreTelemetryLogger? = nil
     ) {
         self.configuration = configuration
         if let baseDirectory {
@@ -136,6 +140,7 @@ public actor ECoreObjectStore {
             let home = FileManager.default.homeDirectoryForCurrentUser
             self.baseDirectory = home.appendingPathComponent(".lingxiagent", isDirectory: true).appendingPathComponent("sessions", isDirectory: true)
         }
+        self.telemetryLogger = telemetryLogger ?? ECoreTelemetryLogger(baseDirectory: self.baseDirectory)
     }
 
     /// 获取特定 Session 的对象存储根目录
@@ -215,12 +220,101 @@ public actor ECoreObjectStore {
                 metadataCache[sessionID] = [:]
             }
             metadataCache[sessionID]?[objectID] = metadata
+
+            if configuration.heatTrackingEnabled {
+                let event = ECoreAccessEvent(
+                    sessionID: sessionID,
+                    objectID: objectID,
+                    eventType: .objectStored,
+                    timestamp: .now,
+                    offsetBytes: 0,
+                    requestedBytes: byteCount,
+                    returnedBytes: byteCount,
+                    toolCallID: toolCallID
+                )
+                let logger = self.telemetryLogger
+                Task {
+                    await logger.appendEvent(event)
+                }
+
+                if heatStates[sessionID] == nil {
+                    heatStates[sessionID] = [:]
+                }
+                let weight = configuration.heatWeightPolicy.weight(for: .objectStored)
+                if var existing = heatStates[sessionID]?[objectID] {
+                    existing.rawHeatScore = ECoreHeatScorer.accumulate(
+                        currentScore: existing.rawHeatScore,
+                        lastUpdatedAt: existing.lastAccessedAt,
+                        now: .now,
+                        eventWeight: weight,
+                        halfLifeSeconds: configuration.heatDecayHalfLifeSeconds
+                    )
+                    existing.accessCount += 1
+                    existing.lastAccessedAt = .now
+                    heatStates[sessionID]?[objectID] = existing
+                } else {
+                    let initialHeat = (weight.isFinite && weight >= 0) ? weight : 0.0
+                    heatStates[sessionID]?[objectID] = ECoreHeatState(
+                        objectID: objectID,
+                        accessCount: 1,
+                        recallCount: 0,
+                        lastAccessedAt: .now,
+                        rawHeatScore: initialHeat,
+                        percentile: 0.5,
+                        robustZScore: 0.0,
+                        candidateZone: .cold
+                    )
+                }
+            }
+
             return metadata
         } catch {
             // Fail-open: 记录警告但不中断
             FileHandle.standardError.write(Data("[E-CORE WARNING] Failed to persist object \(objectID.rawValue): \(error)\n".utf8))
             return nil
         }
+    }
+
+    /// 旁路记录对象投影观测事件（Phase 0.6: 纯观测，零阻塞，零热度权重贡献）
+    public func recordProjection(
+        sessionID: SessionID,
+        objectID: ContextObjectID,
+        originalBytes: Int,
+        turnID: String? = nil,
+        revision: Int? = nil
+    ) {
+        guard configuration.heatTrackingEnabled else { return }
+
+        let meta = metadataCache[sessionID]?[objectID]
+        let createdAt = meta?.createdAt ?? .now
+        let objectAge = max(0.0, Date.now.timeIntervalSince(createdAt))
+
+        let currentCount = (projectionCounts[sessionID]?[objectID] ?? 0) + 1
+        if projectionCounts[sessionID] == nil {
+            projectionCounts[sessionID] = [:]
+        }
+        projectionCounts[sessionID]?[objectID] = currentCount
+
+        let event = ECoreAccessEvent(
+            sessionID: sessionID,
+            objectID: objectID,
+            eventType: .objectProjected,
+            timestamp: .now,
+            offsetBytes: 0,
+            requestedBytes: originalBytes,
+            returnedBytes: originalBytes,
+            toolCallID: meta?.toolCallID,
+            turnID: turnID,
+            revision: revision,
+            projectionCount: currentCount,
+            objectAge: objectAge,
+            originalBytes: originalBytes
+        )
+        let logger = self.telemetryLogger
+        Task {
+            await logger.appendEvent(event)
+        }
+        // 注意红线：绝对不增加任何 Heat Weight，不改变 candidateZone
     }
 
     /// 获取完整对象内容
@@ -242,6 +336,33 @@ public actor ECoreObjectStore {
         limitLines: Int? = nil
     ) async throws -> RecallChunk? {
         guard let content = try await fetch(sessionID: sessionID, objectID: objectID) else {
+            if configuration.heatTrackingEnabled {
+                let missEvent = ECoreAccessEvent(
+                    sessionID: sessionID,
+                    objectID: objectID,
+                    eventType: .recallMiss,
+                    timestamp: .now,
+                    offsetBytes: offsetBytes,
+                    requestedBytes: limitBytes
+                )
+                let logger = self.telemetryLogger
+                Task {
+                    await logger.appendEvent(missEvent)
+                }
+
+                let missWeight = configuration.heatWeightPolicy.weight(for: .recallMiss)
+                if missWeight > 0, var state = heatStates[sessionID]?[objectID] {
+                    state.rawHeatScore = ECoreHeatScorer.accumulate(
+                        currentScore: state.rawHeatScore,
+                        lastUpdatedAt: state.lastAccessedAt,
+                        now: .now,
+                        eventWeight: missWeight,
+                        halfLifeSeconds: configuration.heatDecayHalfLifeSeconds
+                    )
+                    state.lastAccessedAt = .now
+                    heatStates[sessionID]?[objectID] = state
+                }
+            }
             return nil
         }
 
@@ -305,7 +426,7 @@ public actor ECoreObjectStore {
             totalLines += 1
         }
 
-        return RecallChunk(
+        let chunk = RecallChunk(
             objectID: objectID,
             offsetBytes: startIdx,
             lengthBytes: actualLength,
@@ -316,6 +437,50 @@ public actor ECoreObjectStore {
             totalLines: max(1, totalLines),
             totalBytes: totalBytes
         )
+
+        if configuration.heatTrackingEnabled {
+            let recallEvent = ECoreAccessEvent(
+                sessionID: sessionID,
+                objectID: objectID,
+                eventType: .objectRecalled,
+                timestamp: .now,
+                offsetBytes: startIdx,
+                requestedBytes: maxBytes,
+                returnedBytes: actualLength
+            )
+            let logger = self.telemetryLogger
+            Task {
+                await logger.appendEvent(recallEvent)
+            }
+
+            let weight = configuration.heatWeightPolicy.weight(for: .objectRecalled)
+            var state = heatStates[sessionID]?[objectID] ?? ECoreHeatState(
+                objectID: objectID,
+                accessCount: 0,
+                recallCount: 0,
+                lastAccessedAt: .now,
+                rawHeatScore: 0.0,
+                percentile: 0.5,
+                robustZScore: 0.0,
+                candidateZone: .cold
+            )
+            state.rawHeatScore = ECoreHeatScorer.accumulate(
+                currentScore: state.rawHeatScore,
+                lastUpdatedAt: state.lastAccessedAt,
+                now: .now,
+                eventWeight: weight,
+                halfLifeSeconds: configuration.heatDecayHalfLifeSeconds
+            )
+            state.accessCount += 1
+            state.recallCount += 1
+            state.lastAccessedAt = .now
+            if heatStates[sessionID] == nil {
+                heatStates[sessionID] = [:]
+            }
+            heatStates[sessionID]?[objectID] = state
+        }
+
+        return chunk
     }
 
     /// 获取对象元数据
@@ -355,7 +520,7 @@ public actor ECoreObjectStore {
         }
 
         var results: [ObservationMetadata] = []
-        for url in fileURLs where url.pathExtension == "json" && url.lastPathComponent.contains(".meta.") {
+        for url in fileURLs where url.lastPathComponent.hasSuffix(".meta.json") {
             let baseName = url.deletingPathExtension().deletingPathExtension().lastPathComponent
             if let objID = try? ContextObjectID(baseName) {
                 if let meta = await metadata(sessionID: sessionID, objectID: objID) {
@@ -382,12 +547,13 @@ public actor ECoreObjectStore {
             options: [.skipsHiddenFiles]
         ) else { return }
 
-        for url in fileURLs where url.pathExtension == "json" && url.lastPathComponent.contains(".meta.") {
+        for url in fileURLs where url.lastPathComponent.hasSuffix(".meta.json") {
             let baseName = url.deletingPathExtension().deletingPathExtension().lastPathComponent
             guard let objID = try? ContextObjectID(baseName),
                   let meta = await metadata(sessionID: sessionID, objectID: objID) else { continue }
             if !keepingToolCallIDs.contains(meta.toolCallID) {
                 metadataCache[sessionID]?.removeValue(forKey: objID)
+                heatStates[sessionID]?.removeValue(forKey: objID)
                 let txtURL = objectsDir.appendingPathComponent("\(objID.rawValue).txt", isDirectory: false)
                 try? FileManager.default.removeItem(at: url)
                 try? FileManager.default.removeItem(at: txtURL)
@@ -398,7 +564,132 @@ public actor ECoreObjectStore {
     /// 重置或清理 session 存储
     public func cleanSession(sessionID: SessionID) async {
         metadataCache.removeValue(forKey: sessionID)
+        heatStates.removeValue(forKey: sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
         try? FileManager.default.removeItem(at: objectsDir)
+    }
+
+    /// 获取当前内存中的热度状态（Derived State，供可观测性与测试使用）
+    public func heatState(
+        sessionID: SessionID,
+        objectID: ContextObjectID,
+        now: Date? = nil
+    ) -> ECoreHeatState? {
+        guard var state = heatStates[sessionID]?[objectID] else { return nil }
+        if let now {
+            let elapsed = max(0.0, now.timeIntervalSince(state.lastAccessedAt))
+            state.rawHeatScore = ECoreHeatScorer.decayedScore(
+                currentScore: state.rawHeatScore,
+                elapsedSeconds: elapsed,
+                halfLifeSeconds: configuration.heatDecayHalfLifeSeconds
+            )
+        }
+        return state
+    }
+
+    /// 生成当前会话的 E-Core 热度调试与可观测性快照（Phase 0 惰性统计计算，按需全量计算）
+    public func heatSnapshot(
+        sessionID: SessionID,
+        topN: Int = 10,
+        now: Date = .now
+    ) async -> ECoreHeatSnapshot? {
+        guard configuration.heatTrackingEnabled else { return nil }
+        guard var states = heatStates[sessionID], !states.isEmpty else {
+            return nil
+        }
+
+        // 1. 基于当前时间计算每个对象的有效衰减热度（纯时间流逝衰减，不增加事件权重）
+        for (id, var s) in states {
+            let elapsed = max(0.0, now.timeIntervalSince(s.lastAccessedAt))
+            s.rawHeatScore = ECoreHeatScorer.decayedScore(
+                currentScore: s.rawHeatScore,
+                elapsedSeconds: elapsed,
+                halfLifeSeconds: configuration.heatDecayHalfLifeSeconds
+            )
+            states[id] = s
+        }
+
+        let allScores = states.values.map(\.rawHeatScore).sorted()
+        let median = RobustDistributionCalculator.median(allScores)
+        let mad = RobustDistributionCalculator.mad(allScores, median: median)
+
+        let p50 = RobustDistributionCalculator.quantile(0.50, sortedValues: allScores)
+        let p70 = RobustDistributionCalculator.quantile(0.70, sortedValues: allScores)
+        let p80 = RobustDistributionCalculator.quantile(0.80, sortedValues: allScores)
+        let p90 = RobustDistributionCalculator.quantile(0.90, sortedValues: allScores)
+        let p95 = RobustDistributionCalculator.quantile(0.95, sortedValues: allScores)
+
+        // 2. 为每个对象计算 percentile、robustZScore 和 candidateZone
+        // 约定：percentile >= 0.8 为 hot，否则为 cold
+        var hotCount = 0
+        var coldCount = 0
+
+        for (id, var s) in states {
+            let rank = RobustDistributionCalculator.percentileRank(value: s.rawHeatScore, sortedValues: allScores)
+            let zScore = RobustDistributionCalculator.robustZScore(value: s.rawHeatScore, median: median, mad: mad)
+            s.percentile = rank
+            s.robustZScore = zScore
+            if rank >= 0.8 {
+                s.candidateZone = .hot
+                hotCount += 1
+            } else {
+                s.candidateZone = .cold
+                coldCount += 1
+            }
+            states[id] = s
+        }
+        heatStates[sessionID] = states
+
+        // 3. 排序提取 Top-N Hottest
+        let sortedByHeat = states.values.sorted {
+            if $0.rawHeatScore != $1.rawHeatScore {
+                return $0.rawHeatScore > $1.rawHeatScore
+            }
+            return $0.lastAccessedAt > $1.lastAccessedAt
+        }
+        let topHottest = Array(sortedByHeat.prefix(max(1, topN)))
+
+        return ECoreHeatSnapshot(
+            sessionID: sessionID,
+            objectCount: states.count,
+            hotCount: hotCount,
+            coldCount: coldCount,
+            medianHeat: median,
+            madHeat: mad,
+            p50: p50,
+            p70: p70,
+            p80: p80,
+            p90: p90,
+            p95: p95,
+            topHottestObjects: topHottest
+        )
+    }
+
+    /// 导出当前会话的 E-Core 观测期统计指标（完全只读、旁路）
+    public func exportObservationMetrics(
+        sessionID: SessionID,
+        now: Date = .now
+    ) async -> ECoreObservationMetrics {
+        let events = await telemetryLogger.readEvents(for: sessionID)
+        let metas = await listObjects(sessionID: sessionID)
+        return ECoreObservationAnalyzer.analyze(
+            events: events,
+            metadataList: metas,
+            now: now,
+            halfLifeSeconds: configuration.heatDecayHalfLifeSeconds,
+            weightPolicy: configuration.heatWeightPolicy
+        )
+    }
+
+    /// 导出所有会话全局聚合的 E-Core 观测期统计指标（完全只读、旁路）
+    public func exportGlobalObservationMetrics(
+        now: Date = .now
+    ) async -> ECoreObservationMetrics {
+        return ECoreObservationAnalyzer.analyzeDirectory(
+            baseDirectory: baseDirectory,
+            now: now,
+            halfLifeSeconds: configuration.heatDecayHalfLifeSeconds,
+            weightPolicy: configuration.heatWeightPolicy
+        )
     }
 }

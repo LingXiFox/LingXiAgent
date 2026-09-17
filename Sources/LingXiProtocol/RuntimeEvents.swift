@@ -68,7 +68,7 @@ public struct RuntimeInfo: Codable, Sendable, Equatable {
     public init(
         instanceID: RuntimeInstanceID = RuntimeInstanceID(),
         name: String = "LingXiCore",
-        version: String = "0.1.1",
+        version: String = "0.2.0-alpha.1",
         protocolVersion: ProtocolVersion = .current,
         startedAt: Date = Date()
     ) {

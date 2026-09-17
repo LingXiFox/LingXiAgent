@@ -71,4 +71,27 @@ struct ExecutionWatchdogTests {
         #expect(try await iterator.next() == nil)
         #expect(count == 3)
     }
+
+    @Test func streamHeartbeatRefreshesIdleWatchdogWithoutLeakingToConsumer() async throws {
+        let clock = ManualWatchdogClock()
+        var continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation?
+        let source = AsyncThrowingStream<ModelEvent, Error> { continuation = $0 }
+        let deadline = ExecutionDeadline(category: .provider, timeout: .milliseconds(200), idleTimeout: .milliseconds(30))
+        let stream = ExecutionWatchdog.stream(source, deadline: deadline, clock: ExecutionWatchdogClock(now: { await clock.now() }, sleep: { try await clock.sleep(until: $0) }))
+        var iterator = stream.makeAsyncIterator()
+
+        // 每次发送心跳并推进 10ms（小于 30ms 超时）
+        for _ in 0..<3 {
+            continuation?.yield(.heartbeat)
+            await Task.yield()
+            await clock.advance(by: .milliseconds(10))
+        }
+        // 发送一个有效文本
+        continuation?.yield(.textDelta("final"))
+        let event = try #require(await iterator.next())
+        #expect(event == .textDelta("final"))
+
+        continuation?.finish()
+        #expect(try await iterator.next() == nil)
+    }
 }

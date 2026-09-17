@@ -151,6 +151,22 @@ public struct ContextCacheL3Configuration: Codable, Sendable, Equatable {
     }
 }
 
+public struct ECoreHeatWeightPolicy: Codable, Sendable, Equatable {
+    public var storedWeight: Double
+    public var recalledWeight: Double
+    public var recallMissWeight: Double
+
+    public init(
+        storedWeight: Double = 1.0,
+        recalledWeight: Double = 2.0,
+        recallMissWeight: Double = 0.0
+    ) {
+        self.storedWeight = storedWeight
+        self.recalledWeight = recalledWeight
+        self.recallMissWeight = recallMissWeight
+    }
+}
+
 public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
     public var ecoreStorageEnabled: Bool
     public var observationProjectionEnabled: Bool
@@ -161,15 +177,22 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
     public var recallMaxBytes: Int
     public var recallMaxLines: Int
 
+    public var heatTrackingEnabled: Bool
+    public var heatDecayHalfLifeSeconds: Double
+    public var heatWeightPolicy: ECoreHeatWeightPolicy
+
     public init(
         ecoreStorageEnabled: Bool = true,
         observationProjectionEnabled: Bool = true,
         contextRecallEnabled: Bool = true,
-        objectizationThreshold: Int = 10_240, // 10KB
-        fullSendCount: Int = 2,
+        objectizationThreshold: Int = 32_768, // 32KB
+        fullSendCount: Int = 4,
         placeholderExcerpt: Int = 1_024,      // 1KB
         recallMaxBytes: Int = 16_384,         // 16KB
-        recallMaxLines: Int = 400
+        recallMaxLines: Int = 400,
+        heatTrackingEnabled: Bool = true,
+        heatDecayHalfLifeSeconds: Double = 3600.0,
+        heatWeightPolicy: ECoreHeatWeightPolicy = ECoreHeatWeightPolicy()
     ) {
         self.ecoreStorageEnabled = ecoreStorageEnabled
         self.observationProjectionEnabled = observationProjectionEnabled
@@ -179,11 +202,15 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
         self.placeholderExcerpt = placeholderExcerpt
         self.recallMaxBytes = recallMaxBytes
         self.recallMaxLines = recallMaxLines
+        self.heatTrackingEnabled = heatTrackingEnabled
+        self.heatDecayHalfLifeSeconds = heatDecayHalfLifeSeconds
+        self.heatWeightPolicy = heatWeightPolicy
     }
 
     private enum CodingKeys: String, CodingKey {
         case ecoreStorageEnabled, observationProjectionEnabled, contextRecallEnabled,
-             objectizationThreshold, fullSendCount, placeholderExcerpt, recallMaxBytes, recallMaxLines
+             objectizationThreshold, fullSendCount, placeholderExcerpt, recallMaxBytes, recallMaxLines,
+             heatTrackingEnabled, heatDecayHalfLifeSeconds, heatWeightPolicy
     }
 
     public init(from decoder: Decoder) throws {
@@ -191,11 +218,14 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
         ecoreStorageEnabled = try values.decodeIfPresent(Bool.self, forKey: .ecoreStorageEnabled) ?? true
         observationProjectionEnabled = try values.decodeIfPresent(Bool.self, forKey: .observationProjectionEnabled) ?? true
         contextRecallEnabled = try values.decodeIfPresent(Bool.self, forKey: .contextRecallEnabled) ?? true
-        objectizationThreshold = try values.decodeIfPresent(Int.self, forKey: .objectizationThreshold) ?? 10_240
-        fullSendCount = try values.decodeIfPresent(Int.self, forKey: .fullSendCount) ?? 2
+        objectizationThreshold = try values.decodeIfPresent(Int.self, forKey: .objectizationThreshold) ?? 32_768
+        fullSendCount = try values.decodeIfPresent(Int.self, forKey: .fullSendCount) ?? 4
         placeholderExcerpt = try values.decodeIfPresent(Int.self, forKey: .placeholderExcerpt) ?? 1_024
         recallMaxBytes = try values.decodeIfPresent(Int.self, forKey: .recallMaxBytes) ?? 16_384
         recallMaxLines = try values.decodeIfPresent(Int.self, forKey: .recallMaxLines) ?? 400
+        heatTrackingEnabled = try values.decodeIfPresent(Bool.self, forKey: .heatTrackingEnabled) ?? true
+        heatDecayHalfLifeSeconds = try values.decodeIfPresent(Double.self, forKey: .heatDecayHalfLifeSeconds) ?? 3600.0
+        heatWeightPolicy = try values.decodeIfPresent(ECoreHeatWeightPolicy.self, forKey: .heatWeightPolicy) ?? ECoreHeatWeightPolicy()
     }
 }
 
@@ -742,8 +772,8 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        schema = try values.decode(String.self, forKey: .schema)
-        version = try values.decode(Int.self, forKey: .version)
+        schema = try values.decodeIfPresent(String.self, forKey: .schema) ?? ConfigurationSchemaURI.providers
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? ConfigurationFormat.currentVersion
         model = try values.decodeIfPresent(String.self, forKey: .model)
         providers = try values.decodeIfPresent([String: PublicProviderConfiguration].self, forKey: .providers) ?? [:]
         let legacy = Self.makeLegacyConfiguration(model: model, providers: providers)

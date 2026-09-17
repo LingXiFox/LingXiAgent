@@ -53,7 +53,10 @@ public final class AppCompositionRoot: Sendable {
             FileManager.default.changeCurrentDirectoryPath(workDir)
         }
 
-        // 2. 装配 ApplicationStore（由独立组合根持有 Core 启动所有权）
+        // 2. 装配 ApplicationStore（在等待冷启动握手时输出友好提示）
+        if isatty(fileno(stderr)) != 0 {
+            FileHandle.standardError.write(Data("🦊 正在唤醒 LingXiAgent (恢复工作区状态与扩展组件)...\r\n".utf8))
+        }
         let store = try await ApplicationStore.stdio(
             corePath: configuration.corePath,
             interactive: true,
@@ -61,23 +64,18 @@ public final class AppCompositionRoot: Sendable {
         )
 
         // 3. 派发初始业务状态与偏好
-        let bootstrapTask = Task { [configuration] in
+        let initialPerm = Self.resolveInitialPermission(isYoloMode: configuration.isYoloMode)
+        let bootstrapTask = Task { [configuration, initialPerm] in
             await store.dispatch(.listSessions)
 
             let prefs = UserPreferencesStore.shared.load()
             if let resumeID = configuration.resumeSessionID, !resumeID.isEmpty {
                 await store.dispatch(.switchSession(SessionID(resumeID)))
-            }
-            if configuration.isYoloMode {
-                await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
-            } else if let permStr = prefs.lastPermissionConfiguration {
-                switch permStr.lowercased() {
-                case "yolo", "yolo_full", "full": await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
-                case "auto", "auto_workspace": await store.dispatch(.setPermissionConfiguration(.autoWorkspace))
-                case "ask", "ask_workspace": await store.dispatch(.setPermissionConfiguration(.askWorkspace))
-                case "ask_full": await store.dispatch(.setPermissionConfiguration(.askFullAccess))
-                default: break
+                if configuration.isYoloMode {
+                    await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
                 }
+            } else {
+                await store.dispatch(.setPermissionConfiguration(initialPerm))
             }
             let targetModel = configuration.initialModelID ?? prefs.lastModelID
             if let modelID = targetModel, !modelID.isEmpty {
@@ -107,4 +105,42 @@ public final class AppCompositionRoot: Sendable {
         // 5. 前端退出后优雅断开
         await store.dispatch(.disconnect)
     }
+
+    /// 解析启动时的初始权限配置。
+    /// 优先级规则：
+    /// 1. 命令行显式传入 -y / --yolo（最高优先级）
+    /// 2. ~/.lingxiagent/config.json 显式配置的 permissionPolicy / executionProfile
+    /// 3. 兜底默认：严格必须为 Ask/Workspace (.askWorkspace)
+    /// 注意：禁止从临时偏好（preferences.json）自动继承 YOLO 权限！
+    public static func resolveInitialPermission(isYoloMode: Bool) -> PermissionConfiguration {
+        if isYoloMode {
+            return .yoloFullAccess
+        }
+
+        let override = ProcessInfo.processInfo.environment["LINGXI_DATA_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseDir = override.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent", isDirectory: true)
+        let configFile = baseDir.appendingPathComponent("config.json")
+
+        if let data = try? Data(contentsOf: configFile),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let agent = json["agent"] as? [String: Any] {
+            let policy = (agent["permissionPolicy"] as? String)?.lowercased()
+            let profile = (agent["executionProfile"] as? String)?.lowercased()
+            let perm = (agent["permission"] as? String)?.lowercased()
+
+            if perm == "yolo" || policy == "yolo" || (policy == "auto" && profile == "fullaccess") {
+                return .yoloFullAccess
+            } else if perm == "auto" || perm == "autoworkspace" || policy == "auto" {
+                return .autoWorkspace
+            } else if perm == "askfull" || perm == "askfullaccess" || (policy == "ask" && profile == "fullaccess") {
+                return .askFullAccess
+            } else if perm == "ask" || perm == "askworkspace" || policy == "ask" {
+                return .askWorkspace
+            }
+        }
+
+        return .askWorkspace
+    }
 }
+

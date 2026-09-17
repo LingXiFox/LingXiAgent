@@ -102,6 +102,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
             previousResponseID: effectiveStore ? previousResponseID : nil,
             store: effectiveStore
         )
+        OpenCodeHeaderSupport.injectHeadersIfNeeded(into: &urlRequest, modelRequest: request)
         return urlRequest
     }
 
@@ -252,6 +253,9 @@ public struct OpenAIResponsesProvider: ModelProvider {
             continuation.yield(.started)
             do {
                 outer: for try await chunk in source {
+                    if !chunk.isEmpty {
+                        continuation.yield(.heartbeat)
+                    }
                     for line in lines.feed(chunk) {
                         if try emit(line, decoder: &decoder, completed: &completed, lastEventType: &lastEventType, terminalObserved: &terminalObserved, failureObserved: &failureObserved, responseID: &responseID) { break outer }
                     }

@@ -20,20 +20,13 @@ public final class DarwinApplicationBackend: ApplicationBackend, @unchecked Send
     }
 
     public func launchApplication(identifier: String) async throws -> Int32? {
-        await MainActor.run {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
-                let config = NSWorkspace.OpenConfiguration()
-                var pid: Int32?
-                let semaphore = DispatchSemaphore(value: 0)
-                NSWorkspace.shared.openApplication(at: url, configuration: config) { app, _ in
-                    pid = app?.processIdentifier
-                    semaphore.signal()
-                }
-                _ = semaphore.wait(timeout: .now() + 5.0)
-                return pid
-            }
-            return nil
+        let appURL = await MainActor.run {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier)
         }
+        guard let appURL else { return nil }
+        let config = NSWorkspace.OpenConfiguration()
+        let app = try await NSWorkspace.shared.openApplication(at: appURL, configuration: config)
+        return app.processIdentifier
     }
 
     public func terminateApplication(identifier: String) async throws {

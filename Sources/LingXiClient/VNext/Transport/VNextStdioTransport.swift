@@ -202,7 +202,14 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         let id = makeID()
         let (stream, continuation) = AsyncStream<RuntimeEventEnvelope>.makeStream()
         withLock { runtimeContinuations[id] = continuation }
-        Task { try? await self.send(method: "events.runtime", payload: after.map { try? self.encoder.encode($0) } ?? nil, id: id) }
+        Task {
+            do {
+                _ = try await self.send(method: "events.runtime", payload: after.map { try? self.encoder.encode($0) } ?? nil, id: id)
+            } catch {
+                continuation.finish()
+                self.removeRuntime(id)
+            }
+        }
         continuation.onTermination = { [weak self] _ in self?.removeRuntime(id) }
         return stream
     }
@@ -252,8 +259,16 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
             lock.lock()
             if let terminalError { lock.unlock(); continuation.resume(throwing: terminalError); return }
             pending[requestID] = continuation
-            do { try input.write(contentsOf: data); lock.unlock() }
-            catch { pending.removeValue(forKey: requestID); lock.unlock(); continuation.resume(throwing: error) }
+            lock.unlock()
+
+            do {
+                try input.write(contentsOf: data)
+            } catch {
+                lock.lock()
+                pending.removeValue(forKey: requestID)
+                lock.unlock()
+                continuation.resume(throwing: error)
+            }
         }
     }
 

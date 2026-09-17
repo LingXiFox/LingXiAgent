@@ -49,23 +49,34 @@ public struct ContextProjection: Sendable {
             }
 
             let assistantCount = assistantCountAfterMessageID[messageID] ?? 0
+            let toolName = result.toolName ?? "tool"
+            let byteCount = result.content.utf8.count
+            let isSourceCode = (toolName == "read_file" || toolName == "read_file_lines")
 
-            // 规则：前 fullSendCount 次请求，Provider 必须见到完整全文！
-            guard assistantCount >= configuration.fullSendCount else {
+            // 规则 1：源码读取（read_file）在正常工作集容量内优先保留全文，避免模型跨文件关联分析时丢失代码
+            let effectiveThreshold: Int
+            let effectiveFullSendCount: Int
+            if isSourceCode {
+                effectiveThreshold = max(65_536, configuration.objectizationThreshold)
+                effectiveFullSendCount = max(8, configuration.fullSendCount)
+            } else {
+                effectiveThreshold = configuration.objectizationThreshold
+                effectiveFullSendCount = configuration.fullSendCount
+            }
+
+            // 规则 2：未达轮次要求或未达体积阈值，保持完整内联
+            guard assistantCount >= effectiveFullSendCount else {
                 projectedEntries.append(entry)
                 continue
             }
 
-            // 检查大小是否达到独立对象化阈值（10KB）
-            let byteCount = result.content.utf8.count
-            guard byteCount >= configuration.objectizationThreshold else {
+            guard byteCount >= effectiveThreshold else {
                 // 小于阈值的结果保持完整内联，避免无谓的对象碎片
                 projectedEntries.append(entry)
                 continue
             }
 
             // 满足条件：构建 1KB 稳定首尾 Placeholder
-            let toolName = result.toolName ?? "tool"
             let objectID = ContextObjectID.generate(toolName: toolName, callID: result.callID, content: result.content)
 
             // 确保该对象已在 E-Core 中安全归档（Fail-Open）
@@ -83,6 +94,21 @@ public struct ContextProjection: Sendable {
                 content: result.content,
                 excerptBytes: configuration.placeholderExcerpt
             )
+
+            // Phase 0.6: 旁路记录 objectProjected 纯观测事件（Fail-Open，零前台阻塞，绝不影响主流程与返回值）
+            let sessionIDForTelemetry = session.id
+            let byteCountForTelemetry = byteCount
+            let messageIDRaw = messageID.rawValue
+            let revisionForTelemetry = session.messages.count
+            Task {
+                await ecoreStore.recordProjection(
+                    sessionID: sessionIDForTelemetry,
+                    objectID: objectID,
+                    originalBytes: byteCountForTelemetry,
+                    turnID: messageIDRaw,
+                    revision: revisionForTelemetry
+                )
+            }
 
             // 构造投影后的替代 ToolResult，外部 Canonical SessionStore 不受影响
             let projectedResult = ToolResult(

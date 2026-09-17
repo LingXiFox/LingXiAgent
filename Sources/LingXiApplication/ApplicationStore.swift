@@ -30,6 +30,9 @@ public actor ApplicationStore {
         if let lastModel = initialPrefs.lastModelID, !lastModel.isEmpty {
             self.state.currentModelID = lastModel
         }
+        if let savedPerm = Self.parsePermissionConfiguration(initialPrefs.lastPermissionConfiguration) {
+            self.state.nextTurnPermission = savedPerm
+        }
 
         // 注册全部内建 20 个正式业务命令
         for cmd in BuiltinCommands.createAll() {
@@ -624,13 +627,28 @@ public actor ApplicationStore {
             authoritativeCursor = snapshot.eventCursor
             RootReducer.reduce(state: &state, action: ._snapshotResynced(snapshot))
 
-            // 保持工作区权限配置：若当前应用已明确设定 nextTurnPermission（如 YOLO 模式），恢复会话后必须维持该策略，杜绝被服务端默认 Ask 冲刷
-            if let preservedPerm = state.nextTurnPermission {
-                state.activeSessionState?.permissionConfiguration = preservedPerm
-                _ = try? await client.runtime.updateTypedSetting(key: "permissionConfiguration", value: preservedPerm.displayName)
-            } else if let currentPerm = state.activeSessionState?.permissionConfiguration {
-                state.nextTurnPermission = currentPerm
-            }
+            // 保持工作区权限配置：恢复会话后按最高真实度优先恢复权限策略：
+            // 1. 若恢复的会话历史 Turn 中已有执行记录，优先沿用最近一个 Turn 的实际权限策略；
+            // 2. 其次若当前应用已显式设定了 nextTurnPermission，沿用该策略；
+            // 3. 再次沿用用户全局持久化偏好 lastPermissionConfiguration；
+            // 4. 最后降级至快照默认配置。
+            let resolvedPerm: PermissionConfiguration = {
+                if let lastTurnPerm = snapshot.recentTurns.reversed().compactMap({ $0.executionIntent.permissionConfiguration }).first {
+                    return lastTurnPerm
+                }
+                if let preservedPerm = state.nextTurnPermission {
+                    return preservedPerm
+                }
+                if let savedPerm = Self.parsePermissionConfiguration(UserPreferencesStore.shared.load().lastPermissionConfiguration) {
+                    return savedPerm
+                }
+                return snapshot.permissionConfiguration
+            }()
+
+            state.nextTurnPermission = resolvedPerm
+            state.activeSessionState?.permissionConfiguration = resolvedPerm
+            _ = try? await client.runtime.updateTypedSetting(key: "permissionConfiguration", value: resolvedPerm.displayName)
+            UserPreferencesStore.shared.update(permissionConfiguration: resolvedPerm.displayName)
 
             // 保持工作区模式设定
             if let preservedMode = state.nextTurnMode {
@@ -822,5 +840,20 @@ public actor ApplicationStore {
             }
         }
         activeStreamTasks[streamID] = task
+    }
+
+    public static func parsePermissionConfiguration(_ name: String?) -> PermissionConfiguration? {
+        guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
+        let lower = name.lowercased()
+        if lower.contains("yolo") {
+            return .yoloFullAccess
+        } else if lower.contains("auto") {
+            return .autoWorkspace
+        } else if lower.contains("full") {
+            return .askFullAccess
+        } else if lower.contains("ask") {
+            return .askWorkspace
+        }
+        return nil
     }
 }

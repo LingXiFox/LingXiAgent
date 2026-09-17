@@ -490,6 +490,8 @@ public enum ModelEvent: Sendable, Equatable {
     case providerRequestID(String)
     /// Provider 连接建立、推理即将开始。
     case started
+    /// 网络传输保活心跳事件，刷新空闲超时监控。
+    case heartbeat
     case textDelta(String)
     /// 推理内容 delta；Provider 不支持时不会出现。
     case reasoningDelta(String)

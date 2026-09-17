@@ -11,7 +11,10 @@ public final class DarwinProcessAdapter: PlatformProcessProtocol, @unchecked Sen
         guard size > 0 else { return nil }
         var buffer = [CChar](repeating: 0, count: Int(size))
         guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
-        let path = String(cString: buffer)
+        let path = buffer.withUnsafeBufferPointer { ptr in
+            ptr.baseAddress.map { String(cString: $0) } ?? ""
+        }
+        guard !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path).resolvingSymlinksInPath()
     }
 

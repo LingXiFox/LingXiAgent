@@ -130,4 +130,154 @@ struct ModelSelectionAndTurnExecutionFixTests {
         }
         #expect(observedFailure, "Turn execution must report .failed with clear error, never .completed silently")
     }
+
+    @Test func unresolvableModelWithDefaultProviderFailsFastAndDoesNotFallbackSilently() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-turn-failfast-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Host has a valid working default provider assembly
+        let assembly = ModelRuntimeAssembly(
+            provider: OpenAICompatibleProvider(config: ProviderConfig(baseURL: URL(string: "http://127.0.0.1:1234/v1")!, apiKey: "test", model: "default-model", wireProtocol: .chatCompletions)),
+            modelID: ModelID("default-model"),
+            endpoint: ResolvedModelEndpoint(providerID: "default-provider", modelID: ModelID("default-model"), baseURL: URL(string: "http://127.0.0.1:1234/v1")!, wireProtocol: .chatCompletions)
+        )
+
+        let host = try CoreHost(
+            providerAssembly: assembly,
+            dataRoot: tempDir,
+            permissionDecision: .allow
+        )
+        await host.start()
+
+        let client = try await LingXiClientVNext.inProcess(service: host)
+        let sessionReceipt = try await client.session.create()
+        let sessionID = try #require(sessionReceipt.result?.sessionID)
+
+        // Submit turn with an invalid model
+        let intent = TurnExecutionIntent(modelSelection: "broken-provider/broken-model")
+        let turnReceipt = try await client.turn.submitTurn(
+            sessionID: sessionID,
+            input: UserInput(text: "Execute with broken model"),
+            executionIntent: intent
+        )
+        let turnID = try #require(turnReceipt.result?.turnID)
+
+        // Must fail fast with runtimeFailure, NOT succeed by silently falling back to default-model
+        var observedFailure = false
+        for _ in 0..<30 {
+            try await Task.sleep(for: .milliseconds(100))
+            let snapshot = try await client.session.snapshot(sessionID: sessionID)
+            if let turn = snapshot.recentTurns.first(where: { $0.turnID == turnID }), turn.status == .failed {
+                observedFailure = true
+                break
+            }
+        }
+        #expect(observedFailure, "Turn must fail fast when requested model is unresolvable, even if default provider exists")
+    }
+
+    @Test func permissionHierarchyFollowsCliThenConfigThenDefaultsToAskWorkspace() async throws {
+        // 1. CLI --yolo has highest priority
+        let cliYolo = AppCompositionRoot.resolveInitialPermission(isYoloMode: true)
+        #expect(cliYolo == .yoloFullAccess)
+
+        // 2. Default without config.json must be Ask/Workspace
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-perm-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // When config.json is absent or has no YOLO, default is askWorkspace
+        let defaultPerm = AppCompositionRoot.resolveInitialPermission(isYoloMode: false)
+        #expect(defaultPerm == .askWorkspace)
+    }
+
+    @Test func customProviderInProvidersJsonTakesPrecedenceAndHonorsEnvApiKey() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-custom-provider-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Write a providers.json that configures opencode-zen with env:OPENCODE_TEST_KEY
+        setenv("OPENCODE_TEST_KEY", "test-token-value-12345", 1)
+        defer { unsetenv("OPENCODE_TEST_KEY") }
+
+        let providersJson = """
+        {
+          "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
+          "version": 1,
+          "providers": {
+            "opencode-zen": {
+              "name": "OpenCode Zen",
+              "adapter": "openai-responses",
+              "options": {
+                "apiKey": "{env:OPENCODE_TEST_KEY}",
+                "baseURL": "https://opencode.ai/zen/v1"
+              },
+              "models": {
+                "muse-spark-1.3-contributor-free": {
+                  "name": "Muse Spark 1.3 Contributor Free",
+                  "limit": { "context": 131072, "output": 8192 }
+                }
+              }
+            }
+          }
+        }
+        """
+        try providersJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: true, encoding: .utf8)
+
+        let host = try CoreHost(
+            dataRoot: tempDir,
+            permissionDecision: .allow
+        )
+        await host.start()
+
+        // Selecting opencode-zen/muse-spark-1.3-contributor-free must succeed and not throw unauthenticated
+        let client = try await LingXiClientVNext.inProcess(service: host)
+        let selectReceipt = try await client.model.select(model: "opencode-zen/muse-spark-1.3-contributor-free")
+        #expect(selectReceipt.applied == true)
+        #expect(selectReceipt.result?.modelID == "opencode-zen/muse-spark-1.3-contributor-free")
+        #expect(selectReceipt.result?.providerID == "opencode-zen")
+    }
+
+    @Test func customProviderWithoutSchemaAndWithInheritedBuiltinModelsSucceeds() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-schemaless-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Environment key for deepseek
+        setenv("DEEPSEEK_API_KEY", "test-deepseek-key-67890", 1)
+        defer { unsetenv("DEEPSEEK_API_KEY") }
+
+        // providers.json WITHOUT "$schema", and with empty models (inheriting from builtin catalog)
+        let schemalessJson = """
+        {
+          "version": 1,
+          "providers": {
+            "deepseek-api": {
+              "name": "Custom DeepSeek Proxy",
+              "adapter": "openai-compatible",
+              "options": {
+                "baseURL": "https://proxy.internal/v1"
+              },
+              "models": {}
+            }
+          }
+        }
+        """
+        try schemalessJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: true, encoding: .utf8)
+
+        let host = try CoreHost(
+            dataRoot: tempDir,
+            permissionDecision: .allow
+        )
+        await host.start()
+
+        let client = try await LingXiClientVNext.inProcess(service: host)
+        // Select an inherited builtin model (deepseek-chat)
+        let selectReceipt = try await client.model.select(model: "deepseek-api/deepseek-chat")
+        #expect(selectReceipt.applied == true)
+        #expect(selectReceipt.result?.modelID == "deepseek-api/deepseek-chat")
+        #expect(selectReceipt.result?.providerID == "deepseek-api")
+    }
 }
+
+

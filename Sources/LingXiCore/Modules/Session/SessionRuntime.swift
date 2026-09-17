@@ -369,8 +369,10 @@ public actor SessionRuntime {
         var index = 0
         var finalUsage: ModelUsage?
         var finalReason: ModelFinishReason?
-            var lastSuccessfulRead: (signature: ToolRuntime.ReadOnlySignature, content: String)?
-            var deterministicFailures: [String: String] = [:]
+        var lastSuccessfulRead: (signature: ToolRuntime.ReadOnlySignature, content: String)?
+        var successfulReadsBySignature: [ToolRuntime.ReadOnlySignature: String] = [:]
+        var signatureReadCounts: [ToolRuntime.ReadOnlySignature: Int] = [:]
+        var deterministicFailures: [String: String] = [:]
         let executionProfile = self.executionProfile
 
         do {
@@ -798,6 +800,8 @@ public actor SessionRuntime {
                             await eventSink(.providerActivityChanged(snapshot))
                         case .started:
                             trace("provider.stream.start", step: step + 1)
+                        case .heartbeat:
+                            break
                         case let .textDelta(delta):
                             sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID, stepNumber: currentStepNumber, index: index, text: delta, kind: .text))
                             profiler.recordText(delta, streamElapsed: streamStarted.duration(to: clock.now))
@@ -964,7 +968,25 @@ public actor SessionRuntime {
                 for (offset, call) in calls.enumerated() {
                     await eventSink(.toolCallCompleted(call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)))
                     trace("tool.execute.begin", step: step + 1, toolCallID: call.callID)
-                    if let signature = signatures[offset], let previous = lastSuccessfulRead, previous.signature == signature {
+                    if let signature = signatures[offset], let previousContent = successfulReadsBySignature[signature] {
+                        let readCount = signatureReadCounts[signature, default: 1]
+                        if readCount >= 2 {
+                            let resourceName = signature.resource.isEmpty ? signature.toolName : signature.resource
+                            let reminder = "The content of '\(resourceName)' is already present in this session (\(previousContent.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
+                            let outcome = duplicateOutcome(for: call, signature: signature, content: reminder)
+                            outcomes[offset] = outcome
+                            await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                            publishedOutcomes.insert(offset)
+                            signatureReadCounts[signature] = readCount + 1
+                        } else {
+                            let note = "\n[System note: This file was already read previously in this conversation. Please analyze the code directly or proceed to answer the user.]"
+                            let outcome = duplicateOutcome(for: call, signature: signature, content: previousContent + note)
+                            outcomes[offset] = outcome
+                            await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                            publishedOutcomes.insert(offset)
+                            signatureReadCounts[signature] = readCount + 1
+                        }
+                    } else if let signature = signatures[offset], let previous = lastSuccessfulRead, previous.signature == signature {
                         let outcome = duplicateOutcome(for: call, signature: signature, content: previous.content)
                         outcomes[offset] = outcome
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
@@ -1058,6 +1080,10 @@ public actor SessionRuntime {
                     }
                     if let signature = signatures[offset], result.success || result.error?.code == "duplicateToolCall" {
                         lastSuccessfulRead = (signature, result.content)
+                        if result.success && successfulReadsBySignature[signature] == nil {
+                            successfulReadsBySignature[signature] = result.content
+                            signatureReadCounts[signature] = 1
+                        }
                     } else {
                         lastSuccessfulRead = nil
                     }
@@ -1227,12 +1253,13 @@ public actor SessionRuntime {
         let executionMs = max(1.0, timing?.executionMilliseconds ?? Double(execution.components.seconds * 1000))
         let queueMs = timing?.queueMilliseconds ?? 0
         let inheritedTiming = ToolTiming(milliseconds: executionMs, queueMilliseconds: queueMs, executionMilliseconds: executionMs)
+        let isSuppression = content.contains("is already present in this session")
         return ToolRuntime.ExecutionOutcome(
             result: ToolResult(
                 callID: call.callID,
-                success: false,
+                success: !isSuppression,
                 content: content,
-                error: ToolError(code: "duplicateToolCall", message: "连续重复调用已复用前一成功结果"),
+                error: isSuppression ? ToolError(code: "duplicateToolCall", message: "重复读取已拦截，请直接利用已有上下文") : nil,
                 toolName: signature.toolName,
                 timing: inheritedTiming
             ),
@@ -1468,7 +1495,6 @@ public actor SessionRuntime {
         executionID: UUID,
         lease: RunLease? = nil
     ) async {
-        defer { Task { await dataPlane.finishAgentStream(handle.streamID) } }
         do {
             guard isExecuting(executionID) else { return }
             if let runID, await ProviderActivityRegistry.shared.isRunCancelled(runID) { return }
@@ -1519,6 +1545,7 @@ public actor SessionRuntime {
         } catch {
             await failTurn(handle: handle, sink: sink, error: CoreError(code: .transport, message: String(describing: error)), profiler: profiler, executionID: executionID)
         }
+        await dataPlane.finishAgentStream(handle.streamID)
     }
 
     private func makeTerminalTrace(

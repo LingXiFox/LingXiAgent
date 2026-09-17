@@ -8,7 +8,7 @@ public enum OpenTUIError: Error, CustomStringConvertible {
     }
 }
 
-public struct OpenTUIColorValue: Sendable {
+public struct OpenTUIColorValue: Sendable, Equatable {
     public let red: UInt16
     public let green: UInt16
     public let blue: UInt16

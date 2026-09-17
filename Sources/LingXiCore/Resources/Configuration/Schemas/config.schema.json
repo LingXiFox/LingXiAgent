@@ -168,7 +168,18 @@
             "fullSendCount": { "type": "integer", "minimum": 1 },
             "placeholderExcerpt": { "type": "integer", "minimum": 1 },
             "recallMaxBytes": { "type": "integer", "minimum": 1 },
-            "recallMaxLines": { "type": "integer", "minimum": 1 }
+            "recallMaxLines": { "type": "integer", "minimum": 1 },
+            "heatTrackingEnabled": { "type": "boolean" },
+            "heatDecayHalfLifeSeconds": { "type": "number", "minimum": 0 },
+            "heatWeightPolicy": {
+              "type": "object",
+              "properties": {
+                "storedWeight": { "type": "number" },
+                "recalledWeight": { "type": "number" },
+                "recallMissWeight": { "type": "number" }
+              },
+              "additionalProperties": false
+            }
           },
           "additionalProperties": false
         }

@@ -9,8 +9,6 @@ import Darwin
 import Glibc
 #endif
 
-AuthCLI.installSignalHandlers()
-
 let args = Array(CommandLine.arguments.dropFirst())
 let route = CLIParser.parse(arguments: args)
 
@@ -35,6 +33,7 @@ case let .tui(options):
     exit(0)
 
 case let .auth(authArgs):
+    AuthCLI.installSignalHandlers()
     do {
         let output = try await AuthCLI.run(arguments: authArgs)
         print(output)
@@ -164,7 +163,7 @@ case .help:
     exit(0)
 
 case .version:
-    print("lingxiagent version \(CLIParser.version)")
+    print("lingxiagent version \(CLIParser.version) (\(CLIParser.releaseName))")
     exit(0)
 }
 

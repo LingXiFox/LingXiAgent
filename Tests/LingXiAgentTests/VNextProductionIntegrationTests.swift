@@ -726,4 +726,14 @@ struct VNextProductionIntegrationTests {
         #expect(skills.count >= 30)
         #expect(mcps.count >= 6)
     }
+
+    @Test
+    func testResumeSessionPreservesYoloPermission() async throws {
+        // Test parsing helpers
+        #expect(ApplicationStore.parsePermissionConfiguration("yolo") == .yoloFullAccess)
+        #expect(ApplicationStore.parsePermissionConfiguration("YOLO") == .yoloFullAccess)
+        #expect(ApplicationStore.parsePermissionConfiguration("⚡ YOLO") == .yoloFullAccess)
+        #expect(ApplicationStore.parsePermissionConfiguration("Auto/Workspace") == .autoWorkspace)
+        #expect(ApplicationStore.parsePermissionConfiguration("Ask/Workspace") == .askWorkspace)
+    }
 }

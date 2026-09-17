@@ -99,8 +99,9 @@ public actor LingXiModelsCatalogClient {
 
         var request = URLRequest(url: catalogURL)
         request.httpMethod = "GET"
-        request.timeoutInterval = 10
+        request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("gzip, deflate", forHTTPHeaderField: "Accept-Encoding")
         request.setValue("LingXiAgent/2.0 (macOS; Swift)", forHTTPHeaderField: "User-Agent")
         if let etag = cachedEtag, !etag.isEmpty {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
@@ -144,6 +145,11 @@ public actor LingXiModelsCatalogClient {
         } catch {
             return loadCached()
         }
+    }
+
+    /// Asynchronously warms up the models catalog cache in background without blocking startup.
+    public func warmup(forceRefresh: Bool = false) async {
+        _ = await fetch(forceRefresh: forceRefresh)
     }
 
     /// Resolves models for a LingXi Product ID from the cached models.dev catalog (zero network I/O).
