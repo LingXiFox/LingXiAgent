@@ -149,9 +149,10 @@ struct UserIssuesRegressionTests {
     @Test func contextStateAntiJitterAndMonotonicityProtection() async throws {
         let sID = SessionID("sess-anti-jitter")
         
-        // 初始权威快照（由模型推理完成产生）
+        // 初始权威快照（由模型推理完成产生，revision: 2）
         let authoritative = ContextStateSnapshot(
             sessionID: sID,
+            revision: 2,
             estimatedTokens: 10_000,
             l1Tokens: 10_000,
             l2Tokens: 0,
@@ -180,9 +181,10 @@ struct UserIssuesRegressionTests {
             cacheDebt: 0
         )
 
-        // 中间瞬态快照（例如 Turn 刚启动，纯消息文本估算仅有 20 tokens，且 cacheRecord 尚未回填）
+        // 中间瞬态快照（过期乱序中间态，revision: 1）
         let intermediateZeroJitter = ContextStateSnapshot(
             sessionID: sID,
+            revision: 1,
             estimatedTokens: 20,
             l1Tokens: 20,
             l2Tokens: 0,
@@ -226,9 +228,10 @@ struct UserIssuesRegressionTests {
         #expect(merged.previousPromptTokens == 9_800, "Previous prompt tokens must retain 9.8K")
         #expect(merged.cacheStatus == "hit", "Cache status must be preserved")
 
-        // 验证 2: 真实的正常演进快照（如新一轮正常增长至 11K）必须被采纳
+        // 验证 2: 真实的正常演进快照（如新一轮正常增长至 11K，revision: 3）必须被采纳
         let nextAuthoritative = ContextStateSnapshot(
             sessionID: sID,
+            revision: 3,
             estimatedTokens: 11_000,
             l1Tokens: 11_000,
             l2Tokens: 0,

@@ -109,7 +109,7 @@ struct UndoAndCompactSpacingTests {
         #expect(l1Tokens > 0 && l1Tokens < 1000)
 
         let record = await controller.lastProviderCacheRecord(for: sessionID)
-        #expect(record == nil)
+        #expect(record?.status == "coldNewEpoch")
 
         // 撤回至全部清空
         await controller.reconcileAfterRevert(sessionID: sessionID, remainingMessages: [])

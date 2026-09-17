@@ -527,44 +527,96 @@ public enum ContextStateUpdate: Codable, Sendable, Equatable {
 
 /// Context 状态快照。
 public struct ContextStateSnapshot: Codable, Sendable, Equatable {
+    // 权威规范运行时存储属性 (Canonical Runtime Storage)
     public let sessionID: SessionID
     public let revision: UInt64
     public let pCore: PCoreStateSnapshot?
     public let eCore: ECoreStateSnapshot?
     public let providerCache: ProviderCacheStateSnapshot?
     public let estimatedTokens: Int
-    public let l1Tokens: Int
-    public let l2Tokens: Int
-    public let l3Tokens: Int
     public let compactionGeneration: Int
-    public let cacheReadTokens: Int?
-    public let promptTokens: Int?
-    public let previousPromptTokens: Int?
-    public let cacheStatus: String?
-    public let cacheEpoch: Int?
-    public let epochReason: String?
-    public let stablePrefixHash: String?
-    public let missDiagnostics: String?
+
+    // 遥测诊断指标 (Telemetry & Diagnostics)
     public let structuralPrefixStability: Double?
     public let clientCausedBustRate: Double?
     public let appendOnlyContextRatio: Double?
     public let volatileTailBytes: Int?
-    public let clientHealthStatus: String?
     public let observedGranularity: Int?
     public let clientCausedBusts: Int?
     public let comparableRequests: Int?
     public let appendOnlyViolations: Int?
-    public let pCoreTokens: Int?
-    public let eCoreObjectCount: Int?
-    public let eCoreTotalBytes: Int?
-    public let cacheDebt: Int?
+
+    // MARK: - Legacy Compatibility Computed Properties (Non-stored runtime properties)
+
+    public var l1Tokens: Int {
+        pCore?.usedTokens ?? estimatedTokens
+    }
+
+    public var l2Tokens: Int {
+        0
+    }
+
+    public var l3Tokens: Int {
+        0
+    }
+
+    public var pCoreTokens: Int? {
+        pCore?.usedTokens
+    }
+
+    public var eCoreObjectCount: Int? {
+        eCore?.objectCount
+    }
+
+    public var eCoreTotalBytes: Int? {
+        eCore?.totalBytes
+    }
+
+    public var cacheReadTokens: Int? {
+        providerCache?.cacheReadTokens
+    }
+
+    public var promptTokens: Int? {
+        providerCache?.promptTokens
+    }
+
+    public var previousPromptTokens: Int? {
+        providerCache?.previousPromptTokens
+    }
+
+    public var cacheStatus: String? {
+        providerCache?.cacheStatus
+    }
+
+    public var cacheEpoch: Int? {
+        providerCache?.cacheEpoch
+    }
+
+    public var epochReason: String? {
+        providerCache?.epochReason
+    }
+
+    public var stablePrefixHash: String? {
+        providerCache?.stablePrefixHash
+    }
+
+    public var missDiagnostics: String? {
+        providerCache?.missDiagnostics
+    }
+
+    public var clientHealthStatus: String? {
+        providerCache?.clientHealthStatus
+    }
+
+    public var cacheDebt: Int? {
+        providerCache?.cacheDebt
+    }
 
     public var activePCoreTokens: Int {
-        if let pCore {
-            return pCore.usedTokens
-        }
-        return pCoreTokens ?? 0
+        pCore?.usedTokens ?? 0
     }
+
+    // MARK: - Initializer
 
     public init(
         sessionID: SessionID,
@@ -573,9 +625,9 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         eCore: ECoreStateSnapshot? = nil,
         providerCache: ProviderCacheStateSnapshot? = nil,
         estimatedTokens: Int = 0,
-        l1Tokens: Int = 0,
-        l2Tokens: Int = 0,
-        l3Tokens: Int = 0,
+        l1Tokens: Int? = nil,
+        l2Tokens: Int? = nil,
+        l3Tokens: Int? = nil,
         compactionGeneration: Int = 0,
         cacheReadTokens: Int? = nil,
         promptTokens: Int? = nil,
@@ -601,35 +653,201 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     ) {
         self.sessionID = sessionID
         self.revision = revision
-        self.pCore = pCore
-        self.eCore = eCore
-        self.providerCache = providerCache
+
+        // Adapt pCore
+        if let pCore {
+            self.pCore = pCore
+        } else if let pCoreTokens {
+            self.pCore = PCoreStateSnapshot(usedTokens: pCoreTokens)
+        } else {
+            self.pCore = nil
+        }
+
+        // Adapt eCore
+        if let eCore {
+            self.eCore = eCore
+        } else if eCoreObjectCount != nil || eCoreTotalBytes != nil {
+            self.eCore = ECoreStateSnapshot(
+                objectCount: eCoreObjectCount ?? 0,
+                totalBytes: eCoreTotalBytes ?? 0,
+                revision: revision
+            )
+        } else {
+            self.eCore = nil
+        }
+
+        // Adapt providerCache
+        if let providerCache {
+            self.providerCache = providerCache
+        } else if cacheReadTokens != nil || promptTokens != nil || cacheStatus != nil || clientHealthStatus != nil || cacheDebt != nil {
+            self.providerCache = ProviderCacheStateSnapshot(
+                promptTokens: promptTokens,
+                previousPromptTokens: previousPromptTokens,
+                cacheReadTokens: cacheReadTokens,
+                cacheEpoch: cacheEpoch,
+                epochReason: epochReason,
+                cacheDebt: cacheDebt,
+                clientHealthStatus: clientHealthStatus,
+                stablePrefixHash: stablePrefixHash,
+                cacheStatus: cacheStatus,
+                missDiagnostics: missDiagnostics
+            )
+        } else {
+            self.providerCache = nil
+        }
+
         self.estimatedTokens = estimatedTokens
-        self.l1Tokens = l1Tokens
-        self.l2Tokens = l2Tokens
-        self.l3Tokens = l3Tokens
         self.compactionGeneration = compactionGeneration
-        self.cacheReadTokens = cacheReadTokens ?? providerCache?.cacheReadTokens
-        self.promptTokens = promptTokens ?? providerCache?.promptTokens
-        self.previousPromptTokens = previousPromptTokens ?? providerCache?.previousPromptTokens
-        self.cacheStatus = cacheStatus ?? providerCache?.cacheStatus
-        self.cacheEpoch = cacheEpoch ?? providerCache?.cacheEpoch
-        self.epochReason = epochReason ?? providerCache?.epochReason
-        self.stablePrefixHash = stablePrefixHash ?? providerCache?.stablePrefixHash
-        self.missDiagnostics = missDiagnostics ?? providerCache?.missDiagnostics
         self.structuralPrefixStability = structuralPrefixStability
         self.clientCausedBustRate = clientCausedBustRate
         self.appendOnlyContextRatio = appendOnlyContextRatio
         self.volatileTailBytes = volatileTailBytes
-        self.clientHealthStatus = clientHealthStatus ?? providerCache?.clientHealthStatus
         self.observedGranularity = observedGranularity
         self.clientCausedBusts = clientCausedBusts
         self.comparableRequests = comparableRequests
         self.appendOnlyViolations = appendOnlyViolations
-        self.pCoreTokens = pCore?.usedTokens ?? pCoreTokens
-        self.eCoreObjectCount = eCore?.objectCount ?? eCoreObjectCount
-        self.eCoreTotalBytes = eCore?.totalBytes ?? eCoreTotalBytes
-        self.cacheDebt = providerCache?.cacheDebt ?? cacheDebt
+    }
+
+    // MARK: - Codable & Legacy Decode Adapter
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID
+        case revision
+        case pCore
+        case eCore
+        case providerCache
+        case estimatedTokens
+        case compactionGeneration
+        case structuralPrefixStability
+        case clientCausedBustRate
+        case appendOnlyContextRatio
+        case volatileTailBytes
+        case observedGranularity
+        case clientCausedBusts
+        case comparableRequests
+        case appendOnlyViolations
+
+        // Legacy decoding keys
+        case l1Tokens
+        case l2Tokens
+        case l3Tokens
+        case pCoreTokens
+        case eCoreObjectCount
+        case eCoreTotalBytes
+        case cacheReadTokens
+        case promptTokens
+        case previousPromptTokens
+        case cacheStatus
+        case cacheEpoch
+        case epochReason
+        case stablePrefixHash
+        case missDiagnostics
+        case clientHealthStatus
+        case cacheDebt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let directSessionID = try? container.decode(SessionID.self, forKey: .sessionID) {
+            self.sessionID = directSessionID
+        } else if let rawString = try? container.decode(String.self, forKey: .sessionID) {
+            self.sessionID = SessionID(rawString)
+        } else {
+            self.sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        }
+        self.revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
+        self.estimatedTokens = try container.decodeIfPresent(Int.self, forKey: .estimatedTokens) ?? 0
+        self.compactionGeneration = try container.decodeIfPresent(Int.self, forKey: .compactionGeneration) ?? 0
+
+        self.structuralPrefixStability = try container.decodeIfPresent(Double.self, forKey: .structuralPrefixStability)
+        self.clientCausedBustRate = try container.decodeIfPresent(Double.self, forKey: .clientCausedBustRate)
+        self.appendOnlyContextRatio = try container.decodeIfPresent(Double.self, forKey: .appendOnlyContextRatio)
+        self.volatileTailBytes = try container.decodeIfPresent(Int.self, forKey: .volatileTailBytes)
+        self.observedGranularity = try container.decodeIfPresent(Int.self, forKey: .observedGranularity)
+        self.clientCausedBusts = try container.decodeIfPresent(Int.self, forKey: .clientCausedBusts)
+        self.comparableRequests = try container.decodeIfPresent(Int.self, forKey: .comparableRequests)
+        self.appendOnlyViolations = try container.decodeIfPresent(Int.self, forKey: .appendOnlyViolations)
+
+        // 1. Decode or adapt PCore
+        if let decodedPCore = try container.decodeIfPresent(PCoreStateSnapshot.self, forKey: .pCore) {
+            self.pCore = decodedPCore
+        } else if let legacyPCoreTokens = try container.decodeIfPresent(Int.self, forKey: .pCoreTokens) {
+            self.pCore = PCoreStateSnapshot(usedTokens: legacyPCoreTokens)
+        } else if let legacyL1 = try container.decodeIfPresent(Int.self, forKey: .l1Tokens), legacyL1 > 0 {
+            self.pCore = PCoreStateSnapshot(usedTokens: legacyL1)
+        } else {
+            self.pCore = nil
+        }
+
+        // 2. Decode or adapt ECore
+        if let decodedECore = try container.decodeIfPresent(ECoreStateSnapshot.self, forKey: .eCore) {
+            self.eCore = decodedECore
+        } else {
+            let legacyCount = try container.decodeIfPresent(Int.self, forKey: .eCoreObjectCount)
+            let legacyBytes = try container.decodeIfPresent(Int.self, forKey: .eCoreTotalBytes)
+            if legacyCount != nil || legacyBytes != nil {
+                self.eCore = ECoreStateSnapshot(
+                    objectCount: legacyCount ?? 0,
+                    totalBytes: legacyBytes ?? 0,
+                    revision: self.revision
+                )
+            } else {
+                self.eCore = nil
+            }
+        }
+
+        // 3. Decode or adapt ProviderCache
+        if let decodedCache = try container.decodeIfPresent(ProviderCacheStateSnapshot.self, forKey: .providerCache) {
+            self.providerCache = decodedCache
+        } else {
+            let cacheRead = try container.decodeIfPresent(Int.self, forKey: .cacheReadTokens)
+            let prompt = try container.decodeIfPresent(Int.self, forKey: .promptTokens)
+            let prevPrompt = try container.decodeIfPresent(Int.self, forKey: .previousPromptTokens)
+            let cacheStat = try container.decodeIfPresent(String.self, forKey: .cacheStatus)
+            let epoch = try container.decodeIfPresent(Int.self, forKey: .cacheEpoch)
+            let reason = try container.decodeIfPresent(String.self, forKey: .epochReason)
+            let stableHash = try container.decodeIfPresent(String.self, forKey: .stablePrefixHash)
+            let missDiag = try container.decodeIfPresent(String.self, forKey: .missDiagnostics)
+            let clientHealth = try container.decodeIfPresent(String.self, forKey: .clientHealthStatus)
+            let debt = try container.decodeIfPresent(Int.self, forKey: .cacheDebt)
+
+            if cacheRead != nil || prompt != nil || cacheStat != nil || clientHealth != nil || debt != nil {
+                self.providerCache = ProviderCacheStateSnapshot(
+                    promptTokens: prompt,
+                    previousPromptTokens: prevPrompt,
+                    cacheReadTokens: cacheRead,
+                    cacheEpoch: epoch,
+                    epochReason: reason,
+                    cacheDebt: debt,
+                    clientHealthStatus: clientHealth,
+                    stablePrefixHash: stableHash,
+                    cacheStatus: cacheStat,
+                    missDiagnostics: missDiag
+                )
+            } else {
+                self.providerCache = nil
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(revision, forKey: .revision)
+        try container.encodeIfPresent(pCore, forKey: .pCore)
+        try container.encodeIfPresent(eCore, forKey: .eCore)
+        try container.encodeIfPresent(providerCache, forKey: .providerCache)
+        try container.encode(estimatedTokens, forKey: .estimatedTokens)
+        try container.encode(compactionGeneration, forKey: .compactionGeneration)
+
+        try container.encodeIfPresent(structuralPrefixStability, forKey: .structuralPrefixStability)
+        try container.encodeIfPresent(clientCausedBustRate, forKey: .clientCausedBustRate)
+        try container.encodeIfPresent(appendOnlyContextRatio, forKey: .appendOnlyContextRatio)
+        try container.encodeIfPresent(volatileTailBytes, forKey: .volatileTailBytes)
+        try container.encodeIfPresent(observedGranularity, forKey: .observedGranularity)
+        try container.encodeIfPresent(clientCausedBusts, forKey: .clientCausedBusts)
+        try container.encodeIfPresent(comparableRequests, forKey: .comparableRequests)
+        try container.encodeIfPresent(appendOnlyViolations, forKey: .appendOnlyViolations)
     }
 
     /// Prefix Reuse Efficiency = 实际复用旧前缀 token (cacheRead) / 上一轮可复用前缀 token (previousPromptTokens)

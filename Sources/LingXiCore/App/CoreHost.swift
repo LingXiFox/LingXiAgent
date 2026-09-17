@@ -119,6 +119,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let contentStore: ContentStore
     public let sessionMutationLock = SessionMutationLock.shared
     private var currentRevision: UInt64 = 1
+    private var contextStateRevisions: [SessionID: UInt64] = [:]
     public let eventLogStorageDirectory: URL?
     public private(set) var activeFailpoint: CommitFailpoint?
 
@@ -258,11 +259,15 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.effectiveContextPolicy = resolvedPolicy
 
         compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
+        let ecoreStore = ECoreObjectStore(
+            configuration: configuration?.context.fabric ?? ContextObjectFabricConfiguration()
+        )
         let cacheController = ContextCacheController(
             contextPager: contextPager,
             scanner: projectScanner,
             compactor: compactor,
-            policy: resolvedPolicy
+            policy: resolvedPolicy,
+            ecoreStore: ecoreStore
         )
         self.cacheController = cacheController
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
@@ -951,9 +956,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             pageOutCount: 0
         )
 
-        let ecoreObjects = await cacheController.ecoreStore.listObjects(sessionID: sessionID)
-        let ecoreCount = ecoreObjects.count
-        let ecoreBytes = ecoreObjects.reduce(0) { $0 + $1.totalBytes }
+        let ecoreMetrics = await cacheController.ecoreStore.storageMetrics(for: sessionID)
+        let ecoreCount = ecoreMetrics.count
+        let ecoreBytes = ecoreMetrics.totalBytes
         let debtState = await cacheController.scheduler.debtState(for: sessionID)
 
         return ContextCacheProjection(
@@ -1621,9 +1626,9 @@ extension CoreHost {
 
         let cacheRecord = await cacheController.lastProviderCacheRecord(for: sessionID)
         let clientHealth = await cacheController.lastClientHealth(for: sessionID)
-        let ecoreObjects = await cacheController.ecoreStore.listObjects(sessionID: sessionID)
-        let ecoreCount = ecoreObjects.count
-        let ecoreBytes = ecoreObjects.reduce(0) { $0 + $1.totalBytes }
+        let ecoreMetrics = await cacheController.ecoreStore.storageMetrics(for: sessionID)
+        let ecoreCount = ecoreMetrics.count
+        let ecoreBytes = ecoreMetrics.totalBytes
         let debtState = await cacheController.scheduler.debtState(for: sessionID)
         let lastInput = await cacheController.lastProviderInputTokens(for: sessionID) ?? 0
         var pCoreTokens = cacheRecord?.promptTokens ?? max(effectiveL1Usage, lastInput)
@@ -1633,6 +1638,9 @@ extension CoreHost {
         }
 
         let effectivePromptTokens = cacheRecord?.promptTokens ?? (pCoreTokens > 0 ? pCoreTokens : nil)
+
+        contextStateRevisions[sessionID, default: 0] += 1
+        let contextRevision = contextStateRevisions[sessionID]!
 
         let pCoreSnapshot = PCoreStateSnapshot(
             usedTokens: pCoreTokens,
@@ -1646,7 +1654,7 @@ extension CoreHost {
             totalBytes: ecoreBytes,
             hotObjectCount: nil,
             coldObjectCount: nil,
-            revision: UInt64(generation)
+            revision: contextRevision
         )
 
         let providerCacheSnapshot = ProviderCacheStateSnapshot(
@@ -1664,36 +1672,20 @@ extension CoreHost {
 
         return ContextStateSnapshot(
             sessionID: sessionID,
-            revision: UInt64(generation),
+            revision: contextRevision,
             pCore: pCoreSnapshot,
             eCore: eCoreSnapshot,
             providerCache: providerCacheSnapshot,
             estimatedTokens: estimatedTokens,
-            l1Tokens: effectiveL1Usage,
-            l2Tokens: l2Usage,
-            l3Tokens: l3Usage,
             compactionGeneration: generation,
-            cacheReadTokens: cacheRecord?.cachedTokens,
-            promptTokens: effectivePromptTokens,
-            previousPromptTokens: cacheRecord?.previousPromptTokens,
-            cacheStatus: cacheRecord?.status,
-            cacheEpoch: cacheRecord?.epoch ?? clientHealth?.cacheEpoch,
-            epochReason: cacheRecord?.epochReason,
-            stablePrefixHash: cacheRecord?.stablePrefixHash ?? clientHealth?.stablePrefixHash,
-            missDiagnostics: cacheRecord?.missDiagnostics,
             structuralPrefixStability: clientHealth.map { $0.prefixMutationDetected ? 0.0 : 1.0 },
             clientCausedBustRate: clientHealth?.clientCausedBustRate,
             appendOnlyContextRatio: clientHealth?.appendOnlyRatio,
             volatileTailBytes: clientHealth?.volatileTailBytes,
-            clientHealthStatus: clientHealth?.status,
             observedGranularity: nil,
             clientCausedBusts: clientHealth?.clientCausedBusts,
             comparableRequests: clientHealth?.comparableRequests,
-            appendOnlyViolations: clientHealth?.appendOnlyViolations,
-            pCoreTokens: pCoreTokens,
-            eCoreObjectCount: ecoreCount,
-            eCoreTotalBytes: ecoreBytes,
-            cacheDebt: debtState.cacheDebt
+            appendOnlyViolations: clientHealth?.appendOnlyViolations
         )
     }
 

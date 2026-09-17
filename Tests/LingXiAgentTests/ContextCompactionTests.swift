@@ -272,7 +272,7 @@ struct ContextCompactionTests {
             return calls.map(ModelEvent.toolCallCompleted) + [.completed(.toolCalls)]
         } + [[.textDelta("finished"), .completed(.stop)]]
         let provider = ScriptedFakeProvider(script: script)
-        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: ModelContextProfile(contextWindowTokens: 15_000)), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: ModelContextProfile(contextWindowTokens: 12_000)), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
         defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)

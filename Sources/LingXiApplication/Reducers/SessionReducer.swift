@@ -1137,23 +1137,15 @@ public enum SessionReducer {
                 eCore: mergedECore,
                 providerCache: mergedCache,
                 estimatedTokens: existing.estimatedTokens,
-                l1Tokens: mergedPCore?.usedTokens ?? existing.l1Tokens,
-                l2Tokens: existing.l2Tokens,
-                l3Tokens: existing.l3Tokens,
                 compactionGeneration: mergedGeneration,
-                cacheReadTokens: mergedCache?.cacheReadTokens ?? existing.cacheReadTokens,
-                promptTokens: mergedCache?.promptTokens ?? existing.promptTokens,
-                previousPromptTokens: mergedCache?.previousPromptTokens ?? existing.previousPromptTokens,
-                cacheStatus: mergedCache?.cacheStatus ?? existing.cacheStatus,
-                cacheEpoch: mergedCache?.cacheEpoch ?? existing.cacheEpoch,
-                epochReason: mergedCache?.epochReason ?? existing.epochReason,
-                stablePrefixHash: mergedCache?.stablePrefixHash ?? existing.stablePrefixHash,
-                missDiagnostics: mergedCache?.missDiagnostics ?? existing.missDiagnostics,
-                clientHealthStatus: mergedCache?.clientHealthStatus ?? existing.clientHealthStatus,
-                pCoreTokens: mergedPCore?.usedTokens ?? existing.pCoreTokens,
-                eCoreObjectCount: mergedECore?.objectCount ?? existing.eCoreObjectCount,
-                eCoreTotalBytes: mergedECore?.totalBytes ?? existing.eCoreTotalBytes,
-                cacheDebt: mergedCache?.cacheDebt ?? existing.cacheDebt
+                structuralPrefixStability: existing.structuralPrefixStability,
+                clientCausedBustRate: existing.clientCausedBustRate,
+                appendOnlyContextRatio: existing.appendOnlyContextRatio,
+                volatileTailBytes: existing.volatileTailBytes,
+                observedGranularity: existing.observedGranularity,
+                clientCausedBusts: existing.clientCausedBusts,
+                comparableRequests: existing.comparableRequests,
+                appendOnlyViolations: existing.appendOnlyViolations
             )
         }
     }

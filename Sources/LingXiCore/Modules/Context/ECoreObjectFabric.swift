@@ -115,6 +115,17 @@ public struct RecallChunk: Sendable, Equatable, Codable {
     }
 }
 
+/// 会话级外部存储指标（O(1) 维护，避免重复整盘扫描）
+public struct SessionStorageMetrics: Sendable, Equatable {
+    public let count: Int
+    public let totalBytes: Int
+
+    public init(count: Int = 0, totalBytes: Int = 0) {
+        self.count = count
+        self.totalBytes = totalBytes
+    }
+}
+
 /// E-Core 对象 Fabric 存储器：负责管理会话级外部持久化对象。
 /// 遵循三大纪律八项注意：
 /// 1. Fail-Open：所有写入与读取异常降级处理，绝不崩溃智能体主流程。
@@ -127,6 +138,7 @@ public actor ECoreObjectStore {
     private var metadataCache: [SessionID: [ContextObjectID: ObservationMetadata]] = [:]
     private var heatStates: [SessionID: [ContextObjectID: ECoreHeatState]] = [:]
     private var projectionCounts: [SessionID: [ContextObjectID: Int]] = [:]
+    private var cachedMetrics: [SessionID: SessionStorageMetrics] = [:]
 
     public init(
         baseDirectory: URL? = nil,
@@ -219,7 +231,25 @@ public actor ECoreObjectStore {
             if metadataCache[sessionID] == nil {
                 metadataCache[sessionID] = [:]
             }
+            let previousMeta = metadataCache[sessionID]?[objectID]
             metadataCache[sessionID]?[objectID] = metadata
+
+            if var existing = cachedMetrics[sessionID] {
+                if let previousMeta {
+                    existing = SessionStorageMetrics(
+                        count: existing.count,
+                        totalBytes: max(0, existing.totalBytes - previousMeta.totalBytes + byteCount)
+                    )
+                } else {
+                    existing = SessionStorageMetrics(
+                        count: existing.count + 1,
+                        totalBytes: existing.totalBytes + byteCount
+                    )
+                }
+                cachedMetrics[sessionID] = existing
+            } else {
+                cachedMetrics[sessionID] = SessionStorageMetrics(count: 1, totalBytes: byteCount)
+            }
 
             if configuration.heatTrackingEnabled {
                 let event = ECoreAccessEvent(
@@ -563,6 +593,14 @@ public actor ECoreObjectStore {
         if projectionCounts[sessionID]?.isEmpty == true {
             projectionCounts.removeValue(forKey: sessionID)
         }
+        if let remaining = metadataCache[sessionID]?.values {
+            cachedMetrics[sessionID] = SessionStorageMetrics(
+                count: remaining.count,
+                totalBytes: remaining.reduce(0) { $0 + $1.totalBytes }
+            )
+        } else {
+            cachedMetrics[sessionID] = SessionStorageMetrics(count: 0, totalBytes: 0)
+        }
     }
 
     /// 重置或清理 session 存储
@@ -570,8 +608,23 @@ public actor ECoreObjectStore {
         metadataCache.removeValue(forKey: sessionID)
         heatStates.removeValue(forKey: sessionID)
         projectionCounts.removeValue(forKey: sessionID)
+        cachedMetrics.removeValue(forKey: sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
         try? FileManager.default.removeItem(at: objectsDir)
+    }
+
+    /// 获取会话级外部存储指标（O(1) 内存访问，仅冷启动时扫描一次）
+    public func storageMetrics(for sessionID: SessionID) async -> SessionStorageMetrics {
+        if let cached = cachedMetrics[sessionID] {
+            return cached
+        }
+        let objects = await listObjects(sessionID: sessionID)
+        let metrics = SessionStorageMetrics(
+            count: objects.count,
+            totalBytes: objects.reduce(0) { $0 + $1.totalBytes }
+        )
+        cachedMetrics[sessionID] = metrics
+        return metrics
     }
 
     /// 获取特定对象的投影计数（供测试与诊断使用）

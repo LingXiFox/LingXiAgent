@@ -356,7 +356,7 @@ public actor ContextCacheController {
             epochReason: reason,
             stablePrefixHash: currentFP?.stablePrefixHash,
             missDiagnostics: missDiagnostics,
-            provider: provider,
+            provider: provider ?? "provider",
             model: model,
             cacheWriteTokens: cacheWriteTokens
         )
@@ -408,11 +408,11 @@ public actor ContextCacheController {
     /// 获取最近一次 Provider 推理返回的真实详细 Cache 记录
     public func lastProviderCacheRecord(for sessionID: SessionID) -> SessionCacheRecord? {
         if let record = sessionCacheRecords[sessionID] {
-            return record.provider != nil ? record : nil
+            return record
         }
         if let hydrated = loadPersistedTelemetry(sessionID: sessionID) {
             sessionCacheRecords[sessionID] = hydrated
-            return hydrated.provider != nil ? hydrated : nil
+            return hydrated
         }
         return nil
     }
@@ -531,20 +531,20 @@ public actor ContextCacheController {
 
     /// E-Core 对象织物估算 Token 数（按 4 字节约 1 Token 换算）
     public func eCoreUsageTokens(for sessionID: SessionID) async -> Int {
-        let objects = await ecoreStore.listObjects(sessionID: sessionID)
-        return objects.reduce(0) { $0 + $1.totalBytes } / 4
+        let metrics = await ecoreStore.storageMetrics(for: sessionID)
+        return metrics.totalBytes / 4
     }
 
-    /// E-Core 对象总数
+    /// E-Core 对象总数（O(1) 读取）
     public func eCoreObjectCount(for sessionID: SessionID) async -> Int {
-        let objects = await ecoreStore.listObjects(sessionID: sessionID)
-        return objects.count
+        let metrics = await ecoreStore.storageMetrics(for: sessionID)
+        return metrics.count
     }
 
-    /// E-Core 存储总字节数
+    /// E-Core 存储总字节数（O(1) 读取）
     public func eCoreTotalBytes(for sessionID: SessionID) async -> Int {
-        let objects = await ecoreStore.listObjects(sessionID: sessionID)
-        return objects.reduce(0) { $0 + $1.totalBytes }
+        let metrics = await ecoreStore.storageMetrics(for: sessionID)
+        return metrics.totalBytes
     }
 
     /// [Legacy Compatibility] 旧 L2 工作集占用数
@@ -858,6 +858,8 @@ public actor ContextCacheController {
         currentTurnFingerprintBySession.removeValue(forKey: sessionID)
         lastTurnFingerprintBySession.removeValue(forKey: sessionID)
         sessionCacheRecords.removeValue(forKey: sessionID)
+        let telemetryFile = telemetryFileURL(sessionID: sessionID)
+        try? FileManager.default.removeItem(at: telemetryFile)
         residentDerivedPagesBySession.removeValue(forKey: sessionID)
         sessionEpochs[sessionID] = (sessionEpochs[sessionID] ?? 1) + 1
         sessionEpochReasons[sessionID] = "revert_turn"

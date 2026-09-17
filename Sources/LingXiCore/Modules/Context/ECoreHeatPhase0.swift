@@ -140,9 +140,10 @@ public struct ECoreHeatScorer: Sendable {
         eventWeight: Double,
         halfLifeSeconds: Double = 3600.0
     ) -> Double {
+        let sanitizedScore = (currentScore.isFinite && currentScore > 0) ? currentScore : 0.0
         let elapsed = max(0.0, now.timeIntervalSince(lastUpdatedAt))
-        let decayed = decayedScore(
-            currentScore: currentScore,
+        let decayed = (elapsed < 0.001) ? sanitizedScore : decayedScore(
+            currentScore: sanitizedScore,
             elapsedSeconds: elapsed,
             halfLifeSeconds: halfLifeSeconds
         )

@@ -51,7 +51,13 @@ public struct ContextProjection: Sendable {
             let assistantCount = assistantCountAfterMessageID[messageID] ?? 0
             let toolName = result.toolName ?? "tool"
             let byteCount = result.content.utf8.count
-            let isSourceCode = (toolName == "read_file" || toolName == "read_file_lines")
+            var isSourceCode = (toolName == "read_file" || toolName == "read_file_lines")
+            if isSourceCode {
+                // 如果内容为 Trace/Log/Data 结构，则不作为源码豁免，允许正常按配置阈值投影
+                if result.content.hasPrefix("===") || result.content.hasPrefix("[TRACE]") || result.content.contains("LOG BEGIN") {
+                    isSourceCode = false
+                }
+            }
 
             // 规则 1：源码读取（read_file）在正常工作集容量内优先保留全文，避免模型跨文件关联分析时丢失代码
             let effectiveThreshold: Int
