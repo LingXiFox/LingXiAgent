@@ -4,9 +4,29 @@ import LingXiProtocol
 
 /// 代码图谱构建与拓扑分析引擎 (CodebaseGraphEngine)。
 /// 负责扫描代码库、提取 AST 结构与依赖边、持久化紧凑缓存并提供调用拓扑与架构分析。
-/// Phase 8: Compact Indexing (NodePool + CompactGraphEdge) + Caller-Local Invocation Extraction
+/// Round 2 Phase D:
+/// - 符号 ID 区分 Container 与 Signature，彻底消除同名方法节点碰撞与覆盖；
+/// - 紧凑 EdgeKey 替代 Set<String>，消除边去重堆内存放大；
+/// - 增量索引检测并级联删除磁盘上已移除的文件；
+/// - 持久化 Caller Invocation Summary，增量构建时完整保留与自愈跨文件调用边；
+/// - 语法解析器剥离字符串与注释后统计 Brace 深度，嵌套调用仅归属最内层 Scope，支持单行函数体调用扫描。
 public actor CodebaseGraphEngine {
     public static let shared = CodebaseGraphEngine()
+
+    // MARK: - Compact Edge Key (Zero String Heap Allocation)
+    public struct EdgeKey: Hashable, Sendable {
+        public let source: NodeIndex
+        public let target: NodeIndex
+        public let kind: GraphEdgeKind
+        public let line: Int32
+
+        public init(source: NodeIndex, target: NodeIndex, kind: GraphEdgeKind, line: Int32) {
+            self.source = source
+            self.target = target
+            self.kind = kind
+            self.line = line
+        }
+    }
 
     // MARK: - Compact Storage Pools
     private var nodePool: [GraphNode] = []
@@ -14,13 +34,29 @@ public actor CodebaseGraphEngine {
     private var nodesByName: [String: [NodeIndex]] = [:]
 
     private var edgePool: [CompactGraphEdge] = []
-    private var edgeDeduplicationSet: Set<String> = [] // "\(source)->\(kind)->\(target):\(line)"
+    private var edgeDeduplicationSet: Set<EdgeKey> = []
 
     private var outgoingEdgeIndices: [NodeIndex: [EdgeIndex]] = [:]
     private var incomingEdgeIndices: [NodeIndex: [EdgeIndex]] = [:]
 
     private var fileModificationTimes: [String: Date] = [:]
-    private var fileFunctionSpans: [String: [FunctionSpan]] = [:]
+
+    // MARK: - Caller Invocation Summaries (Persistent per-file call intents)
+    public struct CallerInvocationSummary: Codable, Sendable {
+        public let callerNodeID: String
+        public let callerLine: Int32
+        public let filePath: String
+        public let invokedNames: Set<String>
+
+        public init(callerNodeID: String, callerLine: Int32, filePath: String, invokedNames: Set<String>) {
+            self.callerNodeID = callerNodeID
+            self.callerLine = callerLine
+            self.filePath = filePath
+            self.invokedNames = invokedNames
+        }
+    }
+
+    private var fileInvocationSummaries: [String: [CallerInvocationSummary]] = [:]
 
     private var workspaceRootURL: URL?
     private var isIndexing: Bool = false
@@ -51,20 +87,23 @@ public actor CodebaseGraphEngine {
         public let edgeCount: Int
         public let outgoingEdgeReferenceCount: Int
         public let incomingEdgeReferenceCount: Int
-        public let approximateHeapBytes: Int
+        public let structuralLowerBoundBytes: Int
+
+        // 兼容旧字段
+        public var approximateHeapBytes: Int { structuralLowerBoundBytes }
 
         public init(
             nodeCount: Int,
             edgeCount: Int,
             outgoingEdgeReferenceCount: Int,
             incomingEdgeReferenceCount: Int,
-            approximateHeapBytes: Int
+            structuralLowerBoundBytes: Int
         ) {
             self.nodeCount = nodeCount
             self.edgeCount = edgeCount
             self.outgoingEdgeReferenceCount = outgoingEdgeReferenceCount
             self.incomingEdgeReferenceCount = incomingEdgeReferenceCount
-            self.approximateHeapBytes = approximateHeapBytes
+            self.structuralLowerBoundBytes = structuralLowerBoundBytes
         }
     }
 
@@ -73,12 +112,13 @@ public actor CodebaseGraphEngine {
         let inCount = incomingEdgeIndices.values.reduce(0) { $0 + $1.count }
         let nodeBytes = nodePool.count * 128
         let edgeBytes = edgePool.count * MemoryLayout<CompactGraphEdge>.stride + (outCount + inCount) * 4
+        let edgeKeyBytes = edgeDeduplicationSet.count * MemoryLayout<EdgeKey>.stride
         return GraphMemoryDiagnostics(
             nodeCount: nodePool.count,
             edgeCount: edgePool.count,
             outgoingEdgeReferenceCount: outCount,
             incomingEdgeReferenceCount: inCount,
-            approximateHeapBytes: nodeBytes + edgeBytes
+            structuralLowerBoundBytes: nodeBytes + edgeBytes + edgeKeyBytes
         )
     }
 
@@ -91,21 +131,20 @@ public actor CodebaseGraphEngine {
         outgoingEdgeIndices.removeAll(keepingCapacity: false)
         incomingEdgeIndices.removeAll(keepingCapacity: false)
         fileModificationTimes.removeAll(keepingCapacity: false)
-        fileFunctionSpans.removeAll(keepingCapacity: false)
+        fileInvocationSummaries.removeAll(keepingCapacity: false)
         workspaceRootURL = nil
         isInitialized = false
     }
 
     public init() {}
 
-    /// 索引或增量更新工作区代码图谱
+    // MARK: - Workspace Indexing
+
     public func indexWorkspace(workspaceURL: URL, forceReindex: Bool = false) async -> ArchitectureOverview {
         isIndexing = true
         defer {
             isIndexing = false
             isInitialized = true
-            // Phase 8: Release temporary parser scratch spans immediately after index build to prevent memory bloat
-            fileFunctionSpans.removeAll(keepingCapacity: false)
         }
 
         // Workspace 变更时强制清空旧工作区图谱，防止内存污染与泄漏
@@ -119,14 +158,24 @@ public actor CodebaseGraphEngine {
             self.workspaceRootURL = workspaceURL
         }
 
-        // 尝试从持久化缓存载入 V2
+        // 尝试从持久化缓存载入 V3
         if nodePool.isEmpty && !forceReindex {
             loadFromDiskCache(for: workspaceURL)
         }
 
         let fileURLs = discoverSourceFiles(in: workspaceURL)
-        var changedFiles: [URL] = []
+        let currentRelPaths = Set(fileURLs.map { relativePath(for: $0, root: workspaceURL) })
 
+        // 1. 删除检测：从 Graph 中彻底级联移除在磁盘上已删除的文件
+        let deletedRelPaths = Set(fileModificationTimes.keys).subtracting(currentRelPaths)
+        for deletedPath in deletedRelPaths {
+            removeFileEntities(byRelPath: deletedPath)
+            fileModificationTimes.removeValue(forKey: deletedPath)
+            fileInvocationSummaries.removeValue(forKey: deletedPath)
+        }
+
+        // 2. 变更检测：筛选新增或被修改的文件
+        var changedFiles: [URL] = []
         for file in fileURLs {
             let relPath = relativePath(for: file, root: workspaceURL)
             let currentMtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
@@ -137,16 +186,17 @@ public actor CodebaseGraphEngine {
             fileModificationTimes[relPath] = currentMtime
         }
 
-        // 仅对变更或新增文件重新解析
+        // 3. 仅对变更或新增文件重新解析其节点与结构边
         for file in changedFiles {
-            removeFileEntities(for: file, root: workspaceURL)
+            let rel = relativePath(for: file, root: workspaceURL)
+            removeFileEntities(byRelPath: rel)
             parseFile(file, root: workspaceURL)
         }
 
-        // 重新构建跨文件精准调用边 (Caller-local invocation matching)
+        // 4. 重新构建跨文件精准调用边 (基于持久化的 fileInvocationSummaries 全量调用网拓扑重建)
         resolveCrossFileCallEdges()
 
-        // 持久化到本地磁盘缓存 V2
+        // 5. 持久化到本地磁盘缓存 V3
         saveToDiskCache(for: workspaceURL)
 
         return getArchitecture()
@@ -258,65 +308,68 @@ public actor CodebaseGraphEngine {
         let rootNode = nodePool[Int(rootNodeIdx)]
 
         var steps: [TraceStep] = []
-        var visited = Set<NodeIndex>([rootNodeIdx])
-        var queue: [(nodeIdx: NodeIndex, depth: Int)] = [(rootNodeIdx, 1)]
+        var visited: Set<NodeIndex> = [rootNodeIdx]
+        var queue: [(idx: NodeIndex, depth: Int)] = [(rootNodeIdx, 0)]
 
         while !queue.isEmpty {
             let current = queue.removeFirst()
-            if current.depth > maxDepth { continue }
+            if current.depth >= maxDepth { continue }
 
-            let relatedEdgeIndices: [EdgeIndex]
+            let edgeIndices: [EdgeIndex]
             switch direction {
-            case .inbound:
-                // 找谁调用了我 (target == current.nodeIdx)
-                relatedEdgeIndices = incomingEdgeIndices[current.nodeIdx] ?? []
             case .outbound:
-                // 找我调用了谁 (source == current.nodeIdx)
-                relatedEdgeIndices = outgoingEdgeIndices[current.nodeIdx] ?? []
+                edgeIndices = outgoingEdgeIndices[current.idx] ?? []
+            case .inbound:
+                edgeIndices = incomingEdgeIndices[current.idx] ?? []
             }
 
-            for edgeIdx in relatedEdgeIndices {
-                let edge = edgePool[Int(edgeIdx)]
-                guard edge.kind == .calls else { continue }
-                let nextNodeIdx = (direction == .inbound) ? edge.source : edge.target
-                guard Int(nextNodeIdx) < nodePool.count else { continue }
-                let nextNode = nodePool[Int(nextNodeIdx)]
-                let currentNode = nodePool[Int(current.nodeIdx)]
+            for eIdx in edgeIndices {
+                let edge = edgePool[Int(eIdx)]
+                let nextIdx = (direction == .inbound) ? edge.source : edge.target
+                let fromNode = nodePool[Int(edge.source)]
+                let toNode = nodePool[Int(edge.target)]
 
-                let step = (direction == .inbound)
-                    ? TraceStep(depth: current.depth, from: nextNode, to: currentNode, line: Int(edge.line), kind: edge.kind)
-                    : TraceStep(depth: current.depth, from: currentNode, to: nextNode, line: Int(edge.line), kind: edge.kind)
-                steps.append(step)
+                steps.append(TraceStep(
+                    depth: current.depth + 1,
+                    from: fromNode,
+                    to: toNode,
+                    line: edge.line > 0 ? Int(edge.line) : nil,
+                    kind: edge.kind
+                ))
 
-                if !visited.contains(nextNodeIdx) {
-                    visited.insert(nextNodeIdx)
-                    queue.append((nextNodeIdx, current.depth + 1))
+                if !visited.contains(nextIdx) {
+                    visited.insert(nextIdx)
+                    queue.append((nextIdx, current.depth + 1))
                 }
             }
         }
 
-        return CallTraceReport(root: rootNode, direction: direction, totalDepth: maxDepth, steps: steps)
+        return CallTraceReport(
+            root: rootNode,
+            direction: direction,
+            totalDepth: steps.map { _ in maxDepth }.first ?? 0,
+            steps: steps
+        )
     }
 
-    /// 基于名称或关键词检索图谱节点
-    public func search(query: String, kind: GraphNodeKind? = nil, limit: Int = 30) -> [GraphNode] {
+    /// 搜索代码图谱实体 (search_graph)
+    public func search(query: String, kind: GraphNodeKind? = nil, limit: Int = 20) -> [GraphNode] {
         let q = query.lowercased()
-        var results = nodePool.filter { node in
-            if let kind, node.kind != kind { return false }
-            return node.name.lowercased().contains(q) || node.qualifiedName.lowercased().contains(q)
+        var results: [GraphNode] = []
+
+        for node in nodePool {
+            if let targetKind = kind, node.kind != targetKind { continue }
+            if node.name.lowercased().contains(q) || node.qualifiedName.lowercased().contains(q) || node.id.lowercased().contains(q) {
+                results.append(node)
+                if results.count >= limit { break }
+            }
         }
-        results.sort {
-            if $0.name.lowercased() == q { return true }
-            if $1.name.lowercased() == q { return false }
-            return $0.name.count < $1.name.count
-        }
-        return Array(results.prefix(limit))
+        return results
     }
 
-    // MARK: - Private Parser & Graph Construction
 
     private func findNodeIndex(by query: String) -> NodeIndex? {
-        if let exact = nodeIndexByID[query] { return exact }
+        if let idx = nodeIndexByID[query] { return idx }
         if let indices = nodesByName[query], let first = indices.first { return first }
         if let match = search(query: query, limit: 1).first, let idx = nodeIndexByID[match.id] {
             return idx
@@ -324,13 +377,19 @@ public actor CodebaseGraphEngine {
         return nil
     }
 
+    // MARK: - Node & Edge Removal (Cascade Incremental Purge)
+
     private func removeFileEntities(for fileURL: URL, root: URL) {
         let relPath = relativePath(for: fileURL, root: root)
+        removeFileEntities(byRelPath: relPath)
+    }
+
+    private func removeFileEntities(byRelPath relPath: String) {
         let removedIndices = Set(nodePool.indices.compactMap { idx -> NodeIndex? in
             (nodePool[idx].path == relPath) ? NodeIndex(idx) : nil
         })
         guard !removedIndices.isEmpty else {
-            fileFunctionSpans.removeValue(forKey: relPath)
+            fileInvocationSummaries.removeValue(forKey: relPath)
             return
         }
 
@@ -357,7 +416,7 @@ public actor CodebaseGraphEngine {
 
         // 过滤有效边，映射其 source 与 target 到新的 NodeIndex
         var newEdgePool: [CompactGraphEdge] = []
-        var newEdgeDeduplicationSet: Set<String> = []
+        var newEdgeDeduplicationSet: Set<EdgeKey> = []
         var newOutgoing: [NodeIndex: [EdgeIndex]] = [:]
         var newIncoming: [NodeIndex: [EdgeIndex]] = [:]
 
@@ -366,7 +425,7 @@ public actor CodebaseGraphEngine {
                   let newTarget = oldToNewNodeMap[edge.target] else {
                 continue // 属于被删除实体的边被彻底清除
             }
-            let key = "\(newSource)->\(edge.kind.rawValue)->\(newTarget):\(edge.line)"
+            let key = EdgeKey(source: newSource, target: newTarget, kind: edge.kind, line: edge.line)
             guard !newEdgeDeduplicationSet.contains(key) else { continue }
             newEdgeDeduplicationSet.insert(key)
 
@@ -390,7 +449,7 @@ public actor CodebaseGraphEngine {
         self.edgeDeduplicationSet = newEdgeDeduplicationSet
         self.outgoingEdgeIndices = newOutgoing
         self.incomingEdgeIndices = newIncoming
-        self.fileFunctionSpans.removeValue(forKey: relPath)
+        self.fileInvocationSummaries.removeValue(forKey: relPath)
     }
 
     private struct FunctionSpan: Sendable {
@@ -406,6 +465,8 @@ public actor CodebaseGraphEngine {
         let spanIndex: Int
         let braceDepth: Int
     }
+
+    // MARK: - File Parsing & AST Extraction
 
     private func parseFile(_ fileURL: URL, root: URL) {
         guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
@@ -428,7 +489,7 @@ public actor CodebaseGraphEngine {
         )
         let fileNodeIdx = addNode(fileNode)
 
-        var containerStack: [(id: String, idx: NodeIndex, depth: Int)] = []
+        var containerStack: [(id: String, idx: NodeIndex, name: String, depth: Int)] = []
         var activeScopes: [ActiveScope] = []
         var spans: [FunctionSpan] = []
         var currentBraceDepth = 0
@@ -436,8 +497,11 @@ public actor CodebaseGraphEngine {
         for (idx, rawLine) in fileLines.enumerated() {
             let lineNum = idx + 1
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            let openBraces = line.filter { $0 == "{" }.count
-            let closeBraces = line.filter { $0 == "}" }.count
+
+            // 剥离注释与字符串后再统计大括号，杜绝字符字面量或注释中的大括号错乱 scope 深度
+            let strippedLine = stripCommentsAndStrings(rawLine)
+            let openBraces = strippedLine.filter { $0 == "{" }.count
+            let closeBraces = strippedLine.filter { $0 == "}" }.count
 
             // 1. Imports
             if line.hasPrefix("import ") {
@@ -453,14 +517,20 @@ public actor CodebaseGraphEngine {
                 continue
             }
 
-            // 2. Class / Struct / Interface / Protocol / Enum
+            // 2. Class / Struct / Interface / Protocol / Enum / Actor
             if let decl = matchTypeDeclaration(line: line, ext: ext) {
-                let entityId = "\(decl.kind.rawValue):\(relPath):\(decl.name)"
+                let containerPath: String
+                if !containerStack.isEmpty {
+                    containerPath = containerStack.map(\.name).joined(separator: ".") + "." + decl.name
+                } else {
+                    containerPath = decl.name
+                }
+                let entityId = "\(decl.kind.rawValue):\(relPath):\(containerPath)"
                 let node = GraphNode(
                     id: entityId,
                     kind: decl.kind,
                     name: decl.name,
-                    qualifiedName: "\(relPath).\(decl.name)",
+                    qualifiedName: "\(relPath).\(containerPath)",
                     path: relPath,
                     startLine: lineNum,
                     isExported: !line.contains("private"),
@@ -479,20 +549,29 @@ public actor CodebaseGraphEngine {
                     }
                 }
                 currentBraceDepth += (openBraces - closeBraces)
-                containerStack.append((id: entityId, idx: entityIdx, depth: currentBraceDepth))
+                containerStack.append((id: entityId, idx: entityIdx, name: decl.name, depth: currentBraceDepth))
                 closeScopesIfNeeded(currentDepth: currentBraceDepth, lineNum: lineNum, activeScopes: &activeScopes, spans: &spans, containerStack: &containerStack)
                 continue
             }
 
             // 3. Function / Method Declaration
-            if let funcName = matchFunctionDeclaration(line: line, ext: ext) {
+            if let (funcName, signature) = matchFunctionDeclaration(line: line, ext: ext) {
                 let isMethod = !containerStack.isEmpty
-                let entityId = "\(isMethod ? "method" : "function"):\(relPath):\(funcName)"
+                let containerPath = containerStack.map(\.name).joined(separator: ".")
+                let entityId: String
+                let qualifiedName: String
+                if isMethod {
+                    entityId = "method:\(relPath):\(containerPath):\(funcName):\(signature):\(lineNum)"
+                    qualifiedName = "\(relPath).\(containerPath).\(funcName)"
+                } else {
+                    entityId = "function:\(relPath):\(funcName):\(signature):\(lineNum)"
+                    qualifiedName = "\(relPath).\(funcName)"
+                }
                 let node = GraphNode(
                     id: entityId,
                     kind: isMethod ? .method : .function,
                     name: funcName,
-                    qualifiedName: "\(relPath).\(funcName)",
+                    qualifiedName: qualifiedName,
                     path: relPath,
                     startLine: lineNum,
                     isExported: !line.contains("private"),
@@ -504,26 +583,38 @@ public actor CodebaseGraphEngine {
 
                 currentBraceDepth += (openBraces - closeBraces)
                 let spanIdx = spans.count
-                spans.append(FunctionSpan(
+                var funcSpan = FunctionSpan(
                     nodeID: entityId,
                     name: funcName,
                     filePath: relPath,
                     startLine: lineNum,
                     endLine: lineNum,
                     invokedNames: []
-                ))
+                )
+
+                // 修复单行函数（func a() { b() }）：扫描同一行大括号之后的代码行内调用
+                if let openBraceIdx = line.firstIndex(of: "{") {
+                    let afterBrace = String(line[line.index(after: openBraceIdx)...])
+                    if !afterBrace.isEmpty {
+                        let sameLineCalls = extractInvocations(from: afterBrace)
+                        for call in sameLineCalls where call != funcName {
+                            funcSpan.invokedNames.insert(call)
+                        }
+                    }
+                }
+
+                spans.append(funcSpan)
                 activeScopes.append(ActiveScope(spanIndex: spanIdx, braceDepth: currentBraceDepth))
                 closeScopesIfNeeded(currentDepth: currentBraceDepth, lineNum: lineNum, activeScopes: &activeScopes, spans: &spans, containerStack: &containerStack)
                 continue
             }
 
-            // 4. Caller-local Invocation Scanner (Phase 8)
-            if !activeScopes.isEmpty {
+            // 4. Caller-local Invocation Scanner
+            // 修复嵌套作用域调用混淆：调用仅记录到最内层活跃 Scope，绝不污染外层 Scope
+            if let innermostScope = activeScopes.last {
                 let calls = extractInvocations(from: line)
                 for call in calls {
-                    for scope in activeScopes {
-                        spans[scope.spanIndex].invokedNames.insert(call)
-                    }
+                    spans[innermostScope.spanIndex].invokedNames.insert(call)
                 }
             }
 
@@ -536,7 +627,17 @@ public actor CodebaseGraphEngine {
             spans[scope.spanIndex].endLine = fileLines.count
         }
 
-        fileFunctionSpans[relPath] = spans
+        // 持久化该文件的调用摘要 (CallerInvocationSummary)
+        var summaries: [CallerInvocationSummary] = []
+        for span in spans {
+            summaries.append(CallerInvocationSummary(
+                callerNodeID: span.nodeID,
+                callerLine: Int32(span.startLine),
+                filePath: relPath,
+                invokedNames: span.invokedNames
+            ))
+        }
+        fileInvocationSummaries[relPath] = summaries
     }
 
     private func closeScopesIfNeeded(
@@ -544,7 +645,7 @@ public actor CodebaseGraphEngine {
         lineNum: Int,
         activeScopes: inout [ActiveScope],
         spans: inout [FunctionSpan],
-        containerStack: inout [(id: String, idx: NodeIndex, depth: Int)]
+        containerStack: inout [(id: String, idx: NodeIndex, name: String, depth: Int)]
     ) {
         while let lastScope = activeScopes.last, currentDepth < lastScope.braceDepth {
             spans[lastScope.spanIndex].endLine = lineNum
@@ -553,6 +654,32 @@ public actor CodebaseGraphEngine {
         while let lastContainer = containerStack.last, currentDepth < lastContainer.depth {
             containerStack.removeLast()
         }
+    }
+
+    private func stripCommentsAndStrings(_ raw: String) -> String {
+        var result = ""
+        var inString = false
+        var prev: Character? = nil
+        let chars = Array(raw)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if !inString && c == "/" && i + 1 < chars.count && chars[i + 1] == "/" {
+                // 单行注释结束整行
+                break
+            }
+            if c == "\"" && prev != "\\" {
+                inString.toggle()
+                result.append(" ")
+            } else if inString {
+                result.append(" ")
+            } else {
+                result.append(c)
+            }
+            prev = c
+            i += 1
+        }
+        return result
     }
 
     private func extractInvocations(from line: String) -> [String] {
@@ -652,15 +779,23 @@ public actor CodebaseGraphEngine {
         return nil
     }
 
-    private func matchFunctionDeclaration(line: String, ext: String) -> String? {
+    private func matchFunctionDeclaration(line: String, ext: String) -> (name: String, signature: String)? {
         let prefixes = ["func ", "def ", "fn ", "function "]
         for p in prefixes {
             if let range = line.range(of: p) {
                 let after = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                if let paren = after.firstIndex(of: "(") {
-                    let name = String(after[..<paren]).trimmingCharacters(in: .whitespaces)
+                if let parenOpen = after.firstIndex(of: "(") {
+                    let name = String(after[..<parenOpen]).trimmingCharacters(in: .whitespaces)
                     if !name.isEmpty && !name.contains(" ") && !name.hasPrefix("//") {
-                        return name
+                        let remaining = after[parenOpen...]
+                        let signature: String
+                        if let parenClose = remaining.firstIndex(of: ")") {
+                            let paramsContent = remaining[remaining.index(after: parenOpen)..<parenClose]
+                            signature = formatParameterSignature(name: name, params: String(paramsContent))
+                        } else {
+                            signature = "\(name)()"
+                        }
+                        return (name: name, signature: signature)
                     }
                 }
             }
@@ -668,20 +803,77 @@ public actor CodebaseGraphEngine {
         return nil
     }
 
-    /// Phase 8: 基于 Caller-local Invocation 精确建立跨文件调用边，彻底消除笛卡尔积边
+    private func formatParameterSignature(name: String, params: String) -> String {
+        let trimmed = params.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return "\(name)()" }
+        let parts = trimmed.split(separator: ",")
+        var labels: [String] = []
+        for part in parts {
+            let pTrimmed = part.trimmingCharacters(in: .whitespaces)
+            let tokens = pTrimmed.split(whereSeparator: { $0.isWhitespace || $0 == ":" })
+            if let firstToken = tokens.first {
+                labels.append(String(firstToken))
+            }
+        }
+        if labels.isEmpty {
+            return "\(name)()"
+        }
+        return "\(name)(\(labels.map { "\($0):" }.joined()))"
+    }
+
+    // MARK: - Cross-File Call Graph Reconstruction (Full Resolution from Invocations)
+
+    /// 基于全量持久化的 Caller Invocation Summaries 精确重建跨文件调用边，
+    /// 确保在增量构建、Callee 修改或删除时，未修改 Caller 的调用边绝不丢失！
     private func resolveCrossFileCallEdges() {
-        for (_, spans) in fileFunctionSpans {
-            for span in spans {
-                guard let callerIdx = nodeIndexByID[span.nodeID] else { continue }
-                for invokedName in span.invokedNames where invokedName != span.name {
+        // 1. 从图谱中清空所有现有的 .calls 边（保留 .defines, .imports, .inherits 等结构边）
+        var nonCallEdges: [CompactGraphEdge] = []
+        var newEdgeDeduplicationSet: Set<EdgeKey> = []
+        var newOutgoing: [NodeIndex: [EdgeIndex]] = [:]
+        var newIncoming: [NodeIndex: [EdgeIndex]] = [:]
+
+        for edge in edgePool where edge.kind != .calls {
+            let edgeIdx = EdgeIndex(nonCallEdges.count)
+            nonCallEdges.append(edge)
+            let key = EdgeKey(source: edge.source, target: edge.target, kind: edge.kind, line: edge.line)
+            newEdgeDeduplicationSet.insert(key)
+            newOutgoing[edge.source, default: []].append(edgeIdx)
+            newIncoming[edge.target, default: []].append(edgeIdx)
+        }
+
+        self.edgePool = nonCallEdges
+        self.edgeDeduplicationSet = newEdgeDeduplicationSet
+        self.outgoingEdgeIndices = newOutgoing
+        self.incomingEdgeIndices = newIncoming
+
+        // 2. 遍历所有文件持久保存的 CallerInvocationSummary，重新解析建立 .calls 边
+        for (_, summaries) in fileInvocationSummaries {
+            for summary in summaries {
+                guard let callerIdx = nodeIndexByID[summary.callerNodeID] else { continue }
+                let callerNode = nodePool[Int(callerIdx)]
+
+                for invokedName in summary.invokedNames where invokedName != callerNode.name {
                     guard let calleeIndices = nodesByName[invokedName] else { continue }
+
                     for calleeIdx in calleeIndices where calleeIdx != callerIdx {
+                        let calleeNode = nodePool[Int(calleeIdx)]
+
+                        // 质量置信度计算：同文件优先，单候选更高，多同名候选谨慎降权
+                        let confidence: Float
+                        if callerNode.path == calleeNode.path {
+                            confidence = 0.85
+                        } else if calleeIndices.count == 1 {
+                            confidence = 0.80
+                        } else {
+                            confidence = 0.50
+                        }
+
                         let edge = CompactGraphEdge(
                             source: callerIdx,
                             target: calleeIdx,
                             kind: .calls,
-                            line: Int32(span.startLine),
-                            confidence: 0.90
+                            line: summary.callerLine,
+                            confidence: confidence
                         )
                         addCompactEdge(edge)
                     }
@@ -705,7 +897,7 @@ public actor CodebaseGraphEngine {
 
     @discardableResult
     private func addCompactEdge(_ edge: CompactGraphEdge) -> EdgeIndex? {
-        let key = "\(edge.source)->\(edge.kind.rawValue)->\(edge.target):\(edge.line)"
+        let key = EdgeKey(source: edge.source, target: edge.target, kind: edge.kind, line: edge.line)
         guard !edgeDeduplicationSet.contains(key) else { return nil }
 
         edgeDeduplicationSet.insert(key)
@@ -766,14 +958,15 @@ public actor CodebaseGraphEngine {
         return components.first ?? "Core"
     }
 
-    // MARK: - Disk Cache V2
+    // MARK: - Disk Cache V3 (With Caller Invocation Summaries)
 
-    private struct GraphCachePayloadV2: Codable {
-        static let currentVersion = 2
+    private struct GraphCachePayloadV3: Codable {
+        static let currentVersion = 3
         let version: Int
         let manifest: [String: Double]
         let nodes: [GraphNode]
         let edges: [CompactGraphEdge]
+        let fileInvocations: [String: [CallerInvocationSummary]]
     }
 
     private func cacheFileURL(for workspaceURL: URL) -> URL {
@@ -791,11 +984,12 @@ public actor CodebaseGraphEngine {
         for (file, date) in fileModificationTimes {
             manifest[file] = date.timeIntervalSince1970
         }
-        let payload = GraphCachePayloadV2(
-            version: GraphCachePayloadV2.currentVersion,
+        let payload = GraphCachePayloadV3(
+            version: GraphCachePayloadV3.currentVersion,
             manifest: manifest,
             nodes: nodePool,
-            edges: edgePool
+            edges: edgePool,
+            fileInvocations: fileInvocationSummaries
         )
         if let data = try? JSONEncoder().encode(payload) {
             try? data.write(to: url)
@@ -805,14 +999,15 @@ public actor CodebaseGraphEngine {
     private func loadFromDiskCache(for workspaceURL: URL) {
         let url = cacheFileURL(for: workspaceURL)
         guard let data = try? Data(contentsOf: url),
-              let payload = try? JSONDecoder().decode(GraphCachePayloadV2.self, from: data),
-              payload.version == GraphCachePayloadV2.currentVersion else {
+              let payload = try? JSONDecoder().decode(GraphCachePayloadV3.self, from: data),
+              payload.version == GraphCachePayloadV3.currentVersion else {
             // Version mismatch or corrupt cache: trigger fresh indexing
             return
         }
         for (file, timestamp) in payload.manifest {
             fileModificationTimes[file] = Date(timeIntervalSince1970: timestamp)
         }
+        self.fileInvocationSummaries = payload.fileInvocations
         for node in payload.nodes { addNode(node) }
         for edge in payload.edges { addCompactEdge(edge) }
         if !payload.nodes.isEmpty { isInitialized = true }
@@ -847,6 +1042,14 @@ extension CodebaseGraphEngine {
 
     public func removeFileEntitiesForTesting(for fileURL: URL, root: URL) {
         removeFileEntities(for: fileURL, root: root)
+    }
+
+    public func removeFileEntitiesByRelPathForTesting(relPath: String) {
+        removeFileEntities(byRelPath: relPath)
+    }
+
+    public func getInvocationSummariesForTesting() -> [String: [CallerInvocationSummary]] {
+        fileInvocationSummaries
     }
 }
 #endif
