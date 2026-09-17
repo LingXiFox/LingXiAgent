@@ -894,3 +894,11 @@ public actor ApplicationStore {
         return nil
     }
 }
+
+extension ApplicationStore: FrontendRuntime {
+    public var availableCommands: [ApplicationCommand] {
+        get async {
+            self.commandRegistry.allCommands
+        }
+    }
+}

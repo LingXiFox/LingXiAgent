@@ -1,4 +1,5 @@
 import Foundation
+import LingXiPlatform
 import LingXiProtocol
 import LingXiClient
 
@@ -54,7 +55,7 @@ public final class AppCompositionRoot: Sendable {
         }
 
         // 2. 装配 ApplicationStore（在等待冷启动握手时输出友好提示）
-        if isatty(fileno(stderr)) != 0 {
+        if LingXiPlatform.terminal.isInteractive() {
             FileHandle.standardError.write(Data("🦊 正在唤醒 LingXiAgent (恢复工作区状态与扩展组件)...\r\n".utf8))
         }
         let store = try await ApplicationStore.stdio(

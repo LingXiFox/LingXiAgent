@@ -58,7 +58,7 @@ public final class ApplicationTUI: Frontend {
     private let terminal: any TerminalBackend
     private let view = TUIApp()
     private let completionView = CompletionView()
-    private var store: ApplicationStore?
+    private var store: (any FrontendRuntime)?
     private var latestState = ApplicationState()
     private var pendingChanges: ApplicationChangeSet?
     private var activeDisplayedSessionID: SessionID?
@@ -166,7 +166,7 @@ public final class ApplicationTUI: Frontend {
     }
 
     private var allCommands: [FrontendCommandItem] {
-        let currentCommands = store?.commandRegistry.allCommands ?? commands
+        let currentCommands = commands
         var map: [String: FrontendCommandItem] = [:]
         for item in Self.localCommands {
             map[item.name] = item
@@ -202,8 +202,8 @@ public final class ApplicationTUI: Frontend {
     }
 
 
-    /// 挂载到由外部 Composition Root 装配好的 ApplicationStore 并启动前端界面
-    public func run(with store: ApplicationStore) async throws {
+    /// 挂载到由外部 Composition Root 装配好的 FrontendRuntime 并启动前端界面
+    public func run(with store: any FrontendRuntime) async throws {
         debug("run.begin")
         if let workDir = options.initialWorkingDir, !workDir.isEmpty {
             FileManager.default.changeCurrentDirectoryPath(workDir)
@@ -221,7 +221,7 @@ public final class ApplicationTUI: Frontend {
         debug("connecting.frame.end")
 
         self.store = store
-        commands = store.commandRegistry.allCommands
+        commands = await store.availableCommands
 
         let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self)
         uiEventContinuation = eventContinuation
@@ -334,7 +334,7 @@ public final class ApplicationTUI: Frontend {
         FileHandle.standardError.write(Data("[\(timestamp)] [LingXiTUI] \(message)\n".utf8))
     }
 
-    private func handle(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handle(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         if event == .quit || event == .interrupt {
             shouldQuit = true
             return
@@ -622,7 +622,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func handleCommandPalette(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleCommandPalette(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .commandPalette(query, selected) = overlay else { return }
         let candidates = paletteCommands(query: query)
         switch event {
@@ -654,7 +654,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func handleCompletion(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleCompletion(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .completion(tokenStart, selected) = overlay else { return }
         let input = view.composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstToken = input.split(whereSeparator: \.isWhitespace).first.map(String.init)?.lowercased() ?? input.lowercased()
@@ -849,7 +849,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func handleModelPicker(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleModelPicker(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .modelPicker(query, selected) = overlay else { return }
         let items = modelOptions(query: query)
         switch event {
@@ -880,7 +880,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func handleVariantPicker(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleVariantPicker(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .variantPicker(modelID, query, selected, variants) = overlay else { return }
         let q = query.lowercased()
         let filtered = query.isEmpty ? variants : variants.filter { $0.lowercased().contains(q) }
@@ -931,7 +931,7 @@ public final class ApplicationTUI: Frontend {
         overlay = .themePicker(query: "", selected: initialSelected)
     }
 
-    private func handleThemePicker(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleThemePicker(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .themePicker(query, selected) = overlay else { return }
         let allThemes = ThemeManager.shared.availableThemes
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1247,7 +1247,7 @@ public final class ApplicationTUI: Frontend {
         latestState.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
     }
 
-    private func handleSessionPicker(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleSessionPicker(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .sessionPicker(query, selected) = overlay else { return }
         let items = sessionOptions(query: query)
         switch event {
@@ -1356,13 +1356,13 @@ public final class ApplicationTUI: Frontend {
 
     // MARK: - Tasks Modal (/tasks)
 
-    private func openTasksModal(store: ApplicationStore) async {
+    private func openTasksModal(store: any FrontendRuntime) async {
         let tasks = (try? await store.getBackgroundTasks()) ?? []
         overlay = .tasksModal(selected: 0, tasks: tasks, expandedDetail: false)
         refreshView(latestState)
     }
 
-    private func handleTasksModal(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleTasksModal(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard case let .tasksModal(selected, tasks, expandedDetail) = overlay else { return }
         switch event {
         case .up, .scrollUp:
@@ -1449,7 +1449,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func handleInteraction(_ event: TUIInputEvent, store: ApplicationStore) async {
+    private func handleInteraction(_ event: TUIInputEvent, store: any FrontendRuntime) async {
         guard let interaction = latestState.activeInteraction else { return }
         switch event {
         case .up where interaction.questionRequest != nil || interaction.decisionRequest != nil:
@@ -1529,7 +1529,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func cancelInteraction(_ interaction: InteractionSnapshot, store: ApplicationStore) {
+    private func cancelInteraction(_ interaction: InteractionSnapshot, store: any FrontendRuntime) {
         switch interaction.kind {
         case .permission:
             enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .deny)) }
@@ -1547,7 +1547,7 @@ public final class ApplicationTUI: Frontend {
         view.composer.clear()
     }
 
-    private func executeCommand(_ input: String, store: ApplicationStore) async -> TUITranscriptEntry? {
+    private func executeCommand(_ input: String, store: any FrontendRuntime) async -> TUITranscriptEntry? {
         do {
             let result = try await store.executeCommand(input)
             if let reverted = result.revertedComposerText {
@@ -1578,7 +1578,7 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func executeLocalOrApplicationCommand(_ input: String, store: ApplicationStore) {
+    private func executeLocalOrApplicationCommand(_ input: String, store: any FrontendRuntime) {
         let command = input.split(whereSeparator: \ .isWhitespace).first.map(String.init)?.lowercased()
         switch command {
         case "/quit":
@@ -3513,13 +3513,13 @@ public final class ApplicationTUI: Frontend {
         }
     }
 
-    private func cycleMode(store: ApplicationStore) async {
+    private func cycleMode(store: any FrontendRuntime) async {
         let current = latestState.activeSessionState?.mode ?? latestState.nextTurnMode ?? .build
         let nextMode = current.next
         await store.dispatch(.setMode(nextMode))
     }
 
-    private func cycleReasoningEffort(store: ApplicationStore) async {
+    private func cycleReasoningEffort(store: any FrontendRuntime) async {
         let current = latestState.effectiveReasoningEffort
         let candidates: [ReasoningEffort] = [.auto, .off, .low, .medium, .high, .max]
         let nextIndex: Int
