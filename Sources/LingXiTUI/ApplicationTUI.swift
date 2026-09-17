@@ -5,13 +5,6 @@ import LingXiTUIComponents
 
 @MainActor
 public final class ApplicationTUI: Frontend {
-    private enum UIEvent: Sendable {
-        case input(TUIInputEvent)
-        case stateInvalidated
-        case stateUpdate(ApplicationState)
-        case applicationUpdate(ApplicationUpdate)
-        case commandResult(TUITranscriptEntry)
-    }
 
     private struct FrontendCommandItem: Sendable {
         let name: String
@@ -75,7 +68,7 @@ public final class ApplicationTUI: Frontend {
     private var shouldQuit = false
     private var renderCount = 0
     private var actionTail: Task<Void, Never>?
-    private var uiEventContinuation: AsyncStream<UIEvent>.Continuation?
+    private var eventPump: UIEventPump?
     private let animationTicker = TUIAnimationTicker()
     private let animationClock = ContinuousClock()
     private var animationNow: ContinuousClock.Instant
@@ -223,8 +216,8 @@ public final class ApplicationTUI: Frontend {
         self.store = store
         commands = await store.availableCommands
 
-        let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self, bufferingPolicy: .bufferingNewest(256))
-        uiEventContinuation = eventContinuation
+        let pump = UIEventPump()
+        self.eventPump = pump
 
         let coalescer = FrontendUpdateCoalescer()
 
@@ -236,9 +229,9 @@ public final class ApplicationTUI: Frontend {
         }
         defer { updates.cancel() }
 
-        let signalTask = Task { [coalescer, eventContinuation] in
+        let signalTask = Task { [coalescer, pump] in
             for await _ in await coalescer.invalidationSignal {
-                eventContinuation.yield(.stateInvalidated)
+                pump.markStateInvalidated()
             }
         }
         defer { signalTask.cancel() }
@@ -253,10 +246,10 @@ public final class ApplicationTUI: Frontend {
         }
         defer { animationUpdates.cancel() }
 
-        let inputReader = Task.detached { [terminal] in
+        let inputReader = Task.detached { [terminal, pump] in
             while !Task.isCancelled {
                 if let event = terminal.nextInput() {
-                    eventContinuation.yield(.input(event))
+                    pump.postInput(event)
                     if case .quit = event { break }
                     if case .interrupt = event { break }
                 }
@@ -266,9 +259,11 @@ public final class ApplicationTUI: Frontend {
 
         debug("event.loop.begin")
 
-        eventLoop: for await event in eventStream {
-            switch event {
-            case let .input(inputEvent):
+        eventLoop: for await _ in pump.wakeupStream {
+            let batch = pump.drain()
+
+            // 1. 优先消费所有已到达的用户输入（无损 FIFO，零丢键，即时手感）
+            for inputEvent in batch.inputs {
                 await handle(inputEvent, store: store)
                 if case .tick = inputEvent {
                 } else if case .mouseDrag = inputEvent {
@@ -278,76 +273,49 @@ public final class ApplicationTUI: Frontend {
                 }
                 if shouldQuit {
                     frameScheduler.flush()
-                    eventContinuation.finish()
+                    pump.finish()
                     break eventLoop
                 }
-            case .stateInvalidated:
-                guard let (state, changes, _) = await coalescer.drain() else { continue }
-                if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
-                    referenceScanTask?.cancel()
-                    referenceCandidates = []
-                    referenceScanTask = Task { [weak self, store] in
-                        let candidates = await store.workspaceReferenceCandidates()
-                        guard !Task.isCancelled else { return }
-                        self?.referenceCandidates = candidates
-                        self?.frameScheduler.markDirty(.content)
-                    }
-                }
-                if pendingChanges == nil {
-                    pendingChanges = changes
-                } else {
-                    pendingChanges?.merge(with: changes)
-                }
-                latestState = state
-                if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
-                    enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
-                }
-                frameScheduler.markDirty(.content)
-            case let .applicationUpdate(update):
-                let state = update.state
-                if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
-                    referenceScanTask?.cancel()
-                    referenceCandidates = []
-                    referenceScanTask = Task { [weak self, store] in
-                        let candidates = await store.workspaceReferenceCandidates()
-                        guard !Task.isCancelled else { return }
-                        self?.referenceCandidates = candidates
-                        self?.frameScheduler.markDirty(.content)
-                    }
-                }
-                if pendingChanges == nil {
-                    pendingChanges = update.changes
-                } else {
-                    pendingChanges?.merge(with: update.changes)
-                }
-                latestState = state
-                if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
-                    enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
-                }
-                frameScheduler.markDirty(.content)
-            case let .stateUpdate(state):
-                if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
-                    referenceScanTask?.cancel()
-                    referenceCandidates = []
-                    referenceScanTask = Task { [weak self, store] in
-                        let candidates = await store.workspaceReferenceCandidates()
-                        guard !Task.isCancelled else { return }
-                        self?.referenceCandidates = candidates
-                        self?.frameScheduler.markDirty(.content)
-                    }
-                }
-                latestState = state
-                if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
-                    enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
-                }
-                frameScheduler.markDirty(.content)
-            case let .commandResult(entry):
+            }
+
+            // 2. 消费后台本地命令执行结果
+            for entry in batch.commandResults {
                 commandEntries.append(entry)
                 latestState = await store.state
                 frameScheduler.markDirty(.content)
             }
+
+            // 3. 处理折叠合并后的状态更新（单次 Drain，杜绝状态暴风雨洪泛）
+            if batch.hasStateInvalidation {
+                if let (state, changes, _) = await coalescer.drain() {
+                    applyStateUpdate(state: state, changes: changes, store: store)
+                }
+            }
         }
-        uiEventContinuation = nil
+        eventPump = nil
+    }
+
+    private func applyStateUpdate(state: ApplicationState, changes: ApplicationChangeSet, store: any FrontendRuntime) {
+        if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
+            referenceScanTask?.cancel()
+            referenceCandidates = []
+            referenceScanTask = Task { [weak self, store] in
+                let candidates = await store.workspaceReferenceCandidates()
+                guard !Task.isCancelled else { return }
+                self?.referenceCandidates = candidates
+                self?.frameScheduler.markDirty(.content)
+            }
+        }
+        if pendingChanges == nil {
+            pendingChanges = changes
+        } else {
+            pendingChanges?.merge(with: changes)
+        }
+        latestState = state
+        if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
+            enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+        }
+        frameScheduler.markDirty(.content)
     }
 
     /// 便捷入口：由内置默认 AppCompositionRoot 装配 Stdio Core 并运行
@@ -1775,7 +1743,7 @@ public final class ApplicationTUI: Frontend {
     }
 
     private func publishCommandResult(_ entry: TUITranscriptEntry) {
-        uiEventContinuation?.yield(.commandResult(entry))
+        eventPump?.postCommandResult(entry)
     }
 
     private func enqueue(_ action: @escaping @Sendable () async -> Void) {

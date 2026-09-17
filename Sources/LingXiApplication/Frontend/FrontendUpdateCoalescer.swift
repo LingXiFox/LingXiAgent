@@ -11,6 +11,8 @@ public actor FrontendUpdateCoalescer {
     private var latestState: ApplicationState?
     private var accumulatedChanges: ApplicationChangeSet = .empty
     private var latestRevision: UInt64 = 0
+    private var lastSeenRevision: UInt64 = 0
+    private var revisionGapCount: Int = 0
     private var signalContinuation: AsyncStream<Void>.Continuation?
 
     public init() {}
@@ -27,10 +29,23 @@ public actor FrontendUpdateCoalescer {
 
     /// 接收并合流来自 Store / Runtime 的更新包
     public func ingest(update: ApplicationUpdate) {
+        if lastSeenRevision > 0 && update.revision > lastSeenRevision + 1 {
+            // 审计报告 #31：检测到 revision 缺口（中间增量被丢弃）
+            // 累积 ChangeSet 出现空洞，必须硬性升级为 .fullSnapshot 全量同步！
+            self.revisionGapCount += 1
+            self.accumulatedChanges = .fullSnapshot
+        } else {
+            self.accumulatedChanges.merge(with: update.changes)
+        }
+        self.lastSeenRevision = update.revision
         self.latestState = update.state
         self.latestRevision = update.revision
-        self.accumulatedChanges.merge(with: update.changes)
         self.signalContinuation?.yield(())
+    }
+
+    /// 发生的 Revision 缺口次数（用于遥测与健壮性断言）
+    public var totalRevisionGaps: Int {
+        revisionGapCount
     }
 
     /// 原子提取最新合并状态并重置累积变更集
