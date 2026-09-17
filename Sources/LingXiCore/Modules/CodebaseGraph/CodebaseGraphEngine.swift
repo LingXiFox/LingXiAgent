@@ -4,17 +4,25 @@ import LingXiPlatform
 import LingXiProtocol
 
 /// 代码图谱构建与拓扑分析引擎 (CodebaseGraphEngine)。
-/// 负责扫描代码库、提取 AST 结构与依赖边、持久化缓存并提供调用拓扑与架构分析。
+/// 负责扫描代码库、提取 AST 结构与依赖边、持久化紧凑缓存并提供调用拓扑与架构分析。
+/// Phase 8: Compact Indexing (NodePool + CompactGraphEdge) + Caller-Local Invocation Extraction
 public actor CodebaseGraphEngine {
     public static let shared = CodebaseGraphEngine()
 
-    private var nodes: [String: GraphNode] = [:] // id -> Node
-    private var edges: [String: GraphEdge] = [:] // id -> Edge
-    private var edgesBySource: [String: [GraphEdge]] = [:]
-    private var edgesByTarget: [String: [GraphEdge]] = [:]
-    private var nodesByName: [String: [String]] = [:] // name -> [nodeId]
+    // MARK: - Compact Storage Pools
+    private var nodePool: [GraphNode] = []
+    private var nodeIndexByID: [String: NodeIndex] = [:]
+    private var nodesByName: [String: [NodeIndex]] = [:]
+
+    private var edgePool: [CompactGraphEdge] = []
+    private var edgeDeduplicationSet: Set<String> = [] // "\(source)->\(kind)->\(target):\(line)"
+
+    private var outgoingEdgeIndices: [NodeIndex: [EdgeIndex]] = [:]
+    private var incomingEdgeIndices: [NodeIndex: [EdgeIndex]] = [:]
+
     private var fileModificationTimes: [String: Date] = [:]
-    private var fileIdentifiers: [String: Set<String>] = [:]
+    private var fileFunctionSpans: [String: [FunctionSpan]] = [:]
+
     private var workspaceRootURL: URL?
     private var isIndexing: Bool = false
     private var isInitialized: Bool = false
@@ -28,11 +36,11 @@ public actor CodebaseGraphEngine {
     }
 
     public var nodeCount: Int {
-        nodes.count
+        nodePool.count
     }
 
     public var edgeCount: Int {
-        edges.count
+        edgePool.count
     }
 
     public var fileCount: Int {
@@ -62,13 +70,13 @@ public actor CodebaseGraphEngine {
     }
 
     public func memoryDiagnostics() -> GraphMemoryDiagnostics {
-        let outCount = edgesBySource.values.reduce(0) { $0 + $1.count }
-        let inCount = edgesByTarget.values.reduce(0) { $0 + $1.count }
-        let nodeBytes = nodes.count * 256
-        let edgeBytes = edges.count * 160 + (outCount + inCount) * 8
+        let outCount = outgoingEdgeIndices.values.reduce(0) { $0 + $1.count }
+        let inCount = incomingEdgeIndices.values.reduce(0) { $0 + $1.count }
+        let nodeBytes = nodePool.count * 128
+        let edgeBytes = edgePool.count * MemoryLayout<CompactGraphEdge>.stride + (outCount + inCount) * 4
         return GraphMemoryDiagnostics(
-            nodeCount: nodes.count,
-            edgeCount: edges.count,
+            nodeCount: nodePool.count,
+            edgeCount: edgePool.count,
             outgoingEdgeReferenceCount: outCount,
             incomingEdgeReferenceCount: inCount,
             approximateHeapBytes: nodeBytes + edgeBytes
@@ -76,13 +84,15 @@ public actor CodebaseGraphEngine {
     }
 
     public func clearGraphMemory() {
-        nodes.removeAll(keepingCapacity: false)
-        edges.removeAll(keepingCapacity: false)
-        edgesBySource.removeAll(keepingCapacity: false)
-        edgesByTarget.removeAll(keepingCapacity: false)
+        nodePool.removeAll(keepingCapacity: false)
+        nodeIndexByID.removeAll(keepingCapacity: false)
         nodesByName.removeAll(keepingCapacity: false)
+        edgePool.removeAll(keepingCapacity: false)
+        edgeDeduplicationSet.removeAll(keepingCapacity: false)
+        outgoingEdgeIndices.removeAll(keepingCapacity: false)
+        incomingEdgeIndices.removeAll(keepingCapacity: false)
         fileModificationTimes.removeAll(keepingCapacity: false)
-        fileIdentifiers.removeAll(keepingCapacity: false)
+        fileFunctionSpans.removeAll(keepingCapacity: false)
         workspaceRootURL = nil
         isInitialized = false
     }
@@ -95,8 +105,8 @@ public actor CodebaseGraphEngine {
         defer {
             isIndexing = false
             isInitialized = true
-            // Phase 7: Release AST token scratch set immediately after index build to prevent memory bloat
-            fileIdentifiers.removeAll(keepingCapacity: false)
+            // Phase 8: Release temporary parser scratch spans immediately after index build to prevent memory bloat
+            fileFunctionSpans.removeAll(keepingCapacity: false)
         }
 
         // Workspace 变更时强制清空旧工作区图谱，防止内存污染与泄漏
@@ -106,17 +116,12 @@ public actor CodebaseGraphEngine {
         self.workspaceRootURL = workspaceURL
 
         if forceReindex {
-            nodes.removeAll()
-            edges.removeAll()
-            edgesBySource.removeAll()
-            edgesByTarget.removeAll()
-            nodesByName.removeAll()
-            fileModificationTimes.removeAll()
-            fileIdentifiers.removeAll()
+            clearGraphMemory()
+            self.workspaceRootURL = workspaceURL
         }
 
-        // 尝试从持久化缓存载入
-        if nodes.isEmpty && !forceReindex {
+        // 尝试从持久化缓存载入 V2
+        if nodePool.isEmpty && !forceReindex {
             loadFromDiskCache(for: workspaceURL)
         }
 
@@ -139,10 +144,10 @@ public actor CodebaseGraphEngine {
             parseFile(file, root: workspaceURL)
         }
 
-        // 重新构建跨文件调用边
+        // 重新构建跨文件精准调用边 (Caller-local invocation matching)
         resolveCrossFileCallEdges()
 
-        // 持久化到本地磁盘缓存
+        // 持久化到本地磁盘缓存 V2
         saveToDiskCache(for: workspaceURL)
 
         return getArchitecture()
@@ -151,10 +156,9 @@ public actor CodebaseGraphEngine {
     /// 获取整体架构分层概览与核心热点
     public func getArchitecture() -> ArchitectureOverview {
         let projectName = workspaceRootURL?.lastPathComponent ?? "Workspace"
-        let allNodes = Array(nodes.values)
-        let totalNodes = allNodes.count
-        let totalEdges = edges.count
-        let totalFiles = Set(allNodes.map(\.path)).count
+        let totalNodes = nodePool.count
+        let totalEdges = edgePool.count
+        let totalFiles = Set(nodePool.compactMap { $0.path.isEmpty ? nil : $0.path }).count
 
         // 1. 分层识别 (api, core, infra, test)
         var layerMap: [String: (desc: String, files: Set<String>, nodes: Int)] = [
@@ -164,7 +168,7 @@ public actor CodebaseGraphEngine {
             "test": ("测试套件 / 验证用例", [], 0)
         ]
 
-        for node in allNodes {
+        for node in nodePool {
             let p = node.path.lowercased()
             let layerKey: String
             if p.contains("test") {
@@ -188,36 +192,44 @@ public actor CodebaseGraphEngine {
         }.sorted { $0.nodeCount > $1.nodeCount }
 
         // 2. 核心热点计算 (Top Fan-in 扇入枢纽节点)
-        var fanInMap: [String: Int] = [:]
-        var fanOutMap: [String: Int] = [:]
-        for edge in edges.values where edge.kind == .calls || edge.kind == .implements || edge.kind == .inherits {
-            fanInMap[edge.targetId, default: 0] += 1
-            fanOutMap[edge.sourceId, default: 0] += 1
+        var fanInMap: [NodeIndex: Int] = [:]
+        var fanOutMap: [NodeIndex: Int] = [:]
+        for edge in edgePool where edge.kind == .calls || edge.kind == .implements || edge.kind == .inherits {
+            fanInMap[edge.target, default: 0] += 1
+            fanOutMap[edge.source, default: 0] += 1
         }
 
-        let hotspots = allNodes
-            .filter { $0.kind == .function || $0.kind == .method || $0.kind == .class || $0.kind == .struct || $0.kind == .interface }
-            .map { node in
-                GraphHotspot(node: node, fanIn: fanInMap[node.id, default: 0], fanOut: fanOutMap[node.id, default: 0])
+        var hotspots: [GraphHotspot] = []
+        for (idx, node) in nodePool.enumerated() {
+            let nodeIdx = NodeIndex(idx)
+            let kind = node.kind
+            if kind == .function || kind == .method || kind == .class || kind == .struct || kind == .interface {
+                let fanIn = fanInMap[nodeIdx, default: 0]
+                let fanOut = fanOutMap[nodeIdx, default: 0]
+                if fanIn > 0 {
+                    hotspots.append(GraphHotspot(node: node, fanIn: fanIn, fanOut: fanOut))
+                }
             }
-            .filter { $0.fanIn > 0 }
-            .sorted { $0.fanIn > $1.fanIn }
-            .prefix(15)
+        }
+        hotspots.sort { $0.fanIn > $1.fanIn }
+        let topHotspots = Array(hotspots.prefix(15))
 
         // 3. 模块级依赖拓扑
-        var moduleNodes: [String: Set<String>] = [:]
-        for node in allNodes {
+        var moduleNodes: [String: Set<NodeIndex>] = [:]
+        for (idx, node) in nodePool.enumerated() {
             let mod = extractModuleName(from: node.path)
-            moduleNodes[mod, default: []].insert(node.id)
+            moduleNodes[mod, default: []].insert(NodeIndex(idx))
         }
 
         var modules: [ModuleOverview] = []
-        for (modName, nodeIds) in moduleNodes {
+        for (modName, nodeIndices) in moduleNodes {
             var outboundDeps: Set<String> = []
-            for id in nodeIds {
-                if let outEdges = edgesBySource[id] {
-                    for edge in outEdges where edge.kind == .calls || edge.kind == .imports {
-                        if let targetNode = nodes[edge.targetId] {
+            for nodeIdx in nodeIndices {
+                if let outEdgeIndices = outgoingEdgeIndices[nodeIdx] {
+                    for edgeIdx in outEdgeIndices {
+                        let edge = edgePool[Int(edgeIdx)]
+                        if edge.kind == .calls || edge.kind == .imports {
+                            let targetNode = nodePool[Int(edge.target)]
                             let targetMod = extractModuleName(from: targetNode.path)
                             if targetMod != modName {
                                 outboundDeps.insert(targetMod)
@@ -226,7 +238,7 @@ public actor CodebaseGraphEngine {
                     }
                 }
             }
-            modules.append(ModuleOverview(name: modName, nodeCount: nodeIds.count, outboundDependencies: Array(outboundDeps).sorted()))
+            modules.append(ModuleOverview(name: modName, nodeCount: nodeIndices.count, outboundDependencies: Array(outboundDeps).sorted()))
         }
         modules.sort { $0.nodeCount > $1.nodeCount }
 
@@ -236,45 +248,50 @@ public actor CodebaseGraphEngine {
             totalEdges: totalEdges,
             totalFiles: totalFiles,
             layers: layers,
-            hotspots: Array(hotspots),
+            hotspots: topHotspots,
             modules: modules
         )
     }
 
     /// 拓扑调用链追踪 (trace_path)
     public func traceCallPath(symbolNameOrId: String, direction: TraceDirection, maxDepth: Int = 3) -> CallTraceReport? {
-        guard let rootNode = findNode(by: symbolNameOrId) else { return nil }
+        guard let rootNodeIdx = findNodeIndex(by: symbolNameOrId) else { return nil }
+        let rootNode = nodePool[Int(rootNodeIdx)]
 
         var steps: [TraceStep] = []
-        var visited = Set<String>([rootNode.id])
-        var queue: [(node: GraphNode, depth: Int)] = [(rootNode, 1)]
+        var visited = Set<NodeIndex>([rootNodeIdx])
+        var queue: [(nodeIdx: NodeIndex, depth: Int)] = [(rootNodeIdx, 1)]
 
         while !queue.isEmpty {
             let current = queue.removeFirst()
             if current.depth > maxDepth { continue }
 
-            let relatedEdges: [GraphEdge]
+            let relatedEdgeIndices: [EdgeIndex]
             switch direction {
             case .inbound:
-                // 找谁调用了我 (targetId == current.node.id)
-                relatedEdges = edgesByTarget[current.node.id] ?? []
+                // 找谁调用了我 (target == current.nodeIdx)
+                relatedEdgeIndices = incomingEdgeIndices[current.nodeIdx] ?? []
             case .outbound:
-                // 找我调用了谁 (sourceId == current.node.id)
-                relatedEdges = edgesBySource[current.node.id] ?? []
+                // 找我调用了谁 (source == current.nodeIdx)
+                relatedEdgeIndices = outgoingEdgeIndices[current.nodeIdx] ?? []
             }
 
-            for edge in relatedEdges where edge.kind == .calls {
-                let nextNodeId = (direction == .inbound) ? edge.sourceId : edge.targetId
-                guard let nextNode = nodes[nextNodeId] else { continue }
+            for edgeIdx in relatedEdgeIndices {
+                let edge = edgePool[Int(edgeIdx)]
+                guard edge.kind == .calls else { continue }
+                let nextNodeIdx = (direction == .inbound) ? edge.source : edge.target
+                guard Int(nextNodeIdx) < nodePool.count else { continue }
+                let nextNode = nodePool[Int(nextNodeIdx)]
+                let currentNode = nodePool[Int(current.nodeIdx)]
 
                 let step = (direction == .inbound)
-                    ? TraceStep(depth: current.depth, from: nextNode, to: current.node, line: edge.line, kind: edge.kind)
-                    : TraceStep(depth: current.depth, from: current.node, to: nextNode, line: edge.line, kind: edge.kind)
+                    ? TraceStep(depth: current.depth, from: nextNode, to: currentNode, line: Int(edge.line), kind: edge.kind)
+                    : TraceStep(depth: current.depth, from: currentNode, to: nextNode, line: Int(edge.line), kind: edge.kind)
                 steps.append(step)
 
-                if !visited.contains(nextNode.id) {
-                    visited.insert(nextNode.id)
-                    queue.append((nextNode, current.depth + 1))
+                if !visited.contains(nextNodeIdx) {
+                    visited.insert(nextNodeIdx)
+                    queue.append((nextNodeIdx, current.depth + 1))
                 }
             }
         }
@@ -285,7 +302,7 @@ public actor CodebaseGraphEngine {
     /// 基于名称或关键词检索图谱节点
     public func search(query: String, kind: GraphNodeKind? = nil, limit: Int = 30) -> [GraphNode] {
         let q = query.lowercased()
-        var results = nodes.values.filter { node in
+        var results = nodePool.filter { node in
             if let kind, node.kind != kind { return false }
             return node.name.lowercased().contains(q) || node.qualifiedName.lowercased().contains(q)
         }
@@ -299,41 +316,96 @@ public actor CodebaseGraphEngine {
 
     // MARK: - Private Parser & Graph Construction
 
-    private func findNode(by query: String) -> GraphNode? {
-        if let exact = nodes[query] { return exact }
-        if let nodeIds = nodesByName[query], let firstId = nodeIds.first { return nodes[firstId] }
-        let matches = search(query: query, limit: 1)
-        return matches.first
+    private func findNodeIndex(by query: String) -> NodeIndex? {
+        if let exact = nodeIndexByID[query] { return exact }
+        if let indices = nodesByName[query], let first = indices.first { return first }
+        if let match = search(query: query, limit: 1).first, let idx = nodeIndexByID[match.id] {
+            return idx
+        }
+        return nil
     }
 
     private func removeFileEntities(for fileURL: URL, root: URL) {
         let relPath = relativePath(for: fileURL, root: root)
-        let removedNodeIds = Set(nodes.values.filter { $0.path == relPath }.map(\.id))
-        for id in removedNodeIds {
-            nodes.removeValue(forKey: id)
-            if let edgesOut = edgesBySource.removeValue(forKey: id) {
-                for e in edgesOut {
-                    edges.removeValue(forKey: e.id)
-                    edgesByTarget[e.targetId]?.removeAll(where: { $0.id == e.id })
-                }
-            }
-            if let edgesIn = edgesByTarget.removeValue(forKey: id) {
-                for e in edgesIn {
-                    edges.removeValue(forKey: e.id)
-                    edgesBySource[e.sourceId]?.removeAll(where: { $0.id == e.id })
-                }
+        let removedIndices = Set(nodePool.indices.compactMap { idx -> NodeIndex? in
+            (nodePool[idx].path == relPath) ? NodeIndex(idx) : nil
+        })
+        guard !removedIndices.isEmpty else {
+            fileFunctionSpans.removeValue(forKey: relPath)
+            return
+        }
+
+        // 重新压缩构建 NodePool，保持索引紧凑且无悬垂边
+        var newNodePool: [GraphNode] = []
+        var oldToNewNodeMap: [NodeIndex: NodeIndex] = [:]
+        for (idx, node) in nodePool.enumerated() {
+            let oldIdx = NodeIndex(idx)
+            if !removedIndices.contains(oldIdx) {
+                let newIdx = NodeIndex(newNodePool.count)
+                newNodePool.append(node)
+                oldToNewNodeMap[oldIdx] = newIdx
             }
         }
-        // 清理 nodesByName
-        for (name, ids) in nodesByName {
-            let filtered = ids.filter { !removedNodeIds.contains($0) }
-            if filtered.isEmpty {
-                nodesByName.removeValue(forKey: name)
-            } else {
-                nodesByName[name] = filtered
-            }
+
+        // 重建 nodeIndexByID 与 nodesByName
+        var newNodeIndexByID: [String: NodeIndex] = [:]
+        var newNodesByName: [String: [NodeIndex]] = [:]
+        for (idx, node) in newNodePool.enumerated() {
+            let nIdx = NodeIndex(idx)
+            newNodeIndexByID[node.id] = nIdx
+            newNodesByName[node.name, default: []].append(nIdx)
         }
-        fileIdentifiers.removeValue(forKey: relPath)
+
+        // 过滤有效边，映射其 source 与 target 到新的 NodeIndex
+        var newEdgePool: [CompactGraphEdge] = []
+        var newEdgeDeduplicationSet: Set<String> = []
+        var newOutgoing: [NodeIndex: [EdgeIndex]] = [:]
+        var newIncoming: [NodeIndex: [EdgeIndex]] = [:]
+
+        for edge in edgePool {
+            guard let newSource = oldToNewNodeMap[edge.source],
+                  let newTarget = oldToNewNodeMap[edge.target] else {
+                continue // 属于被删除实体的边被彻底清除
+            }
+            let key = "\(newSource)->\(edge.kind.rawValue)->\(newTarget):\(edge.line)"
+            guard !newEdgeDeduplicationSet.contains(key) else { continue }
+            newEdgeDeduplicationSet.insert(key)
+
+            let edgeIdx = EdgeIndex(newEdgePool.count)
+            let compactEdge = CompactGraphEdge(
+                source: newSource,
+                target: newTarget,
+                kind: edge.kind,
+                line: edge.line,
+                confidence: edge.confidence
+            )
+            newEdgePool.append(compactEdge)
+            newOutgoing[newSource, default: []].append(edgeIdx)
+            newIncoming[newTarget, default: []].append(edgeIdx)
+        }
+
+        self.nodePool = newNodePool
+        self.nodeIndexByID = newNodeIndexByID
+        self.nodesByName = newNodesByName
+        self.edgePool = newEdgePool
+        self.edgeDeduplicationSet = newEdgeDeduplicationSet
+        self.outgoingEdgeIndices = newOutgoing
+        self.incomingEdgeIndices = newIncoming
+        self.fileFunctionSpans.removeValue(forKey: relPath)
+    }
+
+    private struct FunctionSpan: Sendable {
+        let nodeID: String
+        let name: String
+        let filePath: String
+        let startLine: Int
+        var endLine: Int
+        var invokedNames: Set<String>
+    }
+
+    private struct ActiveScope {
+        let spanIndex: Int
+        let braceDepth: Int
     }
 
     private func parseFile(_ fileURL: URL, root: URL) {
@@ -343,6 +415,7 @@ public actor CodebaseGraphEngine {
         let isTestFile = relPath.contains("Test") || relPath.contains(".test.") || relPath.contains("_test.")
 
         let fileNodeId = "file:\(relPath)"
+        let fileLines = content.components(separatedBy: "\n")
         let fileNode = GraphNode(
             id: fileNodeId,
             kind: .file,
@@ -350,17 +423,18 @@ public actor CodebaseGraphEngine {
             qualifiedName: relPath,
             path: relPath,
             startLine: 1,
-            endLine: content.components(separatedBy: "\n").count,
+            endLine: fileLines.count,
             isExported: true,
             isTest: isTestFile
         )
-        addNode(fileNode)
+        let fileNodeIdx = addNode(fileNode)
 
-        let lines = content.components(separatedBy: "\n")
-        var containerStack: [(id: String, depth: Int)] = []
+        var containerStack: [(id: String, idx: NodeIndex, depth: Int)] = []
+        var activeScopes: [ActiveScope] = []
+        var spans: [FunctionSpan] = []
         var currentBraceDepth = 0
 
-        for (idx, rawLine) in lines.enumerated() {
+        for (idx, rawLine) in fileLines.enumerated() {
             let lineNum = idx + 1
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             let openBraces = line.filter { $0 == "{" }.count
@@ -371,12 +445,12 @@ public actor CodebaseGraphEngine {
                 let mod = line.replacingOccurrences(of: "import ", with: "")
                     .replacingOccurrences(of: ";", with: "")
                     .trimmingCharacters(in: .whitespaces)
-                let importEdge = GraphEdge(sourceId: fileNodeId, targetId: "module:\(mod)", kind: .imports, line: lineNum)
-                addEdge(importEdge)
+                let modId = "module:\(mod)"
+                let modNode = GraphNode(id: modId, kind: .module, name: mod, qualifiedName: mod, path: "")
+                let modIdx = addNode(modNode)
+                addCompactEdge(CompactGraphEdge(source: fileNodeIdx, target: modIdx, kind: .imports, line: Int32(lineNum)))
                 currentBraceDepth += (openBraces - closeBraces)
-                while let last = containerStack.last, currentBraceDepth < last.depth {
-                    containerStack.removeLast()
-                }
+                closeScopesIfNeeded(currentDepth: currentBraceDepth, lineNum: lineNum, activeScopes: &activeScopes, spans: &spans, containerStack: &containerStack)
                 continue
             }
 
@@ -393,21 +467,25 @@ public actor CodebaseGraphEngine {
                     isExported: !line.contains("private"),
                     isTest: isTestFile
                 )
-                addNode(node)
-                let parentId = containerStack.last?.id ?? fileNodeId
-                addEdge(GraphEdge(sourceId: parentId, targetId: entityId, kind: .defines, line: lineNum))
+                let entityIdx = addNode(node)
+                let parentIdx = containerStack.last?.idx ?? fileNodeIdx
+                addCompactEdge(CompactGraphEdge(source: parentIdx, target: entityIdx, kind: .defines, line: Int32(lineNum)))
 
                 if let inherit = decl.inherits {
                     for base in inherit.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }) {
-                        addEdge(GraphEdge(sourceId: entityId, targetId: "type:\(base)", kind: .inherits, line: lineNum))
+                        let baseId = "type:\(base)"
+                        let baseNode = GraphNode(id: baseId, kind: .interface, name: String(base), qualifiedName: String(base), path: "")
+                        let baseIdx = addNode(baseNode)
+                        addCompactEdge(CompactGraphEdge(source: entityIdx, target: baseIdx, kind: .inherits, line: Int32(lineNum)))
                     }
                 }
                 currentBraceDepth += (openBraces - closeBraces)
-                containerStack.append((id: entityId, depth: currentBraceDepth))
+                containerStack.append((id: entityId, idx: entityIdx, depth: currentBraceDepth))
+                closeScopesIfNeeded(currentDepth: currentBraceDepth, lineNum: lineNum, activeScopes: &activeScopes, spans: &spans, containerStack: &containerStack)
                 continue
             }
 
-            // 3. Function / Method
+            // 3. Function / Method Declaration
             if let funcName = matchFunctionDeclaration(line: line, ext: ext) {
                 let isMethod = !containerStack.isEmpty
                 let entityId = "\(isMethod ? "method" : "function"):\(relPath):\(funcName)"
@@ -421,25 +499,124 @@ public actor CodebaseGraphEngine {
                     isExported: !line.contains("private"),
                     isTest: isTestFile || funcName.lowercased().hasPrefix("test")
                 )
-                addNode(node)
+                let funcIdx = addNode(node)
+                let parentIdx = containerStack.last?.idx ?? fileNodeIdx
+                addCompactEdge(CompactGraphEdge(source: parentIdx, target: funcIdx, kind: .defines, line: Int32(lineNum)))
 
-                let parentId = containerStack.last?.id ?? fileNodeId
-                addEdge(GraphEdge(sourceId: parentId, targetId: entityId, kind: .defines, line: lineNum))
                 currentBraceDepth += (openBraces - closeBraces)
-                while let last = containerStack.last, currentBraceDepth < last.depth {
-                    containerStack.removeLast()
-                }
+                let spanIdx = spans.count
+                spans.append(FunctionSpan(
+                    nodeID: entityId,
+                    name: funcName,
+                    filePath: relPath,
+                    startLine: lineNum,
+                    endLine: lineNum,
+                    invokedNames: []
+                ))
+                activeScopes.append(ActiveScope(spanIndex: spanIdx, braceDepth: currentBraceDepth))
+                closeScopesIfNeeded(currentDepth: currentBraceDepth, lineNum: lineNum, activeScopes: &activeScopes, spans: &spans, containerStack: &containerStack)
                 continue
             }
 
-            currentBraceDepth += (openBraces - closeBraces)
-            while let last = containerStack.last, currentBraceDepth < last.depth {
-                containerStack.removeLast()
+            // 4. Caller-local Invocation Scanner (Phase 8)
+            if !activeScopes.isEmpty {
+                let calls = extractInvocations(from: line)
+                for call in calls {
+                    for scope in activeScopes {
+                        spans[scope.spanIndex].invokedNames.insert(call)
+                    }
+                }
             }
+
+            currentBraceDepth += (openBraces - closeBraces)
+            closeScopesIfNeeded(currentDepth: currentBraceDepth, lineNum: lineNum, activeScopes: &activeScopes, spans: &spans, containerStack: &containerStack)
         }
 
-        let words = content.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { $0.count > 2 }
-        fileIdentifiers[relPath] = Set(words)
+        // 闭合可能遗留的未闭合 scope
+        for scope in activeScopes {
+            spans[scope.spanIndex].endLine = fileLines.count
+        }
+
+        fileFunctionSpans[relPath] = spans
+    }
+
+    private func closeScopesIfNeeded(
+        currentDepth: Int,
+        lineNum: Int,
+        activeScopes: inout [ActiveScope],
+        spans: inout [FunctionSpan],
+        containerStack: inout [(id: String, idx: NodeIndex, depth: Int)]
+    ) {
+        while let lastScope = activeScopes.last, currentDepth < lastScope.braceDepth {
+            spans[lastScope.spanIndex].endLine = lineNum
+            activeScopes.removeLast()
+        }
+        while let lastContainer = containerStack.last, currentDepth < lastContainer.depth {
+            containerStack.removeLast()
+        }
+    }
+
+    private func extractInvocations(from line: String) -> [String] {
+        var text = line
+        if let commentRange = text.range(of: "//") {
+            text = String(text[..<commentRange.lowerBound])
+        }
+        guard !text.isEmpty else { return [] }
+
+        var results: [String] = []
+        let characters = Array(text)
+        var i = 0
+        let n = characters.count
+
+        while i < n {
+            if characters[i] == "\"" {
+                i += 1
+                while i < n && characters[i] != "\"" {
+                    if characters[i] == "\\" && i + 1 < n {
+                        i += 2
+                    } else {
+                        i += 1
+                    }
+                }
+                if i < n { i += 1 }
+                continue
+            }
+
+            if characters[i].isLetter || characters[i] == "_" {
+                let start = i
+                while i < n && (characters[i].isLetter || characters[i].isNumber || characters[i] == "_") {
+                    i += 1
+                }
+                let ident = String(characters[start..<i])
+
+                var j = i
+                while j < n && (characters[j] == " " || characters[j] == "\t") {
+                    j += 1
+                }
+                if j < n && characters[j] == "(" {
+                    if !isControlFlowOrTypeKeyword(ident) {
+                        results.append(ident)
+                    }
+                }
+                continue
+            }
+            i += 1
+        }
+        return results
+    }
+
+    private func isControlFlowOrTypeKeyword(_ word: String) -> Bool {
+        switch word {
+        case "if", "guard", "switch", "case", "for", "while", "repeat", "do", "catch",
+             "func", "def", "fn", "function", "class", "struct", "enum", "protocol", "interface",
+             "init", "subscript", "return", "throw", "throws", "rethrows", "async", "await",
+             "import", "var", "let", "private", "public", "internal", "fileprivate", "open",
+             "static", "final", "mutating", "nonmutating", "override", "where", "as", "is",
+             "try", "nil", "null", "true", "false", "self", "Self", "super":
+            return true
+        default:
+            return false
+        }
     }
 
     private struct TypeDeclMatch {
@@ -477,7 +654,6 @@ public actor CodebaseGraphEngine {
     }
 
     private func matchFunctionDeclaration(line: String, ext: String) -> String? {
-        // func foo( or def foo( or function foo(
         let prefixes = ["func ", "def ", "fn ", "function "]
         for p in prefixes {
             if let range = line.range(of: p) {
@@ -493,36 +669,52 @@ public actor CodebaseGraphEngine {
         return nil
     }
 
+    /// Phase 8: 基于 Caller-local Invocation 精确建立跨文件调用边，彻底消除笛卡尔积边
     private func resolveCrossFileCallEdges() {
-        // 基于 AST 声明的符号名建立跨文件函数互调关联 (倒排哈希极速匹配)
-        let callableNodes = nodes.values.filter { $0.kind == .function || $0.kind == .method }
-        let callableByFile = Dictionary(grouping: callableNodes, by: \.path)
-
-        for (filePath, callers) in callableByFile {
-            guard let tokens = fileIdentifiers[filePath] else { continue }
-            for token in tokens {
-                guard let calleeIds = nodesByName[token] else { continue }
-                for caller in callers where caller.name != token {
-                    for calleeId in calleeIds where calleeId != caller.id {
-                        let edge = GraphEdge(sourceId: caller.id, targetId: calleeId, kind: .calls, confidence: 0.85)
-                        addEdge(edge)
+        for (_, spans) in fileFunctionSpans {
+            for span in spans {
+                guard let callerIdx = nodeIndexByID[span.nodeID] else { continue }
+                for invokedName in span.invokedNames where invokedName != span.name {
+                    guard let calleeIndices = nodesByName[invokedName] else { continue }
+                    for calleeIdx in calleeIndices where calleeIdx != callerIdx {
+                        let edge = CompactGraphEdge(
+                            source: callerIdx,
+                            target: calleeIdx,
+                            kind: .calls,
+                            line: Int32(span.startLine),
+                            confidence: 0.90
+                        )
+                        addCompactEdge(edge)
                     }
                 }
             }
         }
     }
 
-    private func addNode(_ node: GraphNode) {
-        nodes[node.id] = node
-        nodesByName[node.name, default: []].append(node.id)
+    @discardableResult
+    private func addNode(_ node: GraphNode) -> NodeIndex {
+        if let existingIdx = nodeIndexByID[node.id] {
+            nodePool[Int(existingIdx)] = node
+            return existingIdx
+        }
+        let newIdx = NodeIndex(nodePool.count)
+        nodePool.append(node)
+        nodeIndexByID[node.id] = newIdx
+        nodesByName[node.name, default: []].append(newIdx)
+        return newIdx
     }
 
-    private func addEdge(_ edge: GraphEdge) {
-        // Phase 7: deduplicate edge insertion to prevent exponential adjacency growth on reindex
-        guard edges[edge.id] == nil else { return }
-        edges[edge.id] = edge
-        edgesBySource[edge.sourceId, default: []].append(edge)
-        edgesByTarget[edge.targetId, default: []].append(edge)
+    @discardableResult
+    private func addCompactEdge(_ edge: CompactGraphEdge) -> EdgeIndex? {
+        let key = "\(edge.source)->\(edge.kind.rawValue)->\(edge.target):\(edge.line)"
+        guard !edgeDeduplicationSet.contains(key) else { return nil }
+
+        edgeDeduplicationSet.insert(key)
+        let edgeIdx = EdgeIndex(edgePool.count)
+        edgePool.append(edge)
+        outgoingEdgeIndices[edge.source, default: []].append(edgeIdx)
+        incomingEdgeIndices[edge.target, default: []].append(edgeIdx)
+        return edgeIdx
     }
 
     private func discoverSourceFiles(in directory: URL) -> [URL] {
@@ -575,12 +767,14 @@ public actor CodebaseGraphEngine {
         return components.first ?? "Core"
     }
 
-    // MARK: - Disk Cache
+    // MARK: - Disk Cache V2
 
-    private struct GraphCachePayload: Codable {
+    private struct GraphCachePayloadV2: Codable {
+        static let currentVersion = 2
+        let version: Int
         let manifest: [String: Double]
         let nodes: [GraphNode]
-        let edges: [GraphEdge]
+        let edges: [CompactGraphEdge]
     }
 
     private func cacheFileURL(for workspaceURL: URL) -> URL {
@@ -599,7 +793,12 @@ public actor CodebaseGraphEngine {
         for (file, date) in fileModificationTimes {
             manifest[file] = date.timeIntervalSince1970
         }
-        let payload = GraphCachePayload(manifest: manifest, nodes: Array(nodes.values), edges: Array(edges.values))
+        let payload = GraphCachePayloadV2(
+            version: GraphCachePayloadV2.currentVersion,
+            manifest: manifest,
+            nodes: nodePool,
+            edges: edgePool
+        )
         if let data = try? JSONEncoder().encode(payload) {
             try? data.write(to: url)
         }
@@ -608,14 +807,16 @@ public actor CodebaseGraphEngine {
     private func loadFromDiskCache(for workspaceURL: URL) {
         let url = cacheFileURL(for: workspaceURL)
         guard let data = try? Data(contentsOf: url),
-              let payload = try? JSONDecoder().decode(GraphCachePayload.self, from: data) else {
+              let payload = try? JSONDecoder().decode(GraphCachePayloadV2.self, from: data),
+              payload.version == GraphCachePayloadV2.currentVersion else {
+            // Version mismatch or corrupt cache: trigger fresh indexing
             return
         }
         for (file, timestamp) in payload.manifest {
             fileModificationTimes[file] = Date(timeIntervalSince1970: timestamp)
         }
         for node in payload.nodes { addNode(node) }
-        for edge in payload.edges { addEdge(edge) }
+        for edge in payload.edges { addCompactEdge(edge) }
         if !payload.nodes.isEmpty { isInitialized = true }
     }
 }
@@ -627,7 +828,19 @@ extension CodebaseGraphEngine {
     }
 
     public func addEdgeForTesting(_ edge: GraphEdge) {
-        addEdge(edge)
+        let sIdx = nodeIndexByID[edge.sourceId] ?? addNode(
+            GraphNode(id: edge.sourceId, kind: .function, name: edge.sourceId, qualifiedName: edge.sourceId, path: "")
+        )
+        let tIdx = nodeIndexByID[edge.targetId] ?? addNode(
+            GraphNode(id: edge.targetId, kind: .function, name: edge.targetId, qualifiedName: edge.targetId, path: "")
+        )
+        addCompactEdge(CompactGraphEdge(
+            source: sIdx,
+            target: tIdx,
+            kind: edge.kind,
+            line: Int32(edge.line ?? 0),
+            confidence: Float(edge.confidence)
+        ))
     }
 
     public func addNodeForTesting(_ node: GraphNode) {

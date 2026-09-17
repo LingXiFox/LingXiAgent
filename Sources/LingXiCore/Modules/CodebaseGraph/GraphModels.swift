@@ -87,6 +87,32 @@ public struct GraphEdge: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+public typealias NodeIndex = Int32
+public typealias EdgeIndex = Int32
+
+/// 紧凑边结构：使用 Int32 索引指向节点池，仅占用 16 字节，内存降低 90%
+public struct CompactGraphEdge: Codable, Sendable, Equatable {
+    public let source: NodeIndex
+    public let target: NodeIndex
+    public let kind: GraphEdgeKind
+    public let line: Int32
+    public let confidence: Float
+
+    public init(
+        source: NodeIndex,
+        target: NodeIndex,
+        kind: GraphEdgeKind,
+        line: Int32 = 0,
+        confidence: Float = 1.0
+    ) {
+        self.source = source
+        self.target = target
+        self.kind = kind
+        self.line = line
+        self.confidence = confidence
+    }
+}
+
 /// 调用链追踪方向
 public enum TraceDirection: String, Codable, Sendable {
     case inbound  // 追查谁调用了该节点 (反向扇入)
