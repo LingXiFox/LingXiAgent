@@ -916,6 +916,7 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
     public let historyBeforeCursor: EventCursor?
     public let eventCursor: EventCursor
     public let revision: UInt64
+    public let todos: [TodoItemData]
 
     public init(
         sessionID: SessionID,
@@ -932,7 +933,8 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         recentEvents: [SessionEventEnvelope] = [],
         historyBeforeCursor: EventCursor? = nil,
         eventCursor: EventCursor,
-        revision: UInt64 = 0
+        revision: UInt64 = 0,
+        todos: [TodoItemData] = []
     ) {
         self.sessionID = sessionID
         self.info = info
@@ -949,5 +951,33 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         self.historyBeforeCursor = historyBeforeCursor
         self.eventCursor = eventCursor
         self.revision = revision
+        self.todos = todos
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, info, recentTurns, activeRootRun, activeChildRuns
+        case pendingInteractions, activeModelSteps, recentToolInvocations
+        case contextState, permissionConfiguration, agentMode, recentEvents
+        case historyBeforeCursor, eventCursor, revision, todos
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        info = try container.decode(SessionSummary.self, forKey: .info)
+        recentTurns = try container.decodeIfPresent([TurnSnapshot].self, forKey: .recentTurns) ?? []
+        activeRootRun = try container.decodeIfPresent(RunSnapshot.self, forKey: .activeRootRun)
+        activeChildRuns = try container.decodeIfPresent([RunSummary].self, forKey: .activeChildRuns) ?? []
+        pendingInteractions = try container.decodeIfPresent([InteractionSnapshot].self, forKey: .pendingInteractions) ?? []
+        activeModelSteps = try container.decodeIfPresent([ModelStepSnapshot].self, forKey: .activeModelSteps) ?? []
+        recentToolInvocations = try container.decodeIfPresent([ToolInvocationSnapshot].self, forKey: .recentToolInvocations) ?? []
+        contextState = try container.decode(ContextStateSnapshot.self, forKey: .contextState)
+        permissionConfiguration = try container.decodeIfPresent(PermissionConfiguration.self, forKey: .permissionConfiguration) ?? .askWorkspace
+        agentMode = try container.decodeIfPresent(AgentMode.self, forKey: .agentMode) ?? .build
+        recentEvents = try container.decodeIfPresent([SessionEventEnvelope].self, forKey: .recentEvents) ?? []
+        historyBeforeCursor = try container.decodeIfPresent(EventCursor.self, forKey: .historyBeforeCursor)
+        eventCursor = try container.decode(EventCursor.self, forKey: .eventCursor)
+        revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
+        todos = try container.decodeIfPresent([TodoItemData].self, forKey: .todos) ?? []
     }
 }

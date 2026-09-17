@@ -2235,19 +2235,19 @@ public struct TUISidebarModel: Sendable, Equatable {
     public struct CacheLayer: Sendable, Equatable {
         public let name: String
         public let usedTokens: Int
-        public let capacityTokens: Int
+        public let capacityTokens: Int?
         public let detailText: String?
 
-        public init(name: String, usedTokens: Int, capacityTokens: Int, detailText: String? = nil) {
+        public init(name: String, usedTokens: Int, capacityTokens: Int? = nil, detailText: String? = nil) {
             self.name = name
             self.usedTokens = usedTokens
             self.capacityTokens = capacityTokens
             self.detailText = detailText
         }
 
-        public var ratio: Double {
-            guard capacityTokens > 0 else { return 0 }
-            return min(1.0, max(0.0, Double(usedTokens) / Double(capacityTokens)))
+        public var ratio: Double? {
+            guard let cap = capacityTokens, cap > 0 else { return nil }
+            return min(1.0, max(0.0, Double(usedTokens) / Double(cap)))
         }
     }
 
@@ -2835,15 +2835,27 @@ public final class TUIApp {
             }
 
             for layer in model.cacheLayers {
-                let percent = String(format: "%.1f%%", layer.ratio * 100.0)
-                let headerText: String
-                if let detail = layer.detailText {
-                    headerText = "\(layer.name): \(detail) (\(percent))"
+                if let ratio = layer.ratio {
+                    let percent = String(format: "%.1f%%", ratio * 100.0)
+                    let headerText: String
+                    if let detail = layer.detailText {
+                        headerText = "\(layer.name): \(detail) (\(percent))"
+                    } else if let cap = layer.capacityTokens {
+                        headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))/\(TokenFormatter.format(cap)) (\(percent))"
+                    } else {
+                        headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))"
+                    }
+                    writeLine(headerText, style: .sidebarLabel)
+                    writeProgressBar(ratio: ratio)
                 } else {
-                    headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))/\(TokenFormatter.format(layer.capacityTokens)) (\(percent))"
+                    let headerText: String
+                    if let detail = layer.detailText {
+                        headerText = "\(layer.name): \(detail)"
+                    } else {
+                        headerText = "\(layer.name): \(TokenFormatter.format(layer.usedTokens))"
+                    }
+                    writeLine(headerText, style: .sidebarLabel)
                 }
-                writeLine(headerText, style: .sidebarLabel)
-                writeProgressBar(ratio: layer.ratio)
             }
             if currentY < bottomY { currentY += 1 } // 空行
         }

@@ -46,6 +46,9 @@ public struct SessionViewState: Sendable, Equatable {
     // MARK: - Subagent Projection
     public var subagents: [RunID: SubagentNode]
 
+    // MARK: - Todos Projection
+    public var todos: [TodoItemData]
+
     // MARK: - Context State
     public var contextState: ContextStateSnapshot?
     public var contextPolicy: ContextPolicySnapshot?
@@ -99,6 +102,7 @@ public struct SessionViewState: Sendable, Equatable {
         self.activeInteraction = nil
         self.permissionConfiguration = .askWorkspace
         self.subagents = [:]
+        self.todos = []
         self.contextState = nil
         self.contextPolicy = nil
         self.contextCompacted = nil

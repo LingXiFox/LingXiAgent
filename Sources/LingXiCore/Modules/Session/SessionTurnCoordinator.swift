@@ -735,7 +735,8 @@ public actor SessionTurnCoordinator {
             recentEvents: recentEvents,
             historyBeforeCursor: nil,
             eventCursor: cursor,
-            revision: revision
+            revision: revision,
+            todos: TodoStore.shared.getTodos(for: sessionID.rawValue)
         )
     }
 

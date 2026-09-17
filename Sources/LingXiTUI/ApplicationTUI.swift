@@ -93,7 +93,6 @@ public final class ApplicationTUI: Frontend {
     private var sidebarScrollOffset = 0
     private var mcpScrollOffset = 0
     private var taskScrollOffset = 0
-    private var failedMCPServers: Set<String> = []
 
     // MARK: - Sidebar Revision Cache
     private struct SidebarRevisionState: Equatable {
@@ -2023,7 +2022,7 @@ public final class ApplicationTUI: Frontend {
             extensionsHash: state.extensions.reduce(0) { $0 ^ $1.id.hashValue ^ $1.enabled.hashValue ^ $1.lifecycleState.hashValue },
             workflowsCount: state.workflows.count,
             backgroundTasksCount: state.backgroundTasks.count,
-            failedMCPCount: failedMCPServers.count,
+            failedMCPCount: state.extensions.filter { $0.kind == .mcp && ($0.lifecycleState.lowercased().contains("err") || $0.lifecycleState.lowercased().contains("fail") || $0.lifecycleState.lowercased().contains("unavail")) }.count,
             preferencesShowSidebar: prefs.showSidebar,
             sidebarScrollOffset: sidebarScrollOffset,
             mcpScrollOffset: mcpScrollOffset,
@@ -2347,7 +2346,7 @@ public final class ApplicationTUI: Frontend {
             TUISidebarModel.CacheLayer(
                 name: "E-Core",
                 usedTokens: eCoreBytes,
-                capacityTokens: max(eCoreBytes, 1),
+                capacityTokens: nil,
                 detailText: eCoreDetail
             ),
             TUISidebarModel.CacheLayer(
@@ -2358,30 +2357,11 @@ public final class ApplicationTUI: Frontend {
             )
         ]
 
-        // 从 timelineNodes 动态提取运行时失败或不可用的 MCP 服务
-        let nodes = session?.timelineNodes ?? []
-        for node in nodes {
-            if case let .tool(tl) = node.kind, (tl.phase == .failed || tl.result?.success == false || tl.result?.error != nil) {
-                let toolName = tl.toolName
-                let summaryStr = tl.result?.summary ?? ""
-                let previewStr = tl.result?.preview ?? ""
-                let errStr = tl.result?.error?.message ?? ""
-                let content = "\(summaryStr) \(previewStr) \(errStr)"
-                for ext in state.extensions where ext.kind == .mcp {
-                    if toolName.contains(ext.id) || content.contains(ext.id) || content.contains("mcpServerUnavailable") {
-                        if content.contains(ext.id) || toolName.hasPrefix("mcp_\(ext.id)") || toolName.contains(ext.id) {
-                            failedMCPServers.insert(ext.id)
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. 激活的 MCP 具体的名字以及激活状态
+        // 3. 激活的 MCP 具体的名字以及激活状态（直接由 Core 权威状态驱动）
         let mcpExtensions = state.extensions.filter { $0.kind == .mcp && $0.enabled }
         let mcpItems: [TUISidebarModel.MCPItem] = mcpExtensions.map { ext in
             let stateStr = ext.lifecycleState.lowercased()
-            let isFailed = failedMCPServers.contains(ext.id) || stateStr.contains("err") || stateStr.contains("fail") || stateStr.contains("unavail")
+            let isFailed = stateStr.contains("err") || stateStr.contains("fail") || stateStr.contains("unavail")
             let isEmpty = stateStr == "empty" || stateStr.contains("empty")
             let status: TUISidebarModel.MCPStatus
             if isFailed {
@@ -2398,12 +2378,10 @@ public final class ApplicationTUI: Frontend {
             return TUISidebarModel.MCPItem(id: ext.id, status: status)
         }
 
-        // 4. Agent 的 tasks 显示区域 (从 TodoStore、workflows、timeline 汇聚)
+        // 4. Agent 的 tasks 显示区域 (从权威 session.todos 与 workflows 汇聚，拒绝 markdown 历史推断)
         var taskItems: [TUISidebarModel.TaskItem] = []
-        let sessionKey = session?.sessionID.rawValue ?? state.activeSessionID?.rawValue ?? "default"
-
-        let storedTodos = TodoStore.shared.getTodos(for: sessionKey)
-        for todo in storedTodos {
+        let sessionTodos = session?.todos ?? []
+        for todo in sessionTodos {
             let status: TUISidebarModel.TaskStatus
             switch todo.status.lowercased() {
             case "completed", "done", "success":
@@ -2434,34 +2412,6 @@ public final class ApplicationTUI: Frontend {
                 let title = task.definition.title ?? task.definition.task
                 if !taskItems.contains(where: { $0.title == title }) {
                     taskItems.append(TUISidebarModel.TaskItem(id: task.definition.id.rawValue, title: title, status: status))
-                }
-            }
-        }
-
-        if taskItems.isEmpty, let nodes = session?.timelineNodes {
-            for node in nodes.reversed() {
-                if case let .message(msg) = node.kind, msg.role == .assistant, msg.content.contains("- [") {
-                    let lines = msg.content.components(separatedBy: .newlines)
-                    for line in lines {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        if trimmed.hasPrefix("- [ ] ") {
-                            let title = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                            if !title.isEmpty && !taskItems.contains(where: { $0.title == title }) {
-                                taskItems.append(TUISidebarModel.TaskItem(id: "md-\(taskItems.count)", title: title, status: .pending))
-                            }
-                        } else if trimmed.hasPrefix("- [x] ") || trimmed.hasPrefix("- [X] ") {
-                            let title = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                            if !title.isEmpty && !taskItems.contains(where: { $0.title == title }) {
-                                taskItems.append(TUISidebarModel.TaskItem(id: "md-\(taskItems.count)", title: title, status: .completed))
-                            }
-                        } else if trimmed.hasPrefix("- [-] ") {
-                            let title = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                            if !title.isEmpty && !taskItems.contains(where: { $0.title == title }) {
-                                taskItems.append(TUISidebarModel.TaskItem(id: "md-\(taskItems.count)", title: title, status: .failed))
-                            }
-                        }
-                    }
-                    if !taskItems.isEmpty { break }
                 }
             }
         }
@@ -4311,6 +4261,10 @@ extension ApplicationTUI {
 
     public var sidebarModelForTesting: TUISidebarModel? {
         view.sidebarModel
+    }
+
+    public func buildSidebarModelForTesting(from state: ApplicationState) -> TUISidebarModel {
+        buildSidebarModel(from: state)
     }
 }
 #endif

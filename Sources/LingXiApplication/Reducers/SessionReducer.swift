@@ -811,8 +811,9 @@ public enum SessionReducer {
         let hasMessages = !snapshot.recentTurns.isEmpty
         state.contextState = mergeContextState(existing: existingContextState, incoming: snapshot.contextState, hasMessages: hasMessages)
         state.pendingInteractions = snapshot.pendingInteractions
-            state.activeInteraction = snapshot.pendingInteractions.first
-            state.permissionConfiguration = snapshot.permissionConfiguration
+        state.activeInteraction = snapshot.pendingInteractions.first
+        state.permissionConfiguration = snapshot.permissionConfiguration
+        state.todos = snapshot.todos
 
         for turn in snapshot.recentTurns {
             state.turns[turn.turnID] = turn
