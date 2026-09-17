@@ -564,6 +564,42 @@ public actor ECoreObjectStore {
         return results
     }
 
+    /// 在 E-Core 对象织物中按查询关键词检索匹配的上下文对象
+    public func search(
+        sessionID: SessionID,
+        query: String,
+        limit: Int = 5
+    ) async -> [ObservationMetadata] {
+        guard !query.isEmpty else { return [] }
+        let objects = await listObjects(sessionID: sessionID)
+        let normalizedQuery = query.lowercased()
+
+        var matches: [(meta: ObservationMetadata, score: Double)] = []
+
+        for meta in objects {
+            var score = 0.0
+            if meta.toolName.localizedCaseInsensitiveContains(normalizedQuery) {
+                score += 5.0
+            }
+            if meta.objectID.rawValue.localizedCaseInsensitiveContains(normalizedQuery) {
+                score += 3.0
+            }
+
+            if let content = try? await fetch(sessionID: sessionID, objectID: meta.objectID) {
+                if content.localizedCaseInsensitiveContains(normalizedQuery) {
+                    score += 10.0
+                }
+            }
+
+            if score > 0 {
+                matches.append((meta, score))
+            }
+        }
+
+        matches.sort(by: { $0.score > $1.score })
+        return Array(matches.prefix(limit).map(\.meta))
+    }
+
     /// 依据保留的 ToolCallIDs 裁剪废弃的观测对象文件与缓存（用于撤回或会话状态协同）
     public func prune(sessionID: SessionID, keepingToolCallIDs: Set<ToolCallID>) async {
         if keepingToolCallIDs.isEmpty {

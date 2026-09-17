@@ -232,4 +232,120 @@ import Foundation
         #expect(turn2Input > turn1Input)
         #expect(turn2Usage > turn2Input)
     }
+
+    @Test("Strict Append-Only telemetry accurately detects mutations without false positives (Issue #44)")
+    func strictAppendOnlyTelemetryDetectsMutationsAccurately() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let controller = ContextCacheController(
+            contextPager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet()),
+            scanner: ProjectScanner(root: root),
+            policy: EffectiveContextPolicy(
+                addressableBudget: 100_000,
+                modelWindow: 100_000,
+                economicThreshold: nil,
+                reserve: 100,
+                l1Target: 10,
+                l1SoftLimit: 15,
+                l1HardLimit: 20,
+                l2Max: 1_000,
+                l3Capacity: 50_000
+            )
+        )
+
+        let sessionID = SessionID("test-append-only-session")
+
+        // Turn 1: Initial conversation
+        let fp1 = PrefixFingerprint(
+            systemHash: "sys_1",
+            coreToolsHash: "tools_1",
+            historyStableHash: "hist_1",
+            requestProfileHash: "prof_1",
+            stablePrefixHash: "prefix_1"
+        )
+        let hist1 = ["user:Hello", "assistant:Hi there!"]
+        await controller.recordFingerprint(sessionID: sessionID, fingerprint: fp1, historySignatures: hist1)
+        let health1 = try #require(await controller.lastClientHealth(for: sessionID))
+        #expect(health1.appendOnlyHistory == true)
+        #expect(health1.appendOnlyViolations == 0)
+
+        // Turn 2: Legitimate append-only continuation
+        let fp2 = PrefixFingerprint(
+            systemHash: "sys_1",
+            coreToolsHash: "tools_1",
+            historyStableHash: "hist_2",
+            requestProfileHash: "prof_1",
+            stablePrefixHash: "prefix_1"
+        )
+        let hist2 = ["user:Hello", "assistant:Hi there!", "user:What is Swift?", "assistant:A language."]
+        await controller.recordFingerprint(sessionID: sessionID, fingerprint: fp2, historySignatures: hist2)
+        let health2 = try #require(await controller.lastClientHealth(for: sessionID))
+        #expect(health2.appendOnlyHistory == true)
+        #expect(health2.appendOnlyViolations == 0)
+
+        // Turn 3: History mutation / truncation / edit (non-empty hash, but prefix broken!)
+        let fp3 = PrefixFingerprint(
+            systemHash: "sys_1",
+            coreToolsHash: "tools_1",
+            historyStableHash: "hist_3_mutated",
+            requestProfileHash: "prof_1",
+            stablePrefixHash: "prefix_1"
+        )
+        // Previous Turn 1 user message was edited: "user:Hello" -> "user:Edited Prompt"
+        let hist3Mutated = ["user:Edited Prompt", "assistant:Hi there!", "user:What is Swift?"]
+        await controller.recordFingerprint(sessionID: sessionID, fingerprint: fp3, historySignatures: hist3Mutated)
+        let health3 = try #require(await controller.lastClientHealth(for: sessionID))
+        // Must strictly detect violation!
+        #expect(health3.appendOnlyHistory == false)
+        #expect(health3.appendOnlyViolations == 1)
+    }
+
+    @Test("Context search recalls E-Core object fabric content accurately (Issues #40, #41, #42)")
+    func ecoreFabricSearchRecallsObjectAccurately() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let controller = ContextCacheController(
+            contextPager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet()),
+            scanner: ProjectScanner(root: root),
+            policy: EffectiveContextPolicy(
+                addressableBudget: 100_000,
+                modelWindow: 100_000,
+                economicThreshold: nil,
+                reserve: 100,
+                l1Target: 10,
+                l1SoftLimit: 15,
+                l1HardLimit: 20,
+                l2Max: 1_000,
+                l3Capacity: 50_000
+            )
+        )
+
+        let sessionID = SessionID("test-ecore-search-session")
+
+        // Store a large observation into E-Core
+        let toolCallID = ToolCallID("call_find_symbols_123")
+        let observationText = "FOUND SYMBOL: QuantumTelemetryProcessor in package Core/Telemetry.swift at line 42"
+        let meta = await controller.ecoreStore.store(
+            sessionID: sessionID,
+            toolCallID: toolCallID,
+            toolName: "find_symbols",
+            content: observationText,
+            force: true
+        )
+        #expect(meta != nil)
+
+        // Perform context search query
+        let searchResult = try await controller.handleSearch(
+            sessionID: sessionID,
+            query: "QuantumTelemetryProcessor"
+        )
+
+        #expect(searchResult.contains("## E-Core Fabric Objects"))
+        #expect(searchResult.contains("find_symbols"))
+        #expect(searchResult.contains("QuantumTelemetryProcessor"))
+    }
 }

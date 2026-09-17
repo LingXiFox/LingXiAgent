@@ -227,6 +227,7 @@ public actor ContextCacheController {
     private var previousPromptTokensBySession: [SessionID: Int] = [:]
     private var currentTurnFingerprintBySession: [SessionID: PrefixFingerprint] = [:]
     private var lastTurnFingerprintBySession: [SessionID: PrefixFingerprint] = [:]
+    private var lastHistorySignaturesBySession: [SessionID: [String]] = [:]
     private var clientStructuralHealthBySession: [SessionID: ClientStructuralCacheHealth] = [:]
     private var turnsInEpochBySession: [SessionID: Int] = [:]
     private var clientBustsInEpochBySession: [SessionID: Int] = [:]
@@ -238,6 +239,7 @@ public actor ContextCacheController {
         sessionEpochReasons[sessionID] = reason
         previousPromptTokensBySession[sessionID] = nil
         lastTurnFingerprintBySession[sessionID] = nil
+        lastHistorySignaturesBySession[sessionID] = nil
         turnsInEpochBySession[sessionID] = 0
         clientBustsInEpochBySession[sessionID] = 0
     }
@@ -247,14 +249,15 @@ public actor ContextCacheController {
         sessionID: SessionID,
         fingerprint: PrefixFingerprint,
         prefixBytes: Int = 0,
-        volatileBytes: Int = 0
+        volatileBytes: Int = 0,
+        historySignatures: [String]? = nil
     ) {
+        let lastFP = lastTurnFingerprintBySession[sessionID] ?? currentTurnFingerprintBySession[sessionID]
         currentTurnFingerprintBySession[sessionID] = fingerprint
         let epoch = sessionEpochs[sessionID] ?? 1
         let turns = (turnsInEpochBySession[sessionID] ?? 0) + 1
         turnsInEpochBySession[sessionID] = turns
 
-        let lastFP = lastTurnFingerprintBySession[sessionID]
         let isBust: Bool
         let isAppendOnly: Bool
         let status: String
@@ -268,11 +271,32 @@ public actor ContextCacheController {
                 isBust = false
                 status = "stable"
             }
-            isAppendOnly = (lastFP.historyStableHash == fingerprint.historyStableHash || !fingerprint.historyStableHash.isEmpty)
+
+            // 审计报告 #44：严格断言 Append-Only。杜绝任何 !isEmpty 的伪阳性掩盖！
+            if lastFP.historyStableHash == fingerprint.historyStableHash {
+                // 历史哈希完全相同
+                isAppendOnly = true
+            } else if let historySignatures, let lastSignatures = lastHistorySignaturesBySession[sessionID] {
+                // 历史发生变动时，检查当前历史签名序列是否以前一次历史为前缀 (Prefix Extension)
+                if historySignatures.count >= lastSignatures.count &&
+                   historySignatures.prefix(lastSignatures.count).elementsEqual(lastSignatures) {
+                    isAppendOnly = true
+                } else {
+                    // 发生了旧条目修改、历史删除、压缩或重排，真实判定非 append-only
+                    isAppendOnly = false
+                }
+            } else {
+                // 未提供前缀签名且哈希发生突变，不能直接断定为 append-only
+                isAppendOnly = false
+            }
         } else {
             isBust = false
             isAppendOnly = true
             status = "newEpoch"
+        }
+
+        if let historySignatures {
+            lastHistorySignaturesBySession[sessionID] = historySignatures
         }
 
         let totalBusts = clientBustsInEpochBySession[sessionID] ?? 0
@@ -529,12 +553,6 @@ public actor ContextCacheController {
         lastProviderCacheRecord(for: sessionID)?.promptTokens ?? l1UsageTokens(for: sessionID)
     }
 
-    /// E-Core 对象织物估算 Token 数（按 4 字节约 1 Token 换算）
-    public func eCoreUsageTokens(for sessionID: SessionID) async -> Int {
-        let metrics = await ecoreStore.storageMetrics(for: sessionID)
-        return metrics.totalBytes / 4
-    }
-
     /// E-Core 对象总数（O(1) 读取）
     public func eCoreObjectCount(for sessionID: SessionID) async -> Int {
         let metrics = await ecoreStore.storageMetrics(for: sessionID)
@@ -650,8 +668,17 @@ public actor ContextCacheController {
             codebaseCandidates.append((page, priority, "Explicit retrieval for query: \(query)"))
         }
 
+        // 4. Search E-Core Object Fabric (权威沉淀观测与大对象织物)
+        let ecoreMatches = await ecoreStore.search(sessionID: sessionID, query: query, limit: limit)
+        var ecoreResults: [(ObservationMetadata, String)] = []
+        for meta in ecoreMatches {
+            let content = (try? await ecoreStore.fetch(sessionID: sessionID, objectID: meta.objectID)) ?? ""
+            let snippet = content.count > 500 ? String(content.prefix(500)) + "..." : content
+            ecoreResults.append((meta, snippet))
+        }
+
         // Check if anything matched across all sources
-        guard !l2Candidates.isEmpty || !l3Candidates.isEmpty || !codebaseCandidates.isEmpty else {
+        guard !l2Candidates.isEmpty || !l3Candidates.isEmpty || !codebaseCandidates.isEmpty || !ecoreResults.isEmpty else {
             return "No matching context found for query: \"\(query)\"."
         }
 
@@ -783,6 +810,13 @@ public actor ContextCacheController {
                 return "- [\(page.sourceKind.rawValue)]: \(snippet)"
             }.joined(separator: "\n")
             outputSections.append("## Historical Context\n" + formatted)
+        }
+
+        if !ecoreResults.isEmpty {
+            let formatted = ecoreResults.map { meta, snippet in
+                "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
+            }.joined(separator: "\n")
+            outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
         }
 
         return outputSections.joined(separator: "\n\n")
@@ -937,6 +971,7 @@ public actor ContextCacheController {
         previousPromptTokensBySession.removeValue(forKey: sessionID)
         currentTurnFingerprintBySession.removeValue(forKey: sessionID)
         lastTurnFingerprintBySession.removeValue(forKey: sessionID)
+        lastHistorySignaturesBySession.removeValue(forKey: sessionID)
         clientStructuralHealthBySession.removeValue(forKey: sessionID)
         turnsInEpochBySession.removeValue(forKey: sessionID)
         clientBustsInEpochBySession.removeValue(forKey: sessionID)

@@ -642,7 +642,16 @@ public actor SessionRuntime {
                 )
                 let approxPrefixBytes = (systemContext?.utf8.count ?? 0) + coreTools.reduce(0) { $0 + $1.name.utf8.count + $1.description.utf8.count + 120 }
                 let approxVolatileBytes = currentTurnTokens * 4
-                await cacheController.recordFingerprint(sessionID: sessionID, fingerprint: fingerprint, prefixBytes: approxPrefixBytes, volatileBytes: approxVolatileBytes)
+                let historySignatures = context.entries
+                    .filter { $0.messageID != userTurnID && $0.source != .system }
+                    .map { "\($0.role):\($0.part)" }
+                await cacheController.recordFingerprint(
+                    sessionID: sessionID,
+                    fingerprint: fingerprint,
+                    prefixBytes: approxPrefixBytes,
+                    volatileBytes: approxVolatileBytes,
+                    historySignatures: historySignatures
+                )
                 let clientHealth = await cacheController.lastClientHealth(for: sessionID) ?? ClientStructuralCacheHealth(stablePrefixHash: fingerprint.stablePrefixHash)
 
                 let epochInfo = cacheEpoch(for: coreTools)
