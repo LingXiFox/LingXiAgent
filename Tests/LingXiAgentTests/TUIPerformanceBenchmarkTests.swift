@@ -5,7 +5,7 @@ import LingXiProtocol
 @testable import LingXiTUIComponents
 @testable import LingXiApplication
 
-@Suite("TUI System Performance Benchmarks (Phase 0 Baseline)")
+@Suite("TUI System Performance Benchmarks (Phase 0 Baseline)", .serialized)
 @MainActor
 struct TUIPerformanceBenchmarkTests {
 
@@ -164,9 +164,11 @@ struct TUIPerformanceBenchmarkTests {
         metrics.isEnabled = true
         defer { metrics.isEnabled = false }
 
+        let tui = ApplicationTUI(options: .default)
         var state = ApplicationState()
         let sessionID = SessionID("bench-sidebar-session")
         var sessionState = SessionViewState(sessionID: sessionID)
+        sessionState.title = "Performance Session"
 
         let initialNode = TimelineNode(
             id: TimelineNodeID("user-1"),
@@ -176,7 +178,11 @@ struct TUIPerformanceBenchmarkTests {
         state.activeSessionState = sessionState
         state.activeSessionID = sessionID
 
-        // 模拟连续 1,000 次 streaming token delta，而 context / extensions / workflows 均保持不变
+        // 首次全量刷新（预热）
+        tui.refreshViewForTesting(state)
+        let initialRebuilds = metrics.sidebarRebuildCount
+
+        // 模拟连续 1,000 次 streaming token delta，而 context / extensions / workflows 保持不变
         let deltaCount = 1_000
         var streamingText = "Start: "
 
@@ -193,25 +199,26 @@ struct TUIPerformanceBenchmarkTests {
                 state.activeSessionState?.timelineNodes[1] = streamNode
             }
 
-            // 在未优化架构下，如果每次 stateUpdate 都调用 refreshView，sidebar 将被重复全量重建 deltaCount 次
-            // 我们记录这 1,000 次更新中的 sidebar rebuild 次数
-            // 在 baseline 下模拟探测
-            metrics.recordSidebarRebuild()
+            // 调用实际的 refreshView
+            tui.refreshViewForTesting(state)
         }
 
         let dur = start.duration(to: ContinuousClock.now)
         let totalMs = Double(dur.components.seconds) * 1000.0 + Double(dur.components.attoseconds) / 1_000_000_000_000_000.0
 
+        let deltaRebuilds = metrics.sidebarRebuildCount - initialRebuilds
+
         print("\n============================================================")
-        print("📊 BENCHMARK C: SIDEBAR STABILITY BASELINE")
+        print("📊 BENCHMARK C: SIDEBAR STABILITY RESULTS (PHASE 1)")
         print("============================================================")
         print("Total Streaming Deltas:   \(deltaCount)")
-        print("Simulated Sidebar Rebuilds: \(metrics.sidebarRebuildCount)")
+        print("Sidebar Rebuild Invocations: \(deltaRebuilds) (Baseline: 1000)")
         print("Execution Time:           \(String(format: "%.2f", totalMs)) ms")
-        print("Target for Phase 1:       Sidebar Rebuilds <= 5 (Revision Cached)")
+        print("Revision Cache Status:    ACTIVE")
         print("============================================================\n")
 
-        #expect(metrics.sidebarRebuildCount == deltaCount, "Baseline demonstrates 1:1 coupling before Phase 1 optimization")
+        // 验证：1,000 次流式 delta 中，侧边栏重建次数严格 <= 2 次（几乎为 0 次）
+        #expect(deltaRebuilds <= 2, "Phase 1 revision cache must eliminate redundant sidebar rebuilds")
     }
 
     // MARK: - D. Agent Step Context Benchmark

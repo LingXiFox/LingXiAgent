@@ -1174,10 +1174,25 @@ public final class TranscriptViewport {
     public private(set) var collapseState: [String: Bool] = [:]
     public private(set) var timelineItems: [TUITimelineItem] = []
     public private(set) var selectedIndex: Int = -1
+    private var entryIndexByID: [String: Int] = [:]
 
     public var showsBackToCurrent: Bool { !followsBottom && scrollOffset > 0 }
     public var autoFollow: Bool { followsBottom }
     public var isAtBottom: Bool { followsBottom && scrollOffset == 0 }
+
+    public func hasEntry(id: String) -> Bool {
+        if let idx = entryIndexByID[id], idx < entries.count, entries[idx].id == id {
+            return true
+        }
+        return false
+    }
+
+    public func entry(id: String) -> TUITranscriptEntry? {
+        if let idx = entryIndexByID[id], idx < entries.count, entries[idx].id == id {
+            return entries[idx]
+        }
+        return nil
+    }
 
     public var selectedItemID: String? {
         if timelineItems.indices.contains(selectedIndex) {
@@ -1222,6 +1237,12 @@ public final class TranscriptViewport {
 
     public func replace(_ entries: [TUITranscriptEntry]) {
         self.entries = entries
+        var map: [String: Int] = [:]
+        map.reserveCapacity(entries.count)
+        for (i, e) in entries.enumerated() {
+            map[e.id] = i
+        }
+        self.entryIndexByID = map
         if followsBottom { scrollOffset = 0 }
     }
 
@@ -1404,7 +1425,9 @@ public final class TranscriptViewport {
     }
 
     public func append(_ entry: TUITranscriptEntry) {
+        let index = entries.count
         entries.append(entry)
+        entryIndexByID[entry.id] = index
         if followsBottom { scrollOffset = 0 }
     }
 
@@ -1414,10 +1437,28 @@ public final class TranscriptViewport {
     }
 
     public func update(id: String, text: String? = nil, style: TUIStyle? = nil, collapsed: Bool? = nil) {
-        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        let index: Int
+        if let idx = entryIndexByID[id], idx < entries.count, entries[idx].id == id {
+            index = idx
+        } else if let idx = entries.firstIndex(where: { $0.id == id }) {
+            index = idx
+            entryIndexByID[id] = idx
+        } else {
+            return
+        }
         if let text { entries[index].text = text }
         if let collapsed { entries[index].collapsed = collapsed; collapseState[id] = collapsed }
-        if let style { entries[index] = TUITranscriptEntry(id: entries[index].id, kind: entries[index].kind, text: entries[index].text, style: style, collapsed: entries[index].collapsed, parentID: entries[index].parentID) }
+        if let style {
+            entries[index] = TUITranscriptEntry(
+                id: entries[index].id,
+                kind: entries[index].kind,
+                text: entries[index].text,
+                style: style,
+                collapsed: entries[index].collapsed,
+                parentID: entries[index].parentID,
+                timestamp: entries[index].timestamp
+            )
+        }
     }
 
     public func handle(_ event: TUIInputEvent, viewportHeight: Int) {

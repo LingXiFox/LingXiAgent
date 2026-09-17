@@ -91,18 +91,36 @@ public final class ApplicationTUI: Frontend {
     private var mcpScrollOffset = 0
     private var taskScrollOffset = 0
     private var failedMCPServers: Set<String> = []
+
+    // MARK: - Sidebar Revision Cache
+    private struct SidebarRevisionState: Equatable {
+        let sessionID: SessionID?
+        let sessionTitle: String?
+        let compactionGeneration: Int
+        let cacheEpoch: Int
+        let contextActivePCoreTokens: Int
+        let contextECoreTotalBytes: Int
+        let contextECoreObjectCount: Int
+        let contextCacheReadTokens: Int
+        let extensionsCount: Int
+        let extensionsHash: Int
+        let workflowsCount: Int
+        let backgroundTasksCount: Int
+        let failedMCPCount: Int
+        let preferencesShowSidebar: Bool?
+        let sidebarScrollOffset: Int
+        let mcpScrollOffset: Int
+        let taskScrollOffset: Int
+    }
+    private var lastSidebarRevision: SidebarRevisionState?
+    private var cachedSidebarModel: TUISidebarModel?
+
     private lazy var frameScheduler = TUIFrameScheduler(targetFps: 60) { [weak self] dirtyFlags in
         guard let self else { return }
         if dirtyFlags.contains(.content) {
             self.refreshView(self.latestState)
         } else if dirtyFlags.contains(.animation) {
-            self.updateStatusLine(self.latestState)
-            if self.waitingStartedAt != nil {
-                self.refreshWaitingIndicator()
-            }
-            if self.hasLiveAnimatedContent(self.latestState) {
-                self.refreshView(self.latestState)
-            }
+            self.refreshAnimation(self.latestState)
         }
         self.render()
     }
@@ -1864,19 +1882,7 @@ public final class ApplicationTUI: Frontend {
         overlay = .commandPalette(query: normalized, selected: 0)
     }
 
-    private func refreshView(_ state: ApplicationState) {
-        let refreshStart = ContinuousClock.now
-        let preferences = UserPreferencesStore.shared.load()
-        if renderedPreferences != preferences {
-            renderedPreferences = preferences
-            committedEntryCache.removeAll(keepingCapacity: true)
-        }
-        animationNow = animationClock.now
-        if activeInteractionID != state.activeInteraction?.interactionID {
-            activeInteractionID = state.activeInteraction?.interactionID
-            hitlSelectedOption = 0
-            if state.activeInteraction != nil { view.composer.clear() }
-        }
+    private func refreshSessionIdentityIfNeeded(_ state: ApplicationState) {
         if state.activeSessionID != activeDisplayedSessionID {
             activeDisplayedSessionID = state.activeSessionID
             commandEntries.removeAll()
@@ -1884,18 +1890,132 @@ public final class ApplicationTUI: Frontend {
             activityStartedAt.removeAll(keepingCapacity: true)
             activityFinishedDuration.removeAll(keepingCapacity: true)
             userToggledEntries.removeAll(keepingCapacity: true)
-            view.transcript.entries.removeAll()
+            lastSidebarRevision = nil
+            cachedSidebarModel = nil
+            view.transcript.replace([])
             view.transcript.clearSelection()
             view.setFocus(.composer)
         }
+    }
+
+    private func refreshInteraction(_ state: ApplicationState) {
+        if activeInteractionID != state.activeInteraction?.interactionID {
+            activeInteractionID = state.activeInteraction?.interactionID
+            hitlSelectedOption = 0
+            if state.activeInteraction != nil { view.composer.clear() }
+        }
+    }
+
+    private func refreshStatus(_ state: ApplicationState) {
         let yoloPrefix = options.isYoloMode ? "⚡ YOLO · " : ""
         view.header.subtitle = "\(yoloPrefix)\(state.activeSessionState?.title ?? state.connectionState.status.rawValue)"
         view.backgroundTasks = state.backgroundTasks
         view.backgroundSpinnerIndex = spinnerIndex
         updateStatusLine(state)
+    }
+
+    private func refreshHero(_ state: ApplicationState) -> Bool {
+        let isHero = isHeroEmptyState(state)
+        let prefs = UserPreferencesStore.shared.load()
+        if isHero {
+            let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
+            let model = state.currentModelID ?? prefs.lastModelID ?? ""
+            let provider: String = {
+                guard let slashIdx = model.firstIndex(of: "/") else { return "" }
+                return String(model[..<slashIdx])
+            }()
+            let effort = state.nextTurnReasoningEffort?.rawValue ?? prefs.lastReasoningEffort ?? state.effectiveReasoningEffort.rawValue
+            let permission = currentPermissionDisplayName(from: state)
+            view.heroConfig = TUIHeroConfig(
+                modeName: mode,
+                modelName: model,
+                providerName: provider,
+                reasoningEffort: effort,
+                tip: "Press ctrl+p to see all available actions and commands",
+                permissionName: permission
+            )
+            view.sidebarModel = nil
+            return true
+        } else {
+            view.heroConfig = nil
+            return false
+        }
+    }
+
+    private func refreshSidebar(_ state: ApplicationState) {
+        let prefs = UserPreferencesStore.shared.load()
+        guard (prefs.showSidebar ?? true) else {
+            view.sidebarModel = nil
+            cachedSidebarModel = nil
+            lastSidebarRevision = nil
+            return
+        }
 
         let session = state.activeSessionState
+        let ctx = session?.contextState
+        let currentRevision = SidebarRevisionState(
+            sessionID: state.activeSessionID,
+            sessionTitle: session?.title,
+            compactionGeneration: ctx?.compactionGeneration ?? 0,
+            cacheEpoch: ctx?.cacheEpoch ?? 0,
+            contextActivePCoreTokens: ctx?.activePCoreTokens ?? 0,
+            contextECoreTotalBytes: ctx?.eCoreTotalBytes ?? 0,
+            contextECoreObjectCount: ctx?.eCoreObjectCount ?? 0,
+            contextCacheReadTokens: ctx?.cacheReadTokens ?? 0,
+            extensionsCount: state.extensions.count,
+            extensionsHash: state.extensions.reduce(0) { $0 ^ $1.id.hashValue ^ $1.enabled.hashValue ^ $1.lifecycleState.hashValue },
+            workflowsCount: state.workflows.count,
+            backgroundTasksCount: state.backgroundTasks.count,
+            failedMCPCount: failedMCPServers.count,
+            preferencesShowSidebar: prefs.showSidebar,
+            sidebarScrollOffset: sidebarScrollOffset,
+            mcpScrollOffset: mcpScrollOffset,
+            taskScrollOffset: taskScrollOffset
+        )
+
+        if let cached = cachedSidebarModel, lastSidebarRevision == currentRevision {
+            view.sidebarModel = cached
+            return
+        }
+
+        TUIPerformanceMetrics.shared.recordSidebarRebuild()
+        let model = buildSidebarModel(from: state)
+        cachedSidebarModel = model
+        lastSidebarRevision = currentRevision
+        view.sidebarModel = model
+    }
+
+    private func refreshAnimation(_ state: ApplicationState) {
+        updateStatusLine(state)
+        if waitingStartedAt != nil {
+            refreshWaitingIndicator()
+        }
+        refreshActiveTimeNodes(state)
+    }
+
+    private func refreshActiveTimeNodes(_ state: ApplicationState) {
+        guard let session = state.activeSessionState else { return }
+        for node in session.timelineNodes {
+            switch node.kind {
+            case let .thinking(th) where !th.isComplete:
+                if let rendered = renderEntry(node, isTerminalAssistant: false) {
+                    view.transcript.update(id: node.id.rawValue, text: rendered.text, style: rendered.style)
+                }
+            case let .tool(tl) where tl.phase == .running:
+                if let rendered = renderEntry(node, isTerminalAssistant: false) {
+                    view.transcript.update(id: node.id.rawValue, text: rendered.text, style: rendered.style)
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    private func refreshTranscript(_ state: ApplicationState) {
+        let transcriptProjStart = ContinuousClock.now
+        let session = state.activeSessionState
         let nodes = session?.timelineNodes ?? []
+
         if (nodes.isEmpty && commandEntries.isEmpty) || view.transcript.entries.isEmpty {
             if view.focus == .transcript {
                 view.transcript.clearSelection()
@@ -1908,10 +2028,6 @@ public final class ApplicationTUI: Frontend {
             activityFinishedDuration.removeAll(keepingCapacity: true)
             userToggledEntries.removeAll(keepingCapacity: true)
         }
-
-        let transcriptProjStart = ContinuousClock.now
-        var entries: [TUITranscriptEntry] = []
-        entries.reserveCapacity(nodes.count + commandEntries.count + 1)
 
         let lastAssistantNodeID: TimelineNodeID? = nodes.reversed().first(where: { node in
             if case let .message(msg) = node.kind, msg.role == .assistant {
@@ -1946,9 +2062,11 @@ public final class ApplicationTUI: Frontend {
         )
         let isSessionIdle = !hasActiveStreamingNode && !isWaitingForProvider && !isActive(state)
 
+        var entries: [TUITranscriptEntry] = []
+        entries.reserveCapacity(nodes.count + commandEntries.count + 1)
+
         for node in nodes {
             if case .runTerminal = node.kind {
-                // 内部生命周期元数据（如 Run · completed），不应作为消息暴露给用户
                 continue
             }
             let isMutable: Bool
@@ -2019,46 +2137,45 @@ public final class ApplicationTUI: Frontend {
             let transcriptNs = TUIPerformanceMetrics.durationNs(from: transcriptProjStart)
             TUIPerformanceMetrics.shared.recordTranscriptProjection(durationNs: transcriptNs)
         }
-        latestState = state
+        lastRenderedNodeCount = nodes.count
+    }
 
-        let isHero = isHeroEmptyState(state)
-        let prefs = UserPreferencesStore.shared.load()
-        let sidebarProjStart = ContinuousClock.now
-        if isHero {
-            let mode = state.activeSessionState?.mode.displayName ?? state.nextTurnMode?.displayName ?? "Build"
-            let model = state.currentModelID ?? prefs.lastModelID ?? ""
-            let provider: String = {
-                guard let slashIdx = model.firstIndex(of: "/") else { return "" }
-                return String(model[..<slashIdx])
-            }()
-            let effort = state.nextTurnReasoningEffort?.rawValue ?? prefs.lastReasoningEffort ?? state.effectiveReasoningEffort.rawValue
-            let permission = currentPermissionDisplayName(from: state)
-            view.heroConfig = TUIHeroConfig(
-                modeName: mode,
-                modelName: model,
-                providerName: provider,
-                reasoningEffort: effort,
-                tip: "Press ctrl+p to see all available actions and commands",
-                permissionName: permission
-            )
-            view.sidebarModel = nil
-        } else {
-            view.heroConfig = nil
-            if prefs.showSidebar ?? true {
-                TUIPerformanceMetrics.shared.recordSidebarRebuild()
-                view.sidebarModel = buildSidebarModel(from: state)
-            } else {
-                view.sidebarModel = nil
+    private func refreshView(_ state: ApplicationState) {
+        let refreshStart = ContinuousClock.now
+        let preferences = UserPreferencesStore.shared.load()
+        if renderedPreferences != preferences {
+            renderedPreferences = preferences
+            committedEntryCache.removeAll(keepingCapacity: true)
+            lastSidebarRevision = nil
+        }
+        animationNow = animationClock.now
+
+        refreshSessionIdentityIfNeeded(state)
+        refreshInteraction(state)
+        refreshStatus(state)
+        refreshTranscript(state)
+
+        let isHero = refreshHero(state)
+        if !isHero {
+            let sidebarStart = ContinuousClock.now
+            refreshSidebar(state)
+            if TUIPerformanceMetrics.shared.isEnabled {
+                let sidebarNs = TUIPerformanceMetrics.durationNs(from: sidebarStart)
+                TUIPerformanceMetrics.shared.recordSidebarProjection(durationNs: sidebarNs)
             }
         }
+
+        latestState = state
+
         if TUIPerformanceMetrics.shared.isEnabled {
-            let sidebarNs = TUIPerformanceMetrics.durationNs(from: sidebarProjStart)
-            TUIPerformanceMetrics.shared.recordSidebarProjection(durationNs: sidebarNs)
             let refreshTotalNs = TUIPerformanceMetrics.durationNs(from: refreshStart)
             TUIPerformanceMetrics.shared.recordRefreshViewTotal(durationNs: refreshTotalNs)
-            TUIPerformanceMetrics.shared.recordRefresh(isFull: true, nodesCount: nodes.count, entriesCount: allEntries.count)
+            TUIPerformanceMetrics.shared.recordRefresh(
+                isFull: true,
+                nodesCount: state.activeSessionState?.timelineNodes.count ?? 0,
+                entriesCount: view.transcript.entries.count
+            )
         }
-        lastRenderedNodeCount = nodes.count
     }
 
     private func currentPermissionDisplayName(from state: ApplicationState?) -> String {
@@ -4055,3 +4172,12 @@ public final class ApplicationTUI: Frontend {
         return TUITranscriptEntry(id: id, kind: .toolCall, text: lines.joined(separator: "\n"), style: entryStyle, collapsed: isCollapsed, timestamp: timestamp)
     }
 }
+
+#if DEBUG
+extension ApplicationTUI {
+    public func refreshViewForTesting(_ state: ApplicationState) {
+        refreshView(state)
+    }
+}
+#endif
+
