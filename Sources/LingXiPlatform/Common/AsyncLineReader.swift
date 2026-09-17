@@ -7,59 +7,108 @@ public enum AsyncLineReader: Sendable {
     /// 从 FileHandle 异步流式解码行
     public static func lines(from handle: FileHandle, bufferSize: Int = 4096) -> AsyncThrowingStream<String, any Error> {
         AsyncThrowingStream { continuation in
-            let task = Task.detached {
-                var leftover = Data()
-                let newline = UInt8(ascii: "\n")
-                let cr = UInt8(ascii: "\r")
+            #if os(Windows)
+            let useDirectRead = true
+            #else
+            var statBuf = stat()
+            let isRegularFile = (fstat(handle.fileDescriptor, &statBuf) == 0) && ((statBuf.st_mode & S_IFMT) == S_IFREG)
+            let useDirectRead = isRegularFile
+            #endif
 
-                do {
-                    while !Task.isCancelled {
-                        let chunk: Data
-                        if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
-                            if let data = try handle.read(upToCount: bufferSize), !data.isEmpty {
-                                chunk = data
+            if useDirectRead {
+                let task = Task.detached {
+                    var leftover = Data()
+                    let newline = UInt8(ascii: "\n")
+                    let cr = UInt8(ascii: "\r")
+
+                    do {
+                        while !Task.isCancelled {
+                            let chunk: Data
+                            if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
+                                if let data = try handle.read(upToCount: bufferSize), !data.isEmpty {
+                                    chunk = data
+                                } else {
+                                    break // EOF
+                                }
                             } else {
-                                break // EOF
+                                let data = handle.readData(ofLength: bufferSize)
+                                if data.isEmpty { break }
+                                chunk = data
                             }
-                        } else {
-                            let data = handle.readData(ofLength: bufferSize)
-                            if data.isEmpty { break }
-                            chunk = data
+
+                            leftover.append(chunk)
+
+                            while let newlineIndex = leftover.firstIndex(of: newline) {
+                                var lineData = leftover.subdata(in: leftover.startIndex..<newlineIndex)
+                                if lineData.last == cr {
+                                    lineData.removeLast()
+                                }
+                                let line = String(decoding: lineData, as: UTF8.self)
+                                continuation.yield(line)
+                                leftover.removeSubrange(leftover.startIndex...newlineIndex)
+                            }
                         }
 
-                        leftover.append(chunk)
-
-                        while let newlineIndex = leftover.firstIndex(of: newline) {
-                            var lineData = leftover.subdata(in: leftover.startIndex..<newlineIndex)
-                            // 兼容剔除 Windows \r\n 中的 \r
+                        if !leftover.isEmpty {
+                            var lineData = leftover
                             if lineData.last == cr {
                                 lineData.removeLast()
                             }
                             let line = String(decoding: lineData, as: UTF8.self)
-                            continuation.yield(line)
-                            leftover.removeSubrange(leftover.startIndex...newlineIndex)
+                            if !line.isEmpty {
+                                continuation.yield(line)
+                            }
                         }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+
+                continuation.onTermination = { @Sendable _ in
+                    task.cancel()
+                }
+            } else {
+                #if !os(Windows)
+                var leftover = Data()
+                let newline = UInt8(ascii: "\n")
+                let cr = UInt8(ascii: "\r")
+
+                handle.readabilityHandler = { h in
+                    let data = h.availableData
+                    if data.isEmpty {
+                        h.readabilityHandler = nil
+                        if !leftover.isEmpty {
+                            var lineData = leftover
+                            if lineData.last == cr {
+                                lineData.removeLast()
+                            }
+                            let line = String(decoding: lineData, as: UTF8.self)
+                            if !line.isEmpty {
+                                continuation.yield(line)
+                            }
+                            leftover.removeAll()
+                        }
+                        continuation.finish()
+                        return
                     }
 
-                    // Flush residual line without trailing newline at EOF
-                    if !leftover.isEmpty {
-                        var lineData = leftover
+                    leftover.append(data)
+                    while let newlineIndex = leftover.firstIndex(of: newline) {
+                        var lineData = leftover.subdata(in: leftover.startIndex..<newlineIndex)
                         if lineData.last == cr {
                             lineData.removeLast()
                         }
                         let line = String(decoding: lineData, as: UTF8.self)
-                        if !line.isEmpty {
-                            continuation.yield(line)
-                        }
+                        continuation.yield(line)
+                        leftover.removeSubrange(leftover.startIndex...newlineIndex)
                     }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
-            }
 
-            continuation.onTermination = { @Sendable _ in
-                task.cancel()
+                continuation.onTermination = { @Sendable _ in
+                    handle.readabilityHandler = nil
+                }
+                #endif
             }
         }
     }

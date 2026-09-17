@@ -15,8 +15,7 @@ public actor SessionTurnCoordinator {
     private var modelSteps: [ModelStepID: ModelStepSnapshot] = [:]
     private var toolInvocations: [ToolCallID: ToolInvocationSnapshot] = [:]
 
-    private var streamFrames: [StreamID: [StreamFrame]] = [:]
-    private var streamSubscribers: [StreamID: [UUID: AsyncStream<StreamFrame>.Continuation]] = [:]
+    private var streamReplayState = StreamReplayState()
 
     public init(sessionID: SessionID, eventLog: SessionEventLog) {
         self.sessionID = sessionID
@@ -32,7 +31,7 @@ public actor SessionTurnCoordinator {
         interactions.removeAll()
         modelSteps.removeAll()
         toolInvocations.removeAll()
-        streamFrames.removeAll()
+        streamReplayState.reset()
 
         await eventLog.resetToEvents([])
         await hydrateHistoricalMessages(remainingMessages)
@@ -446,14 +445,11 @@ public actor SessionTurnCoordinator {
         return turns.values.sorted(by: { $0.createdAt < $1.createdAt }).last?.executionIntent.mode ?? .build
     }
 
-    private var streamTerminalIndices: [StreamID: UInt64] = [:]
-    private var knownStreamIDs: Set<StreamID> = []
-
     // Assistant streaming 在首 frame 前必须已有稳定 MessageID
     public func beginAssistantStream(stepID: ModelStepID, runID: RunID) async -> (messageID: MessageID, streamID: StreamID) {
         let messageID = MessageID()
         let streamID = StreamID()
-        knownStreamIDs.insert(streamID)
+        streamReplayState.recordKnownStream(streamID)
         let run = runs[runID]
         let causal = CausalContext(sessionID: sessionID, turnID: run?.turnID, runID: runID, rootRunID: run?.rootRunID, modelStepID: stepID)
 
@@ -464,33 +460,15 @@ public actor SessionTurnCoordinator {
 
     @discardableResult
     public func emitStreamFrame(frame: StreamFrame) throws -> StreamFrame {
-        knownStreamIDs.insert(frame.streamID)
-        if let terminal = streamTerminalIndices[frame.streamID] {
-            if frame.index > terminal {
-                throw RuntimeError(category: .runtime, code: "streamAlreadyTerminated", message: "Stream \(frame.streamID.rawValue) 已在 finalIndex \(terminal) 结束", retryability: .none, source: .core)
-            }
-        }
-
-        streamFrames[frame.streamID, default: []].append(frame)
-        if let continuations = streamSubscribers[frame.streamID] {
-            for continuation in continuations.values {
-                continuation.yield(frame)
-            }
-        }
-        return frame
+        try streamReplayState.emitFrame(frame)
     }
 
     public func closeStream(streamID: StreamID, finalIndex: UInt64) {
-        streamTerminalIndices[streamID] = finalIndex
-        if let continuations = streamSubscribers.removeValue(forKey: streamID) {
-            for continuation in continuations.values {
-                continuation.finish()
-            }
-        }
+        streamReplayState.closeStream(streamID: streamID, finalIndex: finalIndex)
     }
 
     public func hasStream(_ streamID: StreamID) -> Bool {
-        knownStreamIDs.contains(streamID) || streamFrames[streamID] != nil || modelSteps.values.contains { $0.visibleReasoningStreamID == streamID || $0.assistantStreamID == streamID }
+        streamReplayState.hasStream(streamID) || modelSteps.values.contains { $0.visibleReasoningStreamID == streamID || $0.assistantStreamID == streamID }
     }
 
     public func commitAssistantMessage(
@@ -520,8 +498,8 @@ public actor SessionTurnCoordinator {
         let messageID = MessageID()
         let reasoningStreamID = StreamID()
         let assistantStreamID = StreamID()
-        knownStreamIDs.insert(reasoningStreamID)
-        knownStreamIDs.insert(assistantStreamID)
+        streamReplayState.recordKnownStream(reasoningStreamID)
+        streamReplayState.recordKnownStream(assistantStreamID)
         let run = runs[runID]
         let causal = CausalContext(sessionID: sessionID, turnID: run?.turnID, runID: runID, rootRunID: run?.rootRunID, modelStepID: stepID)
 
@@ -617,8 +595,8 @@ public actor SessionTurnCoordinator {
     }
 
     public func recordToolRunning(callID: ToolCallID, stdoutStreamID: StreamID?, stderrStreamID: StreamID?, causal: CausalContext) async {
-        if let stdoutStreamID { knownStreamIDs.insert(stdoutStreamID) }
-        if let stderrStreamID { knownStreamIDs.insert(stderrStreamID) }
+        if let stdoutStreamID { streamReplayState.recordKnownStream(stdoutStreamID) }
+        if let stderrStreamID { streamReplayState.recordKnownStream(stderrStreamID) }
         toolStreams[callID] = (stdout: stdoutStreamID, stderr: stderrStreamID)
         if let inv = toolInvocations[callID] {
             toolInvocations[callID] = ToolInvocationSnapshot(
@@ -713,35 +691,20 @@ public actor SessionTurnCoordinator {
     // MARK: - Stream Subscription
 
     public func subscribeStream(streamID: StreamID, afterIndex: UInt64?) -> AsyncStream<StreamFrame> {
-        let key = UUID()
-        let cached = streamFrames[streamID] ?? []
-        let replay = cached.filter { frame in
-            if let afterIndex { return frame.index > afterIndex }
-            return true
-        }
-        let terminalIndex = streamTerminalIndices[streamID]
-
-        return AsyncStream { continuation in
-            for frame in replay {
-                continuation.yield(frame)
-            }
-            if terminalIndex != nil {
-                // Once the stream has terminated, no future frames can ever be emitted.
-                // Replaying available frames and finishing immediately prevents deadlocks.
-                continuation.finish()
-                return
-            }
-            self.streamSubscribers[streamID, default: [:]][key] = continuation
-            continuation.onTermination = { [weak self] _ in
-                Task { [weak self] in
-                    await self?.removeStreamSubscriber(streamID: streamID, key: key)
-                }
+        streamReplayState.subscribeStream(streamID: streamID, afterIndex: afterIndex) { [weak self] key in
+            Task { [weak self] in
+                await self?.removeStreamSubscriber(streamID: streamID, key: key)
             }
         }
     }
 
     private func removeStreamSubscriber(streamID: StreamID, key: UUID) {
-        streamSubscribers[streamID]?.removeValue(forKey: key)
+        streamReplayState.removeSubscriber(streamID: streamID, key: key)
+    }
+
+    /// 暴露只读 StreamReplayState 供诊断和测试断言生命周期指标
+    public var currentStreamReplayState: StreamReplayState {
+        streamReplayState
     }
 
     // MARK: - Snapshot 组装
