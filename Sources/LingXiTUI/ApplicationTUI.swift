@@ -2282,27 +2282,47 @@ public final class ApplicationTUI: Frontend {
             }
         }
 
-        // 2. P-Core / E-Core 双核心架构用量与缓存状态
+        // 2. P-Core / E-Core 双核心架构用量与缓存状态（由 Core 权威状态驱动，杜绝 UI 臆想推算）
         let ctx = session?.contextState
         let pCoreUsed = ctx?.activePCoreTokens ?? 0
-        let pCoreCapacity = 128_000
-        let pCoreDetail = "\(TokenFormatter.format(pCoreUsed))/\(TokenFormatter.format(pCoreCapacity))"
+        // P-Core 容量从 Core 发布的 targetTokens / hardLimitTokens 读取，绝不在 UI 硬编码 128_000
+        let pCoreCapacity = ctx?.pCore?.targetTokens ?? ctx?.pCore?.hardLimitTokens ?? 0
+        let pCoreDetail: String
+        if pCoreCapacity > 0 {
+            pCoreDetail = "\(TokenFormatter.format(pCoreUsed))/\(TokenFormatter.format(pCoreCapacity))"
+        } else {
+            pCoreDetail = "\(TokenFormatter.format(pCoreUsed))"
+        }
 
-        let eCoreBytes = ctx?.eCoreTotalBytes ?? 0
-        let eCoreCount = ctx?.eCoreObjectCount ?? 0
-        let eCoreTokens = eCoreBytes / 4
-        let eCoreCapacity = 100_000
+        let eCoreBytes = ctx?.eCore?.totalBytes ?? ctx?.eCoreTotalBytes ?? 0
+        let eCoreCount = ctx?.eCore?.objectCount ?? ctx?.eCoreObjectCount ?? 0
+        // E-Core 为对象存储，不再用 bytes / 4 伪装 token，也不硬编码 100_000
         let eCoreDetail = "\(eCoreCount) objs · \(TokenFormatter.formatBytes(eCoreBytes))"
 
-        let cacheRead = ctx?.cacheReadTokens ?? 0
-        let cachePrompt = ctx?.promptTokens ?? max(1, pCoreUsed)
-        let cacheDebt = ctx?.cacheDebt ?? 0
+        let cacheRead = ctx?.providerCache?.cacheReadTokens ?? ctx?.cacheReadTokens ?? 0
+        let cachePrompt = ctx?.providerCache?.promptTokens ?? ctx?.promptTokens ?? max(1, pCoreUsed)
+        let cacheDebt = ctx?.providerCache?.cacheDebt ?? ctx?.cacheDebt ?? 0
         let cacheDetail = "Read \(TokenFormatter.format(cacheRead)) · Debt \(cacheDebt)"
 
         let cacheLayers = [
-            TUISidebarModel.CacheLayer(name: "P-Core", usedTokens: pCoreUsed, capacityTokens: pCoreCapacity, detailText: pCoreDetail),
-            TUISidebarModel.CacheLayer(name: "E-Core", usedTokens: eCoreTokens, capacityTokens: eCoreCapacity, detailText: eCoreDetail),
-            TUISidebarModel.CacheLayer(name: "Cache", usedTokens: cacheRead, capacityTokens: max(1, cachePrompt), detailText: cacheDetail)
+            TUISidebarModel.CacheLayer(
+                name: "P-Core",
+                usedTokens: pCoreUsed,
+                capacityTokens: max(pCoreUsed, pCoreCapacity > 0 ? pCoreCapacity : 1),
+                detailText: pCoreDetail
+            ),
+            TUISidebarModel.CacheLayer(
+                name: "E-Core",
+                usedTokens: eCoreBytes,
+                capacityTokens: max(eCoreBytes, 1),
+                detailText: eCoreDetail
+            ),
+            TUISidebarModel.CacheLayer(
+                name: "Cache",
+                usedTokens: cacheRead,
+                capacityTokens: max(1, cachePrompt),
+                detailText: cacheDetail
+            )
         ]
 
         // 从 timelineNodes 动态提取运行时失败或不可用的 MCP 服务
@@ -4254,6 +4274,10 @@ extension ApplicationTUI {
             self.pendingChanges = changes
         }
         refreshView(state)
+    }
+
+    public var sidebarModelForTesting: TUISidebarModel? {
+        view.sidebarModel
     }
 }
 #endif

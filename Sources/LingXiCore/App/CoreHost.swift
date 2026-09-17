@@ -1628,8 +1628,40 @@ extension CoreHost {
 
         let effectivePromptTokens = cacheRecord?.promptTokens ?? (pCoreTokens > 0 ? pCoreTokens : nil)
 
+        let pCoreSnapshot = PCoreStateSnapshot(
+            usedTokens: pCoreTokens,
+            targetTokens: effectiveContextPolicy.l1Target,
+            softLimitTokens: effectiveContextPolicy.l1SoftLimit,
+            hardLimitTokens: effectiveContextPolicy.l1HardLimit
+        )
+
+        let eCoreSnapshot = ECoreStateSnapshot(
+            objectCount: ecoreCount,
+            totalBytes: ecoreBytes,
+            hotObjectCount: nil,
+            coldObjectCount: nil,
+            revision: UInt64(generation)
+        )
+
+        let providerCacheSnapshot = ProviderCacheStateSnapshot(
+            promptTokens: effectivePromptTokens,
+            previousPromptTokens: cacheRecord?.previousPromptTokens,
+            cacheReadTokens: cacheRecord?.cachedTokens,
+            cacheEpoch: cacheRecord?.epoch ?? clientHealth?.cacheEpoch,
+            epochReason: cacheRecord?.epochReason,
+            cacheDebt: debtState.cacheDebt,
+            clientHealthStatus: clientHealth?.status,
+            stablePrefixHash: cacheRecord?.stablePrefixHash ?? clientHealth?.stablePrefixHash,
+            cacheStatus: cacheRecord?.status,
+            missDiagnostics: cacheRecord?.missDiagnostics
+        )
+
         return ContextStateSnapshot(
             sessionID: sessionID,
+            revision: UInt64(generation),
+            pCore: pCoreSnapshot,
+            eCore: eCoreSnapshot,
+            providerCache: providerCacheSnapshot,
             estimatedTokens: estimatedTokens,
             l1Tokens: effectiveL1Usage,
             l2Tokens: l2Usage,

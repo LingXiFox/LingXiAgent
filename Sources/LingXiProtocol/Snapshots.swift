@@ -411,9 +411,127 @@ public enum InteractionResolution: Codable, Sendable, Equatable {
     }
 }
 
+/// P-Core 状态快照
+public struct PCoreStateSnapshot: Codable, Sendable, Equatable {
+    public let usedTokens: Int
+    public let targetTokens: Int
+    public let softLimitTokens: Int
+    public let hardLimitTokens: Int
+
+    public init(
+        usedTokens: Int = 0,
+        targetTokens: Int = 0,
+        softLimitTokens: Int = 0,
+        hardLimitTokens: Int = 0
+    ) {
+        self.usedTokens = usedTokens
+        self.targetTokens = targetTokens
+        self.softLimitTokens = softLimitTokens
+        self.hardLimitTokens = hardLimitTokens
+    }
+}
+
+/// E-Core 状态快照
+public struct ECoreStateSnapshot: Codable, Sendable, Equatable {
+    public let objectCount: Int
+    public let totalBytes: Int
+    public let hotObjectCount: Int?
+    public let coldObjectCount: Int?
+    public let revision: UInt64
+
+    public init(
+        objectCount: Int = 0,
+        totalBytes: Int = 0,
+        hotObjectCount: Int? = nil,
+        coldObjectCount: Int? = nil,
+        revision: UInt64 = 0
+    ) {
+        self.objectCount = objectCount
+        self.totalBytes = totalBytes
+        self.hotObjectCount = hotObjectCount
+        self.coldObjectCount = coldObjectCount
+        self.revision = revision
+    }
+}
+
+/// Provider Cache 状态快照
+public struct ProviderCacheStateSnapshot: Codable, Sendable, Equatable {
+    public let promptTokens: Int?
+    public let previousPromptTokens: Int?
+    public let cacheReadTokens: Int?
+    public let cacheEpoch: Int?
+    public let epochReason: String?
+    public let cacheDebt: Int?
+    public let clientHealthStatus: String?
+    public let stablePrefixHash: String?
+    public let cacheStatus: String?
+    public let missDiagnostics: String?
+
+    public init(
+        promptTokens: Int? = nil,
+        previousPromptTokens: Int? = nil,
+        cacheReadTokens: Int? = nil,
+        cacheEpoch: Int? = nil,
+        epochReason: String? = nil,
+        cacheDebt: Int? = nil,
+        clientHealthStatus: String? = nil,
+        stablePrefixHash: String? = nil,
+        cacheStatus: String? = nil,
+        missDiagnostics: String? = nil
+    ) {
+        self.promptTokens = promptTokens
+        self.previousPromptTokens = previousPromptTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheEpoch = cacheEpoch
+        self.epochReason = epochReason
+        self.cacheDebt = cacheDebt
+        self.clientHealthStatus = clientHealthStatus
+        self.stablePrefixHash = stablePrefixHash
+        self.cacheStatus = cacheStatus
+        self.missDiagnostics = missDiagnostics
+    }
+}
+
+/// Context 状态增量补丁
+public struct ContextStatePatch: Codable, Sendable, Equatable {
+    public let sessionID: SessionID
+    public let revision: UInt64
+    public let pCore: PCoreStateSnapshot?
+    public let eCore: ECoreStateSnapshot?
+    public let providerCache: ProviderCacheStateSnapshot?
+    public let compactionGeneration: Int?
+
+    public init(
+        sessionID: SessionID,
+        revision: UInt64,
+        pCore: PCoreStateSnapshot? = nil,
+        eCore: ECoreStateSnapshot? = nil,
+        providerCache: ProviderCacheStateSnapshot? = nil,
+        compactionGeneration: Int? = nil
+    ) {
+        self.sessionID = sessionID
+        self.revision = revision
+        self.pCore = pCore
+        self.eCore = eCore
+        self.providerCache = providerCache
+        self.compactionGeneration = compactionGeneration
+    }
+}
+
+/// Context 状态更新指令
+public enum ContextStateUpdate: Codable, Sendable, Equatable {
+    case full(ContextStateSnapshot)
+    case patch(ContextStatePatch)
+    case reset(sessionID: SessionID, revision: UInt64)
+}
+
 /// Context 状态快照。
 public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     public let sessionID: SessionID
+    public let revision: UInt64
+    public let pCore: PCoreStateSnapshot?
+    public let eCore: ECoreStateSnapshot?
+    public let providerCache: ProviderCacheStateSnapshot?
     public let estimatedTokens: Int
     public let l1Tokens: Int
     public let l2Tokens: Int
@@ -442,11 +560,18 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     public let cacheDebt: Int?
 
     public var activePCoreTokens: Int {
-        pCoreTokens ?? promptTokens ?? l1Tokens
+        if let pCore {
+            return pCore.usedTokens
+        }
+        return pCoreTokens ?? 0
     }
 
     public init(
         sessionID: SessionID,
+        revision: UInt64 = 0,
+        pCore: PCoreStateSnapshot? = nil,
+        eCore: ECoreStateSnapshot? = nil,
+        providerCache: ProviderCacheStateSnapshot? = nil,
         estimatedTokens: Int = 0,
         l1Tokens: Int = 0,
         l2Tokens: Int = 0,
@@ -475,32 +600,36 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         cacheDebt: Int? = nil
     ) {
         self.sessionID = sessionID
+        self.revision = revision
+        self.pCore = pCore
+        self.eCore = eCore
+        self.providerCache = providerCache
         self.estimatedTokens = estimatedTokens
         self.l1Tokens = l1Tokens
         self.l2Tokens = l2Tokens
         self.l3Tokens = l3Tokens
         self.compactionGeneration = compactionGeneration
-        self.cacheReadTokens = cacheReadTokens
-        self.promptTokens = promptTokens
-        self.previousPromptTokens = previousPromptTokens
-        self.cacheStatus = cacheStatus
-        self.cacheEpoch = cacheEpoch
-        self.epochReason = epochReason
-        self.stablePrefixHash = stablePrefixHash
-        self.missDiagnostics = missDiagnostics
+        self.cacheReadTokens = cacheReadTokens ?? providerCache?.cacheReadTokens
+        self.promptTokens = promptTokens ?? providerCache?.promptTokens
+        self.previousPromptTokens = previousPromptTokens ?? providerCache?.previousPromptTokens
+        self.cacheStatus = cacheStatus ?? providerCache?.cacheStatus
+        self.cacheEpoch = cacheEpoch ?? providerCache?.cacheEpoch
+        self.epochReason = epochReason ?? providerCache?.epochReason
+        self.stablePrefixHash = stablePrefixHash ?? providerCache?.stablePrefixHash
+        self.missDiagnostics = missDiagnostics ?? providerCache?.missDiagnostics
         self.structuralPrefixStability = structuralPrefixStability
         self.clientCausedBustRate = clientCausedBustRate
         self.appendOnlyContextRatio = appendOnlyContextRatio
         self.volatileTailBytes = volatileTailBytes
-        self.clientHealthStatus = clientHealthStatus
+        self.clientHealthStatus = clientHealthStatus ?? providerCache?.clientHealthStatus
         self.observedGranularity = observedGranularity
         self.clientCausedBusts = clientCausedBusts
         self.comparableRequests = comparableRequests
         self.appendOnlyViolations = appendOnlyViolations
-        self.pCoreTokens = pCoreTokens ?? promptTokens ?? (l1Tokens > 0 ? l1Tokens : nil)
-        self.eCoreObjectCount = eCoreObjectCount
-        self.eCoreTotalBytes = eCoreTotalBytes
-        self.cacheDebt = cacheDebt
+        self.pCoreTokens = pCore?.usedTokens ?? pCoreTokens
+        self.eCoreObjectCount = eCore?.objectCount ?? eCoreObjectCount
+        self.eCoreTotalBytes = eCore?.totalBytes ?? eCoreTotalBytes
+        self.cacheDebt = providerCache?.cacheDebt ?? cacheDebt
     }
 
     /// Prefix Reuse Efficiency = 实际复用旧前缀 token (cacheRead) / 上一轮可复用前缀 token (previousPromptTokens)

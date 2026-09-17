@@ -1085,85 +1085,95 @@ public enum SessionReducer {
         }
     }
 
-    /// 上下文状态快照平滑合并：引入高水位线单调性保护，防止中间瞬态计算或无序事件冲刷导致侧边栏 4 项指标归零或跳动
+    /// 上下文状态更新：基于显式 revision 与完整性语义，不再使用数值启发式掩盖真实归零或压缩下降
+    public static func applyContextUpdate(
+        _ update: ContextStateUpdate,
+        existing: ContextStateSnapshot?
+    ) -> ContextStateSnapshot? {
+        switch update {
+        case let .full(snapshot):
+            guard let existing else { return snapshot }
+            guard existing.sessionID == snapshot.sessionID else { return snapshot }
+            if snapshot.revision > 0 && existing.revision > snapshot.revision {
+                return existing // 丢弃过期乱序快照
+            }
+            return snapshot
+
+        case let .reset(sessionID, revision):
+            if let existing, existing.sessionID == sessionID, revision < existing.revision {
+                return existing
+            }
+            return ContextStateSnapshot(
+                sessionID: sessionID,
+                revision: revision,
+                pCore: PCoreStateSnapshot(usedTokens: 0, targetTokens: existing?.pCore?.targetTokens ?? 0, softLimitTokens: existing?.pCore?.softLimitTokens ?? 0, hardLimitTokens: existing?.pCore?.hardLimitTokens ?? 0),
+                eCore: ECoreStateSnapshot(objectCount: 0, totalBytes: 0, revision: revision),
+                providerCache: ProviderCacheStateSnapshot(promptTokens: 0, previousPromptTokens: 0, cacheReadTokens: 0, cacheDebt: 0)
+            )
+
+        case let .patch(patch):
+            guard let existing, existing.sessionID == patch.sessionID else {
+                return ContextStateSnapshot(
+                    sessionID: patch.sessionID,
+                    revision: patch.revision,
+                    pCore: patch.pCore,
+                    eCore: patch.eCore,
+                    providerCache: patch.providerCache,
+                    compactionGeneration: patch.compactionGeneration ?? 0
+                )
+            }
+            if patch.revision > 0 && existing.revision > patch.revision {
+                return existing // 丢弃过期乱序补丁
+            }
+            let mergedPCore = patch.pCore ?? existing.pCore
+            let mergedECore = patch.eCore ?? existing.eCore
+            let mergedCache = patch.providerCache ?? existing.providerCache
+            let mergedGeneration = patch.compactionGeneration ?? existing.compactionGeneration
+
+            return ContextStateSnapshot(
+                sessionID: existing.sessionID,
+                revision: max(existing.revision, patch.revision),
+                pCore: mergedPCore,
+                eCore: mergedECore,
+                providerCache: mergedCache,
+                estimatedTokens: existing.estimatedTokens,
+                l1Tokens: mergedPCore?.usedTokens ?? existing.l1Tokens,
+                l2Tokens: existing.l2Tokens,
+                l3Tokens: existing.l3Tokens,
+                compactionGeneration: mergedGeneration,
+                cacheReadTokens: mergedCache?.cacheReadTokens ?? existing.cacheReadTokens,
+                promptTokens: mergedCache?.promptTokens ?? existing.promptTokens,
+                previousPromptTokens: mergedCache?.previousPromptTokens ?? existing.previousPromptTokens,
+                cacheStatus: mergedCache?.cacheStatus ?? existing.cacheStatus,
+                cacheEpoch: mergedCache?.cacheEpoch ?? existing.cacheEpoch,
+                epochReason: mergedCache?.epochReason ?? existing.epochReason,
+                stablePrefixHash: mergedCache?.stablePrefixHash ?? existing.stablePrefixHash,
+                missDiagnostics: mergedCache?.missDiagnostics ?? existing.missDiagnostics,
+                clientHealthStatus: mergedCache?.clientHealthStatus ?? existing.clientHealthStatus,
+                pCoreTokens: mergedPCore?.usedTokens ?? existing.pCoreTokens,
+                eCoreObjectCount: mergedECore?.objectCount ?? existing.eCoreObjectCount,
+                eCoreTotalBytes: mergedECore?.totalBytes ?? existing.eCoreTotalBytes,
+                cacheDebt: mergedCache?.cacheDebt ?? existing.cacheDebt
+            )
+        }
+    }
+
+    /// 上下文状态快照合并（权威 full snapshot 语义，彻底废弃数值启发式掩盖）
     public static func mergeContextState(
         existing: ContextStateSnapshot?,
         incoming: ContextStateSnapshot,
         hasMessages: Bool
     ) -> ContextStateSnapshot {
-        guard let existing, existing.sessionID == incoming.sessionID, hasMessages else {
+        guard let existing, existing.sessionID == incoming.sessionID else {
             return incoming
         }
 
-        // 1. P-Core 高水位与防归零保护
-        let existingPCore = existing.activePCoreTokens
-        let incomingPCore = incoming.activePCoreTokens
-        let resolvedPCoreTokens: Int?
-        if incomingPCore == 0 && existingPCore > 0 {
-            // 中间态丢失了真实用量，平滑继承既有有效高水位
-            resolvedPCoreTokens = existing.pCoreTokens ?? existingPCore
-        } else if incomingPCore < existingPCore / 4 && incoming.compactionGeneration <= existing.compactionGeneration {
-            // 异常跌落（例如仅算纯消息文本，丢失了工具定义等系统前缀），维持既有数值
-            resolvedPCoreTokens = existing.pCoreTokens ?? existingPCore
-        } else {
-            resolvedPCoreTokens = incoming.pCoreTokens ?? (incomingPCore > 0 ? incomingPCore : existing.pCoreTokens)
+        // 若 incoming 携带显式 revision 且比已存在版本旧，则丢弃乱序旧快照
+        if incoming.revision > 0 && existing.revision > incoming.revision {
+            return existing
         }
 
-        // 2. E-Core 存储平滑保护
-        let existingCount = existing.eCoreObjectCount ?? 0
-        let incomingCount = incoming.eCoreObjectCount ?? 0
-        let resolvedEcoreCount: Int?
-        let resolvedEcoreBytes: Int?
-        if incomingCount == 0 && existingCount > 0 {
-            // 中间态尚未从磁盘完成读取或尚未 settle，平滑继承已沉淀的对象信息
-            resolvedEcoreCount = existing.eCoreObjectCount
-            resolvedEcoreBytes = existing.eCoreTotalBytes
-        } else {
-            resolvedEcoreCount = incoming.eCoreObjectCount
-            resolvedEcoreBytes = incoming.eCoreTotalBytes
-        }
-
-        // 3. Cache Read / Prompt / 前缀复用统计平滑保护
-        let resolvedPromptTokens = incoming.promptTokens ?? existing.promptTokens ?? resolvedPCoreTokens
-        let resolvedCacheReadTokens = incoming.cacheReadTokens ?? existing.cacheReadTokens
-        let resolvedPreviousPromptTokens = incoming.previousPromptTokens ?? existing.previousPromptTokens
-        let resolvedCacheStatus = incoming.cacheStatus ?? existing.cacheStatus
-        let resolvedCacheEpoch = incoming.cacheEpoch ?? existing.cacheEpoch
-        let resolvedEpochReason = incoming.epochReason ?? existing.epochReason
-        let resolvedMissDiag = incoming.missDiagnostics ?? existing.missDiagnostics
-        let resolvedClientHealth = incoming.clientHealthStatus ?? existing.clientHealthStatus
-        let resolvedBustRate = incoming.clientCausedBustRate ?? existing.clientCausedBustRate
-        let resolvedBusts = incoming.clientCausedBusts ?? existing.clientCausedBusts
-        let resolvedComparable = incoming.comparableRequests ?? existing.comparableRequests
-
-        return ContextStateSnapshot(
-            sessionID: incoming.sessionID,
-            estimatedTokens: max(incoming.estimatedTokens, resolvedPCoreTokens ?? 0),
-            l1Tokens: max(incoming.l1Tokens, resolvedPCoreTokens ?? 0),
-            l2Tokens: incoming.l2Tokens,
-            l3Tokens: incoming.l3Tokens,
-            compactionGeneration: max(incoming.compactionGeneration, existing.compactionGeneration),
-            cacheReadTokens: resolvedCacheReadTokens,
-            promptTokens: resolvedPromptTokens,
-            previousPromptTokens: resolvedPreviousPromptTokens,
-            cacheStatus: resolvedCacheStatus,
-            cacheEpoch: resolvedCacheEpoch,
-            epochReason: resolvedEpochReason,
-            stablePrefixHash: incoming.stablePrefixHash ?? existing.stablePrefixHash,
-            missDiagnostics: resolvedMissDiag,
-            structuralPrefixStability: incoming.structuralPrefixStability ?? existing.structuralPrefixStability,
-            clientCausedBustRate: resolvedBustRate,
-            appendOnlyContextRatio: incoming.appendOnlyContextRatio ?? existing.appendOnlyContextRatio,
-            volatileTailBytes: incoming.volatileTailBytes ?? existing.volatileTailBytes,
-            clientHealthStatus: resolvedClientHealth,
-            observedGranularity: incoming.observedGranularity ?? existing.observedGranularity,
-            clientCausedBusts: resolvedBusts,
-            comparableRequests: resolvedComparable,
-            appendOnlyViolations: incoming.appendOnlyViolations ?? existing.appendOnlyViolations,
-            pCoreTokens: resolvedPCoreTokens,
-            eCoreObjectCount: resolvedEcoreCount,
-            eCoreTotalBytes: resolvedEcoreBytes,
-            cacheDebt: incoming.cacheDebt ?? existing.cacheDebt
-        )
+        // 权威快照：0 就是 0，压缩下降就是真实下降，不再做 < 1/4 或 count == 0 的启发式阻拦
+        return incoming
     }
 }
