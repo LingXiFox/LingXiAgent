@@ -123,7 +123,7 @@ public final class GenericProcessLSPTransport: @unchecked Sendable, LSPTransport
 
     public func request(id: Int, method: String, parameters: Data) throws -> Data {
         do {
-            return try peer.request(id: id, method: method, parameters: parameters)
+            return try peer.requestSync(id: id, method: method, parameters: parameters)
         } catch {
             throw LSPClientError.crashed
         }

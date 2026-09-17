@@ -76,20 +76,6 @@ public struct LineDelimitedJSONFramer: MessageFramer {
     }
 
     public func readNextPayload(from transport: StdioTransport) throws -> Data? {
-        var lineData = Data()
-        while let byte = try transport.readByte() {
-            if byte == UInt8(ascii: "\n") {
-                // 剔除末尾可能存在的 \r
-                if lineData.last == UInt8(ascii: "\r") {
-                    lineData.removeLast()
-                }
-                return lineData
-            }
-            lineData.append(byte)
-            if lineData.count > maxLineLength {
-                throw MessageFramerError.headerTooLarge
-            }
-        }
-        return lineData.isEmpty ? nil : lineData
+        try transport.readLine(maxBytes: maxLineLength)
     }
 }

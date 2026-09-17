@@ -49,7 +49,7 @@ public final class BrowserHostClient: @unchecked Sendable {
     /// 执行 initialize 握手
     public func initialize() async throws -> BrowserHostHandshakeResult {
         let reqID = allocateID()
-        let resData = try peer.request(id: reqID, method: "initialize", parameters: nil)
+        let resData = try await peer.request(id: reqID, method: "initialize", parameters: nil)
         return try JSONDecoder().decode(BrowserHostHandshakeResult.self, from: resData)
     }
 
@@ -58,7 +58,7 @@ public final class BrowserHostClient: @unchecked Sendable {
         let reqID = allocateID()
         let params: [String: Any] = ["sessionID": sessionID]
         let paramData = try JSONSerialization.data(withJSONObject: params)
-        let resData = try peer.request(id: reqID, method: "session.create", parameters: paramData)
+        let resData = try await peer.request(id: reqID, method: "session.create", parameters: paramData)
         guard let obj = try? JSONSerialization.jsonObject(with: resData) as? [String: Any],
               let id = obj["sessionID"] as? String else {
             return sessionID
@@ -71,7 +71,7 @@ public final class BrowserHostClient: @unchecked Sendable {
         let reqID = allocateID()
         let params: [String: Any] = ["sessionID": sessionID, "url": url]
         let paramData = try JSONSerialization.data(withJSONObject: params)
-        let resData = try peer.request(id: reqID, method: "session.navigate", parameters: paramData)
+        let resData = try await peer.request(id: reqID, method: "session.navigate", parameters: paramData)
         guard let obj = try? JSONSerialization.jsonObject(with: resData) as? [String: Any] else {
             throw InteractionError.protocolViolation(.invalidFramePayload)
         }
@@ -86,7 +86,7 @@ public final class BrowserHostClient: @unchecked Sendable {
         let reqID = allocateID()
         let params: [String: Any] = ["sessionID": sessionID]
         let paramData = try JSONSerialization.data(withJSONObject: params)
-        let resData = try peer.request(id: reqID, method: "session.snapshot", parameters: paramData)
+        let resData = try await peer.request(id: reqID, method: "session.snapshot", parameters: paramData)
         guard let obj = try? JSONSerialization.jsonObject(with: resData) as? [String: Any] else {
             throw InteractionError.protocolViolation(.invalidFramePayload)
         }
@@ -160,7 +160,7 @@ public final class BrowserHostClient: @unchecked Sendable {
 
         let params: [String: Any] = ["sessionID": sessionID, "action": actDict]
         let paramData = try JSONSerialization.data(withJSONObject: params)
-        _ = try peer.request(id: reqID, method: "session.act", parameters: paramData)
+        _ = try await peer.request(id: reqID, method: "session.act", parameters: paramData)
     }
 
     /// 关闭会话
@@ -168,6 +168,6 @@ public final class BrowserHostClient: @unchecked Sendable {
         let reqID = allocateID()
         let params: [String: Any] = ["sessionID": sessionID]
         let paramData = try JSONSerialization.data(withJSONObject: params)
-        _ = try? peer.request(id: reqID, method: "session.close", parameters: paramData)
+        _ = try? await peer.request(id: reqID, method: "session.close", parameters: paramData)
     }
 }
