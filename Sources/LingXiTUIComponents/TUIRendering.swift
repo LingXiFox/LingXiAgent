@@ -1433,7 +1433,9 @@ public final class TranscriptViewport {
 
     public func updateLast(_ text: String) {
         guard !entries.isEmpty else { return }
+        let lastID = entries[entries.count - 1].id
         entries[entries.count - 1].text = text
+        entryLineCountCache.removeValue(forKey: lastID)
     }
 
     public func update(id: String, text: String? = nil, style: TUIStyle? = nil, collapsed: Bool? = nil) {
@@ -1459,6 +1461,7 @@ public final class TranscriptViewport {
                 timestamp: entries[index].timestamp
             )
         }
+        entryLineCountCache.removeValue(forKey: id)
     }
 
     public func handle(_ event: TUIInputEvent, viewportHeight: Int) {
@@ -1471,47 +1474,178 @@ public final class TranscriptViewport {
             let step = (event == .pageDown ? max(1, viewportHeight - 2) : (event == .scrollDown ? 3 : 1))
             scrollOffset = max(0, scrollOffset - step)
             if scrollOffset == 0 { followsBottom = true }
-        case .home: scrollOffset = max(0, renderedLines().count - max(1, viewportHeight)); followsBottom = false
-        case .end: scrollOffset = 0; followsBottom = true
+        case .home:
+            let total = totalEstimatedLines(width: lastRenderWidth ?? 80)
+            scrollOffset = max(0, total - max(1, viewportHeight))
+            followsBottom = false
+        case .end:
+            scrollOffset = 0
+            followsBottom = true
         default: break
         }
     }
 
+    private func totalEstimatedLines(width: Int) -> Int {
+        var sum = 0
+        for entry in entries {
+            if let c = entryLineCountCache[entry.id] {
+                sum += c
+            } else {
+                let c = renderEntryLines(entry, width: width).count
+                entryLineCountCache[entry.id] = c
+                sum += c
+            }
+        }
+        return sum
+    }
+
     public func entryID(atRow row: Int, viewportHeight: Int, width: Int) -> String? {
-        var entryLineRanges: [(id: String, count: Int)] = []
-        entryLineRanges.reserveCapacity(entries.count)
+        if lastRenderWidth != width {
+            lastRenderWidth = width
+            entryLineCountCache.removeAll(keepingCapacity: true)
+            entryCache.removeAll(keepingCapacity: true)
+        }
+
+        let count = max(1, viewportHeight)
+        guard !entries.isEmpty else { return nil }
+
+        // 底部直读
+        if followsBottom && scrollOffset == 0 {
+            var collectedCount = 0
+            var candidateEntries: [(id: String, count: Int)] = []
+            for entry in entries.reversed() {
+                let linesCount = entryLineCountCache[entry.id] ?? renderEntryLines(entry, width: width).count
+                entryLineCountCache[entry.id] = linesCount
+                candidateEntries.insert((id: entry.id, count: linesCount), at: 0)
+                collectedCount += linesCount
+                if collectedCount >= count { break }
+            }
+
+            let startLineOffset = max(0, collectedCount - count)
+            let targetLineIndex = startLineOffset + row
+            var cur = 0
+            for item in candidateEntries {
+                if targetLineIndex >= cur && targetLineIndex < cur + item.count {
+                    return item.id
+                }
+                cur += item.count
+            }
+            return nil
+        }
+
+        // 历史区定位
+        var lineCounts: [Int] = []
+        lineCounts.reserveCapacity(entries.count)
         var totalLines = 0
         for entry in entries {
-            let lines = renderEntryLines(entry, width: width)
-            entryLineRanges.append((id: entry.id, count: lines.count))
-            totalLines += lines.count
+            let c = entryLineCountCache[entry.id] ?? renderEntryLines(entry, width: width).count
+            entryLineCountCache[entry.id] = c
+            lineCounts.append(c)
+            totalLines += c
         }
-        let count = max(1, viewportHeight)
+
         let effectiveScrollOffset = min(scrollOffset, max(0, totalLines - count))
         let end = max(0, totalLines - effectiveScrollOffset)
         let start = max(0, end - count)
         let targetLineIndex = start + row
         guard targetLineIndex >= 0 && targetLineIndex < totalLines else { return nil }
 
-        var currentLine = 0
-        for item in entryLineRanges {
-            if targetLineIndex >= currentLine && targetLineIndex < currentLine + item.count {
-                return item.id
+        var cur = 0
+        for (idx, entry) in entries.enumerated() {
+            let c = lineCounts[idx]
+            if targetLineIndex >= cur && targetLineIndex < cur + c {
+                return entry.id
             }
-            currentLine += item.count
+            cur += c
         }
         return nil
     }
 
+    // MARK: - Viewport Virtualization Engine
+    private var lastRenderWidth: Int?
+    private var entryLineCountCache: [String: Int] = [:]
+
     public func render(viewportHeight: Int, width: Int) -> [TUIStyledLine] {
-        let allLines = renderedLines(width: width)
-        let count = max(1, viewportHeight)
-        scrollOffset = min(scrollOffset, max(0, allLines.count - count))
-        let end = max(0, allLines.count - scrollOffset)
-        let start = max(0, end - count)
-        return Array(allLines[start..<end])
+        if lastRenderWidth != width {
+            lastRenderWidth = width
+            entryLineCountCache.removeAll(keepingCapacity: true)
+            entryCache.removeAll(keepingCapacity: true)
+        }
+
+        let targetHeight = max(1, viewportHeight)
+        guard !entries.isEmpty else {
+            scrollOffset = 0
+            return []
+        }
+
+        // 场景 A：底部跟随状态（核心高频热路径：流式传输、打字、正常跟底交互）
+        if followsBottom && scrollOffset == 0 {
+            var collected: [TUIStyledLine] = []
+            collected.reserveCapacity(targetHeight + 8)
+
+            // 从后向前倒序查找，累计到 targetHeight 行即停止，绝不遍历全量历史 entries！
+            for entry in entries.reversed() {
+                let lines = renderEntryLines(entry, width: width)
+                entryLineCountCache[entry.id] = lines.count
+                collected.insert(contentsOf: lines, at: 0)
+                if collected.count >= targetHeight {
+                    break
+                }
+            }
+
+            if collected.count > targetHeight {
+                return Array(collected.suffix(targetHeight))
+            } else {
+                return collected
+            }
+        }
+
+        // 场景 B：用户向上滚动了历史区（scrollOffset > 0）
+        var lineCounts: [Int] = []
+        lineCounts.reserveCapacity(entries.count)
+        var totalLines = 0
+        for entry in entries {
+            let count: Int
+            if let cached = entryLineCountCache[entry.id] {
+                count = cached
+            } else {
+                let lines = renderEntryLines(entry, width: width)
+                count = lines.count
+                entryLineCountCache[entry.id] = count
+            }
+            lineCounts.append(count)
+            totalLines += count
+        }
+
+        scrollOffset = min(scrollOffset, max(0, totalLines - targetHeight))
+        let endLine = max(0, totalLines - scrollOffset)
+        let startLine = max(0, endLine - targetHeight)
+
+        var currentOffset = 0
+        var visibleLines: [TUIStyledLine] = []
+        visibleLines.reserveCapacity(targetHeight)
+
+        for (idx, entry) in entries.enumerated() {
+            let count = lineCounts[idx]
+            let entryStart = currentOffset
+            let entryEnd = currentOffset + count
+            currentOffset = entryEnd
+
+            if entryEnd <= startLine { continue }
+            if entryStart >= endLine { break }
+
+            let lines = renderEntryLines(entry, width: width)
+            let sliceStart = max(0, startLine - entryStart)
+            let sliceEnd = min(lines.count, endLine - entryStart)
+            if sliceStart < sliceEnd {
+                visibleLines.append(contentsOf: lines[sliceStart..<sliceEnd])
+            }
+        }
+
+        return visibleLines
     }
 
+    /// 提供测试或完整帧导出使用的备用全量行（非渲染热路径）
     private struct EntryCacheKey: Hashable {
         let id: String
         let textHash: Int
@@ -1535,12 +1669,6 @@ public final class TranscriptViewport {
         var trailingLine: String
     }
     private var activeIncrementalLayout: IncrementalLayoutState?
-
-    private func renderedLines(width: Int = 80) -> [TUIStyledLine] {
-        entries.flatMap { entry in
-            renderEntryLines(entry, width: width)
-        }
-    }
 
     private func renderEntryLines(_ entry: TUITranscriptEntry, width: Int) -> [TUIStyledLine] {
         let key = EntryCacheKey(
