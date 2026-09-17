@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import LingXiPlatform
 import LingXiProtocol
@@ -782,8 +781,7 @@ public actor CodebaseGraphEngine {
             .appendingPathComponent(".lingxiagent/cache/graph", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let canonicalPath = workspaceURL.standardizedFileURL.path
-        let hashData = SHA256.hash(data: Data(canonicalPath.utf8))
-        let hashString = hashData.map { String(format: "%02x", $0) }.joined()
+        let hashString = LingXiPlatform.crypto.sha256Hex(canonicalPath)
         return cacheDir.appendingPathComponent("graph_\(hashString).json")
     }
 

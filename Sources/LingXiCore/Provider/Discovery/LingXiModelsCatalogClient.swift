@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
 
 /// Client for fetching and caching models metadata from `https://models.lingxifox.cn/models.json`.

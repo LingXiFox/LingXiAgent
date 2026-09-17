@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
 
 /// Unified engine for discovering models available to a specific user account.

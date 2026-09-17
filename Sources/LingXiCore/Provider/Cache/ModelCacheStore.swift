@@ -1,5 +1,5 @@
 import Foundation
-import CryptoKit
+import LingXiPlatform
 import LingXiProtocol
 
 /// Record stored in `~/.lingxiagent/provider-cache/<productID>/<accountHash>/<endpointHash>/model_cache.json`.
@@ -63,8 +63,7 @@ public actor ModelCacheStore {
         guard let text = credentialOrRef, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "anonymous"
         }
-        let digest = SHA256.hash(data: Data(text.utf8))
-        return digest.compactMap { String(format: "%02x", $0) }.joined().prefix(16).description
+        return String(LingXiPlatform.crypto.sha256Hex(text).prefix(16))
     }
 
     /// Computes safe endpoint hash from endpoint URL (SHA256 prefix 16 chars).
@@ -72,8 +71,7 @@ public actor ModelCacheStore {
         guard let url = endpoint, !url.absoluteString.isEmpty else {
             return "default"
         }
-        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
-        return digest.compactMap { String(format: "%02x", $0) }.joined().prefix(16).description
+        return String(LingXiPlatform.crypto.sha256Hex(url.absoluteString).prefix(16))
     }
 
     public func cacheFileURL(productID: String, accountHash: String, endpointHash: String) -> URL {

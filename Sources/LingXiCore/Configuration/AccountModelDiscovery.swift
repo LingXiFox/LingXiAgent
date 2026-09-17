@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
 
 /// Discovers the models a *specific account* can reach, using that account's own

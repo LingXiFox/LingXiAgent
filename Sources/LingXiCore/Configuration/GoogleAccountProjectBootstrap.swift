@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
 
 /// The provenance of a Google Cloud project identifier used during discovery.

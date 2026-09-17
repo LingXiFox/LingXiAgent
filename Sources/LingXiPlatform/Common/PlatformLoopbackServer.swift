@@ -4,11 +4,14 @@ import LingXiProtocol
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif os(Windows) || canImport(WinSDK)
+import WinSDK
 #endif
 
 /// 跨平台本地回环回调服务器 (PlatformLoopbackServer)。
 /// 负责在本地分配短暂或首选端口并监听 OAuth/SSO 授权重定向，
-/// 将底层 POSIX / 系统 Socket 细节完全隔离在 LingXiPlatform 内。
+/// 将底层 POSIX / 系统 Socket 细节完全隔离在 LingXiPlatform 内，
+/// 具备三平台兼容、poll 超时控制与安全的资源生命周期释放。
 public final class PlatformLoopbackServer: @unchecked Sendable {
     private var serverSock: Int32 = -1
     public private(set) var port: UInt16 = 0
@@ -16,14 +19,28 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
     private let lock = NSLock()
 
     public init(preferredPort: UInt16 = 54321) throws {
-        #if canImport(Darwin) || canImport(Glibc)
-        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        #if canImport(Darwin)
+        let sockType = SOCK_STREAM
+        #elseif canImport(Glibc)
+        let sockType = Int32(SOCK_STREAM.rawValue)
+        #elseif os(Windows) || canImport(WinSDK)
+        var wsaData = WSADATA()
+        _ = WSAStartup(MAKEWORD(2, 2), &wsaData)
+        let sockType = SOCK_STREAM
+        #endif
+
+        #if canImport(Darwin) || canImport(Glibc) || os(Windows) || canImport(WinSDK)
+        let sock = socket(AF_INET, sockType, 0)
         guard sock >= 0 else {
             throw CoreError(code: .transport, message: "Failed to allocate socket for loopback server")
         }
 
         var reuse: Int32 = 1
+        #if os(Windows) || canImport(WinSDK)
+        setsockopt(SOCKET(UInt(bitPattern: Int(sock))), SOL_SOCKET, SO_REUSEADDR, withUnsafePointer(to: &reuse) { $0.withMemoryRebound(to: CChar.self, capacity: 1) { $0 } }, socklen_t(MemoryLayout<Int32>.size))
+        #else
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        #endif
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -32,7 +49,11 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
 
         var bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #if os(Windows) || canImport(WinSDK)
+                return bind(SOCKET(UInt(bitPattern: Int(sock))), $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #else
+                return bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #endif
             }
         }
 
@@ -41,13 +62,17 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
             addr.sin_port = 0
             bindResult = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    #if os(Windows) || canImport(WinSDK)
+                    return bind(SOCKET(UInt(bitPattern: Int(sock))), $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    #else
+                    return bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    #endif
                 }
             }
         }
 
         guard bindResult == 0 else {
-            close(sock)
+            Self.closeSocket(sock)
             throw CoreError(code: .transport, message: "Failed to bind loopback socket")
         }
 
@@ -55,13 +80,21 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
         var actualAddr = sockaddr_in()
         withUnsafeMutablePointer(to: &actualAddr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                #if os(Windows) || canImport(WinSDK)
+                _ = getsockname(SOCKET(UInt(bitPattern: Int(sock))), $0, &len)
+                #else
                 _ = getsockname(sock, $0, &len)
+                #endif
             }
         }
         self.port = UInt16(bigEndian: actualAddr.sin_port)
         self.serverSock = sock
 
+        #if os(Windows) || canImport(WinSDK)
+        listen(SOCKET(UInt(bitPattern: Int(sock))), 1)
+        #else
         listen(sock, 1)
+        #endif
         #else
         throw CoreError(code: .transport, message: "Loopback socket is not supported on this platform")
         #endif
@@ -74,12 +107,18 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
     public func closeServer() {
         lock.lock()
         defer { lock.unlock() }
-        #if canImport(Darwin) || canImport(Glibc)
         if !isClosed && serverSock >= 0 {
-            close(serverSock)
+            Self.closeSocket(serverSock)
             serverSock = -1
             isClosed = true
         }
+    }
+
+    private static func closeSocket(_ sock: Int32) {
+        #if canImport(Darwin) || canImport(Glibc)
+        close(sock)
+        #elseif os(Windows) || canImport(WinSDK)
+        closesocket(SOCKET(UInt(bitPattern: Int(sock))))
         #endif
     }
 
@@ -101,6 +140,19 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 }
 
                 #if canImport(Darwin) || canImport(Glibc)
+                // 使用 poll 实施严格超时控制，防止无限阻塞
+                var pfd = pollfd(fd: sock, events: Int16(POLLIN), revents: 0)
+                let timeoutMs = Int32(max(1.0, timeoutSeconds * 1000.0))
+                let pollRes = poll(&pfd, 1, timeoutMs)
+
+                if pollRes == 0 {
+                    continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "OAuth callback timed out after \(timeoutSeconds) seconds"))
+                    return
+                } else if pollRes < 0 {
+                    continuation.resume(throwing: CoreError(code: .transport, message: "Poll failed on loopback socket: \(errno)"))
+                    return
+                }
+
                 var clientAddr = sockaddr_in()
                 var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
                 let clientSock = withUnsafeMutablePointer(to: &clientAddr) {
@@ -171,8 +223,8 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 """
 
                 if let error = error {
-                    _ = responseHTML.withCString { ptr in
-                        write(clientSock, errorHTML, errorHTML.utf8.count)
+                    _ = errorHTML.withCString { ptr in
+                        write(clientSock, ptr, errorHTML.utf8.count)
                     }
                     close(clientSock)
                     continuation.resume(throwing: CoreError(code: .permissionDenied, message: "OAuth callback returned error: \(error)"))
@@ -181,7 +233,7 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
 
                 guard state == expectedState else {
                     _ = errorHTML.withCString { ptr in
-                        write(clientSock, errorHTML, errorHTML.utf8.count)
+                        write(clientSock, ptr, errorHTML.utf8.count)
                     }
                     close(clientSock)
                     continuation.resume(throwing: CoreError(code: .permissionDenied, message: "OAuth callback state mismatch (CSRF protection)"))
@@ -190,7 +242,7 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
 
                 guard let authCode = code, !authCode.isEmpty else {
                     _ = errorHTML.withCString { ptr in
-                        write(clientSock, errorHTML, errorHTML.utf8.count)
+                        write(clientSock, ptr, errorHTML.utf8.count)
                     }
                     close(clientSock)
                     continuation.resume(throwing: CoreError(code: .toolArgumentInvalid, message: "Missing code parameter in OAuth callback"))
@@ -198,12 +250,12 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 }
 
                 _ = responseHTML.withCString { ptr in
-                    write(clientSock, responseHTML, responseHTML.utf8.count)
+                    write(clientSock, ptr, responseHTML.utf8.count)
                 }
                 close(clientSock)
                 continuation.resume(returning: authCode)
                 #else
-                continuation.resume(throwing: CoreError(code: .transport, message: "Unsupported platform"))
+                continuation.resume(throwing: CoreError(code: .transport, message: "Unsupported platform for loopback callback"))
                 #endif
             }
         }

@@ -13,7 +13,7 @@ public enum LingXiPlatform {
         #elseif os(Windows)
         return WindowsProcessAdapter()
         #else
-        return DarwinProcessAdapter()
+        fatalError("Unsupported operating system for process adapter")
         #endif
     }()
 
@@ -26,7 +26,7 @@ public enum LingXiPlatform {
         #elseif os(Windows)
         return WindowsTerminalAdapter()
         #else
-        return DarwinTerminalAdapter()
+        fatalError("Unsupported operating system for terminal adapter")
         #endif
     }()
 
@@ -39,7 +39,7 @@ public enum LingXiPlatform {
         #elseif os(Windows)
         return WindowsSandboxAdapter()
         #else
-        return DarwinSandboxAdapter()
+        fatalError("Unsupported operating system for sandbox adapter")
         #endif
     }()
 
@@ -52,7 +52,7 @@ public enum LingXiPlatform {
         #elseif os(Windows)
         return WindowsSecureStorageAdapter()
         #else
-        return DarwinSecureStorageAdapter()
+        fatalError("Unsupported operating system for secure storage adapter")
         #endif
     }()
 
@@ -65,7 +65,7 @@ public enum LingXiPlatform {
         #elseif os(Windows)
         return WindowsSystemAdapter()
         #else
-        return DarwinSystemAdapter()
+        fatalError("Unsupported operating system for system adapter")
         #endif
     }()
 
@@ -74,4 +74,10 @@ public enum LingXiPlatform {
 
     /// 跨平台路径与环境变量工具
     public static let path = PathUtilities.self
+
+    /// 跨平台加密散列工具
+    public static let crypto = PlatformCrypto.self
+
+    /// 跨平台异步按行读取器
+    public static let lineReader = AsyncLineReader.self
 }

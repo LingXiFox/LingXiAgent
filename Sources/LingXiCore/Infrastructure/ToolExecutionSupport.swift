@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import LingXiProtocol
 @_exported import LingXiPlatform
@@ -23,7 +22,7 @@ public enum EnvironmentSanitizer {
 }
 
 func sha256Hex(_ content: String) -> String {
-    SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+    LingXiPlatform.crypto.sha256Hex(content)
 }
 
 public protocol SandboxExecutor: Sendable {

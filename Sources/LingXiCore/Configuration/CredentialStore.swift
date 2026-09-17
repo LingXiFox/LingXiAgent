@@ -1,6 +1,5 @@
-import CoreFoundation
-import CryptoKit
 import Foundation
+import LingXiPlatform
 import LingXiProtocol
 
 public protocol CredentialStore: Sendable {
@@ -16,7 +15,7 @@ public actor FileCredentialStore: CredentialStore {
     private let dataRoot: URL
     private let permissions: any FilePermissionAdapter
     private let passphrase: String?
-    private var cachedKey: (salt: Data, key: SymmetricKey)?
+    private var cachedKey: (salt: Data, key: Data)?
 
     public let isMemoryOnly: Bool
     private var memoryStore: [String: String] = [:]
@@ -145,7 +144,7 @@ public actor FileCredentialStore: CredentialStore {
         try requireOnly(encryption, allowed: ["name", "ciphertext"])
         guard kdf["name"] as? String == "PBKDF2-HMAC-SHA256",
               let iterations = kdf["iterations"] as? NSNumber,
-              CFGetTypeID(iterations) != CFBooleanGetTypeID(),
+              !(iterations is Bool),
               iterations.doubleValue == Double(iterations.intValue),
               iterations.intValue >= 100_000,
               let saltText = kdf["salt"] as? String,
@@ -158,8 +157,8 @@ public actor FileCredentialStore: CredentialStore {
             throw ConfigurationValidationError(path: "$", reason: "invalid encrypted vault metadata")
         }
         do {
-            let box = try AES.GCM.SealedBox(combined: combined)
-            let plaintext = try AES.GCM.open(box, using: try encryptionKey(salt: salt, iterations: iterations.intValue), authenticating: Self.associatedData)
+            let key = try encryptionKey(salt: salt, iterations: iterations.intValue)
+            let plaintext = try LingXiPlatform.crypto.openAESGCM(combined: combined, keyData: key, authenticating: Self.associatedData)
             guard let values = try JSONSerialization.jsonObject(with: plaintext) as? [String: String] else {
                 throw ConfigurationValidationError(path: "$.credentials", reason: "expected object")
             }
@@ -175,13 +174,10 @@ public actor FileCredentialStore: CredentialStore {
     }
 
     private func write(_ values: [String: String], to url: URL) throws {
-        let salt = Data((0..<16).map { _ in UInt8.random(in: .min ... .max) })
+        let salt = LingXiPlatform.secureStorage.generateSecureRandomBytes(count: 16)
         let key = try encryptionKey(salt: salt, iterations: Self.kdfIterations)
         let plaintext = try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys, .withoutEscapingSlashes])
-        let sealed = try AES.GCM.seal(plaintext, using: key, authenticating: Self.associatedData)
-        guard let combined = sealed.combined else {
-            throw ConfigurationValidationError(path: "$", reason: "unable to encrypt credentials.vault")
-        }
+        let combined = try LingXiPlatform.crypto.sealAESGCM(plaintext: plaintext, keyData: key, authenticating: Self.associatedData)
         let vault = EncryptedVault(
             version: 2,
             kdf: .init(name: "PBKDF2-HMAC-SHA256", iterations: Self.kdfIterations, salt: salt.base64EncodedString()),
@@ -195,7 +191,7 @@ public actor FileCredentialStore: CredentialStore {
         try permissions.secureFile(at: url)
     }
 
-    private func encryptionKey(salt: Data, iterations: Int) throws -> SymmetricKey {
+    private func encryptionKey(salt: Data, iterations: Int) throws -> Data {
         let secretPassphrase: String
         if let passphrase {
             secretPassphrase = passphrase
@@ -205,20 +201,9 @@ public actor FileCredentialStore: CredentialStore {
             throw ConfigurationValidationError(path: "$", reason: "Passphrase is required for FileCredentialStore (set via parameter or LINGXI_CREDENTIALS_PASSPHRASE). Pseudo-encryption with local key file is strictly prohibited.")
         }
         if let cachedKey, cachedKey.salt == salt { return cachedKey.key }
-        let password = SymmetricKey(data: Data(secretPassphrase.utf8))
-        var input = salt
-        input.append(contentsOf: [0, 0, 0, 1])
-        var block = Data(HMAC<SHA256>.authenticationCode(for: input, using: password))
-        var derived = [UInt8](block)
-        if iterations > 1 {
-            for _ in 1..<iterations {
-                block = Data(HMAC<SHA256>.authenticationCode(for: block, using: password))
-                for index in derived.indices { derived[index] ^= block[index] }
-            }
-        }
-        let key = SymmetricKey(data: Data(derived))
-        cachedKey = (salt, key)
-        return key
+        let derived = LingXiPlatform.crypto.derivePBKDF2(passphrase: secretPassphrase, salt: salt, iterations: iterations)
+        cachedKey = (salt, derived)
+        return derived
     }
 
     private func requireOnly(_ object: [String: Any], allowed: Set<String>) throws {

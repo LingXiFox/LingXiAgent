@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import LingXiProtocol
 import LingXiPlatform
 
@@ -16,7 +15,7 @@ public struct AutonomousVaultKeyProvider: Sendable {
 
     /// Resolves or generates the protected symmetric key using strict POSIX file isolation
     /// and identity-bound HKDF key derivation.
-    public func resolveKey() throws -> SymmetricKey {
+    public func resolveKey() throws -> Data {
         let rawEntropy: Data
         let fileManager = FileManager.default
 
@@ -43,8 +42,7 @@ public struct AutonomousVaultKeyProvider: Sendable {
         var combinedIKM = rawEntropy
         combinedIKM.append(identity)
 
-        let prk = HKDF<SHA256>.extract(inputKeyMaterial: SymmetricKey(data: combinedIKM), salt: salt)
-        let derivedKey = HKDF<SHA256>.expand(pseudoRandomKey: prk, info: info, outputByteCount: 32)
+        let derivedKey = LingXiPlatform.crypto.deriveHKDF(secret: combinedIKM, salt: salt, info: info, outputByteCount: 32)
         return derivedKey
     }
 }
@@ -60,7 +58,7 @@ public actor UniversalCredentialStore: CredentialStore {
     public let isMemoryOnly: Bool
 
     private var memoryVault: [String: String] = [:]
-    private var cachedKey: SymmetricKey?
+    private var cachedKey: Data?
     private var isLoaded: Bool = false
 
     public init(
@@ -183,7 +181,7 @@ public actor UniversalCredentialStore: CredentialStore {
                 throw ConfigurationValidationError(path: "$.encryption", reason: "unsupported or corrupted encryption payload")
             }
 
-            let key: SymmetricKey
+            let key: Data
             if let saltText = kdf["salt"] as? String,
                let salt = Data(base64Encoded: saltText),
                let iterations = (kdf["iterations"] as? NSNumber)?.intValue,
@@ -195,8 +193,7 @@ public actor UniversalCredentialStore: CredentialStore {
             }
 
             do {
-                let box = try AES.GCM.SealedBox(combined: combined)
-                let plaintext = try AES.GCM.open(box, using: key, authenticating: Self.associatedData)
+                let plaintext = try LingXiPlatform.crypto.openAESGCM(combined: combined, keyData: key, authenticating: Self.associatedData)
                 guard let values = try JSONSerialization.jsonObject(with: plaintext) as? [String: String] else {
                     throw ConfigurationValidationError(path: "$.credentials", reason: "expected object")
                 }
@@ -217,14 +214,11 @@ public actor UniversalCredentialStore: CredentialStore {
     private func saveVault() throws {
         guard !isMemoryOnly else { return }
 
-        let salt = Data((0..<16).map { _ in UInt8.random(in: .min ... .max) })
+        let salt = LingXiPlatform.secureStorage.generateSecureRandomBytes(count: 16)
         let key = try resolveKey(salt: salt, iterations: Self.kdfIterations)
         let plaintext = try JSONSerialization.data(withJSONObject: memoryVault, options: [.sortedKeys, .withoutEscapingSlashes])
 
-        let sealed = try AES.GCM.seal(plaintext, using: key, authenticating: Self.associatedData)
-        guard let combined = sealed.combined else {
-            throw ConfigurationValidationError(path: "$", reason: "unable to encrypt credentials.vault")
-        }
+        let combined = try LingXiPlatform.crypto.sealAESGCM(plaintext: plaintext, keyData: key, authenticating: Self.associatedData)
 
         let vaultData: [String: Any] = [
             "version": 2,
@@ -246,7 +240,7 @@ public actor UniversalCredentialStore: CredentialStore {
         try permissions.secureFile(at: vaultURL)
     }
 
-    private func resolveKey(salt: Data, iterations: Int) throws -> SymmetricKey {
+    private func resolveKey(salt: Data, iterations: Int) throws -> Data {
         if let cached = cachedKey {
             return cached
         }
@@ -257,19 +251,9 @@ public actor UniversalCredentialStore: CredentialStore {
 
         if let pass = effectivePassphrase {
             // Tier 1: Derive key via PBKDF2 with passphrase
-            let password = SymmetricKey(data: Data(pass.utf8))
-            var input = salt.isEmpty ? Data("LingXiDefaultSalt".utf8) : salt
-            input.append(contentsOf: [0, 0, 0, 1])
-            var block = Data(HMAC<SHA256>.authenticationCode(for: input, using: password))
-            var derived = [UInt8](block)
             let iterCount = max(iterations, Self.kdfIterations)
-            if iterCount > 1 {
-                for _ in 1..<iterCount {
-                    block = Data(HMAC<SHA256>.authenticationCode(for: block, using: password))
-                    for index in derived.indices { derived[index] ^= block[index] }
-                }
-            }
-            let key = SymmetricKey(data: Data(derived))
+            let effectiveSalt = salt.isEmpty ? Data("LingXiDefaultSalt".utf8) : salt
+            let key = LingXiPlatform.crypto.derivePBKDF2(passphrase: pass, salt: effectiveSalt, iterations: iterCount)
             self.cachedKey = key
             return key
         } else {

@@ -1,6 +1,9 @@
 import Foundation
-import CryptoKit
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
+import LingXiPlatform
 #if canImport(Network)
 import Network
 #endif
@@ -9,9 +12,8 @@ import Network
 
 public enum PKCE {
     public static func generateVerifier(length: Int = 32) -> String {
-        var bytes = [UInt8](repeating: 0, count: length)
-        _ = SecRandomCopyBytes(kSecRandomDefault, length, &bytes)
-        return Data(bytes).base64EncodedString()
+        let randomData = LingXiPlatform.secureStorage.generateSecureRandomBytes(count: length)
+        return randomData.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
@@ -19,8 +21,8 @@ public enum PKCE {
 
     public static func challenge(for verifier: String) -> String {
         guard let data = verifier.data(using: .ascii) else { return "" }
-        let digest = SHA256.hash(data: data)
-        return Data(digest).base64EncodedString()
+        let digest = LingXiPlatform.crypto.sha256(data)
+        return digest.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")

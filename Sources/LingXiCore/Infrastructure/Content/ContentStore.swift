@@ -1,5 +1,5 @@
 import Foundation
-import CryptoKit
+import LingXiPlatform
 import LingXiProtocol
 
 /// ContentStore：管理不可变、带授权和校验的资源与大内容（ContentRef）。
@@ -89,8 +89,7 @@ public actor ContentStore {
             }
         }
 
-        let sha256 = SHA256.hash(data: assembledData)
-        let digestString = "sha256:" + sha256.compactMap { String(format: "%02x", $0) }.joined()
+        let digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(assembledData)
 
         if let expected = request.expectedDigest, !expected.isEmpty {
             guard expected.lowercased() == digestString.lowercased() else {
@@ -153,8 +152,7 @@ public actor ContentStore {
         filename: String? = nil,
         scope: ContentAuthorizationScope = .global
     ) -> ContentRef {
-        let sha256 = SHA256.hash(data: data)
-        let digestString = "sha256:" + sha256.compactMap { String(format: "%02x", $0) }.joined()
+        let digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(data)
         let contentID = ContentID(UUID().uuidString)
         let stored = StoredContent(
             id: contentID,
@@ -216,8 +214,7 @@ public actor ContentStore {
                     contents[id] = loaded
                     return loaded
                 } else {
-                    let sha256 = SHA256.hash(data: data)
-                    let digestString = "sha256:" + sha256.compactMap { String(format: "%02x", $0) }.joined()
+                    let digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(data)
                     let fallback = StoredContent(
                         id: id,
                         data: data,

@@ -1,5 +1,5 @@
 import Foundation
-import CryptoKit
+import LingXiPlatform
 import LingXiProtocol
 
 /// 单次文件修改日志项（对应 Spec 12.1）
@@ -82,8 +82,7 @@ public actor FileRollbackEngine {
     public init() {}
 
     public static func computeHash(data: Data) -> String {
-        let digest = SHA256.hash(data: data)
-        return "sha256:" + digest.compactMap { String(format: "%02x", $0) }.joined()
+        return "sha256:" + LingXiPlatform.crypto.sha256Hex(data)
     }
 
     public static func captureState(at url: URL) -> (hash: String?, content: Data?) {

@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 /// stdio 子进程连接：spawn LingXiCoreHost，通过 JSON-lines 通信。
 /// 控制面 request/response 与数据面 chunk 在读循环按 plane 分发，
@@ -147,7 +148,7 @@ public actor StdioConnection: LingXiConnection {
 
     private func readLoop(pipe: Pipe) async {
         do {
-            for try await line in pipe.fileHandleForReading.bytes.lines {
+            for try await line in LingXiPlatform.lineReader.lines(from: pipe.fileHandleForReading) {
                 handle(line: line)
             }
         } catch {

@@ -1,5 +1,5 @@
 import Foundation
-import CryptoKit
+import LingXiPlatform
 import LingXiProtocol
 
 /// Capability facts an upstream listing stated about a model, carried through
@@ -253,8 +253,7 @@ public actor AccountScopedCatalogCache {
             }
         }
         // Fallback: SHA256 deterministic prefix
-        let digest = SHA256.hash(data: Data(token.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined().prefix(16).description
+        return String(LingXiPlatform.crypto.sha256Hex(token).prefix(16))
     }
 
     private static func extractJWTPayload(token: String) -> [String: Any]? {

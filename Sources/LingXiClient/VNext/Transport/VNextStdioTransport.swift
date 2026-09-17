@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 private struct VNextWireRequest: Codable {
     let id: String
@@ -279,7 +280,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private func readLoop(pipe: Pipe) async {
         debug("readLoop.begin")
         do {
-            for try await line in pipe.fileHandleForReading.bytes.lines {
+            for try await line in LingXiPlatform.lineReader.lines(from: pipe.fileHandleForReading) {
                 if let data = line.data(using: .utf8) { handle(data) }
             }
         } catch { fail(CoreError(code: .transport, message: String(describing: error))) }

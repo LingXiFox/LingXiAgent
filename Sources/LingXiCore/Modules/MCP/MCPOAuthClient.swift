@@ -1,5 +1,7 @@
 import Foundation
-import CryptoKit
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
 import LingXiPlatform
 

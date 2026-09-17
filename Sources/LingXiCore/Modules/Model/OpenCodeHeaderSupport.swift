@@ -1,5 +1,8 @@
 import Foundation
-import CryptoKit
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+import LingXiPlatform
 
 /// 针对 OpenCode (OpenCode Zen / OpenCode Go) 服务的协议头自动兼容支持。
 /// OpenCode 官方服务端自 2026 年 9 月起要求 free-tier 及 Zen 请求必须携带有效的
@@ -35,7 +38,7 @@ public enum OpenCodeHeaderSupport {
         if let uuid = UUID(uuidString: string) {
             return uuid.uuidString.lowercased()
         }
-        let hash = SHA256.hash(data: Data(string.utf8))
+        let hash = LingXiPlatform.crypto.sha256(Data(string.utf8))
         let b = Array(hash.prefix(16))
         return String(format: "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
                       b[0], b[1], b[2], b[3],
