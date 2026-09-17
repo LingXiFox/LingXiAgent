@@ -113,16 +113,19 @@ public actor DynamicToolLeaseManager {
     private var leasedToolsBySession: [SessionID: Set<ToolID>] = [:]
     private var leasedToolsByRun: [AgentRunID: Set<ToolID>] = [:]
     private var discoveredCandidatesBySession: [SessionID: Set<ToolID>] = [:]
+    public private(set) var revision: UInt64 = 0
 
     public init() {}
 
     public func lease(sessionID: SessionID, runID: AgentRunID?, toolID: ToolID) {
         if let runID { leasedToolsByRun[runID, default: []].insert(toolID) }
         else { leasedToolsBySession[sessionID, default: []].insert(toolID) }
+        revision &+= 1
     }
 
     public func unlease(sessionID: SessionID, toolID: ToolID) {
         leasedToolsBySession[sessionID]?.remove(toolID)
+        revision &+= 1
     }
 
     public func leasedTools(for sessionID: SessionID, runID: AgentRunID? = nil) -> Set<ToolID> {
@@ -140,9 +143,44 @@ public actor DynamicToolLeaseManager {
     public func resetSession(_ sessionID: SessionID) {
         leasedToolsBySession.removeValue(forKey: sessionID)
         discoveredCandidatesBySession.removeValue(forKey: sessionID)
+        revision &+= 1
     }
 
-    public func resetRun(_ runID: AgentRunID) { leasedToolsByRun.removeValue(forKey: runID) }
+    public func resetRun(_ runID: AgentRunID) {
+        leasedToolsByRun.removeValue(forKey: runID)
+        revision &+= 1
+    }
+}
+
+public actor ToolDefinitionsCache {
+    public struct CacheKey: Hashable, Sendable {
+        public let sessionID: SessionID?
+        public let runID: AgentRunID?
+        public let interactive: Bool
+        public let executionProfileTag: String?
+        public let permissionProfile: ExecutionProfile
+        public let leaseRevision: UInt64
+        public let registryRevision: UInt64
+    }
+
+    private var cache: [CacheKey: [ToolDefinition]] = [:]
+
+    public init() {}
+
+    public func get(key: CacheKey) -> [ToolDefinition]? {
+        cache[key]
+    }
+
+    public func set(key: CacheKey, definitions: [ToolDefinition]) {
+        if cache.count > 100 {
+            cache.removeAll(keepingCapacity: true)
+        }
+        cache[key] = definitions
+    }
+
+    public func clear() {
+        cache.removeAll(keepingCapacity: false)
+    }
 }
 
 /// Provider 无关的 Tool 执行入口：参数解析、路径预检、权限、执行和错误归一化。
@@ -177,6 +215,7 @@ public struct ToolRuntime: Sendable {
     private let cacheController: ContextCacheController?
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let dynamicLeases: DynamicToolLeaseManager
+    private let definitionsCache: ToolDefinitionsCache
 
     public init(
         registry: ToolRegistry,
@@ -189,7 +228,8 @@ public struct ToolRuntime: Sendable {
         subagents: SubagentToolService? = nil,
         cacheController: ContextCacheController? = nil,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
-        dynamicLeases: DynamicToolLeaseManager = DynamicToolLeaseManager()
+        dynamicLeases: DynamicToolLeaseManager = DynamicToolLeaseManager(),
+        definitionsCache: ToolDefinitionsCache = ToolDefinitionsCache()
     ) {
         self.registry = registry
         self.permissions = permissions
@@ -202,20 +242,56 @@ public struct ToolRuntime: Sendable {
         self.cacheController = cacheController
         self.deadlinePolicy = deadlinePolicy
         self.dynamicLeases = dynamicLeases
+        self.definitionsCache = definitionsCache
     }
 
     public var definitions: [ToolDefinition] { registry.definitions }
+    public var toolRegistryRevision: UInt64 { 1 }
+    public var dynamicManifestRevision: UInt64 {
+        get async {
+            await dynamicLeases.revision
+        }
+    }
 
     public func resetSession(_ sessionID: SessionID) async {
         await dynamicLeases.resetSession(sessionID)
         await mcpPager?.discardSession(sessionID)
+        await definitionsCache.clear()
     }
 
-    public func resetRun(_ runID: AgentRunID) async { await dynamicLeases.resetRun(runID) }
+    public func resetRun(_ runID: AgentRunID) async {
+        await dynamicLeases.resetRun(runID)
+        await definitionsCache.clear()
+    }
+
+    public func lease(sessionID: SessionID, runID: AgentRunID? = nil, toolID: ToolID) async {
+        await dynamicLeases.lease(sessionID: sessionID, runID: runID, toolID: toolID)
+    }
+
+    public func unlease(sessionID: SessionID, toolID: ToolID) async {
+        await dynamicLeases.unlease(sessionID: sessionID, toolID: toolID)
+    }
 
     public func availableDefinitions(sessionID: SessionID? = nil, runID: AgentRunID? = nil, interactive: Bool = false, executionProfile: SubagentExecutionProfile? = nil) async -> [ToolDefinition] {
         let configuration = await permissions.currentConfiguration()
         let profile = Self.attenuatedProfile(requested: executionProfile?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:)), parent: configuration.profile)
+        let leaseRev = await dynamicLeases.revision
+
+        let execTag = executionProfile.map { "\($0.permissionProfile ?? ""):\($0.toolProfile?.joined(separator: ",") ?? "")" }
+        let key = ToolDefinitionsCache.CacheKey(
+            sessionID: sessionID,
+            runID: runID,
+            interactive: interactive,
+            executionProfileTag: execTag,
+            permissionProfile: profile,
+            leaseRevision: leaseRev,
+            registryRevision: toolRegistryRevision
+        )
+
+        if let cached = await definitionsCache.get(key: key) {
+            return cached
+        }
+
         let effectiveSessionID = sessionID ?? SessionID("ephemeral")
         let leasedIDs = await dynamicLeases.leasedTools(for: effectiveSessionID, runID: runID)
 
@@ -270,7 +346,7 @@ public struct ToolRuntime: Sendable {
                 )
             }
         }
-        return definitions.sorted { lhs, rhs in
+        let sorted = definitions.sorted { lhs, rhs in
             let left = Self.coreToolOrder.firstIndex(of: lhs.id)
             let right = Self.coreToolOrder.firstIndex(of: rhs.id)
             switch (left, right) {
@@ -280,6 +356,8 @@ public struct ToolRuntime: Sendable {
             default: return lhs.id.rawValue < rhs.id.rawValue
             }
         }
+        await definitionsCache.set(key: key, definitions: sorted)
+        return sorted
     }
 
     public struct ExecutionOutcome: Sendable {

@@ -8,6 +8,34 @@ public protocol TokenEstimator: Sendable {
 }
 
 public struct ConservativeTokenEstimator: TokenEstimator {
+    private final class ToolTokenCache: @unchecked Sendable {
+        private var storage: [String: Int] = [:]
+        private let lock = NSLock()
+
+        func get(_ key: String) -> Int? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage[key]
+        }
+
+        func set(_ key: String, tokens: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            if storage.count > 2000 {
+                storage.removeAll(keepingCapacity: true)
+            }
+            storage[key] = tokens
+        }
+
+        func clear() {
+            lock.lock()
+            defer { lock.unlock() }
+            storage.removeAll(keepingCapacity: false)
+        }
+    }
+
+    private static let toolCache = ToolTokenCache()
+
     public init() {}
     public func estimate(text: String) -> Int { max(1, (text.utf8.count + 2) / 3) }
     public func estimate(entries: [ContextEntry]) -> Int {
@@ -18,20 +46,34 @@ public struct ConservativeTokenEstimator: TokenEstimator {
     }
 
     public func estimate(tool: ToolDefinition) -> Int {
+        let rawHash = tool.rawInputSchema != nil ? 1 : 0
+        let cacheKey = "\(tool.id.rawValue):\(tool.name):\(tool.description.hashValue):\(rawHash)"
+        if let cached = Self.toolCache.get(cacheKey) {
+            return cached
+        }
+
+        let tokens: Int
         if let rawSchema = tool.rawInputSchema, let data = try? JSONEncoder().encode(rawSchema) {
-            return estimate(text: tool.id.rawValue + " " + tool.description + " " + String(decoding: data, as: UTF8.self)) + 22
-        }
-        var text = "function: \(tool.name) \(tool.description) "
-        for (name, prop) in tool.inputSchema.properties.sorted(by: { $0.key < $1.key }) {
-            text += "\(name): \(prop.type.rawValue) \(prop.description) "
-            if let enumValues = prop.enumValues {
-                text += "enum: [\(enumValues.joined(separator: ", "))] "
+            tokens = estimate(text: tool.id.rawValue + " " + tool.description + " " + String(decoding: data, as: UTF8.self)) + 22
+        } else {
+            var text = "function: \(tool.name) \(tool.description) "
+            for (name, prop) in tool.inputSchema.properties.sorted(by: { $0.key < $1.key }) {
+                text += "\(name): \(prop.type.rawValue) \(prop.description) "
+                if let enumValues = prop.enumValues {
+                    text += "enum: [\(enumValues.joined(separator: ", "))] "
+                }
             }
+            if !tool.inputSchema.required.isEmpty {
+                text += "required: [\(tool.inputSchema.required.joined(separator: ", "))] "
+            }
+            tokens = estimate(text: text) + 18
         }
-        if !tool.inputSchema.required.isEmpty {
-            text += "required: [\(tool.inputSchema.required.joined(separator: ", "))] "
-        }
-        return estimate(text: text) + 18
+        Self.toolCache.set(cacheKey, tokens: tokens)
+        return tokens
+    }
+
+    public static func clearToolTokenCacheForTesting() {
+        toolCache.clear()
     }
 }
 
