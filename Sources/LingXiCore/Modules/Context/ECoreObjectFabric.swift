@@ -554,10 +554,14 @@ public actor ECoreObjectStore {
             if !keepingToolCallIDs.contains(meta.toolCallID) {
                 metadataCache[sessionID]?.removeValue(forKey: objID)
                 heatStates[sessionID]?.removeValue(forKey: objID)
+                projectionCounts[sessionID]?.removeValue(forKey: objID)
                 let txtURL = objectsDir.appendingPathComponent("\(objID.rawValue).txt", isDirectory: false)
                 try? FileManager.default.removeItem(at: url)
                 try? FileManager.default.removeItem(at: txtURL)
             }
+        }
+        if projectionCounts[sessionID]?.isEmpty == true {
+            projectionCounts.removeValue(forKey: sessionID)
         }
     }
 
@@ -565,8 +569,19 @@ public actor ECoreObjectStore {
     public func cleanSession(sessionID: SessionID) async {
         metadataCache.removeValue(forKey: sessionID)
         heatStates.removeValue(forKey: sessionID)
+        projectionCounts.removeValue(forKey: sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
         try? FileManager.default.removeItem(at: objectsDir)
+    }
+
+    /// 获取特定对象的投影计数（供测试与诊断使用）
+    public func projectionCount(sessionID: SessionID, objectID: ContextObjectID) -> Int? {
+        projectionCounts[sessionID]?[objectID]
+    }
+
+    /// 获取特定会话的全部投影计数状态（供测试与诊断使用）
+    public func allProjectionCounts(sessionID: SessionID) -> [ContextObjectID: Int]? {
+        projectionCounts[sessionID]
     }
 
     /// 获取当前内存中的热度状态（Derived State，供可观测性与测试使用）

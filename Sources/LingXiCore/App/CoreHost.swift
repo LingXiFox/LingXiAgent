@@ -50,6 +50,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let agentSettings: AgentSettings
     private let restoreScheduler: SessionRestoreScheduler?
     private var agent: AgentRuntime?
+    public var residentAgentRuntimesCount: Int {
+        get async {
+            await agent?.residentRuntimesCount ?? 0
+        }
+    }
     private var workflows: WorkflowRuntime?
     private var runtimeProviderAccounts: [String: ProviderAccountInfo] = [:]
     private var runtimeExtensions: [String: ExtensionInfo] = [:]

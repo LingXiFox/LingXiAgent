@@ -148,4 +148,41 @@ public actor RetrievalRuntime {
         self.activeSnapshot = nil
         self.state = .uninitialized
     }
+
+    public struct MemoryDiagnostics: Sendable, Equatable {
+        public let status: String
+        public let hasSnapshot: Bool
+        public let totalDocuments: Int
+        public let vocabularySize: Int
+        public let totalPostingsCount: Int
+        public let estimatedMemoryBytes: Int
+        public let totalSnapshotsBuilt: Int
+        public let lastBuildDurationMs: Double
+    }
+
+    /// 获取检索系统内存与快照指标诊断
+    public var memoryDiagnostics: MemoryDiagnostics {
+        guard let snapshot = activeSnapshot else {
+            return MemoryDiagnostics(
+                status: state.rawValue,
+                hasSnapshot: false,
+                totalDocuments: 0,
+                vocabularySize: 0,
+                totalPostingsCount: 0,
+                estimatedMemoryBytes: 0,
+                totalSnapshotsBuilt: totalSnapshotsBuilt,
+                lastBuildDurationMs: lastBuildDurationMs
+            )
+        }
+        return MemoryDiagnostics(
+            status: state.rawValue,
+            hasSnapshot: true,
+            totalDocuments: snapshot.totalDocuments,
+            vocabularySize: snapshot.vocabularySize,
+            totalPostingsCount: snapshot.totalPostingsCount,
+            estimatedMemoryBytes: snapshot.estimatedMemoryBytes,
+            totalSnapshotsBuilt: totalSnapshotsBuilt,
+            lastBuildDurationMs: lastBuildDurationMs
+        )
+    }
 }

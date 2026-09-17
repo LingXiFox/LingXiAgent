@@ -186,6 +186,29 @@ public final class BM25IndexSnapshot: Sendable {
         self.corpusFingerprint = String(format: "%016llx", UInt64(bitPattern: Int64(hasher.finalize())))
     }
 
+    /// 估算该索引快照占用的内存字节数（供诊断与可观测性使用）
+    public var estimatedMemoryBytes: Int {
+        var bytes = 0
+        bytes += termDictionary.count * 48
+        for list in postingsByTermID {
+            bytes += list.count * MemoryLayout<CompactPosting>.stride + 16
+        }
+        bytes += idfByTermID.count * MemoryLayout<Float>.stride
+        bytes += docLengths.count * MemoryLayout<Int32>.stride
+        bytes += documents.count * 64
+        return bytes
+    }
+
+    /// 词汇表大小
+    public var vocabularySize: Int {
+        termDictionary.count
+    }
+
+    /// 倒排记录总数
+    public var totalPostingsCount: Int {
+        postingsByTermID.reduce(0) { $0 + $1.count }
+    }
+
     /// 执行只读并发检索（支持自然语言 Query 与 Model-Free Semantic Hints）
     /// - Parameters:
     ///   - query: 原始查询文本（保持原意与日志可审计性）

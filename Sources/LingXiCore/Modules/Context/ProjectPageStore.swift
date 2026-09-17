@@ -95,6 +95,24 @@ public actor ProjectPageStore {
         return (pages(projectRoot: id), await symbolIndex.allSymbols(projectRoot: id), await referenceIndex.references(projectRoot: id))
     }
 
+    /// 清除指定工作区项目的常驻索引与页面（用于 workspace switch 或关闭）
+    public func clearWorkspace(projectRoot: URL) async {
+        let rootID = ContextPage.projectIdentifier(for: projectRoot)
+        await clearWorkspace(projectRootID: rootID)
+    }
+
+    /// 清除指定工作区项目 ID 的常驻索引与页面
+    public func clearWorkspace(projectRootID: String) async {
+        filesByProject.removeValue(forKey: projectRootID)
+        await symbolIndex.remove(projectRoot: projectRootID)
+        await referenceIndex.remove(projectRoot: projectRootID)
+    }
+
+    /// 检查指定工作区是否有常驻缓存（供测试与诊断使用）
+    public func hasWorkspaceResident(projectRootID: String) -> Bool {
+        filesByProject[projectRootID] != nil
+    }
+
     public func symbolLookup(projectRoot: URL, query: String, mode: String) async -> [Symbol] {
         let id = ContextPage.projectIdentifier(for: projectRoot)
         switch mode {

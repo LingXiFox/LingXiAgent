@@ -303,6 +303,14 @@ public actor SQLitePersistenceStore {
         }
     }
 
+    public func loadSession(_ id: SessionID) throws -> Session? {
+        let rows = try Self.rows(state, "SELECT session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, revision FROM sessions WHERE session_id = ? AND project_id = ? LIMIT 1", [id.rawValue, projectID.rawValue])
+        guard let row = rows.first else { return nil }
+        let messages = try loadMessages(sessionID: id)
+        let rev = row.count >= 13 ? (UInt64(row[12]) ?? 0) : 0
+        return Session(id: id, createdAt: Self.parseDate(row[10]), kind: SessionKind(rawValue: row[2]) ?? .primary, parentSessionID: row[3].isEmpty ? nil : SessionID(row[3]), rootSessionID: SessionID(row[4]), spawnedByRunID: row[5].isEmpty ? nil : AgentRunID(row[5]), spawnedByToolCallID: row[6].isEmpty ? nil : ToolCallID(row[6]), title: row[7].isEmpty ? nil : row[7], projectID: ProjectID(row[1]), cwdRootBindingID: RootBindingID(row[8]), cwdRelativePath: ProjectRelativePath(rawValue: row[9]), updatedAt: Self.parseDate(row[11]), revision: rev, messages: messages)
+    }
+
     public func loadAllGlobalSessions() throws -> [SessionSummary] {
         try Self.loadAllGlobalSessions(dataRoot: dataRoot)
     }
@@ -502,6 +510,14 @@ public actor SQLitePersistenceStore {
             guard let kind = SessionKind(rawValue: row[5]), let status = AgentRunStatus(rawValue: row[6]) else { return nil }
             return AgentRunInfo(runID: AgentRunID(row[0]), sessionID: SessionID(row[1]), projectID: ProjectID(row[2]), parentRunID: row[3].isEmpty ? nil : AgentRunID(row[3]), rootRunID: AgentRunID(row[4]), agentKind: kind, status: status, modelSelection: ModelSelection(providerID: row[7], accountID: row[8].isEmpty ? nil : row[8], profileID: row[9].isEmpty ? nil : row[9], modelID: row[10], reasoning: row[11].isEmpty ? nil : row[11], contextProfile: row[12].isEmpty ? nil : row[12]), startedAt: row[13].isEmpty ? nil : Self.parseDate(row[13]), finishedAt: row[14].isEmpty ? nil : Self.parseDate(row[14]), latestActivityAt: Self.parseDate(row[15]), error: row[17].isEmpty ? nil : try? JSONDecoder().decode(CoreError.self, from: Data(row[17].utf8)), usage: (try? JSONDecoder().decode(AgentRunUsage.self, from: Data(row[16].utf8))) ?? AgentRunUsage(), title: row[18].isEmpty ? nil : row[18])
         }
+    }
+
+    public func loadAgentRun(_ runID: AgentRunID) throws -> AgentRunInfo? {
+        let query = "SELECT run_id, session_id, project_id, parent_run_id, root_run_id, agent_kind, status, provider_id, account_id, profile_id, model_id, reasoning, context_profile, started_at, finished_at, latest_activity_at, usage_json, error_json, title FROM agent_runs WHERE run_id = ? LIMIT 1"
+        return try Self.rows(state, query, [runID.rawValue]).compactMap { row in
+            guard let kind = SessionKind(rawValue: row[5]), let status = AgentRunStatus(rawValue: row[6]) else { return nil }
+            return AgentRunInfo(runID: AgentRunID(row[0]), sessionID: SessionID(row[1]), projectID: ProjectID(row[2]), parentRunID: row[3].isEmpty ? nil : AgentRunID(row[3]), rootRunID: AgentRunID(row[4]), agentKind: kind, status: status, modelSelection: ModelSelection(providerID: row[7], accountID: row[8].isEmpty ? nil : row[8], profileID: row[9].isEmpty ? nil : row[9], modelID: row[10], reasoning: row[11].isEmpty ? nil : row[11], contextProfile: row[12].isEmpty ? nil : row[12]), startedAt: row[13].isEmpty ? nil : Self.parseDate(row[13]), finishedAt: row[14].isEmpty ? nil : Self.parseDate(row[14]), latestActivityAt: Self.parseDate(row[15]), error: row[17].isEmpty ? nil : try? JSONDecoder().decode(CoreError.self, from: Data(row[17].utf8)), usage: (try? JSONDecoder().decode(AgentRunUsage.self, from: Data(row[16].utf8))) ?? AgentRunUsage(), title: row[18].isEmpty ? nil : row[18])
+        }.first
     }
 
     public func agentRunProfile(_ runID: AgentRunID) throws -> SubagentExecutionProfile? {

@@ -29,6 +29,18 @@ public actor ProjectReferenceIndex {
         rebuild(projectRoot)
     }
 
+    public func remove(projectRoot: String) {
+        referencesByProject.removeValue(forKey: projectRoot)
+        bySourceSymbol.removeValue(forKey: projectRoot)
+        byTargetSymbol.removeValue(forKey: projectRoot)
+        bySourcePage.removeValue(forKey: projectRoot)
+        byTargetPage.removeValue(forKey: projectRoot)
+        bySourcePath.removeValue(forKey: projectRoot)
+        byTargetPath.removeValue(forKey: projectRoot)
+        byTargetName.removeValue(forKey: projectRoot)
+        dependenciesByProject.removeValue(forKey: projectRoot)
+    }
+
     public func references(projectRoot: String) -> [ProjectReference] { sorted(referencesByProject[projectRoot, default: [:]].values) }
     public func referencesFrom(projectRoot: String, symbol: SymbolID) -> [ProjectReference] { lookup(bySourceSymbol[projectRoot]?[symbol] ?? [], projectRoot) }
     public func referencesFrom(projectRoot: String, page: String) -> [ProjectReference] { lookup(bySourcePage[projectRoot]?[page] ?? [], projectRoot) }

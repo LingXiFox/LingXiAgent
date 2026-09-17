@@ -186,7 +186,7 @@ public actor PersistentSessionStore: SessionStore {
     }
 
     public func session(_ id: SessionID) async throws -> Session {
-        if var session = try await persistence.loadSessions().first(where: { $0.id == id }) {
+        if var session = try await persistence.loadSession(id) {
             if let effort = reasoningEfforts[id] {
                 session.setReasoningEffort(effort)
             }

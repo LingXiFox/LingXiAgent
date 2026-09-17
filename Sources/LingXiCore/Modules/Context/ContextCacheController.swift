@@ -864,9 +864,8 @@ public actor ContextCacheController {
 
         // 4. 重新基于剩余有效消息精确估算 L1 / P-Core 常驻 Tokens
         if remainingMessages.isEmpty {
-            sessionL1BaseTokens.removeValue(forKey: sessionID)
-            sessionL1BaseCount.removeValue(forKey: sessionID)
-            residentPagesBySession.removeValue(forKey: sessionID)
+            await clearSessionState(sessionID: sessionID)
+            return
         } else {
             let estimator = ConservativeTokenEstimator()
             var entries: [ContextEntry] = []
@@ -914,28 +913,65 @@ public actor ContextCacheController {
 
         // 5. 调度器经济学债务状态对齐
         await scheduler.reset(sessionID: sessionID)
-        if remainingMessages.isEmpty {
-            let url = telemetryFileURL(sessionID: sessionID)
-            try? FileManager.default.removeItem(at: url)
-        }
     }
 
-    /// 重置指定 Session 的所有级别缓存（用于 /new 或 session 清理）
-    public func resetSession(_ sessionID: SessionID) async {
+    /// 统一彻底清理指定 Session 的所有级别状态、指标与缓存记录
+    public func clearSessionState(sessionID: SessionID) async {
         residentPagesBySession.removeValue(forKey: sessionID)
         residentDerivedPagesBySession.removeValue(forKey: sessionID)
         sessionL1BaseTokens.removeValue(forKey: sessionID)
         sessionL1BaseCount.removeValue(forKey: sessionID)
         lastProviderInputTokensBySession.removeValue(forKey: sessionID)
+        lastPromptCacheHitBySession.removeValue(forKey: sessionID)
         warmL2EntriesBySession.removeValue(forKey: sessionID)
         pageInsBySession.removeValue(forKey: sessionID)
         pageOutsBySession.removeValue(forKey: sessionID)
         promotionsBySession.removeValue(forKey: sessionID)
         demotionsBySession.removeValue(forKey: sessionID)
+
+        sessionCacheRecords.removeValue(forKey: sessionID)
+        sessionEpochs.removeValue(forKey: sessionID)
+        sessionEpochReasons.removeValue(forKey: sessionID)
+        previousPromptTokensBySession.removeValue(forKey: sessionID)
+        currentTurnFingerprintBySession.removeValue(forKey: sessionID)
+        lastTurnFingerprintBySession.removeValue(forKey: sessionID)
+        clientStructuralHealthBySession.removeValue(forKey: sessionID)
+        turnsInEpochBySession.removeValue(forKey: sessionID)
+        clientBustsInEpochBySession.removeValue(forKey: sessionID)
+
         await scheduler.reset(sessionID: sessionID)
         await ecoreStore.cleanSession(sessionID: sessionID)
         let url = telemetryFileURL(sessionID: sessionID)
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// 重置指定 Session 的所有级别缓存（用于 /new 或 session 清理）
+    public func resetSession(_ sessionID: SessionID) async {
+        await clearSessionState(sessionID: sessionID)
+    }
+
+    /// 检查指定会话是否残留任何内存状态（供测试与诊断使用）
+    public func hasResidualSessionState(sessionID: SessionID) -> Bool {
+        residentPagesBySession[sessionID] != nil ||
+        residentDerivedPagesBySession[sessionID] != nil ||
+        sessionL1BaseTokens[sessionID] != nil ||
+        sessionL1BaseCount[sessionID] != nil ||
+        lastProviderInputTokensBySession[sessionID] != nil ||
+        lastPromptCacheHitBySession[sessionID] != nil ||
+        warmL2EntriesBySession[sessionID] != nil ||
+        pageInsBySession[sessionID] != nil ||
+        pageOutsBySession[sessionID] != nil ||
+        promotionsBySession[sessionID] != nil ||
+        demotionsBySession[sessionID] != nil ||
+        sessionCacheRecords[sessionID] != nil ||
+        sessionEpochs[sessionID] != nil ||
+        sessionEpochReasons[sessionID] != nil ||
+        previousPromptTokensBySession[sessionID] != nil ||
+        currentTurnFingerprintBySession[sessionID] != nil ||
+        lastTurnFingerprintBySession[sessionID] != nil ||
+        clientStructuralHealthBySession[sessionID] != nil ||
+        turnsInEpochBySession[sessionID] != nil ||
+        clientBustsInEpochBySession[sessionID] != nil
     }
 
     /// 获取指定会话的 E-Core 热度调试与可观测性快照（只读旁路接口）
