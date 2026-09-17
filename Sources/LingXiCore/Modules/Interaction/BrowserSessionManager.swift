@@ -10,22 +10,35 @@ public struct BrowserSessionState: Sendable {
 }
 
 /// 浏览器交互会话中枢 (BrowserSessionManager Actor)。
-/// 负责管理与外部 Browser Host Sidecar 的长连接、页面上下文与精简 Observation 投影。
+/// 负责管理与外部 Browser Host Sidecar 的长连接、页面上下文单 Context 复用与精简 Observation 投影。
 public actor BrowserSessionManager {
     public static let shared = BrowserSessionManager()
 
     private var hostClient: BrowserHostClient?
     private var sessions: [String: BrowserSessionState] = [:]
     private var scriptPath: String
+    private var mode: BrowserHostMode
 
-    public init(hostClient: BrowserHostClient? = nil, scriptPath: String? = nil) {
+    public init(
+        hostClient: BrowserHostClient? = nil,
+        scriptPath: String? = nil,
+        mode: BrowserHostMode? = nil
+    ) {
         self.hostClient = hostClient
+        
+        let envModeStr = ProcessInfo.processInfo.environment["LINGXI_BROWSER_HOST_MODE"]
+        let defaultMode: BrowserHostMode = (envModeStr == "mock") ? .mock : .real
+        self.mode = mode ?? defaultMode
+
         if let scriptPath {
             self.scriptPath = scriptPath
+        } else if let envPath = ProcessInfo.processInfo.environment["LINGXI_BROWSER_HOST_PATH"], !envPath.isEmpty {
+            self.scriptPath = envPath
         } else {
-            // 自动寻找工作区内置的 Sidecar 脚本路径
+            // 优先查找 Bundle 资源路径，其次降级到工作区相对路径
             let cwd = FileManager.default.currentDirectoryPath
-            self.scriptPath = "\(cwd)/Sidecars/browser-host/index.mjs"
+            let candidatePath = "\(cwd)/Sidecars/browser-host/index.mjs"
+            self.scriptPath = candidatePath
         }
     }
 
@@ -33,20 +46,26 @@ public actor BrowserSessionManager {
         if let client = hostClient {
             return client
         }
-        let client = BrowserHostClient(scriptPath: scriptPath)
+        let client = BrowserHostClient(scriptPath: scriptPath, mode: mode)
         try client.start()
         _ = try await client.initialize()
         self.hostClient = client
         return client
     }
 
-    /// 导航到指定 URL 并抓取首帧精简 Observation
+    /// 导航到指定 URL 并抓取首帧精简 Observation。
+    /// 严格遵循单 Context 复用原则：同一 sessionID 仅在首次打开时创建 Context/Page，后续直接复用既有页面进行跳转，杜绝 Chromium 实例与内存泄漏。
     public func navigate(sessionID: String, url: String) async throws -> String {
         let client = try await ensureClient()
-        _ = try await client.createSession(sessionID: sessionID)
+
+        if sessions[sessionID] == nil {
+            _ = try await client.createSession(sessionID: sessionID)
+        }
+
         let navResult = try await client.navigate(sessionID: sessionID, url: url)
 
-        let obs = try await client.snapshot(sessionID: sessionID)
+        // 默认快照不抓取大 Base64 截屏，零拷贝传输
+        let obs = try await client.snapshot(sessionID: sessionID, includeScreenshot: false)
         sessions[sessionID] = BrowserSessionState(
             sessionID: sessionID,
             currentURL: navResult.url,
@@ -57,7 +76,27 @@ public actor BrowserSessionManager {
         return formatObservationSummary(obs)
     }
 
-    /// 执行点击或输入动作
+    /// 显式重置并重建指定会话（安全销毁旧 Context/Page，防止残留 Cookies 或状态）
+    public func resetSession(sessionID: String, url: String? = nil) async throws -> String {
+        let client = try await ensureClient()
+        try await client.closeSession(sessionID: sessionID)
+        sessions.removeValue(forKey: sessionID)
+
+        _ = try await client.createSession(sessionID: sessionID)
+        let targetURL = url ?? "about:blank"
+        let navResult = try await client.navigate(sessionID: sessionID, url: targetURL)
+        let obs = try await client.snapshot(sessionID: sessionID, includeScreenshot: false)
+
+        sessions[sessionID] = BrowserSessionState(
+            sessionID: sessionID,
+            currentURL: navResult.url,
+            currentTitle: navResult.title,
+            latestObservation: obs
+        )
+        return formatObservationSummary(obs)
+    }
+
+    /// 执行点击或输入动作（带语义引用验证与防陈旧点击保护）
     public func act(
         sessionID: String,
         actionType: String,
@@ -71,9 +110,11 @@ public actor BrowserSessionManager {
 
         var targetX: Double? = nil
         var targetY: Double? = nil
+        var refIndex: Int? = nil
+        var refVersion: Int64? = nil
 
         if let refString {
-            // 匹配 ref_1 或 ref_1@v2
+            // 严格匹配目标引用
             guard let matchedRef = currentObs.elements.keys.first(where: {
                 $0.description == refString || "ref_\($0.index)" == refString
             }) else {
@@ -89,6 +130,8 @@ public actor BrowserSessionManager {
                 throw InteractionError.actionExecution(.elementNotInteractable(ref: matchedRef, reason: "Element has no bounds"))
             }
 
+            refIndex = matchedRef.index
+            refVersion = matchedRef.version
             targetX = bounds.origin.x + bounds.width / 2.0
             targetY = bounds.origin.y + bounds.height / 2.0
         }
@@ -96,13 +139,16 @@ public actor BrowserSessionManager {
         try await client.performAction(
             sessionID: sessionID,
             actionType: actionType,
+            refIndex: refIndex,
+            version: refVersion,
             x: targetX,
             y: targetY,
-            text: text
+            text: text,
+            allowCoordinateFallback: false // 禁止无脑降级为未知坐标点击
         )
 
-        // 动作完成后自动获取新帧 Observation (Semantic Trimming)
-        let newObs = try await client.snapshot(sessionID: sessionID)
+        // 动作完成后获取新帧 Observation (Semantic Trimming)
+        let newObs = try await client.snapshot(sessionID: sessionID, includeScreenshot: false)
         state.latestObservation = newObs
         if case let .browser(_, url, _) = newObs.source {
             state.currentURL = url
@@ -113,6 +159,12 @@ public actor BrowserSessionManager {
         sessions[sessionID] = state
 
         return formatObservationSummary(newObs)
+    }
+
+    /// 独立页面截屏（按需调用，不污染常规 Observation 循环）
+    public func captureScreenshot(sessionID: String, savePath: String? = nil) async throws -> (path: String?, base64: String?) {
+        let client = try await ensureClient()
+        return try await client.capture(sessionID: sessionID, savePath: savePath)
     }
 
     /// 关闭会话

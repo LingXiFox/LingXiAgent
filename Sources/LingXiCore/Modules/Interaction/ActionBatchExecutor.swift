@@ -175,9 +175,34 @@ public struct ActionBatchExecutor: Sendable {
             switch browserAction {
             case let .primitive(primitive):
                 try await executePrimitive(primitive, environment: environment, observation: observation)
-            case .navigate, .reload, .goBack, .waitForURL:
-                // 浏览器专有页面级动作，通常由 BrowserSessionManager 处理
-                break
+            case let .navigate(url):
+                throw InteractionError.capability(
+                    .featureUnsupported(
+                        feature: "BrowserNavigation",
+                        reason: "ActionBatchExecutor requires an explicit browser session context to execute navigate(\(url)). Direct execution without browser context is unsupported."
+                    )
+                )
+            case .reload:
+                throw InteractionError.capability(
+                    .featureUnsupported(
+                        feature: "BrowserNavigation",
+                        reason: "ActionBatchExecutor requires an explicit browser session context to execute reload(). Direct execution without browser context is unsupported."
+                    )
+                )
+            case .goBack:
+                throw InteractionError.capability(
+                    .featureUnsupported(
+                        feature: "BrowserNavigation",
+                        reason: "ActionBatchExecutor requires an explicit browser session context to execute goBack(). Direct execution without browser context is unsupported."
+                    )
+                )
+            case let .waitForURL(pattern, _):
+                throw InteractionError.capability(
+                    .featureUnsupported(
+                        feature: "BrowserNavigation",
+                        reason: "ActionBatchExecutor requires an explicit browser session context to execute waitForURL(\(pattern)). Direct execution without browser context is unsupported."
+                    )
+                )
             }
 
         case let .desktop(desktopAction):

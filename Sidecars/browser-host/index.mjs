@@ -1,24 +1,24 @@
 import readline from "node:readline";
 import fs from "node:fs";
 
-/**
- * LingXiAgent Browser Host Sidecar Runner (JSON-RPC 2.0 / Line-Delimited)
- * 具备协议握手、DOM 语义树提取、稳定 ElementRef 分配与标准动作执行能力。
- */
+const HOST_MODE = process.env.LINGXI_BROWSER_HOST_MODE || "real"; // "real" | "mock"
+const DISABLE_SANDBOX = process.env.LINGXI_BROWSER_DISABLE_SANDBOX === "1";
 
 let playwright = null;
-try {
-  playwright = await import("playwright");
-} catch {
-  // Playwright not installed in local directory; will fallback to headless mock or cdp if needed
+if (HOST_MODE === "real") {
+  try {
+    playwright = await import("playwright");
+  } catch {
+    // Playwright not installed in environment
+  }
 }
 
 let browserInstance = null;
-const sessions = new Map(); // sessionID -> { context, page, elementMap, nextIndex, version }
+// sessionID -> { sessionID, context, page, elementMap, nextIndex, version, currentURL, currentTitle }
+const sessions = new Map();
 
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout,
   terminal: false
 });
 
@@ -30,7 +30,8 @@ function sendResponse(id, result, error = null) {
   } else {
     msg.result = result;
   }
-  process.stdout.write(JSON.stringify(msg) + "\n");
+  const payload = JSON.stringify(msg) + "\n";
+  process.stdout.write(payload);
 }
 
 async function ensureBrowser() {
@@ -38,17 +39,50 @@ async function ensureBrowser() {
   if (!playwright) {
     throw new Error("Playwright is not installed in Node environment");
   }
+  const launchArgs = [];
+  if (DISABLE_SANDBOX) {
+    launchArgs.push("--no-sandbox", "--disable-setuid-sandbox");
+  }
   browserInstance = await playwright.chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    args: launchArgs
   });
   return browserInstance;
+}
+
+function validateURLPolicy(rawURL) {
+  try {
+    const parsed = new URL(rawURL);
+    const allowedProtocols = ["http:", "https:", "about:"];
+    if (!allowedProtocols.includes(parsed.protocol)) {
+      throw new Error(`Forbidden URL protocol '${parsed.protocol}'. Only http:, https: and about: are allowed.`);
+    }
+  } catch (err) {
+    if (err.message && err.message.includes("Forbidden URL protocol")) {
+      throw err;
+    }
+    throw new Error(`Invalid URL format: ${rawURL}`);
+  }
+}
+
+async function cleanupSessionResources(session) {
+  if (!session) return;
+  if (session.page) {
+    await session.page.close().catch(() => {});
+    session.page = null;
+  }
+  if (session.context) {
+    await session.context.close().catch(() => {});
+    session.context = null;
+  }
+  if (session.elementMap) {
+    session.elementMap.clear();
+  }
 }
 
 async function showBrowserVirtualCursor(page, x, y, isClick = false) {
   try {
     const updatedCoord = await page.evaluate(({ targetX, targetY, click }) => {
-      // 1. 尝试根据坐标智能捕获并高亮贴合目标 DOM 元素
       let targetEl = document.elementFromPoint(targetX, targetY);
       if (targetEl && targetEl.id === "lingxi-virtual-cursor") {
         targetEl = null;
@@ -58,14 +92,11 @@ async function showBrowserVirtualCursor(page, x, y, isClick = false) {
       let finalY = targetY;
 
       if (targetEl && targetEl !== document.body && targetEl !== document.documentElement) {
-        // 将元素精准居中于视口
         targetEl.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
         const rect = targetEl.getBoundingClientRect();
-        // 重新矫正为该元素真实中心点
         finalX = rect.left + rect.width / 2;
         finalY = rect.top + rect.height / 2;
 
-        // 注入目标依附高亮外框
         targetEl.classList.add("lingxi-target-focused");
         setTimeout(() => {
           targetEl.classList.remove("lingxi-target-focused");
@@ -152,6 +183,7 @@ async function showBrowserVirtualCursor(page, x, y, isClick = false) {
 rl.on("line", async (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
+  process.stderr.write(`[Sidecar] Received line: ${trimmed.slice(0, 60)}\n`);
 
   let request;
   try {
@@ -166,21 +198,43 @@ rl.on("line", async (line) => {
   try {
     switch (method) {
       case "initialize": {
+        const isPlaywrightAvailable = Boolean(playwright);
+        if (HOST_MODE === "real" && !isPlaywrightAvailable) {
+          sendResponse(id, null, {
+            code: -32001,
+            message: "BrowserHost initialized in 'real' mode but Playwright is not available in Node runtime"
+          });
+          return;
+        }
+
         sendResponse(id, {
           protocolVersion: "v1",
-          hostVersion: "lingxi-browser-host-1.0.0",
-          playwrightAvailable: Boolean(playwright),
-          capabilities: ["navigation", "dom", "screenshot", "actions", "settle"]
+          hostVersion: "lingxi-browser-host-1.1.0",
+          mode: HOST_MODE,
+          playwrightAvailable: isPlaywrightAvailable,
+          capabilities: ["navigation", "dom", "screenshot", "actions", "settle", "capture"]
         });
         break;
       }
 
       case "session.create": {
         const sessionID = params?.sessionID || `session-${Date.now()}`;
+        
+        // Defensive check: If session already exists, explicitly tear down old context & page
+        const existing = sessions.get(sessionID);
+        if (existing) {
+          await cleanupSessionResources(existing);
+          sessions.delete(sessionID);
+        }
+
+        if (HOST_MODE === "real" && !playwright) {
+          throw new Error("Cannot create browser session in 'real' mode without Playwright installed");
+        }
+
         let page = null;
         let context = null;
 
-        if (playwright) {
+        if (playwright && HOST_MODE !== "mock") {
           const browser = await ensureBrowser();
           context = await browser.newContext({
             viewport: { width: 1280, height: 800 }
@@ -199,23 +253,49 @@ rl.on("line", async (line) => {
           currentTitle: "New Tab"
         });
 
-        sendResponse(id, { sessionID, status: "created" });
+        sendResponse(id, { sessionID, status: "created", mode: HOST_MODE });
         break;
       }
 
       case "session.navigate": {
         const { sessionID, url } = params;
-        const session = sessions.get(sessionID);
-        if (!session) throw new Error(`Session ${sessionID} not found`);
+        validateURLPolicy(url);
+
+        let session = sessions.get(sessionID);
+        if (!session) {
+          // If session doesn't exist yet, lazily create it instead of failing
+          if (HOST_MODE === "real" && !playwright) {
+            throw new Error("Cannot navigate in 'real' mode without Playwright installed");
+          }
+          let page = null;
+          let context = null;
+          if (playwright && HOST_MODE !== "mock") {
+            const browser = await ensureBrowser();
+            context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+            page = await context.newPage();
+          }
+          session = {
+            sessionID,
+            context,
+            page,
+            elementMap: new Map(),
+            version: 1,
+            nextIndex: 1,
+            currentURL: "about:blank",
+            currentTitle: "New Tab"
+          };
+          sessions.set(sessionID, session);
+        }
 
         if (session.page) {
-          await session.page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await session.page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
           session.currentURL = session.page.url();
           session.currentTitle = await session.page.title();
         } else {
           session.currentURL = url;
           session.currentTitle = `Mock Page: ${url}`;
         }
+
         session.version += 1;
         session.elementMap.clear();
         session.nextIndex = 1;
@@ -229,7 +309,7 @@ rl.on("line", async (line) => {
       }
 
       case "session.snapshot": {
-        const { sessionID } = params;
+        const { sessionID, includeScreenshot = false } = params;
         const session = sessions.get(sessionID);
         if (!session) throw new Error(`Session ${sessionID} not found`);
 
@@ -237,20 +317,21 @@ rl.on("line", async (line) => {
         let screenshotBase64 = null;
 
         if (session.page) {
-          // 提取可交互元素并打上 stable ref 标记 (全量现代组件与可见性过滤)
+          // Bounded candidate scan (Max 300 candidates to prevent layout thrashing on large DOMs)
           elements = await session.page.evaluate(() => {
             const selector = "button, a, input, select, textarea, [role=button], [role=link], [role=searchbox], [role=combobox], [role=tab], [role=menuitem], [role=checkbox], [role=radio], [contenteditable='true'], [onclick], summary";
-            const candidateElements = Array.from(document.querySelectorAll(selector));
+            const candidateElements = Array.from(document.querySelectorAll(selector)).slice(0, 300);
             
             const validItems = [];
             for (let i = 0; i < candidateElements.length; i++) {
               const el = candidateElements[i];
               const rect = el.getBoundingClientRect();
-              const style = window.getComputedStyle(el);
-
-              // 过滤不可见、被隐藏或尺寸为零的元素
-              if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) continue;
+              
+              // Fast reject zero-size or out-of-document elements
               if (rect.width < 3 || rect.height < 3) continue;
+
+              const style = window.getComputedStyle(el);
+              if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) continue;
 
               const role = el.getAttribute("role") || el.tagName.toLowerCase();
               const name = (
@@ -281,7 +362,6 @@ rl.on("line", async (line) => {
               });
             }
 
-            // 视口内且高优先级（如搜索框、核心按钮）排在最前
             validItems.sort((a, b) => {
               if (a.inViewport !== b.inViewport) return a.inViewport ? -1 : 1;
               return b.priority - a.priority;
@@ -290,26 +370,30 @@ rl.on("line", async (line) => {
             return validItems.slice(0, 100);
           });
 
-          // 截屏 (JPEG/PNG)
-          const buffer = await session.page.screenshot({ type: "jpeg", quality: 70 });
-          screenshotBase64 = buffer.toString("base64");
+          if (includeScreenshot) {
+            const buffer = await session.page.screenshot({ type: "jpeg", quality: 60 });
+            screenshotBase64 = buffer.toString("base64");
+          }
         } else {
-          // Mock 模式
+          // Mock mode
           elements = [
-            { id: "input-search", role: "input", name: "Search Query", value: "", isInteractable: true, x: 100, y: 100, width: 300, height: 36 },
-            { id: "btn-submit", role: "button", name: "Submit", value: null, isInteractable: true, x: 420, y: 100, width: 80, height: 36 }
+            { id: "input-search", role: "input", name: "Search Query", value: "", isInteractable: true, x: 100, y: 100, width: 300, height: 36, inViewport: true },
+            { id: "btn-submit", role: "button", name: "Submit", value: null, isInteractable: true, x: 420, y: 100, width: 80, height: 36, inViewport: true }
           ];
         }
 
-        // 分配稳定 ElementRef
+        // Assign stable ElementRefs for this snapshot
+        session.elementMap.clear();
         const refElements = {};
         for (const el of elements) {
           const index = session.nextIndex++;
-          refElements[`ref_${index}`] = {
+          const refRecord = {
             ...el,
-            refIndex: index
+            refIndex: index,
+            snapshotVersion: session.version
           };
-          session.elementMap.set(index, el);
+          refElements[`ref_${index}`] = refRecord;
+          session.elementMap.set(index, refRecord);
         }
 
         sendResponse(id, {
@@ -324,16 +408,104 @@ rl.on("line", async (line) => {
         break;
       }
 
+      case "session.capture": {
+        const { sessionID, savePath } = params;
+        const session = sessions.get(sessionID);
+        if (!session) throw new Error(`Session ${sessionID} not found`);
+
+        if (session.page) {
+          if (savePath) {
+            await session.page.screenshot({ path: savePath, type: "jpeg", quality: 75 });
+            sendResponse(id, { path: savePath, success: true });
+          } else {
+            const buffer = await session.page.screenshot({ type: "jpeg", quality: 75 });
+            sendResponse(id, { screenshotBase64: buffer.toString("base64"), success: true });
+          }
+        } else {
+          sendResponse(id, { mock: true, success: true });
+        }
+        break;
+      }
+
       case "session.act": {
         const { sessionID, action } = params;
         const session = sessions.get(sessionID);
         if (!session) throw new Error(`Session ${sessionID} not found`);
 
+        let clickX = action.x;
+        let clickY = action.y;
+
+        // ElementRef validation and anti-stale protection
+        if (action.refIndex !== undefined && action.refIndex !== null) {
+          const recordedEl = session.elementMap.get(action.refIndex);
+          if (!recordedEl) {
+            sendResponse(id, null, {
+              code: -32002,
+              message: `Stale element reference: ref_${action.refIndex} no longer exists in current session snapshot table`
+            });
+            return;
+          }
+
+          if (action.version !== undefined && action.version !== session.version) {
+            sendResponse(id, null, {
+              code: -32002,
+              message: `Stale version: action version v${action.version} does not match current page version v${session.version}`
+            });
+            return;
+          }
+
+          if (session.page) {
+            // Verify DOM presence and get current live bounds
+            const liveInfo = await session.page.evaluate((target) => {
+              // Try finding element by ID or matching tag & role
+              let el = document.getElementById(target.id);
+              if (!el && target.name) {
+                const candidates = document.querySelectorAll(target.role || "*");
+                for (const c of candidates) {
+                  const text = (c.innerText || c.getAttribute("aria-label") || c.value || "").trim();
+                  if (text === target.name) {
+                    el = c;
+                    break;
+                  }
+                }
+              }
+              if (!el && !target.allowCoordinateFallback) {
+                return { found: false };
+              }
+              if (el) {
+                const rect = el.getBoundingClientRect();
+                return {
+                  found: true,
+                  x: rect.x + rect.width / 2,
+                  y: rect.y + rect.height / 2
+                };
+              }
+              return { found: false, fallback: true };
+            }, {
+              id: recordedEl.id,
+              name: recordedEl.name,
+              role: recordedEl.role,
+              allowCoordinateFallback: Boolean(action.allowCoordinateFallback)
+            });
+
+            if (!liveInfo.found && !action.allowCoordinateFallback) {
+              sendResponse(id, null, {
+                code: -32002,
+                message: `Element ref_${action.refIndex} ('${recordedEl.name || recordedEl.id}') is disconnected or disappeared from current DOM. Coordinate fallback prohibited.`
+              });
+              return;
+            }
+
+            if (liveInfo.found) {
+              clickX = liveInfo.x;
+              clickY = liveInfo.y;
+            }
+          }
+        }
+
         if (session.page) {
-          let clickX = action.x;
-          let clickY = action.y;
-          if (action.x !== undefined && action.y !== undefined) {
-            const coord = await showBrowserVirtualCursor(session.page, action.x, action.y, action.type === "click");
+          if (clickX !== undefined && clickY !== undefined) {
+            const coord = await showBrowserVirtualCursor(session.page, clickX, clickY, action.type === "click");
             if (coord && typeof coord.x === "number") {
               clickX = coord.x;
               clickY = coord.y;
@@ -345,7 +517,6 @@ rl.on("line", async (line) => {
               await session.page.mouse.click(clickX, clickY);
             }
           } else if (action.type === "type") {
-            // Click-to-Focus 自动保护：输入前先点击目标控件激活焦点
             if (clickX !== undefined && clickY !== undefined) {
               await session.page.mouse.click(clickX, clickY);
               await session.page.waitForTimeout(80);
@@ -368,8 +539,7 @@ rl.on("line", async (line) => {
         const { sessionID } = params;
         const session = sessions.get(sessionID);
         if (session) {
-          if (session.page) await session.page.close().catch(() => {});
-          if (session.context) await session.context.close().catch(() => {});
+          await cleanupSessionResources(session);
           sessions.delete(sessionID);
         }
         sendResponse(id, { closed: true });
@@ -387,12 +557,23 @@ rl.on("line", async (line) => {
   }
 });
 
+async function shutdownAll() {
+  for (const session of sessions.values()) {
+    await cleanupSessionResources(session);
+  }
+  sessions.clear();
+  if (browserInstance) {
+    await browserInstance.close().catch(() => {});
+    browserInstance = null;
+  }
+}
+
 process.on("SIGINT", async () => {
-  if (browserInstance) await browserInstance.close().catch(() => {});
+  await shutdownAll();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
-  if (browserInstance) await browserInstance.close().catch(() => {});
+  await shutdownAll();
   process.exit(0);
 });

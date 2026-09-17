@@ -29,8 +29,8 @@ struct BrowserSessionManagerTests {
         }
     }
 
-    @Test("BrowserHostClient end-to-end handshake and protocol cycle with Sidecar")
-    func testSidecarHandshakeAndProtocolCycle() async throws {
+    @Test("BrowserHostClient protocol cycle in explicit Mock mode")
+    func testSidecarHandshakeAndProtocolCycleInMockMode() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let scriptPath = "\(cwd)/Sidecars/browser-host/index.mjs"
 
@@ -39,7 +39,7 @@ struct BrowserSessionManagerTests {
             return
         }
 
-        let client = BrowserHostClient(scriptPath: scriptPath)
+        let client = BrowserHostClient(scriptPath: scriptPath, mode: .mock)
         try client.start()
         defer { client.stop() }
 
@@ -47,6 +47,7 @@ struct BrowserSessionManagerTests {
         let handshake = try await client.initialize()
         #expect(handshake.protocolVersion == "v1")
         #expect(handshake.hostVersion.contains("lingxi-browser-host"))
+        #expect(handshake.mode == "mock")
         #expect(handshake.capabilities.contains("navigation"))
         #expect(handshake.capabilities.contains("dom"))
 
@@ -60,11 +61,12 @@ struct BrowserSessionManagerTests {
         #expect(navRes.url == "https://example.com")
         #expect(navRes.version >= 1)
 
-        // 4. 验证快照
-        let snapObs = try await client.snapshot(sessionID: sessionID)
+        // 4. 验证快照 (默认 includeScreenshot: false，screenshotBlobRef 为 nil)
+        let snapObs = try await client.snapshot(sessionID: sessionID, includeScreenshot: false)
         #expect(snapObs.viewportBounds.width > 0)
         #expect(snapObs.viewportBounds.height > 0)
         #expect(snapObs.elements.count > 0)
+        #expect(snapObs.screenshotBlobRef == nil)
 
         // 5. 验证执行动作
         try await client.performAction(
@@ -79,8 +81,8 @@ struct BrowserSessionManagerTests {
         try await client.closeSession(sessionID: sessionID)
     }
 
-    @Test("BrowserSessionManager end-to-end semantic trimming, ref mapping and error handling")
-    func testBrowserSessionManagerWorkflow() async throws {
+    @Test("BrowserSessionManager workflow in explicit Mock mode")
+    func testBrowserSessionManagerWorkflowInMockMode() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let scriptPath = "\(cwd)/Sidecars/browser-host/index.mjs"
 
@@ -89,7 +91,7 @@ struct BrowserSessionManagerTests {
             return
         }
 
-        let manager = BrowserSessionManager(scriptPath: scriptPath)
+        let manager = BrowserSessionManager(scriptPath: scriptPath, mode: .mock)
         let sessionID = "agent-browser-\(UUID().uuidString.prefix(8))"
 
         // 1. 导航并验证格式化摘要

@@ -101,7 +101,7 @@ public final class StdioTransport: @unchecked Sendable {
         // 启动后台专用线程持续 drain stderr，防止子进程写满管道死锁，且不占用 Swift 合作线程池
         let drainThread = Thread { [weak self, errH] in
             while true {
-                let chunk = errH.readData(ofLength: 16 * 1024)
+                let chunk = errH.availableData
                 if chunk.isEmpty {
                     break
                 }
@@ -139,9 +139,7 @@ public final class StdioTransport: @unchecked Sendable {
         }
 
         while readBuffer.count < count {
-            let needed = count - readBuffer.count
-            let chunkSize = max(needed, 16 * 1024)
-            let chunk = handle.readData(ofLength: chunkSize)
+            let chunk = handle.availableData
             if chunk.isEmpty {
                 if readBuffer.count == count {
                     break
@@ -182,7 +180,7 @@ public final class StdioTransport: @unchecked Sendable {
                 throw StdioTransportError.readFailed
             }
 
-            let chunk = handle.readData(ofLength: 32 * 1024)
+            let chunk = handle.availableData
             if chunk.isEmpty {
                 if readBuffer.isEmpty {
                     return nil
@@ -202,7 +200,7 @@ public final class StdioTransport: @unchecked Sendable {
         }
     }
 
-    /// 从内部缓冲高效获取下一个单字节（纯内存操作，缓冲为空时批量读取 32KB）
+    /// 从内部缓冲高效获取下一个单字节（纯内存操作，缓冲为空时读取可用数据）
     public func readByte() throws -> UInt8? {
         readLock.lock()
         defer { readLock.unlock() }
@@ -215,7 +213,7 @@ public final class StdioTransport: @unchecked Sendable {
             return readBuffer.removeFirst()
         }
 
-        let chunk = handle.readData(ofLength: 32 * 1024)
+        let chunk = handle.availableData
         if chunk.isEmpty {
             return nil
         }
