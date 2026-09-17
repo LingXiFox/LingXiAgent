@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LingXiPlatform
 import LingXiProtocol
@@ -38,6 +39,54 @@ public actor CodebaseGraphEngine {
         fileModificationTimes.count
     }
 
+    public struct GraphMemoryDiagnostics: Sendable, Equatable {
+        public let nodeCount: Int
+        public let edgeCount: Int
+        public let outgoingEdgeReferenceCount: Int
+        public let incomingEdgeReferenceCount: Int
+        public let approximateHeapBytes: Int
+
+        public init(
+            nodeCount: Int,
+            edgeCount: Int,
+            outgoingEdgeReferenceCount: Int,
+            incomingEdgeReferenceCount: Int,
+            approximateHeapBytes: Int
+        ) {
+            self.nodeCount = nodeCount
+            self.edgeCount = edgeCount
+            self.outgoingEdgeReferenceCount = outgoingEdgeReferenceCount
+            self.incomingEdgeReferenceCount = incomingEdgeReferenceCount
+            self.approximateHeapBytes = approximateHeapBytes
+        }
+    }
+
+    public func memoryDiagnostics() -> GraphMemoryDiagnostics {
+        let outCount = edgesBySource.values.reduce(0) { $0 + $1.count }
+        let inCount = edgesByTarget.values.reduce(0) { $0 + $1.count }
+        let nodeBytes = nodes.count * 256
+        let edgeBytes = edges.count * 160 + (outCount + inCount) * 8
+        return GraphMemoryDiagnostics(
+            nodeCount: nodes.count,
+            edgeCount: edges.count,
+            outgoingEdgeReferenceCount: outCount,
+            incomingEdgeReferenceCount: inCount,
+            approximateHeapBytes: nodeBytes + edgeBytes
+        )
+    }
+
+    public func clearGraphMemory() {
+        nodes.removeAll(keepingCapacity: false)
+        edges.removeAll(keepingCapacity: false)
+        edgesBySource.removeAll(keepingCapacity: false)
+        edgesByTarget.removeAll(keepingCapacity: false)
+        nodesByName.removeAll(keepingCapacity: false)
+        fileModificationTimes.removeAll(keepingCapacity: false)
+        fileIdentifiers.removeAll(keepingCapacity: false)
+        workspaceRootURL = nil
+        isInitialized = false
+    }
+
     public init() {}
 
     /// 索引或增量更新工作区代码图谱
@@ -46,6 +95,13 @@ public actor CodebaseGraphEngine {
         defer {
             isIndexing = false
             isInitialized = true
+            // Phase 7: Release AST token scratch set immediately after index build to prevent memory bloat
+            fileIdentifiers.removeAll(keepingCapacity: false)
+        }
+
+        // Workspace 变更时强制清空旧工作区图谱，防止内存污染与泄漏
+        if let current = self.workspaceRootURL, current.standardizedFileURL.path != workspaceURL.standardizedFileURL.path {
+            clearGraphMemory()
         }
         self.workspaceRootURL = workspaceURL
 
@@ -256,10 +312,16 @@ public actor CodebaseGraphEngine {
         for id in removedNodeIds {
             nodes.removeValue(forKey: id)
             if let edgesOut = edgesBySource.removeValue(forKey: id) {
-                for e in edgesOut { edges.removeValue(forKey: e.id) }
+                for e in edgesOut {
+                    edges.removeValue(forKey: e.id)
+                    edgesByTarget[e.targetId]?.removeAll(where: { $0.id == e.id })
+                }
             }
             if let edgesIn = edgesByTarget.removeValue(forKey: id) {
-                for e in edgesIn { edges.removeValue(forKey: e.id) }
+                for e in edgesIn {
+                    edges.removeValue(forKey: e.id)
+                    edgesBySource[e.sourceId]?.removeAll(where: { $0.id == e.id })
+                }
             }
         }
         // 清理 nodesByName
@@ -456,6 +518,8 @@ public actor CodebaseGraphEngine {
     }
 
     private func addEdge(_ edge: GraphEdge) {
+        // Phase 7: deduplicate edge insertion to prevent exponential adjacency growth on reindex
+        guard edges[edge.id] == nil else { return }
         edges[edge.id] = edge
         edgesBySource[edge.sourceId, default: []].append(edge)
         edgesByTarget[edge.targetId, default: []].append(edge)
@@ -514,6 +578,7 @@ public actor CodebaseGraphEngine {
     // MARK: - Disk Cache
 
     private struct GraphCachePayload: Codable {
+        let manifest: [String: Double]
         let nodes: [GraphNode]
         let edges: [GraphEdge]
     }
@@ -522,13 +587,19 @@ public actor CodebaseGraphEngine {
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".lingxiagent/cache/graph", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        let hash = String(workspaceURL.path.hashValue, radix: 16)
-        return cacheDir.appendingPathComponent("graph_\(hash).json")
+        let canonicalPath = workspaceURL.standardizedFileURL.path
+        let hashData = SHA256.hash(data: Data(canonicalPath.utf8))
+        let hashString = hashData.map { String(format: "%02x", $0) }.joined()
+        return cacheDir.appendingPathComponent("graph_\(hashString).json")
     }
 
     private func saveToDiskCache(for workspaceURL: URL) {
         let url = cacheFileURL(for: workspaceURL)
-        let payload = GraphCachePayload(nodes: Array(nodes.values), edges: Array(edges.values))
+        var manifest: [String: Double] = [:]
+        for (file, date) in fileModificationTimes {
+            manifest[file] = date.timeIntervalSince1970
+        }
+        let payload = GraphCachePayload(manifest: manifest, nodes: Array(nodes.values), edges: Array(edges.values))
         if let data = try? JSONEncoder().encode(payload) {
             try? data.write(to: url)
         }
@@ -540,8 +611,31 @@ public actor CodebaseGraphEngine {
               let payload = try? JSONDecoder().decode(GraphCachePayload.self, from: data) else {
             return
         }
+        for (file, timestamp) in payload.manifest {
+            fileModificationTimes[file] = Date(timeIntervalSince1970: timestamp)
+        }
         for node in payload.nodes { addNode(node) }
         for edge in payload.edges { addEdge(edge) }
         if !payload.nodes.isEmpty { isInitialized = true }
     }
 }
+
+#if DEBUG
+extension CodebaseGraphEngine {
+    public func cacheFileURLForTesting(workspaceURL: URL) -> URL {
+        cacheFileURL(for: workspaceURL)
+    }
+
+    public func addEdgeForTesting(_ edge: GraphEdge) {
+        addEdge(edge)
+    }
+
+    public func addNodeForTesting(_ node: GraphNode) {
+        addNode(node)
+    }
+
+    public func removeFileEntitiesForTesting(for fileURL: URL, root: URL) {
+        removeFileEntities(for: fileURL, root: root)
+    }
+}
+#endif

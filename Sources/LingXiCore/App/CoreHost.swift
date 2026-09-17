@@ -313,7 +313,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
         await bus.add(.ping) { _ in .pong }
         scheduleRegistryRefresh()
-        scheduleCodebaseGraphWarmup()
+        // Phase 7: Do not eagerly warm up CodebaseGraph on startup to avoid 1GB RSS explosion.
+        // Graph indexing is now lazy upon first codebase_graph usage.
         await bus.add(.getInfo) { [self] _ in .info(info) }
         await bus.add(.getState) { [self] _ in .state(await state) }
         await bus.add(.getProviderStatus) { [self] _ in
