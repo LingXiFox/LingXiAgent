@@ -74,6 +74,9 @@ public struct ApplicationState: Sendable, Equatable {
     public var hasActiveError: Bool
     public var status: ProductRuntimeStatus
 
+    /// 初始空白应用状态
+    public static let empty = ApplicationState()
+
     public init(
         connectionState: ConnectionState = .disconnected,
         runtimeHealth: RuntimeHealth? = nil,

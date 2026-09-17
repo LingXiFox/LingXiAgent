@@ -115,7 +115,7 @@ public actor ApplicationStore {
     // MARK: - 状态流订阅 (兼容保留)
     public var stateUpdates: AsyncStream<ApplicationState> {
         let id = UUID()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingNewest(32)) { continuation in
             continuation.yield(self.state)
             self.stateContinuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
@@ -133,7 +133,7 @@ public actor ApplicationStore {
     // MARK: - 增量变更流订阅 (Phase 4 推荐)
     public var updates: AsyncStream<ApplicationUpdate> {
         let id = UUID()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingNewest(32)) { continuation in
             let initial = ApplicationUpdate(
                 revision: self.currentRevision,
                 state: self.state,

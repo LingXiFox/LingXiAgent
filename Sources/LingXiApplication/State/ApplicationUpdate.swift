@@ -68,6 +68,28 @@ public struct ApplicationChangeSet: Sendable, Equatable {
         self.inputChanged = inputChanged
     }
 
+    /// 空变更集
+    public static var empty: ApplicationChangeSet {
+        ApplicationChangeSet()
+    }
+
+    /// 判断变更集是否没有任何域变更
+    public var isEmpty: Bool {
+        !sessionChanged &&
+        !transcriptStructureChanged &&
+        transcriptNodesChanged.isEmpty &&
+        nodeChanges.isEmpty &&
+        !contextChanged &&
+        !extensionsChanged &&
+        !workflowChanged &&
+        !backgroundTasksChanged &&
+        !providerStatusChanged &&
+        !layoutRelevantChanged &&
+        !statusChanged &&
+        !interactionChanged &&
+        !inputChanged
+    }
+
     /// 全量重置或快照同步时的变更集
     public static var fullSnapshot: ApplicationChangeSet {
         ApplicationChangeSet(

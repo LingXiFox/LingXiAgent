@@ -7,6 +7,7 @@ import LingXiTUIComponents
 public final class ApplicationTUI: Frontend {
     private enum UIEvent: Sendable {
         case input(TUIInputEvent)
+        case stateInvalidated
         case stateUpdate(ApplicationState)
         case applicationUpdate(ApplicationUpdate)
         case commandResult(TUITranscriptEntry)
@@ -223,15 +224,25 @@ public final class ApplicationTUI: Frontend {
         self.store = store
         commands = await store.availableCommands
 
-        let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self)
+        let (eventStream, eventContinuation) = AsyncStream.makeStream(of: UIEvent.self, bufferingPolicy: .bufferingNewest(256))
         uiEventContinuation = eventContinuation
 
-        let updates = Task { [store] in
+        let coalescer = FrontendUpdateCoalescer()
+
+        let updates = Task { [store, coalescer] in
             for await update in await store.updates {
-                eventContinuation.yield(.applicationUpdate(update))
+                await coalescer.ingest(update: update)
             }
+            await coalescer.finish()
         }
         defer { updates.cancel() }
+
+        let signalTask = Task { [coalescer, eventContinuation] in
+            for await _ in await coalescer.invalidationSignal {
+                eventContinuation.yield(.stateInvalidated)
+            }
+        }
+        defer { signalTask.cancel() }
         defer { actionTail?.cancel() }
         defer { referenceScanTask?.cancel() }
 
@@ -271,6 +282,28 @@ public final class ApplicationTUI: Frontend {
                     eventContinuation.finish()
                     break eventLoop
                 }
+            case .stateInvalidated:
+                guard let (state, changes, _) = await coalescer.drain() else { continue }
+                if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
+                    referenceScanTask?.cancel()
+                    referenceCandidates = []
+                    referenceScanTask = Task { [weak self, store] in
+                        let candidates = await store.workspaceReferenceCandidates()
+                        guard !Task.isCancelled else { return }
+                        self?.referenceCandidates = candidates
+                        self?.frameScheduler.markDirty(.content)
+                    }
+                }
+                if pendingChanges == nil {
+                    pendingChanges = changes
+                } else {
+                    pendingChanges?.merge(with: changes)
+                }
+                latestState = state
+                if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
+                    enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+                }
+                frameScheduler.markDirty(.content)
             case let .applicationUpdate(update):
                 let state = update.state
                 if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
