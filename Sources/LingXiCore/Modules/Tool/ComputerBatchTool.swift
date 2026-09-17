@@ -1,9 +1,6 @@
 import Foundation
 import LingXiProtocol
 import LingXiPlatform
-#if canImport(AppKit)
-import AppKit
-#endif
 
 /// 桌面计算机交互动作批处理工具 (computer_batch)
 /// 允许模型在一次轮次中一次性下发一连串动作指令（如：查找元素 -> 移动 -> 点击 -> 输入 -> 回车 -> 等待），
@@ -70,11 +67,10 @@ public struct ComputerBatchTool: ToolExecutor {
         let targetWindow = json["target_window"] as? String
         let bringToFront = (json["bring_to_front"] as? Bool) ?? false
 
-        #if os(macOS)
         // 自动从 intent_hint 或参数文本中推导目标应用，防止模型因漏传 target_app 误将前台终端自身作为目标
         if targetApp == nil && targetWindow == nil {
             let combinedHint = "\(intentHint ?? "") \(arguments)".lowercased()
-            let running = NSWorkspace.shared.runningApplications
+            let runningApps = (try? await DesktopEnvironment.makeCurrentPlatformDefault().applications?.listRunningApplications()) ?? []
             let ignoredNames: Set<String> = ["ghostty", "terminal", "iterm2", "alacritty", "lingxiagent", "lingxitui", "cursor", "code"]
             let commonAppMappings: [String: [String]] = [
                 "safari": ["safari", "safari 浏览器", "com.apple.safari"],
@@ -85,26 +81,26 @@ public struct ComputerBatchTool: ToolExecutor {
             ]
             for (key, aliases) in commonAppMappings {
                 if combinedHint.contains(key) || aliases.contains(where: { combinedHint.contains($0) }) {
-                    if let app = running.first(where: { a in
-                        let b = (a.bundleIdentifier ?? "").lowercased()
-                        let n = (a.localizedName ?? "").lowercased()
+                    if let app = runningApps.first(where: { a in
+                        let b = a.identifier.lowercased()
+                        let n = a.name.lowercased()
                         return aliases.contains(b) || aliases.contains(n) || aliases.contains(where: { b.contains($0) || n.contains($0) })
                     }) {
-                        targetApp = app.localizedName ?? key
+                        targetApp = app.name.isEmpty ? key : app.name
                         break
                     }
                 }
             }
             if targetApp == nil {
-                if let matchedApp = running.first(where: { app in
-                    guard let name = app.localizedName?.lowercased(), !name.isEmpty, !ignoredNames.contains(name) else { return false }
+                if let matchedApp = runningApps.first(where: { app in
+                    let name = app.name.lowercased()
+                    guard !name.isEmpty, !ignoredNames.contains(name) else { return false }
                     return combinedHint.contains(name)
                 }) {
-                    targetApp = matchedApp.localizedName
+                    targetApp = matchedApp.name
                 }
             }
         }
-        #endif
 
         let windowRelative = (json["window_relative"] as? Bool) ?? (targetApp != nil || targetWindow != nil)
 

@@ -1,8 +1,6 @@
 import Foundation
+import LingXiPlatform
 import LingXiProtocol
-#if canImport(Security)
-import Security
-#endif
 
 /// Legacy Keychain store preserved strictly for non-interactive read migration.
 public actor KeychainCredentialStore: CredentialStore {
@@ -13,31 +11,7 @@ public actor KeychainCredentialStore: CredentialStore {
     }
 
     public func secret(for reference: CredentialRef) async throws -> String? {
-        #if os(macOS)
-        guard ProcessInfo.processInfo.environment["LINGXI_DISABLE_KEYCHAIN"] != "1" else {
-            return nil
-        }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: reference.rawValue,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound || status == errSecInteractionNotAllowed {
-            return nil
-        }
-        guard status == errSecSuccess, let data = item as? Data else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-        #else
-        return nil
-        #endif
+        LingXiPlatform.secureStorage.readLegacyPlatformSecret(service: service, account: reference.rawValue)
     }
 
     public func setSecret(_ secret: String, for reference: CredentialRef) async throws {
@@ -45,14 +19,7 @@ public actor KeychainCredentialStore: CredentialStore {
     }
 
     public func removeSecret(for reference: CredentialRef) async throws {
-        #if os(macOS)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: reference.rawValue
-        ]
-        SecItemDelete(query as CFDictionary)
-        #endif
+        LingXiPlatform.secureStorage.deleteLegacyPlatformSecret(service: service, account: reference.rawValue)
     }
 }
 

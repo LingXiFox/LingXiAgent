@@ -35,5 +35,26 @@ public final class DarwinProcessAdapter: PlatformProcessProtocol, @unchecked Sen
         }
         _ = Darwin.kill(pid, sig)
     }
+
+    public func nonblockingDrain(handle: FileHandle, chunkSize: Int = 64 * 1024) -> Data {
+        handle.readabilityHandler = nil
+        let fd = handle.fileDescriptor
+        guard fd >= 0 else { return Data() }
+        let flags = fcntl(fd, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+        var accumulated = Data()
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        while true {
+            let bytesRead = Darwin.read(fd, &chunk, chunk.count)
+            if bytesRead > 0 {
+                accumulated.append(contentsOf: chunk[0..<bytesRead])
+            } else {
+                break
+            }
+        }
+        return accumulated
+    }
 }
 #endif

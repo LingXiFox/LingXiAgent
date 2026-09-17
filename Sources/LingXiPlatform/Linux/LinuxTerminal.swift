@@ -40,5 +40,52 @@ public final class LinuxTerminalAdapter: PlatformTerminalProtocol, @unchecked Se
         guard read(STDIN_FILENO, &byte, 1) == 1 else { return nil }
         return byte
     }
+
+    public func isInteractive() -> Bool {
+        #if canImport(Glibc)
+        return isatty(STDIN_FILENO) == 1
+        #else
+        return false
+        #endif
+    }
+
+    public func installSignalHandlers() {
+        #if canImport(Glibc)
+        signal(SIGINT) { _ in
+            var term = termios()
+            if tcgetattr(STDIN_FILENO, &term) == 0 {
+                term.c_lflag |= tcflag_t(ECHO | ICANON | ISIG)
+                _ = tcsetattr(STDIN_FILENO, TCSANOW, &term)
+            }
+            FileHandle.standardError.write(Data("\n".utf8))
+            _exit(130)
+        }
+        signal(SIGTERM) { _ in
+            _exit(143)
+        }
+        #endif
+    }
+
+    public func readSecretLine(prompt: String) -> String? {
+        FileHandle.standardError.write(Data(prompt.utf8))
+        #if canImport(Glibc)
+        if isatty(STDIN_FILENO) == 1 {
+            var original = termios()
+            if tcgetattr(STDIN_FILENO, &original) == 0 {
+                var raw = original
+                raw.c_lflag &= ~tcflag_t(ECHO)
+                raw.c_lflag |= tcflag_t(ISIG)
+                _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
+                defer {
+                    var restore = original
+                    _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &restore)
+                    FileHandle.standardError.write(Data("\n".utf8))
+                }
+                return readLine(strippingNewline: true)
+            }
+        }
+        #endif
+        return readLine(strippingNewline: true)
+    }
 }
 #endif

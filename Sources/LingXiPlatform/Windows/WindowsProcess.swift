@@ -28,10 +28,14 @@ public final class WindowsProcessAdapter: PlatformProcessProtocol, @unchecked Se
 
     public func terminateProcessTree(pid: Int32, force: Bool) {
         guard pid > 0 else { return }
-        // Windows 上使用 taskkill /F /T /PID 能够级联杀灭整棵子进程树
+        // Windows 上使用 taskkill /T /PID 能够级联杀灭整棵子进程树，force 为 true 时加入 /F 强制终止
         let taskkill = Process()
         taskkill.executableURL = URL(fileURLWithPath: "C:\\Windows\\System32\\taskkill.exe")
-        taskkill.arguments = ["/F", "/T", "/PID", String(pid)]
+        var arguments = ["/T", "/PID", String(pid)]
+        if force {
+            arguments.insert("/F", at: 0)
+        }
+        taskkill.arguments = arguments
         try? taskkill.run()
         taskkill.waitUntilExit()
     }

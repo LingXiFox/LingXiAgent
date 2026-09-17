@@ -35,4 +35,16 @@ public enum PathUtilities {
         }
         return path
     }
+
+    /// 跨平台判断路径是否为绝对路径（POSIX 以 / 开头，Windows 以盘符驱动器如 C:\ 或 UNC \\ 开头）
+    public static func isAbsolute(_ path: String) -> Bool {
+        if path.hasPrefix("/") || path.hasPrefix("\\\\") { return true }
+        if path.count >= 3 {
+            let chars = Array(path)
+            if chars[0].isLetter && chars[1] == ":" && (chars[2] == "\\" || chars[2] == "/") {
+                return true
+            }
+        }
+        return false
+    }
 }

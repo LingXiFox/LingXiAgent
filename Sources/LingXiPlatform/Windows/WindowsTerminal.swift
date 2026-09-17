@@ -46,10 +46,50 @@ public final class WindowsTerminalAdapter: PlatformTerminalProtocol, @unchecked 
     }
 
     public func readByte(timeoutMilliseconds: Int32) -> UInt8? {
-        // Windows 管道/输入流读取
+        let inHandle = GetStdHandle(STD_INPUT_HANDLE)
+        if inHandle != INVALID_HANDLE_VALUE {
+            let waitMs = timeoutMilliseconds < 0 ? INFINITE : DWORD(timeoutMilliseconds)
+            let waitResult = WaitForSingleObject(inHandle, waitMs)
+            guard waitResult == WAIT_OBJECT_0 else { return nil }
+            var buffer: UInt8 = 0
+            var bytesRead: DWORD = 0
+            if ReadFile(inHandle, &buffer, 1, &bytesRead, nil) && bytesRead == 1 {
+                return buffer
+            }
+            return nil
+        }
         let handle = FileHandle.standardInput
         guard let byte = handle.availableData.first else { return nil }
         return byte
+    }
+
+    public func isInteractive() -> Bool {
+        let inHandle = GetStdHandle(STD_INPUT_HANDLE)
+        guard inHandle != INVALID_HANDLE_VALUE else { return false }
+        var mode: DWORD = 0
+        return GetConsoleMode(inHandle, &mode)
+    }
+
+    public func installSignalHandlers() {
+        // Windows console Ctrl+C handler can be installed via SetConsoleCtrlHandler
+    }
+
+    public func readSecretLine(prompt: String) -> String? {
+        FileHandle.standardError.write(Data(prompt.utf8))
+        let inHandle = GetStdHandle(STD_INPUT_HANDLE)
+        if inHandle != INVALID_HANDLE_VALUE {
+            var mode: DWORD = 0
+            if GetConsoleMode(inHandle, &mode) {
+                let originalMode = mode
+                SetConsoleMode(inHandle, mode & ~DWORD(0x0004)) // disable ENABLE_ECHO_INPUT
+                defer {
+                    SetConsoleMode(inHandle, originalMode)
+                    FileHandle.standardError.write(Data("\n".utf8))
+                }
+                return readLine(strippingNewline: true)
+            }
+        }
+        return readLine(strippingNewline: true)
     }
 }
 #endif

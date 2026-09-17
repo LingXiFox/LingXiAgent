@@ -42,5 +42,44 @@ public final class DarwinSecureStorageAdapter: PlatformSecureStorageProtocol, @u
         }
         return ProcessInfo.processInfo.hostName
     }
+
+    public func readLegacyPlatformSecret(service: String, account: String) -> String? {
+        #if canImport(Security)
+        guard ProcessInfo.processInfo.environment["LINGXI_DISABLE_KEYCHAIN"] != "1" else {
+            return nil
+        }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound || status == errSecInteractionNotAllowed {
+            return nil
+        }
+        guard status == errSecSuccess, let data = item as? Data else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+        #else
+        return nil
+        #endif
+    }
+
+    public func deleteLegacyPlatformSecret(service: String, account: String) {
+        #if canImport(Security)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+        #endif
+    }
 }
 #endif

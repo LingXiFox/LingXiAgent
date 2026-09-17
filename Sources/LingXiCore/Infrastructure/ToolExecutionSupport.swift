@@ -2,9 +2,6 @@ import CryptoKit
 import Foundation
 import LingXiProtocol
 @_exported import LingXiPlatform
-#if os(macOS)
-import Darwin
-#endif
 
 /// 子进程只继承运行命令所需的环境，避免把宿主机凭据传给工具。
 public enum EnvironmentSanitizer {
@@ -239,25 +236,9 @@ final class ManagedToolProcess: @unchecked Sendable {
     }
 
     private func nonblockingDrain(handle: FileHandle, into buffer: ByteRingBuffer) {
-        handle.readabilityHandler = nil
-        let fd = handle.fileDescriptor
-        guard fd >= 0 else { return }
-        let flags = fcntl(fd, F_GETFL, 0)
-        if flags >= 0 {
-            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
-        }
-        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            #if os(macOS)
-            let bytesRead = Darwin.read(fd, &chunk, chunk.count)
-            #else
-            let bytesRead = Glibc.read(fd, &chunk, chunk.count)
-            #endif
-            if bytesRead > 0 {
-                buffer.append(Data(chunk[0..<bytesRead]))
-            } else {
-                break
-            }
+        let drained = LingXiPlatform.process.nonblockingDrain(handle: handle, chunkSize: 64 * 1024)
+        if !drained.isEmpty {
+            buffer.append(drained)
         }
     }
 

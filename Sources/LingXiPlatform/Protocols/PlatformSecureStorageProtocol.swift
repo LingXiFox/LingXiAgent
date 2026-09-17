@@ -13,4 +13,18 @@ public protocol PlatformSecureStorageProtocol: Sendable {
 
     /// 获取稳定的当前设备唯一指纹字符串（用于保险库本机绑定派生）
     func deviceFingerprint() -> String
+
+    /// 读取系统特定凭据库（如 macOS Keychain），用于向后兼容单向迁移
+    func readLegacyPlatformSecret(service: String, account: String) -> String?
+
+    /// 从系统特定凭据库删除凭据
+    func deleteLegacyPlatformSecret(service: String, account: String)
+}
+
+public extension PlatformSecureStorageProtocol {
+    func readLegacyPlatformSecret(service: String, account: String) -> String? {
+        nil
+    }
+
+    func deleteLegacyPlatformSecret(service: String, account: String) {}
 }

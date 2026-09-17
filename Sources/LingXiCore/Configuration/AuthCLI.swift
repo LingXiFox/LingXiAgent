@@ -1,27 +1,10 @@
 import Foundation
+import LingXiPlatform
 import LingXiProtocol
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 public enum AuthCLI {
     public static func installSignalHandlers() {
-        #if os(macOS) || os(Linux)
-        signal(SIGINT) { _ in
-            var term = termios()
-            if tcgetattr(STDIN_FILENO, &term) == 0 {
-                term.c_lflag |= tcflag_t(ECHO | ICANON | ISIG)
-                _ = tcsetattr(STDIN_FILENO, TCSANOW, &term)
-            }
-            FileHandle.standardError.write(Data("\n".utf8))
-            _exit(130)
-        }
-        signal(SIGTERM) { _ in
-            _exit(143)
-        }
-        #endif
+        LingXiPlatform.terminal.installSignalHandlers()
     }
 
     @Sendable public static func readPrompt(prompt: String) -> String? {
@@ -30,26 +13,7 @@ public enum AuthCLI {
     }
 
     @Sendable public static func readSecretWithoutEcho(prompt: String) -> String? {
-        FileHandle.standardError.write(Data(prompt.utf8))
-        #if os(macOS) || os(Linux)
-        if isatty(STDIN_FILENO) == 1 {
-            var original = termios()
-            if tcgetattr(STDIN_FILENO, &original) == 0 {
-                var raw = original
-                // Disable ECHO, but explicitly preserve ISIG (Ctrl+C generates SIGINT) and ICANON
-                raw.c_lflag &= ~tcflag_t(ECHO)
-                raw.c_lflag |= tcflag_t(ISIG)
-                _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
-                defer {
-                    var restore = original
-                    _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &restore)
-                    FileHandle.standardError.write(Data("\n".utf8))
-                }
-                return readLine(strippingNewline: true)
-            }
-        }
-        #endif
-        return readLine(strippingNewline: true)
+        LingXiPlatform.terminal.readSecretLine(prompt: prompt)
     }
 
     public static func run(

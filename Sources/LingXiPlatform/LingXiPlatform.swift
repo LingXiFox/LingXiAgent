@@ -71,4 +71,7 @@ public enum LingXiPlatform {
 
     /// 纯 ANSI 软渲染控制台兜底对象
     public static let fallbackTerminal = ANSIFallbackTerminal()
+
+    /// 跨平台路径与环境变量工具
+    public static let path = PathUtilities.self
 }
