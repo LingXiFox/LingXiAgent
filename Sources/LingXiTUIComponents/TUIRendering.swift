@@ -1246,6 +1246,20 @@ public final class TranscriptViewport {
         if followsBottom { scrollOffset = 0 }
     }
 
+    public func updateEntry(_ entry: TUITranscriptEntry) {
+        if let idx = entryIndexByID[entry.id], idx < entries.count, entries[idx].id == entry.id {
+            entries[idx] = entry
+            return
+        }
+        if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
+            entries[idx] = entry
+            entryIndexByID[entry.id] = idx
+        } else {
+            entryIndexByID[entry.id] = entries.count
+            entries.append(entry)
+        }
+    }
+
     public func scrollToBottom() {
         scrollOffset = 0
         followsBottom = true

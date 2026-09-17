@@ -11,6 +11,8 @@ public actor ApplicationStore {
     public private(set) var state: ApplicationState
 
     private var stateContinuations: [UUID: AsyncStream<ApplicationState>.Continuation] = [:]
+    private var updateContinuations: [UUID: AsyncStream<ApplicationUpdate>.Continuation] = [:]
+    private var currentRevision: UInt64 = 0
     private var runtimeEventsTask: Task<Void, Never>?
     private var connectionStateTask: Task<Void, Never>?
     private var sessionEventsTask: Task<Void, Never>?
@@ -105,9 +107,12 @@ public actor ApplicationStore {
         for cont in stateContinuations.values {
             cont.finish()
         }
+        for cont in updateContinuations.values {
+            cont.finish()
+        }
     }
 
-    // MARK: - 状态流订阅
+    // MARK: - 状态流订阅 (兼容保留)
     public var stateUpdates: AsyncStream<ApplicationState> {
         let id = UUID()
         return AsyncStream { continuation in
@@ -125,10 +130,42 @@ public actor ApplicationStore {
         stateContinuations.removeValue(forKey: id)
     }
 
-    private func notifyStateChanged() {
+    // MARK: - 增量变更流订阅 (Phase 4 推荐)
+    public var updates: AsyncStream<ApplicationUpdate> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            let initial = ApplicationUpdate(
+                revision: self.currentRevision,
+                state: self.state,
+                changes: .fullSnapshot
+            )
+            continuation.yield(initial)
+            self.updateContinuations[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { [weak self] in
+                    await self?.removeUpdateContinuation(id: id)
+                }
+            }
+        }
+    }
+
+    private func removeUpdateContinuation(id: UUID) {
+        updateContinuations.removeValue(forKey: id)
+    }
+
+    private func notifyUpdate(changes: ApplicationChangeSet) {
+        currentRevision &+= 1
+        let update = ApplicationUpdate(revision: currentRevision, state: state, changes: changes)
+        for cont in updateContinuations.values {
+            cont.yield(update)
+        }
         for cont in stateContinuations.values {
             cont.yield(state)
         }
+    }
+
+    private func notifyStateChanged() {
+        notifyUpdate(changes: .fullSnapshot)
     }
 
     // MARK: - 核心分发调度 (Dispatch)
@@ -314,14 +351,14 @@ public actor ApplicationStore {
 
         // MARK: 9. 内部事件驱动
         case let ._connectionStateChanged(conn):
-            RootReducer.reduce(state: &state, action: ._connectionStateChanged(conn))
+            let changes = RootReducer.reduce(state: &state, action: ._connectionStateChanged(conn))
             if conn.status == .connected {
                 await resyncAfterReconnect()
             }
-            notifyStateChanged()
+            notifyUpdate(changes: changes)
 
         case let ._runtimeEventReceived(event):
-            RootReducer.reduce(state: &state, action: ._runtimeEventReceived(event))
+            let changes = RootReducer.reduce(state: &state, action: ._runtimeEventReceived(event))
             switch event.payload {
             case .providerCatalogChanged, .modelCatalogChanged:
                 await refreshRuntimeBasics()
@@ -330,32 +367,32 @@ public actor ApplicationStore {
             default:
                 break
             }
-            notifyStateChanged()
+            notifyUpdate(changes: changes)
 
         case let ._sessionEventReceived(event):
-            RootReducer.reduce(state: &state, action: ._sessionEventReceived(event))
+            let changes = RootReducer.reduce(state: &state, action: ._sessionEventReceived(event))
             handleSubscribingStreamsIfNeeded(for: event)
-            notifyStateChanged()
+            notifyUpdate(changes: changes)
 
         case let ._streamFrameReceived(frame):
-            RootReducer.reduce(state: &state, action: ._streamFrameReceived(frame))
-            notifyStateChanged()
+            let changes = RootReducer.reduce(state: &state, action: ._streamFrameReceived(frame))
+            notifyUpdate(changes: changes)
 
         case let ._snapshotResynced(snapshot):
-            RootReducer.reduce(state: &state, action: ._snapshotResynced(snapshot))
-            notifyStateChanged()
+            let changes = RootReducer.reduce(state: &state, action: ._snapshotResynced(snapshot))
+            notifyUpdate(changes: changes)
 
         case let ._runtimeInfoResynced(info):
-            RootReducer.reduce(state: &state, action: ._runtimeInfoResynced(info))
-            notifyStateChanged()
+            let changes = RootReducer.reduce(state: &state, action: ._runtimeInfoResynced(info))
+            notifyUpdate(changes: changes)
 
         case let ._runtimeHealthResynced(health):
-            RootReducer.reduce(state: &state, action: ._runtimeHealthResynced(health))
-            notifyStateChanged()
+            let changes = RootReducer.reduce(state: &state, action: ._runtimeHealthResynced(health))
+            notifyUpdate(changes: changes)
 
         case let ._runtimeCapabilitiesResynced(caps):
-            RootReducer.reduce(state: &state, action: ._runtimeCapabilitiesResynced(caps))
-            notifyStateChanged()
+            let changes = RootReducer.reduce(state: &state, action: ._runtimeCapabilitiesResynced(caps))
+            notifyUpdate(changes: changes)
         }
     }
 

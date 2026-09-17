@@ -7,12 +7,14 @@ import LingXiClient
 public enum SessionReducer {
 
     // MARK: - Semantic Event 驱动
+    @discardableResult
     public static func reduce(
         state: inout SessionViewState,
         event: SessionEventEnvelope,
         connectionState: ConnectionState
-    ) {
+    ) -> ApplicationChangeSet {
         state.updatedAt = event.timestamp
+        var changes = ApplicationChangeSet()
 
         switch event.payload {
         // MARK: 1. Turn & Message
@@ -32,8 +34,9 @@ public enum SessionReducer {
             for opt in optNodes {
                 state.removeNode(id: opt.id)
             }
+            let userNodeID = TimelineNodeID.message(message.messageID)
             state.appendCommittedNode(TimelineNode(
-                id: .message(message.messageID),
+                id: userNodeID,
                 timestamp: message.createdAt,
                 kind: .message(MessageNode(
                     messageID: message.messageID,
@@ -44,6 +47,10 @@ public enum SessionReducer {
                     citations: message.attachments
                 ))
             ))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(userNodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: userNodeID, kind: .append))
+            changes.statusChanged = true
             if state.activeRootRunID != nil {
                 // 如果已有活动中的 Root Run，新 Turn 严格标明为 queued
                 if !state.queuedTurns.contains(snapshot.turnID) {
@@ -72,9 +79,13 @@ public enum SessionReducer {
                 isFinal: true
             )
             state.appendCommittedNode(TimelineNode(id: nodeID, timestamp: message.createdAt, kind: .message(msgNode)))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
 
         case let .assistantMessageStarted(messageID, streamID):
             state.messageIDByStream[streamID] = messageID
+            changes.statusChanged = true
             // Do not insert an empty assistant node. The first real text frame or
             // committed message determines its semantic position in the timeline.
 
@@ -96,6 +107,8 @@ public enum SessionReducer {
                 if let finalNode = state.node(for: targetID) {
                     state.appendCommittedNode(finalNode)
                 }
+                changes.transcriptNodesChanged.insert(targetID)
+                changes.nodeChanges.append(TimelineNodeChange(nodeID: targetID, kind: .finalize))
             } else {
                 // 幂等去重防御：若已存在同一 turn 或文本内容完全相同的 assistant 消息，则就地合并，杜绝历史事件翻倍导致的重复渲染
                 if let existingIndex = state.timelineNodes.lastIndex(where: { node in
@@ -115,6 +128,8 @@ public enum SessionReducer {
                             node.kind = .message(m)
                         }
                     }
+                    changes.transcriptNodesChanged.insert(existingID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: existingID, kind: .finalize))
                 } else {
                     let msgNode = MessageNode(
                         messageID: messageID,
@@ -124,8 +139,12 @@ public enum SessionReducer {
                         isFinal: true
                     )
                     state.appendCommittedNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .message(msgNode), modelStepID: modelStepID))
+                    changes.transcriptStructureChanged = true
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
                 }
             }
+            changes.statusChanged = true
 
         case let .turnCompleted(turnID, _):
             updateTurn(state: &state, turnID: turnID, status: .completed, completedAt: event.timestamp)
@@ -136,6 +155,7 @@ public enum SessionReducer {
             state.hasActiveError = false
             finalizeActiveTools(state: &state)
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
+            changes.statusChanged = true
 
         case let .turnFailed(turnID, error):
             updateTurn(state: &state, turnID: turnID, status: .failed, completedAt: event.timestamp)
@@ -148,6 +168,10 @@ public enum SessionReducer {
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
             let errNodeID = TimelineNodeID.error(error.id)
             state.appendNode(TimelineNode(id: errNodeID, timestamp: event.timestamp, kind: .error(ErrorNode(from: error))))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(errNodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: errNodeID, kind: .append))
+            changes.statusChanged = true
 
         // MARK: 2. Run
         case let .runCreated(snapshot):
@@ -163,6 +187,7 @@ public enum SessionReducer {
                     state.queuedTurns.append(snapshot.turnID)
                 }
             }
+            changes.statusChanged = true
 
         case let .runQueued(runID):
             let turnID = event.causal.turnID ?? state.runs[runID]?.turnID
@@ -175,6 +200,7 @@ public enum SessionReducer {
             if state.runs[runID] != nil {
                 updateRun(state: &state, runID: runID, status: .queued)
             }
+            changes.statusChanged = true
 
         case let .runStarted(runID):
             if state.runs[runID]?.parentRunID == nil,
@@ -188,12 +214,15 @@ public enum SessionReducer {
                     state.queuedTurns.removeAll { $0 == turnID }
                 }
             }
+            changes.statusChanged = true
 
         case let .runPaused(runID, _):
             updateRun(state: &state, runID: runID, status: .paused)
+            changes.statusChanged = true
 
         case let .runResumed(runID):
             updateRun(state: &state, runID: runID, status: .running)
+            changes.statusChanged = true
 
         case let .runCompleted(runID, terminalReason):
             let turnID = state.runs[runID]?.turnID
@@ -214,6 +243,10 @@ public enum SessionReducer {
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
             let termNodeID = TimelineNodeID.runTerminal(runID)
             state.appendNode(TimelineNode(id: termNodeID, timestamp: event.timestamp, kind: .runTerminal(RunTerminalNode(runID: runID, terminalReason: terminalReason))))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(termNodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: termNodeID, kind: .append))
+            changes.statusChanged = true
 
         case let .runFailed(runID, error):
             let turnID = state.runs[runID]?.turnID
@@ -237,6 +270,12 @@ public enum SessionReducer {
             state.appendNode(TimelineNode(id: termNodeID, timestamp: event.timestamp, kind: .runTerminal(RunTerminalNode(runID: runID, terminalReason: .runtimeFailure))))
             let errNodeID = TimelineNodeID.error(error.id)
             state.appendNode(TimelineNode(id: errNodeID, timestamp: event.timestamp, kind: .error(ErrorNode(from: error))))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(termNodeID)
+            changes.transcriptNodesChanged.insert(errNodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: termNodeID, kind: .append))
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: errNodeID, kind: .append))
+            changes.statusChanged = true
 
         case let .runCancelled(runID, _):
             let turnID = state.runs[runID]?.turnID
@@ -257,6 +296,10 @@ public enum SessionReducer {
             finalizeActiveThinking(state: &state, timestamp: event.timestamp)
             let termNodeID = TimelineNodeID.runTerminal(runID)
             state.appendNode(TimelineNode(id: termNodeID, timestamp: event.timestamp, kind: .runTerminal(RunTerminalNode(runID: runID, terminalReason: .userCancelled))))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(termNodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: termNodeID, kind: .append))
+            changes.statusChanged = true
 
         // MARK: 3. ModelStep & Thinking
         case let .modelStepStarted(stepID, visibleReasoningStreamID, _):
@@ -271,8 +314,13 @@ public enum SessionReducer {
             if state.thinkingNodes[stepID] == nil {
                 let thinking = ThinkingNode(stepID: stepID, title: "Thinking", isStreaming: true, startedAt: event.timestamp)
                 state.thinkingNodes[stepID] = thinking
-                state.appendNode(TimelineNode(id: TimelineNodeID.thinking(stepID), timestamp: event.timestamp, kind: .thinking(thinking), modelStepID: stepID))
+                let nodeID = TimelineNodeID.thinking(stepID)
+                state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .thinking(thinking), modelStepID: stepID))
+                changes.transcriptStructureChanged = true
+                changes.transcriptNodesChanged.insert(nodeID)
+                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
             }
+            changes.statusChanged = true
 
         case let .modelStepCompleted(stepID, _, metadata):
             convergeStaleTools(state: &state, beforeStepID: stepID)
@@ -290,6 +338,8 @@ public enum SessionReducer {
                 state.updateNode(id: nodeID) { node in
                     node.kind = .thinking(thinking)
                 }
+                changes.transcriptNodesChanged.insert(nodeID)
+                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .finalize))
             }
             if state.activeThinkingStepID == stepID {
                 state.activeThinkingStepID = nil
@@ -310,11 +360,14 @@ public enum SessionReducer {
                             m.isFinal = true
                             m.isStreaming = false
                             state.timelineNodes[idx].kind = .message(m)
+                            changes.transcriptNodesChanged.insert(state.timelineNodes[idx].id)
+                            changes.nodeChanges.append(TimelineNodeChange(nodeID: state.timelineNodes[idx].id, kind: .update))
                             break
                         }
                     }
                 }
             }
+            changes.statusChanged = true
 
         case let .modelStepFailed(stepID, error):
             if var thinking = state.thinkingNodes[stepID] {
@@ -325,6 +378,8 @@ public enum SessionReducer {
                 state.updateNode(id: nodeID) { node in
                     node.kind = .thinking(thinking)
                 }
+                changes.transcriptNodesChanged.insert(nodeID)
+                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .finalize))
             }
             if state.activeThinkingStepID == stepID {
                 state.activeThinkingStepID = nil
@@ -332,6 +387,10 @@ public enum SessionReducer {
             state.hasActiveError = true
             let errNodeID = TimelineNodeID.error(error.id)
             state.appendNode(TimelineNode(id: errNodeID, timestamp: event.timestamp, kind: .error(ErrorNode(from: error))))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(errNodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: errNodeID, kind: .append))
+            changes.statusChanged = true
 
         // MARK: 4. Tool Lifecycle
         case let .toolRequested(invocation):
@@ -359,6 +418,10 @@ public enum SessionReducer {
             }
             state.toolNodes[callID] = toolNode
             state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .tool(toolNode), modelStepID: modelStepID))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
+            changes.statusChanged = true
 
         case let .toolWaitingForPermission(callID, permissionID):
             let modelStepID = event.causal.modelStepID ?? state.toolNodes[callID]?.modelStepID
@@ -370,6 +433,9 @@ public enum SessionReducer {
             state.updateNode(id: nodeID) { node in
                 node.kind = .tool(tool)
             }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .toolScheduled(callID):
             let modelStepID = event.causal.modelStepID ?? state.toolNodes[callID]?.modelStepID
@@ -381,6 +447,9 @@ public enum SessionReducer {
             state.updateNode(id: nodeID) { node in
                 node.kind = .tool(tool)
             }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .toolRunning(callID, stdoutStreamID, stderrStreamID):
             if let stdoutStreamID {
@@ -399,6 +468,9 @@ public enum SessionReducer {
             state.updateNode(id: nodeID) { node in
                 node.kind = .tool(tool)
             }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .toolCompleted(callID, result, _, _):
             guard result.callID == callID else { break }
@@ -425,6 +497,9 @@ public enum SessionReducer {
             state.updateNode(id: nodeID) { node in
                 node.kind = .tool(tool)
             }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .toolFailed(callID, error, _, _):
             let modelStepID = event.causal.modelStepID ?? state.toolNodes[callID]?.modelStepID
@@ -439,6 +514,9 @@ public enum SessionReducer {
             state.updateNode(id: nodeID) { node in
                 node.kind = .tool(tool)
             }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .toolCancelled(callID, _, _):
             let modelStepID = event.causal.modelStepID ?? state.toolNodes[callID]?.modelStepID
@@ -450,10 +528,14 @@ public enum SessionReducer {
             state.updateNode(id: nodeID) { node in
                 node.kind = .tool(tool)
             }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .toolExecutionStateUnknown(callID):
             state.activeToolCallIDs.remove(callID)
             state.hasActiveError = true
+            changes.statusChanged = true
 
         // MARK: 5. HITL Interaction
         case let .interactionRequested(snapshot):
@@ -463,6 +545,11 @@ public enum SessionReducer {
             state.activeInteraction = snapshot
             let nodeID = TimelineNodeID.interaction(snapshot.interactionID)
             state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .interaction(InteractionNode(from: snapshot))))
+            changes.interactionChanged = true
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
+            changes.statusChanged = true
 
         case let .interactionResolved(interactionID, resolution):
             state.pendingInteractions.removeAll { $0.interactionID == interactionID }
@@ -475,6 +562,10 @@ public enum SessionReducer {
                     node.kind = .interaction(inter)
                 }
             }
+            changes.interactionChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         case let .interactionCancelled(interactionID):
             state.pendingInteractions.removeAll { $0.interactionID == interactionID }
@@ -486,6 +577,10 @@ public enum SessionReducer {
                     node.kind = .interaction(inter)
                 }
             }
+            changes.interactionChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+            changes.statusChanged = true
 
         // MARK: 6. Subagents
         case let .subagentCreated(runID, parentRunID):
@@ -494,6 +589,10 @@ public enum SessionReducer {
             state.subagents[runID] = subNode
             let nodeID = TimelineNodeID.subagent(runID)
             state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .subagent(subNode)))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
+            changes.statusChanged = true
 
         case let .subagentStateChanged(runID, status):
             if var subNode = state.subagents[runID] {
@@ -503,7 +602,10 @@ public enum SessionReducer {
                 state.updateNode(id: nodeID) { node in
                     node.kind = .subagent(subNode)
                 }
+                changes.transcriptNodesChanged.insert(nodeID)
+                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
             }
+            changes.statusChanged = true
 
         case let .subagentTerminal(runID, terminalReason):
             state.activeSubagentRunIDs.remove(runID)
@@ -515,20 +617,27 @@ public enum SessionReducer {
                 state.updateNode(id: nodeID) { node in
                     node.kind = .subagent(subNode)
                 }
+                changes.transcriptNodesChanged.insert(nodeID)
+                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
             }
+            changes.statusChanged = true
 
         // MARK: 7. Context
         case let .contextStateChanged(snapshot):
             let hasMessages = !state.timelineNodes.isEmpty || !state.turns.isEmpty
             state.contextState = mergeContextState(existing: state.contextState, incoming: snapshot, hasMessages: hasMessages)
             state.isPaging = false
+            changes.contextChanged = true
 
         case let .contextPolicyChanged(snapshot):
             state.contextPolicy = snapshot
+            changes.contextChanged = true
 
         case let .contextCompacted(snapshot):
             state.contextCompacted = snapshot
             state.isPaging = false
+            changes.contextChanged = true
+            changes.transcriptStructureChanged = true
 
         // MARK: 8. Provider Request
         case let .providerRequestStateChanged(requestID, pState, detail, statusCode):
@@ -536,6 +645,8 @@ public enum SessionReducer {
             state.activeProviderRequestState = pState
             state.activeProviderRequestDetail = detail
             state.activeProviderStatusCode = statusCode
+            changes.providerStatusChanged = true
+            changes.statusChanged = true
 
         case .unknown:
             break
@@ -543,15 +654,18 @@ public enum SessionReducer {
 
         // 重新投影高层产品状态
         state.recalculateStatus(connectionState: connectionState)
+        return changes
     }
 
     // MARK: - Stream Frame 驱动
+    @discardableResult
     public static func reduceStreamFrame(
         state: inout SessionViewState,
         frame: StreamFrame,
         connectionState: ConnectionState
-    ) {
-        guard let text = frame.textPayload, !text.isEmpty else { return }
+    ) -> ApplicationChangeSet {
+        guard let text = frame.textPayload, !text.isEmpty else { return ApplicationChangeSet() }
+        var changes = ApplicationChangeSet()
         switch frame.kind {
         case .assistantText:
             convergeAllActiveTools(state: &state)
@@ -573,6 +687,8 @@ public enum SessionReducer {
                     if let updated = state.node(for: nodeID) {
                         state.updateActiveCell(updated)
                     }
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
                 } else {
                     let newNode = TimelineNode(
                         id: nodeID,
@@ -586,6 +702,9 @@ public enum SessionReducer {
                         modelStepID: modelStepID
                     )
                     state.updateActiveCell(newNode)
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
+                    changes.transcriptStructureChanged = true
                 }
             }
 
@@ -604,6 +723,9 @@ public enum SessionReducer {
                 if state.node(for: nodeID) == nil {
                     let newNode = TimelineNode(id: nodeID, kind: .thinking(thinking), modelStepID: stepID)
                     state.updateActiveCell(newNode)
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
+                    changes.transcriptStructureChanged = true
                 } else {
                     state.updateNode(id: nodeID) { node in
                         node.kind = .thinking(thinking)
@@ -611,6 +733,8 @@ public enum SessionReducer {
                     if let updated = state.node(for: nodeID) {
                         state.updateActiveCell(updated)
                     }
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
                 }
             }
 
@@ -627,6 +751,8 @@ public enum SessionReducer {
                     if let updated = state.node(for: nodeID) {
                         state.updateActiveCell(updated)
                     }
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
                 }
             }
 
@@ -643,6 +769,8 @@ public enum SessionReducer {
                     if let updated = state.node(for: nodeID) {
                         state.updateActiveCell(updated)
                     }
+                    changes.transcriptNodesChanged.insert(nodeID)
+                    changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
                 }
             }
 
@@ -651,14 +779,16 @@ public enum SessionReducer {
         }
 
         state.recalculateStatus(connectionState: connectionState)
+        return changes
     }
 
     // MARK: - Snapshot Resync 重建
+    @discardableResult
     public static func reduceSnapshot(
         state: inout SessionViewState,
         snapshot: SessionSnapshot,
         connectionState: ConnectionState
-    ) {
+    ) -> ApplicationChangeSet {
         // Snapshot replaces every projection fact. Timeline is rebuilt only from the
         // snapshot's authoritative semantic activity window, never local timestamps.
         let effectiveEffort: ReasoningEffort
@@ -778,6 +908,7 @@ public enum SessionReducer {
         }
         state.updatedAt = snapshot.info.updatedAt
         state.recalculateStatus(connectionState: connectionState)
+        return ApplicationChangeSet.fullSnapshot
     }
 
     private static func updateRun(

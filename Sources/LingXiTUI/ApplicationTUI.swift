@@ -8,6 +8,7 @@ public final class ApplicationTUI: Frontend {
     private enum UIEvent: Sendable {
         case input(TUIInputEvent)
         case stateUpdate(ApplicationState)
+        case applicationUpdate(ApplicationUpdate)
         case commandResult(TUITranscriptEntry)
     }
 
@@ -59,6 +60,7 @@ public final class ApplicationTUI: Frontend {
     private let completionView = CompletionView()
     private var store: ApplicationStore?
     private var latestState = ApplicationState()
+    private var pendingChanges: ApplicationChangeSet?
     private var activeDisplayedSessionID: SessionID?
     private var commands: [ApplicationCommand] = []
     private var overlay: Overlay?
@@ -225,8 +227,8 @@ public final class ApplicationTUI: Frontend {
         uiEventContinuation = eventContinuation
 
         let updates = Task { [store] in
-            for await state in await store.stateUpdates {
-                eventContinuation.yield(.stateUpdate(state))
+            for await update in await store.updates {
+                eventContinuation.yield(.applicationUpdate(update))
             }
         }
         defer { updates.cancel() }
@@ -269,6 +271,28 @@ public final class ApplicationTUI: Frontend {
                     eventContinuation.finish()
                     break eventLoop
                 }
+            case let .applicationUpdate(update):
+                let state = update.state
+                if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
+                    referenceScanTask?.cancel()
+                    referenceCandidates = []
+                    referenceScanTask = Task { [weak self, store] in
+                        let candidates = await store.workspaceReferenceCandidates()
+                        guard !Task.isCancelled else { return }
+                        self?.referenceCandidates = candidates
+                        self?.frameScheduler.markDirty(.content)
+                    }
+                }
+                if pendingChanges == nil {
+                    pendingChanges = update.changes
+                } else {
+                    pendingChanges?.merge(with: update.changes)
+                }
+                latestState = state
+                if options.isYoloMode, let interaction = state.activeInteraction, interaction.kind == .permission {
+                    enqueue { await store.dispatch(.grantPermission(interactionID: interaction.interactionID, decision: .allow)) }
+                }
+                frameScheduler.markDirty(.content)
             case let .stateUpdate(state):
                 if latestState.currentWorkspace?.rootPath != state.currentWorkspace?.rootPath {
                     referenceScanTask?.cancel()
@@ -2140,6 +2164,36 @@ public final class ApplicationTUI: Frontend {
         lastRenderedNodeCount = nodes.count
     }
 
+    private func refreshTranscriptIncremental(_ state: ApplicationState, changedNodes: Set<TimelineNodeID>) {
+        let transcriptProjStart = ContinuousClock.now
+        guard let session = state.activeSessionState else { return }
+        let isSessionIdle = !isActive(state)
+        let lastAssistantNodeID: TimelineNodeID? = session.timelineNodes.reversed().first(where: { node in
+            if case let .message(msg) = node.kind, msg.role == .assistant {
+                return true
+            }
+            return false
+        })?.id
+
+        for nodeID in changedNodes {
+            guard let node = session.node(for: nodeID) else { continue }
+            let isTerminalAssistant = isSessionIdle && (node.id == lastAssistantNodeID)
+            if let rendered = renderEntry(node, isTerminalAssistant: isTerminalAssistant) {
+                view.transcript.updateEntry(rendered)
+            }
+        }
+
+        if view.transcript.followsBottom {
+            view.transcript.scrollToBottom()
+        }
+
+        if TUIPerformanceMetrics.shared.isEnabled {
+            let transcriptNs = TUIPerformanceMetrics.durationNs(from: transcriptProjStart)
+            TUIPerformanceMetrics.shared.recordTranscriptProjection(durationNs: transcriptNs)
+        }
+        lastRenderedNodeCount = session.timelineNodes.count
+    }
+
     private func refreshView(_ state: ApplicationState) {
         let refreshStart = ContinuousClock.now
         let preferences = UserPreferencesStore.shared.load()
@@ -2150,10 +2204,30 @@ public final class ApplicationTUI: Frontend {
         }
         animationNow = animationClock.now
 
+        let changes = pendingChanges
+        pendingChanges = nil
+
         refreshSessionIdentityIfNeeded(state)
         refreshInteraction(state)
         refreshStatus(state)
-        refreshTranscript(state)
+
+        let canIncrementalTranscript: Bool = {
+            guard let changes = changes else { return false }
+            guard !changes.sessionChanged,
+                  !changes.transcriptStructureChanged,
+                  !changes.transcriptNodesChanged.isEmpty,
+                  commandEntries.isEmpty,
+                  !view.transcript.entries.isEmpty else {
+                return false
+            }
+            return true
+        }()
+
+        if canIncrementalTranscript, let changes = changes {
+            refreshTranscriptIncremental(state, changedNodes: changes.transcriptNodesChanged)
+        } else {
+            refreshTranscript(state)
+        }
 
         let isHero = refreshHero(state)
         if !isHero {
@@ -2171,7 +2245,7 @@ public final class ApplicationTUI: Frontend {
             let refreshTotalNs = TUIPerformanceMetrics.durationNs(from: refreshStart)
             TUIPerformanceMetrics.shared.recordRefreshViewTotal(durationNs: refreshTotalNs)
             TUIPerformanceMetrics.shared.recordRefresh(
-                isFull: true,
+                isFull: !canIncrementalTranscript,
                 nodesCount: state.activeSessionState?.timelineNodes.count ?? 0,
                 entriesCount: view.transcript.entries.count
             )
@@ -4175,7 +4249,10 @@ public final class ApplicationTUI: Frontend {
 
 #if DEBUG
 extension ApplicationTUI {
-    public func refreshViewForTesting(_ state: ApplicationState) {
+    public func refreshViewForTesting(_ state: ApplicationState, changes: ApplicationChangeSet? = nil) {
+        if let changes {
+            self.pendingChanges = changes
+        }
         refreshView(state)
     }
 }

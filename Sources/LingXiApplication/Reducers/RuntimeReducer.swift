@@ -4,16 +4,20 @@ import LingXiClient
 
 /// Runtime 全局语义事件与快照归纳器。
 public enum RuntimeReducer {
+    @discardableResult
     public static func reduce(
         state: inout ApplicationState,
         event: RuntimeEventEnvelope
-    ) {
+    ) -> ApplicationChangeSet {
+        var changes = ApplicationChangeSet()
         switch event.payload {
         case let .runtimeHealthChanged(health):
             state.runtimeHealth = health
+            changes.statusChanged = true
 
         case let .runtimeCapabilitiesChanged(capabilities):
             state.runtimeCapabilities = capabilities
+            changes.statusChanged = true
 
         case let .sessionCreated(summary):
             if let index = state.sessionCatalog.firstIndex(where: { $0.sessionID == summary.sessionID }) {
@@ -21,6 +25,7 @@ public enum RuntimeReducer {
             } else {
                 state.sessionCatalog.append(summary)
             }
+            changes.sessionChanged = true
 
         case let .sessionUpdated(summary):
             if let index = state.sessionCatalog.firstIndex(where: { $0.sessionID == summary.sessionID }) {
@@ -28,25 +33,30 @@ public enum RuntimeReducer {
             } else {
                 state.sessionCatalog.append(summary)
             }
+            changes.sessionChanged = true
 
         case let .sessionDeleted(sessionID):
             state.sessionCatalog.removeAll { $0.sessionID == sessionID }
             if state.activeSessionID == sessionID {
                 state.activeSessionID = nil
                 state.activeSessionState = nil
+                changes.sessionChanged = true
+                changes.transcriptStructureChanged = true
             }
 
         case .providerCatalogChanged:
-            break
+            changes.providerStatusChanged = true
 
         case let .providerStatusChanged(pStatus):
             state.providerStatus = pStatus
+            changes.providerStatusChanged = true
+            changes.statusChanged = true
 
         case .modelCatalogChanged:
-            break
+            changes.providerStatusChanged = true
 
         case .extensionCatalogChanged:
-            break
+            changes.extensionsChanged = true
 
         case let .extensionStatusChanged(extStatus):
             if let index = state.extensions.firstIndex(where: { $0.id == extStatus.extensionID }) {
@@ -60,14 +70,16 @@ public enum RuntimeReducer {
                     lifecycleState: extStatus.state
                 )
             }
+            changes.extensionsChanged = true
 
         case .globalConfigurationChanged:
-            break
+            changes.layoutRelevantChanged = true
 
         case .unknown:
             break
         }
 
         state.recalculateStatus()
+        return changes
     }
 }
