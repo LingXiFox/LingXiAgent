@@ -275,18 +275,21 @@ public struct ActionBatchResult: Sendable, Codable, Equatable {
     public let succeeded: Bool
     public let failureReason: String?
     public let finalObservationID: ObservationID?
+    public let stepDurationsMs: [Double]
 
     public init(
         batchID: UUID,
         completedStepCount: Int,
         succeeded: Bool,
         failureReason: String? = nil,
-        finalObservationID: ObservationID? = nil
+        finalObservationID: ObservationID? = nil,
+        stepDurationsMs: [Double] = []
     ) {
         self.batchID = batchID
         self.completedStepCount = completedStepCount
         self.succeeded = succeeded
         self.failureReason = failureReason
         self.finalObservationID = finalObservationID
+        self.stepDurationsMs = stepDurationsMs
     }
 }

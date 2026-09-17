@@ -103,6 +103,13 @@ public final class DarwinInputBackend: InputBackend, @unchecked Sendable {
             }
 
         case .scroll(let deltaX, let deltaY):
+            // 确保物理/虚拟指针移至目标坐标再触发滚动
+            await MainActor.run {
+                DarwinVirtualPointerOverlay.shared.move(to: event.position, duration: 0.15, animated: false)
+            }
+            if let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
+                moveEvent.post(tap: .cghidEventTap)
+            }
             if let scrollEvent = CGEvent(
                 scrollWheelEvent2Source: nil,
                 units: .pixel,
@@ -116,29 +123,38 @@ public final class DarwinInputBackend: InputBackend, @unchecked Sendable {
         }
     }
 
+    private var currentModifiers: CGEventFlags = CGEventFlags()
+
     public func injectKeyboard(event: KeyboardInputEvent) async throws {
         try checkAccessibilityPermission()
 
         switch event.kind {
         case .keyPress(let keyName):
-            let keyCode = resolveKeyCode(for: keyName)
+            guard let keyCode = resolveKeyCode(for: keyName) else {
+                throw ActionExecutionError.inputInjectionFailed(reason: "Unknown or unsupported key: '\(keyName)'")
+            }
             if let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true) {
+                down.flags.formUnion(currentModifiers)
                 down.post(tap: .cghidEventTap)
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
             if let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                up.flags.formUnion(currentModifiers)
                 up.post(tap: .cghidEventTap)
             }
 
         case .text(let string):
-            for char in string.utf16 {
-                var codeUnit = char
+            // 按 Extended Grapheme Cluster 粒度一次性提交 UTF-16 缓冲区，绝不拆分 Emoji/非 BMP 字符的 surrogate pairs
+            for character in string {
+                var utf16Array = Array(character.utf16)
                 if let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) {
-                    down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &codeUnit)
+                    down.flags.formUnion(currentModifiers)
+                    down.keyboardSetUnicodeString(stringLength: utf16Array.count, unicodeString: &utf16Array)
                     down.post(tap: .cghidEventTap)
                 }
                 if let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
-                    up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &codeUnit)
+                    up.flags.formUnion(currentModifiers)
+                    up.keyboardSetUnicodeString(stringLength: utf16Array.count, unicodeString: &utf16Array)
                     up.post(tap: .cghidEventTap)
                 }
             }
@@ -149,6 +165,7 @@ public final class DarwinInputBackend: InputBackend, @unchecked Sendable {
             if modifiers.contains(.shift) { flags.insert(.maskShift) }
             if modifiers.contains(.alt) { flags.insert(.maskAlternate) }
             if modifiers.contains(.control) { flags.insert(.maskControl) }
+            self.currentModifiers = flags
 
             if let event = CGEvent(source: nil) {
                 event.flags = flags
@@ -178,6 +195,7 @@ public final class DarwinInputBackend: InputBackend, @unchecked Sendable {
         }
 
         // 2. 清空所有键盘修饰键状态 (Command / Shift / Option / Control)
+        self.currentModifiers = CGEventFlags()
         if let clearFlags = CGEvent(source: nil) {
             clearFlags.flags = CGEventFlags(rawValue: 0)
             clearFlags.post(tap: .cghidEventTap)
@@ -189,8 +207,9 @@ public final class DarwinInputBackend: InputBackend, @unchecked Sendable {
         }
     }
 
-    private func resolveKeyCode(for key: String) -> CGKeyCode {
-        switch key.lowercased() {
+    private func resolveKeyCode(for key: String) -> CGKeyCode? {
+        let normalized = key.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        switch normalized {
         case "return", "enter": return 0x24
         case "tab": return 0x30
         case "space": return 0x31
@@ -208,7 +227,59 @@ public final class DarwinInputBackend: InputBackend, @unchecked Sendable {
         case "right", "arrowright": return 0x7C
         case "down", "arrowdown": return 0x7D
         case "up", "arrowup": return 0x7E
-        default: return 0x00 // Default to key 'A'
+        // 字母键映射 (macOS ANSI Keycodes)
+        case "a": return 0x00
+        case "b": return 0x0B
+        case "c": return 0x08
+        case "d": return 0x02
+        case "e": return 0x0E
+        case "f": return 0x03
+        case "g": return 0x05
+        case "h": return 0x04
+        case "i": return 0x22
+        case "j": return 0x26
+        case "k": return 0x28
+        case "l": return 0x25
+        case "m": return 0x2E
+        case "n": return 0x2D
+        case "o": return 0x1F
+        case "p": return 0x23
+        case "q": return 0x0C
+        case "r": return 0x0F
+        case "s": return 0x01
+        case "t": return 0x11
+        case "u": return 0x20
+        case "v": return 0x09
+        case "w": return 0x0D
+        case "x": return 0x07
+        case "y": return 0x10
+        case "z": return 0x06
+        // 数字键映射
+        case "0": return 0x1D
+        case "1": return 0x12
+        case "2": return 0x13
+        case "3": return 0x14
+        case "4": return 0x15
+        case "5": return 0x17
+        case "6": return 0x16
+        case "7": return 0x1A
+        case "8": return 0x1C
+        case "9": return 0x19
+        // 功能键
+        case "f1": return 0x7A
+        case "f2": return 0x78
+        case "f3": return 0x63
+        case "f4": return 0x76
+        case "f5": return 0x60
+        case "f6": return 0x61
+        case "f7": return 0x62
+        case "f8": return 0x64
+        case "f9": return 0x65
+        case "f10": return 0x6D
+        case "f11": return 0x67
+        case "f12": return 0x6F
+        default:
+            return nil
         }
     }
 }

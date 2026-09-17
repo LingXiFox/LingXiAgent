@@ -90,18 +90,38 @@ public struct ActionBatchExecutor: Sendable {
                         )
                     )
                 }
-                guard currentObservation.elements[ref] != nil else {
-                    throw InteractionError.staleReference(.elementDisappeared(ref: ref))
+                let isWaitingForAppearance: Bool = {
+                    if case let .desktop(.primitive(.wait(condition))) = action,
+                       case .elementVisible = condition { return true }
+                    if case let .browser(.primitive(.wait(condition))) = action,
+                       case .elementVisible = condition { return true }
+                    return false
+                }()
+                if !isWaitingForAppearance {
+                    guard currentObservation.elements[ref] != nil else {
+                        throw InteractionError.staleReference(.elementDisappeared(ref: ref))
+                    }
                 }
             }
 
-            // 检查对应能力是否支持
+            // 检查对应能力是否支持（严密拦截 unsupported / requiresAuthorization / temporarilyUnavailable）
             switch action {
             case .desktop, .browser(.primitive(.click)), .browser(.primitive(.type)), .browser(.primitive(.hover)), .browser(.primitive(.keyPress)), .browser(.primitive(.drag)):
-                if case let .unsupported(reason) = snapshot.input {
+                switch snapshot.input {
+                case let .unsupported(reason):
                     throw InteractionError.capability(
                         .featureUnsupported(feature: "InputInjection", reason: reason)
                     )
+                case let .requiresAuthorization(subsystem):
+                    throw InteractionError.systemAuthorization(
+                        .denied(subsystem: subsystem, guidance: "Grant \(subsystem) permission in System Settings")
+                    )
+                case let .temporarilyUnavailable(reason):
+                    throw InteractionError.capability(
+                        .featureUnsupported(feature: "InputInjection", reason: "Input injection temporarily unavailable: \(reason)")
+                    )
+                default:
+                    break
                 }
             default:
                 break
@@ -121,8 +141,9 @@ public struct ActionBatchExecutor: Sendable {
             }
         }
 
-        // 4. 顺序执行动作流水线
+        // 4. 顺序执行动作流水线（高精度记录每一步真实耗时，杜绝伪造平均值）
         var completedCount = 0
+        var stepDurationsMs: [Double] = []
 
         for (index, action) in batch.actions.enumerated() {
             // 取消检测
@@ -136,21 +157,27 @@ public struct ActionBatchExecutor: Sendable {
                 currentAction: action
             ))
 
+            let stepStart = ContinuousClock().now
             do {
                 try await executeSingleAction(
                     action,
                     environment: environment,
                     observation: currentObservation
                 )
+                let stepElapsedMs = Double(stepStart.duration(to: ContinuousClock().now).components.attoseconds) / 1_000_000_000_000_000.0
+                stepDurationsMs.append(stepElapsedMs)
                 completedCount += 1
             } catch {
+                let stepElapsedMs = Double(stepStart.duration(to: ContinuousClock().now).components.attoseconds) / 1_000_000_000_000_000.0
+                stepDurationsMs.append(stepElapsedMs)
                 if batch.stopOnFailure {
                     return ActionBatchResult(
                         batchID: batch.id,
                         completedStepCount: completedCount,
                         succeeded: false,
                         failureReason: "\(error)",
-                        finalObservationID: currentObservation.id
+                        finalObservationID: currentObservation.id,
+                        stepDurationsMs: stepDurationsMs
                     )
                 }
             }
@@ -161,7 +188,8 @@ public struct ActionBatchExecutor: Sendable {
             completedStepCount: completedCount,
             succeeded: completedCount == batch.actions.count,
             failureReason: nil,
-            finalObservationID: currentObservation.id
+            finalObservationID: currentObservation.id,
+            stepDurationsMs: stepDurationsMs
         )
     }
 
@@ -305,11 +333,78 @@ public struct ActionBatchExecutor: Sendable {
             switch condition {
             case let .duration(ms):
                 try await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+
             case let .stable(timeoutMs):
-                // 默认微等待达到稳定状态
-                try await Task.sleep(nanoseconds: min(UInt64(timeoutMs), 50) * 1_000_000)
-            case .elementVisible, .elementGone:
-                break
+                // 真正的观测稳定检测：在 timeoutMs 内轮询无障碍/窗口状态，确认连续未发生变动
+                let stableClock = ContinuousClock()
+                let deadline = stableClock.now + .milliseconds(max(10, timeoutMs))
+                var previousCount = observation.elements.count
+                var consecutiveStableRounds = 0
+                while stableClock.now < deadline {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                    if let a11y = environment.accessibility {
+                        let currentTree = (try? await a11y.fetchTree(scope: .activeWindow)) ?? []
+                        if currentTree.count == previousCount {
+                            consecutiveStableRounds += 1
+                            if consecutiveStableRounds >= 2 {
+                                break // 稳定状态确认
+                            }
+                        } else {
+                            previousCount = currentTree.count
+                            consecutiveStableRounds = 0
+                        }
+                    } else {
+                        break
+                    }
+                }
+
+            case let .elementVisible(ref, timeoutMs):
+                // 真实轮询等待目标元素出现/可见，超时必须硬性抛错，绝不假动作成功
+                let visibleClock = ContinuousClock()
+                let deadline = visibleClock.now + .milliseconds(max(10, timeoutMs))
+                var isVisible = false
+                while visibleClock.now < deadline {
+                    if let a11y = environment.accessibility {
+                        let tree = (try? await a11y.fetchTree(scope: .activeWindow)) ?? []
+                        if tree.contains(where: { $0.id == String(ref.index) || $0.name == ref.scopeID }) {
+                            isVisible = true
+                            break
+                        }
+                    } else if observation.elements[ref] != nil {
+                        isVisible = true
+                        break
+                    }
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                }
+                guard isVisible else {
+                    throw InteractionError.timeout(
+                        .conditionNotMet(condition: condition, elapsedMs: timeoutMs)
+                    )
+                }
+
+            case let .elementGone(ref, timeoutMs):
+                // 真实轮询等待目标元素消失，超时必须硬性抛错，绝不假动作成功
+                let goneClock = ContinuousClock()
+                let deadline = goneClock.now + .milliseconds(max(10, timeoutMs))
+                var isGone = false
+                while goneClock.now < deadline {
+                    if let a11y = environment.accessibility {
+                        let tree = (try? await a11y.fetchTree(scope: .activeWindow)) ?? []
+                        if !tree.contains(where: { $0.id == String(ref.index) || $0.name == ref.scopeID }) {
+                            isGone = true
+                            break
+                        }
+                    } else if observation.elements[ref] == nil {
+                        isGone = true
+                        break
+                    }
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                }
+                guard isGone else {
+                    throw InteractionError.timeout(
+                        .conditionNotMet(condition: condition, elapsedMs: timeoutMs)
+                    )
+                }
             }
         }
     }

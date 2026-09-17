@@ -25,12 +25,12 @@ public final class LinuxCapabilityProbe: CapabilityProbing, @unchecked Sendable 
 
         let desktopType = hasWayland ? "Wayland" : "X11"
         return HostCapabilitySnapshot(
-            capture: .temporarilyUnavailable(reason: "\(desktopType) ScreenCapture requires Portal/PipeWire daemon"),
-            accessibility: .temporarilyUnavailable(reason: "AT-SPI2 accessibility daemon not connected"),
-            input: .temporarilyUnavailable(reason: "\(desktopType) input injection requires libei / XTest"),
-            windowManagement: .available,
-            applicationManagement: .available,
-            clipboard: .available
+            capture: .unsupported(reason: "\(desktopType) ScreenCapture requires Portal/PipeWire daemon (stub backend not implemented)"),
+            accessibility: .unsupported(reason: "AT-SPI2 accessibility daemon not connected (stub backend not implemented)"),
+            input: .unsupported(reason: "\(desktopType) input injection requires libei / XTest (stub backend not implemented)"),
+            windowManagement: .unsupported(reason: "X11/Wayland window management stub: not implemented"),
+            applicationManagement: .unsupported(reason: "Linux application management stub: not implemented"),
+            clipboard: .unsupported(reason: "Linux clipboard stub: not implemented")
         )
     }
 }
@@ -65,21 +65,31 @@ public final class LinuxStubInputBackend: InputBackend, @unchecked Sendable {
 public final class LinuxStubWindowBackend: WindowBackend, @unchecked Sendable {
     public init() {}
     public func listWindows() async throws -> [WindowInfo] { [] }
-    public func focusWindow(id: String) async throws {}
-    public func setWindowBounds(id: String, bounds: CoordinateRect) async throws {}
+    public func focusWindow(id: String) async throws {
+        throw CapabilityError.featureUnsupported(feature: "LinuxWindowManagement", reason: "Linux focusWindow not implemented")
+    }
+    public func setWindowBounds(id: String, bounds: CoordinateRect) async throws {
+        throw CapabilityError.featureUnsupported(feature: "LinuxWindowManagement", reason: "Linux setWindowBounds not implemented")
+    }
 }
 
 public final class LinuxStubApplicationBackend: ApplicationBackend, @unchecked Sendable {
     public init() {}
     public func listRunningApplications() async throws -> [ApplicationInfo] { [] }
-    public func launchApplication(identifier: String) async throws -> Int32? { nil }
-    public func terminateApplication(identifier: String) async throws {}
+    public func launchApplication(identifier: String) async throws -> Int32? {
+        throw CapabilityError.featureUnsupported(feature: "LinuxApplicationManagement", reason: "Linux launchApplication not implemented")
+    }
+    public func terminateApplication(identifier: String) async throws {
+        throw CapabilityError.featureUnsupported(feature: "LinuxApplicationManagement", reason: "Linux terminateApplication not implemented")
+    }
 }
 
 public final class LinuxStubClipboardBackend: ClipboardBackend, @unchecked Sendable {
     public init() {}
     public func readText() async throws -> String? { nil }
-    public func writeText(_ text: String) async throws {}
+    public func writeText(_ text: String) async throws {
+        throw CapabilityError.featureUnsupported(feature: "LinuxClipboard", reason: "Linux clipboard not implemented")
+    }
 }
 
 public extension DesktopEnvironment {

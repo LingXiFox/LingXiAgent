@@ -76,11 +76,28 @@ public final class DarwinCaptureBackend: CaptureBackend, @unchecked Sendable {
             throw ActionExecutionError.inputInjectionFailed(reason: "Failed to finalize image destination")
         }
 
+        let dynamicScaleFactor: Double = {
+            if let mode = CGDisplayCopyDisplayMode(displayIDVal) {
+                let pixelW = mode.pixelWidth
+                let logW = mode.width
+                if logW > 0 {
+                    return Double(pixelW) / Double(logW)
+                }
+            }
+            let screens = NSScreen.screens
+            if let screen = screens.first(where: {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayIDVal
+            }) {
+                return Double(screen.backingScaleFactor)
+            }
+            return 2.0
+        }()
+
         return CapturedFrame(
             data: mutableData as Data,
             pixelWidth: finalImage.width,
             pixelHeight: finalImage.height,
-            scaleFactor: 2.0 // macOS Retina 常见缩放比
+            scaleFactor: dynamicScaleFactor
         )
     }
 }

@@ -18,6 +18,13 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
             let windowID = windowIDNum.stringValue
             let title = info[kCGWindowName as String] as? String
             let ownerName = info[kCGWindowOwnerName as String] as? String
+            let pidNum = info[kCGWindowOwnerPID as String] as? NSNumber
+            let bundleID: String? = {
+                if let pid = pidNum?.int32Value, let app = NSRunningApplication(processIdentifier: pid), let bid = app.bundleIdentifier {
+                    return bid
+                }
+                return ownerName
+            }()
             let boundsDict = info[kCGWindowBounds as String] as? [String: Any] ?? [:]
 
             let x = (boundsDict["X"] as? NSNumber)?.doubleValue ?? 0
@@ -34,7 +41,7 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
             results.append(WindowInfo(
                 id: windowID,
                 title: title,
-                bundleIdentifier: ownerName,
+                bundleIdentifier: bundleID,
                 bounds: rect,
                 isMinimized: false
             ))
@@ -125,8 +132,40 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
     }
 
     public func setWindowBounds(id: String, bounds: CoordinateRect) async throws {
-        // 在 macOS 原生无障碍下，窗口 bounds 可通过 AXUIElement 修改
-        // 若无足够权限，此接口静默忽略或在 Phase 2 原型中占位
+        guard let winID = UInt32(id) else {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Invalid window ID: \(id)")
+        }
+        let options: CGWindowListOption = [.optionIncludingWindow]
+        guard let infoList = CGWindowListCopyWindowInfo(options, winID) as? [[String: Any]],
+              let first = infoList.first,
+              let pidNum = first[kCGWindowOwnerPID as String] as? NSNumber else {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Window \(id) not found")
+        }
+
+        let pid = pidNum.int32Value
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsVal: AnyObject?
+        let copyErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsVal)
+        guard copyErr == .success, let axWindows = windowsVal as? [AXUIElement], !axWindows.isEmpty else {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to access AXWindows for PID \(pid) (AXError: \(copyErr.rawValue))")
+        }
+
+        let targetAXWindow = axWindows.first!
+        var pos = CGPoint(x: bounds.origin.x, y: bounds.origin.y)
+        guard let posVal = AXValueCreate(.cgPoint, &pos) else {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to create AXValue for position")
+        }
+        let posErr = AXUIElementSetAttributeValue(targetAXWindow, kAXPositionAttribute as CFString, posVal)
+
+        var size = CGSize(width: bounds.width, height: bounds.height)
+        guard let sizeVal = AXValueCreate(.cgSize, &size) else {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to create AXValue for size")
+        }
+        let sizeErr = AXUIElementSetAttributeValue(targetAXWindow, kAXSizeAttribute as CFString, sizeVal)
+
+        if posErr != .success && sizeErr != .success {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to set window bounds: posErr=\(posErr.rawValue), sizeErr=\(sizeErr.rawValue)")
+        }
     }
 }
 #endif

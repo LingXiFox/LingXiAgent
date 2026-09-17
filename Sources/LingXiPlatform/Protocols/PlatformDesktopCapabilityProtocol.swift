@@ -232,6 +232,7 @@ public actor DesktopEnvironment {
         self.applications = applications
         self.clipboard = clipboard
         self.probe = probe
+        self.isSnapshotStale = (initialSnapshot == nil)
         self.currentSnapshot = initialSnapshot ?? HostCapabilitySnapshot(
             capture: .temporarilyUnavailable(reason: "Uninitialized"),
             accessibility: .temporarilyUnavailable(reason: "Uninitialized"),

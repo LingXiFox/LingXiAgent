@@ -1,6 +1,10 @@
 import Foundation
 import LingXiProtocol
 import LingXiPlatform
+#if os(macOS)
+import Cocoa
+import CoreGraphics
+#endif
 
 /// 桌面计算机交互动作批处理工具 (computer_batch)
 /// 允许模型在一次轮次中一次性下发一连串动作指令（如：查找元素 -> 移动 -> 点击 -> 输入 -> 回车 -> 等待），
@@ -147,6 +151,25 @@ public struct ComputerBatchTool: ToolExecutor {
         let winOriginX = (windowRelative ? attachedWindow?.bounds.origin.x : 0.0) ?? 0.0
         let winOriginY = (windowRelative ? attachedWindow?.bounds.origin.y : 0.0) ?? 0.0
 
+        let validActionTypes: Set<String> = [
+            "click", "click_element", "type", "key", "keypress", "wait", "hover", "move",
+            "find", "inspect", "locate", "screenshot", "capture", "launchapp", "launch_app",
+            "activatewindow", "activate_window", "drag"
+        ]
+
+        for item in actionList {
+            guard let rawType = item["type"] as? String else {
+                throw CoreError(code: .toolArgumentInvalid, message: "Action object missing required 'type' field")
+            }
+            let normType = rawType.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            guard validActionTypes.contains(normType) else {
+                throw CoreError(
+                    code: .toolArgumentInvalid,
+                    message: "No recognized actions found in 'actions' array or unrecognized action type '\(rawType)'. Supported action types: click, type, key, wait, hover, find, inspect, screenshot, launchapp, activatewindow."
+                )
+            }
+        }
+
         struct PendingInteractionStep {
             let action: InteractionAction
             let description: String
@@ -154,9 +177,10 @@ public struct ComputerBatchTool: ToolExecutor {
 
         var interactionSteps: [PendingInteractionStep] = []
         var stepIndex = 1
+        var hasFailedStep = false
 
         for item in actionList {
-            guard let rawType = item["type"] as? String else { continue }
+            let rawType = item["type"] as! String
             let type = rawType.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
 
             var x = (item["x"] as? NSNumber)?.doubleValue
@@ -167,6 +191,7 @@ public struct ComputerBatchTool: ToolExecutor {
                 let inspectStart = clock.now
                 let query = (item["query"] as? String) ?? (item["element_query"] as? String) ?? (item["element_name"] as? String) ?? ""
                 var foundDesc = "Query '\(query)' was empty"
+                var foundSuccess = false
                 if !query.isEmpty, let a11y = environment.accessibility {
                     let scope: AccessibilityScope = (targetApp != nil) ? .application(bundleOrName: targetApp!) : .activeWindow
                     if let matchedNode = try? await a11y.findElement(matching: query, role: item["role"] as? String, scope: scope),
@@ -174,10 +199,12 @@ public struct ComputerBatchTool: ToolExecutor {
                         let cx = bounds.origin.x + bounds.width / 2.0
                         let cy = bounds.origin.y + bounds.height / 2.0
                         foundDesc = "Found '\(matchedNode.name ?? query)' (role: \(matchedNode.role)) at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(bounds.origin.x)), \(Int(bounds.origin.y)), \(Int(bounds.width)), \(Int(bounds.height)))"
+                        foundSuccess = true
                     } else {
                         #if os(macOS)
                         if let visionHit = try? await DarwinVisionOCRBackend.shared.findElement(matching: query, windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds) {
                             foundDesc = "Found '\(visionHit.element.text)' via Native Vision OCR at center (\(String(format: "%.1f", visionHit.center.x)), \(String(format: "%.1f", visionHit.center.y))), bounds: (\(Int(visionHit.element.bounds.origin.x)), \(Int(visionHit.element.bounds.origin.y)), \(Int(visionHit.element.bounds.width)), \(Int(visionHit.element.bounds.height)))"
+                            foundSuccess = true
                         } else if let elements = try? await DarwinVisionOCRBackend.shared.recognizeElements(windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds), !elements.isEmpty {
                             let sampleList = elements.prefix(12).map { "\"\($0.text)\"" }.joined(separator: ", ")
                             foundDesc = "Element '\(query)' not found. Visible elements in window: [\(sampleList)]"
@@ -190,16 +217,35 @@ public struct ComputerBatchTool: ToolExecutor {
                     }
                 }
                 let inspectMs = String(format: "%.1f", Double(inspectStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
-                stepSummaries.append("Step \(stepIndex) [Find / Inspect \"\(query)\"]: \(inspectMs)ms (\(foundDesc))")
+                let outcomeLabel = foundSuccess ? "matched" : "not found"
+                stepSummaries.append("Step \(stepIndex) [Find / Inspect \"\(query)\"]: \(inspectMs)ms (\(outcomeLabel) - \(foundDesc))")
                 stepIndex += 1
                 continue
             }
 
-            // 处理截屏动作 (screenshot / capture)
+            // 处理截屏动作 (screenshot / capture)：真实调用底层 capture backend，杜绝假动作成功
             if type == "screenshot" || type == "capture" {
                 let shotStart = clock.now
-                let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
-                stepSummaries.append("Step \(stepIndex) [Screenshot]: \(shotMs)ms (Display captured. NOTE: On text-only models without vision, rely on Accessibility element_query rather than visual inspection)")
+                if let captureBackend = environment.capture {
+                    let sources = (try? await captureBackend.availableSources()) ?? []
+                    if let mainSource = sources.first(where: { $0.isDisplay }) ?? sources.first {
+                        do {
+                            let frame = try await captureBackend.captureFrame(source: mainSource, cropRect: nil)
+                            let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                            stepSummaries.append("Step \(stepIndex) [Screenshot]: \(shotMs)ms (Display captured successfully: \(frame.pixelWidth)x\(frame.pixelHeight) px, scale \(frame.scaleFactor))")
+                        } catch {
+                            let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                            stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (\(shotMs)ms - Screen capture failed: \(error))")
+                            hasFailedStep = true
+                        }
+                    } else {
+                        stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (No available display capture source found)")
+                        hasFailedStep = true
+                    }
+                } else {
+                    stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (Screen capture capability unsupported on current platform)")
+                    hasFailedStep = true
+                }
                 stepIndex += 1
                 continue
             }
@@ -258,7 +304,7 @@ public struct ComputerBatchTool: ToolExecutor {
 
             if axDirectHandled { continue }
 
-            // 若显式指定了 element_query 但未能在无障碍或视觉树中命中，给出当前窗口的候选文字建议，避免盲目错误点击
+            // 若显式指定了 element_query 但未能在无障碍或视觉树中命中，给出当前窗口的候选文字建议，并严格标记失败
             if elementLookupFailed, let query = elementQuery {
                 #if os(macOS)
                 var visibleSuggestion = ""
@@ -270,9 +316,33 @@ public struct ComputerBatchTool: ToolExecutor {
                 #else
                 stepSummaries.append("Step \(stepIndex) [\(type.capitalized) '\(query)']: FAILED (Element not found in accessibility tree)")
                 #endif
+                hasFailedStep = true
                 stepIndex += 1
                 continue
             }
+
+            // 后台安全防误触检查（审计报告 #17）：
+            // 若为后台模式 (bringToFront == false) 且 AX direct 未能处理，若目标应用不是前台活跃 App，
+            // 严禁发送全局硬件鼠标点击/拖拽，以防止误点击用户正在使用的前台终端！
+            #if os(macOS)
+            if !bringToFront, let attachedWindow, !axDirectHandled, (type == "click" || type == "click_element" || type == "type" || type == "drag") {
+                let isFrontmost: Bool = {
+                    if let winID = UInt32(attachedWindow.id),
+                       let infoList = CGWindowListCopyWindowInfo([.optionIncludingWindow], winID) as? [[String: Any]],
+                       let pid = (infoList.first?[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value {
+                        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+                    }
+                    return false
+                }()
+                if !isFrontmost {
+                    let winTitle = attachedWindow.title ?? targetApp ?? "target"
+                    stepSummaries.append("Step \(stepIndex) [\(type.capitalized)]: FAILED (Background safety violation: Target '\(winTitle)' is not frontmost and AX direct manipulation failed. Refusing global hardware injection into user's current foreground window. Please set 'bring_to_front: true' to perform foreground actions.)")
+                    hasFailedStep = true
+                    stepIndex += 1
+                    continue
+                }
+            }
+            #endif
 
             let targetPos: TargetPosition? = {
                 if let x, let y {
@@ -283,12 +353,19 @@ public struct ComputerBatchTool: ToolExecutor {
 
             switch type {
             case "click", "click_element":
+                // 审计报告 #18：禁止在缺少 target 时默认点击 (0,0)（macOS 菜单栏苹果图标）
+                guard let targetPos else {
+                    stepSummaries.append("Step \(stepIndex) [Click]: FAILED (Missing target: click requires element_query, ref, or valid x/y coordinates. Refused to fallback to (0,0))")
+                    hasFailedStep = true
+                    stepIndex += 1
+                    continue
+                }
                 let buttonStr = (item["button"] as? String)?.lowercased() ?? "left"
                 let button: PointerButton = (buttonStr == "right" ? .right : (buttonStr == "middle" ? .middle : .left))
                 let count = (item["count"] as? NSNumber)?.intValue ?? 1
-                let target: ActionTarget = targetPos.map { .coordinate($0) } ?? .coordinate(TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")))
+                let target: ActionTarget = .coordinate(targetPos)
                 let prim = CommonInteractionPrimitive.click(target: target, button: button, count: count)
-                let coordStr = targetPos.map { "(\(String(format: "%.1f", $0.x)), \(String(format: "%.1f", $0.y)))" } ?? "default"
+                let coordStr = "(\(String(format: "%.1f", targetPos.x)), \(String(format: "%.1f", targetPos.y)))"
                 let locNote = matchedDesc.map { " [\($0)]" } ?? ""
                 interactionSteps.append(PendingInteractionStep(
                     action: .desktop(.primitive(prim)),
@@ -296,14 +373,18 @@ public struct ComputerBatchTool: ToolExecutor {
                 ))
 
             case "move", "hover":
-                if let targetPos {
-                    let prim = CommonInteractionPrimitive.hover(target: .coordinate(targetPos))
-                    let coordStr = "(\(String(format: "%.1f", targetPos.x)), \(String(format: "%.1f", targetPos.y)))"
-                    interactionSteps.append(PendingInteractionStep(
-                        action: .desktop(.primitive(prim)),
-                        description: "Hover cursor to \(coordStr)"
-                    ))
+                guard let targetPos else {
+                    stepSummaries.append("Step \(stepIndex) [Hover]: FAILED (Missing x/y coordinates)")
+                    hasFailedStep = true
+                    stepIndex += 1
+                    continue
                 }
+                let prim = CommonInteractionPrimitive.hover(target: .coordinate(targetPos))
+                let coordStr = "(\(String(format: "%.1f", targetPos.x)), \(String(format: "%.1f", targetPos.y)))"
+                interactionSteps.append(PendingInteractionStep(
+                    action: .desktop(.primitive(prim)),
+                    description: "Hover cursor to \(coordStr)"
+                ))
 
             case "type":
                 let text = (item["text"] as? String) ?? ""
@@ -350,6 +431,10 @@ public struct ComputerBatchTool: ToolExecutor {
                         action: .desktop(.launchApp(identifier: identifier)),
                         description: "Launch app '\(identifier)'"
                     ))
+                } else {
+                    stepSummaries.append("Step \(stepIndex) [LaunchApp]: FAILED (Missing 'identifier' parameter)")
+                    hasFailedStep = true
+                    stepIndex += 1
                 }
 
             case "activatewindow", "activate_window":
@@ -359,10 +444,16 @@ public struct ComputerBatchTool: ToolExecutor {
                         action: .desktop(.activateWindow(windowID: windowID)),
                         description: "Activate window id '\(windowID)'"
                     ))
+                } else {
+                    stepSummaries.append("Step \(stepIndex) [ActivateWindow]: FAILED (Missing 'window_id' parameter)")
+                    hasFailedStep = true
+                    stepIndex += 1
                 }
 
             default:
-                break
+                stepSummaries.append("Step \(stepIndex) [\(type)]: FAILED (Unknown or unsupported action type '\(type)')")
+                hasFailedStep = true
+                stepIndex += 1
             }
         }
 
@@ -385,43 +476,69 @@ public struct ComputerBatchTool: ToolExecutor {
                 intentHint: intentHint
             )
 
+            #if os(macOS)
+            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = {
+                if let mainScreen = NSScreen.main {
+                    let frame = mainScreen.frame
+                    let scale = Double(mainScreen.backingScaleFactor)
+                    return (
+                        CoordinateRect(
+                            origin: TargetPosition(x: frame.origin.x, y: frame.origin.y, space: .logicalPoint(displayID: "main")),
+                            width: frame.width,
+                            height: frame.height
+                        ),
+                        scale
+                    )
+                }
+                return (
+                    CoordinateRect(
+                        origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")),
+                        width: 1920,
+                        height: 1080
+                    ),
+                    2.0
+                )
+            }()
+            #else
+            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = (
+                CoordinateRect(
+                    origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")),
+                    width: 1920,
+                    height: 1080
+                ),
+                1.0
+            )
+            #endif
+
             let initialObservation = Observation(
                 sessionID: EnvironmentSessionID(rawValue: "desktop-session"),
                 version: 1,
                 source: .desktop(displayID: "main", activeWindowID: attachedWindow?.id),
                 elements: [:],
-                viewportBounds: attachedWindow?.bounds ?? CoordinateRect(
-                    origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")),
-                    width: 1920,
-                    height: 1080
-                ),
+                viewportBounds: attachedWindow?.bounds ?? realDisplayBounds,
                 displayMetrics: DisplayMetrics(
                     displayID: "main",
-                    scaleFactor: 2.0,
-                    bounds: CoordinateRect(
-                        origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")),
-                        width: 1920,
-                        height: 1080
-                    )
+                    scaleFactor: realScaleFactor,
+                    bounds: realDisplayBounds
                 )
             )
 
             let executor = ActionBatchExecutor()
-            let execStart = clock.now
-
             let result = try await executor.execute(
                 batch: batch,
                 environment: environment,
                 currentObservation: initialObservation,
-                riskEvaluator: PermissiveRiskEvaluator()
+                riskEvaluator: InteractionRiskAdvisor()
             )
-
-            let totalExecMs = Double(execStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0
-            let avgStepMs = result.completedStepCount > 0 ? (totalExecMs / Double(result.completedStepCount)) : totalExecMs
 
             for (idx, step) in interactionSteps.enumerated() {
                 let status = idx < result.completedStepCount ? "completed" : (idx == result.completedStepCount && !result.succeeded ? "failed" : "skipped")
-                let msStr = idx < result.completedStepCount ? String(format: "%.1f", avgStepMs) : "0.0"
+                let msStr: String = {
+                    if idx < result.stepDurationsMs.count {
+                        return String(format: "%.1f", result.stepDurationsMs[idx])
+                    }
+                    return "0.0"
+                }()
                 stepSummaries.append("Step \(stepIndex) [\(step.description)]: \(msStr)ms (\(status))")
                 stepIndex += 1
             }
@@ -432,9 +549,11 @@ public struct ComputerBatchTool: ToolExecutor {
 
         let totalBatchMs = String(format: "%.1f", Double(batchStartTime.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
 
-        var output = "Action Batch Execution: \(executionSuccess ? "SUCCESS" : "FAILED")\n"
+        // 审计报告 #19：严格区分工具调用与动作结果，有任何步骤失败则整体标记为 FAILED
+        let overallSuccess = executionSuccess && !hasFailedStep
+        var output = "Action Batch Execution: \(overallSuccess ? "SUCCESS" : "FAILED")\n"
         let totalActionSteps = max(interactionSteps.count, stepSummaries.count)
-        output += "Completed Steps: \(executionSuccess ? totalActionSteps : 0) / \(totalActionSteps)\n"
+        output += "Completed Steps: \(overallSuccess ? totalActionSteps : 0) / \(totalActionSteps)\n"
         output += "Total Elapsed: \(totalBatchMs)ms\n"
         output += "Executed Steps: \(stepSummaries.count)\n\n"
         output += "Step Timing Breakdown:\n"
@@ -453,9 +572,10 @@ public struct ComputerBatchTool: ToolExecutor {
     }
 }
 
-/// 默认基础风险评估器（在标准交互中放行合法桌面动作，对于关键高危动作阻断）
-private struct PermissiveRiskEvaluator: InteractionRiskEvaluating {
-    func evaluateRisk(
+/// 交互动作风险建议器（审计报告 #25 规范：输出风险研判建议，不伪造 Evaluator 假控制）
+public struct InteractionRiskAdvisor: InteractionRiskEvaluating {
+    public init() {}
+    public func evaluateRisk(
         actions: [InteractionAction],
         observation: Observation?,
         origin: String?,
