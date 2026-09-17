@@ -93,7 +93,13 @@ case .doctor:
 
 case let .resume(resumeArgs):
     do {
-        let action = try await ResumeCLI.run(arguments: resumeArgs)
+        let env = ProcessInfo.processInfo.environment
+        let dataRoot = LingXiDataRootResolver.resolve(
+            environment: env,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let summaries = (try? SQLitePersistenceStore.loadAllGlobalSessions(dataRoot: dataRoot)) ?? []
+        let action = ResumeCLI.run(arguments: resumeArgs, summaries: summaries)
         switch action {
         case let .launch(sessionID, targetDir):
             if let targetDir, !targetDir.isEmpty, targetDir != FileManager.default.currentDirectoryPath {

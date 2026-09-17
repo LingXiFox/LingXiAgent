@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(CSQLite)
+import CSQLite
+#else
 import SQLite3
+#endif
 import LingXiProtocol
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -339,15 +343,29 @@ public actor SQLitePersistenceStore {
             }
             defer { sqlite3_close(stateDB) }
 
-            let sessionRows = (try? rows(stateDB, "SELECT session_id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC", [])) ?? []
+            let query = """
+            SELECT 
+                s.session_id, 
+                s.title, 
+                s.created_at, 
+                s.updated_at,
+                COALESCE(m.msg_count, 0)
+            FROM sessions s
+            LEFT JOIN (
+                SELECT session_id, COUNT(*) AS msg_count 
+                FROM messages 
+                GROUP BY session_id
+            ) m ON s.session_id = m.session_id
+            ORDER BY s.updated_at DESC
+            """
+            let sessionRows = (try? rows(stateDB, query, [])) ?? []
             for sRow in sessionRows {
-                guard sRow.count >= 4 else { continue }
+                guard sRow.count >= 5 else { continue }
                 let sID = sRow[0]
                 var title = sRow[1].trimmingCharacters(in: .whitespacesAndNewlines)
                 let cDate = parseDate(sRow[2])
                 let uDate = parseDate(sRow[3])
-
-                let msgCount = (try? scalar(stateDB, "SELECT COUNT(*) FROM messages WHERE session_id = ?", [sID])).flatMap(Int.init) ?? 0
+                let msgCount = Int(sRow[4]) ?? 0
 
                 if title.isEmpty {
                     let firstUserPayload = try? scalar(stateDB, "SELECT payload FROM message_parts WHERE message_id IN (SELECT message_id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY ordinal LIMIT 1) LIMIT 1", [sID])

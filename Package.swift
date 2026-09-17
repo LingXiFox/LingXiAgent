@@ -27,10 +27,18 @@ let package = Package(
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
         .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol", "LingXiPlatform"]),
+        .systemLibrary(
+            name: "CSQLite",
+            pkgConfig: "sqlite3",
+            providers: [
+                .apt(["libsqlite3-dev"]),
+                .brew(["sqlite3"])
+            ]
+        ),
         // Core：业务能力与状态权威。仅依赖 Protocol、Platform 与 PluginSDK 核心。
         .target(
             name: "LingXiCore",
-            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiPluginSDK"],
+            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiPluginSDK", "CSQLite"],
             resources: [
                 .copy("Resources/Configuration"),
                 .copy("Provider/Products"),

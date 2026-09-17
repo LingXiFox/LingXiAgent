@@ -1,0 +1,61 @@
+name: CI Matrix Gate
+
+on:
+  push:
+    branches: [ main, 'release/**', 'feature/**', 'fix/**' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-macos:
+    name: macOS Build & Test (arm64)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Print Swift Version
+        run: swift --version
+
+      - name: Build All Targets
+        run: swift build -v
+
+      - name: Run Test Suite
+        run: swift test -v --parallel
+
+      - name: Smoke Test CLI Executables
+        run: |
+          BIN_PATH="$(swift build --show-bin-path)"
+          "$BIN_PATH/lingxiagent" --help || true
+
+  test-linux:
+    name: Linux Build & Test (x86_64)
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          apt-get update && apt-get install -y libsqlite3-dev pkg-config
+
+      - name: Print Swift Version
+        run: swift --version
+
+      - name: Build All Targets
+        run: swift build -v
+
+      - name: Run Test Suite
+        run: swift test -v --parallel
+
+      - name: Smoke Test CLI Executables
+        run: |
+          BIN_PATH="$(swift build --show-bin-path)"
+          "$BIN_PATH/lingxiagent" --help || true

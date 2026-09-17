@@ -51,7 +51,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          apt-get update && apt-get install -y libsqlite3-dev
+          apt-get update && apt-get install -y libsqlite3-dev pkg-config
 
       - name: Build Release Binaries
         run: |

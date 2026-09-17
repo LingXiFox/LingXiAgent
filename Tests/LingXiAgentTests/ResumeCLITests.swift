@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import SQLite3
+@testable import LingXiCore
 @testable import LingXiApplication
 @testable import LingXiProtocol
 
@@ -75,7 +76,8 @@ import SQLite3
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let action = try await ResumeCLI.run(arguments: ["resume"], dataRoot: tempDir)
+        let summaries = (try? SQLitePersistenceStore.loadAllGlobalSessions(dataRoot: tempDir)) ?? []
+        let action = ResumeCLI.run(arguments: ["resume"], summaries: summaries)
         #expect(action == .output("未找到任何历史会话记录。"))
     }
 
@@ -84,7 +86,8 @@ import SQLite3
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let action = try await ResumeCLI.run(arguments: ["resume", "nonexistent"], dataRoot: tempDir)
+        let summaries = (try? SQLitePersistenceStore.loadAllGlobalSessions(dataRoot: tempDir)) ?? []
+        let action = ResumeCLI.run(arguments: ["resume", "nonexistent"], summaries: summaries)
         #expect(action == .output("未找到匹配 ID 为「nonexistent」的历史会话。"))
     }
 
@@ -113,7 +116,8 @@ import SQLite3
             )
         ])
 
-        let action = try await ResumeCLI.run(arguments: ["resume"], dataRoot: tempDir)
+        let summaries = try SQLitePersistenceStore.loadAllGlobalSessions(dataRoot: tempDir)
+        let action = ResumeCLI.run(arguments: ["resume"], currentCwd: currentCwd, summaries: summaries)
         guard case let .output(rendered) = action else {
             Issue.record("Expected output action")
             return
@@ -152,7 +156,8 @@ import SQLite3
         ])
 
         // 前缀匹配短 ID
-        let action = try await ResumeCLI.run(arguments: ["resume", "other-sess"], dataRoot: tempDir)
+        let summaries = try SQLitePersistenceStore.loadAllGlobalSessions(dataRoot: tempDir)
+        let action = ResumeCLI.run(arguments: ["resume", "other-sess"], summaries: summaries)
         #expect(action == .launch(sessionID: "other-sess-12345678", workingDirectory: otherDir))
     }
 
@@ -182,7 +187,8 @@ import SQLite3
             )
         ])
 
-        let action = try await ResumeCLI.run(arguments: ["resume", "--last"], dataRoot: tempDir)
+        let summaries = try SQLitePersistenceStore.loadAllGlobalSessions(dataRoot: tempDir)
+        let action = ResumeCLI.run(arguments: ["resume", "--last"], currentCwd: currentCwd, summaries: summaries)
         #expect(action == .launch(sessionID: "curr-sess-older", workingDirectory: currentCwd))
     }
 }
