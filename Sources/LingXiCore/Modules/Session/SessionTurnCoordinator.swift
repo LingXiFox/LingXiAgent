@@ -15,11 +15,14 @@ public actor SessionTurnCoordinator {
     private var modelSteps: [ModelStepID: ModelStepSnapshot] = [:]
     private var toolInvocations: [ToolCallID: ToolInvocationSnapshot] = [:]
 
+    public let todoStore: TodoStore?
+
     private var streamReplayState = StreamReplayState()
 
-    public init(sessionID: SessionID, eventLog: SessionEventLog) {
+    public init(sessionID: SessionID, eventLog: SessionEventLog, todoStore: TodoStore? = nil) {
         self.sessionID = sessionID
         self.eventLog = eventLog
+        self.todoStore = todoStore
     }
 
     /// 撤回（undo）操作后的全量状态重置与重新水合
@@ -736,8 +739,12 @@ public actor SessionTurnCoordinator {
             historyBeforeCursor: nil,
             eventCursor: cursor,
             revision: revision,
-            todos: TodoStore.shared.getTodos(for: sessionID.rawValue)
+            todos: todoStore?.getTodos(for: sessionID.rawValue) ?? []
         )
+    }
+
+    package func todoSnapshot() -> [TodoItemData] {
+        todoStore?.getTodos(for: sessionID.rawValue) ?? []
     }
 
     public func getTurn(turnID: TurnID) -> TurnSnapshot? {

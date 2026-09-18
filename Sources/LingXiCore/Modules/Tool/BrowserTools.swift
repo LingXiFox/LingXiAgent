@@ -4,8 +4,10 @@ import LingXiProtocol
 /// 浏览器页面导航工具 (browser_navigate)
 public struct BrowserNavigateTool: ToolExecutor {
     public let definition: ToolDefinition
+    private let browserManager: BrowserSessionManager
 
-    public init() {
+    public init(browserManager: BrowserSessionManager? = nil) {
+        self.browserManager = browserManager ?? BrowserSessionManager()
         self.definition = ToolDefinition(
             id: ToolID("browser_navigate"),
             name: "browser_navigate",
@@ -37,15 +39,17 @@ public struct BrowserNavigateTool: ToolExecutor {
         }
 
         let sessionID = ToolExecutionContext.sessionID?.rawValue ?? "default-session"
-        return try await BrowserSessionManager.shared.navigate(sessionID: sessionID, url: url)
+        return try await browserManager.navigate(sessionID: sessionID, url: url)
     }
 }
 
 /// 浏览器交互动作执行工具 (browser_act)
 public struct BrowserActTool: ToolExecutor {
     public let definition: ToolDefinition
+    private let browserManager: BrowserSessionManager
 
-    public init() {
+    public init(browserManager: BrowserSessionManager? = nil) {
+        self.browserManager = browserManager ?? BrowserSessionManager()
         self.definition = ToolDefinition(
             id: ToolID("browser_act"),
             name: "browser_act",
@@ -77,7 +81,7 @@ public struct BrowserActTool: ToolExecutor {
         let text = json["text"] as? String
         let sessionID = ToolExecutionContext.sessionID?.rawValue ?? "default-session"
 
-        return try await BrowserSessionManager.shared.act(
+        return try await browserManager.act(
             sessionID: sessionID,
             actionType: action,
             refString: ref,

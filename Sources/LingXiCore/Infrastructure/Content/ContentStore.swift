@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import LingXiPlatform
 import LingXiProtocol
 
@@ -15,6 +16,7 @@ public actor ContentStore {
         var stagingFileURL: URL?
         var chunks: [UInt64: Data]
         var receivedIndices: Set<UInt64>
+        var nextExpectedChunkIndex: UInt64
         var totalBytesWritten: Int
     }
 
@@ -126,6 +128,7 @@ public actor ContentStore {
             stagingFileURL: stagingURL,
             chunks: [:],
             receivedIndices: [],
+            nextExpectedChunkIndex: 0,
             totalBytesWritten: 0
         )
         return BeginContentUploadResponse(uploadID: uploadID)
@@ -142,6 +145,23 @@ public actor ContentStore {
                 source: .client
             )
         }
+
+        // 幂等处理网络重试导致的重复分片，避免重复追加损坏数据 (Audit Round 8 Phase D)
+        if upload.receivedIndices.contains(chunkIndex) {
+            return
+        }
+
+        // 关键防御：严格强制分片顺序，杜绝乱序分片静默损坏文件内容 (Audit Round 8 Phase D)
+        guard chunkIndex == upload.nextExpectedChunkIndex else {
+            throw RuntimeError(
+                category: .validation,
+                code: "outOfOrderChunk",
+                message: "Chunk index \(chunkIndex) is out of order; expected \(upload.nextExpectedChunkIndex)",
+                retryability: .none,
+                source: .client
+            )
+        }
+
         let maxChunkBytes = 32 * 1024 * 1024
         guard data.count <= maxChunkBytes else {
             throw RuntimeError(
@@ -152,7 +172,7 @@ public actor ContentStore {
                 source: .client
             )
         }
-        guard upload.receivedIndices.count < 10000 || upload.receivedIndices.contains(chunkIndex) else {
+        guard upload.receivedIndices.count < 10000 else {
             throw RuntimeError(
                 category: .validation,
                 code: "tooManyChunks",
@@ -195,6 +215,7 @@ public actor ContentStore {
         }
 
         upload.receivedIndices.insert(chunkIndex)
+        upload.nextExpectedChunkIndex += 1
         upload.totalBytesWritten += data.count
         upload.updatedAt = Date()
         inProgress[uploadID] = upload
@@ -243,9 +264,31 @@ public actor ContentStore {
         let assembledData: Data
 
         if let stagingURL = upload.stagingFileURL, let dir = storageDirectory {
-            let data = (try? Data(contentsOf: stagingURL)) ?? Data()
-            digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(data)
-            assembledData = data
+            let calculatedDigest: String
+            do {
+                let handle = try FileHandle(forReadingFrom: stagingURL)
+                defer { try? handle.close() }
+                var hasher = SHA256()
+                while true {
+                    let chunk = handle.readData(ofLength: 64 * 1024)
+                    if chunk.isEmpty { break }
+                    hasher.update(data: chunk)
+                }
+                let digestBytes = hasher.finalize()
+                calculatedDigest = "sha256:" + digestBytes.map { String(format: "%02x", $0) }.joined()
+            } catch {
+                try? FileManager.default.removeItem(at: stagingURL)
+                inProgress.removeValue(forKey: request.uploadID)
+                throw RuntimeError(
+                    category: .runtime,
+                    code: "digestCalculationFailed",
+                    message: "Failed to compute digest: \(error.localizedDescription)",
+                    retryability: .none,
+                    source: .core
+                )
+            }
+            digestString = calculatedDigest
+            assembledData = (upload.totalBytesWritten <= 8 * 1024 * 1024) ? ((try? Data(contentsOf: stagingURL)) ?? Data()) : Data()
 
             if let expected = request.expectedDigest, !expected.isEmpty {
                 guard expected.lowercased() == digestString.lowercased() else {
@@ -261,7 +304,7 @@ public actor ContentStore {
                 }
             }
 
-            // 原子重命名 staging 文件为正式内容文件，并原子写入 metadata
+            // 原子重命名 staging 文件为正式内容文件，并严格校验写入 metadata，严禁静默吞错 (Audit Round 8 Phase D)
             let finalFileURL = dir.appendingPathComponent(contentID.rawValue)
             let metaURL = dir.appendingPathComponent("\(contentID.rawValue).meta.json")
             try? FileManager.default.removeItem(at: finalFileURL)
@@ -275,8 +318,19 @@ public actor ContentStore {
                 scope: upload.scope,
                 createdAt: Date()
             )
-            if let metaData = try? JSONEncoder().encode(meta) {
-                try? metaData.write(to: metaURL, options: .atomic)
+            do {
+                let metaData = try JSONEncoder().encode(meta)
+                try metaData.write(to: metaURL, options: .atomic)
+            } catch {
+                try? FileManager.default.removeItem(at: finalFileURL)
+                try? FileManager.default.removeItem(at: metaURL)
+                throw RuntimeError(
+                    category: .runtime,
+                    code: "metadataWriteFailed",
+                    message: "Failed to persist content metadata: \(error.localizedDescription)",
+                    retryability: .none,
+                    source: .core
+                )
             }
         } else {
             var memData = Data()
@@ -315,11 +369,12 @@ public actor ContentStore {
         )
         rememberContent(stored)
 
-        let tokenEstimate = max(1, assembledData.count / 4)
+        let finalByteCount = upload.totalBytesWritten
+        let tokenEstimate = max(1, finalByteCount / 4)
         return ContentRef(
             id: contentID,
             mediaType: upload.proposedMediaType,
-            byteCount: assembledData.count,
+            byteCount: finalByteCount,
             tokenEstimate: tokenEstimate,
             digest: digestString
         )
@@ -336,7 +391,7 @@ public actor ContentStore {
         mediaType: String? = nil,
         filename: String? = nil,
         scope: ContentAuthorizationScope = .global
-    ) -> ContentRef {
+    ) throws -> ContentRef {
         let digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(data)
         let contentID = ContentID(UUID().uuidString)
         let stored = StoredContent(
@@ -348,25 +403,36 @@ public actor ContentStore {
             scope: scope,
             createdAt: Date()
         )
-        rememberContent(stored)
 
         if let dir = storageDirectory {
             let fileURL = dir.appendingPathComponent(contentID.rawValue)
             let metaURL = dir.appendingPathComponent("\(contentID.rawValue).meta.json")
-            try? data.write(to: fileURL, options: .atomic)
-            let meta = PersistedMeta(
-                id: contentID.rawValue,
-                mediaType: mediaType,
-                digest: digestString,
-                filename: filename,
-                scope: scope,
-                createdAt: stored.createdAt
-            )
-            if let metaData = try? JSONEncoder().encode(meta) {
-                try? metaData.write(to: metaURL, options: .atomic)
+            do {
+                try data.write(to: fileURL, options: .atomic)
+                let meta = PersistedMeta(
+                    id: contentID.rawValue,
+                    mediaType: mediaType,
+                    digest: digestString,
+                    filename: filename,
+                    scope: scope,
+                    createdAt: stored.createdAt
+                )
+                let metaData = try JSONEncoder().encode(meta)
+                try metaData.write(to: metaURL, options: .atomic)
+            } catch {
+                try? FileManager.default.removeItem(at: fileURL)
+                try? FileManager.default.removeItem(at: metaURL)
+                throw RuntimeError(
+                    category: .runtime,
+                    code: "storageWriteFailed",
+                    message: "Failed to persist content body or metadata: \(error.localizedDescription)",
+                    retryability: .none,
+                    source: .core
+                )
             }
         }
 
+        rememberContent(stored)
         let tokenEstimate = max(1, data.count / 4)
         return ContentRef(
             id: contentID,

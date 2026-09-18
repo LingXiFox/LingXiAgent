@@ -132,6 +132,10 @@ public actor AgentRunScheduler {
         (Array(active.keys), queued.map(\.0))
     }
 
+    public var hasActiveRuns: Bool {
+        !active.isEmpty || !queued.isEmpty
+    }
+
     private func start(_ runID: AgentRunID, _ operation: @escaping @Sendable () async -> Void) {
         active[runID] = Task { await operation() }
     }

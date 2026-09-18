@@ -1,0 +1,324 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000012900000000000001 /* LingXiGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000012900000000000001 /* LingXiGlass.swift */; };
+		A10000022900000000000002 /* PresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000022900000000000002 /* PresentationModels.swift */; };
+		A10000032900000000000003 /* FakeFrontendRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000032900000000000003 /* FakeFrontendRuntime.swift */; };
+		A10000042900000000000004 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000042900000000000004 /* SidebarView.swift */; };
+		A10000052900000000000005 /* ConversationTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000052900000000000005 /* ConversationTimelineView.swift */; };
+		A10000062900000000000006 /* RuntimeInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000062900000000000006 /* RuntimeInspectorView.swift */; };
+		A10000072900000000000007 /* FloatingComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000072900000000000007 /* FloatingComposerView.swift */; };
+		A10000082900000000000008 /* MainGlassView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000082900000000000008 /* MainGlassView.swift */; };
+		A10000092900000000000009 /* LingXiMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000092900000000000009 /* LingXiMacApp.swift */; };
+		A100000A290000000000000A /* LingXiIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000A290000000000000A /* LingXiIOSApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B10000002900000000000000 /* LingXiApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LingXiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000012900000000000001 /* LingXiGlass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LingXiGlass.swift; sourceTree = "<group>"; };
+		B10000022900000000000002 /* PresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationModels.swift; sourceTree = "<group>"; };
+		B10000032900000000000003 /* FakeFrontendRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeFrontendRuntime.swift; sourceTree = "<group>"; };
+		B10000042900000000000004 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		B10000052900000000000005 /* ConversationTimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineView.swift; sourceTree = "<group>"; };
+		B10000062900000000000006 /* RuntimeInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeInspectorView.swift; sourceTree = "<group>"; };
+		B10000072900000000000007 /* FloatingComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingComposerView.swift; sourceTree = "<group>"; };
+		B10000082900000000000008 /* MainGlassView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainGlassView.swift; sourceTree = "<group>"; };
+		B10000092900000000000009 /* LingXiMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LingXiMacApp.swift; sourceTree = "<group>"; };
+		B100000A290000000000000A /* LingXiIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LingXiIOSApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C10000002900000000000000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D10000002900000000000000 = {
+			isa = PBXGroup;
+			children = (
+				D10000012900000000000001 /* Shared */,
+				D10000022900000000000002 /* macOS */,
+				D10000032900000000000003 /* iOS */,
+				D10000042900000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D10000012900000000000001 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				D10000052900000000000005 /* DesignSystem */,
+				D10000062900000000000006 /* Models */,
+				D10000072900000000000007 /* Frontend */,
+				D10000082900000000000008 /* Components */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		D10000022900000000000002 /* macOS */ = {
+			isa = PBXGroup;
+			children = (
+				B10000092900000000000009 /* LingXiMacApp.swift */,
+			);
+			path = macOS;
+			sourceTree = "<group>";
+		};
+		D10000032900000000000003 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				B100000A290000000000000A /* LingXiIOSApp.swift */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+		D10000042900000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B10000002900000000000000 /* LingXiApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D10000052900000000000005 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				B10000012900000000000001 /* LingXiGlass.swift */,
+			);
+			path = DesignSystem;
+			sourceTree = "<group>";
+		};
+		D10000062900000000000006 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B10000022900000000000002 /* PresentationModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		D10000072900000000000007 /* Frontend */ = {
+			isa = PBXGroup;
+			children = (
+				B10000032900000000000003 /* FakeFrontendRuntime.swift */,
+			);
+			path = Frontend;
+			sourceTree = "<group>";
+		};
+		D10000082900000000000008 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				B10000042900000000000004 /* SidebarView.swift */,
+				B10000052900000000000005 /* ConversationTimelineView.swift */,
+				B10000062900000000000006 /* RuntimeInspectorView.swift */,
+				B10000072900000000000007 /* FloatingComposerView.swift */,
+				B10000082900000000000008 /* MainGlassView.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E10000002900000000000000 /* LingXiApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000002900000000000000 /* Build configuration list for PBXNativeTarget "LingXiApp" */;
+			buildPhases = (
+				C10000012900000000000001 /* Sources */,
+				C10000002900000000000000 /* Frameworks */,
+				C10000022900000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LingXiApp;
+			productName = LingXiApp;
+			productReference = B10000002900000000000000 /* LingXiApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		08FB7793FE84155DC02AAC07 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					E10000002900000000000000 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = F10000012900000000000001 /* Build configuration list for PBXProject "LingXiApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = D10000002900000000000000;
+			productRefGroup = D10000042900000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E10000002900000000000000 /* LingXiApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C10000022900000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C10000012900000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000012900000000000001 /* LingXiGlass.swift in Sources */,
+				A10000022900000000000002 /* PresentationModels.swift in Sources */,
+				A10000032900000000000003 /* FakeFrontendRuntime.swift in Sources */,
+				A10000042900000000000004 /* SidebarView.swift in Sources */,
+				A10000052900000000000005 /* ConversationTimelineView.swift in Sources */,
+				A10000062900000000000006 /* RuntimeInspectorView.swift in Sources */,
+				A10000072900000000000007 /* FloatingComposerView.swift in Sources */,
+				A10000082900000000000008 /* MainGlassView.swift in Sources */,
+				A10000092900000000000009 /* LingXiMacApp.swift in Sources */,
+				A100000A290000000000000A /* LingXiIOSApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		G10000002900000000000000 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "LingXi";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 LingXi. All rights reserved.";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lingxi.LingXiApp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		G10000012900000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "LingXi";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 LingXi. All rights reserved.";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lingxi.LingXiApp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		G10000022900000000000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		G10000032900000000000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SWIFT_COMPILATION_MODE = "wholemodule";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F10000002900000000000000 /* Build configuration list for PBXNativeTarget "LingXiApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				G10000002900000000000000 /* Debug */,
+				G10000012900000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F10000012900000000000001 /* Build configuration list for PBXProject "LingXiApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				G10000022900000000000002 /* Debug */,
+				G10000032900000000000003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 08FB7793FE84155DC02AAC07 /* Project object */;
+}

@@ -206,6 +206,7 @@ public struct ToolRuntime: Sendable {
     public static let coreToolIDs: Set<ToolID> = Set(coreToolOrder)
 
     public let workspacePath: String?
+    public let workspaceRevision: UInt64?
     private let registry: ToolRegistry
     private let permissions: PermissionEngine
     private let mutations: ToolMutationCoordinator
@@ -232,9 +233,11 @@ public struct ToolRuntime: Sendable {
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         dynamicLeases: DynamicToolLeaseManager = DynamicToolLeaseManager(),
         definitionsCache: ToolDefinitionsCache = ToolDefinitionsCache(),
-        workspacePath: String? = nil
+        workspacePath: String? = nil,
+        workspaceRevision: UInt64? = nil
     ) {
         self.workspacePath = workspacePath
+        self.workspaceRevision = workspaceRevision
         self.registry = registry
         self.permissions = permissions
         self.mutations = mutations
@@ -510,7 +513,7 @@ public struct ToolRuntime: Sendable {
         var executionStartedAt: ContinuousClock.Instant?
         do {
             try Task.checkCancellation()
-            // 校验 Workspace 身份一致性，防止跨工作区或过期工作区执行导致的数据泄露/写错目录 (Audit Round 7 Phase A)
+            // 校验 Workspace 身份一致性，防止跨工作区或过期工作区执行导致的数据泄露/写错目录 (Audit Round 7 Phase A, Round 8 Phase B)
             if let contextWorkspace = runExecutionContext?.workspacePath ?? AgentExecutionContext.currentRunContext?.workspacePath {
                 if let currentWorkspace = self.workspacePath {
                     let stdCtx = URL(fileURLWithPath: contextWorkspace).standardizedFileURL.path
@@ -518,6 +521,12 @@ public struct ToolRuntime: Sendable {
                     guard stdCtx == stdCur else {
                         throw CoreError(code: .commandFailed, message: "staleWorkspaceContext: Run workspace (\(stdCtx)) does not match ToolRuntime workspace (\(stdCur))")
                     }
+                }
+            }
+            if let contextRevision = runExecutionContext?.workspaceRevision ?? AgentExecutionContext.currentRunContext?.workspaceRevision,
+               let currentRevision = self.workspaceRevision {
+                guard contextRevision == currentRevision else {
+                    throw CoreError(code: .commandFailed, message: "staleWorkspaceRevision: Run revision (\(contextRevision)) does not match ToolRuntime revision (\(currentRevision))")
                 }
             }
             if let allowed = executionProfile?.toolProfile, !allowed.contains(call.toolID.rawValue) {

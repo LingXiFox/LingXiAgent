@@ -45,6 +45,7 @@ public actor AgentRuntime {
     private var cacheController: ContextCacheController
     private let maxAgentLoopSteps: Int
     private let backgroundManager: BackgroundCommandManager
+    private let providerActivityRegistry: ProviderActivityRegistry
 
     init(
         store: any SessionStore,
@@ -74,7 +75,8 @@ public actor AgentRuntime {
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
         diagnostics: RuntimeDiagnosticsStore? = nil,
-        backgroundManager: BackgroundCommandManager? = nil
+        backgroundManager: BackgroundCommandManager? = nil,
+        providerActivityRegistry: ProviderActivityRegistry? = nil
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -104,6 +106,7 @@ public actor AgentRuntime {
         self.restoreScheduler = restoreScheduler
         self.diagnostics = diagnostics
         self.backgroundManager = backgroundManager ?? BackgroundCommandManager()
+        self.providerActivityRegistry = providerActivityRegistry ?? ProviderActivityRegistry()
     }
 
     // MARK: - Workspace Transition
@@ -134,7 +137,12 @@ public actor AgentRuntime {
     }
 
     public var hasActiveRuns: Bool {
-        !activeSessions.isEmpty
+        get async {
+            if !activeSessions.isEmpty { return true }
+            if runs.values.contains(where: { !$0.status.isTerminal }) { return true }
+            if await scheduler.hasActiveRuns { return true }
+            return false
+        }
     }
 
     internal func markSessionActiveForTesting(_ sessionID: SessionID) {
@@ -494,6 +502,7 @@ public actor AgentRuntime {
         }
         do {
             let runID = run.runID
+            activeSessions.insert(child.id)
             let status = await scheduler.submit(runID: runID) { [weak self] in await self?.runChild(runID: runID, task: task) }
             if status == .queued {
                 run = updated(run, status: .queued)
@@ -506,6 +515,7 @@ public actor AgentRuntime {
             if status == .queued { await eventSink(.agentRunQueued(run)) }
             return (child.id, run)
         } catch {
+            activeSessions.remove(child.id)
             logDiagnostic("spawn failed parentSession=\(parentSessionID.rawValue) parentRun=\(parentRunID.rawValue) childSession=\(child.id.rawValue): \(error)")
             let childRuns = runs.values.filter { $0.sessionID == child.id }
             for r in childRuns {
@@ -524,7 +534,7 @@ public actor AgentRuntime {
         let targets = descendants ? runs.values.filter { isDescendant($0, of: runID) || $0.runID == runID }.map(\.runID) : [runID]
         for id in targets {
             await scheduler.cancel(id)
-            let cancelled = await ProviderActivityRegistry.shared.cancelRun(id)
+            let cancelled = await providerActivityRegistry.cancelRun(id)
             for snapshot in cancelled {
                 await eventSink(.providerActivityChanged(snapshot))
             }
@@ -646,7 +656,9 @@ public actor AgentRuntime {
             deadlinePolicy: deadlinePolicy,
             restoreScheduler: restoreScheduler,
             diagnostics: diagnostics,
-            backgroundManager: backgroundManager
+            backgroundManager: backgroundManager,
+            providerActivityRegistry: providerActivityRegistry,
+            workspaceRevision: workspaceRevision
         )
     }
 
@@ -683,7 +695,7 @@ public actor AgentRuntime {
         await evictIdleRuntimesIfNeeded()
         if let run {
             let resolved = try await modelResolver.resolve(run.modelSelection, subagent: run.agentKind == .subagent)
-            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning, deadlinePolicy: deadlinePolicy))
+            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning, deadlinePolicy: deadlinePolicy, activityRegistry: providerActivityRegistry))
             let session = try await store.session(sessionID)
             let runtime = makeRuntime(for: sessionID, run: run, modelBus: bus, rootSessionID: session.rootSessionID)
             runtimes[sessionID] = runtime
@@ -744,7 +756,18 @@ public actor AgentRuntime {
     }
 
     private func consumeChildTurn(run: AgentRunInfo, task: String) async throws {
-        let stream = try await runtime(for: run.sessionID, run: run).startTurn(task)
+        let exec = executionProfiles[run.runID]
+        let childRunContext = RunExecutionContext(
+            runID: run.runID.rawValue,
+            sessionID: run.sessionID,
+            permissionConfiguration: exec?.permissionProfile == "fullAccess" ? .yoloFullAccess : (exec?.permissionProfile == "workspace" ? .askWorkspace : .strict),
+            workspacePath: projectScanner.root.path,
+            modelSelection: run.modelSelection.modelID,
+            timeoutSeconds: exec?.timeoutSeconds.map(Double.init),
+            workspaceID: projectScanner.root.path,
+            workspaceRevision: self.workspaceRevision
+        )
+        let stream = try await runtime(for: run.sessionID, run: run).startTurn(task, executionContext: childRunContext)
         for try await _ in stream.chunks {}
     }
 

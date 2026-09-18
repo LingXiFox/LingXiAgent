@@ -100,6 +100,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
     }
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
+    package var workspaceRevisionRef: UInt64 { workspaceRevision }
+    public var currentWorkspaceRevision: UInt64 { workspaceRevision }
     package var backgroundManagerRef: BackgroundCommandManager { backgroundManager }
     package var workflowRuntimeRef: WorkflowRuntime? { workflows }
     package var performanceStoreRef: PerformanceStore { performanceStore }
@@ -288,7 +290,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let scanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let effective = providerAssembly ?? .unavailable
         self.currentAssembly = (providerAssembly != nil && !effective.modelID.rawValue.isEmpty) ? providerAssembly : nil
-        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy)
+        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy, activityRegistry: effectiveActivityRegistry)
         let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
         modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
 
@@ -340,7 +342,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:)),
             tavilyAPIKey: environment["TAVILY_API_KEY"],
             graphEngine: effectiveGraphEngine,
-            todoStore: effectiveTodoStore
+            todoStore: effectiveTodoStore,
+            browserManager: effectiveBrowserManager
         )
         let mutationCoordinator = ToolMutationCoordinator(pager: pager, scanner: scanner)
         let effectiveToolRuntime = ToolRuntime(
@@ -353,7 +356,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             subagents: subagentService,
             cacheController: cacheController,
             deadlinePolicy: executionDeadlinePolicy,
-            workspacePath: workspace.path
+            workspacePath: workspace.path,
+            workspaceRevision: self.workspaceRevision
         )
         self.contextPager = pager
         self.projectScanner = scanner
@@ -648,7 +652,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             deadlinePolicy: executionDeadlinePolicy,
             restoreScheduler: restoreScheduler,
             diagnostics: diagnosticsStore,
-            backgroundManager: self.backgroundManager
+            backgroundManager: self.backgroundManager,
+            providerActivityRegistry: self.providerActivityRegistry
         )
         self.agent = agent
         let workflows = await agent.makeWorkflowRuntime()
@@ -1732,7 +1737,7 @@ extension CoreHost {
         }
         _ = try await sessionStore.session(sessionID)
         let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: eventLogStorageDirectory)
-        let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
+        let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog, todoStore: self.todoStore)
         sessionCoordinators[sessionID] = coord
         return coord
     }
@@ -3889,6 +3894,9 @@ extension CoreHost {
             throw CoreError(code: .commandFailed, message: "Workspace transition rejected: active agent runs in progress")
         }
 
+        // 先计算目标版本 targetRevision，确保组件构造与 AgentRuntime 始终与 CoreHost 处于同一最新世代 (Audit Round 8 Phase B)
+        let targetRevision = self.workspaceRevision &+ 1
+
         let stdURL = newURL.standardizedFileURL
         self.workspaceURL = stdURL
         let sensitivePaths = SensitivePathPolicy(root: stdURL)
@@ -3937,7 +3945,8 @@ extension CoreHost {
             webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:)),
             tavilyAPIKey: environment["TAVILY_API_KEY"],
             graphEngine: self.codebaseGraphEngine,
-            todoStore: self.todoStore
+            todoStore: self.todoStore,
+            browserManager: self.browserSessionManager
         )
         let mutationCoordinator = ToolMutationCoordinator(pager: contextPager, scanner: self.projectScanner)
         self.toolRuntime = ToolRuntime(
@@ -3950,7 +3959,8 @@ extension CoreHost {
             subagents: subagentService,
             cacheController: cacheController,
             deadlinePolicy: executionDeadlinePolicy,
-            workspacePath: stdURL.path
+            workspacePath: stdURL.path,
+            workspaceRevision: targetRevision
         )
 
         // 重新关联统一检索变更钩子，并重新绑定 E-Core 变更钩子 (Audit Round 7 Phase D)
@@ -3977,9 +3987,12 @@ extension CoreHost {
                 contextPager: self.contextPager,
                 cacheController: self.cacheController,
                 behaviorSystemContext: self.behaviorSystemContext,
-                workspaceRevision: self.workspaceRevision
+                workspaceRevision: targetRevision
             )
         }
+
+        // 原子提交 CoreHost 的最新 workspaceRevision
+        self.workspaceRevision = targetRevision
     }
 
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> {
@@ -3989,12 +4002,11 @@ extension CoreHost {
 
         let isGit = FileManager.default.fileExists(atPath: newURL.appendingPathComponent(".git").path)
         workspaceIndexTask?.cancel()
-        workspaceRevision &+= 1
-        let revision = workspaceRevision
+        let revision = self.workspaceRevision
 
         let indexingState: String
         let engine = self.codebaseGraphEngine
-        if startupPolicy.allowExternalProcesses {
+        if startupPolicy != .unitTest {
             indexingState = "indexing"
             workspaceIndexTask = Task(priority: .background) { [weak self, engine] in
                 guard !Task.isCancelled else { return }

@@ -236,7 +236,7 @@ struct Round6SystemAuditTests {
 
         let store = ContentStore(storageDirectory: tempDir)
         let sampleData = Data("sensitive session content".utf8)
-        let ref = await store.store(
+        let ref = try await store.store(
             data: sampleData,
             mediaType: "text/plain",
             filename: "secret.txt",
@@ -288,7 +288,7 @@ struct Round6SystemAuditTests {
         let store = ContentStore(storageDirectory: tempDir)
         let fullString = (0..<1000).map { "LINE_\(String(format: "%04d", $0))\n" }.joined()
         let fullData = Data(fullString.utf8)
-        let ref = await store.store(data: fullData, scope: .global)
+        let ref = try await store.store(data: fullData, scope: .global)
 
         // Read arbitrary byte range
         let offset = 450
@@ -310,20 +310,23 @@ struct Round6SystemAuditTests {
         ))
         let uploadID = beginResp.uploadID
 
-        // Upload chunk 0 and chunk 2, skipping chunk 1
+        // Upload chunk 0
         try await store.writeChunk(uploadID: uploadID, chunkIndex: 0, data: Data("chunk0_".utf8)) // 7 bytes
-        try await store.writeChunk(uploadID: uploadID, chunkIndex: 2, data: Data("chunk2".utf8)) // 6 bytes
 
-        // Commit should fail because chunk 1 is missing
+        // Upload chunk 2 skipping chunk 1 must fail immediately with outOfOrderChunk
         do {
-            _ = try await store.commitUpload(request: CommitContentUploadRequest(uploadID: uploadID))
-            Issue.record("Should fail because chunk 1 is missing")
+            try await store.writeChunk(uploadID: uploadID, chunkIndex: 2, data: Data("chunk2".utf8))
+            Issue.record("Should fail immediately with outOfOrderChunk when skipping chunk 1")
         } catch let err as RuntimeError {
-            #expect(err.code == "incompleteChunks")
+            #expect(err.code == "outOfOrderChunk")
         }
 
-        // Upload chunk 1 now
+        // Upload chunk 1 in order
         try await store.writeChunk(uploadID: uploadID, chunkIndex: 1, data: Data("chunk1_".utf8)) // 7 bytes
+
+        // Upload chunk 2 in order
+        try await store.writeChunk(uploadID: uploadID, chunkIndex: 2, data: Data("chunk2".utf8)) // 6 bytes
+
         // Total bytes = 7 + 7 + 6 = 20, but expected was 15 -> should fail byteCountMismatch
         do {
             _ = try await store.commitUpload(request: CommitContentUploadRequest(uploadID: uploadID))

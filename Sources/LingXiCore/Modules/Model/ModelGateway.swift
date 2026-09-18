@@ -14,24 +14,27 @@ public struct ModelGateway: Sendable {
     public let reasoning: String?
     public let deadlinePolicy: ExecutionDeadlinePolicy
     private let rateScheduler: ProviderRateScheduler
+    private let activityRegistry: ProviderActivityRegistry
     public var modelID: ModelID? { endpoint?.modelID }
     public var contextProfile: ModelContextProfile { endpoint?.contextProfile ?? ModelContextProfile() }
 
-    public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile(), reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()) {
+    public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile(), reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), activityRegistry: ProviderActivityRegistry? = nil) {
         self.provider = provider
         endpoint = modelID.map { ResolvedModelEndpoint(providerID: "default", modelID: $0, baseURL: nil, wireProtocol: .chatCompletions, contextProfile: contextProfile) }
         self.missingRequirements = missingRequirements
         self.reasoning = reasoning
         self.deadlinePolicy = deadlinePolicy
+        self.activityRegistry = activityRegistry ?? ProviderActivityRegistry()
         rateScheduler = .shared
     }
 
-    public init(assembly: ModelRuntimeAssembly?, missingRequirements: [String] = [], reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy()) {
+    public init(assembly: ModelRuntimeAssembly?, missingRequirements: [String] = [], reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), activityRegistry: ProviderActivityRegistry? = nil) {
         provider = assembly?.provider
         endpoint = assembly?.endpoint
         self.missingRequirements = missingRequirements
         self.reasoning = reasoning
         self.deadlinePolicy = deadlinePolicy
+        self.activityRegistry = activityRegistry ?? ProviderActivityRegistry()
         rateScheduler = .shared
     }
 
@@ -64,11 +67,11 @@ public struct ModelGateway: Sendable {
         let runID = request.executionID ?? currentContext?.runID
         let providerRequestID = "local:\(request.requestID.rawValue)"
 
-        if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
+        if await activityRegistry.isCancelled(providerRequestID: providerRequestID, runID: runID) {
             throw CancellationError()
         }
 
-        let scheduledSnapshot = await ProviderActivityRegistry.shared.record(
+        let scheduledSnapshot = await activityRegistry.record(
             sessionID: sessionID,
             runID: runID,
             providerRequestID: providerRequestID,
@@ -83,10 +86,10 @@ public struct ModelGateway: Sendable {
 
         while true {
             try Task.checkCancellation()
-            if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
+            if await activityRegistry.isCancelled(providerRequestID: providerRequestID, runID: runID) {
                 throw CancellationError()
             }
-            let waitingSnapshot = await ProviderActivityRegistry.shared.record(
+            let waitingSnapshot = await activityRegistry.record(
                 sessionID: sessionID,
                 runID: runID,
                 providerRequestID: providerRequestID,
@@ -95,7 +98,7 @@ public struct ModelGateway: Sendable {
             )
             await onActivityChanged?(waitingSnapshot)
             try await rateScheduler.admit(endpoint: endpoint, requestID: request.requestID, estimatedTokens: estimate)
-            let requestingSnapshot = await ProviderActivityRegistry.shared.record(
+            let requestingSnapshot = await activityRegistry.record(
                 sessionID: sessionID,
                 runID: runID,
                 providerRequestID: providerRequestID,
@@ -128,7 +131,7 @@ public struct ModelGateway: Sendable {
                 let delay = retryDelay(error.retryAfter, policy: policy, retry: retries + 1)
                 await rateScheduler.recordRateLimit(endpoint: endpoint, requestID: request.requestID, cooldown: delay)
                 guard retries < policy.maxRetries else {
-                    let failSnap = await ProviderActivityRegistry.shared.record(
+                    let failSnap = await activityRegistry.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
@@ -169,7 +172,7 @@ public struct ModelGateway: Sendable {
                     detail = "\(error.classified.category.userDescription)，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
                 }
 
-                let retrySnap = await ProviderActivityRegistry.shared.record(
+                let retrySnap = await activityRegistry.record(
                     sessionID: sessionID,
                     runID: runID,
                     providerRequestID: providerRequestID,
@@ -201,7 +204,7 @@ public struct ModelGateway: Sendable {
                         ? "请求超时，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
                         : "网络传输中断，等待重试 (\(delayText)) · 正在第 \(retries)/\(policy.maxRetries) 次重试"
 
-                    let retrySnap = await ProviderActivityRegistry.shared.record(
+                    let retrySnap = await activityRegistry.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
@@ -216,7 +219,7 @@ public struct ModelGateway: Sendable {
                     continue
                 }
                 let terminalState: ProviderActivityState = isCancelled ? .cancelled : .failed
-                let failSnap = await ProviderActivityRegistry.shared.record(
+                let failSnap = await activityRegistry.record(
                     sessionID: sessionID,
                     runID: runID,
                     providerRequestID: providerRequestID,
@@ -263,7 +266,7 @@ public struct ModelGateway: Sendable {
                             doneFlag.markDone()
                             released = true
                             await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
-                            let snap = await ProviderActivityRegistry.shared.record(
+                            let snap = await activityRegistry.record(
                                 sessionID: sessionID,
                                 runID: runID,
                                 providerRequestID: providerRequestID,
@@ -274,7 +277,7 @@ public struct ModelGateway: Sendable {
                             continuation.finish(throwing: CancellationError())
                             return
                         }
-                        if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
+                        if await activityRegistry.isCancelled(providerRequestID: providerRequestID, runID: runID) {
                             doneFlag.markDone()
                             released = true
                             await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
@@ -283,7 +286,7 @@ public struct ModelGateway: Sendable {
                         }
                         if !streamedFirstChunk {
                             streamedFirstChunk = true
-                            let snap = await ProviderActivityRegistry.shared.record(
+                            let snap = await activityRegistry.record(
                                 sessionID: sessionID,
                                 runID: runID,
                                 providerRequestID: providerRequestID,
@@ -299,7 +302,7 @@ public struct ModelGateway: Sendable {
                     }
                     doneFlag.markDone()
                     await releasePermit()
-                    let snap = await ProviderActivityRegistry.shared.record(
+                    let snap = await activityRegistry.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
@@ -318,7 +321,7 @@ public struct ModelGateway: Sendable {
                         await releasePermit()
                     }
                     let terminalState: ProviderActivityState = isCancelled ? .cancelled : .failed
-                    let snap = await ProviderActivityRegistry.shared.record(
+                    let snap = await activityRegistry.record(
                         sessionID: sessionID,
                         runID: runID,
                         providerRequestID: providerRequestID,
@@ -336,7 +339,7 @@ public struct ModelGateway: Sendable {
                 pump.cancel()
                 Task {
                     await rateScheduler.cancel(requestID: requestID, endpoint: endpoint)
-                    let snap = await ProviderActivityRegistry.shared.cancel(providerRequestID: providerRequestID)
+                    let snap = await activityRegistry.cancel(providerRequestID: providerRequestID)
                     if let snap { await onActivityChanged?(snap) }
                 }
             }

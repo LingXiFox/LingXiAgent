@@ -70,9 +70,15 @@ let package = Package(
             name: "LingXiTUIApp",
             dependencies: ["LingXiTUI"]
         ),
+        // FrontendKit: macOS/iOS GUI Phase 0 Shared Component Library
+        .target(
+            name: "LingXiFrontendKit",
+            dependencies: ["LingXiProtocol"],
+            path: "Apps/LingXiApp/Shared"
+        ),
         .testTarget(
             name: "LingXiAgentTests",
-            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK"],
+            dependencies: ["LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication", "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK", "LingXiFrontendKit"],
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),

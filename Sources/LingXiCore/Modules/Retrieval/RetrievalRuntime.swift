@@ -155,13 +155,14 @@ public actor RetrievalRuntime {
         durationMs: Double,
         revision: Int
     ) {
-        self.isBuilding = false
-        self.buildingTask = nil
-
+        // 关键防御：世代校验必须位于清空构建标记之前！杜绝被取消/迟到的旧构建将新世代的活跃构建状态清空 (Audit Round 8 Phase C)
         guard generation == self.buildGeneration else {
-            // 过期构建直接丢弃，杜绝旧快照覆盖新快照
+            // 过期构建直接丢弃，杜绝旧快照覆盖新快照或清零当前正在进行的构建 tracking
             return
         }
+
+        self.isBuilding = false
+        self.buildingTask = nil
 
         self.activeSnapshot = snapshot
         self.state = .ready
@@ -181,6 +182,15 @@ public actor RetrievalRuntime {
         }
     }
 
+    package func finishSingleFlightBuildForTesting(
+        snapshot: BM25IndexSnapshot,
+        generation: UInt64,
+        durationMs: Double = 0.0,
+        revision: Int = 1
+    ) {
+        finishSingleFlightBuild(snapshot: snapshot, generation: generation, durationMs: durationMs, revision: revision)
+    }
+
     /// 原子替换为新快照 (Atomic Swap)
     public func applySnapshot(_ snapshot: BM25IndexSnapshot, durationMs: Double = 0.0, revision: Int? = nil) {
         finishSingleFlightBuild(
@@ -192,7 +202,10 @@ public actor RetrievalRuntime {
     }
 
     /// 处理构建失败：Fail-Open 保护，有旧快照继续使用旧快照
-    public func handleBuildFailure(_ errorMessage: String) {
+    public func handleBuildFailure(_ errorMessage: String, generation: UInt64? = nil) {
+        if let generation, generation != self.buildGeneration {
+            return
+        }
         self.isBuilding = false
         self.lastBuildError = errorMessage
         self.buildingTask = nil

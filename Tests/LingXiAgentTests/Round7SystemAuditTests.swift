@@ -198,7 +198,7 @@ struct Round7SystemAuditTests {
         }
         let sampleData = Data(sampleBytes)
 
-        let ref = await store.store(
+        let ref = try await store.store(
             data: sampleData,
             mediaType: "application/octet-stream",
             filename: "sample_large.bin",

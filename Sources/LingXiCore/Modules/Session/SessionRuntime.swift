@@ -75,6 +75,8 @@ public actor SessionRuntime {
     private let restoreScheduler: SessionRestoreScheduler?
     private let diagnostics: RuntimeDiagnosticsStore?
     private let backgroundManager: BackgroundCommandManager
+    private let providerActivityRegistry: ProviderActivityRegistry
+    public let workspaceRevision: UInt64?
     private var turnRunning = false
     private var activeExecution: ActiveExecution?
     private var shuttingDown = false
@@ -208,7 +210,9 @@ public actor SessionRuntime {
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
         diagnostics: RuntimeDiagnosticsStore? = nil,
-        backgroundManager: BackgroundCommandManager? = nil
+        backgroundManager: BackgroundCommandManager? = nil,
+        providerActivityRegistry: ProviderActivityRegistry? = nil,
+        workspaceRevision: UInt64? = nil
     ) {
         self.store = store
         self.sessionID = sessionID
@@ -242,6 +246,8 @@ public actor SessionRuntime {
         self.restoreScheduler = restoreScheduler
         self.diagnostics = diagnostics
         self.backgroundManager = backgroundManager ?? BackgroundCommandManager()
+        self.providerActivityRegistry = providerActivityRegistry ?? ProviderActivityRegistry()
+        self.workspaceRevision = workspaceRevision
     }
 
     public func restore() async throws {
@@ -352,7 +358,7 @@ public actor SessionRuntime {
                     modelSelection: nil,
                     timeoutSeconds: executionProfile?.timeoutSeconds.map(Double.init),
                     workspaceID: projectScanner.root.path,
-                    workspaceRevision: nil
+                    workspaceRevision: self.workspaceRevision
                 )
             }
             let turnTask = Task {
@@ -807,14 +813,14 @@ public actor SessionRuntime {
                             logDiagnostic("session.stale_event_dropped eventType=streaming_delta sessionID=\(sessionID.rawValue) eventRevision=\(runLease.revision) currentRevision=\(currentRev)")
                             throw StaleRunError(sessionID: sessionID, expected: currentRev, actual: runLease.revision)
                         }
-                        if await ProviderActivityRegistry.shared.isCancelled(providerRequestID: providerRequestID, runID: runID) {
+                        if await providerActivityRegistry.isCancelled(providerRequestID: providerRequestID, runID: runID) {
                             throw CancellationError()
                         }
                         switch event {
                         case let .providerRequestID(value):
                             providerRequestID = value
                             profiler.updateLastProviderCallRequestID(value)
-                            let snapshot = await ProviderActivityRegistry.shared.record(
+                            let snapshot = await providerActivityRegistry.record(
                                 sessionID: sessionID,
                                 runID: runID,
                                 providerRequestID: value,
@@ -1547,7 +1553,7 @@ public actor SessionRuntime {
     ) async {
         do {
             guard isExecuting(executionID) else { return }
-            if let runID, await ProviderActivityRegistry.shared.isRunCancelled(runID) { return }
+            if let runID, await providerActivityRegistry.isRunCancelled(runID) { return }
             if let lease {
                 let current = try await store.currentRevision(lease.sessionID)
                 guard current == lease.revision else {
@@ -1638,7 +1644,7 @@ public actor SessionRuntime {
         }
         let isCancellation = Task.isCancelled || error.code == .toolCancelled || shuttingDown
         if let latestID = latestModelRequestID?.rawValue {
-            let snapshot = await ProviderActivityRegistry.shared.record(
+            let snapshot = await providerActivityRegistry.record(
                 sessionID: sessionID,
                 runID: runID,
                 providerRequestID: "local:\(latestID)",

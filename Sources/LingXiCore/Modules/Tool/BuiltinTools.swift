@@ -1809,7 +1809,7 @@ public struct TodoTool: ToolExecutor {
     private let todoStore: TodoStore
 
     public init(todoStore: TodoStore? = nil) {
-        self.todoStore = todoStore ?? TodoStore.shared
+        self.todoStore = todoStore ?? TodoStore()
     }
 
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
@@ -1912,7 +1912,7 @@ public struct CodebaseGraphTool: ToolExecutor {
 
     public init(workspace: WorkspaceRoot, graphEngine: CodebaseGraphEngine? = nil) {
         self.workspace = workspace
-        self.graphEngine = graphEngine ?? CodebaseGraphEngine.shared
+        self.graphEngine = graphEngine ?? CodebaseGraphEngine(cachePolicy: .disabled)
     }
 
     public let definition = ToolDefinition(
@@ -1971,7 +1971,7 @@ public struct CodebaseGraphTool: ToolExecutor {
 }
 
 public extension BuiltInToolProvider {
-    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil, tavilyAPIKey: String? = nil, graphEngine: CodebaseGraphEngine? = nil, todoStore: TodoStore? = nil) {
+    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil, tavilyAPIKey: String? = nil, graphEngine: CodebaseGraphEngine? = nil, todoStore: TodoStore? = nil, browserManager: BrowserSessionManager? = nil) {
         let indexTools: [any ToolExecutor]
         if let contextPager, let scanner {
             indexTools = [
@@ -2010,15 +2010,15 @@ public extension BuiltInToolProvider {
             TodoTool(todoStore: todoStore)
             // NOTE: Computer Use and Browser Use implementations are frozen and disabled from the default toolcall list per owner directive.
             // Underlying implementation code (BrowserNavigateTool, BrowserActTool, ComputerBatchTool) is fully preserved.
-            // BrowserNavigateTool(),
-            // BrowserActTool(),
+            // BrowserNavigateTool(browserManager: browserManager),
+            // BrowserActTool(browserManager: browserManager),
             // ComputerBatchTool()
         ] + indexTools + intelligenceTools)
     }
 }
 
 public extension ToolRegistry {
-    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil, tavilyAPIKey: String? = nil, graphEngine: CodebaseGraphEngine? = nil, todoStore: TodoStore? = nil) -> ToolRegistry {
-        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint, tavilyAPIKey: tavilyAPIKey, graphEngine: graphEngine, todoStore: todoStore).tools)
+    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil, tavilyAPIKey: String? = nil, graphEngine: CodebaseGraphEngine? = nil, todoStore: TodoStore? = nil, browserManager: BrowserSessionManager? = nil) -> ToolRegistry {
+        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint, tavilyAPIKey: tavilyAPIKey, graphEngine: graphEngine, todoStore: todoStore, browserManager: browserManager).tools)
     }
 }

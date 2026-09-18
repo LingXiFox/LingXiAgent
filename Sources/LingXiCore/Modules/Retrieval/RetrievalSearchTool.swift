@@ -22,7 +22,7 @@ public struct RetrievalSearchTool: ToolExecutor, Sendable {
         runtime: RetrievalRuntime? = nil,
         index: BM25RetrievalIndex? = nil,
         ecoreStore: ECoreObjectStore? = nil,
-        graphEngine: CodebaseGraphEngine? = CodebaseGraphEngine.shared
+        graphEngine: CodebaseGraphEngine? = nil
     ) {
         self.projectRoot = projectRoot
         let reg = registry ?? UnifiedRetrievalRegistry.standard(projectRoot: projectRoot, ecoreStore: ecoreStore)
