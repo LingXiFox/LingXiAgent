@@ -143,7 +143,7 @@ public actor WorkflowRuntime {
             changed = true
             let workflowID = workflow.id
             let taskID = task.definition.id
-            active[key(workflowID, taskID)] = Task.detached { [weak self] in
+            active[key(workflowID, taskID)] = Task { [weak self] in
                 let completion = await executor(workflowID, task.definition, provenance) { [weak self] child in
                     await self?.recordChild(workflowID: workflowID, taskID: taskID, provenance: child)
                 }
@@ -221,4 +221,24 @@ public actor WorkflowRuntime {
 
     private func persist(_ workflow: WorkflowSnapshot) async throws { try await persistence?.saveWorkflow(workflow) }
     private func key(_ workflowID: WorkflowID, _ taskID: WorkflowTaskID) -> String { "\(workflowID.rawValue)/\(taskID.rawValue)" }
+
+    public func cancel(workflowID: WorkflowID) {
+        for (k, task) in active where k.hasPrefix("\(workflowID.rawValue)/") {
+            task.cancel()
+            active.removeValue(forKey: k)
+        }
+    }
+
+    public func cancelAll() {
+        for task in active.values {
+            task.cancel()
+        }
+        active.removeAll()
+    }
+
+    deinit {
+        for task in active.values {
+            task.cancel()
+        }
+    }
 }

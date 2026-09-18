@@ -139,6 +139,11 @@ public actor ECoreObjectStore {
     private var heatStates: [SessionID: [ContextObjectID: ECoreHeatState]] = [:]
     private var projectionCounts: [SessionID: [ContextObjectID: Int]] = [:]
     private var cachedMetrics: [SessionID: SessionStorageMetrics] = [:]
+    public struct MutationSubscriptionToken: Hashable, Sendable {
+        public let id: UUID
+        public init(id: UUID = UUID()) { self.id = id }
+    }
+    private var mutationHooks: [MutationSubscriptionToken: @Sendable () async -> Void] = [:]
 
     public init(
         baseDirectory: URL? = nil,
@@ -153,6 +158,25 @@ public actor ECoreObjectStore {
             self.baseDirectory = home.appendingPathComponent(".lingxiagent", isDirectory: true).appendingPathComponent("sessions", isDirectory: true)
         }
         self.telemetryLogger = telemetryLogger ?? ECoreTelemetryLogger(baseDirectory: self.baseDirectory)
+    }
+
+    /// 注册变更通知钩子（供统一检索等外部系统感知 E-Core 对象变更，自动失效与增量重建）
+    @discardableResult
+    public func addMutationHook(_ hook: @escaping @Sendable () async -> Void) -> MutationSubscriptionToken {
+        let token = MutationSubscriptionToken()
+        mutationHooks[token] = hook
+        return token
+    }
+
+    /// 注销变更通知钩子
+    public func removeMutationHook(token: MutationSubscriptionToken) {
+        mutationHooks.removeValue(forKey: token)
+    }
+
+    private func notifyMutation() {
+        for hook in mutationHooks.values {
+            Task { await hook() }
+        }
     }
 
     /// 获取特定 Session 的对象存储根目录
@@ -297,6 +321,7 @@ public actor ECoreObjectStore {
                 }
             }
 
+            notifyMutation()
             return metadata
         } catch {
             // Fail-open: 记录警告但不中断
@@ -637,6 +662,7 @@ public actor ECoreObjectStore {
         } else {
             cachedMetrics[sessionID] = SessionStorageMetrics(count: 0, totalBytes: 0)
         }
+        notifyMutation()
     }
 
     /// 重置或清理 session 存储
@@ -647,6 +673,7 @@ public actor ECoreObjectStore {
         cachedMetrics.removeValue(forKey: sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
         try? FileManager.default.removeItem(at: objectsDir)
+        notifyMutation()
     }
 
     /// 获取会话级外部存储指标（O(1) 内存访问，仅冷启动时扫描一次）

@@ -6,11 +6,15 @@ import LingXiProtocol
 /// 彻底移出 Protocol 层，禁止作为跨进程隐式文件 side channel 使用。
 /// 数据通过 Core 发布权威 SessionSnapshot / 事件流传输给 Application 与 TUI。
 public final class TodoStore: @unchecked Sendable {
-    public static let shared = TodoStore()
+    public static var shared: TodoStore = TodoStore()
     private let lock = NSLock()
     private var todosBySession: [String: [TodoItemData]] = [:]
     private var fileTimestamps: [String: Date] = [:]
     private let storageDir: URL
+
+    public static func configureShared(storageDir: URL) {
+        shared = TodoStore(storageDir: storageDir)
+    }
 
     public init(storageDir: URL? = nil) {
         if let storageDir {

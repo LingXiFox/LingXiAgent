@@ -2,6 +2,56 @@ import Foundation
 import LingXiPlatform
 import LingXiProtocol
 
+/// 代码图谱持久化缓存策略 (GraphCachePolicy)
+public enum GraphCachePolicy: Sendable, Equatable {
+    case disabled
+    case temporary(URL)
+    case persistent(URL)
+
+    public var cacheDirectory: URL? {
+        switch self {
+        case .disabled:
+            return nil
+        case .temporary(let url), .persistent(let url):
+            return url
+        }
+    }
+}
+
+/// 代码图谱持久化缓存硬预算 (GraphCacheBudget)
+public struct GraphCacheBudget: Sendable, Equatable {
+    public var maxTotalBytes: Int64
+    public var maxWorkspaceEntries: Int
+    public var maxEntryAgeSeconds: TimeInterval
+
+    public init(
+        maxTotalBytes: Int64 = 512 * 1024 * 1024, // 512 MB
+        maxWorkspaceEntries: Int = 16,
+        maxEntryAgeSeconds: TimeInterval = 14 * 86400 // 14 days
+    ) {
+        self.maxTotalBytes = maxTotalBytes
+        self.maxWorkspaceEntries = maxWorkspaceEntries
+        self.maxEntryAgeSeconds = maxEntryAgeSeconds
+    }
+}
+
+/// 代码图谱缓存诊断指标 (GraphCacheDiagnostics)
+public struct GraphCacheDiagnostics: Sendable, Codable, Equatable {
+    public let entryCount: Int
+    public let totalBytes: Int64
+    public let orphanCount: Int
+    public let legacyCount: Int
+    public let directoryPath: String
+
+    public init(entryCount: Int, totalBytes: Int64, orphanCount: Int, legacyCount: Int, directoryPath: String) {
+        self.entryCount = entryCount
+        self.totalBytes = totalBytes
+        self.orphanCount = orphanCount
+        self.legacyCount = legacyCount
+        self.directoryPath = directoryPath
+    }
+}
+
 /// 代码图谱构建与拓扑分析引擎 (CodebaseGraphEngine)。
 /// 负责扫描代码库、提取 AST 结构与依赖边、持久化紧凑缓存并提供调用拓扑与架构分析。
 /// Round 2 Phase D:
@@ -11,7 +61,11 @@ import LingXiProtocol
 /// - 持久化 Caller Invocation Summary，增量构建时完整保留与自愈跨文件调用边；
 /// - 语法解析器剥离字符串与注释后统计 Brace 深度，嵌套调用仅归属最内层 Scope，支持单行函数体调用扫描。
 public actor CodebaseGraphEngine {
-    public static let shared = CodebaseGraphEngine()
+    public static var shared: CodebaseGraphEngine = CodebaseGraphEngine()
+
+    public static func configureShared(cachePolicy: GraphCachePolicy, cacheBudget: GraphCacheBudget = GraphCacheBudget()) {
+        shared = CodebaseGraphEngine(cachePolicy: cachePolicy, cacheBudget: cacheBudget)
+    }
 
     // MARK: - Compact Edge Key (Zero String Heap Allocation)
     public struct EdgeKey: Hashable, Sendable {
@@ -61,6 +115,18 @@ public actor CodebaseGraphEngine {
     private var workspaceRootURL: URL?
     private var isIndexing: Bool = false
     private var isInitialized: Bool = false
+    private var currentRevision: UInt64 = 0
+
+    public let cachePolicy: GraphCachePolicy
+    public let cacheBudget: GraphCacheBudget
+
+    public init(
+        cachePolicy: GraphCachePolicy = .persistent(CoreStorageLayout.current.graphCache),
+        cacheBudget: GraphCacheBudget = GraphCacheBudget()
+    ) {
+        self.cachePolicy = cachePolicy
+        self.cacheBudget = cacheBudget
+    }
 
     public var isIndexingInProgress: Bool {
         isIndexing
@@ -136,15 +202,22 @@ public actor CodebaseGraphEngine {
         isInitialized = false
     }
 
-    public init() {}
-
     // MARK: - Workspace Indexing
 
-    public func indexWorkspace(workspaceURL: URL, forceReindex: Bool = false) async -> ArchitectureOverview {
+    public func indexWorkspace(workspaceURL: URL, forceReindex: Bool = false, revision: UInt64 = 0) async -> ArchitectureOverview {
+        if revision > 0 {
+            guard revision >= currentRevision else {
+                return getArchitecture()
+            }
+            currentRevision = revision
+        }
+
         isIndexing = true
         defer {
             isIndexing = false
-            isInitialized = true
+            if !Task.isCancelled {
+                isInitialized = true
+            }
         }
 
         // Workspace 变更时强制清空旧工作区图谱，防止内存污染与泄漏
@@ -163,6 +236,8 @@ public actor CodebaseGraphEngine {
             loadFromDiskCache(for: workspaceURL)
         }
 
+        if Task.isCancelled { return getArchitecture() }
+
         let fileURLs = discoverSourceFiles(in: workspaceURL)
         let currentRelPaths = Set(fileURLs.map { relativePath(for: $0, root: workspaceURL) })
 
@@ -173,6 +248,8 @@ public actor CodebaseGraphEngine {
             fileModificationTimes.removeValue(forKey: deletedPath)
             fileInvocationSummaries.removeValue(forKey: deletedPath)
         }
+
+        if Task.isCancelled { return getArchitecture() }
 
         // 2. 变更检测：筛选新增或被修改的文件
         var changedFiles: [URL] = []
@@ -188,10 +265,13 @@ public actor CodebaseGraphEngine {
 
         // 3. 仅对变更或新增文件重新解析其节点与结构边
         for file in changedFiles {
+            if Task.isCancelled { return getArchitecture() }
             let rel = relativePath(for: file, root: workspaceURL)
             removeFileEntities(byRelPath: rel)
             parseFile(file, root: workspaceURL)
         }
+
+        if Task.isCancelled { return getArchitecture() }
 
         // 4. 重新构建跨文件精准调用边 (基于持久化的 fileInvocationSummaries 全量调用网拓扑重建)
         resolveCrossFileCallEdges()
@@ -958,46 +1038,83 @@ public actor CodebaseGraphEngine {
         return components.first ?? "Core"
     }
 
-    // MARK: - Disk Cache V3 (With Caller Invocation Summaries)
+    // MARK: - Disk Cache V4 (Sidecar Metadata Architecture)
 
     private struct GraphCachePayloadV3: Codable {
         static let currentVersion = 3
         let version: Int
+        let workspaceCanonicalPath: String?
+        let lastAccessTimestamp: Double?
         let manifest: [String: Double]
         let nodes: [GraphNode]
         let edges: [CompactGraphEdge]
         let fileInvocations: [String: [CallerInvocationSummary]]
     }
 
-    private func cacheFileURL(for workspaceURL: URL) -> URL {
-        let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".lingxiagent/cache/graph", isDirectory: true)
+    private struct GraphCacheSidecarMeta: Codable {
+        static let currentVersion = 4
+        let version: Int
+        let workspaceCanonicalPath: String?
+        var lastAccessTimestamp: Double
+        let nodeCount: Int
+        let edgeCount: Int
+        let bodyByteCount: Int64
+    }
+
+    private func cacheFileURL(for workspaceURL: URL) -> URL? {
+        guard let cacheDir = cachePolicy.cacheDirectory else { return nil }
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let canonicalPath = workspaceURL.standardizedFileURL.path
         let hashString = LingXiPlatform.crypto.sha256Hex(canonicalPath)
         return cacheDir.appendingPathComponent("graph_\(hashString).json")
     }
 
+    private func sidecarFileURL(for workspaceURL: URL) -> URL? {
+        guard let cacheDir = cachePolicy.cacheDirectory else { return nil }
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let canonicalPath = workspaceURL.standardizedFileURL.path
+        let hashString = LingXiPlatform.crypto.sha256Hex(canonicalPath)
+        return cacheDir.appendingPathComponent("graph_\(hashString).meta.json")
+    }
+
     private func saveToDiskCache(for workspaceURL: URL) {
-        let url = cacheFileURL(for: workspaceURL)
+        guard let url = cacheFileURL(for: workspaceURL) else { return }
         var manifest: [String: Double] = [:]
         for (file, date) in fileModificationTimes {
             manifest[file] = date.timeIntervalSince1970
         }
+        let canonical = workspaceURL.standardizedFileURL.path
+        let now = Date().timeIntervalSince1970
         let payload = GraphCachePayloadV3(
             version: GraphCachePayloadV3.currentVersion,
+            workspaceCanonicalPath: canonical,
+            lastAccessTimestamp: now,
             manifest: manifest,
             nodes: nodePool,
             edges: edgePool,
             fileInvocations: fileInvocationSummaries
         )
-        if let data = try? JSONEncoder().encode(payload) {
-            try? data.write(to: url)
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        try? data.write(to: url, options: .atomic)
+
+        // 写入轻量 Sidecar Metadata，供 prune 和 diagnostics 零反序列化瞬间查询
+        let sidecar = GraphCacheSidecarMeta(
+            version: GraphCacheSidecarMeta.currentVersion,
+            workspaceCanonicalPath: canonical,
+            lastAccessTimestamp: now,
+            nodeCount: nodePool.count,
+            edgeCount: edgePool.count,
+            bodyByteCount: Int64(data.count)
+        )
+        if let sidecarData = try? JSONEncoder().encode(sidecar), let metaURL = sidecarFileURL(for: workspaceURL) {
+            try? sidecarData.write(to: metaURL, options: .atomic)
         }
+
+        pruneDiskCache()
     }
 
     private func loadFromDiskCache(for workspaceURL: URL) {
-        let url = cacheFileURL(for: workspaceURL)
+        guard let url = cacheFileURL(for: workspaceURL) else { return }
         guard let data = try? Data(contentsOf: url),
               let payload = try? JSONDecoder().decode(GraphCachePayloadV3.self, from: data),
               payload.version == GraphCachePayloadV3.currentVersion else {
@@ -1011,13 +1128,155 @@ public actor CodebaseGraphEngine {
         for node in payload.nodes { addNode(node) }
         for edge in payload.edges { addCompactEdge(edge) }
         if !payload.nodes.isEmpty { isInitialized = true }
+
+        // Load hit: 更新 sidecar 元数据的最后访问时间 (touch lastAccess)
+        if let metaURL = sidecarFileURL(for: workspaceURL),
+           let metaData = try? Data(contentsOf: metaURL),
+           var meta = try? JSONDecoder().decode(GraphCacheSidecarMeta.self, from: metaData) {
+            meta.lastAccessTimestamp = Date().timeIntervalSince1970
+            if let updated = try? JSONEncoder().encode(meta) {
+                try? updated.write(to: metaURL, options: .atomic)
+            }
+        }
+    }
+
+    /// 执行基于 TTL、LRU、孤儿检测与磁盘预算的高性能修剪（零解码 Graph Body）
+    public func pruneDiskCache(budget: GraphCacheBudget? = nil) {
+        guard let cacheDir = cachePolicy.cacheDirectory,
+              FileManager.default.fileExists(atPath: cacheDir.path) else { return }
+        let effectiveBudget = budget ?? self.cacheBudget
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil) else { return }
+
+        struct Entry {
+            let baseName: String
+            let bodyURL: URL
+            let metaURL: URL
+            let meta: GraphCacheSidecarMeta
+        }
+
+        var validEntries: [Entry] = []
+        var recognizedBodyFiles = Set<String>()
+
+        for file in files where file.lastPathComponent.hasPrefix("graph_") && file.lastPathComponent.hasSuffix(".meta.json") {
+            let filename = file.lastPathComponent
+            // 提取 baseName: "graph_HASH"
+            let baseName = String(filename.dropLast(".meta.json".count))
+            let bodyURL = cacheDir.appendingPathComponent("\(baseName).json")
+            recognizedBodyFiles.insert("\(baseName).json")
+
+            guard let metaData = try? Data(contentsOf: file),
+                  let meta = try? JSONDecoder().decode(GraphCacheSidecarMeta.self, from: metaData),
+                  meta.version == GraphCacheSidecarMeta.currentVersion else {
+                // 损坏或版本不匹配，清理
+                try? fileManager.removeItem(at: file)
+                try? fileManager.removeItem(at: bodyURL)
+                continue
+            }
+
+            // 孤儿检测：如果工作区在磁盘上已不存在，自动回收
+            if let canonical = meta.workspaceCanonicalPath, !canonical.isEmpty {
+                if !fileManager.fileExists(atPath: canonical) {
+                    try? fileManager.removeItem(at: file)
+                    try? fileManager.removeItem(at: bodyURL)
+                    continue
+                }
+            }
+
+            let accessDate = Date(timeIntervalSince1970: meta.lastAccessTimestamp)
+            // TTL 检测：超过最大保留天数自动回收
+            if Date().timeIntervalSince(accessDate) > effectiveBudget.maxEntryAgeSeconds {
+                try? fileManager.removeItem(at: file)
+                try? fileManager.removeItem(at: bodyURL)
+                continue
+            }
+
+            validEntries.append(Entry(baseName: baseName, bodyURL: bodyURL, metaURL: file, meta: meta))
+        }
+
+        // 清理没有对应 .meta.json 的遗留/孤立 json 缓存
+        for file in files where file.lastPathComponent.hasPrefix("graph_") && file.pathExtension == "json" && !file.lastPathComponent.hasSuffix(".meta.json") {
+            if !recognizedBodyFiles.contains(file.lastPathComponent) {
+                try? fileManager.removeItem(at: file)
+            }
+        }
+
+        // 按最后访问时间升序排列（最久未访问的在最前面）
+        validEntries.sort { $0.meta.lastAccessTimestamp < $1.meta.lastAccessTimestamp }
+
+        // 1. 条目数上限回收
+        while validEntries.count > effectiveBudget.maxWorkspaceEntries && !validEntries.isEmpty {
+            let victim = validEntries.removeFirst()
+            try? fileManager.removeItem(at: victim.metaURL)
+            try? fileManager.removeItem(at: victim.bodyURL)
+        }
+
+        // 2. 总容量上限回收 (LRU) - 零磁盘 IO，直接读取 Sidecar 中的 bodyByteCount
+        var totalBytes = validEntries.reduce(0) { $0 + $1.meta.bodyByteCount }
+        while totalBytes > effectiveBudget.maxTotalBytes && !validEntries.isEmpty {
+            let victim = validEntries.removeFirst()
+            try? fileManager.removeItem(at: victim.metaURL)
+            try? fileManager.removeItem(at: victim.bodyURL)
+            totalBytes -= victim.meta.bodyByteCount
+        }
+    }
+
+    /// 获取当前持久化缓存诊断信息（零解码 Graph Body，瞬间返回）
+    public func cacheDiagnostics() -> GraphCacheDiagnostics {
+        guard let cacheDir = cachePolicy.cacheDirectory,
+              FileManager.default.fileExists(atPath: cacheDir.path) else {
+            return GraphCacheDiagnostics(entryCount: 0, totalBytes: 0, orphanCount: 0, legacyCount: 0, directoryPath: cachePolicy.cacheDirectory?.path ?? "disabled")
+        }
+        let fileManager = FileManager.default
+        let files = (try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil)) ?? []
+        var count = 0
+        var totalBytes: Int64 = 0
+        var orphans = 0
+        var legacy = 0
+
+        for file in files where file.lastPathComponent.hasPrefix("graph_") && file.lastPathComponent.hasSuffix(".meta.json") {
+            guard let metaData = try? Data(contentsOf: file),
+                  let meta = try? JSONDecoder().decode(GraphCacheSidecarMeta.self, from: metaData),
+                  meta.version == GraphCacheSidecarMeta.currentVersion else {
+                legacy += 1
+                continue
+            }
+            count += 1
+            totalBytes += meta.bodyByteCount
+            if let canonical = meta.workspaceCanonicalPath, !canonical.isEmpty, !fileManager.fileExists(atPath: canonical) {
+                orphans += 1
+            }
+        }
+        return GraphCacheDiagnostics(entryCount: count, totalBytes: totalBytes, orphanCount: orphans, legacyCount: legacy, directoryPath: cacheDir.path)
+    }
+
+    /// 清除遗留历史膨胀缓存（供系统启动、用户命令或诊断调用）
+    public static func purgeLegacyCacheDir(targetDir: URL? = nil) {
+        let dir = targetDir ?? CoreStorageLayout.current.graphCache
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: dir.path),
+              let files = try? fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        for file in files where file.pathExtension == "json" {
+            // 清理无 sidecar 或非当前版本的遗留文件
+            if !file.lastPathComponent.hasSuffix(".meta.json") {
+                let sidecar = dir.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".meta.json")
+                if !fileManager.fileExists(atPath: sidecar.path) {
+                    try? fileManager.removeItem(at: file)
+                }
+            }
+        }
     }
 }
 
 #if DEBUG
 extension CodebaseGraphEngine {
     public func cacheFileURLForTesting(workspaceURL: URL) -> URL {
-        cacheFileURL(for: workspaceURL)
+        if let url = cacheFileURL(for: workspaceURL) {
+            return url
+        }
+        let canonicalPath = workspaceURL.standardizedFileURL.path
+        let hashString = LingXiPlatform.crypto.sha256Hex(canonicalPath)
+        return FileManager.default.temporaryDirectory.appendingPathComponent("graph_\(hashString).json")
     }
 
     public func addEdgeForTesting(_ edge: GraphEdge) {

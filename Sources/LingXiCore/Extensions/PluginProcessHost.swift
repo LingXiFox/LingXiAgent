@@ -3,6 +3,88 @@ import LingXiProtocol
 import LingXiPlatform
 import LingXiPluginSDK
 
+private final class PluginProcessState: @unchecked Sendable {
+    var process: Process?
+    var stdinHandle: FileHandle?
+    var stdoutHandle: FileHandle?
+    var errorHandle: FileHandle?
+    private let lock = NSLock()
+
+    func store(process: Process, stdin: FileHandle, stdout: FileHandle, error: FileHandle) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.process = process
+        self.stdinHandle = stdin
+        self.stdoutHandle = stdout
+        self.errorHandle = error
+    }
+
+    func getHandles() -> (stdin: FileHandle, stdout: FileHandle, isRunning: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let inH = stdinHandle, let outH = stdoutHandle, let proc = process, proc.isRunning else {
+            return nil
+        }
+        return (inH, outH, true)
+    }
+
+    func closeHandles() {
+        let (inH, outH, errH) = lock.withLock {
+            let ih = stdinHandle
+            let oh = stdoutHandle
+            let eh = errorHandle
+            stdinHandle = nil
+            stdoutHandle = nil
+            errorHandle = nil
+            return (ih, oh, eh)
+        }
+
+        try? inH?.close()
+        try? outH?.close()
+        try? errH?.close()
+    }
+
+    func terminate(timeout: TimeInterval = 0.4) async {
+        let proc = lock.withLock {
+            let p = process
+            process = nil
+            return p
+        }
+
+        closeHandles()
+        guard let proc, proc.isRunning else { return }
+
+        proc.terminate()
+        let didExit: Bool = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let start = Date()
+                while proc.isRunning && Date().timeIntervalSince(start) < timeout {
+                    usleep(20_000)
+                }
+                continuation.resume(returning: !proc.isRunning)
+            }
+        }
+
+        if !didExit && proc.isRunning {
+            LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
+            proc.waitUntilExit()
+        }
+    }
+
+    func killForcefully() {
+        let proc = lock.withLock {
+            let p = process
+            process = nil
+            return p
+        }
+
+        closeHandles()
+        guard let proc, proc.isRunning else { return }
+        proc.terminate()
+        LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
+    }
+}
+
 /// 单个外部二进制插件的进程宿主代理。
 public actor PluginProcessHost {
     public let binaryURL: URL
@@ -10,9 +92,7 @@ public actor PluginProcessHost {
     private let permissions: PermissionEngine
     private let watchdogTimeout: Double
 
-    private var process: Process?
-    private var stdinHandle: FileHandle?
-    private var stdoutHandle: FileHandle?
+    private let state = PluginProcessState()
     private var isTerminated = false
 
     public private(set) var handshakeResult: PluginHandshakeResult?
@@ -27,6 +107,10 @@ public actor PluginProcessHost {
         self.scope = scope
         self.permissions = permissions
         self.watchdogTimeout = watchdogTimeout
+    }
+
+    deinit {
+        state.killForcefully()
     }
 
     /// 启动子进程并完成握手
@@ -53,9 +137,17 @@ public actor PluginProcessHost {
             throw CoreError(code: .commandFailed, message: "Failed to spawn plugin process: \(error.localizedDescription)")
         }
 
-        self.process = proc
-        self.stdinHandle = inPipe.fileHandleForWriting
-        self.stdoutHandle = outPipe.fileHandleForReading
+        let inH = inPipe.fileHandleForWriting
+        let outH = outPipe.fileHandleForReading
+        let errH = errPipe.fileHandleForReading
+        state.store(process: proc, stdin: inH, stdout: outH, error: errH)
+
+        // 持续 Drain stderr 防止 64KB pipe 缓冲区写满导致插件进程挂死
+        let drainThread = Thread { [weak errH] in
+            while let chunk = errH?.availableData, !chunk.isEmpty {}
+        }
+        drainThread.name = "org.lingxi.plugin.stderrDrain"
+        drainThread.start()
 
         // 发起握手
         let responseData = try await sendRawRequest(method: "plugin.initialize", params: nil)
@@ -81,7 +173,7 @@ public actor PluginProcessHost {
             )
             let decision = await permissions.check(req)
             if decision.decision == .deny {
-                terminate()
+                await terminate()
                 throw CoreError(code: .permissionDenied, message: "Plugin '\(handshake.manifest.id)' capability denied: \(capability.rawValue)")
             }
         }
@@ -129,30 +221,26 @@ public actor PluginProcessHost {
     }
 
     /// 安全终止或熔断强杀
-    public func terminate() {
+    public func terminate() async {
         guard !isTerminated else { return }
         isTerminated = true
-        if let proc = process, proc.isRunning {
-            proc.terminate()
-            // 延时强杀
-            Task {
-                try? await Task.sleep(for: .milliseconds(200))
-                if proc.isRunning {
-                    LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
-                }
-            }
-        }
-        stdinHandle = nil
-        stdoutHandle = nil
-        process = nil
+        await state.terminate()
+    }
+
+    /// 同步尽力终止与强杀（供 deinit / 同步清理路径使用）
+    public nonisolated func terminateSync() {
+        state.killForcefully()
     }
 
     // MARK: - Private IPC Exchange
 
     private func sendRawRequest(method: String, params: Data?) async throws -> Data {
-        guard let inHandle = stdinHandle, let outHandle = stdoutHandle, let proc = process, proc.isRunning else {
+        guard let handles = state.getHandles() else {
             throw CoreError(code: .processNotRunning, message: "Plugin process is not running")
         }
+
+        let inHandle = handles.stdin
+        let outHandle = handles.stdout
 
         let requestID = UUID().uuidString
         let request = PluginIPCRequest(id: requestID, method: method, params: params)
@@ -197,7 +285,7 @@ public actor PluginProcessHost {
             // 打破孤儿读取线程的阻塞，清理失联或超时的插件进程
             try? outHandle.close()
             if let coreErr = error as? CoreError, coreErr.code == .commandTimedOut {
-                terminate()
+                await terminate()
             }
             throw error
         }

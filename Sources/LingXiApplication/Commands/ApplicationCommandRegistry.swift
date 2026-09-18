@@ -166,7 +166,7 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
                     category: parsed.category.isEmpty ? "Custom" : parsed.category,
                     argumentSchema: parsed.argumentsHint.isEmpty ? "[]" : parsed.argumentsHint
                 ) { [weak self] ctx in
-                    if let result = self?.resolveCustomMarkdownCommand(name: ctx.commandName, args: ctx.arguments) {
+                    if let result = await self?.resolveCustomMarkdownCommand(name: ctx.commandName, args: ctx.arguments, client: ctx.client, sessionID: ctx.sessionID) {
                         return result
                     }
                     throw ApplicationCommandError.commandNotFound(ctx.commandName)
@@ -226,15 +226,15 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
             }
         }
 
-        // 尝试从项目级与全局级目录发现自定义 Markdown 指令
-        if let customResult = resolveCustomMarkdownCommand(name: name, args: args) {
+        // 尝试从项目级与全局级目录发现自定义 Markdown 指令并委托 Core 执行
+        if let customResult = await resolveCustomMarkdownCommand(name: name, args: args, client: client, sessionID: sessionID) {
             return customResult
         }
 
         throw ApplicationCommandError.commandNotFound(name)
     }
 
-    private func resolveCustomMarkdownCommand(name: String, args: [String]) -> ApplicationCommandResult? {
+    private func resolveCustomMarkdownCommand(name: String, args: [String], client: LingXiClientVNext?, sessionID: SessionID?) async -> ApplicationCommandResult? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let currentDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 
@@ -261,17 +261,21 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
                     revertedComposerText: interpolated
                 )
             case .script:
-                // 本地执行脚本
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-                proc.arguments = ["-c", interpolated]
-                let pipe = Pipe()
-                proc.standardOutput = pipe
-                proc.standardError = pipe
-                try? proc.run()
-                proc.waitUntilExit()
-                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                return ApplicationCommandResult(output: output.isEmpty ? "✓ 脚本执行完毕" : output)
+                // 委托 Core 统一执行自定义脚本，严禁前端越权直接 spawn /bin/sh (Audit Round 5 Phase C)
+                if let client {
+                    do {
+                        let res = try await client.extensionDomain.executeCommand(
+                            name: parsed.name,
+                            arguments: args,
+                            sessionID: sessionID?.rawValue
+                        )
+                        return ApplicationCommandResult(output: res.output.isEmpty ? "✓ 脚本执行完毕" : res.output)
+                    } catch {
+                        return ApplicationCommandResult(output: "❌ 脚本由 Core 执行失败: \(error)")
+                    }
+                } else {
+                    return ApplicationCommandResult(output: "❌ 客户端未连接 Core，无法执行脚本命令")
+                }
             }
         }
         return nil

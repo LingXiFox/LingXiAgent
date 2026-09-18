@@ -88,6 +88,41 @@ public struct WarmL2Entry: Sendable, Equatable {
     }
 }
 
+/// Warm L2 / Derived L3 / E-Core 驻留状态与重复数据量化指标
+public struct ContextResidencyTelemetry: Sendable, Codable, Equatable {
+    public let sessionID: String
+    public let l1ResidentCount: Int
+    public let l1ResidentTokens: Int
+    public let warmL2EntryCount: Int
+    public let warmL2Tokens: Int
+    public let residentDerivedCount: Int
+    public let ecoreObjectCount: Int
+    public let ecoreTotalBytes: Int
+    public let duplicateResidencyBytes: Int
+
+    public init(
+        sessionID: String,
+        l1ResidentCount: Int,
+        l1ResidentTokens: Int,
+        warmL2EntryCount: Int,
+        warmL2Tokens: Int,
+        residentDerivedCount: Int,
+        ecoreObjectCount: Int,
+        ecoreTotalBytes: Int,
+        duplicateResidencyBytes: Int
+    ) {
+        self.sessionID = sessionID
+        self.l1ResidentCount = l1ResidentCount
+        self.l1ResidentTokens = l1ResidentTokens
+        self.warmL2EntryCount = warmL2EntryCount
+        self.warmL2Tokens = warmL2Tokens
+        self.residentDerivedCount = residentDerivedCount
+        self.ecoreObjectCount = ecoreObjectCount
+        self.ecoreTotalBytes = ecoreTotalBytes
+        self.duplicateResidencyBytes = duplicateResidencyBytes
+    }
+}
+
 /// Cache Controller 负责三级缓存的加权调度与 L1/L2/L3 Residency 管理。
 /// 模型只负责声明检索意图 (context_search)，调度决策完全由 Cache Controller 驱动。
 public actor ContextCacheController {
@@ -450,6 +485,40 @@ public actor ContextCacheController {
         return dir.appendingPathComponent("telemetry.json", isDirectory: false)
     }
 
+    /// 获取指定会话的 Warm L2 / Derived L3 / E-Core 驻留状态与重复驻留数据量化统计
+    public func residencyTelemetry(sessionID: SessionID) async -> ContextResidencyTelemetry {
+        let l1 = residentPagesBySession[sessionID] ?? [:]
+        let l1Tokens = l1.values.reduce(0) { $0 + $1.tokens }
+        let l2 = warmL2EntriesBySession[sessionID] ?? [:]
+        let l2Tokens = l2.values.reduce(0) { $0 + $1.tokens }
+        let derived = residentDerivedPagesBySession[sessionID] ?? [:]
+        
+        let ecoreObjects = await ecoreStore.listObjects(sessionID: sessionID)
+        let ecoreBytes = ecoreObjects.reduce(0) { $0 + $1.totalBytes }
+        
+        var dupBytes = 0
+        let ecoreNames = Set(ecoreObjects.map { $0.toolName.lowercased() })
+        for entry in l2.values {
+            if let content = entry.page?.content ?? entry.derivedPage?.content {
+                if ecoreNames.contains(entry.id.lowercased()) {
+                    dupBytes += content.utf8.count
+                }
+            }
+        }
+
+        return ContextResidencyTelemetry(
+            sessionID: sessionID.rawValue,
+            l1ResidentCount: l1.count,
+            l1ResidentTokens: l1Tokens,
+            warmL2EntryCount: l2.count,
+            warmL2Tokens: l2Tokens,
+            residentDerivedCount: derived.count,
+            ecoreObjectCount: ecoreObjects.count,
+            ecoreTotalBytes: ecoreBytes,
+            duplicateResidencyBytes: dupBytes
+        )
+    }
+
     private func savePersistedTelemetry(sessionID: SessionID, record: SessionCacheRecord, debt: Int) {
         struct DTO: Codable {
             let cachedTokens: Int
@@ -464,7 +533,11 @@ public actor ContextCacheController {
             let model: String?
             let cacheWriteTokens: Int?
             let cacheDebt: Int
+            let warmL2Count: Int?
+            let ecoreObjectCount: Int?
+            let duplicateResidencyBytes: Int?
         }
+        let l2Count = warmL2EntriesBySession[sessionID]?.count ?? 0
         let dto = DTO(
             cachedTokens: record.cachedTokens,
             promptTokens: record.promptTokens,
@@ -477,7 +550,10 @@ public actor ContextCacheController {
             provider: record.provider,
             model: record.model,
             cacheWriteTokens: record.cacheWriteTokens,
-            cacheDebt: debt
+            cacheDebt: debt,
+            warmL2Count: l2Count,
+            ecoreObjectCount: nil,
+            duplicateResidencyBytes: nil
         )
         if let data = try? JSONEncoder().encode(dto) {
             let url = telemetryFileURL(sessionID: sessionID)
@@ -797,6 +873,13 @@ public actor ContextCacheController {
         warmL2EntriesBySession[sessionID] = currentL2
 
         var outputSections: [String] = []
+        if !ecoreResults.isEmpty {
+            let formatted = ecoreResults.map { meta, snippet in
+                "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
+            }.joined(separator: "\n")
+            outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
+        }
+
         if !pagedInCodebasePages.isEmpty {
             let formatted = pagedInCodebasePages.map { page in
                 "### \(page.path):\(page.startLine)-\(page.endLine)\n```\n\(page.content)\n```"
@@ -810,13 +893,6 @@ public actor ContextCacheController {
                 return "- [\(page.sourceKind.rawValue)]: \(snippet)"
             }.joined(separator: "\n")
             outputSections.append("## Historical Context\n" + formatted)
-        }
-
-        if !ecoreResults.isEmpty {
-            let formatted = ecoreResults.map { meta, snippet in
-                "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
-            }.joined(separator: "\n")
-            outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
         }
 
         return outputSections.joined(separator: "\n\n")

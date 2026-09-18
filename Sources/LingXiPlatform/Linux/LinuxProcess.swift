@@ -36,11 +36,21 @@ public final class LinuxProcessAdapter: PlatformProcessProtocol, @unchecked Send
     public func terminateProcessTree(pid: Int32, force: Bool) {
         guard pid > 1 else { return }
         let sig = force ? SIGKILL : SIGTERM
-        let pgid = getpgid(pid)
-        if pgid > 0 {
-            _ = kill(-pgid, sig)
+        #if canImport(Glibc)
+        let currentPgrp = Glibc.getpgrp()
+        let pgid = Glibc.getpgid(pid)
+        if pgid > 0 && pgid != currentPgrp && (pgid == pid || pgid != Glibc.getpid()) {
+            _ = Glibc.kill(-pgid, sig)
         }
-        _ = kill(pid, sig)
+        _ = Glibc.kill(pid, sig)
+        #elseif canImport(Musl)
+        let currentPgrp = Musl.getpgrp()
+        let pgid = Musl.getpgid(pid)
+        if pgid > 0 && pgid != currentPgrp && (pgid == pid || pgid != Musl.getpid()) {
+            _ = Musl.kill(-pgid, sig)
+        }
+        _ = Musl.kill(pid, sig)
+        #endif
     }
 
     public func nonblockingDrain(handle: FileHandle, chunkSize: Int = 64 * 1024) -> Data {

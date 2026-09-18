@@ -716,6 +716,9 @@ struct UnifiedRetrievalPhaseR13Tests {
 
     @Test("Benchmark: Phase R1.3 Model-Free Semantic Rescue 全量真实语料对比评测")
     func testModelFreeSemanticRescueFullCorpus() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let projectRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let registry = UnifiedRetrievalRegistry.standard(projectRoot: projectRoot)
 
@@ -970,6 +973,9 @@ struct UnifiedRetrievalPhaseR13Tests {
 
     @Test("Export: 导出 4,618 全量切片供 Python 执行最后一次 Dense Sanity Check")
     func testExportCorpusForDenseFairnessCheck() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let projectRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let registry = UnifiedRetrievalRegistry.standard(projectRoot: projectRoot)
         let distractorCorpus = await registry.enumerateAllChunks(projectRoot: projectRoot)

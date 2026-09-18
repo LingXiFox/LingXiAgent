@@ -4,14 +4,22 @@ import LingXiProtocol
 // MARK: - Subsystem Data Structures
 
 public struct CaptureSource: Sendable, Codable, Equatable {
+    public enum Kind: String, Sendable, Codable, Equatable {
+        case display
+        case window
+    }
     public let id: String
     public let name: String
     public let isDisplay: Bool
+    public let kind: Kind
+    public let windowID: UInt32?
 
-    public init(id: String, name: String, isDisplay: Bool) {
+    public init(id: String, name: String, isDisplay: Bool, kind: Kind? = nil, windowID: UInt32? = nil) {
         self.id = id
         self.name = name
         self.isDisplay = isDisplay
+        self.kind = kind ?? (isDisplay ? .display : .window)
+        self.windowID = windowID ?? (isDisplay ? nil : UInt32(id))
     }
 }
 
@@ -29,10 +37,51 @@ public struct CapturedFrame: Sendable {
     }
 }
 
+/// 目标桌面窗口的强类型精准句柄 (DesktopTargetHandle)
+/// 严格绑定进程 PID、CGWindowID、BundleID、Display、几何 Bounds 与状态版本 revision，消除多窗口与图层遮挡下的歧义。
+public struct DesktopTargetHandle: Sendable, Codable, Equatable {
+    public let ownerPID: Int32
+    public let bundleIdentifier: String?
+    public let windowID: UInt32
+    public let displayID: String
+    public let bounds: CoordinateRect
+    public let revision: UInt64
+
+    public init(
+        ownerPID: Int32,
+        bundleIdentifier: String?,
+        windowID: UInt32,
+        displayID: String = "main",
+        bounds: CoordinateRect,
+        revision: UInt64 = 1
+    ) {
+        self.ownerPID = ownerPID
+        self.bundleIdentifier = bundleIdentifier
+        self.windowID = windowID
+        self.displayID = displayID
+        self.bounds = bounds
+        self.revision = revision
+    }
+}
+
+/// 绑定 TargetHandle 与观察版本的无障碍元素引用 (AccessibilityElementRef)
+public struct AccessibilityElementRef: Sendable, Codable, Equatable {
+    public let target: DesktopTargetHandle
+    public let observationRevision: UInt64
+    public let opaqueID: UUID
+
+    public init(target: DesktopTargetHandle, observationRevision: UInt64, opaqueID: UUID = UUID()) {
+        self.target = target
+        self.observationRevision = observationRevision
+        self.opaqueID = opaqueID
+    }
+}
+
 public enum AccessibilityScope: Sendable, Codable, Equatable {
     case fullSystem
     case activeWindow
     case application(bundleOrName: String)
+    case window(DesktopTargetHandle)
 }
 
 public enum AccessibilityAction: Sendable, Codable, Equatable {
@@ -79,13 +128,27 @@ public struct WindowInfo: Sendable, Codable, Equatable {
     public let bundleIdentifier: String?
     public let bounds: CoordinateRect
     public let isMinimized: Bool
+    public let ownerPID: Int32?
 
-    public init(id: String, title: String?, bundleIdentifier: String?, bounds: CoordinateRect, isMinimized: Bool) {
+    public init(id: String, title: String?, bundleIdentifier: String?, bounds: CoordinateRect, isMinimized: Bool, ownerPID: Int32? = nil) {
         self.id = id
         self.title = title
         self.bundleIdentifier = bundleIdentifier
         self.bounds = bounds
         self.isMinimized = isMinimized
+        self.ownerPID = ownerPID
+    }
+
+    public func toTargetHandle(displayID: String = "main", revision: UInt64 = 1) -> DesktopTargetHandle? {
+        guard let winID = UInt32(id) else { return nil }
+        return DesktopTargetHandle(
+            ownerPID: ownerPID ?? 0,
+            bundleIdentifier: bundleIdentifier,
+            windowID: winID,
+            displayID: displayID,
+            bounds: bounds,
+            revision: revision
+        )
     }
 }
 
@@ -108,6 +171,20 @@ public struct ApplicationInfo: Sendable, Codable, Equatable {
 public protocol CaptureBackend: Sendable {
     func availableSources() async throws -> [CaptureSource]
     func captureFrame(source: CaptureSource, cropRect: NormalizedRect?) async throws -> CapturedFrame
+    func captureWindow(handle: DesktopTargetHandle) async throws -> CapturedFrame
+}
+
+extension CaptureBackend {
+    public func captureWindow(handle: DesktopTargetHandle) async throws -> CapturedFrame {
+        let src = CaptureSource(
+            id: String(handle.windowID),
+            name: handle.bundleIdentifier ?? "Window \(handle.windowID)",
+            isDisplay: false,
+            kind: .window,
+            windowID: handle.windowID
+        )
+        return try await captureFrame(source: src, cropRect: nil)
+    }
 }
 
 public protocol AccessibilityBackend: Sendable {

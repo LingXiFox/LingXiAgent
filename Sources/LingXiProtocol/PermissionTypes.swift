@@ -211,6 +211,7 @@ public struct PermissionRule: Sendable, Equatable, Codable {
 public struct PermissionRequest: Sendable, Equatable, Codable {
     public let permissionID: PermissionID
     public let sessionID: SessionID
+    public let runID: String?
     public let toolCallID: ToolCallID
     public let toolID: ToolID
     public let capabilities: Set<ToolCapabilityKind>
@@ -221,6 +222,7 @@ public struct PermissionRequest: Sendable, Equatable, Codable {
     public init(
         permissionID: PermissionID,
         sessionID: SessionID,
+        runID: String? = nil,
         toolCallID: ToolCallID,
         toolID: ToolID,
         capabilities: Set<ToolCapabilityKind> = [],
@@ -229,6 +231,7 @@ public struct PermissionRequest: Sendable, Equatable, Codable {
     ) {
         self.permissionID = permissionID
         self.sessionID = sessionID
+        self.runID = runID
         self.toolCallID = toolCallID
         self.toolID = toolID
         self.capabilities = capabilities
@@ -247,3 +250,36 @@ public struct PermissionReply: Sendable, Equatable, Codable {
         self.decision = decision
     }
 }
+
+/// 单个 Turn / AgentRun 冻结的不可变执行上下文，消除跨 Session/Run 全局权限串扰
+public struct RunExecutionContext: Sendable, Codable, Equatable {
+    public let runID: String
+    public let sessionID: SessionID
+    public let permissionConfiguration: PermissionConfiguration
+    public let workspaceID: String?
+    public let workspacePath: String?
+    public let workspaceRevision: UInt64?
+    public let modelSelection: String?
+    public let timeoutSeconds: Double?
+
+    public init(
+        runID: String,
+        sessionID: SessionID,
+        permissionConfiguration: PermissionConfiguration,
+        workspacePath: String? = nil,
+        modelSelection: String? = nil,
+        timeoutSeconds: Double? = nil,
+        workspaceID: String? = nil,
+        workspaceRevision: UInt64? = nil
+    ) {
+        self.runID = runID
+        self.sessionID = sessionID
+        self.permissionConfiguration = permissionConfiguration
+        self.workspacePath = workspacePath
+        self.modelSelection = modelSelection
+        self.timeoutSeconds = timeoutSeconds
+        self.workspaceID = workspaceID ?? workspacePath
+        self.workspaceRevision = workspaceRevision
+    }
+}
+

@@ -90,6 +90,9 @@ struct DarwinDesktopBackendTests {
 
     @Test("Live Computer Use demonstration on macOS desktop")
     func testLiveComputerUseDemonstration() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_LIVE_DESKTOP"] == "1" else {
+            return
+        }
         let env = DesktopEnvironment.makeCurrentPlatformDefault()
         let snapshot = await env.refreshCapabilities()
 
@@ -174,6 +177,9 @@ struct DarwinDesktopBackendTests {
 
     @Test("Find Untitled document and type Antigravity Computer Use via ComputerBatchTool with Target Attachment")
     func testTypeIntoUntitledDocument() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_LIVE_DESKTOP"] == "1" else {
+            return
+        }
         let env = DesktopEnvironment.makeCurrentPlatformDefault()
         guard let windowsBackend = env.windows else { return }
 
@@ -255,6 +261,9 @@ struct DarwinDesktopBackendTests {
 
     @Test("Live Browser Use demonstration with Target Attachment and Semantic Element Precision")
     func testLiveBrowserUseDemonstration() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_LIVE_DESKTOP"] == "1" else {
+            return
+        }
         let env = DesktopEnvironment.makeCurrentPlatformDefault()
         guard let windowsBackend = env.windows else { return }
 

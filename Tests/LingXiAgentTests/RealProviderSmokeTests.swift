@@ -370,6 +370,7 @@ struct RealProviderSmokeTests {
 
     @MainActor
     @Test func testSensenovaRealPrompt() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1" else { return }
         guard let apiKey = ProcessInfo.processInfo.environment["SENSENOVA_API_KEY"] else { return }
         let prompt = """
         请执行系统级全要素综合体检，按以下步骤对当前会话环境中的所有 MCP 工具链、Skills 技能库与 To-Do 任务流进行一次性端到端实测：
@@ -442,6 +443,7 @@ struct RealProviderSmokeTests {
     }
 
     @Test func testPrefixCacheWithRealProvider() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_REAL_PROVIDER_SMOKE"] == "1" else { return }
         let dataRoot = LingXiDataRootResolver.resolve(
             environment: ProcessInfo.processInfo.environment,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser

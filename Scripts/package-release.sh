@@ -73,6 +73,11 @@ else
     if [ -d "$BIN_DIR/LingXiAgent_LingXiCore.bundle" ]; then
         cp -R "$BIN_DIR/LingXiAgent_LingXiCore.bundle" "$STAGING_DIR/"
     fi
+    mkdir -p "$STAGING_DIR/Sidecars/browser-host"
+    if [ -d "$ROOT_DIR/Sidecars/browser-host" ]; then
+        cp -f "$ROOT_DIR/Sidecars/browser-host/index.mjs" "$STAGING_DIR/Sidecars/browser-host/"
+        cp -f "$ROOT_DIR/Sidecars/browser-host/package.json" "$STAGING_DIR/Sidecars/browser-host/"
+    fi
     ARCHIVE_NAME="lingxiagent-$PLATFORM-$CPU_ARCH.tar.gz"
     tar -czf "$DIST_DIR/$ARCHIVE_NAME" -C "$STAGING_DIR" .
 fi

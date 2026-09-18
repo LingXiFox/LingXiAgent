@@ -183,6 +183,9 @@ struct UnifiedRetrievalPhaseR12Tests {
 
     @Test("Memory: 真实 4.6k 语料构建后倒排索引净内存与稳态 RSS 审计")
     func testRealCorpusMemoryBreakdownAudit() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let registry = UnifiedRetrievalRegistry.standard(projectRoot: root)
 
@@ -784,6 +787,9 @@ struct UnifiedRetrievalPhaseR12Tests {
 
     @Test("Benchmark: 33 条多维度 Semantic Retrieval Benchmark 评测与分类深度剖析")
     func testSemanticBenchmarkEvaluation() throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let corpus = try makeSemanticBenchmarkCorpus()
         let cases = makeSemanticBenchmarkDataset()
         #expect(cases.count >= 30) // 确保满足主人>=30条要求

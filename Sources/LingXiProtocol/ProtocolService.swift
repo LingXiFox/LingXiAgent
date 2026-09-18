@@ -518,12 +518,14 @@ public struct WorkspaceSummary: Codable, Sendable, Equatable {
     public let isGitRepository: Bool
     public var codebaseNodes: Int?
     public var codebaseEdges: Int?
+    public var indexingState: String?
 
-    public init(rootPath: String, isGitRepository: Bool, codebaseNodes: Int? = nil, codebaseEdges: Int? = nil) {
+    public init(rootPath: String, isGitRepository: Bool, codebaseNodes: Int? = nil, codebaseEdges: Int? = nil, indexingState: String? = nil) {
         self.rootPath = rootPath
         self.isGitRepository = isGitRepository
         self.codebaseNodes = codebaseNodes
         self.codebaseEdges = codebaseEdges
+        self.indexingState = indexingState
     }
 }
 

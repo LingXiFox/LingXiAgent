@@ -43,7 +43,8 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
                 title: title,
                 bundleIdentifier: bundleID,
                 bounds: rect,
-                isMinimized: false
+                isMinimized: false,
+                ownerPID: pidNum?.int32Value
             ))
         }
 
@@ -118,10 +119,8 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
             let appElement = AXUIElementCreateApplication(pid)
             AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
 
-            var windowsVal: AnyObject?
-            if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsVal) == .success,
-               let axWindows = windowsVal as? [AXUIElement], let frontWin = axWindows.first {
-                AXUIElementPerformAction(frontWin, kAXRaiseAction as CFString)
+            if let targetAXWindow = Self.findAXWindow(appElement: appElement, matchingWindowID: winID, fallbackBounds: targetWin.bounds, fallbackTitle: targetWin.title) {
+                AXUIElementPerformAction(targetAXWindow, kAXRaiseAction as CFString)
             }
             try? await Task.sleep(nanoseconds: 60_000_000)
         }
@@ -144,13 +143,10 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
 
         let pid = pidNum.int32Value
         let appElement = AXUIElementCreateApplication(pid)
-        var windowsVal: AnyObject?
-        let copyErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsVal)
-        guard copyErr == .success, let axWindows = windowsVal as? [AXUIElement], !axWindows.isEmpty else {
-            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to access AXWindows for PID \(pid) (AXError: \(copyErr.rawValue))")
+        guard let targetAXWindow = Self.findAXWindow(appElement: appElement, matchingWindowID: winID, fallbackBounds: bounds) else {
+            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to locate exact target AXWindow for PID \(pid) WindowID \(winID)")
         }
 
-        let targetAXWindow = axWindows.first!
         var pos = CGPoint(x: bounds.origin.x, y: bounds.origin.y)
         guard let posVal = AXValueCreate(.cgPoint, &pos) else {
             throw ActionExecutionError.inputInjectionFailed(reason: "Failed to create AXValue for position")
@@ -166,6 +162,70 @@ public final class DarwinWindowBackend: WindowBackend, @unchecked Sendable {
         if posErr != .success && sizeErr != .success {
             throw ActionExecutionError.inputInjectionFailed(reason: "Failed to set window bounds: posErr=\(posErr.rawValue), sizeErr=\(sizeErr.rawValue)")
         }
+    }
+
+    /// 精确映射 CGWindowID 至对应的 AXUIElement 窗口，杜绝多窗口应用下误将动作路由给错误窗口。
+    public static func findAXWindow(
+        appElement: AXUIElement,
+        matchingWindowID targetID: UInt32,
+        fallbackBounds: CoordinateRect? = nil,
+        fallbackTitle: String? = nil
+    ) -> AXUIElement? {
+        var windowsVal: AnyObject?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsVal) == .success,
+              let axWindows = windowsVal as? [AXUIElement], !axWindows.isEmpty else {
+            return nil
+        }
+
+        // 1. 优先通过私有但稳定的 _AXUIElementGetWindow 运行时符号获取真实 CGWindowID
+        typealias AXGetWindowFunc = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+        if let handle = dlopen(nil, RTLD_LAZY),
+           let sym = dlsym(handle, "_AXUIElementGetWindow") {
+            let getWin = unsafeBitCast(sym, to: AXGetWindowFunc.self)
+            for axWin in axWindows {
+                var currentID: CGWindowID = 0
+                if getWin(axWin, &currentID) == .success && currentID == targetID {
+                    return axWin
+                }
+            }
+        }
+
+        // 2. 几何与标题精准匹对 (几何容差 <= 5pt)
+        if let bounds = fallbackBounds {
+            for axWin in axWindows {
+                var posVal: AnyObject?
+                var sizeVal: AnyObject?
+                var pt = CGPoint.zero
+                var sz = CGSize.zero
+                if AXUIElementCopyAttributeValue(axWin, kAXPositionAttribute as CFString, &posVal) == .success,
+                   AXUIElementCopyAttributeValue(axWin, kAXSizeAttribute as CFString, &sizeVal) == .success,
+                   let pos = posVal, let size = sizeVal {
+                    if AXValueGetValue(pos as! AXValue, .cgPoint, &pt),
+                       AXValueGetValue(size as! AXValue, .cgSize, &sz) {
+                        let diffX = abs(Double(pt.x) - bounds.origin.x)
+                        let diffY = abs(Double(pt.y) - bounds.origin.y)
+                        let diffW = abs(Double(sz.width) - bounds.width)
+                        let diffH = abs(Double(sz.height) - bounds.height)
+                        if diffX < 8 && diffY < 8 && diffW < 12 && diffH < 12 {
+                            return axWin
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. 标题精准匹对
+        if let title = fallbackTitle, !title.isEmpty {
+            for axWin in axWindows {
+                var titleVal: AnyObject?
+                if AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleVal) == .success,
+                   let t = titleVal as? String, t == title {
+                    return axWin
+                }
+            }
+        }
+
+        return axWindows.first
     }
 }
 #endif

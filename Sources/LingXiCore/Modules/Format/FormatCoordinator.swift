@@ -153,7 +153,7 @@ public actor FormatCoordinator {
             try process.run()
 
             // 设置执行超时，防止格式化器挂起（最大 15 秒）
-            let task = Task.detached {
+            let task = Task {
                 process.waitUntilExit()
             }
 

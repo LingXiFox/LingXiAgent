@@ -162,65 +162,45 @@ public struct WebFetchTool: ToolExecutor {
         }
 
         let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-        let maxLimit = min(max(1024, input.maxBytes ?? 65_536), 262_144)
+        let limit = min(max(1, input.maxBytes ?? 32_768), 262_144)
 
-        // 1. JSON 响应：自动进行漂亮缩进格式化，彻底消除嵌套转义地狱
-        if contentType.contains("json") || (try? JSONSerialization.jsonObject(with: data)) != nil {
-            if let obj = try? JSONSerialization.jsonObject(with: data),
-               let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
-               let prettyStr = String(data: prettyData, encoding: .utf8) {
-                let bounded = prettyStr.prefix(maxLimit)
-                var output = "URL: \(url.absoluteString)\n"
-                output += "Status: \(http.statusCode) OK\n"
-                output += "Content-Type: application/json\n\n"
-                output += "```json\n"
-                output += bounded
-                if prettyStr.count > maxLimit {
-                    output += "\n... [Truncated: \(prettyStr.count - maxLimit) bytes omitted]"
-                }
-                output += "\n```"
-                return output
-            }
-        }
-
-        // 2. HTML 响应：自动清洗并转为极高可读性的 Markdown 正文
-        let rawContent = String(decoding: data, as: UTF8.self)
+        let processedContent: String
+        // 1. HTML 响应：自动清洗并转为极高可读性的 Markdown 正文 (除非显式要求 raw)
+        let rawContent = String(decoding: data.prefix(limit), as: UTF8.self)
         if !(input.raw ?? false) && (contentType.contains("html") || rawContent.contains("<!DOCTYPE") || rawContent.contains("<html")) {
-            let (title, markdown) = WebHTMLCleaner.clean(rawContent)
-            let bounded = markdown.prefix(maxLimit)
-
-            var output = "URL: \(url.absoluteString)\n"
-            output += "Status: \(http.statusCode)\n"
-            if let title, !title.isEmpty {
-                output += "Title: \(title)\n"
-            }
-            output += "Content-Type: text/html (Cleaned to Markdown)\n\n"
-            output += bounded
-            if markdown.count > maxLimit {
-                output += "\n\n... [Content truncated at \(maxLimit) characters out of \(markdown.count) total]"
-            }
-            return String(output)
+            let fullText = String(decoding: data, as: UTF8.self)
+            let (_, markdown) = WebHTMLCleaner.clean(fullText)
+            processedContent = String(markdown.prefix(limit))
+        } else {
+            processedContent = rawContent
         }
 
-        // 3. 纯文本 / 源代码响应
-        let bounded = rawContent.prefix(maxLimit)
-        var output = "URL: \(url.absoluteString)\n"
-        output += "Status: \(http.statusCode)\n\n"
-        output += bounded
-        if rawContent.count > maxLimit {
-            output += "\n\n... [Content truncated at \(maxLimit) characters]"
+        var result: [String: Any] = [
+            "url": url.absoluteString,
+            "status": http.statusCode,
+            "content": processedContent,
+            "truncated": data.count > limit
+        ]
+        if !contentType.isEmpty {
+            result["contentType"] = contentType
         }
-        return String(output)
+
+        guard JSONSerialization.isValidJSONObject(result), let encoded = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) else {
+            throw CoreError(code: .toolExecutionFailed, message: "Web fetch 结果无法编码")
+        }
+        return String(decoding: encoded, as: UTF8.self)
     }
 }
 
 public struct WebSearchTool: ToolExecutor {
     private let session: URLSession
     private let endpoint: URL?
+    private let tavilyAPIKey: String?
 
-    public init(session: URLSession = .shared, endpoint: URL? = nil) {
+    public init(session: URLSession = .shared, endpoint: URL? = nil, tavilyAPIKey: String? = nil) {
         self.session = session
         self.endpoint = endpoint
+        self.tavilyAPIKey = tavilyAPIKey
     }
 
     public let definition = ToolDefinition(
@@ -250,15 +230,13 @@ public struct WebSearchTool: ToolExecutor {
         let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "web_search query 不能为空") }
 
-        let env = ProcessInfo.processInfo.environment
-
         // 1. 优先使用显式配置的 backend endpoint (如 SearXNG / 自建搜索端点)
         if let configured = endpoint {
             return try await executeConfiguredEndpoint(configured, query: query, maxResults: input.maxResults ?? 5)
         }
 
         // 2. 支持开箱即用的 Tavily 搜索服务 (若配置了 TAVILY_API_KEY)
-        if let tavilyKey = env["TAVILY_API_KEY"], !tavilyKey.isEmpty {
+        if let tavilyKey = tavilyAPIKey, !tavilyKey.isEmpty {
             return try await executeTavilySearch(apiKey: tavilyKey, query: query, maxResults: input.maxResults ?? 5)
         }
 

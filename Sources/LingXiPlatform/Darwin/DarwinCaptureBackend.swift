@@ -41,12 +41,24 @@ public final class DarwinCaptureBackend: CaptureBackend, @unchecked Sendable {
             }
         }
 
-        guard let displayIDVal = UInt32(source.id) else {
-            throw ActionExecutionError.inputInjectionFailed(reason: "Invalid display ID: \(source.id)")
-        }
+        let cgImage: CGImage
+        let targetDisplayID: UInt32
 
-        guard let cgImage = CGDisplayCreateImage(displayIDVal) else {
-            throw ActionExecutionError.inputInjectionFailed(reason: "Failed to capture CGImage from display \(source.id)")
+        if source.kind == .window || source.windowID != nil, let winID = source.windowID ?? UInt32(source.id) {
+            guard let winImg = CGWindowListCreateImage(.null, .optionIncludingWindow, winID, [.bestResolution]) else {
+                throw ActionExecutionError.inputInjectionFailed(reason: "Failed to capture window image for windowID: \(winID)")
+            }
+            cgImage = winImg
+            targetDisplayID = CGMainDisplayID()
+        } else {
+            guard let displayIDVal = UInt32(source.id) else {
+                throw ActionExecutionError.inputInjectionFailed(reason: "Invalid display ID: \(source.id)")
+            }
+            guard let img = CGDisplayCreateImage(displayIDVal) else {
+                throw ActionExecutionError.inputInjectionFailed(reason: "Failed to capture CGImage from display \(source.id)")
+            }
+            cgImage = img
+            targetDisplayID = displayIDVal
         }
 
         let width = cgImage.width
@@ -77,7 +89,7 @@ public final class DarwinCaptureBackend: CaptureBackend, @unchecked Sendable {
         }
 
         let dynamicScaleFactor: Double = {
-            if let mode = CGDisplayCopyDisplayMode(displayIDVal) {
+            if let mode = CGDisplayCopyDisplayMode(targetDisplayID) {
                 let pixelW = mode.pixelWidth
                 let logW = mode.width
                 if logW > 0 {
@@ -86,7 +98,7 @@ public final class DarwinCaptureBackend: CaptureBackend, @unchecked Sendable {
             }
             let screens = NSScreen.screens
             if let screen = screens.first(where: {
-                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayIDVal
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == targetDisplayID
             }) {
                 return Double(screen.backingScaleFactor)
             }

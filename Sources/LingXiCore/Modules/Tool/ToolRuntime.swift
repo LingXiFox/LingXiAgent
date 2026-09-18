@@ -160,6 +160,7 @@ public actor ToolDefinitionsCache {
         public let executionProfileTag: String?
         public let permissionProfile: ExecutionProfile
         public let leaseRevision: UInt64
+        public let mcpRevision: UInt64
         public let registryRevision: UInt64
     }
 
@@ -204,6 +205,7 @@ public struct ToolRuntime: Sendable {
     ]
     public static let coreToolIDs: Set<ToolID> = Set(coreToolOrder)
 
+    public let workspacePath: String?
     private let registry: ToolRegistry
     private let permissions: PermissionEngine
     private let mutations: ToolMutationCoordinator
@@ -229,8 +231,10 @@ public struct ToolRuntime: Sendable {
         cacheController: ContextCacheController? = nil,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         dynamicLeases: DynamicToolLeaseManager = DynamicToolLeaseManager(),
-        definitionsCache: ToolDefinitionsCache = ToolDefinitionsCache()
+        definitionsCache: ToolDefinitionsCache = ToolDefinitionsCache(),
+        workspacePath: String? = nil
     ) {
+        self.workspacePath = workspacePath
         self.registry = registry
         self.permissions = permissions
         self.mutations = mutations
@@ -272,10 +276,24 @@ public struct ToolRuntime: Sendable {
         await dynamicLeases.unlease(sessionID: sessionID, toolID: toolID)
     }
 
-    public func availableDefinitions(sessionID: SessionID? = nil, runID: AgentRunID? = nil, interactive: Bool = false, executionProfile: SubagentExecutionProfile? = nil) async -> [ToolDefinition] {
-        let configuration = await permissions.currentConfiguration()
+    public func availableDefinitions(
+        sessionID: SessionID? = nil,
+        runID: AgentRunID? = nil,
+        interactive: Bool = false,
+        executionProfile: SubagentExecutionProfile? = nil,
+        permissionConfiguration: PermissionConfiguration? = nil
+    ) async -> [ToolDefinition] {
+        let configuration: PermissionConfiguration
+        if let permissionConfiguration {
+            configuration = permissionConfiguration
+        } else if let contextConfig = AgentExecutionContext.currentRunContext?.permissionConfiguration {
+            configuration = contextConfig
+        } else {
+            configuration = await permissions.currentConfiguration()
+        }
         let profile = Self.attenuatedProfile(requested: executionProfile?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:)), parent: configuration.profile)
         let leaseRev = await dynamicLeases.revision
+        let mcpRev = await mcpPager?.revision ?? 0
 
         let execTag = executionProfile.map { "\($0.permissionProfile ?? ""):\($0.toolProfile?.joined(separator: ",") ?? "")" }
         let key = ToolDefinitionsCache.CacheKey(
@@ -285,6 +303,7 @@ public struct ToolRuntime: Sendable {
             executionProfileTag: execTag,
             permissionProfile: profile,
             leaseRevision: leaseRev,
+            mcpRevision: mcpRev,
             registryRevision: toolRegistryRevision
         )
 
@@ -417,9 +436,11 @@ public struct ToolRuntime: Sendable {
         sessionID: SessionID,
         projectID: ProjectID = ProjectID("ephemeral"),
         executionProfile: SubagentExecutionProfile? = nil,
+        permissionConfiguration: PermissionConfiguration? = nil,
+        runExecutionContext: RunExecutionContext? = nil,
         onPermissionAsked: (@Sendable (PermissionRequest) async -> Void)? = nil
     ) async -> ToolResult {
-        await executeWithMetrics(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, onPermissionAsked: onPermissionAsked ?? { _ in }).result
+        await executeWithMetrics(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, permissionConfiguration: permissionConfiguration, runExecutionContext: runExecutionContext, onPermissionAsked: onPermissionAsked ?? { _ in }).result
     }
 
     public func executeWithMetrics(
@@ -427,6 +448,8 @@ public struct ToolRuntime: Sendable {
         sessionID: SessionID,
         projectID: ProjectID = ProjectID("ephemeral"),
         executionProfile: SubagentExecutionProfile? = nil,
+        permissionConfiguration: PermissionConfiguration? = nil,
+        runExecutionContext: RunExecutionContext? = nil,
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void,
         observer: ToolExecutionObserver? = nil,
         parentDeadline: ExecutionDeadline? = nil
@@ -437,7 +460,7 @@ public struct ToolRuntime: Sendable {
         return await ToolExecutionContext.$lifecycleTrace.withValue(lifecycle) {
             await ToolExecutionContext.$toolCallID.withValue(call.callID) {
                 do {
-                    var outcome = try await executeWithMetricsUnbounded(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, onPermissionAsked: onPermissionAsked, observer: observer, deadline: deadline)
+                    var outcome = try await executeWithMetricsUnbounded(call, sessionID: sessionID, projectID: projectID, executionProfile: executionProfile, permissionConfiguration: permissionConfiguration, runExecutionContext: runExecutionContext, onPermissionAsked: onPermissionAsked, observer: observer, deadline: deadline)
                     lifecycle.record(.toolResultBuilt, processPID: lifecycle.snapshot().last?.processPID, exitCode: outcome.result.exitCode.map { Int32($0) })
                     outcome.lifecycleTrace = lifecycle
                     return outcome
@@ -471,6 +494,8 @@ public struct ToolRuntime: Sendable {
         sessionID: SessionID,
         projectID: ProjectID,
         executionProfile: SubagentExecutionProfile?,
+        permissionConfiguration: PermissionConfiguration?,
+        runExecutionContext: RunExecutionContext?,
         onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void,
         observer: ToolExecutionObserver?,
         deadline: ExecutionDeadline
@@ -485,16 +510,33 @@ public struct ToolRuntime: Sendable {
         var executionStartedAt: ContinuousClock.Instant?
         do {
             try Task.checkCancellation()
+            // 校验 Workspace 身份一致性，防止跨工作区或过期工作区执行导致的数据泄露/写错目录 (Audit Round 7 Phase A)
+            if let contextWorkspace = runExecutionContext?.workspacePath ?? AgentExecutionContext.currentRunContext?.workspacePath {
+                if let currentWorkspace = self.workspacePath {
+                    let stdCtx = URL(fileURLWithPath: contextWorkspace).standardizedFileURL.path
+                    let stdCur = URL(fileURLWithPath: currentWorkspace).standardizedFileURL.path
+                    guard stdCtx == stdCur else {
+                        throw CoreError(code: .commandFailed, message: "staleWorkspaceContext: Run workspace (\(stdCtx)) does not match ToolRuntime workspace (\(stdCur))")
+                    }
+                }
+            }
             if let allowed = executionProfile?.toolProfile, !allowed.contains(call.toolID.rawValue) {
                 throw CoreError(code: .permissionDenied, message: "Execution Profile 不允许 \(call.toolID.rawValue)")
             }
-            let baseConfiguration = await permissions.currentConfiguration()
-            let effectiveProfile = Self.attenuatedProfile(requested: executionProfile?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:)), parent: baseConfiguration.profile)
+            let effectiveConfig: PermissionConfiguration
+            if let config = runExecutionContext?.permissionConfiguration ?? permissionConfiguration ?? AgentExecutionContext.currentRunContext?.permissionConfiguration {
+                effectiveConfig = config
+            } else {
+                effectiveConfig = await permissions.currentConfiguration()
+            }
+            let effectiveProfile = Self.attenuatedProfile(requested: executionProfile?.permissionProfile.flatMap(ExecutionProfile.init(rawValue:)), parent: effectiveConfig.profile)
+            let currentRunID = runExecutionContext?.runID ?? AgentExecutionContext.currentRunContext?.runID ?? AgentExecutionContext.current?.runID.rawValue
             if call.toolID == SubagentTool.definition.id, let subagents {
                 try ToolSchemaValidator.validate(arguments: call.arguments, schema: SubagentTool.definition.inputSchema)
                 let request = PermissionRequest(
                     permissionID: PermissionID(UUID().uuidString),
                     sessionID: sessionID,
+                    runID: currentRunID,
                     toolCallID: call.callID,
                     toolID: call.toolID,
                     capabilities: SubagentTool.definition.capability.kinds,
@@ -503,7 +545,7 @@ public struct ToolRuntime: Sendable {
                 )
                 let permissionStart = clock.now
                 lifecycleTrace?.record(.permissionStart)
-                let resolution = await permissions.resolve(request) {
+                let resolution = await permissions.resolve(request, configuration: effectiveConfig) {
                     await observer?.permissionAsked(request)
                     await onPermissionAsked(request)
                 }
@@ -661,7 +703,7 @@ public struct ToolRuntime: Sendable {
             }
             if registry.tool(for: call.toolID) == nil, let mcpPager {
                 if await mcpPager.canHandle(sessionID: sessionID, providerToolID: call.toolID) {
-                    return await executeMCP(call, sessionID: sessionID, projectID: projectID, profile: effectiveProfile, pager: mcpPager, onPermissionAsked: onPermissionAsked, observer: observer, deadline: deadline)
+                    return await executeMCP(call, sessionID: sessionID, projectID: projectID, profile: effectiveProfile, configuration: effectiveConfig, runID: currentRunID, pager: mcpPager, onPermissionAsked: onPermissionAsked, observer: observer, deadline: deadline)
                 }
             }
             guard let tool = registry.tool(for: call.toolID) else {
@@ -676,6 +718,7 @@ public struct ToolRuntime: Sendable {
             let request = PermissionRequest(
                 permissionID: PermissionID(UUID().uuidString),
                 sessionID: sessionID,
+                runID: currentRunID,
                 toolCallID: call.callID,
                 toolID: call.toolID,
                 capabilities: capabilities,
@@ -686,6 +729,7 @@ public struct ToolRuntime: Sendable {
                 let externalRequest = PermissionRequest(
                     permissionID: PermissionID(UUID().uuidString),
                     sessionID: sessionID,
+                    runID: currentRunID,
                     toolCallID: call.callID,
                     toolID: call.toolID,
                     capabilities: [.externalFilesystem],
@@ -693,7 +737,7 @@ public struct ToolRuntime: Sendable {
                     description: "允许 \(call.toolID.rawValue) 访问 Workspace 外目录"
                 )
                 lifecycleTrace?.record(.permissionStart)
-                let externalResolution = await permissions.resolve(externalRequest, action: .externalDirectory) {
+                let externalResolution = await permissions.resolve(externalRequest, action: .externalDirectory, configuration: effectiveConfig) {
                     await observer?.permissionAsked(externalRequest)
                     await onPermissionAsked(externalRequest)
                 }
@@ -707,7 +751,7 @@ public struct ToolRuntime: Sendable {
             }
             let permissionStart = clock.now
             lifecycleTrace?.record(.permissionStart)
-            let resolution = await permissions.resolve(request, action: Self.permissionAction(for: tool.definition.id)) {
+            let resolution = await permissions.resolve(request, action: Self.permissionAction(for: tool.definition.id), configuration: effectiveConfig) {
                 await observer?.permissionAsked(request)
                 await onPermissionAsked(request)
             }
@@ -848,7 +892,7 @@ public struct ToolRuntime: Sendable {
     public func finishMCPProviderStep(sessionID: SessionID) async { await mcpPager?.finishProviderStep(sessionID: sessionID) }
     public func abortMCPTurn(sessionID: SessionID) async { await mcpPager?.abortTurn(sessionID: sessionID) }
 
-    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, profile: ExecutionProfile, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void, observer: ToolExecutionObserver?, deadline: ExecutionDeadline) async -> ExecutionOutcome {
+    private func executeMCP(_ call: ToolCall, sessionID: SessionID, projectID: ProjectID, profile: ExecutionProfile, configuration: PermissionConfiguration?, runID: String?, pager: MCPToolPager, onPermissionAsked: @escaping @Sendable (PermissionRequest) async -> Void, observer: ToolExecutionObserver?, deadline: ExecutionDeadline) async -> ExecutionOutcome {
         let clock = ContinuousClock()
         let lifecycleTrace = ToolExecutionContext.lifecycleTrace
         do {
@@ -859,11 +903,11 @@ public struct ToolRuntime: Sendable {
             if isDestructive {
                 capabilities.insert(.destructive)
             }
-            let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, toolCallID: call.callID, toolID: lease.toolID, capabilities: capabilities, resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
+            let request = PermissionRequest(permissionID: PermissionID(UUID().uuidString), sessionID: sessionID, runID: runID, toolCallID: call.callID, toolID: lease.toolID, capabilities: capabilities, resource: lease.toolID.rawValue, description: "允许外部 MCP Tool \(lease.toolID.rawValue)")
             guard profile != .readOnly || ToolCapability(request.capabilities).readOnly else { throw CoreError(code: .permissionDenied, message: "readOnly Profile 不允许 MCP Tool") }
             let permissionStarted = clock.now
             lifecycleTrace?.record(.permissionStart)
-            let resolution = await permissions.resolve(request) {
+            let resolution = await permissions.resolve(request, configuration: configuration) {
                 await observer?.permissionAsked(request)
                 await onPermissionAsked(request)
             }

@@ -38,8 +38,8 @@ public struct ExecutionTimeoutSettings: Codable, Sendable, Equatable {
         foregroundShellSeconds: Double = 60,
         buildTestSeconds: Double = 300,
         mcpSeconds: Double = 60,
-        providerSeconds: Double = 300,
-        providerIdleSeconds: Double = 120,
+        providerSeconds: Double = 120,
+        providerIdleSeconds: Double = 45,
         subagentSeconds: Double = 600,
         agentRunSeconds: Double = 1_800,
         maximumSeconds: Double = 3_600
@@ -68,8 +68,8 @@ public struct ExecutionTimeoutSettings: Codable, Sendable, Equatable {
             foregroundShellSeconds: try values.decodeIfPresent(Double.self, forKey: .foregroundShellSeconds) ?? 60,
             buildTestSeconds: try values.decodeIfPresent(Double.self, forKey: .buildTestSeconds) ?? 300,
             mcpSeconds: try values.decodeIfPresent(Double.self, forKey: .mcpSeconds) ?? 60,
-            providerSeconds: try values.decodeIfPresent(Double.self, forKey: .providerSeconds) ?? 300,
-            providerIdleSeconds: try values.decodeIfPresent(Double.self, forKey: .providerIdleSeconds) ?? 120,
+            providerSeconds: try values.decodeIfPresent(Double.self, forKey: .providerSeconds) ?? 120,
+            providerIdleSeconds: try values.decodeIfPresent(Double.self, forKey: .providerIdleSeconds) ?? 45,
             subagentSeconds: try values.decodeIfPresent(Double.self, forKey: .subagentSeconds) ?? 600,
             agentRunSeconds: try values.decodeIfPresent(Double.self, forKey: .agentRunSeconds) ?? 1_800,
             maximumSeconds: try values.decodeIfPresent(Double.self, forKey: .maximumSeconds) ?? 3_600

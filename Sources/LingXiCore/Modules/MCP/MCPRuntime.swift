@@ -157,6 +157,7 @@ public actor MCPToolPager {
     private var serverStatuses: [MCPServerID: MCPServerRuntimeStatus] = [:]
     private var serverAliases: [MCPServerID: String] = [:]
     public private(set) var pageFaults = 0
+    public private(set) var revision: UInt64 = 0
 
     public init(schemaStore: MCPToolSchemaStore = MCPToolSchemaStore(), invoker: (any MCPToolInvoker)? = nil, maxSchemaBytes: Int = 128 * 1024, maxSchemaDepth: Int = 64, maxCatalogTools: Int = 1_000) {
         self.schemas = schemaStore; self.invoker = invoker; self.maxSchemaBytes = maxSchemaBytes; self.maxSchemaDepth = maxSchemaDepth; self.maxCatalogTools = maxCatalogTools
@@ -206,6 +207,7 @@ public actor MCPToolPager {
         } else {
             serverStatuses[serverID] = .ready(toolCount: tools.count)
         }
+        revision &+= 1
     }
 
     public func markServerUnavailable(serverID: MCPServerID) {
@@ -230,6 +232,7 @@ public actor MCPToolPager {
             }
             sessions[sessionID] = state
         }
+        revision &+= 1
     }
 
     @discardableResult
@@ -389,6 +392,7 @@ public actor MCPToolPager {
         let providerName = codec.encode(serverAlias: entry.serverAlias, upstreamName: entry.upstreamName, toolID: effectiveID)
         let lease = MCPToolSchemaLease(leaseID: UUID().uuidString, sessionID: sessionID, toolID: effectiveID, schemaHash: entry.schemaHash, providerName: providerName, createdAt: .now, expiresAt: .now.addingTimeInterval(300), state: .armed)
         var state = sessions[sessionID] ?? SessionState(); state.leases[lease.leaseID] = lease; sessions[sessionID] = state
+        revision &+= 1
         return lease
     }
 
@@ -494,10 +498,11 @@ public actor MCPToolPager {
         }
         state.presented.removeAll()
         sessions[sessionID] = state
+        revision &+= 1
     }
 
-    public func abortTurn(sessionID: SessionID) { sessions[sessionID]?.leases.removeAll(); sessions[sessionID]?.presented.removeAll() }
-    public func discardSession(_ sessionID: SessionID) { sessions.removeValue(forKey: sessionID); providerSchemaCounts.removeValue(forKey: sessionID) }
+    public func abortTurn(sessionID: SessionID) { sessions[sessionID]?.leases.removeAll(); sessions[sessionID]?.presented.removeAll(); revision &+= 1 }
+    public func discardSession(_ sessionID: SessionID) { sessions.removeValue(forKey: sessionID); providerSchemaCounts.removeValue(forKey: sessionID); revision &+= 1 }
 
     public func leaseCount(sessionID: SessionID) -> Int { purgeExpired(sessionID); return sessions[sessionID]?.leases.count ?? 0 }
     /// Request audit only: counts, never schema bodies.

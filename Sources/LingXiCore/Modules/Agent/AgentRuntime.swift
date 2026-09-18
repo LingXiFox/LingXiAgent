@@ -11,12 +11,12 @@ public actor AgentRuntime {
     private let contextEngine: L1ContextEngine
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
-    private let toolRuntime: ToolRuntime
+    private var toolRuntime: ToolRuntime
     private let questions: QuestionRuntime
     private let permissions: PermissionEngine
     private let performanceStore: PerformanceStore
-    private let contextPager: ContextPager
-    private let projectScanner: ProjectScanner
+    private var contextPager: ContextPager
+    private var projectScanner: ProjectScanner
     private let compactor: ContextCompactor
     private let budgetPlanner: ContextBudgetPlanner
     private let persistence: SQLitePersistenceStore?
@@ -31,7 +31,7 @@ public actor AgentRuntime {
     private let limits: SubagentRuntimeLimits
     private var behaviorProfile: AgentBehaviorProfile
     private var behaviorInstructionsEnabled: Bool
-    private let behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
+    private var behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let restoreScheduler: SessionRestoreScheduler?
     private let diagnostics: RuntimeDiagnosticsStore?
@@ -42,7 +42,7 @@ public actor AgentRuntime {
     private var runDeadlines: [AgentRunID: ExecutionDeadline] = [:]
     private var resultWaiters: [AgentRunID: [CheckedContinuation<SubagentResult, Error>]] = [:]
     private var shuttingDown = false
-    private let cacheController: ContextCacheController
+    private var cacheController: ContextCacheController
     private let maxAgentLoopSteps: Int
     private let backgroundManager: BackgroundCommandManager
 
@@ -106,7 +106,44 @@ public actor AgentRuntime {
         self.backgroundManager = backgroundManager ?? BackgroundCommandManager()
     }
 
-    // MARK: - Session 生命周期
+    // MARK: - Workspace Transition
+
+    public private(set) var workspaceRevision: UInt64 = 0
+
+    public func updateWorkspaceComponents(
+        toolRuntime: ToolRuntime,
+        projectScanner: ProjectScanner,
+        contextPager: ContextPager,
+        cacheController: ContextCacheController,
+        behaviorSystemContext: @escaping @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?,
+        workspaceRevision: UInt64 = 0
+    ) async {
+        self.toolRuntime = toolRuntime
+        self.projectScanner = projectScanner
+        self.contextPager = contextPager
+        self.cacheController = cacheController
+        self.behaviorSystemContext = behaviorSystemContext
+        self.workspaceRevision = workspaceRevision
+        // 清理缓存的 SessionRuntime，确保未来 turn 使用全新的 ToolRuntime 与 Scanner
+        self.runtimes.removeAll()
+        self.runtimeAccessOrder.removeAll()
+    }
+
+    public var currentToolRuntime: ToolRuntime {
+        toolRuntime
+    }
+
+    public var hasActiveRuns: Bool {
+        !activeSessions.isEmpty
+    }
+
+    internal func markSessionActiveForTesting(_ sessionID: SessionID) {
+        activeSessions.insert(sessionID)
+    }
+
+    internal func markSessionInactiveForTesting(_ sessionID: SessionID) {
+        activeSessions.remove(sessionID)
+    }
 
     public func createSession() async throws -> SessionID {
         let session = try await store.create(kind: .primary, parentSessionID: nil, rootSessionID: nil, spawnedByRunID: nil, spawnedByToolCallID: nil, title: nil)
@@ -375,7 +412,7 @@ public actor AgentRuntime {
     // MARK: - 对话
 
     /// 在 Session 中发起一轮对话，返回该轮的 DMA 通道。
-    public func sendMessage(_ sessionID: SessionID, _ content: String) async throws -> OpenedStream {
+    public func sendMessage(_ sessionID: SessionID, _ content: String, executionIntent: TurnExecutionIntent? = nil) async throws -> OpenedStream {
         guard !activeSessions.contains(sessionID) else { throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次") }
         // Preserve the established contract: an unavailable provider still records the user turn.
         if modelBus.gateway.modelID == nil { return try await runtime(for: sessionID).startTurn(content) }
@@ -384,7 +421,19 @@ public actor AgentRuntime {
             activeSessions.insert(sessionID)
             let session = try await store.session(sessionID)
             let run = try await createRun(session: session, parentRunID: nil, requestedModel: nil, title: session.title, profile: behaviorProfile.executionProfile)
-            return try await runtime(for: sessionID, run: run).startTurn(content)
+            let permConfig = executionIntent?.permissionConfiguration
+                ?? (behaviorProfile.executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (behaviorProfile.executionProfile?.permissionProfile == "workspace" ? .askWorkspace : .strict))
+            let runContext = RunExecutionContext(
+                runID: run.runID.rawValue,
+                sessionID: sessionID,
+                permissionConfiguration: permConfig,
+                workspacePath: projectScanner.root.path,
+                modelSelection: executionIntent?.modelSelection,
+                timeoutSeconds: behaviorProfile.executionProfile?.timeoutSeconds.map(Double.init),
+                workspaceID: projectScanner.root.path,
+                workspaceRevision: workspaceRevision
+            )
+            return try await runtime(for: sessionID, run: run).startTurn(content, executionContext: runContext)
         } catch {
             activeSessions.remove(sessionID)
             throw error

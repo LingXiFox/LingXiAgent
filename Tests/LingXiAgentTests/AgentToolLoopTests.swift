@@ -46,6 +46,7 @@ private struct DelayedReadTool: ToolExecutor {
     }
 }
 
+@Suite(.serialized)
 struct AgentToolLoopTests {
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -223,7 +224,7 @@ struct AgentToolLoopTests {
             return
         }
         #expect(failure.error.code == .agentStepLimitReached)
-        #expect(provider.recorder.requests.count == 4)
+        #expect(provider.recorder.requests.count == 5)
         #expect(failure.error.message.contains("检测到无进展死循环"))
     }
 

@@ -11,8 +11,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     public let info: CoreInfo
-    private let bus = CommandBus()
-    private let dataPlane = DataPlane()
+    nonisolated private let bus = CommandBus()
+    nonisolated private let dataPlane = DataPlane()
     /// 由 Host 显式声明；headless 默认不允许问题工具等待用户输入。
     public let interactive: Bool
     public let questions: QuestionRuntime
@@ -21,19 +21,20 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let sessionStore: any SessionStore
     /// nil 表示显式的 ephemeral Core；调用方传入 dataRoot 时启用 project durable state。
     public let persistence: SQLitePersistenceStore?
-    public let workspaceURL: URL
+    public let storageLayout: CoreStorageLayout
+    public private(set) var workspaceURL: URL
     public let extensionPlatform: ExtensionPlatform
     private let gateway: ModelGateway
     private let modelResolver: SubagentModelResolver
     private let subagentService: SubagentToolService
     private let permissionEngine: PermissionEngine
-    private let toolRuntime: ToolRuntime
+    private var toolRuntime: ToolRuntime
     private let contextEngine: L1ContextEngine
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
-    private let projectScanner: ProjectScanner
+    private var projectScanner: ProjectScanner
     public let compactor: ContextCompactor
-    public let cacheController: ContextCacheController
+    public private(set) var cacheController: ContextCacheController
     private let budgetPlanner: ContextBudgetPlanner
     private let diagnosticsEnabled: Bool
     private let configurationStore: ConfigurationStore?
@@ -46,10 +47,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let l1ProjectCharacterCapacity: Int
     private let behaviorProfile: AgentBehaviorProfile
     private let behaviorInstructionsEnabled: Bool
-    private let behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
+    private var behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
     private let agentSettings: AgentSettings
     private let restoreScheduler: SessionRestoreScheduler?
-    private var agent: AgentRuntime?
+    package var agent: AgentRuntime?
     public var residentAgentRuntimesCount: Int {
         get async {
             await agent?.residentRuntimesCount ?? 0
@@ -117,7 +118,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let idempotencyJournal: IdempotencyJournal
     public let commandWAL: DurableCommandWAL
     public let contentStore: ContentStore
-    public let sessionMutationLock = SessionMutationLock.shared
+    public let sessionMutationLock: SessionMutationLock
+    public let codebaseGraphEngine: CodebaseGraphEngine
+    public let browserSessionManager: BrowserSessionManager
+    public let providerActivityRegistry: ProviderActivityRegistry
+    public let todoStore: TodoStore
+    private var ecoreMutationSubscriptionToken: ECoreObjectStore.MutationSubscriptionToken?
     private var currentRevision: UInt64 = 1
     private var contextStateRevisions: [SessionID: UInt64] = [:]
     public let eventLogStorageDirectory: URL?
@@ -127,8 +133,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.activeFailpoint = failpoint
     }
 
+    public private(set) var startupPolicy: CoreHostStartupPolicy
+    private var registryRefreshTask: Task<Void, Never>?
+    private var workspaceIndexTask: Task<Void, Never>?
+    private var workspaceRevision: UInt64 = 1
+
     /// - Parameter providerAssembly: 显式注入 Provider 运行时（测试用）；nil 时从环境装配。
     public init(
+        startupPolicy: CoreHostStartupPolicy? = nil,
         providerAssembly: ModelRuntimeAssembly? = nil,
         providerMissingRequirements: [String] = [],
         modelRuntimes: [String: ModelRuntimeAssembly] = [:],
@@ -137,6 +149,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         sessionStore: (any SessionStore)? = nil,
         workspaceRoot: WorkspaceRoot? = nil,
         dataRoot: URL? = nil,
+        storageLayout: CoreStorageLayout? = nil,
         persistence: SQLitePersistenceStore? = nil,
         permissionDecision: PermissionDecision? = nil,
         toolRegistry: ToolRegistry? = nil,
@@ -149,6 +162,48 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         backgroundManager: BackgroundCommandManager? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
+        let isTesting = startupPolicy == .unitTest
+            || startupPolicy?.allowExternalProcesses == false
+            || environment["XCTestConfigurationFilePath"] != nil
+            || environment["LINGXI_TEST_MODE"] != nil
+            || ProcessInfo.processInfo.processName.contains("Test")
+            || ProcessInfo.processInfo.processName.contains("xctest")
+            || ProcessInfo.processInfo.arguments.first?.contains("PackageTests") == true
+            || NSClassFromString("XCTestCase") != nil
+        let effectivePolicy = startupPolicy ?? (isTesting ? .unitTest : CoreHostStartupPolicy.defaultPolicy)
+        self.startupPolicy = effectivePolicy
+        let isTestingEnv = isTesting || effectivePolicy == .unitTest || !effectivePolicy.allowExternalProcesses
+        let layout: CoreStorageLayout
+        if let explicit = storageLayout {
+            layout = explicit
+        } else if let dataRoot {
+            layout = CoreStorageLayout(root: dataRoot)
+        } else if isTestingEnv {
+            layout = CoreStorageLayout.temporarySandbox()
+        } else {
+            layout = CoreStorageLayout.production
+        }
+        self.storageLayout = layout
+        try? layout.ensureDirectoriesExist()
+
+        // 实例级持有与隔离核心服务，杜绝跨 Host 单例污染 (Audit Round 7 Phase B)
+        let effectiveTodoStore = TodoStore(storageDir: layout.todos)
+        let effectiveGraphEngine: CodebaseGraphEngine
+        if isTestingEnv {
+            effectiveGraphEngine = CodebaseGraphEngine(cachePolicy: .disabled)
+        } else {
+            effectiveGraphEngine = CodebaseGraphEngine(cachePolicy: .persistent(layout.graphCache))
+        }
+        let effectiveBrowserManager = BrowserSessionManager()
+        let effectiveActivityRegistry = ProviderActivityRegistry()
+        let effectiveSessionMutationLock = SessionMutationLock()
+
+        self.todoStore = effectiveTodoStore
+        self.codebaseGraphEngine = effectiveGraphEngine
+        self.browserSessionManager = effectiveBrowserManager
+        self.providerActivityRegistry = effectiveActivityRegistry
+        self.sessionMutationLock = effectiveSessionMutationLock
+
         let supportsInteraction = interactive ?? configuration?.runtime.interactive ?? false
         self.interactive = supportsInteraction
         self.configurationStore = configurationStore ?? dataRoot.flatMap { try? ConfigurationStore(dataRoot: $0) }
@@ -156,7 +211,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.restoreScheduler = restoreScheduler
         self.dataRootURL = dataRoot
         self.cachedAssemblies = modelRuntimes
-        questions = QuestionRuntime(interactive: supportsInteraction)
+        let questionsRuntime = QuestionRuntime(interactive: supportsInteraction)
+        self.questions = questionsRuntime
         let processes = ToolProcessStore()
         self.processes = processes
         let bgManager = backgroundManager ?? BackgroundCommandManager()
@@ -169,7 +225,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             protocolVersion: Self.protocolVersion
         )
         let baseWorkspace = try workspaceRoot ?? WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
-        let persistentRoot = dataRoot
+        let persistentRoot = (dataRoot != nil || !isTestingEnv) ? layout.persistence : nil
         let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url)
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
         self.workspaceURL = workspace.url
@@ -218,17 +274,18 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             ?? PermissionEngine(configuration: PermissionConfiguration(policy: agentSettings.permissionPolicy, profile: agentSettings.executionProfile))
         permissionEngine = permissions
         self.extensionPlatform = extensionPlatform ?? ExtensionPlatform(
-            globalRoot: persistentRoot ?? FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-extensions-\(UUID().uuidString)", isDirectory: true),
+            globalRoot: persistentRoot ?? layout.root.appendingPathComponent("extensions", isDirectory: true),
             projectRoot: workspace.url,
             permissions: permissions,
-            deadlinePolicy: executionDeadlinePolicy
+            deadlinePolicy: executionDeadlinePolicy,
+            enablePlugins: effectivePolicy.discoverBinaryPlugins
         )
         let l2Budget = agentSettings.l2MaxCharacters
         let l1ProjectBudget = agentSettings.l1ProjectMaxCharacters
         l2CharacterCapacity = l2Budget
         l1ProjectCharacterCapacity = l1ProjectBudget
-        contextPager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
-        projectScanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
+        let pager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
+        let scanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let effective = providerAssembly ?? .unavailable
         self.currentAssembly = (providerAssembly != nil && !effective.modelID.rawValue.isEmpty) ? providerAssembly : nil
         gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy)
@@ -260,28 +317,48 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
         compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
         let ecoreStore = ECoreObjectStore(
+            baseDirectory: layout.ecore,
             configuration: configuration?.context.fabric ?? ContextObjectFabricConfiguration()
         )
         let cacheController = ContextCacheController(
-            contextPager: contextPager,
-            scanner: projectScanner,
+            contextPager: pager,
+            scanner: scanner,
             compactor: compactor,
             policy: resolvedPolicy,
             ecoreStore: ecoreStore
         )
-        self.cacheController = cacheController
-        let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: projectScanner, pager: contextPager) : nil
-        toolRuntime = ToolRuntime(
-            registry: toolRegistry ?? .builtin(workspace: workspace, contextPager: contextPager, scanner: projectScanner, questions: questions, processes: processes, backgroundManager: bgManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:))),
+        let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: scanner, pager: pager) : nil
+        let effectiveRegistry = toolRegistry ?? ToolRegistry.builtin(
+            workspace: workspace,
+            contextPager: pager,
+            scanner: scanner,
+            questions: questionsRuntime,
+            processes: processes,
+            backgroundManager: bgManager,
+            codeIntelligence: codeIntelligence,
+            cacheController: cacheController,
+            webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:)),
+            tavilyAPIKey: environment["TAVILY_API_KEY"],
+            graphEngine: effectiveGraphEngine,
+            todoStore: effectiveTodoStore
+        )
+        let mutationCoordinator = ToolMutationCoordinator(pager: pager, scanner: scanner)
+        let effectiveToolRuntime = ToolRuntime(
+            registry: effectiveRegistry,
             permissions: permissions,
-            mutations: ToolMutationCoordinator(pager: contextPager, scanner: projectScanner),
+            mutations: mutationCoordinator,
             outputArchive: ToolOutputArchive(persistence: persistent),
             outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
             mcpPager: effectiveMCPPager,
             subagents: subagentService,
             cacheController: cacheController,
-            deadlinePolicy: executionDeadlinePolicy
+            deadlinePolicy: executionDeadlinePolicy,
+            workspacePath: workspace.path
         )
+        self.contextPager = pager
+        self.projectScanner = scanner
+        self.cacheController = cacheController
+        self.toolRuntime = effectiveToolRuntime
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: systemContext
         ))
@@ -293,13 +370,26 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
         performanceStore = PerformanceStore(enabled: diagnosticsEnabled)
         budgetPlanner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredActiveTokens: agentSettings.preferredActiveTokens))
-        let eventLogDir = persistentRoot?.appendingPathComponent(".lingxi/eventlog") ?? baseWorkspace.url.appendingPathComponent(".lingxi/eventlog")
+        let eventLogDir = layout.eventLog
         self.eventLogStorageDirectory = eventLogDir
         runtimeEventLog = RuntimeEventLog(storageDirectory: eventLogDir)
         idempotencyJournal = IdempotencyJournal(storageDirectory: eventLogDir)
         commandWAL = DurableCommandWAL(storageDirectory: eventLogDir)
-        let storageDir = persistentRoot?.appendingPathComponent(".lingxi/content") ?? baseWorkspace.url.appendingPathComponent(".lingxi/content")
+        let storageDir = layout.content
         contentStore = ContentStore(storageDirectory: storageDir)
+
+        if let retrievalTool = effectiveRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
+            let runtime = retrievalTool.retrievalRuntime
+            let projectURL = workspace.url
+            Task {
+                await mutationCoordinator.addMutationHook {
+                    await runtime.markDirty(source: .workspace, projectRoot: projectURL)
+                }
+                await ecoreStore.addMutationHook {
+                    await runtime.markDirty(source: .ecore, projectRoot: projectURL)
+                }
+            }
+        }
     }
 
     /// 注册控制面路由并进入 ready。
@@ -314,15 +404,19 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
         )
         await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
-        await extensionPlatform.restore()
-        _ = await extensionPlatform.discover()
+        if startupPolicy.discoverSkills || startupPolicy.discoverCommands || startupPolicy.discoverBinaryPlugins {
+            await extensionPlatform.restore()
+            _ = await extensionPlatform.discover()
+        }
         await questions.setEventSink { [weak self] request in
             await self?.agent?.markWaitingForQuestion(request, waiting: true)
             await self?.routeWorkflowQuestion(request)
             await self?.broadcast(request.originSessionID == request.rootSessionID ? .questionAsked(request) : .questionEscalated(request))
         }
         await bus.add(.ping) { _ in .pong }
-        scheduleRegistryRefresh()
+        if startupPolicy.refreshRegistry && startupPolicy.allowNetwork {
+            scheduleRegistryRefresh()
+        }
         // Phase 7: Do not eagerly warm up CodebaseGraph on startup to avoid 1GB RSS explosion.
         // Graph indexing is now lazy upon first codebase_graph usage.
         await bus.add(.getInfo) { [self] _ in .info(info) }
@@ -610,14 +704,27 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         await processes.stopAll()
         await backgroundManager.terminateAll()
         await extensionPlatform.terminatePlugins()
+        await browserSessionManager.shutdown()
         lifecycle("cleanupCompleted", waitingOn: "processes")
-        await ProviderActivityRegistry.shared.reset()
+        await providerActivityRegistry.reset()
+        registryRefreshTask?.cancel()
+        registryRefreshTask = nil
+        workspaceIndexTask?.cancel()
+        workspaceIndexTask = nil
         agent = nil
         workflows = nil
         eventContinuations.values.forEach { $0.finish() }
         eventContinuations.removeAll()
         setState(.stopped)
         await diagnosticsStore.record(kind: .core, event: "core.shutdown.completed")
+    }
+
+    deinit {
+        registryRefreshTask?.cancel()
+        workspaceIndexTask?.cancel()
+        extensionPlatform.terminatePluginsSync()
+        let b = self.browserSessionManager
+        Task { await b.shutdown() }
     }
 
     private func lifecycle(_ event: String, waitingOn: String) {
@@ -1145,20 +1252,19 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     /// The first model listing must not wait on the network: the on-disk
     /// catalog cache serves the initial render, and this brings it up to date.
     private func scheduleRegistryRefresh(delaySeconds: Double = 5.0) {
-        Task.detached(priority: .background) {
+        guard startupPolicy.refreshRegistry && startupPolicy.allowNetwork else { return }
+        registryRefreshTask?.cancel()
+        registryRefreshTask = Task(priority: .background) {
             if delaySeconds > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                } catch {
+                    return
+                }
             }
+            guard !Task.isCancelled else { return }
             _ = await ModelRegistryClient.shared.fetch()
             await LingXiModelsCatalogClient.shared.warmup()
-        }
-    }
-
-    /// 在后台低优先级异步预热当前工作区代码图谱，不阻塞 Core 启动与首屏交互。
-    private func scheduleCodebaseGraphWarmup() {
-        let wsURL = workspaceURL
-        Task.detached(priority: .background) {
-            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: wsURL)
         }
     }
 
@@ -1175,51 +1281,69 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     ///
     /// No branch here inspects a provider or product name.
     private func providerModels() async throws -> [ProviderModelInfo] {
-        guard let configurationStore else { return [] }
-        let snapshot = try await configurationStore.load()
-        let catalog = await ModelRegistryClient.shared.catalog()
-        let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
-
         var results: [ProviderModelInfo] = []
         var customModelIDs = Set<String>()
 
-        // 1. Custom providers configured explicitly by the user in ~/.lingxiagent/providers.json.
-        // User explicit configuration ALWAYS takes precedence over built-in catalog entries.
-        for providerID in snapshot.providers.providers.keys.sorted() {
-            guard let provider = snapshot.providers.providers[providerID] else { continue }
-            let models = configuredModelInfos(providerID: providerID, provider: provider)
-            for m in models {
-                customModelIDs.insert(m.id)
-                results.append(m)
+        if let configurationStore {
+            let snapshot = try await configurationStore.load()
+            let catalog = await ModelRegistryClient.shared.catalog()
+            let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
+
+            // 1. Custom providers configured explicitly by the user in ~/.lingxiagent/providers.json.
+            // User explicit configuration ALWAYS takes precedence over built-in catalog entries.
+            for providerID in snapshot.providers.providers.keys.sorted() {
+                guard let provider = snapshot.providers.providers[providerID] else { continue }
+                let models = configuredModelInfos(providerID: providerID, provider: provider)
+                for m in models {
+                    customModelIDs.insert(m.id)
+                    results.append(m)
+                }
+            }
+
+            // 2. Built-in products from catalog (co-exist with custom providers; user-defined models take precedence on collision)
+            for product in availableProducts {
+                guard product.runtime.isRunnable else { continue }
+
+                let isConfigured = await isProductConfigured(product: product)
+                let accountModels: [DiscoveredRemoteModel]
+                if isConfigured {
+                    accountModels = await accountDiscoveredModels(
+                        product: product,
+                        providerID: product.id
+                    )
+                } else {
+                    accountModels = []
+                }
+
+                let outcome = ModelAvailabilityResolver.resolve(
+                    product: product,
+                    registryModels: catalog?.models(productID: product.id) ?? [],
+                    accountModels: accountModels,
+                    isConfigured: isConfigured
+                )
+                for model in outcome.models {
+                    if !customModelIDs.contains(model.id) {
+                        results.append(model)
+                    }
+                }
             }
         }
 
-        // 2. Built-in products from catalog (co-exist with custom providers; user-defined models take precedence on collision)
-        for product in availableProducts {
-            guard product.runtime.isRunnable else { continue }
-
-            let isConfigured = await isProductConfigured(product: product)
-            let accountModels: [DiscoveredRemoteModel]
-            if isConfigured {
-                accountModels = await accountDiscoveredModels(
-                    product: product,
-                    providerID: product.id
-                )
-            } else {
-                accountModels = []
-            }
-
-            let outcome = ModelAvailabilityResolver.resolve(
-                product: product,
-                registryModels: catalog?.models(productID: product.id) ?? [],
-                accountModels: accountModels,
-                isConfigured: isConfigured
-            )
-            for model in outcome.models {
-                if !customModelIDs.contains(model.id) {
-                    results.append(model)
-                }
-            }
+        if let assembly = currentAssembly, !results.contains(where: { $0.modelID == assembly.modelID.rawValue || $0.id == assembly.modelID.rawValue }) {
+            results.append(ProviderModelInfo(
+                id: assembly.modelID.rawValue,
+                providerID: assembly.endpoint.providerID,
+                modelID: assembly.modelID.rawValue,
+                displayName: assembly.modelID.rawValue,
+                contextWindow: 128_000,
+                maxOutputTokens: 8192,
+                reasoning: false,
+                configured: true,
+                metadataIncomplete: false,
+                canonicalModelID: assembly.modelID.rawValue,
+                backendVariant: nil,
+                backendVariants: nil
+            ))
         }
 
         return results
@@ -1429,6 +1553,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func modelSelection(for value: String) async throws -> ModelSelection {
+        if let current = currentAssembly, current.modelID.rawValue == value || "\(current.endpoint.providerID)/\(current.modelID.rawValue)" == value {
+            return ModelSelection(providerID: current.endpoint.providerID, modelID: current.modelID.rawValue)
+        }
         guard let separator = value.firstIndex(of: "/") else { throw CoreError(code: .toolArgumentInvalid, message: "模型格式必须是 provider/model") }
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
@@ -1703,17 +1830,20 @@ extension CoreHost {
             _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
             return
         }
-        // Core 执行必须使用该 Turn 的 frozen executionIntent
-        await permissionEngine.setConfiguration(executionIntent.permissionConfiguration)
+        // Turn 的 frozen executionIntent 由 per-run RunExecutionContext 强绑定并穿透至 ToolRuntime，避免并发 Run 串扰
         var modelResolutionError: Error? = nil
         if let model = executionIntent.modelSelection {
-            do {
-                let selection = try await modelSelection(for: model)
-                let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
-                try await agent?.selectModel(selection, assembly: assembly)
-                self.currentAssembly = assembly
-            } catch {
-                modelResolutionError = error
+            if let current = currentAssembly, current.modelID.rawValue == model || "\(current.endpoint.providerID)/\(current.modelID.rawValue)" == model {
+                // Already current assembly, no need to resolve or switch
+            } else {
+                do {
+                    let selection = try await modelSelection(for: model)
+                    let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
+                    try await agent?.selectModel(selection, assembly: assembly)
+                    self.currentAssembly = assembly
+                } catch {
+                    modelResolutionError = error
+                }
             }
         }
         guard let agent, state == .ready, modelResolutionError == nil, (currentAssembly != nil || gateway.isConfigured) else {
@@ -1796,7 +1926,7 @@ extension CoreHost {
         }
 
         do {
-            let stream = try await agent.sendMessage(sessionID, input.text)
+            let stream = try await agent.sendMessage(sessionID, input.text, executionIntent: executionIntent)
 
             for try await chunk in stream.chunks {
                 if Task.isCancelled {
@@ -2746,7 +2876,7 @@ extension CoreHost {
         if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: BeginContentUploadResponse.self) {
             return cached
         }
-        let response = await contentStore.beginUpload(request: envelope.payload)
+        let response = try await contentStore.beginUpload(request: envelope.payload)
         let watermark = await runtimeEventLog.currentWatermark()
         let receipt = CommandReceipt<BeginContentUploadResponse>(
             commandID: envelope.commandID,
@@ -2882,8 +3012,8 @@ extension CoreHost {
     }
 
     public func getModelSelection(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ModelSelectionInfo> {
-        let currentModel = selectedModelOverride ?? gateway.modelID?.rawValue ?? ""
-        let providerID = currentModel.contains("/") ? String(currentModel.split(separator: "/").first ?? "") : nil
+        let currentModel = selectedModelOverride ?? currentAssembly?.modelID.rawValue ?? gateway.modelID?.rawValue ?? ""
+        let providerID = currentModel.contains("/") ? String(currentModel.split(separator: "/").first ?? "") : (currentAssembly?.endpoint.providerID)
         return ResponseEnvelope(
             requestID: envelope.requestID,
             revision: currentRevision,
@@ -3286,17 +3416,30 @@ extension CoreHost {
     }
 
     // MARK: - 10. Workspace
+    public func getWorkspaceSummary() async -> WorkspaceSummary {
+        let rootPath = self.workspaceURL.path
+        let isGit = FileManager.default.fileExists(atPath: self.workspaceURL.appendingPathComponent(".git").path)
+        let isIndexing = await codebaseGraphEngine.isIndexingInProgress
+        let isIndexed = await codebaseGraphEngine.isIndexed
+        let indexingState: String = isIndexing ? "indexing" : (isIndexed ? "ready" : "pending")
+        let nodes = isIndexed ? await codebaseGraphEngine.nodeCount : nil
+        let edges = isIndexed ? await codebaseGraphEngine.edgeCount : nil
+        return WorkspaceSummary(
+            rootPath: rootPath,
+            isGitRepository: isGit,
+            codebaseNodes: nodes,
+            codebaseEdges: edges,
+            indexingState: indexingState
+        )
+    }
+
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
-        let rootPath = extensionPlatform.projectRoot.path
-        let isGit = FileManager.default.fileExists(atPath: extensionPlatform.projectRoot.appendingPathComponent(".git").path)
-        let isIndexed = await CodebaseGraphEngine.shared.isIndexed
-        let nodes = isIndexed ? await CodebaseGraphEngine.shared.nodeCount : nil
-        let edges = isIndexed ? await CodebaseGraphEngine.shared.edgeCount : nil
+        let summary = await getWorkspaceSummary()
         return ResponseEnvelope(
             requestID: envelope.requestID,
             revision: currentRevision,
             eventCursor: await runtimeEventLog.currentCursor(),
-            payload: WorkspaceSummary(rootPath: rootPath, isGitRepository: isGit, codebaseNodes: nodes, codebaseEdges: edges)
+            payload: summary
         )
     }
 
@@ -3739,17 +3882,141 @@ extension CoreHost {
         try await getWorkspaceSummary(envelope: envelope)
     }
 
+    /// 原子切换 Core 工作区数据面与控制面，消除 split-brain (Audit Round 5 Phase A, Round 7 Phase A)
+    public func applyWorkspaceTransition(to newURL: URL) async throws {
+        // 关键防御：若存在活跃的 Agent/Turn 运行，硬性拒绝工作区切换，消除过渡态 split-brain (Audit Round 7 Phase A)
+        if let agent = self.agent, await agent.hasActiveRuns {
+            throw CoreError(code: .commandFailed, message: "Workspace transition rejected: active agent runs in progress")
+        }
+
+        let stdURL = newURL.standardizedFileURL
+        self.workspaceURL = stdURL
+        let sensitivePaths = SensitivePathPolicy(root: stdURL)
+        let workspace = try WorkspaceRoot(path: stdURL.path, sensitivePathPolicy: sensitivePaths)
+        self.projectScanner = ProjectScanner(root: stdURL, sensitivePathPolicy: sensitivePaths)
+        await self.extensionPlatform.updateProjectRoot(stdURL)
+
+        // 重新装配 Agent 指令集与系统上下文事实
+        let instructions = try AgentInstructionSet.load(workspace: stdURL)
+        let environment = ProcessInfo.processInfo.environment
+        let defaultAccessScope = (agentSettings.executionProfile == .fullAccess) ? "fullAccess" : "workspace"
+        self.behaviorSystemContext = { [agentSettings] profile, execProfile in
+            let scope: String
+            if let execProfile {
+                scope = (execProfile.permissionProfile == "fullAccess") ? "fullAccess" : "workspace"
+            } else {
+                scope = defaultAccessScope
+            }
+            let facts = AgentEnvironmentFacts(
+                workspaceRoot: stdURL.path,
+                currentDirectory: stdURL.path,
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path,
+                shell: environment["SHELL"] ?? "unknown",
+                accessScope: scope
+            )
+            return AgentBehaviorInstructions.render(
+                profile: profile,
+                configured: agentSettings.systemContext,
+                repository: instructions,
+                environmentFacts: facts
+            )
+        }
+
+        // 重构内置工具集并注入 ToolRuntime
+        let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: self.projectScanner, pager: contextPager) : nil
+        self.cacheController = ContextCacheController(contextPager: contextPager, scanner: self.projectScanner, compactor: compactor)
+        let newRegistry = ToolRegistry.builtin(
+            workspace: workspace,
+            contextPager: contextPager,
+            scanner: self.projectScanner,
+            questions: questions,
+            processes: processes,
+            backgroundManager: backgroundManager,
+            codeIntelligence: codeIntelligence,
+            cacheController: cacheController,
+            webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:)),
+            tavilyAPIKey: environment["TAVILY_API_KEY"],
+            graphEngine: self.codebaseGraphEngine,
+            todoStore: self.todoStore
+        )
+        let mutationCoordinator = ToolMutationCoordinator(pager: contextPager, scanner: self.projectScanner)
+        self.toolRuntime = ToolRuntime(
+            registry: newRegistry,
+            permissions: permissionEngine,
+            mutations: mutationCoordinator,
+            outputArchive: ToolOutputArchive(persistence: persistence),
+            outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
+            mcpPager: mcpPager,
+            subagents: subagentService,
+            cacheController: cacheController,
+            deadlinePolicy: executionDeadlinePolicy,
+            workspacePath: stdURL.path
+        )
+
+        // 重新关联统一检索变更钩子，并重新绑定 E-Core 变更钩子 (Audit Round 7 Phase D)
+        if let retrievalTool = newRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
+            let runtime = retrievalTool.retrievalRuntime
+            await mutationCoordinator.addMutationHook {
+                await runtime.markDirty(source: .workspace, projectRoot: stdURL)
+            }
+            if let oldToken = self.ecoreMutationSubscriptionToken {
+                await self.cacheController.ecoreStore.removeMutationHook(token: oldToken)
+                self.ecoreMutationSubscriptionToken = nil
+            }
+            let newToken = await self.cacheController.ecoreStore.addMutationHook {
+                await runtime.markDirty(source: .ecore, projectRoot: stdURL)
+            }
+            self.ecoreMutationSubscriptionToken = newToken
+        }
+
+        // 关键闭环：更新 AgentRuntime 内部持有的 ToolRuntime、Scanner、Pager 和 BehaviorContext，并丢弃旧 SessionRuntime 缓存
+        if let agent = self.agent {
+            await agent.updateWorkspaceComponents(
+                toolRuntime: self.toolRuntime,
+                projectScanner: self.projectScanner,
+                contextPager: self.contextPager,
+                cacheController: self.cacheController,
+                behaviorSystemContext: self.behaviorSystemContext,
+                workspaceRevision: self.workspaceRevision
+            )
+        }
+    }
+
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> {
         let watermark = await runtimeEventLog.currentWatermark()
-        let isGit = FileManager.default.fileExists(atPath: URL(fileURLWithPath: envelope.payload.workspaceRoot).appendingPathComponent(".git").path)
         let newURL = URL(fileURLWithPath: envelope.payload.workspaceRoot)
-        Task.detached(priority: .background) {
-            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: newURL)
+        try await applyWorkspaceTransition(to: newURL)
+
+        let isGit = FileManager.default.fileExists(atPath: newURL.appendingPathComponent(".git").path)
+        workspaceIndexTask?.cancel()
+        workspaceRevision &+= 1
+        let revision = workspaceRevision
+
+        let indexingState: String
+        let engine = self.codebaseGraphEngine
+        if startupPolicy.allowExternalProcesses {
+            indexingState = "indexing"
+            workspaceIndexTask = Task(priority: .background) { [weak self, engine] in
+                guard !Task.isCancelled else { return }
+                _ = await engine.indexWorkspace(workspaceURL: newURL, revision: revision)
+                guard let self, !Task.isCancelled else { return }
+                let current = await self.workspaceRevision
+                guard current == revision else { return }
+            }
+        } else {
+            indexingState = "ready"
         }
-        let isIndexed = await CodebaseGraphEngine.shared.isIndexed
-        let nodes = isIndexed ? await CodebaseGraphEngine.shared.nodeCount : nil
-        let edges = isIndexed ? await CodebaseGraphEngine.shared.edgeCount : nil
-        let summary = WorkspaceSummary(rootPath: envelope.payload.workspaceRoot, isGitRepository: isGit, codebaseNodes: nodes, codebaseEdges: edges)
+        
+        let isIndexed = await self.codebaseGraphEngine.isIndexed
+        let nodes = isIndexed ? await self.codebaseGraphEngine.nodeCount : nil
+        let edges = isIndexed ? await self.codebaseGraphEngine.edgeCount : nil
+        let summary = WorkspaceSummary(
+            rootPath: self.workspaceURL.path,
+            isGitRepository: isGit,
+            codebaseNodes: nodes,
+            codebaseEdges: edges,
+            indexingState: indexingState
+        )
         return CommandReceipt(
             commandID: envelope.commandID,
             applied: true,

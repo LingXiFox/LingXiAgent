@@ -18,21 +18,32 @@ public actor ApplicationStore {
     private var sessionEventsTask: Task<Void, Never>?
     private var activeStreamTasks: [StreamID: Task<Void, Never>] = [:]
     private var runtimeRefreshTask: Task<Void, Never>?
+    private let preferencesStore: UserPreferencesStore
 
     public init(
         client: LingXiClientVNext,
-        autoConnect: Bool = false
+        autoConnect: Bool = false,
+        preferencesStore: UserPreferencesStore? = nil
     ) async {
         self.client = client
         self.commandRegistry = ApplicationCommandRegistry()
         let initialConn = await client.connectionState
         Self.trace("init.connectionState.done state=\(initialConn)")
         self.state = ApplicationState(connectionState: initialConn)
-        let initialPrefs = UserPreferencesStore.shared.load()
+        let isTesting = NSClassFromString("XCTest") != nil ||
+            ProcessInfo.processInfo.processName.contains("Testing") ||
+            ProcessInfo.processInfo.processName.contains("xctest") ||
+            CommandLine.arguments.contains(where: {
+                $0.contains("Testing") || $0.contains("xctest") || $0.contains("swift-testing") || $0.contains("test")
+            })
+        let prefsStore = preferencesStore ?? (isTesting ? UserPreferencesStore(fileURL: URL(fileURLWithPath: "/dev/null")) : UserPreferencesStore.shared)
+        self.preferencesStore = prefsStore
+        let initialPrefs = prefsStore.load()
         if let lastModel = initialPrefs.lastModelID, !lastModel.isEmpty {
             self.state.currentModelID = lastModel
         }
-        if let savedPerm = Self.parsePermissionConfiguration(initialPrefs.lastPermissionConfiguration) {
+        if let savedPerm = Self.parsePermissionConfiguration(initialPrefs.lastPermissionConfiguration),
+           savedPerm != .yoloFullAccess { // 严格遵守 AppCompositionRoot 安全契约：禁止从 preferences.json 隐式继承 YOLO 全量越权
             self.state.nextTurnPermission = savedPerm
         }
 
@@ -64,6 +75,8 @@ public actor ApplicationStore {
             debug("init.connect.end")
             let conn = await client.connectionState
             RootReducer.reduce(state: &state, action: ._connectionStateChanged(conn))
+            await refreshRuntimeBasics()
+        } else if initialConn.status == .connected {
             await refreshRuntimeBasics()
         }
     }
@@ -250,7 +263,7 @@ public actor ApplicationStore {
                 state.activeSessionState?.permissionConfiguration = perm
                 _ = try? await client.runtime.updateTypedSetting(key: "permissionConfiguration", value: perm.displayName)
             }
-            UserPreferencesStore.shared.update(permissionConfiguration: perm.displayName)
+            preferencesStore.update(permissionConfiguration: perm.displayName)
             notifyStateChanged()
 
         case let .setReasoningEffort(effort):
@@ -282,7 +295,7 @@ public actor ApplicationStore {
             do {
                 let receipt = try await client.model.select(model: modelID)
                 state.currentModelID = modelID
-                UserPreferencesStore.shared.update(modelID: modelID)
+                preferencesStore.update(modelID: modelID)
                 if let sel = receipt.result {
                     state.selectedModel = sel
                 }
@@ -454,7 +467,7 @@ public actor ApplicationStore {
     }
 
     private func handleSetReasoningEffort(_ effort: ReasoningEffort) async {
-        UserPreferencesStore.shared.update(reasoningEffort: effort.rawValue)
+        preferencesStore.update(reasoningEffort: effort.rawValue)
         state.nextTurnReasoningEffort = effort
         if let activeSessionID = state.activeSessionID {
             state.activeSessionState?.reasoningEffort = effort
@@ -557,8 +570,26 @@ public actor ApplicationStore {
             }
         }
 
+        // 校验并对齐当前模型的选择，防止提交当前 Host 未注册或未认证的外部 Provider
+        if state.models.isEmpty {
+            await refreshRuntimeBasics()
+        }
+        var effectiveModelSelection = state.currentModelID
+        if !state.models.isEmpty {
+            if let current = effectiveModelSelection, !state.models.contains(where: { $0.modelID == current }) {
+                effectiveModelSelection = state.selectedModel?.modelID ?? state.models.first?.modelID
+                state.currentModelID = effectiveModelSelection
+            }
+        } else {
+            if let selection = try? await client.model.getSelection() {
+                state.selectedModel = selection
+                effectiveModelSelection = selection.modelID
+                state.currentModelID = effectiveModelSelection
+            }
+        }
+
         let intent = TurnExecutionIntent(
-            modelSelection: state.currentModelID,
+            modelSelection: effectiveModelSelection,
             mode: nextMode,
             permissionConfiguration: nextPerm
         )
@@ -619,7 +650,7 @@ public actor ApplicationStore {
         if cachedReferenceRoot == rootPath {
             return cachedReferenceCandidates
         }
-        let scan = Task.detached(priority: .utility) {
+        let scan = Task(priority: .utility) {
             let root = URL(fileURLWithPath: rootPath).standardizedFileURL
             var candidates: [String] = []
             if let enumerator = FileManager.default.enumerator(
@@ -628,7 +659,7 @@ public actor ApplicationStore {
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) {
                 while let url = enumerator.nextObject() as? URL {
-                    if candidates.count >= 1000 { break }
+                    if Task.isCancelled || candidates.count >= 1000 { break }
                     let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
                     if !relative.isEmpty {
                         candidates.append(relative)
@@ -676,7 +707,8 @@ public actor ApplicationStore {
                 if let preservedPerm = state.nextTurnPermission {
                     return preservedPerm
                 }
-                if let savedPerm = Self.parsePermissionConfiguration(UserPreferencesStore.shared.load().lastPermissionConfiguration) {
+                if let savedPerm = Self.parsePermissionConfiguration(preferencesStore.load().lastPermissionConfiguration),
+                   savedPerm != .yoloFullAccess { // 禁止从全局 preferences 静默恢复 YOLO 导致越权
                     return savedPerm
                 }
                 return snapshot.permissionConfiguration
@@ -685,7 +717,7 @@ public actor ApplicationStore {
             state.nextTurnPermission = resolvedPerm
             state.activeSessionState?.permissionConfiguration = resolvedPerm
             _ = try? await client.runtime.updateTypedSetting(key: "permissionConfiguration", value: resolvedPerm.displayName)
-            UserPreferencesStore.shared.update(permissionConfiguration: resolvedPerm.displayName)
+            preferencesStore.update(permissionConfiguration: resolvedPerm.displayName)
 
             // 保持工作区模式设定
             if let preservedMode = state.nextTurnMode {
@@ -694,7 +726,7 @@ public actor ApplicationStore {
 
             // 保持 Reasoning Effort 思考等级设定：防止快照默认 auto 冲刷用户配置的等级
             let preservedEffort = state.nextTurnReasoningEffort
-                ?? (UserPreferencesStore.shared.load().lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:)))
+                ?? (preferencesStore.load().lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:)))
             if let effort = preservedEffort, effort != .auto {
                 state.nextTurnReasoningEffort = effort
                 state.activeSessionState?.reasoningEffort = effort
@@ -776,7 +808,8 @@ public actor ApplicationStore {
             state.models = models
         }
         if let selection {
-            if state.currentModelID == nil || state.currentModelID?.isEmpty == true {
+            let modelAvailable = models?.contains(where: { $0.modelID == state.currentModelID }) ?? false
+            if !modelAvailable {
                 state.currentModelID = selection.modelID
             }
             state.selectedModel = selection

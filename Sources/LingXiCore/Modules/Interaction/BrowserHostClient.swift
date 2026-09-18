@@ -248,7 +248,14 @@ public final class BrowserHostClient: @unchecked Sendable {
             observedAt: Date(),
             source: .browser(tabID: sessionID, url: url, title: title),
             elements: elementsMap,
-            screenshotBlobRef: screenshotBase64 != nil ? "data:image/jpeg;base64,\(screenshotBase64!.prefix(32))..." : nil,
+            screenshotBlobRef: {
+                guard let b64 = screenshotBase64, !b64.isEmpty, let imgData = Data(base64Encoded: b64) else { return nil }
+                let digest = LingXiPlatform.crypto.sha256Hex(imgData)
+                let contentDir = CoreStorageLayout.current.content
+                try? FileManager.default.createDirectory(at: contentDir, withIntermediateDirectories: true)
+                try? imgData.write(to: contentDir.appendingPathComponent("\(digest).jpg"))
+                return "content://sha256:\(digest)"
+            }(),
             viewportBounds: displayBounds,
             displayMetrics: metrics
         )

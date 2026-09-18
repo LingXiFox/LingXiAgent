@@ -201,3 +201,65 @@ public struct AbortContentUploadRequest: Codable, Sendable, Equatable {
         self.uploadID = uploadID
     }
 }
+
+// MARK: - Content Download Requests & Responses
+
+public struct GetContentMetadataRequest: Codable, Sendable, Equatable {
+    public let ref: ContentRef
+    public let authorization: ContentAuthorizationContext
+
+    public init(ref: ContentRef, authorization: ContentAuthorizationContext = .anonymous) {
+        self.ref = ref
+        self.authorization = authorization
+    }
+}
+
+public struct GetContentRequest: Codable, Sendable, Equatable {
+    public let ref: ContentRef
+    public let authorization: ContentAuthorizationContext
+
+    public init(ref: ContentRef, authorization: ContentAuthorizationContext = .anonymous) {
+        self.ref = ref
+        self.authorization = authorization
+    }
+}
+
+public struct GetContentRangeRequest: Codable, Sendable, Equatable {
+    public let ref: ContentRef
+    public let offset: Int
+    public let length: Int
+    public let authorization: ContentAuthorizationContext
+
+    public init(ref: ContentRef, offset: Int, length: Int, authorization: ContentAuthorizationContext = .anonymous) {
+        self.ref = ref
+        self.offset = offset
+        self.length = length
+        self.authorization = authorization
+    }
+}
+
+public struct ContentBinaryPayload: Codable, Sendable, Equatable {
+    public let base64Data: String
+
+    public init(data: Data) {
+        self.base64Data = data.base64EncodedString()
+    }
+
+    public var data: Data {
+        Data(base64Encoded: base64Data) ?? Data()
+    }
+}
+
+public struct UploadContentChunkRequest: Codable, Sendable, Equatable {
+    public let uploadID: String
+    public let chunkIndex: UInt64
+    public let payload: ContentBinaryPayload
+
+    public init(uploadID: String, chunkIndex: UInt64, data: Data) {
+        self.uploadID = uploadID
+        self.chunkIndex = chunkIndex
+        self.payload = ContentBinaryPayload(data: data)
+    }
+}
+
+

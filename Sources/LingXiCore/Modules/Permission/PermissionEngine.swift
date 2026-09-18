@@ -16,7 +16,7 @@ public actor PermissionEngine {
 
     private var rules: [PermissionRule]
     private var resourceRules: [PermissionResourceRule]
-    private var configuration: PermissionConfiguration
+    private var defaultConfiguration: PermissionConfiguration
     private var legacyDefaultDecision: PermissionDecision?
     private var pending: [PermissionID: Pending] = [:]
     private var restoredReplies: [ToolCallID: PermissionDecision] = [:]
@@ -24,30 +24,32 @@ public actor PermissionEngine {
     public init(rules: [PermissionRule] = [], resourceRules: [PermissionResourceRule] = [], configuration: PermissionConfiguration = .strict) {
         self.rules = rules
         self.resourceRules = resourceRules
-        self.configuration = configuration
+        self.defaultConfiguration = configuration
         legacyDefaultDecision = nil
     }
 
     public init(rules: [PermissionRule] = [], resourceRules: [PermissionResourceRule] = [], defaultDecision: PermissionDecision) {
         self.rules = rules
         self.resourceRules = resourceRules
-        configuration = defaultDecision == .allow ? .agent : .strict
+        defaultConfiguration = defaultDecision == .allow ? .agent : .strict
         legacyDefaultDecision = defaultDecision
     }
 
     public func request(
         _ request: PermissionRequest,
+        configuration: PermissionConfiguration? = nil,
         onAsk: @escaping @Sendable () async -> Void
     ) async -> PermissionDecision {
-        await resolve(request, onAsk: onAsk).decision
+        await resolve(request, configuration: configuration, onAsk: onAsk).decision
     }
 
     public func resolve(
         _ request: PermissionRequest,
         action: PermissionAction? = nil,
+        configuration: PermissionConfiguration? = nil,
         onAsk: @escaping @Sendable () async -> Void
     ) async -> PermissionResolution {
-        let decision = decision(for: request, action: action)
+        let decision = decision(for: request, action: action, configuration: configuration)
         guard decision == .ask else { return PermissionResolution(decision: decision, asked: false) }
         if let restored = restoredReplies.removeValue(forKey: request.toolCallID) {
             return PermissionResolution(decision: restored, asked: true)
@@ -69,8 +71,8 @@ public actor PermissionEngine {
     }
 
     /// 非阻塞检查，供没有 HITL 通道的扩展控制面使用。`.ask` 不会创建 pending request。
-    public func check(_ request: PermissionRequest, action: PermissionAction? = nil) -> PermissionResolution {
-        let decision = decision(for: request, action: action)
+    public func check(_ request: PermissionRequest, action: PermissionAction? = nil, configuration: PermissionConfiguration? = nil) -> PermissionResolution {
+        let decision = decision(for: request, action: action, configuration: configuration)
         return PermissionResolution(decision: decision, asked: false)
     }
 
@@ -96,10 +98,10 @@ public actor PermissionEngine {
         }
     }
 
-    public func currentConfiguration() -> PermissionConfiguration { configuration }
+    public func currentConfiguration() -> PermissionConfiguration { defaultConfiguration }
 
     public func setConfiguration(_ configuration: PermissionConfiguration) {
-        self.configuration = configuration
+        self.defaultConfiguration = configuration
         legacyDefaultDecision = nil
     }
 
@@ -113,15 +115,24 @@ public actor PermissionEngine {
         }
     }
 
+    public func cancelPending(runID: String, reason: PendingInteractionCancelReason = .sessionReverted) {
+        let targets = pending.filter { $0.value.request.runID == runID }
+        for (id, waiting) in targets {
+            pending.removeValue(forKey: id)
+            waiting.continuation?.resume(returning: .deny)
+        }
+    }
+
     private func cancel(_ permissionID: PermissionID) {
         pending.removeValue(forKey: permissionID)?.continuation?.resume(returning: .deny)
     }
 
-    private func decision(for request: PermissionRequest, action: PermissionAction?) -> PermissionDecision {
+    private func decision(for request: PermissionRequest, action: PermissionAction?, configuration: PermissionConfiguration?) -> PermissionDecision {
+        let effectiveConfig = configuration ?? defaultConfiguration
         let matching = rules.filter { $0.toolID == request.toolID && ($0.capability == nil || request.capabilities.contains($0.capability!)) }
         let resourceMatching = action.map { value in resourceRules.filter { $0.action == value && Self.matches($0.resourcePattern, request.resource) } } ?? []
         if matching.contains(where: { $0.decision == .deny }) || resourceMatching.contains(where: { $0.decision == .deny }) { return .deny }
-        return resourceMatching.last?.decision ?? matching.first?.decision ?? legacyDefaultDecision ?? (configuration.policy == .auto ? .allow : .ask)
+        return resourceMatching.last?.decision ?? matching.first?.decision ?? legacyDefaultDecision ?? (effectiveConfig.policy == .auto ? .allow : .ask)
     }
 
     private static func matches(_ pattern: String, _ value: String) -> Bool {

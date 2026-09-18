@@ -299,7 +299,7 @@ public actor SessionRuntime {
     }
 
     /// 启动一轮对话并立即返回 DMA 通道；同一 Session 只允许一个活动 turn。
-    public func startTurn(_ content: String) async throws -> OpenedStream {
+    public func startTurn(_ content: String, executionContext: RunExecutionContext? = nil) async throws -> OpenedStream {
         guard !shuttingDown, !turnRunning else {
             throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次")
         }
@@ -343,9 +343,23 @@ public actor SessionRuntime {
             let sessionID = self.sessionID
             let deadline = deadlinePolicy.deadline(for: runID == nil ? .agentRun : .subagent, requested: executionProfile?.timeoutSeconds.map { .seconds($0) })
             let executionID = UUID()
+            let effectiveRunContext = executionContext ?? runID.map { id in
+                RunExecutionContext(
+                    runID: id.rawValue,
+                    sessionID: sessionID,
+                    permissionConfiguration: executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (executionProfile?.permissionProfile == "workspace" ? .askWorkspace : .strict),
+                    workspacePath: projectScanner.root.path,
+                    modelSelection: nil,
+                    timeoutSeconds: executionProfile?.timeoutSeconds.map(Double.init),
+                    workspaceID: projectScanner.root.path,
+                    workspaceRevision: nil
+                )
+            }
             let turnTask = Task {
                 await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
-                    await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler, deadline: deadline, executionID: executionID)
+                    await AgentExecutionContext.$currentRunContext.withValue(effectiveRunContext) {
+                        await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler, deadline: deadline, executionID: executionID, runExecutionContext: effectiveRunContext)
+                    }
                 }
             }
             activeExecution = ActiveExecution(id: executionID, task: turnTask, streamID: opened.stream.id, isRestore: false)
@@ -364,7 +378,8 @@ public actor SessionRuntime {
         profiler: TurnProfiler,
         deadline: ExecutionDeadline,
         executionID: UUID,
-        resume: Bool = false
+        resume: Bool = false,
+        runExecutionContext: RunExecutionContext? = nil
     ) async {
         var index = 0
         var finalUsage: ModelUsage?
@@ -383,7 +398,7 @@ public actor SessionRuntime {
             let runLease = RunLease(sessionID: sessionID, turnID: TurnID(userTurnID.rawValue), runID: runID.map { RunID($0.rawValue) }, revision: currentSession.revision)
             if resume {
                 let session = try await store.session(sessionID)
-                try await settleDurableBatches(session: session, deadline: deadline, profiler: profiler)
+                try await settleDurableBatches(session: session, deadline: deadline, profiler: profiler, runExecutionContext: runExecutionContext)
                 try ensureExecuting(executionID)
             }
             var lastCallBatchSignature: String?
@@ -996,7 +1011,9 @@ public actor SessionRuntime {
                             signatureReadCounts[signature] = readCount + 1
                         }
                     } else if let signature = signatures[offset], let previous = lastSuccessfulRead, previous.signature == signature {
-                        let outcome = duplicateOutcome(for: call, signature: signature, content: previous.content)
+                        let resourceName = signature.resource.isEmpty ? signature.toolName : signature.resource
+                        let reminder = "The content of '\(resourceName)' is already present in this session (\(previous.content.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
+                        let outcome = duplicateOutcome(for: call, signature: signature, content: reminder)
                         outcomes[offset] = outcome
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
                         publishedOutcomes.insert(offset)
@@ -1026,10 +1043,19 @@ public actor SessionRuntime {
                             questionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .question(request)) },
                             questionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .question(request), reply: .question(reply)) }
                         )
-                        group.addTask { [toolRuntime, sessionID, eventSink] in
-                            let outcome = await toolRuntime.executeWithMetrics(executionCall, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile, onPermissionAsked: { request in
-                                await eventSink(.permissionAsked(request))
-                            }, observer: observer)
+                        group.addTask { [toolRuntime, sessionID, eventSink, runExecutionContext] in
+                            let outcome = await toolRuntime.executeWithMetrics(
+                                executionCall,
+                                sessionID: sessionID,
+                                projectID: session.projectID ?? ProjectID("ephemeral"),
+                                executionProfile: executionProfile,
+                                permissionConfiguration: runExecutionContext?.permissionConfiguration,
+                                runExecutionContext: runExecutionContext,
+                                onPermissionAsked: { request in
+                                    await eventSink(.permissionAsked(request))
+                                },
+                                observer: observer
+                            )
                             return (offset, outcome)
                         }
                     }
@@ -1040,13 +1066,16 @@ public actor SessionRuntime {
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
                         publishedOutcomes.insert(offset)
 
-                        // 关键：当 primary tool 产出结果时，同批次复用它的 secondary tool 立即发布完成，杜绝幽灵旋转
+                        // 关键：当 primary tool 产出结果时，同批次复用它的 secondary tool 立即发布完成，杜绝幽灵旋转并拦截重复读取
                         for sec in calls.indices where primaryByIndex[sec] == offset && sec != offset && outcomes[sec] == nil {
                             let secondaryCall = calls[sec]
+                            let secSignature = signatures[sec]!
+                            let resourceName = secSignature.resource.isEmpty ? secSignature.toolName : secSignature.resource
+                            let reminder = "The content of '\(resourceName)' is already present in this session (\(outcome.result.content.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
                             let secOutcome = duplicateOutcome(
                                 for: secondaryCall,
-                                signature: signatures[sec]!,
-                                content: outcome.result.content,
+                                signature: secSignature,
+                                content: reminder,
                                 timing: outcome.result.timing,
                                 execution: outcome.execution
                             )
@@ -1063,10 +1092,13 @@ public actor SessionRuntime {
                     guard let primary = primaryByIndex[offset], let previous = outcomes[primary] else {
                         throw CoreError(code: .modelStream, message: "Tool batch settlement 缺少结果: \(call.callID.rawValue)")
                     }
+                    let secSignature = signatures[offset]!
+                    let resourceName = secSignature.resource.isEmpty ? secSignature.toolName : secSignature.resource
+                    let reminder = "The content of '\(resourceName)' is already present in this session (\(previous.result.content.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
                     let outcome = duplicateOutcome(
                         for: call,
-                        signature: signatures[offset]!,
-                        content: previous.result.content,
+                        signature: secSignature,
+                        content: reminder,
                         timing: previous.result.timing,
                         execution: previous.execution
                     )
@@ -1371,7 +1403,7 @@ public actor SessionRuntime {
         await compactor.unitStates(sessionID: sessionID)
     }
 
-    private func settleDurableBatches(session: Session, deadline: ExecutionDeadline, profiler: TurnProfiler) async throws {
+    private func settleDurableBatches(session: Session, deadline: ExecutionDeadline, profiler: TurnProfiler, runExecutionContext: RunExecutionContext? = nil) async throws {
         for batchID in toolBatches.filter({ $0.state == .pending || $0.state == .recoveryRequired }).map(\.batchID) {
             guard let batch = toolBatches.first(where: { $0.batchID == batchID }), batch.resultMessageID == nil else { continue }
             for call in batch.toolCallStates where call.state == .recoveryRequired {
@@ -1404,10 +1436,19 @@ public actor SessionRuntime {
                         questionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .question(request)) },
                         questionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .question(request), reply: .question(reply)) }
                     )
-                    group.addTask { [toolRuntime, sessionID, eventSink, executionProfile] in
-                        await toolRuntime.executeWithMetrics(executionCall, sessionID: sessionID, projectID: session.projectID ?? ProjectID("ephemeral"), executionProfile: executionProfile, onPermissionAsked: { request in
-                            await eventSink(.permissionAsked(request))
-                        }, observer: observer)
+                    group.addTask { [toolRuntime, sessionID, eventSink, executionProfile, runExecutionContext] in
+                        await toolRuntime.executeWithMetrics(
+                            executionCall,
+                            sessionID: sessionID,
+                            projectID: session.projectID ?? ProjectID("ephemeral"),
+                            executionProfile: executionProfile,
+                            permissionConfiguration: runExecutionContext?.permissionConfiguration,
+                            runExecutionContext: runExecutionContext,
+                            onPermissionAsked: { request in
+                                await eventSink(.permissionAsked(request))
+                            },
+                            observer: observer
+                        )
                     }
                 }
                 for await outcome in group {

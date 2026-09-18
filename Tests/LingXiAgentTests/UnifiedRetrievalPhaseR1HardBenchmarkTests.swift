@@ -307,6 +307,9 @@ struct UnifiedRetrievalPhaseR1HardBenchmarkTests {
 
     @Test("Hard Benchmark: 运行真实 Graded Relevance 评测并输出基准指标")
     func testHardBenchmarkGradedRelevance() throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let corpus = try makeHardBenchmarkCorpus()
         let queries = makeHardBenchmarkQueries()
         let snapshot = BM25IndexSnapshot(chunks: corpus, config: .standard, tokenizer: CodeAwareTokenizer())
@@ -375,6 +378,9 @@ struct UnifiedRetrievalPhaseR1HardBenchmarkTests {
 
     @Test("Ablation Test: 测量 Tokenizer 与 Exact Boost 的独立贡献")
     func testAblationStudy() throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let corpus = try makeHardBenchmarkCorpus()
         let queries = makeHardBenchmarkQueries()
 
@@ -445,6 +451,9 @@ struct UnifiedRetrievalPhaseR1HardBenchmarkTests {
 
     @Test("Sensitivity: Exact Boost 权重敏感度测试")
     func testExactBoostSensitivity() throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let corpus = try makeHardBenchmarkCorpus()
         let queries = makeHardBenchmarkQueries()
 
@@ -479,6 +488,9 @@ struct UnifiedRetrievalPhaseR1HardBenchmarkTests {
 
     @Test("Real Workspace: 4.6k Chunks 真实索引查询延迟与内存资源分析")
     func testRealCorpusLatencyAndSystemResources() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let registry = UnifiedRetrievalRegistry.standard(projectRoot: root)
 
@@ -555,6 +567,9 @@ struct UnifiedRetrievalPhaseR1HardBenchmarkTests {
 
     @Test("Cold vs Warm: 验证 Warm Search 毫秒级与后台构建不阻塞")
     func testColdVsWarmSearchAndNonBlocking() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let tool = RetrievalSearchTool(projectRoot: root)
 

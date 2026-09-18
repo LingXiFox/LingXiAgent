@@ -39,7 +39,8 @@ public struct ExtensionCompatibility: Codable, Sendable, Equatable {
     }
 
     private static func version(_ value: String) -> [Int]? {
-        let parts = value.split(separator: ".")
+        let clean = value.split(separator: "-").first.map(String.init) ?? value
+        let parts = clean.split(separator: ".")
         guard !parts.isEmpty, parts.allSatisfy({ Int($0).map { $0 >= 0 } == true }) else { return nil }
         return parts.map { Int($0)! } + Array(repeating: 0, count: max(0, 3 - parts.count))
     }
@@ -271,7 +272,7 @@ public struct PluginManifest: Codable, Sendable, Equatable {
 public actor ExtensionPlatform {
     public let registry: ExtensionRegistry
     public let globalRoot: URL
-    public let projectRoot: URL
+    public private(set) var projectRoot: URL
     public let pluginSupervisor: PluginHostSupervisor
     private let permissions: PermissionEngine
     private let deadlinePolicy: ExecutionDeadlinePolicy
@@ -279,14 +280,23 @@ public actor ExtensionPlatform {
     private var hooks: [String: (event: ExtensionHookEvent, timeout: Double, handler: @Sendable (ExtensionEvent) async throws -> Void)] = [:]
     private var mcpRegistry: MCPServerRegistry?
 
-    public init(globalRoot: URL, projectRoot: URL, permissions: PermissionEngine, registry: ExtensionRegistry = ExtensionRegistry(), deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), coreVersion: String = CoreHost.coreVersion) {
+    public init(globalRoot: URL, projectRoot: URL, permissions: PermissionEngine, registry: ExtensionRegistry = ExtensionRegistry(), deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), coreVersion: String = CoreHost.coreVersion, enablePlugins: Bool = true) {
         self.globalRoot = globalRoot.standardizedFileURL
         self.projectRoot = projectRoot.standardizedFileURL
         self.permissions = permissions
         self.registry = registry
         self.deadlinePolicy = deadlinePolicy
         self.coreVersion = coreVersion
-        self.pluginSupervisor = PluginHostSupervisor(globalRoot: globalRoot, projectRoot: projectRoot, permissions: permissions)
+        self.pluginSupervisor = PluginHostSupervisor(globalRoot: globalRoot, projectRoot: projectRoot, permissions: permissions, isEnabled: enablePlugins)
+    }
+
+    /// 更新工作区项目根目录并重新扫描扩展
+    @discardableResult
+    public func updateProjectRoot(_ newURL: URL) async -> ExtensionDiscoveryResult {
+        let std = newURL.standardizedFileURL
+        self.projectRoot = std
+        await pluginSupervisor.updateProjectRoot(std)
+        return await discover()
     }
 
     public func restore() async {
@@ -373,11 +383,80 @@ public actor ExtensionPlatform {
     }
 
     public func executePluginCommand(name: String, arguments: [String], sessionID: String?) async throws -> PluginCommandCallResult {
-        try await pluginSupervisor.executeCommand(name: name, arguments: arguments, sessionID: sessionID)
+        do {
+            return try await pluginSupervisor.executeCommand(name: name, arguments: arguments, sessionID: sessionID)
+        } catch {
+            if let result = await executeMarkdownCommand(name: name, arguments: arguments) {
+                return result
+            }
+            throw error
+        }
+    }
+
+    private func executeMarkdownCommand(name: String, arguments: [String]) async -> PluginCommandCallResult? {
+        let candidates = [
+            projectRoot.appendingPathComponent(".lingxi/commands/\(name).md"),
+            globalRoot.appendingPathComponent("commands/\(name).md"),
+            globalRoot.appendingPathComponent(".lingxi/commands/\(name).md")
+        ]
+        for url in candidates {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let lines = content.components(separatedBy: .newlines)
+            var bodyLines: [String] = []
+            var isScript = false
+            var inCodeBlock = false
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("```") {
+                    inCodeBlock.toggle()
+                    if trimmed.contains("bash") || trimmed.contains("sh") {
+                        isScript = true
+                    }
+                    continue
+                }
+                if inCodeBlock || !line.hasPrefix("#") {
+                    bodyLines.append(line)
+                }
+            }
+            let rawBody = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if isScript {
+                let invocation: ToolProcessInvocation
+                #if os(Windows)
+                invocation = ToolProcessInvocation(executable: "cmd.exe", arguments: ["/c", rawBody])
+                #else
+                invocation = ToolProcessInvocation(executable: "/bin/sh", arguments: ["-c", rawBody])
+                #endif
+                do {
+                    let sanitizedEnv = EnvironmentSanitizer.sanitized()
+                    let result = try await runToolProcess(
+                        invocation: invocation,
+                        cwd: projectRoot,
+                        environment: sanitizedEnv,
+                        timeoutMilliseconds: 60_000
+                    )
+                    let outStr = (result.stdout + "\n" + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+                    return PluginCommandCallResult(isPrompt: false, text: outStr.isEmpty ? "✓ 脚本执行完毕" : outStr, presentation: "modal", title: "/\(name)")
+                } catch {
+                    return PluginCommandCallResult(isPrompt: false, text: "❌ 脚本执行失败: \(error)", presentation: "modal", title: "/\(name)")
+                }
+            } else {
+                return PluginCommandCallResult(isPrompt: true, text: rawBody, presentation: "inline", title: nil)
+            }
+        }
+        return nil
     }
 
     public func terminatePlugins() async {
         await pluginSupervisor.terminateAll()
+    }
+
+    public nonisolated func terminatePluginsSync() {
+        pluginSupervisor.terminateAllSync()
+    }
+
+    deinit {
+        terminatePluginsSync()
     }
 
     public func list(type: ExtensionType? = nil) async -> [ExtensionDescriptor] {

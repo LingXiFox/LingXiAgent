@@ -53,6 +53,9 @@ struct StreamingPerformanceBenchmarkTests {
 
     @Test("Deterministic burst-stream benchmark satisfies latency, stall, and fidelity requirements")
     func deterministicBurstStreamBenchmark() async throws {
+        guard ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1" else {
+            return
+        }
         let tracker = StreamingLatencyTracker()
         tracker.reset()
         tracker.isEnabled = true

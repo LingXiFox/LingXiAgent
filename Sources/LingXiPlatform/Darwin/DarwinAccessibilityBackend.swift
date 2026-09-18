@@ -98,7 +98,18 @@ public final class DarwinAccessibilityBackend: AccessibilityBackend, @unchecked 
                 if let roleDesc, !roleDesc.isEmpty { metaTokens.append(roleDesc) }
                 let compositeSearchText = metaTokens.joined(separator: " ")
 
-                let nodeId = "node_\(visitedCount)"
+                let prefix: String
+                switch scope {
+                case .window(let target):
+                    prefix = "w\(target.windowID)_r\(target.revision)"
+                case .application(let appName):
+                    prefix = "app_\(appName.prefix(8))"
+                case .activeWindow:
+                    prefix = "active"
+                case .fullSystem:
+                    prefix = "sys"
+                }
+                let nodeId = "\(prefix)_node_\(visitedCount)"
                 let finalName = (primaryName?.isEmpty ?? true) ? (compositeSearchText.isEmpty ? nil : compositeSearchText) : primaryName
 
                 let isInteractable = isElementInteractable(role: role, supportedActions: supportedActions, hasDomId: domId != nil)
@@ -123,20 +134,30 @@ public final class DarwinAccessibilityBackend: AccessibilityBackend, @unchecked 
                 }
             }
 
-            // 优先遍历主窗口/聚焦窗口以提升网页交互元素的命中率与速度
-            var windowsValue: AnyObject?
-            if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-               let windows = windowsValue as? [AXUIElement], !windows.isEmpty {
-                for win in windows {
-                    traverse(element: win, depth: 0)
-                    if visitedCount >= maxNodes { break }
-                }
+            // 若 scope 为指定窗口，则精确锁定目标 AXWindow 根节点；否则优先遍历应用各窗口
+            if case .window(let target) = scope,
+               let targetWin = DarwinWindowBackend.findAXWindow(appElement: appElement, matchingWindowID: target.windowID, fallbackBounds: target.bounds) {
+                traverse(element: targetWin, depth: 0)
             } else {
-                traverse(element: appElement, depth: 0)
+                var windowsValue: AnyObject?
+                if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+                   let windows = windowsValue as? [AXUIElement], !windows.isEmpty {
+                    for win in windows {
+                        traverse(element: win, depth: 0)
+                        if visitedCount >= maxNodes { break }
+                    }
+                } else {
+                    traverse(element: appElement, depth: 0)
+                }
             }
 
             cacheLock.withLock {
-                self.elementCache = newCache
+                for (k, v) in newCache {
+                    self.elementCache[k] = v
+                }
+                if self.elementCache.count > 5000 {
+                    self.elementCache = newCache
+                }
             }
 
             return snapshots
@@ -285,6 +306,17 @@ public final class DarwinAccessibilityBackend: AccessibilityBackend, @unchecked 
         }
 
         switch scope {
+        case .window(let target):
+            if target.ownerPID > 0, let app = NSRunningApplication(processIdentifier: target.ownerPID) {
+                return app
+            }
+            if let bundle = target.bundleIdentifier {
+                if let app = runningApps.first(where: { $0.bundleIdentifier == bundle }) {
+                    return app
+                }
+            }
+            return NSWorkspace.shared.frontmostApplication
+
         case .fullSystem, .activeWindow:
             let front = NSWorkspace.shared.frontmostApplication
             if let front, !isTerminalApp(front) {

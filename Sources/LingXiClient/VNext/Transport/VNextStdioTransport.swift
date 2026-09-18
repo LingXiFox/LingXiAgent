@@ -109,7 +109,24 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         }
         for continuation in continuations { continuation.resume(throwing: error) }
         try? input.close()
-        if let process, process.isRunning { process.terminate() }
+
+        if let process {
+            let gracePeriod = 2.0
+            let start = Date()
+            while process.isRunning && Date().timeIntervalSince(start) < gracePeriod {
+                try? await Task.sleep(nanoseconds: 30_000_000)
+            }
+            if process.isRunning {
+                process.terminate()
+                let termStart = Date()
+                while process.isRunning && Date().timeIntervalSince(termStart) < 1.0 {
+                    try? await Task.sleep(nanoseconds: 30_000_000)
+                }
+            }
+            if process.isRunning {
+                LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
+            }
+        }
         updateState(.disconnected)
     }
 
@@ -181,13 +198,27 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope.payload) }
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> { try await response("workspace.diff", envelope.payload) }
 
-    public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> { try await unsupported() }
-    public func uploadContentChunk(uploadID: String, chunkIndex: UInt64, data: Data) async throws { try await unsupportedVoid() }
-    public func commitContentUpload(envelope: CommandEnvelope<CommitContentUploadRequest>) async throws -> CommandReceipt<ContentRef> { try await unsupported() }
-    public func abortContentUpload(envelope: CommandEnvelope<AbortContentUploadRequest>) async throws -> CommandReceipt<VoidResult> { try await unsupported() }
-    public func getContentMetadata(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> ContentMetadata { try await unsupported() }
-    public func getContent(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> Data { try await unsupported() }
-    public func getContentRange(ref: ContentRef, offset: Int, length: Int, authorization: ContentAuthorizationContext) async throws -> Data { try await unsupported() }
+    public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> { try await command("content.beginUpload", envelope.payload) }
+    public func uploadContentChunk(uploadID: String, chunkIndex: UInt64, data: Data) async throws {
+        let req = UploadContentChunkRequest(uploadID: uploadID, chunkIndex: chunkIndex, data: data)
+        let _: CommandReceipt<VoidResult> = try await command("content.uploadChunk", req)
+    }
+    public func commitContentUpload(envelope: CommandEnvelope<CommitContentUploadRequest>) async throws -> CommandReceipt<ContentRef> { try await command("content.commitUpload", envelope.payload) }
+    public func abortContentUpload(envelope: CommandEnvelope<AbortContentUploadRequest>) async throws -> CommandReceipt<VoidResult> { try await command("content.abortUpload", envelope.payload) }
+    public func getContentMetadata(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> ContentMetadata {
+        let req = GetContentMetadataRequest(ref: ref, authorization: authorization)
+        return try await rawResponse("content.getMetadata", req)
+    }
+    public func getContent(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> Data {
+        let req = GetContentRequest(ref: ref, authorization: authorization)
+        let payload: ContentBinaryPayload = try await rawResponse("content.get", req)
+        return payload.data
+    }
+    public func getContentRange(ref: ContentRef, offset: Int, length: Int, authorization: ContentAuthorizationContext) async throws -> Data {
+        let req = GetContentRangeRequest(ref: ref, offset: offset, length: length, authorization: authorization)
+        let payload: ContentBinaryPayload = try await rawResponse("content.getRange", req)
+        return payload.data
+    }
 
     public func getDiagnostics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeDiagnosticsBundle> { try await response("diagnostics.get", envelope.payload) }
     public func getPerformanceMetrics(envelope: QueryEnvelope<GetPerformanceMetricsRequest>) async throws -> ResponseEnvelope<TurnPerformanceReport?> { try await response("diagnostics.performance", envelope.payload) }
@@ -245,6 +276,11 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         try decoder.decode(ResponseEnvelope<Response>.self, from: await send(method: method, payload: encoder.encode(payload)))
     }
 
+    private func rawResponse<Request: Encodable, Response: Decodable>(_ method: String, _ payload: Request) async throws -> Response {
+        let resData = try await send(method: method, payload: encoder.encode(payload))
+        return try decoder.decode(Response.self, from: resData)
+    }
+
     private func command<Request: Encodable, Result: Codable & Sendable>(_ method: String, _ payload: Request) async throws -> CommandReceipt<Result> {
         try decoder.decode(CommandReceipt<Result>.self, from: await send(method: method, payload: encoder.encode(payload)))
     }
@@ -256,20 +292,32 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         let requestID = id ?? makeID()
         debug("send.begin id=\(requestID) method=\(method)")
         let data = try encoder.encode(VNextWireRequest(id: requestID, method: method, payload: payload)) + Data("\n".utf8)
-        return try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            if let terminalError { lock.unlock(); continuation.resume(throwing: terminalError); return }
-            pending[requestID] = continuation
-            lock.unlock()
-
-            do {
-                try input.write(contentsOf: data)
-            } catch {
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
-                pending.removeValue(forKey: requestID)
+                if let terminalError {
+                    lock.unlock()
+                    continuation.resume(throwing: terminalError)
+                    return
+                }
+                pending[requestID] = continuation
                 lock.unlock()
-                continuation.resume(throwing: error)
+
+                do {
+                    try input.write(contentsOf: data)
+                } catch {
+                    lock.lock()
+                    pending.removeValue(forKey: requestID)
+                    lock.unlock()
+                    continuation.resume(throwing: error)
+                }
             }
+        } onCancel: { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let continuation = self.pending.removeValue(forKey: requestID)
+            self.lock.unlock()
+            continuation?.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(requestID) cancelled"))
         }
     }
 
@@ -321,9 +369,30 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         }
     }
     private func withLock<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
-    private func removeRuntime(_ id: String) { lock.lock(); runtimeContinuations.removeValue(forKey: id)?.finish(); lock.unlock() }
-    private func removeSession(_ id: String) { lock.lock(); sessionContinuations.removeValue(forKey: id)?.finish(); lock.unlock() }
-    private func removeFrame(_ id: String) { lock.lock(); frameContinuations.removeValue(forKey: id)?.finish(); lock.unlock() }
+    private func removeRuntime(_ id: String) {
+        lock.lock()
+        runtimeContinuations.removeValue(forKey: id)?.finish()
+        lock.unlock()
+        Task { [weak self] in
+            _ = try? await self?.send(method: "events.unsubscribe", payload: JSONEncoder().encode(id))
+        }
+    }
+    private func removeSession(_ id: String) {
+        lock.lock()
+        sessionContinuations.removeValue(forKey: id)?.finish()
+        lock.unlock()
+        Task { [weak self] in
+            _ = try? await self?.send(method: "events.unsubscribe", payload: JSONEncoder().encode(id))
+        }
+    }
+    private func removeFrame(_ id: String) {
+        lock.lock()
+        frameContinuations.removeValue(forKey: id)?.finish()
+        lock.unlock()
+        Task { [weak self] in
+            _ = try? await self?.send(method: "events.unsubscribe", payload: JSONEncoder().encode(id))
+        }
+    }
 
     private func debug(_ message: String) {
         Self.trace(message)

@@ -11,8 +11,10 @@ import CoreGraphics
 /// 本地由 ActionBatchExecutor 流水线连贯执行，记录毫秒级单步耗时，退出自动强安全中立化。
 public struct ComputerBatchTool: ToolExecutor {
     public let definition: ToolDefinition
+    private let customEnvironment: DesktopEnvironment?
 
-    public init() {
+    public init(environment: DesktopEnvironment? = nil) {
+        self.customEnvironment = environment
         self.definition = ToolDefinition(
             id: ToolID("computer_batch"),
             name: "computer_batch",
@@ -72,9 +74,10 @@ public struct ComputerBatchTool: ToolExecutor {
         let bringToFront = (json["bring_to_front"] as? Bool) ?? false
 
         // 自动从 intent_hint 或参数文本中推导目标应用，防止模型因漏传 target_app 误将前台终端自身作为目标
+        let environment = self.customEnvironment ?? DesktopEnvironment.makeCurrentPlatformDefault()
         if targetApp == nil && targetWindow == nil {
             let combinedHint = "\(intentHint ?? "") \(arguments)".lowercased()
-            let runningApps = (try? await DesktopEnvironment.makeCurrentPlatformDefault().applications?.listRunningApplications()) ?? []
+            let runningApps = (try? await environment.applications?.listRunningApplications()) ?? []
             let ignoredNames: Set<String> = ["ghostty", "terminal", "iterm2", "alacritty", "lingxiagent", "lingxitui", "cursor", "code"]
             let commonAppMappings: [String: [String]] = [
                 "safari": ["safari", "safari 浏览器", "com.apple.safari"],
@@ -107,8 +110,6 @@ public struct ComputerBatchTool: ToolExecutor {
         }
 
         let windowRelative = (json["window_relative"] as? Bool) ?? (targetApp != nil || targetWindow != nil)
-
-        let environment = DesktopEnvironment.makeCurrentPlatformDefault()
         var stepSummaries: [String] = []
 
         // 1. 目标应用/窗口范围锁定 (Target Scoping & Isolation)
@@ -129,6 +130,8 @@ public struct ComputerBatchTool: ToolExecutor {
             let modeDesc = bringToFront ? "Foreground focus" : "Non-disruptive background mode (TUI visibility preserved)"
             stepSummaries.append("Target Scope [\(winTitle)]: \(attachMs)ms (\(modeDesc), \(boundsDesc))")
         }
+
+        var targetHandle: DesktopTargetHandle? = attachedWindow?.toTargetHandle(revision: 1)
 
         #if os(macOS)
         if let attachedWindow, bringToFront {
@@ -193,21 +196,53 @@ public struct ComputerBatchTool: ToolExecutor {
                 var foundDesc = "Query '\(query)' was empty"
                 var foundSuccess = false
                 if !query.isEmpty, let a11y = environment.accessibility {
-                    let scope: AccessibilityScope = (targetApp != nil) ? .application(bundleOrName: targetApp!) : .activeWindow
-                    if let matchedNode = try? await a11y.findElement(matching: query, role: item["role"] as? String, scope: scope),
-                       let bounds = matchedNode.bounds {
+                    let scope: AccessibilityScope = (targetHandle != nil) ? .window(targetHandle!) : ((targetApp != nil) ? .application(bundleOrName: targetApp!) : .activeWindow)
+                    
+                    // 单步超时保护：最大等待 1.5 秒，杜绝 Accessibility IPC 挂死
+                    let matchedNode: AccessibilityNodeSnapshot? = await withTaskGroup(of: AccessibilityNodeSnapshot?.self) { group in
+                        group.addTask {
+                            try? await a11y.findElement(matching: query, role: item["role"] as? String, scope: scope)
+                        }
+                        group.addTask {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            return nil
+                        }
+                        let first = await group.next() ?? nil
+                        group.cancelAll()
+                        return first
+                    }
+
+                    if let matchedNode, let bounds = matchedNode.bounds {
                         let cx = bounds.origin.x + bounds.width / 2.0
                         let cy = bounds.origin.y + bounds.height / 2.0
                         foundDesc = "Found '\(matchedNode.name ?? query)' (role: \(matchedNode.role)) at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(bounds.origin.x)), \(Int(bounds.origin.y)), \(Int(bounds.width)), \(Int(bounds.height)))"
                         foundSuccess = true
                     } else {
                         #if os(macOS)
-                        if let visionHit = try? await DarwinVisionOCRBackend.shared.findElement(matching: query, windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds) {
-                            foundDesc = "Found '\(visionHit.element.text)' via Native Vision OCR at center (\(String(format: "%.1f", visionHit.center.x)), \(String(format: "%.1f", visionHit.center.y))), bounds: (\(Int(visionHit.element.bounds.origin.x)), \(Int(visionHit.element.bounds.origin.y)), \(Int(visionHit.element.bounds.width)), \(Int(visionHit.element.bounds.height)))"
-                            foundSuccess = true
-                        } else if let elements = try? await DarwinVisionOCRBackend.shared.recognizeElements(windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds), !elements.isEmpty {
-                            let sampleList = elements.prefix(12).map { "\"\($0.text)\"" }.joined(separator: ", ")
-                            foundDesc = "Element '\(query)' not found. Visible elements in window: [\(sampleList)]"
+                        if let winID = attachedWindow?.id {
+                            let visionHit = await withTaskGroup(of: VisualElementSnapshot?.self) { group in
+                                group.addTask {
+                                    if let hit = try? await DarwinVisionOCRBackend.shared.findElement(matching: query, windowID: winID, windowBounds: attachedWindow?.bounds) {
+                                        return hit.element
+                                    }
+                                    return nil
+                                }
+                                group.addTask {
+                                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                                    return nil
+                                }
+                                let first = await group.next() ?? nil
+                                group.cancelAll()
+                                return first
+                            }
+                            if let visionHit {
+                                let cx = visionHit.bounds.origin.x + visionHit.bounds.width / 2.0
+                                let cy = visionHit.bounds.origin.y + visionHit.bounds.height / 2.0
+                                foundDesc = "Found '\(visionHit.text)' via Native Vision OCR at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(visionHit.bounds.origin.x)), \(Int(visionHit.bounds.origin.y)), \(Int(visionHit.bounds.width)), \(Int(visionHit.bounds.height)))"
+                                foundSuccess = true
+                            } else {
+                                foundDesc = "Element '\(query)' not found in \(targetApp ?? "target window")"
+                            }
                         } else {
                             foundDesc = "Element '\(query)' not found in \(targetApp ?? "current window")"
                         }
@@ -223,23 +258,35 @@ public struct ComputerBatchTool: ToolExecutor {
                 continue
             }
 
-            // 处理截屏动作 (screenshot / capture)：真实调用底层 capture backend，杜绝假动作成功
+            // 处理截屏动作 (screenshot / capture)：优先目标窗口精准捕获（不依赖前台是否遮挡），产物写入本地并生成稳定 blobRef
             if type == "screenshot" || type == "capture" {
                 let shotStart = clock.now
                 if let captureBackend = environment.capture {
-                    let sources = (try? await captureBackend.availableSources()) ?? []
-                    if let mainSource = sources.first(where: { $0.isDisplay }) ?? sources.first {
-                        do {
-                            let frame = try await captureBackend.captureFrame(source: mainSource, cropRect: nil)
-                            let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
-                            stepSummaries.append("Step \(stepIndex) [Screenshot]: \(shotMs)ms (Display captured successfully: \(frame.pixelWidth)x\(frame.pixelHeight) px, scale \(frame.scaleFactor))")
-                        } catch {
-                            let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
-                            stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (\(shotMs)ms - Screen capture failed: \(error))")
-                            hasFailedStep = true
+                    do {
+                        let frame: CapturedFrame
+                        let targetDesc: String
+                        if let handle = targetHandle {
+                            frame = try await captureBackend.captureWindow(handle: handle)
+                            let title = attachedWindow?.title ?? targetApp ?? "Window \(handle.windowID)"
+                            targetDesc = "Target window '\(title)'"
+                        } else {
+                            let sources = (try? await captureBackend.availableSources()) ?? []
+                            guard let mainSource = sources.first(where: { $0.isDisplay }) ?? sources.first else {
+                                throw ActionExecutionError.inputInjectionFailed(reason: "No available display capture source found")
+                            }
+                            frame = try await captureBackend.captureFrame(source: mainSource, cropRect: nil)
+                            targetDesc = "Main display"
                         }
-                    } else {
-                        stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (No available display capture source found)")
+                        let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                        let digest = LingXiPlatform.crypto.sha256Hex(frame.data)
+                        let contentRef = "content://sha256:\(digest)"
+                        let contentDir = CoreStorageLayout.current.content
+                        try? FileManager.default.createDirectory(at: contentDir, withIntermediateDirectories: true)
+                        try? frame.data.write(to: contentDir.appendingPathComponent("\(digest).png"))
+                        stepSummaries.append("Step \(stepIndex) [Screenshot]: \(shotMs)ms (\(targetDesc) captured: \(frame.pixelWidth)x\(frame.pixelHeight) px, scale \(frame.scaleFactor), contentRef: \(contentRef))")
+                    } catch {
+                        let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                        stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (\(shotMs)ms - Screen capture failed: \(error))")
                         hasFailedStep = true
                     }
                 } else {
@@ -259,7 +306,7 @@ public struct ComputerBatchTool: ToolExecutor {
             if let query = elementQuery, !query.isEmpty {
                 let locateStart = clock.now
                 if let a11y = environment.accessibility {
-                    let scope: AccessibilityScope = (targetApp != nil) ? .application(bundleOrName: targetApp!) : .activeWindow
+                    let scope: AccessibilityScope = (targetHandle != nil) ? .window(targetHandle!) : ((targetApp != nil) ? .application(bundleOrName: targetApp!) : .activeWindow)
                     if let matchedNode = try? await a11y.findElement(matching: query, role: item["role"] as? String, scope: scope) {
                         if let bounds = matchedNode.bounds {
                             x = bounds.origin.x + bounds.width / 2.0
@@ -321,28 +368,17 @@ public struct ComputerBatchTool: ToolExecutor {
                 continue
             }
 
-            // 后台安全防误触检查（审计报告 #17）：
-            // 若为后台模式 (bringToFront == false) 且 AX direct 未能处理，若目标应用不是前台活跃 App，
-            // 严禁发送全局硬件鼠标点击/拖拽，以防止误点击用户正在使用的前台终端！
-            #if os(macOS)
-            if !bringToFront, let attachedWindow, !axDirectHandled, (type == "click" || type == "click_element" || type == "type" || type == "drag") {
-                let isFrontmost: Bool = {
-                    if let winID = UInt32(attachedWindow.id),
-                       let infoList = CGWindowListCopyWindowInfo([.optionIncludingWindow], winID) as? [[String: Any]],
-                       let pid = (infoList.first?[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value {
-                        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-                    }
-                    return false
-                }()
-                if !isFrontmost {
-                    let winTitle = attachedWindow.title ?? targetApp ?? "target"
-                    stepSummaries.append("Step \(stepIndex) [\(type.capitalized)]: FAILED (Background safety violation: Target '\(winTitle)' is not frontmost and AX direct manipulation failed. Refusing global hardware injection into user's current foreground window. Please set 'bring_to_front: true' to perform foreground actions.)")
-                    hasFailedStep = true
-                    stepIndex += 1
-                    continue
-                }
+            // 后台安全防误触契约（Round 4 审计 #17 & #30）：
+            // 若为后台模式 (bringToFront == false) 且 AX direct 未能处理，
+            // 严禁向屏幕坐标发送全局 CGEvent 硬件鼠标/拖拽/输入，杜绝击穿到桌面顶层覆盖窗口！
+            if !bringToFront, (targetApp != nil || targetWindow != nil || attachedWindow != nil),
+               (type == "click" || type == "click_element" || type == "type" || type == "hover" || type == "move" || type == "drag") {
+                let winTitle = attachedWindow?.title ?? targetApp ?? "target window"
+                stepSummaries.append("Step \(stepIndex) [\(type.capitalized)]: FAILED (foregroundRequired: Coordinate actions cannot be safely injected to background window '\(winTitle)' without risk of hitting occluding windows. Please set 'bring_to_front: true' to perform foreground actions, or use semantic 'element_query' for direct background AX manipulation.)")
+                hasFailedStep = true
+                stepIndex += 1
+                continue
             }
-            #endif
 
             let targetPos: TargetPosition? = {
                 if let x, let y {
@@ -467,6 +503,21 @@ public struct ComputerBatchTool: ToolExecutor {
 
         var executionSuccess = true
         var failureMessage: String? = nil
+
+        // 前台坐标输入防遮挡二次确认（审计报告 #19 & #31）：
+        // 在批量硬件输入执行前，重新验证 exact target window 存在、刷新 bounds 并确保置顶
+        if bringToFront, let winBackend = environment.windows, let currentHandle = targetHandle {
+            let windows = (try? await winBackend.listWindows()) ?? []
+            if let freshWin = windows.first(where: { $0.id == String(currentHandle.windowID) }) {
+                try? await winBackend.focusWindow(id: freshWin.id)
+                targetHandle = freshWin.toTargetHandle(revision: currentHandle.revision + 1)
+                attachedWindow = freshWin
+            } else {
+                stepSummaries.append("Step \(stepIndex) [Pre-Flight Validation]: FAILED (staleTarget: Target window \(currentHandle.windowID) disappeared or closed)")
+                hasFailedStep = true
+                interactionSteps.removeAll()
+            }
+        }
 
         if !interactionSteps.isEmpty {
             let interactionActions = interactionSteps.map(\.action)

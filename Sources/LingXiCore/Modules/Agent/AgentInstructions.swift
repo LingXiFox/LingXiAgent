@@ -188,7 +188,7 @@ enum AgentBehaviorInstructions {
                 },
                 "options": {
                   "baseURL": "https://api.example.com/v1", // or endpoint without /responses or /chat/completions
-                  "apiKey": "{env:API_KEY_NAME}"
+                  "token": "{env:API_KEY_NAME}"
                 }
               }
             }

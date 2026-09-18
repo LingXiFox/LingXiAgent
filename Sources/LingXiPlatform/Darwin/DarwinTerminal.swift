@@ -49,7 +49,7 @@ public final class DarwinTerminalAdapter: PlatformTerminalProtocol, @unchecked S
             _exit(130)
         }
         signal(SIGTERM) { _ in
-            _exit(143)
+            exit(143)
         }
     }
 

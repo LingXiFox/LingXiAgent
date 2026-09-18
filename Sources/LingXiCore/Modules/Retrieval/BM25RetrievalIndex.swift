@@ -216,12 +216,14 @@ public final class BM25IndexSnapshot: Sendable {
     ///   - symbolHints: 可选的代码符号与函数名提示（享受 exact symbol boost，绝非硬过滤）
     ///   - scope: 检索来源范围
     ///   - limit: 最大返回数量（上限 10）
+    ///   - sessionID: 可选的当前会话 ID（用于严格隔离 E-Core 会话对象，杜绝跨会话泄露）
     public func search(
         query: String,
         lexicalHints: [String]? = nil,
         symbolHints: [String]? = nil,
         scope: RetrievalScope = .all,
-        limit: Int = 5
+        limit: Int = 5,
+        sessionID: SessionID? = nil
     ) -> [RankedRetrievalChunk] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, totalDocuments > 0 else { return [] }
@@ -230,6 +232,24 @@ public final class BM25IndexSnapshot: Sendable {
         let queryTokens = tokenizer.tokenize(trimmed)
         let hintTokens = (lexicalHints ?? []).flatMap { tokenizer.tokenize($0) }
         guard !queryTokens.isEmpty || !hintTokens.isEmpty else { return [] }
+
+        // Audit #47: 校验 Chunk 是否对当前检索请求与会话可见
+        @inline(__always)
+        func isChunkPermitted(_ chunk: RetrievalChunk) -> Bool {
+            guard scope.matches(chunk.sourceType) else { return false }
+            if chunk.sourceType == .ecoreToolResult {
+                if let targetSession = sessionID {
+                    if let chunkSession = chunk.metadata["session_id"], !chunkSession.isEmpty, chunkSession != targetSession.rawValue {
+                        return false
+                    }
+                } else {
+                    if let chunkSession = chunk.metadata["session_id"], !chunkSession.isEmpty {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
 
         // docIndex -> 累加 BM25 得分
         var docScores: [Int32: Double] = [:]
@@ -245,7 +265,7 @@ public final class BM25IndexSnapshot: Sendable {
             for posting in postingList {
                 let docIdx = Int(posting.docID)
                 let chunk = documents[docIdx]
-                guard scope.matches(chunk.sourceType) else { continue }
+                guard isChunkPermitted(chunk) else { continue }
 
                 let dl = Double(docLengths[docIdx])
                 let tfDouble = Double(posting.termFrequency)
@@ -266,7 +286,7 @@ public final class BM25IndexSnapshot: Sendable {
             for posting in postingList {
                 let docIdx = Int(posting.docID)
                 let chunk = documents[docIdx]
-                guard scope.matches(chunk.sourceType) else { continue }
+                guard isChunkPermitted(chunk) else { continue }
 
                 let dl = Double(docLengths[docIdx])
                 let tfDouble = Double(posting.termFrequency)

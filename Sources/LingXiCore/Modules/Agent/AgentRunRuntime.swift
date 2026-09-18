@@ -137,6 +137,8 @@ public actor AgentRunScheduler {
     }
 }
 
-enum AgentExecutionContext {
-    @TaskLocal static var current: (sessionID: SessionID, runID: AgentRunID, rootSessionID: SessionID, parentSessionID: SessionID?)?
+public enum AgentExecutionContext {
+    @TaskLocal public static var current: (sessionID: SessionID, runID: AgentRunID, rootSessionID: SessionID, parentSessionID: SessionID?)?
+    @TaskLocal public static var currentRunContext: RunExecutionContext?
 }
+

@@ -158,6 +158,18 @@ git status --short --branch > "$META/git-status.txt" 2>&1 || true
 git diff --stat > "$META/git-diff-stat.txt" 2>&1 || true
 git diff --no-ext-diff --no-color > "$META/git-diff.patch" 2>&1 || true
 git diff --cached --stat > "$META/git-staged-diff-stat.txt" 2>&1 || true
+{
+  if git diff --no-ext-diff --no-color --quiet 2>/dev/null; then
+    echo "working-tree-diff: clean"
+  else
+    echo "working-tree-diff: present"
+  fi
+  if git diff --cached --no-ext-diff --no-color --quiet 2>/dev/null; then
+    echo "staged-diff: clean"
+  else
+    echo "staged-diff: present"
+  fi
+} > "$META/git-diff-check.txt"
 git diff --cached --no-ext-diff --no-color > "$META/git-staged-diff.patch" 2>&1 || true
 git log -20 --decorate --oneline > "$META/git-log-last-20.txt" 2>&1 || true
 

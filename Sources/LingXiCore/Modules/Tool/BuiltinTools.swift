@@ -4,6 +4,7 @@ import LingXiProtocol
 public struct WorkspaceRoot: Sendable {
     public let url: URL
     public let sensitivePathPolicy: SensitivePathPolicy
+    public var path: String { url.path }
 
     public init(path: String, sensitivePathPolicy: SensitivePathPolicy? = nil) throws {
         let candidate = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
@@ -1805,7 +1806,11 @@ public struct TodoTool: ToolExecutor {
         capability: ToolCapability(readOnly: false)
     )
 
-    public init() {}
+    private let todoStore: TodoStore
+
+    public init(todoStore: TodoStore? = nil) {
+        self.todoStore = todoStore ?? TodoStore.shared
+    }
 
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
         let input: TodoArguments = try decodeArguments(arguments)
@@ -1823,20 +1828,20 @@ public struct TodoTool: ToolExecutor {
             let taskID = input.id ?? UUID().uuidString.prefix(6).lowercased()
             let status = input.status ?? "pending"
             let item = TodoItemData(id: String(taskID), title: title, status: status)
-            TodoStore.shared.addTodo(item, for: sessionKey)
+            todoStore.addTodo(item, for: sessionKey)
             return try json(TodoMutationResponse(status: "ok", task: item))
         case "update":
             guard let id = input.id, !id.isEmpty else {
                 throw CoreError(code: .toolArgumentInvalid, message: "update 需要 id")
             }
             let status = input.status ?? "in_progress"
-            let ok = TodoStore.shared.updateTodo(id: id, status: status, title: input.title, for: sessionKey)
+            let ok = todoStore.updateTodo(id: id, status: status, title: input.title, for: sessionKey)
             return try json(TodoMutationResponse(status: ok ? "ok" : "not_found", id: id, newStatus: status))
         case "list":
-            let items = TodoStore.shared.getTodos(for: sessionKey)
+            let items = todoStore.getTodos(for: sessionKey)
             return try json(TodoListResponse(status: "ok", tasks: items))
         case "clear":
-            TodoStore.shared.clear(for: sessionKey)
+            todoStore.clear(for: sessionKey)
             return try json(TodoMutationResponse(status: "ok", message: "Todos cleared"))
         default:
             throw CoreError(code: .toolArgumentInvalid, message: "不支持的 action: \(input.action)")
@@ -1903,7 +1908,13 @@ private struct CodebaseGraphArguments: Decodable {
 
 public struct CodebaseGraphTool: ToolExecutor {
     private let workspace: WorkspaceRoot
-    public init(workspace: WorkspaceRoot) { self.workspace = workspace }
+    private let graphEngine: CodebaseGraphEngine
+
+    public init(workspace: WorkspaceRoot, graphEngine: CodebaseGraphEngine? = nil) {
+        self.workspace = workspace
+        self.graphEngine = graphEngine ?? CodebaseGraphEngine.shared
+    }
+
     public let definition = ToolDefinition(
         id: ToolID("codebase_graph"),
         description: "Explore the codebase knowledge graph: architecture layers, hotspots, call hierarchy trace (inbound/outbound), and symbol topological search.",
@@ -1926,14 +1937,14 @@ public struct CodebaseGraphTool: ToolExecutor {
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: CodebaseGraphArguments = try decodeArguments(arguments)
         let shouldReindex = input.reindex == true || input.action == "refresh"
-        let isIndexed = await CodebaseGraphEngine.shared.isIndexed
+        let isIndexed = await graphEngine.isIndexed
         if shouldReindex || !isIndexed {
-            _ = await CodebaseGraphEngine.shared.indexWorkspace(workspaceURL: workspace.url, forceReindex: shouldReindex)
+            _ = await graphEngine.indexWorkspace(workspaceURL: workspace.url, forceReindex: shouldReindex)
         }
 
         switch input.action {
         case "architecture", "overview", "refresh":
-            let overview = await CodebaseGraphEngine.shared.getArchitecture()
+            let overview = await graphEngine.getArchitecture()
             return try json(overview)
         case "trace":
             guard let target = input.target, !target.isEmpty else {
@@ -1941,7 +1952,7 @@ public struct CodebaseGraphTool: ToolExecutor {
             }
             let dir: TraceDirection = (input.direction == "inbound") ? .inbound : .outbound
             let depth = min(max(1, input.depth ?? 3), 5)
-            if let report = await CodebaseGraphEngine.shared.traceCallPath(symbolNameOrId: target, direction: dir, maxDepth: depth) {
+            if let report = await graphEngine.traceCallPath(symbolNameOrId: target, direction: dir, maxDepth: depth) {
                 return try json(report)
             } else {
                 return try json(["status": "not_found", "message": "Symbol '\(target)' not found in codebase graph"])
@@ -1951,7 +1962,7 @@ public struct CodebaseGraphTool: ToolExecutor {
                 throw CoreError(code: .toolArgumentInvalid, message: "Action 'search' requires 'target' parameter")
             }
             let filterKind = input.kind.flatMap { GraphNodeKind(rawValue: $0.lowercased()) }
-            let results = await CodebaseGraphEngine.shared.search(query: query, kind: filterKind)
+            let results = await graphEngine.search(query: query, kind: filterKind)
             return try json(results)
         default:
             throw CoreError(code: .toolArgumentInvalid, message: "Unsupported action '\(input.action)'")
@@ -1960,7 +1971,7 @@ public struct CodebaseGraphTool: ToolExecutor {
 }
 
 public extension BuiltInToolProvider {
-    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) {
+    init(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil, tavilyAPIKey: String? = nil, graphEngine: CodebaseGraphEngine? = nil, todoStore: TodoStore? = nil) {
         let indexTools: [any ToolExecutor]
         if let contextPager, let scanner {
             indexTools = [
@@ -1978,6 +1989,7 @@ public extension BuiltInToolProvider {
         self.init(tools: [
             ReadFileTool(workspace: workspace),
             ContextRecallTool(ecoreStore: cacheController?.ecoreStore),
+            RetrievalSearchTool(projectRoot: workspace.url, ecoreStore: cacheController?.ecoreStore, graphEngine: graphEngine),
             ListDirectoryTool(workspace: workspace),
             GlobTool(workspace: workspace),
             GrepTool(workspace: workspace),
@@ -1985,17 +1997,17 @@ public extension BuiltInToolProvider {
             EditFileTool(workspace: workspace),
             ApplyPatchTool(workspace: workspace),
             FormatFileTool(workspace: workspace),
-            CodebaseGraphTool(workspace: workspace),
+            CodebaseGraphTool(workspace: workspace, graphEngine: graphEngine),
             ShellTool(workspace: workspace),
             RunBackgroundCommandTool(workspace: workspace, manager: effectiveBgManager),
             ManageBackgroundCommandTool(manager: effectiveBgManager),
-            WebSearchTool(endpoint: webSearchEndpoint),
+            WebSearchTool(endpoint: webSearchEndpoint, tavilyAPIKey: tavilyAPIKey),
             WebFetchTool(),
             ProcessTool(workspace: workspace, store: processes ?? ToolProcessStore()),
             GitTool(workspace: workspace),
             SkillTool(workspace: workspace),
             QuestionTool(questions: questions),
-            TodoTool()
+            TodoTool(todoStore: todoStore)
             // NOTE: Computer Use and Browser Use implementations are frozen and disabled from the default toolcall list per owner directive.
             // Underlying implementation code (BrowserNavigateTool, BrowserActTool, ComputerBatchTool) is fully preserved.
             // BrowserNavigateTool(),
@@ -2006,7 +2018,7 @@ public extension BuiltInToolProvider {
 }
 
 public extension ToolRegistry {
-    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil) -> ToolRegistry {
-        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint).tools)
+    static func builtin(workspace: WorkspaceRoot, contextPager: ContextPager? = nil, scanner: ProjectScanner? = nil, questions: QuestionRuntime? = nil, processes: ToolProcessStore? = nil, backgroundManager: BackgroundCommandManager? = nil, codeIntelligence: CodeIntelligence? = nil, cacheController: ContextCacheController? = nil, webSearchEndpoint: URL? = nil, tavilyAPIKey: String? = nil, graphEngine: CodebaseGraphEngine? = nil, todoStore: TodoStore? = nil) -> ToolRegistry {
+        ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint, tavilyAPIKey: tavilyAPIKey, graphEngine: graphEngine, todoStore: todoStore).tools)
     }
 }

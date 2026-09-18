@@ -35,10 +35,24 @@ public actor BrowserSessionManager {
         } else if let envPath = ProcessInfo.processInfo.environment["LINGXI_BROWSER_HOST_PATH"], !envPath.isEmpty {
             self.scriptPath = envPath
         } else {
-            // 优先查找 Bundle 资源路径，其次降级到工作区相对路径
-            let cwd = FileManager.default.currentDirectoryPath
-            let candidatePath = "\(cwd)/Sidecars/browser-host/index.mjs"
-            self.scriptPath = candidatePath
+            // 多层确定性解析：Bundle -> 进程可执行文件同级/上级 -> 工作区 cwd -> 用户全局目录
+            let fm = FileManager.default
+            let cwd = fm.currentDirectoryPath
+            var candidates: [String] = []
+            
+            if let bundleResource = Bundle.main.resourcePath {
+                candidates.append("\(bundleResource)/Sidecars/browser-host/index.mjs")
+            }
+            if let execPath = CommandLine.arguments.first {
+                let execURL = URL(fileURLWithPath: execPath)
+                candidates.append(execURL.deletingLastPathComponent().appendingPathComponent("Sidecars/browser-host/index.mjs").path)
+                candidates.append(execURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sidecars/browser-host/index.mjs").path)
+            }
+            candidates.append("\(cwd)/Sidecars/browser-host/index.mjs")
+            candidates.append("\(fm.homeDirectoryForCurrentUser.path)/.lingxiagent/sidecars/browser-host/index.mjs")
+
+            let resolved = candidates.first { fm.fileExists(atPath: $0) }
+            self.scriptPath = resolved ?? "\(cwd)/Sidecars/browser-host/index.mjs"
         }
     }
 

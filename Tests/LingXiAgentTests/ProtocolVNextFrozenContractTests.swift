@@ -315,7 +315,7 @@ struct ProtocolVNextFrozenContractTests {
 
         let contentStore = ContentStore(storageDirectory: tempDir)
 
-        let beginResp = await contentStore.beginUpload(request: BeginContentUploadRequest(
+        let beginResp = try await contentStore.beginUpload(request: BeginContentUploadRequest(
             filename: "hello.txt",
             proposedMediaType: "text/plain",
             expectedByteCount: 11
@@ -591,7 +591,7 @@ struct ProtocolVNextFrozenContractTests {
         // 2. Session-scoped content
         let s1 = SessionID("session-alpha")
         let s2 = SessionID("session-beta")
-        let beginAlpha = await store.beginUpload(request: BeginContentUploadRequest(
+        let beginAlpha = try await store.beginUpload(request: BeginContentUploadRequest(
             filename: "secret.txt",
             proposedMediaType: "text/plain",
             expectedByteCount: 5,
@@ -637,7 +637,7 @@ struct ProtocolVNextFrozenContractTests {
         #expect(metaAlpha.scope == .session(s1))
 
         // 3. Principal-scoped content
-        let beginUser = await store.beginUpload(request: BeginContentUploadRequest(
+        let beginUser = try await store.beginUpload(request: BeginContentUploadRequest(
             filename: "user_doc.txt",
             expectedByteCount: 4,
             scope: .principal("alice")
@@ -657,7 +657,7 @@ struct ProtocolVNextFrozenContractTests {
         // 4. Workspace-scoped content
         let wsA = "ws-project-alpha"
         let wsB = "ws-project-beta"
-        let beginWs = await store.beginUpload(request: BeginContentUploadRequest(
+        let beginWs = try await store.beginUpload(request: BeginContentUploadRequest(
             filename: "project_plan.md",
             expectedByteCount: 4,
             scope: .workspace(wsA)

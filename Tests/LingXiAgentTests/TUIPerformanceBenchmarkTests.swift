@@ -5,7 +5,7 @@ import LingXiProtocol
 @testable import LingXiTUIComponents
 @testable import LingXiApplication
 
-@Suite("TUI System Performance Benchmarks (Phase 0 Baseline)", .serialized)
+@Suite("TUI System Performance Benchmarks (Phase 0 Baseline)", .serialized, .enabled(if: ProcessInfo.processInfo.environment["LINGXI_RUN_BENCHMARKS"] == "1"))
 @MainActor
 struct TUIPerformanceBenchmarkTests {
 

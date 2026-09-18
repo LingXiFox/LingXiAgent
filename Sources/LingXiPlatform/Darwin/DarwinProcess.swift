@@ -28,9 +28,10 @@ public final class DarwinProcessAdapter: PlatformProcessProtocol, @unchecked Sen
     public func terminateProcessTree(pid: Int32, force: Bool) {
         guard pid > 1 else { return }
         let sig = force ? SIGKILL : SIGTERM
-        // 尝试向进程组发送信号以清理子进程树
-        let pgid = getpgid(pid)
-        if pgid > 0 {
+        let currentPgrp = Darwin.getpgrp()
+        let pgid = Darwin.getpgid(pid)
+        // 只有当 pgid 存在且属于子进程独立进程组（绝不属于当前父进程/runner 组）时才向组发信号
+        if pgid > 0 && pgid != currentPgrp && (pgid == pid || pgid != Darwin.getpid()) {
             _ = Darwin.kill(-pgid, sig)
         }
         _ = Darwin.kill(pid, sig)

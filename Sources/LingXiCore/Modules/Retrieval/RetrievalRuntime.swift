@@ -7,18 +7,49 @@ import LingXiProtocol
 /// 1. 绝不阻塞 Agent Loop 或主线程，首次调用若索引在 building 立即返回 warming 状态
 /// 2. 后台单次执行 Snapshot 构建，禁止常驻高 CPU 循环 Worker
 /// 3. 新 Snapshot 构建成功后执行原子指针替换，若构建失败严格 Fail-Open 保持旧 Snapshot
+/// 4. 遵守 Audit #46 & #54：按 WorkspaceRevision / ECoreRevision / IndexRevision 追踪版本与失效，提供原子 Swap
 public actor RetrievalRuntime {
+    public enum InvalidationSource: String, Sendable, Codable {
+        case workspace
+        case ecore
+        case all
+    }
+
     private(set) public var state: RetrievalRuntimeState = .uninitialized
     private(set) public var activeSnapshot: BM25IndexSnapshot?
     private var buildingTask: Task<Void, Never>?
+    public private(set) var isBuilding: Bool = false
+    private var queuedBuildRoot: URL?
+    private var queuedBuildSessionID: SessionID?
+    public private(set) var buildGeneration: UInt64 = 0
 
     private let registry: UnifiedRetrievalRegistry
     private let config: BM25Config
     private let tokenizer: any RetrievalTokenizer
 
+    // Audit #46: 三维版本感知与生命周期管理
+    public private(set) var workspaceRevision: Int = 1
+    public private(set) var ecoreRevision: Int = 1
+    public private(set) var indexRevision: Int = 0
+
     public private(set) var lastBuildDurationMs: Double = 0.0
     public private(set) var lastBuildError: String? = nil
     public private(set) var totalSnapshotsBuilt: Int = 0
+
+    private var lastProjectRoot: URL?
+    private var lastSessionID: SessionID?
+
+    public var desiredRevision: Int {
+        workspaceRevision + ecoreRevision
+    }
+
+    public var isStale: Bool {
+        indexRevision < desiredRevision
+    }
+
+    public var staleness: Int {
+        max(0, desiredRevision - indexRevision)
+    }
 
     public init(
         registry: UnifiedRetrievalRegistry,
@@ -30,67 +61,154 @@ public actor RetrievalRuntime {
         self.tokenizer = tokenizer
     }
 
+    /// 显式使特定语料源失效并递增 Revision，支持可选触发后台平滑重建 (Audit #46)
+    public func markDirty(
+        source: InvalidationSource = .all,
+        projectRoot: URL? = nil,
+        sessionID: SessionID? = nil,
+        autoRebuild: Bool = true
+    ) {
+        switch source {
+        case .workspace:
+            workspaceRevision += 1
+        case .ecore:
+            ecoreRevision += 1
+        case .all:
+            workspaceRevision += 1
+            ecoreRevision += 1
+        }
+
+        if let root = projectRoot ?? lastProjectRoot, autoRebuild {
+            triggerWarmup(projectRoot: root, sessionID: sessionID ?? lastSessionID, force: true)
+        }
+    }
+
     /// 等待后台预热就绪（主要用于测试或显式同步场景）
     public func waitForReady(timeoutMs: Double = 5000) async -> Bool {
+        if state == .ready && !isStale { return true }
+        if let task = buildingTask {
+            _ = await task.value
+            return state == .ready
+        }
         let start = DispatchTime.now()
         while state == .building || state == .uninitialized {
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
             if elapsed > timeoutMs { return false }
-            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            try? await Task.sleep(nanoseconds: 5_000_000) // 5ms
         }
         return state == .ready
     }
 
-    /// 触发单次后台异步低优先级预热 (Utility Priority)
-    /// - Parameters:
-    ///   - projectRoot: 工程根目录
-    ///   - sessionID: 会话 ID（用于枚举 E-Core 派生切片）
-    ///   - force: 是否强制重新构建
+    /// 触发后台异步预热 (Single-Flight，杜绝 Rebuild Storm)
     public func triggerWarmup(
         projectRoot: URL,
         sessionID: SessionID? = nil,
         force: Bool = false
     ) {
-        if !force && (state == .building || state == .ready) {
+        self.lastProjectRoot = projectRoot
+        if let sessionID { self.lastSessionID = sessionID }
+
+        if isBuilding {
+            // 已有单飞构建正在执行，仅更新排队构建请求，杜绝并发 Rebuild 堆叠风暴
+            self.queuedBuildRoot = projectRoot
+            self.queuedBuildSessionID = sessionID
             return
         }
 
+        if !force && (state == .ready && !isStale) {
+            return
+        }
+
+        startSingleFlightBuild(projectRoot: projectRoot, sessionID: sessionID)
+    }
+
+    private func startSingleFlightBuild(projectRoot: URL, sessionID: SessionID?) {
+        self.isBuilding = true
         self.state = .building
         self.lastBuildError = nil
+        self.buildGeneration &+= 1
+        let currentGeneration = self.buildGeneration
+        let targetRevision = self.desiredRevision
 
         let currentRegistry = self.registry
         let currentConfig = self.config
         let currentTokenizer = self.tokenizer
 
-        // 启动独立低优先级后台任务，单次构建，杜绝常驻循环消耗资源
-        self.buildingTask = Task.detached(priority: .utility) { [weak self] in
+        // 启动唯一后台单飞构建任务
+        self.buildingTask = Task(priority: .medium) { [weak self] in
             let startTime = DispatchTime.now()
             let chunks = await currentRegistry.enumerateAllChunks(projectRoot: projectRoot, sessionID: sessionID)
             let snapshot = BM25IndexSnapshot(chunks: chunks, config: currentConfig, tokenizer: currentTokenizer)
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000.0
-            await self?.applySnapshot(snapshot, durationMs: elapsedMs)
+            await self?.finishSingleFlightBuild(
+                snapshot: snapshot,
+                generation: currentGeneration,
+                durationMs: elapsedMs,
+                revision: targetRevision
+            )
         }
     }
 
-    /// 原子替换为新快照 (Atomic Swap)
-    public func applySnapshot(_ snapshot: BM25IndexSnapshot, durationMs: Double = 0.0) {
+    private func finishSingleFlightBuild(
+        snapshot: BM25IndexSnapshot,
+        generation: UInt64,
+        durationMs: Double,
+        revision: Int
+    ) {
+        self.isBuilding = false
+        self.buildingTask = nil
+
+        guard generation == self.buildGeneration else {
+            // 过期构建直接丢弃，杜绝旧快照覆盖新快照
+            return
+        }
+
         self.activeSnapshot = snapshot
         self.state = .ready
         self.lastBuildDurationMs = durationMs
         self.lastBuildError = nil
         self.totalSnapshotsBuilt += 1
-        self.buildingTask = nil
+        self.indexRevision = revision
+
+        // 检查是否有并发变更产生的后续构建需求
+        if let nextRoot = self.queuedBuildRoot ?? (self.isStale ? self.lastProjectRoot : nil) {
+            let nextSession = self.queuedBuildSessionID ?? self.lastSessionID
+            self.queuedBuildRoot = nil
+            self.queuedBuildSessionID = nil
+            if self.isStale {
+                startSingleFlightBuild(projectRoot: nextRoot, sessionID: nextSession)
+            }
+        }
+    }
+
+    /// 原子替换为新快照 (Atomic Swap)
+    public func applySnapshot(_ snapshot: BM25IndexSnapshot, durationMs: Double = 0.0, revision: Int? = nil) {
+        finishSingleFlightBuild(
+            snapshot: snapshot,
+            generation: self.buildGeneration,
+            durationMs: durationMs,
+            revision: revision ?? self.desiredRevision
+        )
     }
 
     /// 处理构建失败：Fail-Open 保护，有旧快照继续使用旧快照
     public func handleBuildFailure(_ errorMessage: String) {
+        self.isBuilding = false
         self.lastBuildError = errorMessage
         self.buildingTask = nil
         if activeSnapshot != nil {
-            // 保留旧 Snapshot 继续对外提供只读查询
             self.state = .ready
         } else {
             self.state = .failed
+        }
+        // Audit Round 7 Phase D: 失败后若有排队的重建请求，继续启动 queued request
+        if let nextRoot = self.queuedBuildRoot ?? (self.isStale ? self.lastProjectRoot : nil) {
+            let nextSession = self.queuedBuildSessionID ?? self.lastSessionID
+            self.queuedBuildRoot = nil
+            self.queuedBuildSessionID = nil
+            if self.isStale {
+                startSingleFlightBuild(projectRoot: nextRoot, sessionID: nextSession)
+            }
         }
     }
 
@@ -107,14 +225,15 @@ public actor RetrievalRuntime {
         projectRoot: URL? = nil,
         sessionID: SessionID? = nil
     ) -> RetrievalSearchResult {
-        // 1. 如果已有就绪快照，立即执行并发无锁搜索（零阻塞）
+        // 1. 如果已有就绪快照，立即执行并发无锁搜索（零阻塞，支持 sessionID 隔离）
         if let snapshot = activeSnapshot {
             let results = snapshot.search(
                 query: query,
                 lexicalHints: lexicalHints,
                 symbolHints: symbolHints,
                 scope: scope,
-                limit: limit
+                limit: limit,
+                sessionID: sessionID
             )
             return .results(results)
         }
@@ -141,14 +260,20 @@ public actor RetrievalRuntime {
         // Phase R1.2: 保持架构预留，暂不引入复杂 Watcher
     }
 
-    /// 显式使当前快照失效
+    /// 显式使当前快照失效 (Hard Generation Barrier - Audit Round 7 Phase D)
     public func invalidate() {
+        self.buildGeneration &+= 1
+        self.isBuilding = false
+        self.queuedBuildRoot = nil
+        self.queuedBuildSessionID = nil
         self.buildingTask?.cancel()
         self.buildingTask = nil
         self.activeSnapshot = nil
         self.state = .uninitialized
+        self.indexRevision = 0
     }
 
+    /// 检索系统内存与快照指标诊断（Audit #54 系统级观测指标）
     public struct MemoryDiagnostics: Sendable, Equatable {
         public let status: String
         public let hasSnapshot: Bool
@@ -158,6 +283,11 @@ public actor RetrievalRuntime {
         public let estimatedMemoryBytes: Int
         public let totalSnapshotsBuilt: Int
         public let lastBuildDurationMs: Double
+        public let workspaceRevision: Int
+        public let ecoreRevision: Int
+        public let indexRevision: Int
+        public let staleness: Int
+        public let isStale: Bool
     }
 
     /// 获取检索系统内存与快照指标诊断
@@ -171,7 +301,12 @@ public actor RetrievalRuntime {
                 totalPostingsCount: 0,
                 estimatedMemoryBytes: 0,
                 totalSnapshotsBuilt: totalSnapshotsBuilt,
-                lastBuildDurationMs: lastBuildDurationMs
+                lastBuildDurationMs: lastBuildDurationMs,
+                workspaceRevision: workspaceRevision,
+                ecoreRevision: ecoreRevision,
+                indexRevision: indexRevision,
+                staleness: staleness,
+                isStale: isStale
             )
         }
         return MemoryDiagnostics(
@@ -182,7 +317,12 @@ public actor RetrievalRuntime {
             totalPostingsCount: snapshot.totalPostingsCount,
             estimatedMemoryBytes: snapshot.estimatedMemoryBytes,
             totalSnapshotsBuilt: totalSnapshotsBuilt,
-            lastBuildDurationMs: lastBuildDurationMs
+            lastBuildDurationMs: lastBuildDurationMs,
+            workspaceRevision: workspaceRevision,
+            ecoreRevision: ecoreRevision,
+            indexRevision: indexRevision,
+            staleness: staleness,
+            isStale: isStale
         )
     }
 }

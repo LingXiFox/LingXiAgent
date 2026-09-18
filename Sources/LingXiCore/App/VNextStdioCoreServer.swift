@@ -22,11 +22,46 @@ private struct VNextWirePush: Codable {
 private struct SessionEventSubscription: Codable { let sessionID: SessionID; let after: EventCursor? }
 private struct StreamSubscription: Codable { let streamID: StreamID; let afterIndex: UInt64? }
 
+private final class ConnectionTaskRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [String: Task<Void, Never>] = [:]
+
+    func register(id: String, task: Task<Void, Never>) {
+        lock.lock()
+        tasks[id] = task
+        lock.unlock()
+    }
+
+    func unregister(id: String) {
+        lock.lock()
+        _ = tasks.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func cancel(id: String) {
+        lock.lock()
+        let task = tasks.removeValue(forKey: id)
+        lock.unlock()
+        task?.cancel()
+    }
+
+    func cancelAll() {
+        lock.lock()
+        let all = Array(tasks.values)
+        tasks.removeAll()
+        lock.unlock()
+        for task in all {
+            task.cancel()
+        }
+    }
+}
+
 /// JSON-lines server for the VNext Application composition root.
 public struct VNextStdioCoreServer: Sendable {
     private let service: any LingXiProtocolService
     private let input: FileHandle
     private let output: FileHandle
+    private let connectionTasks = ConnectionTaskRegistry()
 
     public init(service: any LingXiProtocolService, input: FileHandle = .standardInput, output: FileHandle = .standardOutput) {
         self.service = service
@@ -35,6 +70,9 @@ public struct VNextStdioCoreServer: Sendable {
     }
 
     public func run() async throws {
+        defer {
+            connectionTasks.cancelAll()
+        }
         let writer = VNextWireWriter(output: output)
         let chunks = AsyncStream<Data> { continuation in
             continuation.onTermination = { _ in
@@ -72,7 +110,11 @@ public struct VNextStdioCoreServer: Sendable {
     }
 
     private func handle(_ request: VNextWireRequest, writer: VNextWireWriter) {
-        Task {
+        let task = Task {
+            defer {
+                connectionTasks.unregister(id: request.id)
+            }
+            guard !Task.isCancelled else { return }
             do {
                 switch request.method {
                 case "runtime.info": try await reply(request, try await service.getRuntimeInfo(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
@@ -131,6 +173,34 @@ public struct VNextStdioCoreServer: Sendable {
                 case "workspace.get": try await reply(request, try await service.getWorkspace(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
                 case "workspace.set": try await reply(request, try await service.setWorkspace(envelope: CommandEnvelope(payload: decode(SetWorkspaceRequest.self, request.payload))), writer)
                 case "workspace.diff": try await reply(request, try await service.getWorkspaceDiffSummary(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
+                case "content.beginUpload": try await reply(request, try await service.beginContentUpload(envelope: CommandEnvelope(payload: decode(BeginContentUploadRequest.self, request.payload))), writer)
+                case "content.uploadChunk":
+                    let req = try decode(UploadContentChunkRequest.self, request.payload)
+                    try await service.uploadContentChunk(uploadID: req.uploadID, chunkIndex: req.chunkIndex, data: req.payload.data)
+                    let receipt = CommandReceipt<VoidResult>(commandID: CommandID(request.id), applied: true, revision: 0, observedThrough: [], result: VoidResult())
+                    try await reply(request, receipt, writer)
+                case "content.commitUpload": try await reply(request, try await service.commitContentUpload(envelope: CommandEnvelope(payload: decode(CommitContentUploadRequest.self, request.payload))), writer)
+                case "content.abortUpload": try await reply(request, try await service.abortContentUpload(envelope: CommandEnvelope(payload: decode(AbortContentUploadRequest.self, request.payload))), writer)
+                case "content.getMetadata":
+                    let req = try decode(GetContentMetadataRequest.self, request.payload)
+                    let auth = sanitizeContentAuthorization(req.authorization)
+                    let meta = try await service.getContentMetadata(ref: req.ref, authorization: auth)
+                    guard !Task.isCancelled else { return }
+                    await writer.reply(id: request.id, payload: try? JSONEncoder().encode(meta), error: nil)
+                case "content.get":
+                    let req = try decode(GetContentRequest.self, request.payload)
+                    let auth = sanitizeContentAuthorization(req.authorization)
+                    let data = try await service.getContent(ref: req.ref, authorization: auth)
+                    let payload = ContentBinaryPayload(data: data)
+                    guard !Task.isCancelled else { return }
+                    await writer.reply(id: request.id, payload: try? JSONEncoder().encode(payload), error: nil)
+                case "content.getRange":
+                    let req = try decode(GetContentRangeRequest.self, request.payload)
+                    let auth = sanitizeContentAuthorization(req.authorization)
+                    let data = try await service.getContentRange(ref: req.ref, offset: req.offset, length: req.length, authorization: auth)
+                    let payload = ContentBinaryPayload(data: data)
+                    guard !Task.isCancelled else { return }
+                    await writer.reply(id: request.id, payload: try? JSONEncoder().encode(payload), error: nil)
                 case "diagnostics.get": try await reply(request, try await service.getDiagnostics(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
                 case "diagnostics.performance": try await reply(request, try await service.getPerformanceMetrics(envelope: QueryEnvelope(payload: decode(GetPerformanceMetricsRequest.self, request.payload))), writer)
                 case "diagnostics.providerMetrics": try await reply(request, try await service.getProviderMetrics(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
@@ -141,38 +211,89 @@ public struct VNextStdioCoreServer: Sendable {
                 case "credential.status": try await reply(request, try await service.getCredentialStatus(envelope: QueryEnvelope(payload: decode(GetCredentialStatusRequest.self, request.payload))), writer)
                 case "credential.test": try await reply(request, try await service.testCredential(envelope: CommandEnvelope(payload: decode(TestCredentialRequest.self, request.payload))), writer)
                 case "events.runtime":
+                    guard !Task.isCancelled else { return }
                     await writer.reply(id: request.id, payload: nil, error: nil)
                     let after = request.payload.flatMap { try? JSONDecoder().decode(EventCursor.self, from: $0) }
                     let stream = await service.subscribeRuntimeEvents(after: after)
-                    for await event in stream { await writer.push(kind: "runtime", subscriptionID: request.id, payload: event) }
+                    let subKey = "sub:\(request.id)"
+                    let subTask = Task {
+                        defer { connectionTasks.unregister(id: subKey) }
+                        for await event in stream {
+                            guard !Task.isCancelled else { break }
+                            await writer.push(kind: "runtime", subscriptionID: request.id, payload: event)
+                        }
+                    }
+                    connectionTasks.register(id: subKey, task: subTask)
                 case "events.session":
+                    guard !Task.isCancelled else { return }
                     await writer.reply(id: request.id, payload: nil, error: nil)
                     let subscription = try decode(SessionEventSubscription.self, request.payload)
                     let stream = try await service.subscribeSessionEvents(sessionID: subscription.sessionID, after: subscription.after)
-                    for await event in stream { await writer.push(kind: "session", subscriptionID: request.id, payload: event) }
+                    let subKey = "sub:\(request.id)"
+                    let subTask = Task {
+                        defer { connectionTasks.unregister(id: subKey) }
+                        for await event in stream {
+                            guard !Task.isCancelled else { break }
+                            await writer.push(kind: "session", subscriptionID: request.id, payload: event)
+                        }
+                    }
+                    connectionTasks.register(id: subKey, task: subTask)
                 case "events.session.list": try await reply(request, try await service.listSessionEvents(request: decode(ListSessionEventsRequest.self, request.payload)), writer)
                 case "events.stream":
+                    guard !Task.isCancelled else { return }
                     await writer.reply(id: request.id, payload: nil, error: nil)
                     let subscription = try decode(StreamSubscription.self, request.payload)
                     let stream = try await service.subscribeStreamFrames(streamID: subscription.streamID, afterIndex: subscription.afterIndex)
-                    for await frame in stream { await writer.push(kind: "frame", subscriptionID: request.id, payload: frame) }
+                    let subKey = "sub:\(request.id)"
+                    let subTask = Task {
+                        defer { connectionTasks.unregister(id: subKey) }
+                        for await frame in stream {
+                            guard !Task.isCancelled else { break }
+                            await writer.push(kind: "frame", subscriptionID: request.id, payload: frame)
+                        }
+                    }
+                    connectionTasks.register(id: subKey, task: subTask)
+                case "events.unsubscribe":
+                    if let subID = try? decode(String.self, request.payload) {
+                        connectionTasks.cancel(id: "sub:\(subID)")
+                        connectionTasks.cancel(id: subID)
+                    }
+                    let receipt = CommandReceipt<VoidResult>(commandID: CommandID(request.id), applied: true, revision: 0, observedThrough: [], result: VoidResult())
+                    try await reply(request, receipt, writer)
                 default: throw CoreError(code: .unsupportedCommand, message: "未知 VNext 方法: \(request.method)")
                 }
             } catch let error as CoreError {
-                await writer.reply(id: request.id, payload: nil, error: error)
+                if !Task.isCancelled {
+                    await writer.reply(id: request.id, payload: nil, error: error)
+                }
             } catch {
-                await writer.reply(id: request.id, payload: nil, error: CoreError(code: .transport, message: String(describing: error)))
+                if !Task.isCancelled {
+                    await writer.reply(id: request.id, payload: nil, error: CoreError(code: .transport, message: String(describing: error)))
+                }
             }
         }
+        connectionTasks.register(id: request.id, task: task)
     }
 
     private func reply<T: Encodable>(_ request: VNextWireRequest, _ value: T, _ writer: VNextWireWriter) async throws {
+        guard !Task.isCancelled else { return }
         await writer.reply(id: request.id, payload: try JSONEncoder().encode(value), error: nil)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ payload: Data?) throws -> T {
         guard let payload else { return try JSONDecoder().decode(T.self, from: Data("{}".utf8)) }
         return try JSONDecoder().decode(T.self, from: payload)
+    }
+
+    private func sanitizeContentAuthorization(_ clientAuth: ContentAuthorizationContext?) -> ContentAuthorizationContext {
+        guard let clientAuth else { return .anonymous }
+        // 关键安全防御：绝不允许客户端自封 isSystemAdmin 或伪造系统权限 (Audit Round 7 Phase E)
+        return ContentAuthorizationContext(
+            sessionID: clientAuth.sessionID,
+            principal: clientAuth.principal,
+            workspaceID: clientAuth.workspaceID,
+            isSystemAdmin: false
+        )
     }
 }
 

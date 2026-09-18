@@ -78,6 +78,7 @@ struct BackgroundCommandTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let manager = BackgroundCommandManager()
+        defer { Task { await manager.terminateAll() } }
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
         let manageTool = ManageBackgroundCommandTool(manager: manager)
 
@@ -102,6 +103,7 @@ struct BackgroundCommandTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let manager = BackgroundCommandManager()
+        defer { Task { await manager.terminateAll() } }
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
         let manageTool = ManageBackgroundCommandTool(manager: manager)
 

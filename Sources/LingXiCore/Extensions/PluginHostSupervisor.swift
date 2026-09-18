@@ -3,12 +3,42 @@ import LingXiProtocol
 import LingXiPlatform
 import LingXiPluginSDK
 
+private final class PluginSupervisorState: @unchecked Sendable {
+    var hosts: [PluginProcessHost] = []
+    private let lock = NSLock()
+
+    func setHosts(_ next: [PluginProcessHost]) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.hosts = next
+    }
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        self.hosts.removeAll()
+    }
+
+    func terminateSync() {
+        lock.lock()
+        let current = hosts
+        hosts.removeAll()
+        lock.unlock()
+
+        for host in current {
+            host.terminateSync()
+        }
+    }
+}
+
 /// 插件系统管理中心：负责扫描可执行二进制插件、沙箱进程宿主管理与调用分发。
 public actor PluginHostSupervisor {
     public let globalPluginsRoot: URL
-    public let projectPluginsRoot: URL
+    public private(set) var projectPluginsRoot: URL
     private let permissions: PermissionEngine
+    public var isEnabled: Bool
 
+    private let state = PluginSupervisorState()
     private var hostsByPluginID: [String: PluginProcessHost] = [:]
     private var toolToPluginID: [String: String] = [:]
     private var commandToPluginID: [String: String] = [:]
@@ -16,22 +46,34 @@ public actor PluginHostSupervisor {
     public init(
         globalRoot: URL,
         projectRoot: URL,
-        permissions: PermissionEngine
+        permissions: PermissionEngine,
+        isEnabled: Bool = true
     ) {
         self.globalPluginsRoot = globalRoot.appendingPathComponent("plugins", isDirectory: true)
         self.projectPluginsRoot = projectRoot.appendingPathComponent(".lingxi/plugins", isDirectory: true)
         self.permissions = permissions
+        self.isEnabled = isEnabled
+    }
+
+    /// 更新工作区工程根路径并重置插件进程
+    public func updateProjectRoot(_ newURL: URL) async {
+        await terminateAll()
+        self.projectPluginsRoot = newURL.appendingPathComponent(".lingxi/plugins", isDirectory: true)
+    }
+
+    deinit {
+        state.terminateSync()
     }
 
     /// 扫描并加载所有可用插件（并行拉起与握手）
     public func discoverAndStartAll() async -> [PluginHandshakeResult] {
-        terminateAll()
+        await terminateAll()
+        guard isEnabled else { return [] }
 
-        // 项目级优先，其次全局级
+        // 严格遵循依赖注入根目录，绝不硬编码扫描用户个人 HOME 目录
         let searchDirectories = [
             (ExtensionScope.project, projectPluginsRoot),
-            (.global, globalPluginsRoot),
-            (.global, FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lingxiagent/plugins", isDirectory: true))
+            (.global, globalPluginsRoot)
         ]
 
         struct Candidate: Sendable {
@@ -115,6 +157,7 @@ public actor PluginHostSupervisor {
             }
         }
 
+        state.setHosts(Array(hostsByPluginID.values))
         return discoveredResults
     }
 
@@ -153,13 +196,25 @@ public actor PluginHostSupervisor {
     }
 
     /// 全局终止所有插件进程（用于退出或全局熔断）
-    public func terminateAll() {
-        for host in hostsByPluginID.values {
-            Task { await host.terminate() }
-        }
+    public func terminateAll() async {
+        let hosts = Array(hostsByPluginID.values)
         hostsByPluginID.removeAll()
         toolToPluginID.removeAll()
         commandToPluginID.removeAll()
+        state.clear()
+
+        await withTaskGroup(of: Void.self) { group in
+            for host in hosts {
+                group.addTask {
+                    await host.terminate()
+                }
+            }
+        }
+    }
+
+    /// 同步尽力终止所有插件进程（供 deinit 使用）
+    public nonisolated func terminateAllSync() {
+        state.terminateSync()
     }
 
     // MARK: - Helper

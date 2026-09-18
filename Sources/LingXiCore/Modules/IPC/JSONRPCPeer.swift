@@ -19,6 +19,7 @@ public final class JSONRPCPeer: @unchecked Sendable {
 
     // 正在等待响应的请求 Continuation 注册表
     private var pendingRequests: [Int: CheckedContinuation<Data, any Error>] = [:]
+    private var pendingTimeoutTasks: [Int: Task<Void, Never>] = [:]
 
     private var isStarted = false
 
@@ -63,17 +64,34 @@ public final class JSONRPCPeer: @unchecked Sendable {
         return true
     }
 
-    /// 根据 ID 移除并返回对应的 continuation
+    /// 注册超时任务，若请求已结束则立即取消任务
+    private func storeTimeoutTask(id: Int, task: Task<Void, Never>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if pendingRequests[id] != nil {
+            pendingTimeoutTasks[id] = task
+        } else {
+            task.cancel()
+        }
+    }
+
+    /// 根据 ID 移除并返回对应的 continuation，同时取消对应的超时计时器
     private func removePending(id: Int) -> CheckedContinuation<Data, any Error>? {
         lock.lock()
         defer { lock.unlock() }
+        let timeout = pendingTimeoutTasks.removeValue(forKey: id)
+        timeout?.cancel()
         return pendingRequests.removeValue(forKey: id)
     }
 
-    /// 排空并返回所有等待中的 continuation，同时标记停止
+    /// 排空并返回所有等待中的 continuation，同时标记停止并取消所有计时器
     private func drainAllPending() -> [CheckedContinuation<Data, any Error>] {
         lock.lock()
         defer { lock.unlock() }
+        for task in pendingTimeoutTasks.values {
+            task.cancel()
+        }
+        pendingTimeoutTasks.removeAll()
         let all = Array(pendingRequests.values)
         pendingRequests.removeAll()
         isStarted = false
@@ -150,12 +168,13 @@ public final class JSONRPCPeer: @unchecked Sendable {
                 }
 
                 if timeoutSeconds > 0 {
-                    Task.detached { [weak self, id, timeoutSeconds] in
+                    let timeoutTask = Task { [weak self, id, timeoutSeconds] in
                         try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                        guard let self else { return }
+                        guard !Task.isCancelled, let self else { return }
                         let pending = self.removePending(id: id)
                         pending?.resume(throwing: JSONRPCError.requestTimeout(id: id, timeoutSeconds: timeoutSeconds))
                     }
+                    self.storeTimeoutTask(id: id, task: timeoutTask)
                 }
             }
         } onCancel: { [weak self, id] in

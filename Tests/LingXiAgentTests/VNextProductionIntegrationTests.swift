@@ -595,6 +595,7 @@ struct VNextProductionIntegrationTests {
         let desktop = tempDir.deletingLastPathComponent().appendingPathComponent("Desktop", isDirectory: true)
         try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
         let target = desktop.appendingPathComponent("lingxi-tui.txt")
+        try? FileManager.default.removeItem(at: target)
         defer {
             Task {
                 await host.shutdown()

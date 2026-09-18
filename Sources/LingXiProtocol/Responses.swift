@@ -109,6 +109,7 @@ public struct CoreError: Sendable, Equatable, Error {
         case patchConflict
         case commandFailed
         case commandTimedOut
+        case commandCancelled
         case idleTimedOut
         case transportLost
         case executionStateUnknown

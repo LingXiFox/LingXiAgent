@@ -93,6 +93,8 @@ public struct RetrievalSearchTool: ToolExecutor, Sendable {
             let symbolHints: [String]?
             let scope: String?
             let limit: Int?
+            let session_id: String?
+            let sessionId: String?
         }
 
         guard let data = arguments.data(using: .utf8) else {
@@ -116,7 +118,7 @@ public struct RetrievalSearchTool: ToolExecutor, Sendable {
         let scope = RetrievalScope(rawValue: input.scope?.lowercased() ?? "all") ?? .all
         let limit = min(max(1, input.limit ?? 5), 10)
 
-        let sessionID = ToolExecutionContext.sessionID
+        let sessionID = (input.session_id ?? input.sessionId).map(SessionID.init) ?? ToolExecutionContext.sessionID
         let searchResult = await runtime.search(
             query: trimmedQuery,
             lexicalHints: lexicalHints,

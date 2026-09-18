@@ -61,7 +61,7 @@ public final class LinuxTerminalAdapter: PlatformTerminalProtocol, @unchecked Se
             _exit(130)
         }
         signal(SIGTERM) { _ in
-            _exit(143)
+            exit(143)
         }
         #endif
     }
