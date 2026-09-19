@@ -106,10 +106,11 @@ jobs:
           vsversion: "2022"
 
       - name: Set up Swift
-        uses: compnerd/gha-setup-swift@v0.2.3
+        uses: compnerd/gha-setup-swift@v0.4.0
         with:
-          branch: swift-6.0-release
-          tag: 6.0-RELEASE
+          swift-version: swift-6.0.3-release
+          swift-build: 6.0.3-RELEASE
+          update-sdk-modules: true
 
       - name: Provision SQLite Native Dependencies
         shell: cmd

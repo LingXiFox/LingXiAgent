@@ -954,6 +954,7 @@ struct UnifiedRetrievalPhaseR12Tests {
 
     /// 获取当前进程内核物理驻留内存 (mach task_info RSS)
     private func getProcessResidentMemoryBytes() -> UInt64 {
+        #if canImport(Darwin)
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / 4)
         let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
@@ -962,6 +963,9 @@ struct UnifiedRetrievalPhaseR12Tests {
             }
         }
         return kerr == KERN_SUCCESS ? info.resident_size : 0
+        #else
+        return 0
+        #endif
     }
 
     /// 计算标准 Graded NDCG@K
