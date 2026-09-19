@@ -14,7 +14,10 @@ struct Round19SystemAuditTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try await withTestCoreHost(workspaceRoot: tempDir) { host in
+        let provider = ControllableFakeProvider()
+        let assembly = ModelRuntimeAssembly(provider: provider, modelID: ModelID("test-model"))
+
+        try await withTestCoreHost(workspaceRoot: tempDir, providerAssembly: assembly) { host in
             let createReceipt = try await host.createSession(envelope: CommandEnvelope(
                 payload: CreateSessionRequest(workspace: tempDir.path)
             ))

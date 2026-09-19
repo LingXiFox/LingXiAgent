@@ -2612,8 +2612,63 @@ extension CoreHost {
             }
 
             // P0-D Invariant: 检查该 revert 命令在崩溃前是否已经完成了修改。
-            // 若已完成，直接返回已撤回结果，杜绝重试导致双重撤销（Double-Revert）！
+            // 若已完成，完成所有剩余系统层级（Coordinator、CacheController、ContextEngine）的收敛，并返回已撤回结果，杜绝重试导致双重撤销（Double-Revert）！
             if let stagedRevert = await commandWAL.lookupRevertedRecord(commandID: envelope.commandID, sessionID: sessionID.rawValue) {
+                let fresh = try? await sessionStore.session(sessionID)
+                let remainingMessages = fresh?.messages ?? []
+
+                let coord = try? await coordinator(for: sessionID)
+                if let coord {
+                    try? await coord.resetForRevert(remainingMessages: remainingMessages)
+                }
+
+                await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
+                await compactor.reset(sessionID: sessionID)
+                await contextEngine.reset(for: sessionID)
+
+                var authoritativeSnapshot: SessionSnapshot?
+                if let coord {
+                    let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
+                    let causal = CausalContext(sessionID: sessionID)
+                    await coord.recordContextStateChanged(freshContextState, causal: causal)
+
+                    var title = fresh?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if title.isEmpty {
+                        if let firstUser = remainingMessages.first(where: { $0.role == .user })?.content {
+                            let clean = firstUser.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+                            title = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
+                        }
+                    }
+                    if title.isEmpty { title = "未命名会话" }
+
+                    let resolvedDir: String
+                    if let p = persistence, let root = try? SQLitePersistenceStore.findProjectDirectory(for: sessionID, dataRoot: p.dataRoot)?.absoluteRoot {
+                        resolvedDir = root
+                    } else {
+                        resolvedDir = workspaceURL.path
+                    }
+
+                    let summary = SessionSummary(
+                        sessionID: sessionID,
+                        title: title,
+                        createdAt: fresh?.createdAt ?? Date(),
+                        updatedAt: fresh?.updatedAt ?? Date(),
+                        turnCount: remainingMessages.filter { $0.role == .user }.count,
+                        mode: .build,
+                        reasoningEffort: fresh?.reasoningEffort ?? .auto,
+                        workingDirectory: resolvedDir,
+                        messageCount: remainingMessages.count
+                    )
+                    let agentMode = await coord.currentAgentMode()
+                    authoritativeSnapshot = await coord.buildSnapshot(
+                        info: summary,
+                        contextState: freshContextState,
+                        permissionConfiguration: await permissionEngine.currentConfiguration(),
+                        agentMode: agentMode,
+                        revision: stagedRevert.revertedRevision ?? currentRevision
+                    )
+                }
+
                 let receipt = CommandReceipt<RevertLastTurnResult>(
                     commandID: envelope.commandID,
                     applied: true,
@@ -2624,7 +2679,7 @@ extension CoreHost {
                     result: RevertLastTurnResult(
                         revertedPrompt: stagedRevert.revertedPrompt ?? "",
                         removedCount: stagedRevert.removedMessageCount ?? 1,
-                        snapshot: nil,
+                        snapshot: authoritativeSnapshot,
                         revision: stagedRevert.revertedRevision ?? currentRevision
                     )
                 )
@@ -2674,7 +2729,7 @@ extension CoreHost {
             }
 
             let (revertedPrompt, count) = try await sessionStore.revertLastTurn(sessionID, bumpRevision: false)
-            try? await commandWAL.recordRevertState(
+            try await commandWAL.recordRevertState(
                 commandID: envelope.commandID,
                 sessionID: sessionID,
                 revertedPrompt: revertedPrompt,
@@ -2687,7 +2742,7 @@ extension CoreHost {
 
             let coord = try? await coordinator(for: sessionID)
             if let coord {
-                await coord.resetForRevert(remainingMessages: remainingMessages)
+                try await coord.resetForRevert(remainingMessages: remainingMessages)
             }
 
             // P-E 双核心架构协同：清理被撤回的 E-Core 对象，精确重估 P-Core (L1) Tokens 并重置缓存调度器
@@ -2944,15 +2999,18 @@ extension CoreHost {
                 attachments: envelope.payload.input.attachments,
                 createdAt: Date()
             )
-            let decision = try await coord.submitTurn(
-                input: envelope.payload.input,
-                intent: envelope.payload.executionIntent,
-                userMessage: userSnapshot
-            )
 
+            var decision: SessionTurnCoordinator.SubmitTurnDecision?
             var isTransactionCommitted = false
             do {
-                if decision.shouldStartExecution {
+                let d = try await coord.submitTurn(
+                    input: envelope.payload.input,
+                    intent: envelope.payload.executionIntent,
+                    userMessage: userSnapshot
+                )
+                decision = d
+
+                if d.shouldStartExecution {
                     _ = try await sessionStore.appendMessage(
                         sessionID,
                         message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: Date())
@@ -2964,8 +3022,8 @@ extension CoreHost {
                     createdSessionID: nil,
                     sessionID: sessionID,
                     stagedUserMessageID: msgID,
-                    turnID: decision.turn.turnID,
-                    runID: decision.runID,
+                    turnID: d.turn.turnID,
+                    runID: d.runID,
                     initialRuntimeSequence: initialRuntimeSeq,
                     initialSessionSequence: initialSessionSeq
                 )
@@ -2976,7 +3034,7 @@ extension CoreHost {
                 }
 
                 if activeFailpoint == .afterStateMutationBeforeEventAppend {
-                    await coord.rollbackTurn(decision: decision)
+                    await coord.rollbackTurn(decision: d)
                     throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
                 }
 
@@ -2989,15 +3047,15 @@ extension CoreHost {
 
                 if activeFailpoint == .afterEventAppendBeforeReceipt {
                     try? await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
-                    if decision.shouldStartExecution {
+                    if d.shouldStartExecution {
                         try? await sessionStore.removeMessage(sessionID, messageID: msgID)
                     }
-                    await coord.rollbackTurn(decision: decision)
+                    await coord.rollbackTurn(decision: d)
                     throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
                 }
 
                 let watermark = await coord.eventLog.currentWatermark()
-                let result = SubmitTurnResult(turnID: decision.turn.turnID, status: decision.status, runID: decision.runID)
+                let result = SubmitTurnResult(turnID: d.turn.turnID, status: d.status, runID: d.runID)
                 let receipt = CommandReceipt<SubmitTurnResult>(
                     commandID: envelope.commandID,
                     applied: true,
@@ -3015,11 +3073,11 @@ extension CoreHost {
                 isTransactionCommitted = true
 
                 // P0-A Invariant: Execution ownership MUST be established immediately once transaction commits!
-                if decision.shouldStartExecution, let runID = decision.runID {
+                if d.shouldStartExecution, let runID = d.runID {
                     let task = Task { [weak self, weak coord] () -> Void in
                         await self?.executeTurnRun(
                             sessionID: sessionID,
-                            turnID: decision.turn.turnID,
+                            turnID: d.turn.turnID,
                             runID: runID,
                             input: envelope.payload.input,
                             executionIntent: envelope.payload.executionIntent,
@@ -3046,10 +3104,12 @@ extension CoreHost {
                 // 事务一旦成功 commit，后续 post-commit 故障绝不能反向删除已提交的 User Message 或回滚 Turn！
                 // 反之若 pre-commit 失败，必须将 SessionStore、Coordinator 与 EventLog 彻底退回到 initial sequence！
                 if !isTransactionCommitted {
-                    if decision.shouldStartExecution {
-                        try? await sessionStore.removeMessage(sessionID, messageID: msgID)
+                    if let d = decision {
+                        if d.shouldStartExecution {
+                            try? await sessionStore.removeMessage(sessionID, messageID: msgID)
+                        }
+                        await coord.rollbackTurn(decision: d)
                     }
-                    await coord.rollbackTurn(decision: decision)
                     try? await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
                 }
                 throw error

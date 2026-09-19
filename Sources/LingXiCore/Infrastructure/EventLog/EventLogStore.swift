@@ -150,17 +150,26 @@ public actor SessionEventLog {
                 try lineData.write(to: eventsURL, options: .atomic)
             }
 
+            // P0-B Single Commit Point Invariant:
+            // events.jsonl 是权威落盘事实。一旦写入并物理刷盘成功，事务即已不可逆 durable。
+            // 此时必须立即推进内存 sequence，杜绝因后续 meta.json 缓存写失败而回退 sequence 造成重复序列号分裂！
+            sequence = nextSeq
+            events.append(envelope)
+            if events.count > maxRetainedEvents {
+                events.removeFirst(events.count - maxRetainedEvents)
+            }
+
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: nextSeq)
-            let metaData = try JSONEncoder().encode(meta)
-            try metaData.write(to: metaURL, options: .atomic)
-        }
-
-        // P0-C Invariant: 只有当物理磁盘真正落盘并持久化成功后，才推进内存状态！
-        sequence = nextSeq
-        events.append(envelope)
-        if events.count > maxRetainedEvents {
-            events.removeFirst(events.count - maxRetainedEvents)
+            if let metaData = try? JSONEncoder().encode(meta) {
+                try? metaData.write(to: metaURL, options: .atomic)
+            }
+        } else {
+            sequence = nextSeq
+            events.append(envelope)
+            if events.count > maxRetainedEvents {
+                events.removeFirst(events.count - maxRetainedEvents)
+            }
         }
 
         for subscriber in subscribers.values {
@@ -216,26 +225,30 @@ public actor SessionEventLog {
         sequence = targetSeq
     }
 
-    public func resetToEvents(_ newEvents: [SessionEventEnvelope]) {
-        self.events = newEvents
-        self.sequence = newEvents.last?.cursor.sequence ?? 0
+    public func resetToEvents(_ newEvents: [SessionEventEnvelope]) throws {
+        let newSeq = newEvents.last?.cursor.sequence ?? 0
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
-            let metaURL = sessionDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
             var newContent = ""
-            for env in events {
-                if let envData = try? JSONEncoder().encode(env),
-                   let s = String(data: envData, encoding: .utf8) {
+            for env in newEvents {
+                let envData = try JSONEncoder().encode(env)
+                if let s = String(data: envData, encoding: .utf8) {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL)
+            try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+
+            let metaURL = sessionDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: newSeq)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
         }
+
+        // P0-C Invariant: 磁盘写入成功后才更新内存状态，绝不造成分裂
+        self.events = newEvents
+        self.sequence = newSeq
     }
 
     public func subscribe(after: EventCursor?) throws -> AsyncStream<SessionEventEnvelope> {
@@ -452,17 +465,26 @@ public actor RuntimeEventLog {
                 try lineData.write(to: eventsURL, options: .atomic)
             }
 
+            // P0-B Single Commit Point Invariant:
+            // events.jsonl 是权威落盘事实。一旦写入并物理刷盘成功，事务即已不可逆 durable。
+            // 此时必须立即推进内存 sequence，杜绝因后续 meta.json 缓存写失败而回退 sequence 造成重复序列号分裂！
+            sequence = nextSeq
+            events.append(envelope)
+            if events.count > maxRetainedEvents {
+                events.removeFirst(events.count - maxRetainedEvents)
+            }
+
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: nextSeq)
-            let metaData = try JSONEncoder().encode(meta)
-            try metaData.write(to: metaURL, options: .atomic)
-        }
-
-        // P0-C Invariant: 只有当物理磁盘真正落盘并持久化成功后，才推进内存状态！
-        sequence = nextSeq
-        events.append(envelope)
-        if events.count > maxRetainedEvents {
-            events.removeFirst(events.count - maxRetainedEvents)
+            if let metaData = try? JSONEncoder().encode(meta) {
+                try? metaData.write(to: metaURL, options: .atomic)
+            }
+        } else {
+            sequence = nextSeq
+            events.append(envelope)
+            if events.count > maxRetainedEvents {
+                events.removeFirst(events.count - maxRetainedEvents)
+            }
         }
 
         for subscriber in subscribers.values {

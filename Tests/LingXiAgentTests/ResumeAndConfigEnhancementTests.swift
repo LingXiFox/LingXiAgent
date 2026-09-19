@@ -321,7 +321,7 @@ struct ResumeAndConfigEnhancementTests {
         #expect(await coord.activeRootRunID != nil)
 
         // 模拟在第一轮运行或异常时执行撤回
-        await coord.resetForRevert(remainingMessages: [])
+        try await coord.resetForRevert(remainingMessages: [])
         #expect(await coord.activeRootRunID == nil)
 
         // 撤回后再提交新的一轮，应当能够正常启动执行，绝对不能被判定为 queued 死锁（被吞）

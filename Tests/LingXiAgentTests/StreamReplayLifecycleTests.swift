@@ -160,7 +160,7 @@ struct StreamReplayLifecycleTests {
         #expect(await coordinator.hasStream(streamID))
 
         // Execute resetForRevert
-        await coordinator.resetForRevert(remainingMessages: [])
+        try await coordinator.resetForRevert(remainingMessages: [])
 
         // The subscriber should have finished promptly
         let count = await subscriberTask.value

@@ -29,7 +29,10 @@ public actor SessionTurnCoordinator {
     }
 
     /// 撤回（undo）操作后的全量状态重置与重新水合
-    public func resetForRevert(remainingMessages: [Message]) async {
+    public func resetForRevert(remainingMessages: [Message]) async throws {
+        // P0-C Invariant: 必须先成功重置物理磁盘 EventLog，成功后再清空并重置内存状态，绝不造成脑裂
+        try await eventLog.resetToEvents([])
+
         activeRootRunID = nil
         queuedTurns.removeAll()
         turns.removeAll()
@@ -39,7 +42,6 @@ public actor SessionTurnCoordinator {
         toolInvocations.removeAll()
         streamReplayState.reset()
 
-        await eventLog.resetToEvents([])
         await hydrateHistoricalMessages(remainingMessages)
     }
 
@@ -410,6 +412,7 @@ public actor SessionTurnCoordinator {
                 createdAt: Date()
             )
             let queuedCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queuedRunID, rootRunID: queuedRunID)
+            let initialSeq = await eventLog.currentSequence()
 
             do {
                 try await eventLog.append(causal: causal, payload: .turnCreated(
@@ -419,6 +422,7 @@ public actor SessionTurnCoordinator {
                 try await eventLog.append(causal: queuedCausal, payload: .runCreated(queuedRun))
                 try await eventLog.append(causal: causal, payload: .runQueued(runID: queuedRunID))
             } catch {
+                try? await eventLog.truncateEvents(afterSequence: initialSeq)
                 throw error
             }
 
@@ -449,6 +453,7 @@ public actor SessionTurnCoordinator {
             )
 
             let runCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: runID, rootRunID: runID)
+            let initialSeq = await eventLog.currentSequence()
 
             do {
                 try await eventLog.append(causal: causal, payload: .turnCreated(
@@ -458,6 +463,7 @@ public actor SessionTurnCoordinator {
                 try await eventLog.append(causal: runCausal, payload: .runCreated(run))
                 try await eventLog.append(causal: runCausal, payload: .runStarted(runID: runID))
             } catch {
+                try? await eventLog.truncateEvents(afterSequence: initialSeq)
                 throw error
             }
 
@@ -477,6 +483,9 @@ public actor SessionTurnCoordinator {
             throw RuntimeError(category: .validation, code: "turnNotFound", message: "未找到处于排队状态的 Turn \(turnID.rawValue)", retryability: .none, source: .client)
         }
         let queued = queuedTurns.remove(at: index)
+        let originalRun = queued.rootRunID.flatMap { runs[$0] }
+        let originalTurn = turns[turnID]
+
         if let runID = queued.rootRunID, let r = runs[runID] {
             runs[runID] = RunSnapshot(
                 runID: runID,
@@ -502,10 +511,25 @@ public actor SessionTurnCoordinator {
         )
         turns[turnID] = cancelledTurn
         let causal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queued.rootRunID, rootRunID: queued.rootRunID)
-        if let runID = queued.rootRunID {
-            _ = try? await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
+
+        let initialSeq = await eventLog.currentSequence()
+        do {
+            if let runID = queued.rootRunID {
+                try await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
+            }
+            try await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
+        } catch {
+            // P0-A Rollback memory & eventlog state on failure
+            try? await eventLog.truncateEvents(afterSequence: initialSeq)
+            queuedTurns.insert(queued, at: index)
+            if let originalRun {
+                runs[originalRun.runID] = originalRun
+            }
+            if let originalTurn {
+                turns[turnID] = originalTurn
+            }
+            throw error
         }
-        _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
     }
 
     public func rollbackTurn(decision: SubmitTurnDecision) async {
@@ -607,6 +631,10 @@ public actor SessionTurnCoordinator {
 
         // If target run is queued: remove from queuedTurns and mark cancelled, NEVER advance queue!
         if run.status == .queued {
+            let removedTurns = queuedTurns.filter { $0.rootRunID == runID || $0.turnID == run.turnID }
+            let originalRun = runs[runID]
+            let originalTurn = turns[run.turnID]
+
             queuedTurns.removeAll(where: { $0.rootRunID == runID || $0.turnID == run.turnID })
             let causal = CausalContext(sessionID: sessionID, turnID: run.turnID, runID: runID, rootRunID: run.rootRunID)
             let cancelledRun = RunSnapshot(
@@ -633,8 +661,18 @@ public actor SessionTurnCoordinator {
                     completedAt: Date()
                 )
             }
-            _ = try? await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: reason ?? "userCancelled"))
-            _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: run.turnID, terminalReason: .userCancelled))
+
+            let initialSeq = await eventLog.currentSequence()
+            do {
+                try await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: reason ?? "userCancelled"))
+                try await eventLog.append(causal: causal, payload: .turnCompleted(turnID: run.turnID, terminalReason: .userCancelled))
+            } catch {
+                try? await eventLog.truncateEvents(afterSequence: initialSeq)
+                queuedTurns.append(contentsOf: removedTurns)
+                if let originalRun { runs[runID] = originalRun }
+                if let originalTurn { turns[run.turnID] = originalTurn }
+                throw error
+            }
             return nil
         }
 
@@ -673,11 +711,26 @@ public actor SessionTurnCoordinator {
             turns[next.turnID] = runningTurn
 
             let nextCausal = CausalContext(sessionID: sessionID, turnID: next.turnID, runID: nextRunID, rootRunID: nextRunID)
-            // Invariant: If this Run was already created during queueing, NEVER emit duplicate .runCreated!
-            if existingRun == nil {
-                _ = try? await eventLog.append(causal: nextCausal, payload: .runCreated(nextRun))
+            let initialSeq = await eventLog.currentSequence()
+            do {
+                // Invariant: If this Run was already created during queueing, NEVER emit duplicate .runCreated!
+                if existingRun == nil {
+                    try await eventLog.append(causal: nextCausal, payload: .runCreated(nextRun))
+                }
+                try await eventLog.append(causal: nextCausal, payload: .runStarted(runID: nextRunID))
+            } catch {
+                // Rollback queue schedule state on disk failure, do NOT dispatch execution lease!
+                try? await eventLog.truncateEvents(afterSequence: initialSeq)
+                queuedTurns.insert(next, at: 0)
+                if let existingRun {
+                    runs[nextRunID] = existingRun
+                } else {
+                    runs.removeValue(forKey: nextRunID)
+                }
+                turns[next.turnID] = next
+                activeRootRunID = nil
+                return nil
             }
-            _ = try? await eventLog.append(causal: nextCausal, payload: .runStarted(runID: nextRunID))
 
             return NextTurnToRun(turn: runningTurn, runID: nextRunID)
         }
