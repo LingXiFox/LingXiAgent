@@ -140,6 +140,27 @@ public actor DurableCommandWAL {
         try writeWAL(record, to: walDir)
     }
 
+    /// 记录 revertLastTurn 计划执行目标（在破坏性操作前落盘，消除 pre-marker 崩溃窗口）
+    public func recordRevertPlan(
+        commandID: CommandID,
+        sessionID: SessionID,
+        targetUserMessageID: MessageID?,
+        revertedPrompt: String?,
+        removedCount: Int,
+        revision: UInt64
+    ) throws {
+        guard let walDir else { return }
+        var record = readWAL(commandID: commandID) ?? StagedWALRecord(commandID: commandID.rawValue, commandName: "revertLastTurn")
+        record.sessionID = sessionID.rawValue
+        record.stagedUserMessageID = targetUserMessageID?.rawValue
+        record.revertedPrompt = revertedPrompt
+        record.removedMessageCount = removedCount
+        record.revertedRevision = revision
+        record.stage = "revertPlanned"
+        record.updatedAt = Date()
+        try writeWAL(record, to: walDir)
+    }
+
     /// 记录 revertLastTurn 已完成破坏性状态修改（防止 SIGKILL 后重试造成双重撤回）
     public func recordRevertState(
         commandID: CommandID,
@@ -159,10 +180,10 @@ public actor DurableCommandWAL {
         try writeWAL(record, to: walDir)
     }
 
-    /// 查询是否存在已完成破坏性修改的 revertLastTurn 记录
+    /// 查询是否存在已完成破坏性修改或已规划的 revertLastTurn 记录
     public func lookupRevertedRecord(commandID: CommandID, sessionID: String) -> StagedWALRecord? {
         guard let record = readWAL(commandID: commandID) else { return nil }
-        guard record.commandName == "revertLastTurn", record.sessionID == sessionID, (record.stage == "reverted" || record.revertedPrompt != nil || record.removedMessageCount != nil) else { return nil }
+        guard record.commandName == "revertLastTurn", record.sessionID == sessionID, (record.stage == "reverted" || record.stage == "revertPlanned" || record.revertedPrompt != nil || record.removedMessageCount != nil) else { return nil }
         return record
     }
 

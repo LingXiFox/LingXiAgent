@@ -34,7 +34,7 @@ struct Round11SystemAuditTests {
         #expect(await coordinator.isTurnQueued(turnID: decision2.turn.turnID))
 
         // Finish first run: coordinator must schedule next queued turn with the EXACT queuedRunID (no phantom RunID)
-        let nextTurn = await coordinator.finishRun(runID: activeRunID, reason: .completed)
+        let nextTurn = try await coordinator.finishRun(runID: activeRunID, reason: .completed)
         let scheduled = try #require(nextTurn)
 
         #expect(scheduled.turn.turnID == decision2.turn.turnID)

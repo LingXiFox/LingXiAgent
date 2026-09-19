@@ -38,9 +38,8 @@ jobs:
           "$BIN_PATH/lingxiagent" --help || true
 
   test-linux:
-    name: Linux Build & Test (x86_64, Experimental)
+    name: Linux Build & Test (x86_64)
     runs-on: ubuntu-latest
-    continue-on-error: true
     container:
       image: swift:6.0
     steps:
@@ -55,7 +54,10 @@ jobs:
         run: swift --version
 
       - name: Build All Targets
-        run: swift build -v
+        run: |
+          swift build -v --product lingxiagent
+          swift build -v --product LingXiCoreHost
+          swift build -v --product LingXiTUI
 
       - name: Run Test Suite
         run: swift test -v --parallel
@@ -64,3 +66,41 @@ jobs:
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
           "$BIN_PATH/lingxiagent" --help || true
+
+  test-windows:
+    name: Windows Build & Test (x86_64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Swift
+        uses: compnerd/gha-setup-swift@v0.2.3
+        with:
+          branch: swift-6.0-release
+          tag: 6.0-RELEASE
+
+      - name: Provision SQLite Native Dependencies
+        shell: bash
+        run: |
+          vcpkg integrate install || choco install sqlite -y || true
+
+      - name: Print Swift Version
+        run: swift --version
+
+      - name: Build All Targets
+        shell: bash
+        run: |
+          swift build -v --product lingxiagent
+          swift build -v --product LingXiCoreHost
+          swift build -v --product LingXiTUI
+
+      - name: Run Test Suite
+        shell: bash
+        run: swift test -v
+
+      - name: Smoke Test CLI Executables
+        shell: bash
+        run: |
+          BIN_PATH="$(swift build --show-bin-path)"
+          "$BIN_PATH/lingxiagent.exe" --help || true

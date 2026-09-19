@@ -3,7 +3,7 @@
 <p align="center">
   <span style="font-size: 64px;">🦊</span><br/>
   <strong>Native Swift AI Coding Agent with Heterogeneous Dual-Core Architecture</strong><br/>
-  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS 原生优先 · Linux / Windows 实验性跨平台支持</em>
+  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS / Linux / Windows 官方支持 (CLI + TUI)</em>
 </p>
 
 <p align="center">
@@ -17,9 +17,15 @@
 ---
 
 > [!IMPORTANT]
-> **平台支持现状 (Platform Support)**
-> - **macOS 原生一级支持**：全面支持 **macOS** (Apple Silicon / Intel)，具备完整的原生交互与运行时保障。
-> - **跨平台实验性推进**：**Linux** (Ubuntu / Debian / Arch，x86_64 与 AArch64) 与 **Windows** (x86_64 与 ARM64) 实验性跨平台支持持续推进中。底层由独立模块 `LingXiPlatform` 提供抽象。
+> **全平台正式支持契约 (V1.0.0 Platform Support Matrix)**
+> 
+> | 操作系统 | 交付形态 | 预编译发布包 (Prebuilt) | 源码构建 (Source Build) | 平台专属能力边界说明 |
+> | :--- | :--- | :--- | :--- | :--- |
+> | **macOS** | CLI + TUI | `arm64` (Apple Silicon) | Apple Silicon / Intel | 全功能就绪：Seatbelt 原生沙箱、Browser Use、视觉桌面感知 (Computer Use) |
+> | **Linux** | CLI + TUI | `x86_64` (Ubuntu/Debian/Arch) | x86_64 / AArch64 | 核心就绪：Bubblewrap 沙箱、Browser Use；桌面视觉 Computer Use 暂不开放 |
+> | **Windows** | CLI + TUI | `x86_64` (Win 10/11) | x86_64 / ARM64 | 核心就绪：Win32 控制台、Browser Use；桌面视觉 Computer Use 随 V1.1.0+ 提供 |
+> 
+> 表现层由纯受控客户端 `LingXiTUI` 驱动，系统底层由独立平台层 `LingXiPlatform` 与 `CSQLite` 提供跨平台强一致保障。
 
 ---
 

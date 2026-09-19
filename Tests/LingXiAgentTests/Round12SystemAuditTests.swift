@@ -55,7 +55,7 @@ struct Round12SystemAuditTests {
 
         // Duplicate terminalization attempts (e.g. from cancellation catch path or late callback)
         // must be idempotent no-op and NEVER advance queue to C!
-        let next2 = await coordinator.finishRun(runID: runIDA, reason: .userCancelled)
+        let next2 = try await coordinator.finishRun(runID: runIDA, reason: .userCancelled)
         #expect(next2 == nil)
 
         let next3 = try await coordinator.cancelRun(runID: runIDA, reason: "userCancelled")

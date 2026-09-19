@@ -1057,11 +1057,23 @@ enum ToolSchemaValidator {
         case .string: return value is String
         case .boolean: return value is Bool
         case .integer:
+            #if canImport(CoreFoundation)
             guard let number = value as? NSNumber else { return false }
             return CFGetTypeID(number) != CFBooleanGetTypeID() && floor(number.doubleValue) == number.doubleValue
+            #else
+            guard !(value is Bool) else { return false }
+            if value is Int { return true }
+            if let num = value as? Double { return floor(num) == num }
+            return false
+            #endif
         case .number:
+            #if canImport(CoreFoundation)
             guard let number = value as? NSNumber else { return false }
             return CFGetTypeID(number) != CFBooleanGetTypeID()
+            #else
+            guard !(value is Bool) else { return false }
+            return value is Double || value is Int || value is Float
+            #endif
         case .object: return value is [String: Any]
         case .array: return value is [Any]
         }

@@ -552,7 +552,7 @@ public actor SessionTurnCoordinator {
         public let runID: RunID
     }
 
-    public func finishRun(runID: RunID, reason: TerminalReason, error: RuntimeError? = nil) async -> NextTurnToRun? {
+    public func finishRun(runID: RunID, reason: TerminalReason, error: RuntimeError? = nil) async throws -> NextTurnToRun? {
         guard let run = runs[runID], !run.status.isTerminal else {
             // Idempotent guard: already terminal or not found. Never advance queue twice!
             return nil
@@ -580,6 +580,27 @@ public actor SessionTurnCoordinator {
             completedAt: Date(),
             terminalReason: reason
         )
+
+        // P0-A Terminal Durability Invariant:
+        // 必须物理落盘终态事件成功后，才更新内存终态并推进队列！
+        // 若落盘失败，立即截断回 initialSeq，绝不假装完成，更绝不能 advance queue 造成双非终态并发与重启状态分裂！
+        let initialSeq = await eventLog.currentSequence()
+        do {
+            if terminalStatus == .cancelled {
+                try await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "userCancelled"))
+                try await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
+            } else if let error {
+                try await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: error))
+                try await eventLog.append(causal: causal, payload: .turnFailed(turnID: turnID, error: error))
+            } else {
+                try await eventLog.append(causal: causal, payload: .runCompleted(runID: runID, terminalReason: reason))
+                try await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: reason))
+            }
+        } catch {
+            try? await eventLog.truncateEvents(afterSequence: initialSeq)
+            throw error
+        }
+
         runs[runID] = terminalRun
 
         if let turn = turns[turnID] {
@@ -594,17 +615,6 @@ public actor SessionTurnCoordinator {
                 createdAt: turn.createdAt,
                 completedAt: Date()
             )
-        }
-
-        if terminalStatus == .cancelled {
-            _ = try? await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "userCancelled"))
-            _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
-        } else if let error {
-            _ = try? await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: error))
-            _ = try? await eventLog.append(causal: causal, payload: .turnFailed(turnID: turnID, error: error))
-        } else {
-            _ = try? await eventLog.append(causal: causal, payload: .runCompleted(runID: runID, terminalReason: reason))
-            _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: reason))
         }
 
         let wasActiveRoot = (activeRootRunID == runID)
@@ -677,7 +687,7 @@ public actor SessionTurnCoordinator {
         }
 
         // Target run is running: route through single terminalization path
-        return await finishRun(runID: runID, reason: .userCancelled)
+        return try await finishRun(runID: runID, reason: .userCancelled)
     }
 
     private func scheduleNextQueuedTurn() async -> NextTurnToRun? {

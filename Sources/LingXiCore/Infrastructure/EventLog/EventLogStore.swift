@@ -214,15 +214,21 @@ public actor SessionEventLog {
                 }
             }
             try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+
+            // P0-C Invariant: events.jsonl 是权威落盘事实。一旦原子写入成功，截断即已不可逆生效！
+            // 此时必须立即推进内存状态，杜绝后续 meta.json 缓存写失败导致磁盘已截断但内存仍是旧 sequence 的脑裂！
+            events = remainingEvents
+            sequence = targetSeq
+
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: targetSeq)
-            let data = try JSONEncoder().encode(meta)
-            try data.write(to: metaURL, options: .atomic)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
+        } else {
+            events = remainingEvents
+            sequence = targetSeq
         }
-
-        // P0-C Invariant: 磁盘写入成功后才更新内存状态，绝不造成分裂
-        events = remainingEvents
-        sequence = targetSeq
     }
 
     public func resetToEvents(_ newEvents: [SessionEventEnvelope]) throws {
@@ -529,15 +535,20 @@ public actor RuntimeEventLog {
                 }
             }
             try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+
+            // P0-C Invariant: events.jsonl 是权威落盘事实。一旦原子写入成功，截断即已不可逆生效！
+            events = remainingEvents
+            sequence = targetSeq
+
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: targetSeq)
-            let data = try JSONEncoder().encode(meta)
-            try data.write(to: metaURL, options: .atomic)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
+        } else {
+            events = remainingEvents
+            sequence = targetSeq
         }
-
-        // P0-C Invariant: 磁盘成功后才更新内存
-        events = remainingEvents
-        sequence = targetSeq
     }
 
     public func subscribe(after: EventCursor?) -> AsyncStream<RuntimeEventEnvelope> {

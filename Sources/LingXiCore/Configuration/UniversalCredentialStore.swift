@@ -149,14 +149,11 @@ public actor UniversalCredentialStore: CredentialStore {
             throw ConfigurationValidationError(path: "$", reason: "invalid credentials.vault JSON")
         }
 
-        guard let version = root["version"] as? NSNumber,
-              CFGetTypeID(version) != CFBooleanGetTypeID(),
-              version.doubleValue == Double(version.intValue)
-        else {
+        guard let version = root["version"] as? Int else {
             throw ConfigurationValidationError(path: "$.version", reason: "expected integer version")
         }
 
-        switch version.intValue {
+        switch version {
         case 1:
             // Legacy plaintext credentials migration
             guard let credentials = root["credentials"] as? [String: String] else {
@@ -207,7 +204,7 @@ public actor UniversalCredentialStore: CredentialStore {
             }
 
         default:
-            throw ConfigurationValidationError(path: "$.version", reason: "unsupported credentials.vault version \(version.intValue)")
+            throw ConfigurationValidationError(path: "$.version", reason: "unsupported credentials.vault version \(version)")
         }
     }
 

@@ -52,7 +52,6 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    continue-on-error: true
     container:
       image: swift:latest
     steps:
@@ -67,13 +66,19 @@ jobs:
         run: |
           swift build -c release --product lingxiagent
           swift build -c release --product LingXiCoreHost
+          swift build -c release --product LingXiTUI
           BIN_PATH="$(swift build -c release --show-bin-path)"
           mkdir -p dist staging
           cp -f "$BIN_PATH/lingxiagent" staging/
           cp -f "$BIN_PATH/LingXiCoreHost" staging/
-          if [ -d "$BIN_PATH/LingXiAgent_LingXiCore.bundle" ]; then
-            cp -R "$BIN_PATH/LingXiAgent_LingXiCore.bundle" staging/
+          if [ -f "$BIN_PATH/LingXiTUI" ]; then
+            cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
+          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiCore*.resources; do
+            if [ -d "$b" ]; then
+              cp -R "$b" staging/
+            fi
+          done
           mkdir -p staging/Sidecars/browser-host
           if [ -d "Sidecars/browser-host" ]; then
             cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
@@ -90,7 +95,6 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -101,16 +105,35 @@ jobs:
           branch: swift-6.0-release
           tag: 6.0-RELEASE
 
+      - name: Provision SQLite Native Dependencies
+        shell: bash
+        run: |
+          vcpkg integrate install || choco install sqlite -y || true
+
       - name: Build Release Binaries
         shell: bash
         run: |
           swift build -c release --product lingxiagent
           swift build -c release --product LingXiCoreHost
+          swift build -c release --product LingXiTUI
           BIN_PATH="$(swift build -c release --show-bin-path)"
           mkdir -p dist staging
           cp -f "$BIN_PATH/lingxiagent.exe" staging/
           if [ -f "$BIN_PATH/LingXiCoreHost.exe" ]; then
             cp -f "$BIN_PATH/LingXiCoreHost.exe" staging/
+          fi
+          if [ -f "$BIN_PATH/LingXiTUI.exe" ]; then
+            cp -f "$BIN_PATH/LingXiTUI.exe" staging/
+          fi
+          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiCore*.resources; do
+            if [ -d "$b" ]; then
+              cp -R "$b" staging/
+            fi
+          done
+          mkdir -p staging/Sidecars/browser-host
+          if [ -d "Sidecars/browser-host" ]; then
+            cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
+            cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
           fi
           cd staging && 7z a "../dist/lingxiagent-windows-x86_64.zip" * && cd ..
           certutil -hashfile "dist/lingxiagent-windows-x86_64.zip" SHA256 > "dist/lingxiagent-windows-x86_64.zip.sha256"
@@ -123,7 +146,7 @@ jobs:
 
   publish-release:
     needs: [build-macos, build-linux, build-windows]
-    if: always() && needs.build-macos.result == 'success'
+    if: needs.build-macos.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

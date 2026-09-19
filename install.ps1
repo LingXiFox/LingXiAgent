@@ -41,6 +41,36 @@ Write-Host "[2/5] 准备本地安装路径: $BinDir" -ForegroundColor DarkGray
 # 3. 部署二进制文件
 $Installed = $false
 
+function Install-Sidecars-And-Bundles($SourceDir, $TargetBinDir, $Root) {
+    # 1. 复制 LingXiCore 资源 Bundle 与 Resources
+    Get-ChildItem -Path $SourceDir -Directory -Filter "*LingXiCore*" -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -Force -Recurse $_.FullName (Join-Path $TargetBinDir $_.Name)
+    }
+
+    # 2. 部署 Browser Sidecar 及其依赖
+    $SrcSidecar = Join-Path $SourceDir "Sidecars\browser-host"
+    if (Test-Path $SrcSidecar) {
+        $DestSidecar = Join-Path $Root "sidecars\browser-host"
+        $BinSidecar = Join-Path $TargetBinDir "Sidecars\browser-host"
+        New-Item -ItemType Directory -Force -Path $DestSidecar | Out-Null
+        New-Item -ItemType Directory -Force -Path $BinSidecar | Out-Null
+        Copy-Item -Force -Recurse (Join-Path $SrcSidecar "*") $DestSidecar
+        Copy-Item -Force -Recurse (Join-Path $SrcSidecar "*") $BinSidecar
+
+        if (Get-Command npm -ErrorAction SilentlyContinue) {
+            Push-Location $DestSidecar
+            try {
+                npm install --omit=dev --silent | Out-Null
+                Write-Host "[*] 已成功部署 Browser Sidecar 运行时 (Playwright 依赖就绪)" -ForegroundColor DarkGray
+            } catch {
+                Write-Host "[!] Browser Sidecar npm 依赖安装失败，浏览器能力将降级" -ForegroundColor Yellow
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+}
+
 # 场景 A: 如果当前目录下存在 Package.swift 且是 LingXiAgent 源码目录
 if ((Test-Path "Package.swift") -and (Select-String -Path "Package.swift" -Pattern "LingXiAgent" -Quiet -ErrorAction SilentlyContinue)) {
     if (Get-Command swift -ErrorAction SilentlyContinue) {
@@ -54,6 +84,10 @@ if ((Test-Path "Package.swift") -and (Select-String -Path "Package.swift" -Patte
             Copy-Item -Force $BuiltAgent $TargetBin
             if (Test-Path $BuiltCore) {
                 Copy-Item -Force $BuiltCore (Join-Path $BinDir "LingXiCoreHost.exe")
+            }
+            Install-Sidecars-And-Bundles $BinPath $BinDir $InstallRoot
+            if (Test-Path "Sidecars\browser-host") {
+                Install-Sidecars-And-Bundles "." $BinDir $InstallRoot
             }
             $Installed = $true
             Write-Host "[✓] 本地源码编译并成功安装至 $TargetBin" -ForegroundColor Green
@@ -93,6 +127,7 @@ if (-not $Installed) {
                 if (Test-Path $CandidateCore) {
                     Copy-Item -Force $CandidateCore (Join-Path $BinDir "LingXiCoreHost.exe")
                 }
+                Install-Sidecars-And-Bundles $TempExtract $BinDir $InstallRoot
                 $Installed = $true
                 Write-Host "[✓] 预编译二进制安装成功!" -ForegroundColor Green
             }
@@ -121,6 +156,8 @@ if (-not $Installed) {
                 if (Test-Path $BuiltCore) {
                     Copy-Item -Force $BuiltCore (Join-Path $BinDir "LingXiCoreHost.exe")
                 }
+                Install-Sidecars-And-Bundles $BinPath $BinDir $InstallRoot
+                Install-Sidecars-And-Bundles "." $BinDir $InstallRoot
                 $Installed = $true
                 Write-Host "[✓] 源码构建并安装成功!" -ForegroundColor Green
             }

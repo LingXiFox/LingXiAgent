@@ -1946,7 +1946,7 @@ extension CoreHost {
         guard let coordinator else { return }
         defer { unregisterActiveTurnTask(runID: runID, sessionID: sessionID) }
         if Task.isCancelled {
-            let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
             dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
             return
         }
@@ -1964,7 +1964,7 @@ extension CoreHost {
                 }
             } catch {
                 let runtimeErr = RuntimeError(category: .runtime, code: "persistUserMessageFailed", message: "Failed to persist user message: \(error)", retryability: .none, source: .core)
-                let next = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+                let next = try? await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
                 dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
@@ -1997,7 +1997,7 @@ extension CoreHost {
             } else {
                 runtimeErr = RuntimeError(category: .runtime, code: "noProviderConfigured", message: "未配置可用模型 Provider，请检查 providers.json 或运行 lingxiagent auth", retryability: .none, source: .core)
             }
-            let next = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+            let next = try? await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
             dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
             return
         }
@@ -2079,7 +2079,7 @@ extension CoreHost {
                             metadata: computeMetadata("cancelled")
                         )
                     }
-                    let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                    let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
                     dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                     return
                 }
@@ -2173,13 +2173,13 @@ extension CoreHost {
                 )
             }
             if Task.isCancelled {
-                let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
                 dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
             let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
             await coordinator.recordContextStateChanged(freshContextState, causal: CausalContext(sessionID: sessionID))
-            let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .completed)
+            let nextTurnToRun = try? await coordinator.finishRun(runID: runID, reason: .completed)
             dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator)
         } catch is CancellationError {
             if currentStepID != nil {
@@ -2196,7 +2196,7 @@ extension CoreHost {
                     metadata: computeMetadata("cancelled")
                 )
             }
-            let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            let nextTurnToRun = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
             dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator)
         } catch {
             if Task.isCancelled {
@@ -2214,7 +2214,7 @@ extension CoreHost {
                         metadata: computeMetadata("cancelled")
                     )
                 }
-                let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
                 dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
@@ -2233,7 +2233,7 @@ extension CoreHost {
                 )
             }
             let runtimeErr = (error as? RuntimeError) ?? (error as? CoreError)?.asRuntimeError ?? RuntimeError(category: .runtime, code: "executionError", message: error.localizedDescription, retryability: .none, source: .core)
-            let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+            let nextTurnToRun = try? await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
             dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator, delayMs: 200)
         }
     }
@@ -2611,23 +2611,32 @@ extension CoreHost {
                 return cached
             }
 
-            // P0-D Invariant: 检查该 revert 命令在崩溃前是否已经完成了修改。
-            // 若已完成，完成所有剩余系统层级（Coordinator、CacheController、ContextEngine）的收敛，并返回已撤回结果，杜绝重试导致双重撤销（Double-Revert）！
+            // P0-D Invariant: 检查该 revert 命令在崩溃前是否已经存在 WAL 记录。
+            // 无论崩溃在文件回滚、sessionStore 回滚、或收敛期间，重试时均收敛为恰好一次逻辑撤销（Zero Double-Revert）！
             if let stagedRevert = await commandWAL.lookupRevertedRecord(commandID: envelope.commandID, sessionID: sessionID.rawValue) {
                 let fresh = try? await sessionStore.session(sessionID)
                 let remainingMessages = fresh?.messages ?? []
+                let targetMsgID = stagedRevert.stagedUserMessageID.flatMap { MessageID($0) }
 
-                let coord = try? await coordinator(for: sessionID)
-                if let coord {
-                    try? await coord.resetForRevert(remainingMessages: remainingMessages)
+                let isAlreadyRevertedInStore: Bool
+                if stagedRevert.stage == "reverted" {
+                    isAlreadyRevertedInStore = true
+                } else if let targetMsgID, let msgs = fresh?.messages {
+                    isAlreadyRevertedInStore = !msgs.contains(where: { $0.id == targetMsgID })
+                } else {
+                    isAlreadyRevertedInStore = (stagedRevert.revertedPrompt != nil || stagedRevert.removedMessageCount != nil)
                 }
 
-                await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
-                await compactor.reset(sessionID: sessionID)
-                await contextEngine.reset(for: sessionID)
+                if isAlreadyRevertedInStore {
+                    // SessionStore 破坏性撤销已完成：坚决不调 sessionStore.revertLastTurn，直接完成系统收敛！
+                    let coord = try await coordinator(for: sessionID)
+                    try await coord.resetForRevert(remainingMessages: remainingMessages)
 
-                var authoritativeSnapshot: SessionSnapshot?
-                if let coord {
+                    await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
+                    await compactor.reset(sessionID: sessionID)
+                    await contextEngine.reset(for: sessionID)
+
+                    var authoritativeSnapshot: SessionSnapshot?
                     let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
                     let causal = CausalContext(sessionID: sessionID)
                     await coord.recordContextStateChanged(freshContextState, causal: causal)
@@ -2667,35 +2676,56 @@ extension CoreHost {
                         agentMode: agentMode,
                         revision: stagedRevert.revertedRevision ?? currentRevision
                     )
-                }
 
-                let receipt = CommandReceipt<RevertLastTurnResult>(
-                    commandID: envelope.commandID,
-                    applied: true,
-                    revision: stagedRevert.revertedRevision ?? nextRevision(),
-                    observedThrough: [
-                        await runtimeEventLog.currentWatermark()
-                    ],
-                    result: RevertLastTurnResult(
-                        revertedPrompt: stagedRevert.revertedPrompt ?? "",
-                        removedCount: stagedRevert.removedMessageCount ?? 1,
-                        snapshot: authoritativeSnapshot,
-                        revision: stagedRevert.revertedRevision ?? currentRevision
+                    let receipt = CommandReceipt<RevertLastTurnResult>(
+                        commandID: envelope.commandID,
+                        applied: true,
+                        revision: stagedRevert.revertedRevision ?? nextRevision(),
+                        observedThrough: [
+                            await runtimeEventLog.currentWatermark()
+                        ],
+                        result: RevertLastTurnResult(
+                            revertedPrompt: stagedRevert.revertedPrompt ?? "",
+                            removedCount: stagedRevert.removedMessageCount ?? 1,
+                            snapshot: authoritativeSnapshot,
+                            revision: stagedRevert.revertedRevision ?? currentRevision
+                        )
                     )
-                )
-                try? await commandWAL.commitTransaction(
-                    commandID: envelope.commandID,
-                    commandName: "revertLastTurn",
-                    payloadFingerprint: CommandStorageSecurity.fingerprint(envelope.payload),
-                    receipt: receipt
-                )
-                try? await recordIdempotency(envelope: envelope, commandName: "revertLastTurn", receipt: receipt)
-                return receipt
+                    try await commandWAL.commitTransaction(
+                        commandID: envelope.commandID,
+                        commandName: "revertLastTurn",
+                        payloadFingerprint: CommandStorageSecurity.fingerprint(envelope.payload),
+                        receipt: receipt
+                    )
+                    try await recordIdempotency(envelope: envelope, commandName: "revertLastTurn", receipt: receipt)
+                    return receipt
+                }
             }
 
-            try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "revertLastTurn", sessionID: sessionID.rawValue)
+            // 新事务或之前的崩溃发生在真正删除 SessionStore 消息之前：先分析撤回目标并在破坏性操作前建立 WAL 预备 Checkpoint
+            let preSession = try await sessionStore.session(sessionID)
+            let lastUserIdx = preSession.messages.lastIndex(where: { $0.role == .user })
+            let targetUserMsg = lastUserIdx.map { preSession.messages[$0] }
+            let plannedPrompt = targetUserMsg?.content
+            let plannedCount = lastUserIdx.map { preSession.messages.count - $0 } ?? 0
+            let plannedRevision = preSession.revision + 1
 
-            let oldRevision = (try? await sessionStore.currentRevision(sessionID)) ?? 0
+            try await commandWAL.beginTransaction(
+                commandID: envelope.commandID,
+                commandName: "revertLastTurn",
+                sessionID: sessionID.rawValue,
+                stagedUserMessageID: targetUserMsg?.id.rawValue
+            )
+            try await commandWAL.recordRevertPlan(
+                commandID: envelope.commandID,
+                sessionID: sessionID,
+                targetUserMessageID: targetUserMsg?.id,
+                revertedPrompt: plannedPrompt,
+                removedCount: plannedCount,
+                revision: plannedRevision
+            )
+
+            let oldRevision = preSession.revision
             let newRevision = try await sessionStore.bumpRevision(sessionID)
             FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.begin sessionID=\(sessionID.rawValue) oldRevision=\(oldRevision) newRevision=\(newRevision)\n".utf8))
 
@@ -2732,66 +2762,61 @@ extension CoreHost {
             try await commandWAL.recordRevertState(
                 commandID: envelope.commandID,
                 sessionID: sessionID,
-                revertedPrompt: revertedPrompt,
-                removedCount: count,
+                revertedPrompt: revertedPrompt ?? plannedPrompt,
+                removedCount: count > 0 ? count : plannedCount,
                 revision: newRevision
             )
 
             let fresh = try? await sessionStore.session(sessionID)
             let remainingMessages = fresh?.messages ?? []
 
-            let coord = try? await coordinator(for: sessionID)
-            if let coord {
-                try await coord.resetForRevert(remainingMessages: remainingMessages)
-            }
+            let coord = try await coordinator(for: sessionID)
+            try await coord.resetForRevert(remainingMessages: remainingMessages)
 
             // P-E 双核心架构协同：清理被撤回的 E-Core 对象，精确重估 P-Core (L1) Tokens 并重置缓存调度器
             await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
             await compactor.reset(sessionID: sessionID)
             await contextEngine.reset(for: sessionID)
 
-            var authoritativeSnapshot: SessionSnapshot?
-            if let coord {
-                let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
-                let causal = CausalContext(sessionID: sessionID)
-                await coord.recordContextStateChanged(freshContextState, causal: causal)
+            let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
+            let causal = CausalContext(sessionID: sessionID)
+            await coord.recordContextStateChanged(freshContextState, causal: causal)
 
-                var title = fresh?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if title.isEmpty {
-                    if let firstUser = remainingMessages.first(where: { $0.role == .user })?.content {
-                        let clean = firstUser.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
-                        title = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
-                    }
+            var title = fresh?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if title.isEmpty {
+                if let firstUser = remainingMessages.first(where: { $0.role == .user })?.content {
+                    let clean = firstUser.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+                    title = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
                 }
-                if title.isEmpty { title = "未命名会话" }
-
-                let resolvedDir: String
-                if let p = persistence, let root = try? SQLitePersistenceStore.findProjectDirectory(for: sessionID, dataRoot: p.dataRoot)?.absoluteRoot {
-                    resolvedDir = root
-                } else {
-                    resolvedDir = workspaceURL.path
-                }
-
-                let summary = SessionSummary(
-                    sessionID: sessionID,
-                    title: title,
-                    createdAt: fresh?.createdAt ?? Date(),
-                    updatedAt: fresh?.updatedAt ?? Date(),
-                    turnCount: remainingMessages.filter { $0.role == .user }.count,
-                    mode: .build,
-                    reasoningEffort: fresh?.reasoningEffort ?? .auto,
-                    workingDirectory: resolvedDir,
-                    messageCount: remainingMessages.count
-                )
-                let agentMode = await coord.currentAgentMode()
-                authoritativeSnapshot = await coord.buildSnapshot(
-                    info: summary,
-                    contextState: freshContextState,
-                    permissionConfiguration: await permissionEngine.currentConfiguration(),
-                    agentMode: agentMode,
-                    revision: newRevision
-                )
             }
+            if title.isEmpty { title = "未命名会话" }
+
+            let resolvedDir: String
+            if let p = persistence, let root = try? SQLitePersistenceStore.findProjectDirectory(for: sessionID, dataRoot: p.dataRoot)?.absoluteRoot {
+                resolvedDir = root
+            } else {
+                resolvedDir = workspaceURL.path
+            }
+
+            let summary = SessionSummary(
+                sessionID: sessionID,
+                title: title,
+                createdAt: fresh?.createdAt ?? Date(),
+                updatedAt: fresh?.updatedAt ?? Date(),
+                turnCount: remainingMessages.filter { $0.role == .user }.count,
+                mode: .build,
+                reasoningEffort: fresh?.reasoningEffort ?? .auto,
+                workingDirectory: resolvedDir,
+                messageCount: remainingMessages.count
+            )
+            let agentMode = await coord.currentAgentMode()
+            let authoritativeSnapshot: SessionSnapshot? = await coord.buildSnapshot(
+                info: summary,
+                contextState: freshContextState,
+                permissionConfiguration: await permissionEngine.currentConfiguration(),
+                agentMode: agentMode,
+                revision: newRevision
+            )
 
             FileHandle.standardError.write(Data("[CORE_HOST] session.snapshot.resynced sessionID=\(sessionID.rawValue) revision=\(newRevision)\n".utf8))
             FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.completed sessionID=\(sessionID.rawValue) newRevision=\(newRevision) removedCount=\(count)\n".utf8))

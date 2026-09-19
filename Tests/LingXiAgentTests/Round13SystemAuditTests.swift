@@ -198,12 +198,12 @@ struct Round13SystemAuditTests {
         let runIDB = try #require(decB.runID)
 
         // Finish A: triggers scheduling of B
-        let nextToRun = await coord.finishRun(runID: runIDA, reason: .completed)
+        let nextToRun = try await coord.finishRun(runID: runIDA, reason: .completed)
         let scheduled = try #require(nextToRun)
         #expect(scheduled.runID == runIDB)
 
         // Finish B
-        _ = await coord.finishRun(runID: runIDB, reason: .completed)
+        _ = try await coord.finishRun(runID: runIDB, reason: .completed)
 
         // Verify EventLog: runCreated for B must appear EXACTLY once!
         let allEvents = await eventLog.allEvents()

@@ -108,13 +108,10 @@ public actor FileCredentialStore: CredentialStore {
     }
 
     private func vaultVersion(in root: [String: Any]) throws -> Int {
-        guard let version = root["version"] as? NSNumber,
-              CFGetTypeID(version) != CFBooleanGetTypeID(),
-              version.doubleValue == Double(version.intValue)
-        else {
+        guard let version = root["version"] as? Int else {
             throw ConfigurationValidationError(path: "$.version", reason: "expected integer")
         }
-        return version.intValue
+        return version
     }
 
     private func legacyCredentials(in root: [String: Any]) throws -> [String: String] {

@@ -204,7 +204,7 @@ struct ProtocolVNextFrozenContractTests {
         #expect(cancelledTurn?.status == .cancelled)
 
         // Now finish Turn 1
-        let nextToRun = await coordinator.finishRun(runID: runID1, reason: .completed)
+        let nextToRun = try await coordinator.finishRun(runID: runID1, reason: .completed)
         #expect(nextToRun == nil) // No more queued turns because Turn 2 was cancelled
         #expect(await coordinator.activeRootRunID == nil)
     }
