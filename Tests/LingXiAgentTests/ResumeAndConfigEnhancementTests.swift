@@ -316,7 +316,7 @@ struct ResumeAndConfigEnhancementTests {
 
         // 模拟提交第一轮
         let msg1 = MessageSnapshot(messageID: MessageID("m1"), role: .user, text: "hello 1", createdAt: Date())
-        let d1 = await coord.submitTurn(input: UserInput(text: "hello 1"), intent: TurnExecutionIntent(), userMessage: msg1)
+        let d1 = try await coord.submitTurn(input: UserInput(text: "hello 1"), intent: TurnExecutionIntent(), userMessage: msg1)
         #expect(d1.shouldStartExecution == true)
         #expect(await coord.activeRootRunID != nil)
 
@@ -326,7 +326,7 @@ struct ResumeAndConfigEnhancementTests {
 
         // 撤回后再提交新的一轮，应当能够正常启动执行，绝对不能被判定为 queued 死锁（被吞）
         let msg2 = MessageSnapshot(messageID: MessageID("m2"), role: .user, text: "hello 2", createdAt: Date())
-        let d2 = await coord.submitTurn(input: UserInput(text: "hello 2"), intent: TurnExecutionIntent(), userMessage: msg2)
+        let d2 = try await coord.submitTurn(input: UserInput(text: "hello 2"), intent: TurnExecutionIntent(), userMessage: msg2)
         #expect(d2.shouldStartExecution == true)
         #expect(d2.runID != nil)
         #expect(d2.status == .running)

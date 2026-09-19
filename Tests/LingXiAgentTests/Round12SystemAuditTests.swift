@@ -13,7 +13,7 @@ struct Round12SystemAuditTests {
         let coordinator = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
         // Turn A starts running
-        let decisionA = await coordinator.submitTurn(
+        let decisionA = try await coordinator.submitTurn(
             input: UserInput(text: "Prompt A"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Prompt A", createdAt: Date())
@@ -22,14 +22,14 @@ struct Round12SystemAuditTests {
         #expect(await coordinator.activeRootRunID == runIDA)
 
         // Turn B and Turn C queued
-        let decisionB = await coordinator.submitTurn(
+        let decisionB = try await coordinator.submitTurn(
             input: UserInput(text: "Prompt B"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Prompt B", createdAt: Date())
         )
         let runIDB = try #require(decisionB.runID)
 
-        let decisionC = await coordinator.submitTurn(
+        let decisionC = try await coordinator.submitTurn(
             input: UserInput(text: "Prompt C"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Prompt C", createdAt: Date())
@@ -209,7 +209,7 @@ struct Round12SystemAuditTests {
         let coord1 = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
         // Submit A (running)
-        let decisionA = await coord1.submitTurn(
+        let decisionA = try await coord1.submitTurn(
             input: UserInput(text: "Active prompt"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Active prompt", createdAt: Date())
@@ -218,7 +218,7 @@ struct Round12SystemAuditTests {
 
         // Submit B (queued)
         let msgIDB = MessageID()
-        let decisionB = await coord1.submitTurn(
+        let decisionB = try await coord1.submitTurn(
             input: UserInput(text: "Queued prompt"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: msgIDB, role: .user, text: "Queued prompt", createdAt: Date())
@@ -283,7 +283,7 @@ struct Round12SystemAuditTests {
         let eventLog = SessionEventLog(sessionID: sessionID)
         let coordinator = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
-        let decision = await coordinator.submitTurn(
+        let decision = try await coordinator.submitTurn(
             input: UserInput(text: "Run to cancel"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Run to cancel", createdAt: Date())

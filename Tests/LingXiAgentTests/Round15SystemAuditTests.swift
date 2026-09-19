@@ -280,12 +280,12 @@ struct Round15SystemAuditTests {
         )
 
         let causal = CausalContext(sessionID: sessionID, turnID: turnID, runID: runID, rootRunID: runID)
-        await coord.eventLog.append(causal: causal, payload: .turnCreated(turn))
-        await coord.eventLog.append(causal: causal, payload: .runCreated(run))
-        await coord.eventLog.append(causal: causal, payload: .runQueued(runID: runID))
+        try await coord.eventLog.append(causal: causal, payload: .turnCreated(turn))
+        try await coord.eventLog.append(causal: causal, payload: .runCreated(run))
+        try await coord.eventLog.append(causal: causal, payload: .runQueued(runID: runID))
         // Append durable cancellation events as produced by cancelTurn
-        await coord.eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
-        await coord.eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
+        try await coord.eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
+        try await coord.eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
 
         // Create a new coordinator and restore historical queue
         let restoredEventLog = SessionEventLog(sessionID: sessionID, storageDirectory: tempDir)

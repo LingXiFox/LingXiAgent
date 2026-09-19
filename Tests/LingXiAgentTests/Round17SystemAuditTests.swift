@@ -230,7 +230,7 @@ struct Round17SystemAuditTests {
         #expect(healedMetaStr.contains("\"sequence\":3"), "meta.json was not self-healed on disk!")
 
         // - Next append must produce sequence 4 without duplicate or gap
-        await eventLog.append(
+        try await eventLog.append(
             causal: CausalContext(sessionID: sessionID),
             payload: .runCompleted(runID: RunID("run-4"), terminalReason: .completed)
         )
@@ -297,9 +297,9 @@ struct Round17SystemAuditTests {
             completedAt: nil,
             terminalReason: nil
         )
-        await eventLog.append(causal: causal, payload: .turnCreated(turnSnap))
-        await eventLog.append(causal: causal, payload: .runCreated(runSnap))
-        await eventLog.append(causal: causal, payload: .runStarted(runID: runID))
+        try await eventLog.append(causal: causal, payload: .turnCreated(turnSnap))
+        try await eventLog.append(causal: causal, payload: .runCreated(runSnap))
+        try await eventLog.append(causal: causal, payload: .runStarted(runID: runID))
 
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
         await coord.restoreHistoricalQueue()

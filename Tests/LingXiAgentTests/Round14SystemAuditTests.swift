@@ -265,17 +265,17 @@ struct Round14SystemAuditTests {
         let causalFailed = CausalContext(sessionID: sessionID, turnID: failedTurnID, runID: failedRunID, rootRunID: failedRunID)
 
         // Write historical sequence
-        await eventLog.append(causal: causalCompleted, payload: .turnCreated(tCompleted))
-        await eventLog.append(causal: causalCompleted, payload: .runCreated(rCompleted))
-        await eventLog.append(causal: causalCompleted, payload: .runStarted(runID: completedRunID))
-        await eventLog.append(causal: causalCompleted, payload: .runCompleted(runID: completedRunID, terminalReason: .completed))
-        await eventLog.append(causal: causalCompleted, payload: .turnCompleted(turnID: completedTurnID, terminalReason: .completed))
+        try await eventLog.append(causal: causalCompleted, payload: .turnCreated(tCompleted))
+        try await eventLog.append(causal: causalCompleted, payload: .runCreated(rCompleted))
+        try await eventLog.append(causal: causalCompleted, payload: .runStarted(runID: completedRunID))
+        try await eventLog.append(causal: causalCompleted, payload: .runCompleted(runID: completedRunID, terminalReason: .completed))
+        try await eventLog.append(causal: causalCompleted, payload: .turnCompleted(turnID: completedTurnID, terminalReason: .completed))
 
-        await eventLog.append(causal: causalFailed, payload: .turnCreated(tFailed))
-        await eventLog.append(causal: causalFailed, payload: .runCreated(rFailed))
-        await eventLog.append(causal: causalFailed, payload: .runStarted(runID: failedRunID))
-        await eventLog.append(causal: causalFailed, payload: .runFailed(runID: failedRunID, error: RuntimeError(category: .runtime, code: "boom", message: "Boom", retryability: .none, source: .core)))
-        await eventLog.append(causal: causalFailed, payload: .turnFailed(turnID: failedTurnID, error: RuntimeError(category: .runtime, code: "boom", message: "Boom", retryability: .none, source: .core)))
+        try await eventLog.append(causal: causalFailed, payload: .turnCreated(tFailed))
+        try await eventLog.append(causal: causalFailed, payload: .runCreated(rFailed))
+        try await eventLog.append(causal: causalFailed, payload: .runStarted(runID: failedRunID))
+        try await eventLog.append(causal: causalFailed, payload: .runFailed(runID: failedRunID, error: RuntimeError(category: .runtime, code: "boom", message: "Boom", retryability: .none, source: .core)))
+        try await eventLog.append(causal: causalFailed, payload: .turnFailed(turnID: failedTurnID, error: RuntimeError(category: .runtime, code: "boom", message: "Boom", retryability: .none, source: .core)))
 
         // Instantiate coordinator and restore
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)

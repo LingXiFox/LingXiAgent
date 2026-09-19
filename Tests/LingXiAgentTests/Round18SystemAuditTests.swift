@@ -148,7 +148,7 @@ struct Round18SystemAuditTests {
         #expect(truncatedStr.hasSuffix("\n"), "File does not end with newline after torn tail truncation!")
 
         // 4. Append next event: must be cleanly written as sequence 3
-        await eventLog1.append(
+        try await eventLog1.append(
             causal: CausalContext(sessionID: sessionID),
             payload: .runCompleted(runID: RunID("run-3"), terminalReason: .completed)
         )

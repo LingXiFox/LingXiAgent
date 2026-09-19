@@ -182,7 +182,7 @@ struct ProtocolVNextFrozenContractTests {
         let msg1 = MessageSnapshot(role: .user, text: input1.text)
 
         // Turn 1 should start running
-        let decision1 = await coordinator.submitTurn(input: input1, intent: intent1, userMessage: msg1)
+        let decision1 = try await coordinator.submitTurn(input: input1, intent: intent1, userMessage: msg1)
         #expect(decision1.status == .running)
         #expect(decision1.shouldStartExecution)
         let runID1 = try #require(decision1.runID)
@@ -192,7 +192,7 @@ struct ProtocolVNextFrozenContractTests {
         let intent2 = TurnExecutionIntent(mode: .build)
         let msg2 = MessageSnapshot(role: .user, text: input2.text)
 
-        let decision2 = await coordinator.submitTurn(input: input2, intent: intent2, userMessage: msg2)
+        let decision2 = try await coordinator.submitTurn(input: input2, intent: intent2, userMessage: msg2)
         #expect(decision2.status == .queued)
         #expect(!decision2.shouldStartExecution)
         #expect(decision2.runID == nil)
@@ -216,7 +216,7 @@ struct ProtocolVNextFrozenContractTests {
         let eventLog = SessionEventLog(sessionID: sessionID)
         let coordinator = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
-        let turnDecision = await coordinator.submitTurn(
+        let turnDecision = try await coordinator.submitTurn(
             input: UserInput(text: "Generate answer"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(role: .user, text: "Generate answer")
@@ -282,10 +282,10 @@ struct ProtocolVNextFrozenContractTests {
         let eventLog = SessionEventLog(sessionID: sessionID, generationID: genID)
 
         let causal = CausalContext(sessionID: sessionID)
-        await eventLog.append(causal: causal, payload: .runQueued(runID: RunID("r1")))
+        try await eventLog.append(causal: causal, payload: .runQueued(runID: RunID("r1")))
         let cursor1 = await eventLog.currentCursor()
-        await eventLog.append(causal: causal, payload: .runStarted(runID: RunID("r1")))
-        await eventLog.append(causal: causal, payload: .runCompleted(runID: RunID("r1"), terminalReason: .completed))
+        try await eventLog.append(causal: causal, payload: .runStarted(runID: RunID("r1")))
+        try await eventLog.append(causal: causal, payload: .runCompleted(runID: RunID("r1"), terminalReason: .completed))
 
         // Normal replay from cursor1 (sequence 1) should yield sequences 2 and 3
         let replayStream = try await eventLog.subscribe(after: cursor1)
@@ -527,11 +527,11 @@ struct ProtocolVNextFrozenContractTests {
             #expect(!initialGenID.rawValue.isEmpty)
 
             let causal = CausalContext(sessionID: sessionID)
-            await log.append(causal: causal, payload: .runQueued(runID: RunID("r-0")))
-            await log.append(causal: causal, payload: .runStarted(runID: RunID("r-0")))
+            try await log.append(causal: causal, payload: .runQueued(runID: RunID("r-0")))
+            try await log.append(causal: causal, payload: .runStarted(runID: RunID("r-0")))
             cursorBeforeRestart = await log.currentCursor()
             #expect(cursorBeforeRestart.sequence == 2)
-            await log.append(causal: causal, payload: .runStarted(runID: RunID("r-1")))
+            try await log.append(causal: causal, payload: .runStarted(runID: RunID("r-1")))
         }
 
         // 2. Cold restart: instantiate fresh SessionEventLog from same storageDirectory
@@ -561,7 +561,7 @@ struct ProtocolVNextFrozenContractTests {
 
         // 4. Continue appending after restart: sequence must monotonically increment
         let causal = CausalContext(sessionID: sessionID)
-        await restartedLog.append(causal: causal, payload: .runCompleted(runID: RunID("r-1"), terminalReason: .completed))
+        try await restartedLog.append(causal: causal, payload: .runCompleted(runID: RunID("r-1"), terminalReason: .completed))
         let afterAppendCursor = await restartedLog.currentCursor()
         #expect(afterAppendCursor.sequence == 4)
     }

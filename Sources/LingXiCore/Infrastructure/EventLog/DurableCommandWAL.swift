@@ -5,7 +5,7 @@ import LingXiProtocol
 public struct StagedWALRecord: Codable, Sendable, Equatable {
     public let commandID: String
     public let commandName: String
-    public var stage: String // "staged", "eventsAppended", "committed"
+    public var stage: String // "staged", "eventsAppended", "reverted", "committed"
     public var createdSessionID: String?
     public var sessionID: String?
     public var stagedUserMessageID: String?
@@ -13,6 +13,9 @@ public struct StagedWALRecord: Codable, Sendable, Equatable {
     public var runID: String?
     public var initialRuntimeSequence: UInt64?
     public var initialSessionSequence: UInt64?
+    public var revertedPrompt: String?
+    public var removedMessageCount: Int?
+    public var revertedRevision: UInt64?
     public var receiptData: Data?
     public let createdAt: Date
     public var updatedAt: Date
@@ -28,6 +31,9 @@ public struct StagedWALRecord: Codable, Sendable, Equatable {
         runID: String? = nil,
         initialRuntimeSequence: UInt64? = nil,
         initialSessionSequence: UInt64? = nil,
+        revertedPrompt: String? = nil,
+        removedMessageCount: Int? = nil,
+        revertedRevision: UInt64? = nil,
         receiptData: Data? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -42,6 +48,9 @@ public struct StagedWALRecord: Codable, Sendable, Equatable {
         self.runID = runID
         self.initialRuntimeSequence = initialRuntimeSequence
         self.initialSessionSequence = initialSessionSequence
+        self.revertedPrompt = revertedPrompt
+        self.removedMessageCount = removedMessageCount
+        self.revertedRevision = revertedRevision
         self.receiptData = receiptData
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -129,6 +138,32 @@ public actor DurableCommandWAL {
         record.stage = "eventsAppended"
         record.updatedAt = Date()
         try writeWAL(record, to: walDir)
+    }
+
+    /// 记录 revertLastTurn 已完成破坏性状态修改（防止 SIGKILL 后重试造成双重撤回）
+    public func recordRevertState(
+        commandID: CommandID,
+        sessionID: SessionID,
+        revertedPrompt: String?,
+        removedCount: Int,
+        revision: UInt64
+    ) throws {
+        guard let walDir else { return }
+        var record = readWAL(commandID: commandID) ?? StagedWALRecord(commandID: commandID.rawValue, commandName: "revertLastTurn")
+        record.sessionID = sessionID.rawValue
+        record.revertedPrompt = revertedPrompt
+        record.removedMessageCount = removedCount
+        record.revertedRevision = revision
+        record.stage = "reverted"
+        record.updatedAt = Date()
+        try writeWAL(record, to: walDir)
+    }
+
+    /// 查询是否存在已完成破坏性修改的 revertLastTurn 记录
+    public func lookupRevertedRecord(commandID: CommandID, sessionID: String) -> StagedWALRecord? {
+        guard let record = readWAL(commandID: commandID) else { return nil }
+        guard record.commandName == "revertLastTurn", record.sessionID == sessionID, (record.stage == "reverted" || record.revertedPrompt != nil || record.removedMessageCount != nil) else { return nil }
+        return record
     }
 
     public struct CommittedTransactionRecord: Codable, Sendable {
@@ -284,6 +319,12 @@ public actor DurableCommandWAL {
             }
             if isCommitted {
                 try? FileManager.default.removeItem(at: fileURL)
+                continue
+            }
+
+            // P0-D Invariant: 如果是已完成破坏性修改的 revertLastTurn，保留 WAL 供后续同 CommandID 重试命中，
+            // 绝不能在重启后将其清除导致重试发生二次撤回（Double-Revert）！
+            if record.commandName == "revertLastTurn" && (record.stage == "reverted" || record.revertedPrompt != nil || record.removedMessageCount != nil) {
                 continue
             }
 

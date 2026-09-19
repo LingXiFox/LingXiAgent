@@ -11,6 +11,7 @@ public actor SessionEventLog {
     public let sessionID: SessionID
     public let generationID: EventLogGenerationID
     public private(set) var sequence: UInt64
+    public private(set) var isDegraded: Bool = false
     private var events: [SessionEventEnvelope]
     private var subscribers: [UUID: AsyncStream<SessionEventEnvelope>.Continuation]
     private let maxRetainedEvents: Int
@@ -21,7 +22,8 @@ public actor SessionEventLog {
         generationID: EventLogGenerationID? = nil,
         initialSequence: UInt64 = 0,
         maxRetainedEvents: Int = 10_000,
-        storageDirectory: URL? = nil
+        storageDirectory: URL? = nil,
+        isDegraded: Bool = false
     ) {
         self.sessionID = sessionID
         self.maxRetainedEvents = maxRetainedEvents
@@ -31,6 +33,7 @@ public actor SessionEventLog {
         var resolvedGen = generationID ?? EventLogGenerationID("gen-\(sessionID.rawValue)")
         var resolvedSeq = initialSequence
         var loadedEvents: [SessionEventEnvelope] = []
+        var degradedState = isDegraded
 
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
@@ -62,11 +65,14 @@ public actor SessionEventLog {
                     }
                 }
 
-                // P0-B: 自动识别并截断 torn/partial tail，防止后续 append 粘在坏 tail 上导致永久污染
+                // P0-B & P0-C: 自动识别并截断 torn/partial tail，若截断失败显式进入 degraded 状态，杜绝向坏 tail 追加
                 if validByteOffset < UInt64(totalBytes) {
-                    if let fileHandle = try? FileHandle(forWritingTo: eventsURL) {
-                        try? fileHandle.truncate(atOffset: validByteOffset)
-                        try? fileHandle.close()
+                    do {
+                        let fileHandle = try FileHandle(forWritingTo: eventsURL)
+                        try fileHandle.truncate(atOffset: validByteOffset)
+                        try fileHandle.close()
+                    } catch {
+                        degradedState = true
                     }
                 }
             }
@@ -93,6 +99,7 @@ public actor SessionEventLog {
         self.generationID = resolvedGen
         self.sequence = resolvedSeq
         self.events = loadedEvents
+        self.isDegraded = degradedState
     }
 
     public func currentCursor() -> EventCursor {
@@ -108,36 +115,52 @@ public actor SessionEventLog {
     }
 
     @discardableResult
-    public func append(causal: CausalContext, payload: SessionEventPayload) -> SessionEventEnvelope {
-        sequence += 1
-        let cursor = EventCursor(generationID: generationID, sequence: sequence)
-        let envelope = SessionEventEnvelope(cursor: cursor, timestamp: Date(), causal: causal, payload: payload)
-        events.append(envelope)
-        if events.count > maxRetainedEvents {
-            events.removeFirst(events.count - maxRetainedEvents)
+    public func append(causal: CausalContext, payload: SessionEventPayload) throws -> SessionEventEnvelope {
+        if isDegraded {
+            throw RuntimeError(
+                category: .runtime,
+                code: "eventLogDegraded",
+                message: "SessionEventLog is in degraded state: torn tail recovery failed",
+                retryability: .none,
+                source: .core
+            )
         }
+
+        let nextSeq = sequence + 1
+        let cursor = EventCursor(generationID: generationID, sequence: nextSeq)
+        let envelope = SessionEventEnvelope(cursor: cursor, timestamp: Date(), causal: causal, payload: payload)
 
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
-            if let envelopeData = try? JSONEncoder().encode(envelope),
-               let lineStr = String(data: envelopeData, encoding: .utf8) {
-                let lineToAppend = lineStr + "\n"
-                if FileManager.default.fileExists(atPath: eventsURL.path) {
-                    if let fileHandle = try? FileHandle(forWritingTo: eventsURL) {
-                        defer { try? fileHandle.close() }
-                        _ = try? fileHandle.seekToEnd()
-                        try? fileHandle.write(contentsOf: Data(lineToAppend.utf8))
-                    }
-                } else {
-                    try? Data(lineToAppend.utf8).write(to: eventsURL)
-                }
+            let envelopeData = try JSONEncoder().encode(envelope)
+            guard let lineStr = String(data: envelopeData, encoding: .utf8) else {
+                throw RuntimeError(category: .runtime, code: "eventEncodingFailed", message: "Failed to encode event to UTF-8", retryability: .none, source: .core)
             }
+            let lineToAppend = lineStr + "\n"
+            let lineData = Data(lineToAppend.utf8)
+
+            if FileManager.default.fileExists(atPath: eventsURL.path) {
+                let fileHandle = try FileHandle(forWritingTo: eventsURL)
+                defer { try? fileHandle.close() }
+                _ = try fileHandle.seekToEnd()
+                try fileHandle.write(contentsOf: lineData)
+                try fileHandle.synchronize()
+            } else {
+                try lineData.write(to: eventsURL, options: .atomic)
+            }
+
             let metaURL = sessionDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
-            }
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: nextSeq)
+            let metaData = try JSONEncoder().encode(meta)
+            try metaData.write(to: metaURL, options: .atomic)
+        }
+
+        // P0-C Invariant: 只有当物理磁盘真正落盘并持久化成功后，才推进内存状态！
+        sequence = nextSeq
+        events.append(envelope)
+        if events.count > maxRetainedEvents {
+            events.removeFirst(events.count - maxRetainedEvents)
         }
 
         for subscriber in subscribers.values {
@@ -170,24 +193,27 @@ public actor SessionEventLog {
     }
 
     public func truncateEvents(afterSequence targetSeq: UInt64) throws {
-        events.removeAll { $0.cursor.sequence > targetSeq }
-        sequence = targetSeq
+        let remainingEvents = events.filter { $0.cursor.sequence <= targetSeq }
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
             var newContent = ""
-            for env in events {
-                if let envData = try? JSONEncoder().encode(env),
-                   let s = String(data: envData, encoding: .utf8) {
+            for env in remainingEvents {
+                let envData = try JSONEncoder().encode(env)
+                if let s = String(data: envData, encoding: .utf8) {
                     newContent += s + "\n"
                 }
             }
             try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
             let metaURL = sessionDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: targetSeq)
             let data = try JSONEncoder().encode(meta)
             try data.write(to: metaURL, options: .atomic)
         }
+
+        // P0-C Invariant: 磁盘写入成功后才更新内存状态，绝不造成分裂
+        events = remainingEvents
+        sequence = targetSeq
     }
 
     public func resetToEvents(_ newEvents: [SessionEventEnvelope]) {
@@ -289,6 +315,7 @@ public actor RuntimeEventLog {
 
     public let generationID: EventLogGenerationID
     public private(set) var sequence: UInt64
+    public private(set) var isDegraded: Bool = false
     private var events: [RuntimeEventEnvelope]
     private var subscribers: [UUID: AsyncStream<RuntimeEventEnvelope>.Continuation]
     private let maxRetainedEvents: Int
@@ -298,7 +325,8 @@ public actor RuntimeEventLog {
         generationID: EventLogGenerationID? = nil,
         initialSequence: UInt64 = 0,
         maxRetainedEvents: Int = 5_000,
-        storageDirectory: URL? = nil
+        storageDirectory: URL? = nil,
+        isDegraded: Bool = false
     ) {
         self.maxRetainedEvents = maxRetainedEvents
         self.storageDirectory = storageDirectory
@@ -307,6 +335,7 @@ public actor RuntimeEventLog {
         var resolvedGen = generationID ?? EventLogGenerationID("gen-runtime-global")
         var resolvedSeq = initialSequence
         var loadedEvents: [RuntimeEventEnvelope] = []
+        var degradedState = isDegraded
 
         if let dir = storageDirectory {
             let runtimeDir = dir.appendingPathComponent("runtime", isDirectory: true)
@@ -338,11 +367,14 @@ public actor RuntimeEventLog {
                     }
                 }
 
-                // P0-B: 自动识别并截断 torn/partial tail，防止后续 append 粘在坏 tail 上导致永久污染
+                // P0-B & P0-C: 自动识别并截断 torn/partial tail，若截断失败显式进入 degraded 状态，杜绝向坏 tail 追加
                 if validByteOffset < UInt64(totalBytes) {
-                    if let fileHandle = try? FileHandle(forWritingTo: eventsURL) {
-                        try? fileHandle.truncate(atOffset: validByteOffset)
-                        try? fileHandle.close()
+                    do {
+                        let fileHandle = try FileHandle(forWritingTo: eventsURL)
+                        try fileHandle.truncate(atOffset: validByteOffset)
+                        try fileHandle.close()
+                    } catch {
+                        degradedState = true
                     }
                 }
             }
@@ -369,6 +401,7 @@ public actor RuntimeEventLog {
         self.generationID = resolvedGen
         self.sequence = resolvedSeq
         self.events = loadedEvents
+        self.isDegraded = degradedState
     }
 
     public func currentCursor() -> EventCursor {
@@ -384,36 +417,52 @@ public actor RuntimeEventLog {
     }
 
     @discardableResult
-    public func append(payload: RuntimeEventPayload) -> RuntimeEventEnvelope {
-        sequence += 1
-        let cursor = EventCursor(generationID: generationID, sequence: sequence)
-        let envelope = RuntimeEventEnvelope(cursor: cursor, timestamp: Date(), payload: payload)
-        events.append(envelope)
-        if events.count > maxRetainedEvents {
-            events.removeFirst(events.count - maxRetainedEvents)
+    public func append(payload: RuntimeEventPayload) throws -> RuntimeEventEnvelope {
+        if isDegraded {
+            throw RuntimeError(
+                category: .runtime,
+                code: "eventLogDegraded",
+                message: "RuntimeEventLog is in degraded state: torn tail recovery failed",
+                retryability: .none,
+                source: .core
+            )
         }
+
+        let nextSeq = sequence + 1
+        let cursor = EventCursor(generationID: generationID, sequence: nextSeq)
+        let envelope = RuntimeEventEnvelope(cursor: cursor, timestamp: Date(), payload: payload)
 
         if let dir = storageDirectory {
             let runtimeDir = dir.appendingPathComponent("runtime", isDirectory: true)
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
-            if let envelopeData = try? JSONEncoder().encode(envelope),
-               let lineStr = String(data: envelopeData, encoding: .utf8) {
-                let lineToAppend = lineStr + "\n"
-                if FileManager.default.fileExists(atPath: eventsURL.path) {
-                    if let fileHandle = try? FileHandle(forWritingTo: eventsURL) {
-                        defer { try? fileHandle.close() }
-                        _ = try? fileHandle.seekToEnd()
-                        try? fileHandle.write(contentsOf: Data(lineToAppend.utf8))
-                    }
-                } else {
-                    try? Data(lineToAppend.utf8).write(to: eventsURL)
-                }
+            let envelopeData = try JSONEncoder().encode(envelope)
+            guard let lineStr = String(data: envelopeData, encoding: .utf8) else {
+                throw RuntimeError(category: .runtime, code: "eventEncodingFailed", message: "Failed to encode event to UTF-8", retryability: .none, source: .core)
             }
+            let lineToAppend = lineStr + "\n"
+            let lineData = Data(lineToAppend.utf8)
+
+            if FileManager.default.fileExists(atPath: eventsURL.path) {
+                let fileHandle = try FileHandle(forWritingTo: eventsURL)
+                defer { try? fileHandle.close() }
+                _ = try fileHandle.seekToEnd()
+                try fileHandle.write(contentsOf: lineData)
+                try fileHandle.synchronize()
+            } else {
+                try lineData.write(to: eventsURL, options: .atomic)
+            }
+
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
-            }
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: nextSeq)
+            let metaData = try JSONEncoder().encode(meta)
+            try metaData.write(to: metaURL, options: .atomic)
+        }
+
+        // P0-C Invariant: 只有当物理磁盘真正落盘并持久化成功后，才推进内存状态！
+        sequence = nextSeq
+        events.append(envelope)
+        if events.count > maxRetainedEvents {
+            events.removeFirst(events.count - maxRetainedEvents)
         }
 
         for subscriber in subscribers.values {
@@ -446,24 +495,27 @@ public actor RuntimeEventLog {
     }
 
     public func truncateEvents(afterSequence targetSeq: UInt64) throws {
-        events.removeAll { $0.cursor.sequence > targetSeq }
-        sequence = targetSeq
+        let remainingEvents = events.filter { $0.cursor.sequence <= targetSeq }
         if let dir = storageDirectory {
             let runtimeDir = dir.appendingPathComponent("runtime", isDirectory: true)
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
             var newContent = ""
-            for env in events {
-                if let envData = try? JSONEncoder().encode(env),
-                   let s = String(data: envData, encoding: .utf8) {
+            for env in remainingEvents {
+                let envData = try JSONEncoder().encode(env)
+                if let s = String(data: envData, encoding: .utf8) {
                     newContent += s + "\n"
                 }
             }
             try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: targetSeq)
             let data = try JSONEncoder().encode(meta)
             try data.write(to: metaURL, options: .atomic)
         }
+
+        // P0-C Invariant: 磁盘成功后才更新内存
+        events = remainingEvents
+        sequence = targetSeq
     }
 
     public func subscribe(after: EventCursor?) -> AsyncStream<RuntimeEventEnvelope> {

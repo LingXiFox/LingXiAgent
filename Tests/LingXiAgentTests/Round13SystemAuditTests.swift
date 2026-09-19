@@ -101,7 +101,7 @@ struct Round13SystemAuditTests {
         let coord1 = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
         // Turn A active
-        let decA = await coord1.submitTurn(
+        let decA = try await coord1.submitTurn(
             input: UserInput(text: "Turn A"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Turn A", createdAt: Date())
@@ -110,7 +110,7 @@ struct Round13SystemAuditTests {
 
         // Turn B queued
         let msgIDB = MessageID()
-        let decB = await coord1.submitTurn(
+        let decB = try await coord1.submitTurn(
             input: UserInput(text: "Turn B"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: msgIDB, role: .user, text: "Turn B", createdAt: Date())
@@ -124,7 +124,7 @@ struct Round13SystemAuditTests {
         await coord2.restoreHistoricalQueue()
 
         // Submit new Turn C
-        let decC = await coord2.submitTurn(
+        let decC = try await coord2.submitTurn(
             input: UserInput(text: "Turn C"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Turn C", createdAt: Date())
@@ -150,7 +150,7 @@ struct Round13SystemAuditTests {
         let coord1 = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
         // Submit B as queued
-        let decB = await coord1.submitTurn(
+        let decB = try await coord1.submitTurn(
             input: UserInput(text: "Run B"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Run B", createdAt: Date())
@@ -159,7 +159,7 @@ struct Round13SystemAuditTests {
 
         // Simulate B actually started (e.g. executed tool/side-effect)
         let causal = CausalContext(sessionID: sessionID, turnID: decB.turn.turnID, runID: runIDB, rootRunID: runIDB)
-        await eventLog.append(causal: causal, payload: .runStarted(runID: runIDB))
+        try await eventLog.append(causal: causal, payload: .runStarted(runID: runIDB))
 
         // Crash before terminal event!
         // Now restart:
@@ -182,7 +182,7 @@ struct Round13SystemAuditTests {
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
         // Turn A active
-        let decA = await coord.submitTurn(
+        let decA = try await coord.submitTurn(
             input: UserInput(text: "Active A"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Active A", createdAt: Date())
@@ -190,7 +190,7 @@ struct Round13SystemAuditTests {
         let runIDA = try #require(decA.runID)
 
         // Turn B queued
-        let decB = await coord.submitTurn(
+        let decB = try await coord.submitTurn(
             input: UserInput(text: "Queued B"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Queued B", createdAt: Date())

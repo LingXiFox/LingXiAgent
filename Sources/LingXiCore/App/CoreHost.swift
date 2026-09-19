@@ -129,6 +129,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
         }
     }
+
+    private func getActiveTurnTask(runID: RunID) -> Task<Void, Never>? {
+        activeTurnTasks[runID]
+    }
+
+    package func hasActiveTurnTask(runID: RunID) -> Bool {
+        activeTurnTasks[runID] != nil
+    }
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
     package var workspaceRevisionRef: UInt64 { workspaceRevision }
     public var currentWorkspaceRevision: UInt64 { workspaceRevision }
@@ -2400,6 +2408,7 @@ extension CoreHost {
         await ProviderRateScheduler.shared.reset()
 
         var isTransactionCommitted = false
+        var initialSessionSeq: UInt64 = 0
         do {
             let session = try await sessionStore.create(
                 id: preallocatedSessionID,
@@ -2411,7 +2420,7 @@ extension CoreHost {
                 title: envelope.payload.workspace.flatMap { URL(fileURLWithPath: $0).lastPathComponent }
             )
             let coord = try await coordinator(for: session.id)
-            let initialSessionSeq = await coord.eventLog.currentSequence()
+            initialSessionSeq = await coord.eventLog.currentSequence()
 
             try await commandWAL.recordState(
                 commandID: envelope.commandID,
@@ -2442,7 +2451,7 @@ extension CoreHost {
                 mode: envelope.payload.defaultMode,
                 reasoningEffort: session.reasoningEffort
             )
-            await runtimeEventLog.append(payload: .sessionCreated(summary))
+            try await runtimeEventLog.append(payload: .sessionCreated(summary))
             try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
@@ -2451,7 +2460,7 @@ extension CoreHost {
             }
 
             if activeFailpoint == .afterEventAppendBeforeReceipt {
-                await runtimeEventLog.rollbackLastAppended()
+                try? await runtimeEventLog.truncateEvents(afterSequence: initialRuntimeSeq)
                 try? await sessionStore.deleteSession(session.id)
                 sessionCoordinators.removeValue(forKey: session.id)
                 throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
@@ -2488,11 +2497,16 @@ extension CoreHost {
 
             return receipt
         } catch {
-            // P0-A Commit Boundary Invariant:
+            // P0-A & P0-B Commit Boundary & Frontier Invariant:
             // 事务一旦成功 commit，后续 post-commit/delivery 故障绝不能反向删除已提交的 Session！
+            // 反之若 pre-commit 失败，必须将 Session 与 EventLog 彻底退回到 initial sequence，绝不残留 orphan 事件！
             if !isTransactionCommitted {
                 try? await sessionStore.deleteSession(preallocatedSessionID)
                 sessionCoordinators.removeValue(forKey: preallocatedSessionID)
+                try? await runtimeEventLog.truncateEvents(afterSequence: initialRuntimeSeq)
+                if let coord = try? await coordinator(for: preallocatedSessionID) {
+                    try? await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
+                }
             }
             throw error
         }
@@ -2516,7 +2530,7 @@ extension CoreHost {
             mode: .build,
             reasoningEffort: session.reasoningEffort
         )
-        await runtimeEventLog.append(payload: .sessionUpdated(summary))
+        _ = try? await runtimeEventLog.append(payload: .sessionUpdated(summary))
         let receipt = CommandReceipt<SessionSummary>(
             commandID: envelope.commandID,
             applied: true,
@@ -2549,7 +2563,7 @@ extension CoreHost {
             mode: .build,
             reasoningEffort: session.reasoningEffort
         )
-        await runtimeEventLog.append(payload: .sessionUpdated(summary))
+        _ = try? await runtimeEventLog.append(payload: .sessionUpdated(summary))
         let receipt = CommandReceipt<SessionSummary>(
             commandID: envelope.commandID,
             applied: true,
@@ -2573,7 +2587,7 @@ extension CoreHost {
         }
         try await sessionStore.deleteSession(envelope.payload.sessionID)
         sessionCoordinators.removeValue(forKey: envelope.payload.sessionID)
-        _ = await runtimeEventLog.append(payload: .sessionDeleted(envelope.payload.sessionID))
+        _ = try? await runtimeEventLog.append(payload: .sessionDeleted(envelope.payload.sessionID))
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
@@ -2595,6 +2609,33 @@ extension CoreHost {
         return try await sessionMutationLock.withExclusiveMutation(sessionID) {
             if let cached = try await checkIdempotency(envelope: envelope, commandName: "revertLastTurn", as: RevertLastTurnResult.self) {
                 return cached
+            }
+
+            // P0-D Invariant: 检查该 revert 命令在崩溃前是否已经完成了修改。
+            // 若已完成，直接返回已撤回结果，杜绝重试导致双重撤销（Double-Revert）！
+            if let stagedRevert = await commandWAL.lookupRevertedRecord(commandID: envelope.commandID, sessionID: sessionID.rawValue) {
+                let receipt = CommandReceipt<RevertLastTurnResult>(
+                    commandID: envelope.commandID,
+                    applied: true,
+                    revision: stagedRevert.revertedRevision ?? nextRevision(),
+                    observedThrough: [
+                        await runtimeEventLog.currentWatermark()
+                    ],
+                    result: RevertLastTurnResult(
+                        revertedPrompt: stagedRevert.revertedPrompt ?? "",
+                        removedCount: stagedRevert.removedMessageCount ?? 1,
+                        snapshot: nil,
+                        revision: stagedRevert.revertedRevision ?? currentRevision
+                    )
+                )
+                try? await commandWAL.commitTransaction(
+                    commandID: envelope.commandID,
+                    commandName: "revertLastTurn",
+                    payloadFingerprint: CommandStorageSecurity.fingerprint(envelope.payload),
+                    receipt: receipt
+                )
+                try? await recordIdempotency(envelope: envelope, commandName: "revertLastTurn", receipt: receipt)
+                return receipt
             }
 
             try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "revertLastTurn", sessionID: sessionID.rawValue)
@@ -2633,6 +2674,13 @@ extension CoreHost {
             }
 
             let (revertedPrompt, count) = try await sessionStore.revertLastTurn(sessionID, bumpRevision: false)
+            try? await commandWAL.recordRevertState(
+                commandID: envelope.commandID,
+                sessionID: sessionID,
+                revertedPrompt: revertedPrompt,
+                removedCount: count,
+                revision: newRevision
+            )
 
             let fresh = try? await sessionStore.session(sessionID)
             let remainingMessages = fresh?.messages ?? []
@@ -2847,6 +2895,26 @@ extension CoreHost {
         let sessionID = envelope.payload.sessionID
         return try await sessionMutationLock.withExclusiveMutation(sessionID) {
             if let cached = try await checkIdempotency(envelope: envelope, commandName: "submitTurn", as: SubmitTurnResult.self) {
+                // P0-A Invariant: If a committed turn is retrieved from idempotency cache and is still running,
+                // ensure its execution task is active, preventing orphaned phantom runs on retry!
+                if let turnResult = cached.result, turnResult.status == .running, let runID = turnResult.runID {
+                    let coord = try? await coordinator(for: sessionID)
+                    if let coord, await coord.activeRootRunID == runID {
+                        if getActiveTurnTask(runID: runID) == nil {
+                            let task = Task { [weak self, weak coord] () -> Void in
+                                await self?.executeTurnRun(
+                                    sessionID: sessionID,
+                                    turnID: turnResult.turnID,
+                                    runID: runID,
+                                    input: envelope.payload.input,
+                                    executionIntent: envelope.payload.executionIntent,
+                                    coordinator: coord
+                                )
+                            }
+                            registerActiveTurnTask(task, runID: runID, sessionID: sessionID)
+                        }
+                    }
+                }
                 return cached
             }
 
@@ -2876,7 +2944,7 @@ extension CoreHost {
                 attachments: envelope.payload.input.attachments,
                 createdAt: Date()
             )
-            let decision = await coord.submitTurn(
+            let decision = try await coord.submitTurn(
                 input: envelope.payload.input,
                 intent: envelope.payload.executionIntent,
                 userMessage: userSnapshot
@@ -2920,7 +2988,10 @@ extension CoreHost {
                 }
 
                 if activeFailpoint == .afterEventAppendBeforeReceipt {
-                    await coord.eventLog.rollbackLastAppended()
+                    try? await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
+                    if decision.shouldStartExecution {
+                        try? await sessionStore.removeMessage(sessionID, messageID: msgID)
+                    }
                     await coord.rollbackTurn(decision: decision)
                     throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
                 }
@@ -2942,17 +3013,8 @@ extension CoreHost {
                     receipt: receipt
                 )
                 isTransactionCommitted = true
-                try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
 
-                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
-                    fflush(stdout)
-                    kill(getpid(), SIGKILL)
-                }
-
-                if activeFailpoint == .afterCommitBeforeResponse {
-                    throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
-                }
-
+                // P0-A Invariant: Execution ownership MUST be established immediately once transaction commits!
                 if decision.shouldStartExecution, let runID = decision.runID {
                     let task = Task { [weak self, weak coord] () -> Void in
                         await self?.executeTurnRun(
@@ -2966,15 +3028,29 @@ extension CoreHost {
                     }
                     registerActiveTurnTask(task, runID: runID, sessionID: sessionID)
                 }
+
+                try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
+
+                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+                    fflush(stdout)
+                    kill(getpid(), SIGKILL)
+                }
+
+                if activeFailpoint == .afterCommitBeforeResponse {
+                    throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
+                }
+
                 return receipt
             } catch {
-                // P0-A Commit Boundary Invariant:
+                // P0-A & P0-B Commit Boundary & Frontier Invariant:
                 // 事务一旦成功 commit，后续 post-commit 故障绝不能反向删除已提交的 User Message 或回滚 Turn！
+                // 反之若 pre-commit 失败，必须将 SessionStore、Coordinator 与 EventLog 彻底退回到 initial sequence！
                 if !isTransactionCommitted {
                     if decision.shouldStartExecution {
                         try? await sessionStore.removeMessage(sessionID, messageID: msgID)
                     }
                     await coord.rollbackTurn(decision: decision)
+                    try? await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
                 }
                 throw error
             }
@@ -4283,7 +4359,7 @@ extension CoreHost {
     }
 
     public func notifyExtensionCatalogChanged() async {
-        _ = await runtimeEventLog.append(payload: .extensionCatalogChanged)
+        _ = try? await runtimeEventLog.append(payload: .extensionCatalogChanged)
     }
 
     public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {

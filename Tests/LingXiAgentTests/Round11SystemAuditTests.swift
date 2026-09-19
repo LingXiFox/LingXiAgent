@@ -15,7 +15,7 @@ struct Round11SystemAuditTests {
         // Submit first turn: starts running immediately
         let input1 = UserInput(text: "First prompt")
         let userMsg1 = MessageSnapshot(messageID: MessageID(), role: .user, text: input1.text, createdAt: Date())
-        let decision1 = await coordinator.submitTurn(input: input1, intent: TurnExecutionIntent(), userMessage: userMsg1)
+        let decision1 = try await coordinator.submitTurn(input: input1, intent: TurnExecutionIntent(), userMessage: userMsg1)
 
         #expect(decision1.status == TurnStatus.running)
         #expect(decision1.shouldStartExecution == true)
@@ -25,7 +25,7 @@ struct Round11SystemAuditTests {
         // Submit second turn: must be queued with a deterministic real runID
         let input2 = UserInput(text: "Second prompt")
         let userMsg2 = MessageSnapshot(messageID: MessageID(), role: .user, text: input2.text, createdAt: Date())
-        let decision2 = await coordinator.submitTurn(input: input2, intent: TurnExecutionIntent(), userMessage: userMsg2)
+        let decision2 = try await coordinator.submitTurn(input: input2, intent: TurnExecutionIntent(), userMessage: userMsg2)
 
         #expect(decision2.status == TurnStatus.queued)
         #expect(decision2.shouldStartExecution == false)
@@ -50,11 +50,11 @@ struct Round11SystemAuditTests {
         let coordinator = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
 
         let userMsgA = MessageSnapshot(messageID: MessageID(), role: .user, text: "Run A", createdAt: Date())
-        let decisionA = await coordinator.submitTurn(input: UserInput(text: "Run A"), intent: TurnExecutionIntent(), userMessage: userMsgA)
+        let decisionA = try await coordinator.submitTurn(input: UserInput(text: "Run A"), intent: TurnExecutionIntent(), userMessage: userMsgA)
         let runIDA = try #require(decisionA.runID)
 
         let userMsgB = MessageSnapshot(messageID: MessageID(), role: .user, text: "Run B", createdAt: Date())
-        let decisionB = await coordinator.submitTurn(input: UserInput(text: "Run B"), intent: TurnExecutionIntent(), userMessage: userMsgB)
+        let decisionB = try await coordinator.submitTurn(input: UserInput(text: "Run B"), intent: TurnExecutionIntent(), userMessage: userMsgB)
         let turnIDB = decisionB.turn.turnID
 
         #expect(await coordinator.activeRootRunID == runIDA)

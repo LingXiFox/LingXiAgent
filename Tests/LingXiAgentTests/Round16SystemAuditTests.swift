@@ -270,9 +270,9 @@ struct Round16SystemAuditTests {
             completedAt: nil,
             terminalReason: nil
         )
-        await eventLog.append(causal: causal, payload: .turnCreated(turnSnap))
-        await eventLog.append(causal: causal, payload: .runCreated(runSnap))
-        await eventLog.append(causal: causal, payload: .runStarted(runID: runID))
+        try await eventLog.append(causal: causal, payload: .turnCreated(turnSnap))
+        try await eventLog.append(causal: causal, payload: .runCreated(runSnap))
+        try await eventLog.append(causal: causal, payload: .runStarted(runID: runID))
 
         // Replay/Restore in SessionTurnCoordinator
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)

@@ -97,8 +97,8 @@ public actor SessionTurnCoordinator {
 
                 if !hasExistingEvents {
                     let turnCausal = CausalContext(sessionID: sessionID, turnID: tID)
-                    await eventLog.append(causal: turnCausal, payload: .turnCreated(turnSnap))
-                    await eventLog.append(causal: turnCausal, payload: .userMessageCommitted(snap))
+                    _ = try? await eventLog.append(causal: turnCausal, payload: .turnCreated(turnSnap))
+                    _ = try? await eventLog.append(causal: turnCausal, payload: .userMessageCommitted(snap))
                 }
 
             case .assistant:
@@ -118,7 +118,7 @@ public actor SessionTurnCoordinator {
                         )
                         toolInvocations[tc.callID] = invocation
                         if !hasExistingEvents {
-                            await eventLog.append(causal: causal, payload: .toolRequested(invocation))
+                            _ = try? await eventLog.append(causal: causal, payload: .toolRequested(invocation))
                             if let res = toolResultsByCallID[tc.callID] {
                                 let summaryText = res.summary.isEmpty ? (res.content.count > 100 ? String(res.content.prefix(100)) + "..." : res.content) : res.summary
                                 let resSnap = ToolResultSnapshot(
@@ -127,14 +127,14 @@ public actor SessionTurnCoordinator {
                                     success: res.success,
                                     summary: summaryText
                                 )
-                                await eventLog.append(causal: causal, payload: .toolCompleted(
+                                _ = try? await eventLog.append(causal: causal, payload: .toolCompleted(
                                     callID: res.callID,
                                     result: resSnap,
                                     stdoutFinalIndex: nil,
                                     stderrFinalIndex: nil
                                 ))
                             } else {
-                                await eventLog.append(causal: causal, payload: .toolCancelled(
+                                _ = try? await eventLog.append(causal: causal, payload: .toolCancelled(
                                     callID: tc.callID,
                                     stdoutFinalIndex: nil,
                                     stderrFinalIndex: nil
@@ -148,14 +148,14 @@ public actor SessionTurnCoordinator {
                 }
                 if !hasExistingEvents {
                     if !textContent.isEmpty || !msg.parts.isEmpty {
-                        await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
+                        _ = try? await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
                             messageID: msg.id,
                             content: textContent,
                             assistantFinalIndex: 0
                         ))
                     }
                     if let tID = currentTurnID {
-                        await eventLog.append(causal: causal, payload: .turnCompleted(turnID: tID, terminalReason: .completed))
+                        _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: tID, terminalReason: .completed))
                     }
                 }
 
@@ -170,7 +170,7 @@ public actor SessionTurnCoordinator {
                             summary: summaryText
                         )
                         if !hasExistingEvents {
-                            await eventLog.append(causal: causal, payload: .toolCompleted(
+                            _ = try? await eventLog.append(causal: causal, payload: .toolCompleted(
                                 callID: res.callID,
                                 result: resSnap,
                                 stdoutFinalIndex: nil,
@@ -344,8 +344,8 @@ public actor SessionTurnCoordinator {
                 // Persist terminal events to ensure deterministic replay semantics
                 let causal = CausalContext(sessionID: sessionID, turnID: existing.turnID, runID: runID, rootRunID: existing.rootRunID)
                 let runtimeErr = RuntimeError(category: .runtime, code: "interruptedBySystemCrash", message: "Run interrupted by system crash", retryability: .afterDelay, source: .core)
-                await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: runtimeErr))
-                await eventLog.append(causal: causal, payload: .turnFailed(turnID: existing.turnID, error: runtimeErr))
+                _ = try? await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: runtimeErr))
+                _ = try? await eventLog.append(causal: causal, payload: .turnFailed(turnID: existing.turnID, error: runtimeErr))
             }
         }
 
@@ -384,17 +384,11 @@ public actor SessionTurnCoordinator {
         input: UserInput,
         intent: TurnExecutionIntent,
         userMessage: MessageSnapshot
-    ) async -> SubmitTurnDecision {
+    ) async throws -> SubmitTurnDecision {
         let turnID = TurnID()
         let causal = CausalContext(sessionID: sessionID, turnID: turnID)
 
-        // 1. Commit user message and turn created events
-        await eventLog.append(causal: causal, payload: .turnCreated(
-            TurnSnapshot(turnID: turnID, sessionID: sessionID, userMessage: userMessage, executionIntent: intent, status: .queued)
-        ))
-        await eventLog.append(causal: causal, payload: .userMessageCommitted(userMessage))
-
-        // 2. Check Root Run concurrency & Queue FIFO (max 1 active Root Run; never bypass queued turns)
+        // 1. Check Root Run concurrency & Queue FIFO (max 1 active Root Run; never bypass queued turns)
         if activeRootRunID != nil || !queuedTurns.isEmpty {
             let queuedRunID = RunID()
             let queuedTurn = TurnSnapshot(
@@ -415,16 +409,25 @@ public actor SessionTurnCoordinator {
                 model: intent.modelSelection ?? "default",
                 createdAt: Date()
             )
+            let queuedCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queuedRunID, rootRunID: queuedRunID)
+
+            do {
+                try await eventLog.append(causal: causal, payload: .turnCreated(
+                    TurnSnapshot(turnID: turnID, sessionID: sessionID, userMessage: userMessage, executionIntent: intent, status: .queued)
+                ))
+                try await eventLog.append(causal: causal, payload: .userMessageCommitted(userMessage))
+                try await eventLog.append(causal: queuedCausal, payload: .runCreated(queuedRun))
+                try await eventLog.append(causal: causal, payload: .runQueued(runID: queuedRunID))
+            } catch {
+                throw error
+            }
+
             runs[queuedRunID] = queuedRun
             queuedTurns.append(queuedTurn)
             turns[turnID] = queuedTurn
-            let queuedCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queuedRunID, rootRunID: queuedRunID)
-            await eventLog.append(causal: queuedCausal, payload: .runCreated(queuedRun))
-            await eventLog.append(causal: causal, payload: .runQueued(runID: queuedRunID))
             return SubmitTurnDecision(turn: queuedTurn, status: .queued, runID: queuedRunID, shouldStartExecution: false)
         } else {
             let runID = RunID()
-            activeRootRunID = runID
             let run = RunSnapshot(
                 runID: runID,
                 sessionID: sessionID,
@@ -434,7 +437,6 @@ public actor SessionTurnCoordinator {
                 model: intent.modelSelection ?? "default",
                 createdAt: Date()
             )
-            runs[runID] = run
 
             let runningTurn = TurnSnapshot(
                 turnID: turnID,
@@ -445,11 +447,23 @@ public actor SessionTurnCoordinator {
                 rootRunID: runID,
                 createdAt: Date()
             )
-            turns[turnID] = runningTurn
 
             let runCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: runID, rootRunID: runID)
-            await eventLog.append(causal: runCausal, payload: .runCreated(run))
-            await eventLog.append(causal: runCausal, payload: .runStarted(runID: runID))
+
+            do {
+                try await eventLog.append(causal: causal, payload: .turnCreated(
+                    TurnSnapshot(turnID: turnID, sessionID: sessionID, userMessage: userMessage, executionIntent: intent, status: .queued)
+                ))
+                try await eventLog.append(causal: causal, payload: .userMessageCommitted(userMessage))
+                try await eventLog.append(causal: runCausal, payload: .runCreated(run))
+                try await eventLog.append(causal: runCausal, payload: .runStarted(runID: runID))
+            } catch {
+                throw error
+            }
+
+            activeRootRunID = runID
+            runs[runID] = run
+            turns[turnID] = runningTurn
 
             return SubmitTurnDecision(turn: runningTurn, status: .running, runID: runID, shouldStartExecution: true)
         }
@@ -489,9 +503,9 @@ public actor SessionTurnCoordinator {
         turns[turnID] = cancelledTurn
         let causal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queued.rootRunID, rootRunID: queued.rootRunID)
         if let runID = queued.rootRunID {
-            await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
+            _ = try? await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
         }
-        await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
+        _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
     }
 
     public func rollbackTurn(decision: SubmitTurnDecision) async {
@@ -559,14 +573,14 @@ public actor SessionTurnCoordinator {
         }
 
         if terminalStatus == .cancelled {
-            await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "userCancelled"))
-            await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
+            _ = try? await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "userCancelled"))
+            _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
         } else if let error {
-            await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: error))
-            await eventLog.append(causal: causal, payload: .turnFailed(turnID: turnID, error: error))
+            _ = try? await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: error))
+            _ = try? await eventLog.append(causal: causal, payload: .turnFailed(turnID: turnID, error: error))
         } else {
-            await eventLog.append(causal: causal, payload: .runCompleted(runID: runID, terminalReason: reason))
-            await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: reason))
+            _ = try? await eventLog.append(causal: causal, payload: .runCompleted(runID: runID, terminalReason: reason))
+            _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: reason))
         }
 
         let wasActiveRoot = (activeRootRunID == runID)
@@ -619,8 +633,8 @@ public actor SessionTurnCoordinator {
                     completedAt: Date()
                 )
             }
-            await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: reason ?? "userCancelled"))
-            await eventLog.append(causal: causal, payload: .turnCompleted(turnID: run.turnID, terminalReason: .userCancelled))
+            _ = try? await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: reason ?? "userCancelled"))
+            _ = try? await eventLog.append(causal: causal, payload: .turnCompleted(turnID: run.turnID, terminalReason: .userCancelled))
             return nil
         }
 
@@ -661,9 +675,9 @@ public actor SessionTurnCoordinator {
             let nextCausal = CausalContext(sessionID: sessionID, turnID: next.turnID, runID: nextRunID, rootRunID: nextRunID)
             // Invariant: If this Run was already created during queueing, NEVER emit duplicate .runCreated!
             if existingRun == nil {
-                await eventLog.append(causal: nextCausal, payload: .runCreated(nextRun))
+                _ = try? await eventLog.append(causal: nextCausal, payload: .runCreated(nextRun))
             }
-            await eventLog.append(causal: nextCausal, payload: .runStarted(runID: nextRunID))
+            _ = try? await eventLog.append(causal: nextCausal, payload: .runStarted(runID: nextRunID))
 
             return NextTurnToRun(turn: runningTurn, runID: nextRunID)
         }
@@ -687,7 +701,7 @@ public actor SessionTurnCoordinator {
         let causal = CausalContext(sessionID: sessionID, turnID: run?.turnID, runID: runID, rootRunID: run?.rootRunID, modelStepID: stepID)
 
         // Assistant streaming 在首 frame 前必须已有稳定 MessageID
-        await eventLog.append(causal: causal, payload: .assistantMessageStarted(messageID: messageID, assistantStreamID: streamID))
+        _ = try? await eventLog.append(causal: causal, payload: .assistantMessageStarted(messageID: messageID, assistantStreamID: streamID))
         return (messageID, streamID)
     }
 
@@ -714,7 +728,7 @@ public actor SessionTurnCoordinator {
         if let streamID {
             closeStream(streamID: streamID, finalIndex: finalIndex)
         }
-        await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
+        _ = try? await eventLog.append(causal: causal, payload: .assistantMessageCommitted(
             messageID: messageID,
             content: content,
             assistantFinalIndex: finalIndex
@@ -747,12 +761,12 @@ public actor SessionTurnCoordinator {
         )
         modelSteps[stepID] = snapshot
 
-        await eventLog.append(causal: causal, payload: .modelStepStarted(
+        _ = try? await eventLog.append(causal: causal, payload: .modelStepStarted(
             stepID: stepID,
             visibleReasoningStreamID: reasoningStreamID,
             assistantStreamID: assistantStreamID
         ))
-        await eventLog.append(causal: causal, payload: .assistantMessageStarted(messageID: messageID, assistantStreamID: assistantStreamID))
+        _ = try? await eventLog.append(causal: causal, payload: .assistantMessageStarted(messageID: messageID, assistantStreamID: assistantStreamID))
         return (messageID, reasoningStreamID, assistantStreamID)
     }
 
@@ -777,7 +791,7 @@ public actor SessionTurnCoordinator {
                 completedAt: Date()
             )
         }
-        await eventLog.append(causal: causal, payload: .modelStepCompleted(
+        _ = try? await eventLog.append(causal: causal, payload: .modelStepCompleted(
             stepID: stepID,
             visibleReasoningFinalIndex: finalIndex,
             outputMetadata: outputMetadata
@@ -790,7 +804,7 @@ public actor SessionTurnCoordinator {
 
     public func recordToolRequested(snapshot: ToolInvocationSnapshot, causal: CausalContext) async {
         toolInvocations[snapshot.callID] = snapshot
-        await eventLog.append(causal: causal, payload: .toolRequested(snapshot))
+        _ = try? await eventLog.append(causal: causal, payload: .toolRequested(snapshot))
     }
 
     public func recordToolScheduled(callID: ToolCallID, causal: CausalContext) async {
@@ -807,7 +821,7 @@ public actor SessionTurnCoordinator {
                 error: inv.error
             )
         }
-        await eventLog.append(causal: causal, payload: .toolScheduled(callID: callID))
+        _ = try? await eventLog.append(causal: causal, payload: .toolScheduled(callID: callID))
     }
 
     public func recordToolWaitingForPermission(callID: ToolCallID, permissionID: PermissionID, causal: CausalContext) async {
@@ -824,7 +838,7 @@ public actor SessionTurnCoordinator {
                 error: inv.error
             )
         }
-        await eventLog.append(causal: causal, payload: .toolWaitingForPermission(callID: callID, permissionID: permissionID))
+        _ = try? await eventLog.append(causal: causal, payload: .toolWaitingForPermission(callID: callID, permissionID: permissionID))
     }
 
     public func recordToolRunning(callID: ToolCallID, stdoutStreamID: StreamID?, stderrStreamID: StreamID?, causal: CausalContext) async {
@@ -844,7 +858,7 @@ public actor SessionTurnCoordinator {
                 error: inv.error
             )
         }
-        await eventLog.append(causal: causal, payload: .toolRunning(callID: callID, stdoutStreamID: stdoutStreamID, stderrStreamID: stderrStreamID))
+        _ = try? await eventLog.append(causal: causal, payload: .toolRunning(callID: callID, stdoutStreamID: stdoutStreamID, stderrStreamID: stderrStreamID))
     }
 
     public func recordToolCompleted(
@@ -875,7 +889,7 @@ public actor SessionTurnCoordinator {
                 error: result.error
             )
         }
-        await eventLog.append(causal: causal, payload: .toolCompleted(
+        _ = try? await eventLog.append(causal: causal, payload: .toolCompleted(
             callID: callID,
             result: result,
             stdoutFinalIndex: stdoutFinalIndex,
@@ -890,7 +904,7 @@ public actor SessionTurnCoordinator {
         statusCode: Int? = nil,
         causal: CausalContext
     ) async {
-        await eventLog.append(causal: causal, payload: .providerRequestStateChanged(
+        _ = try? await eventLog.append(causal: causal, payload: .providerRequestStateChanged(
             requestID: requestID,
             state: state,
             detail: detail,
@@ -899,14 +913,14 @@ public actor SessionTurnCoordinator {
     }
 
     public func recordContextStateChanged(_ snapshot: ContextStateSnapshot, causal: CausalContext) async {
-        await eventLog.append(causal: causal, payload: .contextStateChanged(snapshot))
+        _ = try? await eventLog.append(causal: causal, payload: .contextStateChanged(snapshot))
     }
 
     // MARK: - Interactions
 
     public func recordInteractionRequested(snapshot: InteractionSnapshot) async {
         interactions[snapshot.interactionID] = snapshot
-        await eventLog.append(causal: snapshot.causal, payload: .interactionRequested(snapshot))
+        _ = try? await eventLog.append(causal: snapshot.causal, payload: .interactionRequested(snapshot))
     }
 
     public func resolveInteraction(interactionID: InteractionID, resolution: InteractionResolution) async throws {
@@ -914,7 +928,7 @@ public actor SessionTurnCoordinator {
             throw RuntimeError(category: .permission, code: "interactionNotFound", message: "Interaction \(interactionID.rawValue) 不存在", retryability: .none, source: .client)
         }
         interactions.removeValue(forKey: interactionID)
-        await eventLog.append(causal: interaction.causal, payload: .interactionResolved(interactionID: interactionID, resolution: resolution))
+        _ = try? await eventLog.append(causal: interaction.causal, payload: .interactionResolved(interactionID: interactionID, resolution: resolution))
     }
 
     public func listPendingInteractions() -> [InteractionSnapshot] {
