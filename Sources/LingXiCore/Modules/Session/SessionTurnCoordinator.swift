@@ -433,7 +433,7 @@ public actor SessionTurnCoordinator {
             runs[queuedRunID] = queuedRun
             queuedTurns.append(queuedTurn)
             turns[turnID] = queuedTurn
-            return SubmitTurnDecision(turn: queuedTurn, status: .queued, runID: queuedRunID, shouldStartExecution: false)
+            return SubmitTurnDecision(turn: queuedTurn, status: .queued, runID: nil, shouldStartExecution: false)
         } else {
             let runID = RunID()
             let run = RunSnapshot(
