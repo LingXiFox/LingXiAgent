@@ -1,7 +1,18 @@
 import Foundation
-import os
 import LingXiProtocol
 @testable import LingXiClient
+
+/// 跨平台 Sendable 状态锁封装，替代 Apple 专有的 OSAllocatedUnfairLock
+private final class LockedState<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+    init(_ initial: T) { self.value = initial }
+    func withLock<R>(_ body: (inout T) throws -> R) rethrows -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
+    }
+}
 
 /// FaultInjectingTransport：用于验收测试的可控故障注入传输层。
 /// 支持网络强制断开、StreamFrame 丢帧、StreamFrame 重放失效、EventLog ReplayUnavailable 以及 Generation Mismatch 故障注入。
@@ -19,7 +30,7 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
 
     private let underlying: any LingXiProtocolService
     public let authorizationContext: ContentAuthorizationContext
-    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let state = LockedState(State())
 
     public init(
         service: any LingXiProtocolService,

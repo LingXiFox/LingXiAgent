@@ -1,6 +1,10 @@
 import Foundation
 import Testing
+#if canImport(CSQLite)
+import CSQLite
+#else
 import SQLite3
+#endif
 @testable import LingXiCore
 @testable import LingXiApplication
 @testable import LingXiProtocol

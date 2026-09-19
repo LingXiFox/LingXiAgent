@@ -2648,7 +2648,8 @@ extension CoreHost {
 
             // P0-D Invariant: 检查该 revert 命令在崩溃前是否已经存在 WAL 记录。
             // 无论崩溃在文件回滚、sessionStore 回滚、或收敛期间，重试时均收敛为恰好一次逻辑撤销（Zero Double-Revert）！
-            if let stagedRevert = await commandWAL.lookupRevertedRecord(commandID: envelope.commandID, sessionID: sessionID.rawValue) {
+            let stagedRevert = await commandWAL.lookupRevertedRecord(commandID: envelope.commandID, sessionID: sessionID.rawValue)
+            if let stagedRevert {
                 let fresh = try? await sessionStore.session(sessionID)
                 let remainingMessages = fresh?.messages ?? []
                 let targetMsgID = stagedRevert.stagedUserMessageID.flatMap { MessageID($0) }
@@ -2737,31 +2738,50 @@ extension CoreHost {
                 }
             }
 
-            // 新事务或之前的崩溃发生在真正删除 SessionStore 消息之前：先分析撤回目标并在破坏性操作前建立 WAL 预备 Checkpoint
+            // 新事务或之前的崩溃发生在真正删除 SessionStore 消息之前：先分析撤回目标并在破坏性操作前建立/恢复 WAL 预备 Checkpoint
             let preSession = try await sessionStore.session(sessionID)
             let lastUserIdx = preSession.messages.lastIndex(where: { $0.role == .user })
             let targetUserMsg = lastUserIdx.map { preSession.messages[$0] }
-            let plannedPrompt = targetUserMsg?.content
-            let plannedCount = lastUserIdx.map { preSession.messages.count - $0 } ?? 0
-            let plannedRevision = preSession.revision + 1
 
-            try await commandWAL.beginTransaction(
-                commandID: envelope.commandID,
-                commandName: "revertLastTurn",
-                sessionID: sessionID.rawValue,
-                stagedUserMessageID: targetUserMsg?.id.rawValue
-            )
-            try await commandWAL.recordRevertPlan(
-                commandID: envelope.commandID,
-                sessionID: sessionID,
-                targetUserMessageID: targetUserMsg?.id,
-                revertedPrompt: plannedPrompt,
-                removedCount: plannedCount,
-                revision: plannedRevision
-            )
+            // P0-D Exactly-Once Revision Invariant:
+            // 检查是否存在崩溃前已记录的 WAL 规划（stagedRevert）。若存在，必须严格沿用已有 plannedRevision，严禁重复递增！
+            let plannedPrompt: String?
+            let plannedCount: Int
+            let targetRevision: UInt64
+
+            if let stagedRevert {
+                plannedPrompt = stagedRevert.revertedPrompt ?? targetUserMsg?.content
+                plannedCount = stagedRevert.removedMessageCount ?? (lastUserIdx.map { preSession.messages.count - $0 } ?? 0)
+                targetRevision = stagedRevert.revertedRevision ?? (preSession.revision + 1)
+            } else {
+                plannedPrompt = targetUserMsg?.content
+                plannedCount = lastUserIdx.map { preSession.messages.count - $0 } ?? 0
+                targetRevision = preSession.revision + 1
+
+                try await commandWAL.beginTransaction(
+                    commandID: envelope.commandID,
+                    commandName: "revertLastTurn",
+                    sessionID: sessionID.rawValue,
+                    stagedUserMessageID: targetUserMsg?.id.rawValue
+                )
+                try await commandWAL.recordRevertPlan(
+                    commandID: envelope.commandID,
+                    sessionID: sessionID,
+                    targetUserMessageID: targetUserMsg?.id,
+                    revertedPrompt: plannedPrompt,
+                    removedCount: plannedCount,
+                    revision: targetRevision
+                )
+            }
 
             let oldRevision = preSession.revision
-            let newRevision = try await sessionStore.bumpRevision(sessionID)
+            let newRevision: UInt64
+            if preSession.revision < targetRevision {
+                newRevision = try await sessionStore.bumpRevision(sessionID)
+            } else {
+                // 在崩溃前已成功 bump 过 revision，重试时直接复用已生效的目标 revision，绝不进行二次递增（Exactly-Once Revision）！
+                newRevision = targetRevision
+            }
             FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.begin sessionID=\(sessionID.rawValue) oldRevision=\(oldRevision) newRevision=\(newRevision)\n".utf8))
 
             cancelActiveTurnTasks(for: sessionID)

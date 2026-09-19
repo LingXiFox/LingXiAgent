@@ -99,6 +99,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Set up Swift
         uses: compnerd/gha-setup-swift@v0.2.3
         with:
@@ -106,14 +111,13 @@ jobs:
           tag: 6.0-RELEASE
 
       - name: Provision SQLite Native Dependencies
-        shell: bash
+        shell: cmd
         run: |
           vcpkg install sqlite3:x64-windows
           vcpkg integrate install
-          VCPKG_ROOT="${VCPKG_INSTALLATION_ROOT:-C:/vcpkg}"
-          echo "INCLUDE=$VCPKG_ROOT/installed/x64-windows/include;$INCLUDE" >> $GITHUB_ENV
-          echo "LIB=$VCPKG_ROOT/installed/x64-windows/lib;$LIB" >> $GITHUB_ENV
-          echo "PATH=$VCPKG_ROOT/installed/x64-windows/bin:$PATH" >> $GITHUB_ENV
+          echo INCLUDE=C:\vcpkg\installed\x64-windows\include;%INCLUDE%>> %GITHUB_ENV%
+          echo LIB=C:\vcpkg\installed\x64-windows\lib;%LIB%>> %GITHUB_ENV%
+          echo PATH=C:\vcpkg\installed\x64-windows\bin;%PATH%>> %GITHUB_ENV%
 
       - name: Build Release Binaries
         shell: bash

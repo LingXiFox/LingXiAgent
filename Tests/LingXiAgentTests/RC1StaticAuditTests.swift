@@ -386,8 +386,18 @@ struct RC1StaticAuditTests {
             let currentContent = try String(contentsOf: fileURL, encoding: .utf8)
             #expect(currentContent == "original state before turn")
 
+            // 先将 Session 推进到 Revision 10（模拟已有历史交互的真实 Session at Revision N）
+            while (try await host.sessionStore.session(sessionID)).revision < 10 {
+                _ = try await host.sessionStore.bumpRevision(sessionID)
+            }
+            let sessionBefore = try await host.sessionStore.session(sessionID)
+            let baseRevision = sessionBefore.revision
+            #expect(baseRevision == 10)
+            let targetRevision = baseRevision + 1 // 11 (N+1)
+
             // 2. Simulate CRASH before SessionStore.revertLastTurn:
-            // WAL has recorded revertPlan, but target user message is still in SessionStore!
+            // 真实生产流程中：先写入 revertPlan，然后执行了 bumpRevision 将 session revision 由 10 提升到 11 (N+1)，
+            // 接着执行了文件回滚并写入 recordFilesReverted，随后系统发生崩溃 CRASH！
             let revertCmdID = CommandID("cmd-file-crash-retry-test")
             try await host.commandWAL.recordRevertPlan(
                 commandID: revertCmdID,
@@ -395,28 +405,36 @@ struct RC1StaticAuditTests {
                 targetUserMessageID: userMsg2.id,
                 revertedPrompt: "Modify File Turn",
                 removedCount: 1,
-                revision: 3
+                revision: targetRevision
+            )
+            let bumpedRevision = try await host.sessionStore.bumpRevision(sessionID)
+            #expect(bumpedRevision == targetRevision)
+            try await host.commandWAL.recordFilesReverted(
+                commandID: revertCmdID,
+                sessionID: sessionID
             )
 
             // 3. Retry same commandID:
             // CoreHost re-runs revertLastTurn, which calls FileRollbackEngine.rollbackMutations again!
-            // Without our idempotency fix, this would fail with fileRollbackConflict!
+            // Without our idempotency and exactly-once revision fixes, this would fail with conflict or bump revision to 12!
             let retryReceipt = try await host.revertLastTurn(envelope: CommandEnvelope(
                 commandID: revertCmdID,
                 payload: RevertLastTurnRequest(sessionID: sessionID)
             ))
             #expect(retryReceipt.applied == true)
             #expect(retryReceipt.result?.revertedPrompt == "Modify File Turn")
+            #expect(retryReceipt.revision == targetRevision, "Receipt revision MUST be \(targetRevision) (N+1), NOT \(targetRevision + 1) (N+2)!")
 
-            // 4. Verify file content remains original state
-            let finalContent = try String(contentsOf: fileURL, encoding: .utf8)
-            #expect(finalContent == "original state before turn")
-
-            // 5. Verify exactly one logical turn was removed
+            // 4. Verify session revision in store is strictly targetRevision (11), NOT 12!
             let sessionAfter = try await host.sessionStore.session(sessionID)
+            #expect(sessionAfter.revision == targetRevision, "Session revision MUST be \(targetRevision) (N+1), NOT \(targetRevision + 1) (N+2)!")
             let remainingMsgs = sessionAfter.messages.filter { $0.role == .user }
             #expect(remainingMsgs.count == 1)
             #expect(remainingMsgs.first?.content == "Initial Turn")
+
+            // 5. Verify file content remains original state
+            let finalContent = try String(contentsOf: fileURL, encoding: .utf8)
+            #expect(finalContent == "original state before turn")
         }
     }
 
