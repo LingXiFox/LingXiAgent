@@ -1,4 +1,12 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WinSDK)
+import WinSDK
+#endif
 import Foundation
 @testable import LingXiCore
 
@@ -18,7 +26,9 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
         var reuse: Int32 = 1
         guard setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw POSIXError(.EINVAL) }
         var address = sockaddr_in()
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = 0
         address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
@@ -38,8 +48,8 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
     func stop() {
         lock.lock(); let shouldClose = running; running = false; lock.unlock()
         guard shouldClose else { return }
-        Darwin.shutdown(listener, SHUT_RDWR)
-        Darwin.close(listener)
+        _ = shutdown(listener, SHUT_RDWR)
+        _ = close(listener)
         acceptTask?.cancel()
     }
 
@@ -55,7 +65,7 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
     private var active: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
     private func handle(_ client: Int32) {
-        defer { Darwin.close(client) }
+        defer { _ = close(client) }
         guard readHeaders(client) != nil else { return }
         lock.lock(); requestCount += 1; let count = requestCount; lock.unlock()
         let body = count == 1 ? Self.spawnEvents : Self.textEvents
