@@ -31,7 +31,7 @@ private actor InFlightMutationLock {
 
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
-    public static let coreVersion = "0.2.0-alpha.1"
+    public static let coreVersion = "1.0.0-rc1"
     public static let protocolVersion = "1"
 
     public static func stdioInteractive(environment: [String: String]) -> Bool {
@@ -1935,6 +1935,41 @@ extension CoreHost {
         registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
     }
 
+    private func terminalizeRun(
+        runID: RunID,
+        reason: TerminalReason,
+        error: RuntimeError? = nil,
+        coordinator: SessionTurnCoordinator,
+        sessionID: SessionID
+    ) async -> SessionTurnCoordinator.NextTurnToRun? {
+        var retries = 3
+        var backoffMs: UInt64 = 50
+        while true {
+            do {
+                let next = try await coordinator.finishRun(runID: runID, reason: reason, error: error)
+                return next
+            } catch {
+                retries -= 1
+                if retries > 0 {
+                    FileHandle.standardError.write(Data("[CORE_HOST] finishRun failed, retrying in \(backoffMs)ms (retriesLeft=\(retries)): \(error)\n".utf8))
+                    try? await Task.sleep(nanoseconds: backoffMs * 1_000_000)
+                    backoffMs *= 2
+                } else {
+                    FileHandle.standardError.write(Data("[CORE_HOST] CRITICAL: finishRun failed after retries, entering degraded state to prevent phantom active root! error=\(error)\n".utf8))
+                    let fatalRuntimeError = (error as? RuntimeError) ?? RuntimeError(
+                        category: .runtime,
+                        code: "terminalDurabilityFailed",
+                        message: "Physical storage failed to commit terminal state for run \(runID.rawValue): \(error)",
+                        retryability: .none,
+                        source: .core
+                    )
+                    _ = await coordinator.markTerminalDegraded(runID: runID, reason: reason, error: fatalRuntimeError)
+                    return nil
+                }
+            }
+        }
+    }
+
     private func executeTurnRun(
         sessionID: SessionID,
         turnID: TurnID,
@@ -1946,7 +1981,7 @@ extension CoreHost {
         guard let coordinator else { return }
         defer { unregisterActiveTurnTask(runID: runID, sessionID: sessionID) }
         if Task.isCancelled {
-            let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            let next = await terminalizeRun(runID: runID, reason: .userCancelled, coordinator: coordinator, sessionID: sessionID)
             dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
             return
         }
@@ -1964,7 +1999,7 @@ extension CoreHost {
                 }
             } catch {
                 let runtimeErr = RuntimeError(category: .runtime, code: "persistUserMessageFailed", message: "Failed to persist user message: \(error)", retryability: .none, source: .core)
-                let next = try? await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+                let next = await terminalizeRun(runID: runID, reason: .runtimeFailure, error: runtimeErr, coordinator: coordinator, sessionID: sessionID)
                 dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
@@ -1997,7 +2032,7 @@ extension CoreHost {
             } else {
                 runtimeErr = RuntimeError(category: .runtime, code: "noProviderConfigured", message: "未配置可用模型 Provider，请检查 providers.json 或运行 lingxiagent auth", retryability: .none, source: .core)
             }
-            let next = try? await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+            let next = await terminalizeRun(runID: runID, reason: .runtimeFailure, error: runtimeErr, coordinator: coordinator, sessionID: sessionID)
             dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
             return
         }
@@ -2079,7 +2114,7 @@ extension CoreHost {
                             metadata: computeMetadata("cancelled")
                         )
                     }
-                    let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                    let next = await terminalizeRun(runID: runID, reason: .userCancelled, coordinator: coordinator, sessionID: sessionID)
                     dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                     return
                 }
@@ -2173,13 +2208,13 @@ extension CoreHost {
                 )
             }
             if Task.isCancelled {
-                let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                let next = await terminalizeRun(runID: runID, reason: .userCancelled, coordinator: coordinator, sessionID: sessionID)
                 dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
             let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
             await coordinator.recordContextStateChanged(freshContextState, causal: CausalContext(sessionID: sessionID))
-            let nextTurnToRun = try? await coordinator.finishRun(runID: runID, reason: .completed)
+            let nextTurnToRun = await terminalizeRun(runID: runID, reason: .completed, coordinator: coordinator, sessionID: sessionID)
             dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator)
         } catch is CancellationError {
             if currentStepID != nil {
@@ -2196,7 +2231,7 @@ extension CoreHost {
                     metadata: computeMetadata("cancelled")
                 )
             }
-            let nextTurnToRun = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            let nextTurnToRun = await terminalizeRun(runID: runID, reason: .userCancelled, coordinator: coordinator, sessionID: sessionID)
             dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator)
         } catch {
             if Task.isCancelled {
@@ -2214,7 +2249,7 @@ extension CoreHost {
                         metadata: computeMetadata("cancelled")
                     )
                 }
-                let next = try? await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                let next = await terminalizeRun(runID: runID, reason: .userCancelled, coordinator: coordinator, sessionID: sessionID)
                 dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
@@ -2233,7 +2268,7 @@ extension CoreHost {
                 )
             }
             let runtimeErr = (error as? RuntimeError) ?? (error as? CoreError)?.asRuntimeError ?? RuntimeError(category: .runtime, code: "executionError", message: error.localizedDescription, retryability: .none, source: .core)
-            let nextTurnToRun = try? await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+            let nextTurnToRun = await terminalizeRun(runID: runID, reason: .runtimeFailure, error: runtimeErr, coordinator: coordinator, sessionID: sessionID)
             dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator, delayMs: 200)
         }
     }
@@ -2751,6 +2786,7 @@ extension CoreHost {
                                 source: .core
                             )
                         }
+                        try await commandWAL.recordFilesReverted(commandID: envelope.commandID, sessionID: sessionID)
                     } catch {
                         FileHandle.standardError.write(Data("[CORE_HOST] session.files.revert.failed sessionID=\(sessionID.rawValue) error=\(error)\n".utf8))
                         throw error

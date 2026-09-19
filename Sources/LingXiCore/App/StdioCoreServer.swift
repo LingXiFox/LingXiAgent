@@ -1,4 +1,5 @@
 import Foundation
+import LingXiPlatform
 import LingXiProtocol
 
 /// 把 CoreEndpoint 暴露为 stdio JSON-lines 服务。
@@ -40,7 +41,7 @@ public struct StdioCoreServer: Sendable {
             toolOutputTask.cancel()
         }
 
-        for try await line in input.bytes.lines {
+        for try await line in AsyncLineReader.lines(from: input) {
             guard let data = line.data(using: .utf8),
                   let message = try? JSONDecoder().decode(WireMessage.self, from: data)
             else { continue }

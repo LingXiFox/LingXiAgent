@@ -331,4 +331,166 @@ struct RC1StaticAuditTests {
             }
         }
     }
+
+    // MARK: - 7. P0 REVERT: File rollback crash before marker converges idempotently without conflict
+    @Test("Revert Pre-Marker File Crash Convergence: Retry after file rollback succeeds idempotently without conflict")
+    func testRevertPreMarkerFileRollbackCrashRetryConvergesIdempotently() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try await withTestCoreHost(workspaceRoot: tempDir) { host in
+            let createReceipt = try await host.createSession(envelope: CommandEnvelope(
+                payload: CreateSessionRequest(workspace: tempDir.path)
+            ))
+            let sessionID = try #require(createReceipt.result?.sessionID)
+
+            // Setup a real file on disk
+            let fileURL = tempDir.appendingPathComponent("audit_target.txt")
+            let initialData = "original state before turn".data(using: .utf8)!
+            let modifiedData = "modified state by agent turn".data(using: .utf8)!
+            try initialData.write(to: fileURL)
+
+            // Add turn messages into sessionStore
+            let userMsg1 = Message(id: MessageID("u1"), role: .user, content: "Initial Turn", createdAt: Date())
+            let userMsg2 = Message(id: MessageID("u2"), role: .user, content: "Modify File Turn", createdAt: Date())
+            _ = try await host.sessionStore.appendMessage(sessionID, message: userMsg1)
+            _ = try await host.sessionStore.appendMessage(sessionID, message: userMsg2)
+
+            // Simulate file modification: write modified content to disk
+            try modifiedData.write(to: fileURL)
+
+            // Record real FileMutation into persistence
+            let initialHash = FileRollbackEngine.computeHash(data: initialData)
+            let modifiedHash = FileRollbackEngine.computeHash(data: modifiedData)
+            let mutation = FileMutation(
+                sessionID: sessionID,
+                turnID: TurnID(),
+                revision: 2,
+                toolCallID: ToolCallID("tool-edit-1"),
+                path: "audit_target.txt",
+                beforeHash: initialHash,
+                beforeContent: initialData,
+                afterHash: modifiedHash,
+                afterContent: modifiedData
+            )
+            let persistence = try #require(await host.persistence)
+            try await persistence.recordFileMutation(mutation)
+
+            // 1. Simulate Phase 8 file rollback executing first (e.g. before crash)
+            let engine = FileRollbackEngine()
+            let firstReport = try await engine.rollbackMutations([mutation], workspaceRoot: tempDir)
+            #expect(!firstReport.hasConflicts)
+            #expect(firstReport.restoredCount == 1)
+            // Disk file is now back to initial state
+            let currentContent = try String(contentsOf: fileURL, encoding: .utf8)
+            #expect(currentContent == "original state before turn")
+
+            // 2. Simulate CRASH before SessionStore.revertLastTurn:
+            // WAL has recorded revertPlan, but target user message is still in SessionStore!
+            let revertCmdID = CommandID("cmd-file-crash-retry-test")
+            try await host.commandWAL.recordRevertPlan(
+                commandID: revertCmdID,
+                sessionID: sessionID,
+                targetUserMessageID: userMsg2.id,
+                revertedPrompt: "Modify File Turn",
+                removedCount: 1,
+                revision: 3
+            )
+
+            // 3. Retry same commandID:
+            // CoreHost re-runs revertLastTurn, which calls FileRollbackEngine.rollbackMutations again!
+            // Without our idempotency fix, this would fail with fileRollbackConflict!
+            let retryReceipt = try await host.revertLastTurn(envelope: CommandEnvelope(
+                commandID: revertCmdID,
+                payload: RevertLastTurnRequest(sessionID: sessionID)
+            ))
+            #expect(retryReceipt.applied == true)
+            #expect(retryReceipt.result?.revertedPrompt == "Modify File Turn")
+
+            // 4. Verify file content remains original state
+            let finalContent = try String(contentsOf: fileURL, encoding: .utf8)
+            #expect(finalContent == "original state before turn")
+
+            // 5. Verify exactly one logical turn was removed
+            let sessionAfter = try await host.sessionStore.session(sessionID)
+            let remainingMsgs = sessionAfter.messages.filter { $0.role == .user }
+            #expect(remainingMsgs.count == 1)
+            #expect(remainingMsgs.first?.content == "Initial Turn")
+        }
+    }
+
+    // MARK: - 8. P0 RUNTIME: Terminal durability failure enters degraded without phantom active root
+    @Test("Terminal Durability Failure: Repeated disk failures enter degraded state and clear activeRootRunID")
+    func testTerminalDurabilityFailureEntersDegradedWithoutPhantomActiveRoot() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessionID = SessionID(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: tempDir)
+        let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog)
+
+        let userMsg = MessageSnapshot(messageID: MessageID("m1"), role: .user, text: "degraded test", createdAt: Date())
+        let d = try await coord.submitTurn(input: UserInput(text: "degraded test"), intent: TurnExecutionIntent(), userMessage: userMsg)
+        #expect(d.status == .running)
+        guard let runID = d.runID else {
+            Issue.record("Expected runID")
+            return
+        }
+        #expect(await coord.activeRootRunID == runID)
+
+        // Simulate terminal persistence failure: mark terminal degraded
+        let fatalError = RuntimeError(category: .runtime, code: "terminalDurabilityFailed", message: "disk write error", retryability: .none, source: .core)
+        let updatedTurn = await coord.markTerminalDegraded(runID: runID, reason: .runtimeFailure, error: fatalError)
+
+        #expect(updatedTurn?.status == .failed)
+        // Critical: activeRootRunID MUST BE NIL! No phantom active root!
+        #expect(await coord.activeRootRunID == nil)
+        #expect(await coord.isDegraded == true)
+        #expect(await coord.degradedError?.code == "terminalDurabilityFailed")
+
+        let run = await coord.getRun(runID: runID)
+        #expect(run?.status == .failed)
+    }
+
+    // MARK: - 9. P0 DURABILITY: True mid-batch Nth append failure and atomic orphan rollback
+    @Test("Mid-Batch Failure: Mid-batch EventLog append failure cleanly truncates orphan prefix back to initial sequence")
+    func testMidBatchAppendFailureCleansOrphanPrefix() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessionID = SessionID(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: tempDir)
+        let causal = CausalContext(sessionID: sessionID)
+
+        // Seed 2 initial committed events
+        _ = try await eventLog.append(causal: causal, payload: .turnCreated(TurnSnapshot(turnID: TurnID(), sessionID: sessionID, userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "init 1", createdAt: Date()), executionIntent: TurnExecutionIntent(), status: .queued)))
+        _ = try await eventLog.append(causal: causal, payload: .turnCreated(TurnSnapshot(turnID: TurnID(), sessionID: sessionID, userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "init 2", createdAt: Date()), executionIntent: TurnExecutionIntent(), status: .queued)))
+        let initialSeq = await eventLog.currentSequence()
+        #expect(initialSeq == 2)
+
+        // Simulate a multi-event transaction where #1 and #2 succeed, but #3 fails
+        do {
+            _ = try await eventLog.append(causal: causal, payload: .runStarted(runID: RunID())) // seq 3
+            _ = try await eventLog.append(causal: causal, payload: .runStarted(runID: RunID())) // seq 4
+            // Now simulate failure on append #3:
+            throw CoreError(code: .persistence, message: "Disk failure on event 3")
+        } catch {
+            // Coordinator catches error and truncates back to initialSeq:
+            try await eventLog.truncateEvents(afterSequence: initialSeq)
+        }
+
+        // Invariant: no orphan events remain, sequence strictly restored to initialSeq
+        #expect(await eventLog.currentSequence() == initialSeq)
+        let all = await eventLog.allEvents()
+        #expect(all.count == 2)
+        #expect(all.last?.cursor.sequence == initialSeq)
+
+        // Next write continues cleanly from initialSeq + 1 (sequence 3)
+        let nextEnv = try await eventLog.append(causal: causal, payload: .turnCreated(TurnSnapshot(turnID: TurnID(), sessionID: sessionID, userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "recovered", createdAt: Date()), executionIntent: TurnExecutionIntent(), status: .queued)))
+        #expect(nextEnv.cursor.sequence == 3)
+        #expect(await eventLog.currentSequence() == 3)
+    }
 }

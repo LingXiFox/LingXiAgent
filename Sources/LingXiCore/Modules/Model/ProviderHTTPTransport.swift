@@ -105,7 +105,7 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
         }
         return ProviderHTTPResponse(
             statusCode: http.statusCode,
-            headers: Dictionary(uniqueKeysWithValues: http.allHeaderFields.compactMap { key, value in
+            headers: Dictionary<String, String>(uniqueKeysWithValues: http.allHeaderFields.compactMap { (key: AnyHashable, value: Any) -> (String, String)? in
                 guard let key = key as? String else { return nil }
                 return (key, String(describing: value))
             }),
@@ -140,7 +140,7 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
                     }
                     streamContinuation.finish()
                 }
-                let headers = Dictionary(uniqueKeysWithValues: http.allHeaderFields.compactMap { key, value in
+                let headers: [String: String] = Dictionary<String, String>(uniqueKeysWithValues: http.allHeaderFields.compactMap { (key: AnyHashable, value: Any) -> (String, String)? in
                     guard let key = key as? String else { return nil }
                     return (key, String(describing: value))
                 })

@@ -1,5 +1,8 @@
 import Darwin
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import LingXiCore
 @testable import LingXiProtocol

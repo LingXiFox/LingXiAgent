@@ -8,6 +8,8 @@ public actor SessionTurnCoordinator {
     public let eventLog: SessionEventLog
 
     public private(set) var activeRootRunID: RunID?
+    public private(set) var isDegraded: Bool = false
+    public private(set) var degradedError: RuntimeError?
     private var queuedTurns: [TurnSnapshot] = []
     public var queuedTurnsSnapshot: [TurnSnapshot] {
         queuedTurns
@@ -34,6 +36,8 @@ public actor SessionTurnCoordinator {
         try await eventLog.resetToEvents([])
 
         activeRootRunID = nil
+        isDegraded = false
+        degradedError = nil
         queuedTurns.removeAll()
         turns.removeAll()
         runs.removeAll()
@@ -628,6 +632,58 @@ public actor SessionTurnCoordinator {
         } else {
             return nil
         }
+    }
+
+    /// P0-B Runtime Invariant: 当物理持久化终端事件反复重试彻底失败时调用。
+    /// 强行标记为 degraded 错误终态并清理 activeRootRunID，消除 phantom active root（无 Task 但占着锁）死锁，
+    /// 同时阻止未决队列盲目调度。
+    @discardableResult
+    public func markTerminalDegraded(runID: RunID, reason: TerminalReason, error: RuntimeError) -> TurnSnapshot? {
+        self.isDegraded = true
+        self.degradedError = error
+
+        guard let run = runs[runID], !run.status.isTerminal else {
+            if activeRootRunID == runID {
+                activeRootRunID = nil
+            }
+            return nil
+        }
+        let turnID = run.turnID
+
+        let terminalRun = RunSnapshot(
+            runID: runID,
+            sessionID: sessionID,
+            turnID: turnID,
+            rootRunID: run.rootRunID,
+            status: .failed,
+            model: run.model,
+            createdAt: run.createdAt,
+            completedAt: Date(),
+            terminalReason: reason
+        )
+        runs[runID] = terminalRun
+
+        var updatedTurn: TurnSnapshot?
+        if let turn = turns[turnID] {
+            let t = TurnSnapshot(
+                turnID: turnID,
+                sessionID: sessionID,
+                userMessage: turn.userMessage,
+                executionIntent: turn.executionIntent,
+                status: .failed,
+                rootRunID: run.rootRunID ?? runID,
+                createdAt: turn.createdAt,
+                completedAt: Date()
+            )
+            turns[turnID] = t
+            updatedTurn = t
+        }
+
+        if activeRootRunID == runID {
+            activeRootRunID = nil
+        }
+
+        return updatedTurn
     }
 
     public func cancelRun(runID: RunID, reason: String? = nil) async throws -> NextTurnToRun? {

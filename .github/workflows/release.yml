@@ -108,7 +108,12 @@ jobs:
       - name: Provision SQLite Native Dependencies
         shell: bash
         run: |
-          vcpkg integrate install || choco install sqlite -y || true
+          vcpkg install sqlite3:x64-windows
+          vcpkg integrate install
+          VCPKG_ROOT="${VCPKG_INSTALLATION_ROOT:-C:/vcpkg}"
+          echo "INCLUDE=$VCPKG_ROOT/installed/x64-windows/include;$INCLUDE" >> $GITHUB_ENV
+          echo "LIB=$VCPKG_ROOT/installed/x64-windows/lib;$LIB" >> $GITHUB_ENV
+          echo "PATH=$VCPKG_ROOT/installed/x64-windows/bin:$PATH" >> $GITHUB_ENV
 
       - name: Build Release Binaries
         shell: bash

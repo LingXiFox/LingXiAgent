@@ -12,8 +12,8 @@ ALPHA_DIR="$DIST_DIR/alpha-1"
 ALPHA_BIN_DIR="$ALPHA_DIR/bin"
 SYMLINK_PATH="$ROOT_DIR/lingxiagent-alpha"
 
-VERSION="0.2.0-alpha.1"
-RELEASE_NAME="Alpha 1"
+VERSION="1.0.0-rc1"
+RELEASE_NAME="Release Candidate 1"
 
 DO_BUILD=1
 DO_TEST=0

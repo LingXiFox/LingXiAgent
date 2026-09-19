@@ -186,12 +186,12 @@ public actor AgentRuntime {
                     parentRunID: run.parentRunID,
                     rootRunID: run.rootRunID,
                     agentKind: run.agentKind,
-                    status: .failed,
+                    status: .recoveryRequired,
                     modelSelection: run.modelSelection,
                     startedAt: run.startedAt,
                     finishedAt: .now,
                     latestActivityAt: .now,
-                    error: CoreError(code: .toolCancelled, message: "Core 重启，运行已中断 (interrupted by system crash)"),
+                    error: CoreError(code: .toolCancelled, message: "Core 重启，运行需要恢复 (interrupted by system crash)"),
                     usage: run.usage,
                     title: run.title
                 )

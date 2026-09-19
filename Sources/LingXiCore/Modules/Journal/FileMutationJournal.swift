@@ -121,6 +121,11 @@ public actor FileRollbackEngine {
                         try FileManager.default.removeItem(at: targetURL)
                         actions.append(.deleted(path: mutation.path))
                     }
+                } else if currentHash == mutation.beforeHash {
+                    // P0-C Idempotency Invariant:
+                    // 当前文件内容已与 beforeHash 一致，说明在此前的回滚阶段（或崩溃重试前）已成功还原。
+                    // 处于目标收敛状态，作为幂等 no-op 处理，绝不误报 conflict！
+                    actions.append(.restored(path: mutation.path))
                 } else {
                     // 文件在 Agent 修改后又被外部篡改：安全优先，不盲目覆盖，报告 conflict
                     actions.append(.conflict(
@@ -134,6 +139,11 @@ public actor FileRollbackEngine {
                     try FileManager.default.createDirectory(at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try beforeContent.write(to: targetURL, options: .atomic)
                     actions.append(.restored(path: mutation.path))
+                } else {
+                    // P0-C Idempotency Invariant:
+                    // 该文件为 Agent 新建文件（beforeContent == nil），且当前磁盘上已不存在。
+                    // 说明在此前的回滚阶段（或崩溃重试前）已成功删除，处于目标收敛状态，作为幂等 no-op 处理！
+                    actions.append(.deleted(path: mutation.path))
                 }
             }
         }
