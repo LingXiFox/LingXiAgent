@@ -100,11 +100,6 @@ public struct VNextStdioCoreServer: Sendable {
 
     public func run() async throws {
         let writer = VNextWireWriter(output: output)
-        defer {
-            Task { [connectionTasks] in
-                await connectionTasks.drainAll()
-            }
-        }
         let chunks = AsyncStream<Data> { continuation in
             continuation.onTermination = { _ in
                 input.readabilityHandler = nil
@@ -160,6 +155,7 @@ public struct VNextStdioCoreServer: Sendable {
             input.readabilityHandler = nil
             try? input.close()
         }
+        await connectionTasks.drainAll()
     }
 
     private func handle(_ request: VNextWireRequest, writer: VNextWireWriter) {

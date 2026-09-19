@@ -323,8 +323,17 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         return cancelledRequestIDs.contains(id)
     }
 
+    private func removeCancelledRequest(_ id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelledRequestIDs.remove(id)
+    }
+
     private func send(method: String, payload: Data?, id: String? = nil) async throws -> Data {
         let requestID = id ?? makeID()
+        defer {
+            removeCancelledRequest(requestID)
+        }
         debug("send.begin id=\(requestID) method=\(method)")
         let wireRequest = VNextWireRequest(id: requestID, method: method, payload: payload)
         let data = try encoder.encode(wireRequest) + Data("\n".utf8)
@@ -345,6 +354,9 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
                 lock.unlock()
 
                 Task {
+                    defer {
+                        self.removeCancelledRequest(requestID)
+                    }
                     do {
                         // 关键安全防御：写入前检测 cancellation，已取消的命令绝不上管道，杜绝副作用晚发 (Audit Round 10 Phase C)
                         try await writer.write(data: data) { [weak self] in

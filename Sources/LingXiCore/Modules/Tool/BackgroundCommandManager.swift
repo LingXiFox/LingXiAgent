@@ -15,6 +15,8 @@ final class BackgroundTaskRecord: @unchecked Sendable {
     var hasBeenObserved: Bool
     var noticeCount: Int
     let process: ManagedToolProcess
+    let sessionID: SessionID?
+    let runID: RunID?
     var timeoutTask: Task<Void, Never>?
     var watchExitTask: Task<Void, Never>?
     var cachedExitCode: Int32?
@@ -26,7 +28,9 @@ final class BackgroundTaskRecord: @unchecked Sendable {
         timeoutSeconds: Int,
         startedAt: Date = Date(),
         description: String? = nil,
-        process: ManagedToolProcess
+        process: ManagedToolProcess,
+        sessionID: SessionID? = nil,
+        runID: RunID? = nil
     ) {
         self.id = id
         self.command = command
@@ -38,6 +42,8 @@ final class BackgroundTaskRecord: @unchecked Sendable {
         self.hasBeenObserved = false
         self.noticeCount = 0
         self.process = process
+        self.sessionID = sessionID
+        self.runID = runID
     }
 }
 
@@ -97,7 +103,9 @@ public actor BackgroundCommandManager {
         profile: ExecutionProfile,
         description: String? = nil,
         customID: String? = nil,
-        lifecycleTrace: ToolLifecycleTrace? = nil
+        lifecycleTrace: ToolLifecycleTrace? = nil,
+        sessionID: SessionID? = nil,
+        runID: RunID? = nil
     ) async throws -> BackgroundTaskSnapshot {
         guard let timeout = timeoutSeconds, timeout > 0 else {
             throw CoreError(
@@ -146,7 +154,9 @@ public actor BackgroundCommandManager {
             cwd: cwd,
             timeoutSeconds: timeout,
             description: description,
-            process: process
+            process: process,
+            sessionID: sessionID,
+            runID: runID
         )
 
         record.timeoutTask = Task { [weak self, weak record, taskID] in
@@ -258,6 +268,26 @@ public actor BackgroundCommandManager {
         tasks.removeAll()
         taskOrder.removeAll()
         notifyWaiters()
+    }
+
+    public func terminateTasks(sessionID: SessionID) async {
+        let targets = tasks.values.filter { $0.sessionID == sessionID && $0.status == .running }
+        for record in targets {
+            _ = try? terminate(id: record.id)
+        }
+        for record in targets {
+            await record.process.waitForExit()
+        }
+    }
+
+    public func terminateTasks(runID: RunID) async {
+        let targets = tasks.values.filter { $0.runID == runID && $0.status == .running }
+        for record in targets {
+            _ = try? terminate(id: record.id)
+        }
+        for record in targets {
+            await record.process.waitForExit()
+        }
     }
 
     public func generateSystemNotice(currentStep: Int) -> String? {

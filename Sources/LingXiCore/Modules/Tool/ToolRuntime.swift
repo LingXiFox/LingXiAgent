@@ -207,7 +207,7 @@ public struct ToolRuntime: Sendable {
 
     public let workspacePath: String?
     public let workspaceRevision: UInt64?
-    private let registry: ToolRegistry
+    package let registry: ToolRegistry
     private let permissions: PermissionEngine
     private let mutations: ToolMutationCoordinator
     private let outputPolicy: ToolOutputPolicy

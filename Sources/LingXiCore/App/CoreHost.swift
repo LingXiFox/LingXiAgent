@@ -29,6 +29,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let subagentService: SubagentToolService
     private let permissionEngine: PermissionEngine
     private var toolRuntime: ToolRuntime
+    private var mutationCoordinator: ToolMutationCoordinator
     private let contextEngine: L1ContextEngine
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
@@ -383,6 +384,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.projectScanner = scanner
         self.cacheController = cacheController
         self.toolRuntime = effectiveToolRuntime
+        self.mutationCoordinator = mutationCoordinator
         contextEngine = L1ContextEngine(policy: L1ContextPolicy(
             systemContext: systemContext
         ))
@@ -401,25 +403,22 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         commandWAL = DurableCommandWAL(storageDirectory: eventLogDir)
         let storageDir = layout.content
         contentStore = ContentStore(storageDirectory: storageDir)
-
-        if let retrievalTool = effectiveRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
-            let runtime = retrievalTool.retrievalRuntime
-            let projectURL = workspace.url
-            Task { [weak self, ecoreStore] in
-                await mutationCoordinator.addMutationHook {
-                    await runtime.markDirty(source: .workspace, projectRoot: projectURL)
-                }
-                let token = await ecoreStore.addMutationHook {
-                    await runtime.markDirty(source: .ecore, projectRoot: projectURL)
-                }
-                await self?.recordInitialECoreToken(token)
-            }
-        }
     }
 
     /// 注册控制面路由并进入 ready。
     public func start() async {
         guard state == .starting else { return }
+        if let retrievalTool = toolRuntime.registry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
+            let runtime = retrievalTool.retrievalRuntime
+            let projectURL = workspaceURL
+            await mutationCoordinator.addMutationHook {
+                await runtime.markDirty(source: .workspace, projectRoot: projectURL)
+            }
+            let token = await cacheController.ecoreStore.addMutationHook {
+                await runtime.markDirty(source: .ecore, projectRoot: projectURL)
+            }
+            recordInitialECoreToken(token)
+        }
         await commandWAL.recover(
             sessionStore: sessionStore,
             runtimeEventLog: runtimeEventLog,
@@ -1859,6 +1858,18 @@ extension CoreHost {
             _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
             return
         }
+
+        // Ensure user message is appended to sessionStore when run executes (queued turns are deferred until execution)
+        if let turn = await coordinator.getTurn(turnID: turnID) {
+            let msgID = turn.userMessage.messageID
+            let existing = try? await sessionStore.session(sessionID).messages.contains(where: { $0.id == msgID })
+            if existing != true {
+                _ = try? await sessionStore.appendMessage(
+                    sessionID,
+                    message: Message(id: msgID, role: .user, content: turn.userMessage.text, createdAt: turn.userMessage.createdAt)
+                )
+            }
+        }
         // Turn 的 frozen executionIntent 由 per-run RunExecutionContext 强绑定并穿透至 ToolRuntime，避免并发 Run 串扰
         var modelResolutionError: Error? = nil
         if let model = executionIntent.modelSelection {
@@ -2072,10 +2083,64 @@ extension CoreHost {
                 registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
             }
         } catch is CancellationError {
-            _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            if currentStepID != nil {
+                await closeModelStepStreaming(
+                    coordinator: coordinator,
+                    stepID: currentStepID,
+                    causal: currentCausal,
+                    msgID: currentMsgID,
+                    astStreamID: currentAssistantStreamID,
+                    assistantText: currentAssistantText,
+                    assistantIndex: currentAssistantIndex,
+                    reasoningIndex: currentReasoningIndex,
+                    finishReason: "cancelled",
+                    metadata: computeMetadata("cancelled")
+                )
+            }
+            let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            if let next = nextTurnToRun {
+                let task = Task { [weak self, weak coordinator] () -> Void in
+                    await self?.executeTurnRun(
+                        sessionID: sessionID,
+                        turnID: next.turn.turnID,
+                        runID: next.runID,
+                        input: UserInput(text: next.turn.userMessage.text),
+                        executionIntent: next.turn.executionIntent,
+                        coordinator: coordinator
+                    )
+                }
+                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+            }
         } catch {
             if Task.isCancelled {
-                _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                if currentStepID != nil {
+                    await closeModelStepStreaming(
+                        coordinator: coordinator,
+                        stepID: currentStepID,
+                        causal: currentCausal,
+                        msgID: currentMsgID,
+                        astStreamID: currentAssistantStreamID,
+                        assistantText: currentAssistantText,
+                        assistantIndex: currentAssistantIndex,
+                        reasoningIndex: currentReasoningIndex,
+                        finishReason: "cancelled",
+                        metadata: computeMetadata("cancelled")
+                    )
+                }
+                let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                if let next {
+                    let task = Task { [weak self, weak coordinator] () -> Void in
+                        await self?.executeTurnRun(
+                            sessionID: sessionID,
+                            turnID: next.turn.turnID,
+                            runID: next.runID,
+                            input: UserInput(text: next.turn.userMessage.text),
+                            executionIntent: next.turn.executionIntent,
+                            coordinator: coordinator
+                        )
+                    }
+                    registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+                }
                 return
             }
             if currentStepID != nil {
@@ -2608,19 +2673,25 @@ extension CoreHost {
 
             await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
 
-            _ = try await sessionStore.session(sessionID)
             let coord = try await coordinator(for: sessionID)
             let initialRuntimeSeq = await runtimeEventLog.currentSequence()
             let initialSessionSeq = await coord.eventLog.currentSequence()
 
-            let msg = try await sessionStore.appendMessage(sessionID, role: .user, content: envelope.payload.input.text)
+            let isBusy = await coord.activeRootRunID != nil
+            let msgID = MessageID()
             let userSnapshot = MessageSnapshot(
-                messageID: msg.id,
+                messageID: msgID,
                 role: .user,
                 text: envelope.payload.input.text,
                 attachments: envelope.payload.input.attachments,
-                createdAt: msg.createdAt
+                createdAt: Date()
             )
+            if !isBusy {
+                _ = try await sessionStore.appendMessage(
+                    sessionID,
+                    message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: userSnapshot.createdAt)
+                )
+            }
             let decision = await coord.submitTurn(
                 input: envelope.payload.input,
                 intent: envelope.payload.executionIntent,
@@ -2702,11 +2773,24 @@ extension CoreHost {
         if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
             return cached
         }
-        cancelActiveTurnTasks(for: envelope.payload.sessionID)
-        await agent?.cancelSession(envelope.payload.sessionID)
-        await backgroundManager.terminateAll()
         let coord = try await coordinator(for: envelope.payload.sessionID)
-        try await coord.cancelTurn(turnID: envelope.payload.turnID)
+        let isQueued = await coord.isTurnQueued(turnID: envelope.payload.turnID)
+        if isQueued {
+            // 取消排队中的 Turn：严格局部移出队列，绝不干扰当前正在运行的 Run 或杀死后台任务
+            try await coord.cancelTurn(turnID: envelope.payload.turnID)
+        } else {
+            // 取消运行中的 Turn：按目标 RunID 精准取消
+            let targetTurn = await coord.getTurn(turnID: envelope.payload.turnID)
+            if let runID = targetTurn?.rootRunID {
+                cancelActiveTurnTask(runID: runID)
+                await backgroundManager.terminateTasks(runID: runID)
+            } else {
+                cancelActiveTurnTasks(for: envelope.payload.sessionID)
+                await backgroundManager.terminateTasks(sessionID: envelope.payload.sessionID)
+            }
+            await agent?.cancelSession(envelope.payload.sessionID)
+            try await coord.cancelTurn(turnID: envelope.payload.turnID)
+        }
         let watermark = await coord.eventLog.currentWatermark()
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
@@ -2748,8 +2832,8 @@ extension CoreHost {
             return cached
         }
         cancelActiveTurnTask(runID: envelope.payload.runID)
+        await backgroundManager.terminateTasks(runID: envelope.payload.runID)
         await agent?.cancelSession(envelope.payload.sessionID)
-        await backgroundManager.terminateAll()
         let coord = try await coordinator(for: envelope.payload.sessionID)
         let nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
         try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))

@@ -181,6 +181,10 @@ public actor SessionTurnCoordinator {
         }
     }
 
+    public func isTurnQueued(turnID: TurnID) -> Bool {
+        queuedTurns.contains(where: { $0.turnID == turnID })
+    }
+
     // MARK: - Turn 提交与调度
 
     public struct SubmitTurnDecision: Sendable {
@@ -206,19 +210,30 @@ public actor SessionTurnCoordinator {
 
         // 2. Check Root Run concurrency (max 1 active Root Run)
         if activeRootRunID != nil {
+            let queuedRunID = RunID()
             let queuedTurn = TurnSnapshot(
                 turnID: turnID,
                 sessionID: sessionID,
                 userMessage: userMessage,
                 executionIntent: intent,
                 status: .queued,
-                rootRunID: nil,
+                rootRunID: queuedRunID,
                 createdAt: Date()
             )
+            let queuedRun = RunSnapshot(
+                runID: queuedRunID,
+                sessionID: sessionID,
+                turnID: turnID,
+                rootRunID: queuedRunID,
+                status: .queued,
+                model: intent.modelSelection ?? "default",
+                createdAt: Date()
+            )
+            runs[queuedRunID] = queuedRun
             queuedTurns.append(queuedTurn)
             turns[turnID] = queuedTurn
-            await eventLog.append(causal: causal, payload: .runQueued(runID: RunID()))
-            return SubmitTurnDecision(turn: queuedTurn, status: .queued, runID: nil, shouldStartExecution: false)
+            await eventLog.append(causal: causal, payload: .runQueued(runID: queuedRunID))
+            return SubmitTurnDecision(turn: queuedTurn, status: .queued, runID: queuedRunID, shouldStartExecution: false)
         } else {
             let runID = RunID()
             activeRootRunID = runID
@@ -260,13 +275,26 @@ public actor SessionTurnCoordinator {
             throw RuntimeError(category: .validation, code: "turnNotFound", message: "未找到处于排队状态的 Turn \(turnID.rawValue)", retryability: .none, source: .client)
         }
         let queued = queuedTurns.remove(at: index)
+        if let runID = queued.rootRunID, let r = runs[runID] {
+            runs[runID] = RunSnapshot(
+                runID: runID,
+                sessionID: sessionID,
+                turnID: turnID,
+                rootRunID: r.rootRunID,
+                status: .cancelled,
+                model: r.model,
+                createdAt: r.createdAt,
+                completedAt: Date(),
+                terminalReason: .userCancelled
+            )
+        }
         let cancelledTurn = TurnSnapshot(
             turnID: turnID,
             sessionID: sessionID,
             userMessage: queued.userMessage,
             executionIntent: queued.executionIntent,
             status: .cancelled,
-            rootRunID: nil,
+            rootRunID: queued.rootRunID,
             createdAt: queued.createdAt,
             completedAt: Date()
         )
@@ -406,7 +434,7 @@ public actor SessionTurnCoordinator {
         // Schedule next queued Turn if any
         if !queuedTurns.isEmpty {
             let next = queuedTurns.removeFirst()
-            let nextRunID = RunID()
+            let nextRunID = next.rootRunID ?? RunID()
             activeRootRunID = nextRunID
 
             let nextRun = RunSnapshot(
