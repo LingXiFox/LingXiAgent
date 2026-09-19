@@ -6,6 +6,20 @@ import Foundation
 
 @Suite("IPC Peer Robustness Tests (Round 3 Phase A)")
 struct IPCPeerRobustnessTests {
+    private static func resolvePython() -> String {
+        if let found = LingXiPlatform.process.resolveExecutable(named: "python3", customSearchPaths: ["/usr/bin", "/bin", "/usr/local/bin"]) {
+            return found
+        }
+        if let found = LingXiPlatform.process.resolveExecutable(named: "python", customSearchPaths: ["/usr/bin", "/bin", "/usr/local/bin"]) {
+            return found
+        }
+        #if os(Windows)
+        if let found = LingXiPlatform.process.resolveExecutable(named: "python.exe", customSearchPaths: nil) {
+            return found
+        }
+        #endif
+        return "/usr/bin/python3"
+    }
 
     @Test("StderrRingBuffer bounded storage discards oldest chunks correctly")
     func testStderrRingBufferCapacity() {
@@ -32,7 +46,7 @@ struct IPCPeerRobustnessTests {
     func testDirectStdioPipeRoundtrip() throws {
         let script = "import sys; line = sys.stdin.readline(); sys.stdout.write('ECHO:' + line); sys.stdout.flush()"
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-u", "-c", script]
         )
         let transport = StdioTransport(managedProcess: proc)
@@ -50,7 +64,7 @@ struct IPCPeerRobustnessTests {
         // Unix pipes typically block when stderr exceeds ~64KB if not drained.
         let pythonScript = "import sys; sys.stderr.write('X' * (128 * 1024)); sys.stderr.flush(); sys.stdout.write('SUCCESS\\n'); sys.stdout.flush()"
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-c", pythonScript],
             environment: [:]
         )
@@ -74,7 +88,7 @@ struct IPCPeerRobustnessTests {
     func testStdioTransportReadExact() throws {
         let pythonScript = "import sys; sys.stdout.write('ABCDEFGHIJ'); sys.stdout.flush()"
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-c", pythonScript],
             environment: [:]
         )
@@ -90,7 +104,7 @@ struct IPCPeerRobustnessTests {
     func testStdioTransportReadLine() throws {
         let pythonScript = "import sys; sys.stdout.write('Line 1\\r\\nLine 2\\nLine 3'); sys.stdout.flush()"
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-c", pythonScript],
             environment: [:]
         )
@@ -120,7 +134,7 @@ msg = json.loads(line)
 print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"ok": True}}), flush=True)
 """
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-u", "-c", script]
         )
         let transport = StdioTransport(managedProcess: proc)
@@ -160,7 +174,7 @@ for _ in range(2):
     print(json.dumps(res), flush=True)
 """
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-u", "-c", serverScript]
         )
         let transport = StdioTransport(managedProcess: proc)
@@ -206,7 +220,7 @@ while True:
     time.sleep(10)
 """
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-u", "-c", serverScript]
         )
         let transport = StdioTransport(managedProcess: proc)
@@ -239,7 +253,7 @@ while True:
     time.sleep(10)
 """
         let proc = ManagedProcess(
-            executablePath: "/usr/bin/python3",
+            executablePath: Self.resolvePython(),
             arguments: ["-u", "-c", serverScript]
         )
         let transport = StdioTransport(managedProcess: proc)

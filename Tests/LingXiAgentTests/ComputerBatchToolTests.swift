@@ -27,7 +27,13 @@ struct ComputerBatchToolTests {
 
     @Test("ComputerBatchTool executes multi-step sequential action pipeline")
     func testBatchActionExecution() async throws {
-        let tool = ComputerBatchTool()
+        let mockEnv = DesktopEnvironment(
+            accessibility: MockTestAccessibilityBackend(),
+            input: MockTestInputBackend(),
+            windows: MockTestWindowBackend(),
+            probe: MockTestProbe()
+        )
+        let tool = ComputerBatchTool(environment: mockEnv)
 
         let payload = """
         {

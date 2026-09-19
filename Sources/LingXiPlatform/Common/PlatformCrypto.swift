@@ -86,7 +86,14 @@ public enum PlatformCrypto: Sendable {
         }
         return combined
         #else
-        throw NSError(domain: "PlatformCrypto", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hardware AES.GCM requires platform crypto provider"])
+        let nonce = LingXiPlatform.secureStorage.generateSecureRandomBytes(count: 12)
+        let (cipher, tag) = try CompactAESGCM.seal(
+            plaintext: Array(plaintext),
+            key: Array(keyData),
+            nonce: Array(nonce),
+            aad: Array(authenticating)
+        )
+        return nonce + Data(cipher) + Data(tag)
         #endif
     }
 
@@ -97,7 +104,20 @@ public enum PlatformCrypto: Sendable {
         let box = try AES.GCM.SealedBox(combined: combined)
         return try AES.GCM.open(box, using: key, authenticating: authenticating)
         #else
-        throw NSError(domain: "PlatformCrypto", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hardware AES.GCM requires platform crypto provider"])
+        guard combined.count >= 28 else {
+            throw NSError(domain: "PlatformCrypto", code: -3, userInfo: [NSLocalizedDescriptionKey: "Combined AES-GCM data too short"])
+        }
+        let nonce = Array(combined.prefix(12))
+        let tag = Array(combined.suffix(16))
+        let ciphertext = Array(combined.dropFirst(12).dropLast(16))
+        let plain = try CompactAESGCM.open(
+            ciphertext: ciphertext,
+            tag: tag,
+            key: Array(keyData),
+            nonce: nonce,
+            aad: Array(authenticating)
+        )
+        return Data(plain)
         #endif
     }
 
@@ -306,6 +326,261 @@ private enum CompactSHA256 {
         var state = CompactSHA256StreamState()
         state.update(data: data)
         return state.finalize()
+    }
+}
+
+/// 零外部依赖的标准 AES-256 算法实现（用于非 Darwin 平台 AES-GCM 核心构建）
+struct CompactAES256Standard: Sendable {
+    private static let sbox: [UInt8] = [
+        0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+        0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+        0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+        0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+        0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+        0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+        0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+        0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+        0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+        0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+        0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+        0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+        0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+        0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+        0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+        0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
+    ]
+
+    private static let rcon: [UInt8] = [
+        0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
+        0x80, 0x1B, 0x36, 0x6C, 0xD8, 0xAB, 0x4D, 0x9A,
+        0x2F, 0x5E, 0xBC, 0x63, 0xC6, 0x97, 0x35, 0x6A,
+        0xD4, 0xB3, 0x7D, 0xFA, 0xEF, 0xC5, 0x91, 0x39
+    ]
+
+    private let keyMatrices: [[[UInt8]]]
+
+    init(key: [UInt8]) {
+        precondition(key.count == 32)
+        var keyColumns: [[UInt8]] = (0..<8).map { i in
+            [key[i*4], key[i*4+1], key[i*4+2], key[i*4+3]]
+        }
+        var rconIdx = 1
+        while keyColumns.count < 60 {
+            var word = keyColumns.last!
+            if keyColumns.count % 8 == 0 {
+                let first = word.removeFirst()
+                word.append(first)
+                word = word.map { Self.sbox[Int($0)] }
+                word[0] ^= Self.rcon[rconIdx]
+                rconIdx += 1
+            } else if keyColumns.count % 8 == 4 {
+                word = word.map { Self.sbox[Int($0)] }
+            }
+            let prevCol = keyColumns[keyColumns.count - 8]
+            for j in 0..<4 {
+                word[j] ^= prevCol[j]
+            }
+            keyColumns.append(word)
+        }
+
+        var matrices: [[[UInt8]]] = []
+        for i in 0..<15 {
+            let mat = Array(keyColumns[i*4 ..< (i+1)*4])
+            matrices.append(mat)
+        }
+        self.keyMatrices = matrices
+    }
+
+    private static func xtime(_ a: UInt8) -> UInt8 {
+        ((a << 1) ^ ((a & 0x80) != 0 ? 0x1b : 0x00))
+    }
+
+    func encryptBlock(_ input: [UInt8]) -> [UInt8] {
+        var s: [[UInt8]] = (0..<4).map { i in
+            [input[i*4], input[i*4+1], input[i*4+2], input[i*4+3]]
+        }
+
+        for i in 0..<4 {
+            for j in 0..<4 { s[i][j] ^= keyMatrices[0][i][j] }
+        }
+
+        for r in 1...13 {
+            for i in 0..<4 {
+                for j in 0..<4 { s[i][j] = Self.sbox[Int(s[i][j])] }
+            }
+            let t1 = s[0][1]; s[0][1] = s[1][1]; s[1][1] = s[2][1]; s[2][1] = s[3][1]; s[3][1] = t1
+            let t2 = s[0][2]; let t2b = s[1][2]; s[0][2] = s[2][2]; s[1][2] = s[3][2]; s[2][2] = t2; s[3][2] = t2b
+            let t3 = s[3][3]; s[3][3] = s[2][3]; s[2][3] = s[1][3]; s[1][3] = s[0][3]; s[0][3] = t3
+            for i in 0..<4 {
+                let a0 = s[i][0], a1 = s[i][1], a2 = s[i][2], a3 = s[i][3]
+                let t = a0 ^ a1 ^ a2 ^ a3
+                s[i][0] ^= t ^ Self.xtime(a0 ^ a1)
+                s[i][1] ^= t ^ Self.xtime(a1 ^ a2)
+                s[i][2] ^= t ^ Self.xtime(a2 ^ a3)
+                s[i][3] ^= t ^ Self.xtime(a3 ^ a0)
+            }
+            for i in 0..<4 {
+                for j in 0..<4 { s[i][j] ^= keyMatrices[r][i][j] }
+            }
+        }
+
+        for i in 0..<4 {
+            for j in 0..<4 { s[i][j] = Self.sbox[Int(s[i][j])] }
+        }
+        let t1 = s[0][1]; s[0][1] = s[1][1]; s[1][1] = s[2][1]; s[2][1] = s[3][1]; s[3][1] = t1
+        let t2 = s[0][2]; let t2b = s[1][2]; s[0][2] = s[2][2]; s[1][2] = s[3][2]; s[2][2] = t2; s[3][2] = t2b
+        let t3 = s[3][3]; s[3][3] = s[2][3]; s[2][3] = s[1][3]; s[1][3] = s[0][3]; s[0][3] = t3
+
+        for i in 0..<4 {
+            for j in 0..<4 { s[i][j] ^= keyMatrices[14][i][j] }
+        }
+
+        var out = [UInt8](repeating: 0, count: 16)
+        for i in 0..<4 {
+            for j in 0..<4 {
+                out[i*4 + j] = s[i][j]
+            }
+        }
+        return out
+    }
+}
+
+/// 零外部依赖的标准 NIST SP 800-38D AES-256-GCM 算法实现
+enum CompactAESGCM {
+    private static func shiftRightBlock(_ v: inout [UInt8]) {
+        var carry: UInt8 = 0
+        for i in 0..<16 {
+            let nextCarry = v[i] & 0x01
+            v[i] = (v[i] >> 1) | (carry << 7)
+            carry = nextCarry
+        }
+    }
+
+    private static func gfMult(_ x: [UInt8], _ y: [UInt8]) -> [UInt8] {
+        var z = [UInt8](repeating: 0, count: 16)
+        var v = y
+        for i in 0..<16 {
+            for j in 0..<8 {
+                if (x[i] & (1 << (7 - j))) != 0 {
+                    for k in 0..<16 { z[k] ^= v[k] }
+                }
+                if (v[15] & 0x01) != 0 {
+                    shiftRightBlock(&v)
+                    v[0] ^= 0xe1
+                } else {
+                    shiftRightBlock(&v)
+                }
+            }
+        }
+        return z
+    }
+
+    private static func computeGHASH(h: [UInt8], aad: [UInt8], ciphertext: [UInt8]) -> [UInt8] {
+        var y = [UInt8](repeating: 0, count: 16)
+
+        var offset = 0
+        while offset < aad.count {
+            let end = min(offset + 16, aad.count)
+            for i in 0..<(end - offset) {
+                y[i] ^= aad[offset + i]
+            }
+            y = gfMult(y, h)
+            offset += 16
+        }
+
+        offset = 0
+        while offset < ciphertext.count {
+            let end = min(offset + 16, ciphertext.count)
+            for i in 0..<(end - offset) {
+                y[i] ^= ciphertext[offset + i]
+            }
+            y = gfMult(y, h)
+            offset += 16
+        }
+
+        var lenBlock = [UInt8](repeating: 0, count: 16)
+        let aadBits = UInt64(aad.count * 8).bigEndian
+        let cBits = UInt64(ciphertext.count * 8).bigEndian
+        withUnsafeBytes(of: aadBits) { lenBlock.replaceSubrange(0..<8, with: $0) }
+        withUnsafeBytes(of: cBits) { lenBlock.replaceSubrange(8..<16, with: $0) }
+
+        for i in 0..<16 { y[i] ^= lenBlock[i] }
+        y = gfMult(y, h)
+        return y
+    }
+
+    static func seal(plaintext: [UInt8], key: [UInt8], nonce: [UInt8], aad: [UInt8]) throws -> (ciphertext: [UInt8], tag: [UInt8]) {
+        precondition(key.count == 32)
+        precondition(nonce.count == 12)
+        let aes = CompactAES256Standard(key: key)
+        let h = aes.encryptBlock([UInt8](repeating: 0, count: 16))
+
+        let j0 = nonce + [0, 0, 0, 1]
+        let s = aes.encryptBlock(j0)
+
+        var ciphertext = [UInt8](repeating: 0, count: plaintext.count)
+        var counter = j0
+        var offset = 0
+        while offset < plaintext.count {
+            var carry: UInt32 = 1
+            for k in (12..<16).reversed() {
+                let sum = UInt32(counter[k]) + carry
+                counter[k] = UInt8(sum & 0xff)
+                carry = sum >> 8
+            }
+            let keystream = aes.encryptBlock(counter)
+            let blockSize = min(16, plaintext.count - offset)
+            for b in 0..<blockSize {
+                ciphertext[offset + b] = plaintext[offset + b] ^ keystream[b]
+            }
+            offset += blockSize
+        }
+
+        let g = computeGHASH(h: h, aad: aad, ciphertext: ciphertext)
+        var tag = [UInt8](repeating: 0, count: 16)
+        for i in 0..<16 { tag[i] = g[i] ^ s[i] }
+
+        return (ciphertext, tag)
+    }
+
+    static func open(ciphertext: [UInt8], tag: [UInt8], key: [UInt8], nonce: [UInt8], aad: [UInt8]) throws -> [UInt8] {
+        precondition(key.count == 32)
+        precondition(nonce.count == 12)
+        precondition(tag.count == 16)
+        let aes = CompactAES256Standard(key: key)
+        let h = aes.encryptBlock([UInt8](repeating: 0, count: 16))
+
+        let j0 = nonce + [0, 0, 0, 1]
+        let s = aes.encryptBlock(j0)
+
+        let g = computeGHASH(h: h, aad: aad, ciphertext: ciphertext)
+        var expectedTag = [UInt8](repeating: 0, count: 16)
+        for i in 0..<16 { expectedTag[i] = g[i] ^ s[i] }
+
+        var diff: UInt8 = 0
+        for i in 0..<16 { diff |= tag[i] ^ expectedTag[i] }
+        guard diff == 0 else {
+            throw NSError(domain: "PlatformCrypto", code: -3, userInfo: [NSLocalizedDescriptionKey: "Authentication tag mismatch"])
+        }
+
+        var plaintext = [UInt8](repeating: 0, count: ciphertext.count)
+        var counter = j0
+        var offset = 0
+        while offset < ciphertext.count {
+            var carry: UInt32 = 1
+            for k in (12..<16).reversed() {
+                let sum = UInt32(counter[k]) + carry
+                counter[k] = UInt8(sum & 0xff)
+                carry = sum >> 8
+            }
+            let keystream = aes.encryptBlock(counter)
+            let blockSize = min(16, ciphertext.count - offset)
+            for b in 0..<blockSize {
+                plaintext[offset + b] = ciphertext[offset + b] ^ keystream[b]
+            }
+            offset += blockSize
+        }
+        return plaintext
     }
 }
 #endif

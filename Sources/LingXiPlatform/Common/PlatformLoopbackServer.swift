@@ -57,8 +57,13 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
         #endif
 
         var addr = sockaddr_in()
+        #if os(Windows) || canImport(WinSDK)
+        addr.sin_family = ADDRESS_FAMILY(AF_INET)
+        addr.sin_addr.S_un.S_addr = inet_addr("127.0.0.1")
+        #else
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        #endif
         addr.sin_port = preferredPort.bigEndian
 
         var bindResult = withUnsafePointer(to: &addr) {

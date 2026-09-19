@@ -14,6 +14,10 @@ struct BackgroundCommandTests {
         return (tempDir, root)
     }
 
+    private var testProfile: ExecutionProfile {
+        LingXiPlatform.sandbox.capabilities.filesystemEnforced ? .workspace : .fullAccess
+    }
+
     @Test func testMandatoryTimeoutEnforcement() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -26,7 +30,7 @@ struct BackgroundCommandTests {
         {"command": "echo hello"}
         """
         await #expect(throws: CoreError.self) {
-            _ = try await runTool.execute(arguments: missingArgs, profile: .workspace)
+            _ = try await runTool.execute(arguments: missingArgs, profile: testProfile)
         }
 
         // 2. Zero timeout_seconds should be rejected
@@ -34,7 +38,7 @@ struct BackgroundCommandTests {
         {"command": "echo hello", "timeout_seconds": 0}
         """
         await #expect(throws: CoreError.self) {
-            _ = try await runTool.execute(arguments: zeroArgs, profile: .workspace)
+            _ = try await runTool.execute(arguments: zeroArgs, profile: testProfile)
         }
 
         // 3. Negative timeout_seconds should be rejected
@@ -42,7 +46,7 @@ struct BackgroundCommandTests {
         {"command": "echo hello", "timeout_seconds": -10}
         """
         await #expect(throws: CoreError.self) {
-            _ = try await runTool.execute(arguments: negativeArgs, profile: .workspace)
+            _ = try await runTool.execute(arguments: negativeArgs, profile: testProfile)
         }
     }
 
@@ -57,7 +61,7 @@ struct BackgroundCommandTests {
         let spawnArgs = """
         {"command": "echo 'LingXi-BG-Output-1' && echo 'LingXi-BG-Output-2'", "timeout_seconds": 30, "task_id": "test-task-1"}
         """
-        let spawnResult = try await runTool.execute(arguments: spawnArgs, profile: .workspace)
+        let spawnResult = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
         #expect(spawnResult.contains("test-task-1"))
         #expect(spawnResult.contains("running"))
 
@@ -67,7 +71,7 @@ struct BackgroundCommandTests {
         let pollArgs = """
         {"action": "poll", "task_id": "test-task-1"}
         """
-        let pollResult = try await manageTool.execute(arguments: pollArgs, profile: .workspace)
+        let pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
         #expect(pollResult.contains("LingXi-BG-Output-1"))
         #expect(pollResult.contains("LingXi-BG-Output-2"))
         #expect(pollResult.contains("exited"))
@@ -85,7 +89,7 @@ struct BackgroundCommandTests {
         let spawnArgs = """
         {"command": "sleep 30", "timeout_seconds": 1, "task_id": "sleep-timeout-test"}
         """
-        _ = try await runTool.execute(arguments: spawnArgs, profile: .workspace)
+        _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
         // Wait for watchdog to trigger (1.5s > 1s)
         try? await Task.sleep(for: .milliseconds(1600))
@@ -93,7 +97,7 @@ struct BackgroundCommandTests {
         let pollArgs = """
         {"action": "poll", "task_id": "sleep-timeout-test"}
         """
-        let pollResult = try await manageTool.execute(arguments: pollArgs, profile: .workspace)
+        let pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
         #expect(pollResult.contains("timed_out"))
         await manager.terminateAll()
     }
@@ -109,12 +113,12 @@ struct BackgroundCommandTests {
         let spawnArgs = """
         {"command": "sleep 60", "timeout_seconds": 120, "task_id": "manual-kill-test"}
         """
-        _ = try await runTool.execute(arguments: spawnArgs, profile: .workspace)
+        _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
         let terminateArgs = """
         {"action": "terminate", "task_id": "manual-kill-test"}
         """
-        let termResult = try await manageTool.execute(arguments: terminateArgs, profile: .workspace)
+        let termResult = try await manageTool.execute(arguments: terminateArgs, profile: testProfile)
         #expect(termResult.contains("terminated"))
         await manager.terminateAll()
     }
@@ -131,7 +135,7 @@ struct BackgroundCommandTests {
         let spawnArgs = """
         {"command": "echo done-fast", "timeout_seconds": 10, "task_id": "fast-task"}
         """
-        _ = try await runTool.execute(arguments: spawnArgs, profile: .workspace)
+        _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
         // Allow process to finish
         try? await Task.sleep(for: .milliseconds(500))
@@ -147,7 +151,7 @@ struct BackgroundCommandTests {
         let pollArgs = """
         {"action": "poll", "task_id": "fast-task"}
         """
-        _ = try await manageTool.execute(arguments: pollArgs, profile: .workspace)
+        _ = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
 
         // Notice should now be cleared
         let notice2 = await manager.generateSystemNotice(currentStep: 2)
@@ -157,7 +161,7 @@ struct BackgroundCommandTests {
         let runningSpawn = """
         {"command": "sleep 10", "timeout_seconds": 60, "task_id": "cadence-task"}
         """
-        _ = try await runTool.execute(arguments: runningSpawn, profile: .workspace)
+        _ = try await runTool.execute(arguments: runningSpawn, profile: testProfile)
 
         // Step 1: should produce running cadence reminder
         let cadenceNotice = await manager.generateSystemNotice(currentStep: 3)
@@ -176,8 +180,8 @@ struct BackgroundCommandTests {
         let manager = BackgroundCommandManager()
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
 
-        _ = try await runTool.execute(arguments: "{\"command\": \"sleep 30\", \"timeout_seconds\": 60, \"task_id\": \"task-a\"}", profile: .workspace)
-        _ = try await runTool.execute(arguments: "{\"command\": \"sleep 30\", \"timeout_seconds\": 60, \"task_id\": \"task-b\"}", profile: .workspace)
+        _ = try await runTool.execute(arguments: "{\"command\": \"sleep 30\", \"timeout_seconds\": 60, \"task_id\": \"task-a\"}", profile: testProfile)
+        _ = try await runTool.execute(arguments: "{\"command\": \"sleep 30\", \"timeout_seconds\": 60, \"task_id\": \"task-b\"}", profile: testProfile)
 
         let before = await manager.list()
         #expect(before.count == 2)
@@ -196,20 +200,20 @@ struct BackgroundCommandTests {
 
         // 1. Rejects single trailing &
         await #expect(throws: CoreError.self) {
-            try await shellTool.execute(arguments: #"{"command": "sleep 5 &"}"#, profile: .workspace)
+            try await shellTool.execute(arguments: #"{"command": "sleep 5 &"}"#, profile: testProfile)
         }
 
         // 2. Rejects shell background with redirect
         await #expect(throws: CoreError.self) {
-            try await shellTool.execute(arguments: #"{"command": "sleep 5 >/dev/null 2>&1 & echo background_pid=$!"}"#, profile: .workspace)
+            try await shellTool.execute(arguments: #"{"command": "sleep 5 >/dev/null 2>&1 & echo background_pid=$!"}"#, profile: testProfile)
         }
 
         // 3. Accepts regular command
-        let normalResult = try await shellTool.execute(arguments: #"{"command": "echo hello-lingxi"}"#, profile: .workspace)
+        let normalResult = try await shellTool.execute(arguments: #"{"command": "echo hello-lingxi"}"#, profile: testProfile)
         #expect(normalResult.contains("hello-lingxi"))
 
         // 4. Accepts command chain with &&
-        let chainResult = try await shellTool.execute(arguments: #"{"command": "echo a && echo b"}"#, profile: .workspace)
+        let chainResult = try await shellTool.execute(arguments: #"{"command": "echo a && echo b"}"#, profile: testProfile)
         #expect(chainResult.contains("a") && chainResult.contains("b"))
     }
 
@@ -235,7 +239,7 @@ struct BackgroundCommandTests {
 
         // 2. Run a background command to have a completed task
         let runBgTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
-        _ = try await runBgTool.execute(arguments: #"{"command": "echo task-finished-ok", "timeout_seconds": 10, "task_id": "test-task-1"}"#, profile: .workspace)
+        _ = try await runBgTool.execute(arguments: #"{"command": "echo task-finished-ok", "timeout_seconds": 10, "task_id": "test-task-1"}"#, profile: testProfile)
 
         // Give it a moment to exit
         try? await Task.sleep(for: .milliseconds(500))
@@ -304,7 +308,7 @@ struct BackgroundCommandTests {
         let spawnArgs = """
         {"command": "sleep 0.4 && echo 'bg-result-42'", "timeout_seconds": 10, "task_id": "wake-test-task"}
         """
-        _ = try await runTool.execute(arguments: spawnArgs, profile: .workspace)
+        _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
         let running = await manager.hasRunningTasks
         #expect(running == true)
