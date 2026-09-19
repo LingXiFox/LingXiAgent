@@ -66,6 +66,13 @@ public enum TurnStatus: String, Codable, Sendable, Equatable {
         let raw = try container.decode(String.self)
         self = TurnStatus(rawValue: raw) ?? .unknown
     }
+
+    public var isTerminal: Bool {
+        switch self {
+        case .completed, .failed, .cancelled: true
+        default: false
+        }
+    }
 }
 
 /// Turn 快照。

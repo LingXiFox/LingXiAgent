@@ -6,6 +6,7 @@ import Testing
 /// Structured async test resource helper to guarantee zero orphaned tasks and deterministic teardown.
 public func withTestCoreHost<T: Sendable>(
     workspaceRoot: URL,
+    providerAssembly: ModelRuntimeAssembly? = nil,
     storageLayout: CoreStorageLayout? = nil,
     _ operation: @Sendable (CoreHost) async throws -> T
 ) async throws -> T {
@@ -14,6 +15,7 @@ public func withTestCoreHost<T: Sendable>(
     try layout.ensureDirectoriesExist()
     let host = try CoreHost(
         startupPolicy: .unitTest,
+        providerAssembly: providerAssembly,
         workspaceRoot: WorkspaceRoot(path: workspaceRoot.path),
         storageLayout: layout
     )

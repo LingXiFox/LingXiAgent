@@ -331,9 +331,6 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
     private func send(method: String, payload: Data?, id: String? = nil) async throws -> Data {
         let requestID = id ?? makeID()
-        defer {
-            removeCancelledRequest(requestID)
-        }
         debug("send.begin id=\(requestID) method=\(method)")
         let wireRequest = VNextWireRequest(id: requestID, method: method, payload: payload)
         let data = try encoder.encode(wireRequest) + Data("\n".utf8)

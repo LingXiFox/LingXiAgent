@@ -243,6 +243,10 @@ public actor SessionEventLog {
         return events
     }
 
+    public func allEvents() -> [SessionEventEnvelope] {
+        events
+    }
+
     private func removeSubscriber(_ key: UUID) {
         subscribers.removeValue(forKey: key)
     }

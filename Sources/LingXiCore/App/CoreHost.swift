@@ -1761,6 +1761,7 @@ extension CoreHost {
         _ = try await sessionStore.session(sessionID)
         let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: eventLogStorageDirectory)
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog, todoStore: self.todoStore)
+        await coord.restoreHistoricalQueue()
         sessionCoordinators[sessionID] = coord
         return coord
     }
@@ -1862,22 +1863,30 @@ extension CoreHost {
         // Ensure user message is appended to sessionStore when run executes (queued turns are deferred until execution)
         if let turn = await coordinator.getTurn(turnID: turnID) {
             let msgID = turn.userMessage.messageID
-            let existing = try? await sessionStore.session(sessionID).messages.contains(where: { $0.id == msgID })
-            if existing != true {
-                _ = try? await sessionStore.appendMessage(
-                    sessionID,
-                    message: Message(id: msgID, role: .user, content: turn.userMessage.text, createdAt: turn.userMessage.createdAt)
-                )
+            do {
+                let existing = try await sessionStore.session(sessionID).messages.contains(where: { $0.id == msgID })
+                if !existing {
+                    try await sessionStore.appendMessage(
+                        sessionID,
+                        message: Message(id: msgID, role: .user, content: turn.userMessage.text, createdAt: turn.userMessage.createdAt)
+                    )
+                }
+            } catch {
+                let runtimeErr = RuntimeError(category: .runtime, code: "persistUserMessageFailed", message: "Failed to persist user message: \(error)", retryability: .none, source: .core)
+                _ = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+                return
             }
         }
         // Turn 的 frozen executionIntent 由 per-run RunExecutionContext 强绑定并穿透至 ToolRuntime，避免并发 Run 串扰
+        var explicitModelSelection: ModelSelection? = nil
         var modelResolutionError: Error? = nil
         if let model = executionIntent.modelSelection {
             if let current = currentAssembly, current.modelID.rawValue == model || "\(current.endpoint.providerID)/\(current.modelID.rawValue)" == model {
-                // Already current assembly, no need to resolve or switch
+                explicitModelSelection = currentAssembly.map { ModelSelection(providerID: $0.endpoint.providerID, modelID: $0.modelID.rawValue) }
             } else {
                 do {
                     let selection = try await modelSelection(for: model)
+                    explicitModelSelection = selection
                     let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
                     try await agent?.selectModel(selection, assembly: assembly)
                     self.currentAssembly = assembly
@@ -1966,10 +1975,30 @@ extension CoreHost {
         }
 
         do {
-            let stream = try await agent.sendMessage(sessionID, input.text, executionIntent: executionIntent)
+            let stream = try await agent.sendMessage(
+                sessionID,
+                input.text,
+                executionIntent: executionIntent,
+                explicitRunID: AgentRunID(runID.rawValue),
+                explicitModel: explicitModelSelection
+            )
 
             for try await chunk in stream.chunks {
                 if Task.isCancelled {
+                    if currentStepID != nil {
+                        await closeModelStepStreaming(
+                            coordinator: coordinator,
+                            stepID: currentStepID,
+                            causal: currentCausal,
+                            msgID: currentMsgID,
+                            astStreamID: currentAssistantStreamID,
+                            assistantText: currentAssistantText,
+                            assistantIndex: currentAssistantIndex,
+                            reasoningIndex: currentReasoningIndex,
+                            finishReason: "cancelled",
+                            metadata: computeMetadata("cancelled")
+                        )
+                    }
                     _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
                     return
                 }
@@ -2774,23 +2803,26 @@ extension CoreHost {
             return cached
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
-        let isQueued = await coord.isTurnQueued(turnID: envelope.payload.turnID)
-        if isQueued {
-            // 取消排队中的 Turn：严格局部移出队列，绝不干扰当前正在运行的 Run 或杀死后台任务
-            try await coord.cancelTurn(turnID: envelope.payload.turnID)
-        } else {
-            // 取消运行中的 Turn：按目标 RunID 精准取消
-            let targetTurn = await coord.getTurn(turnID: envelope.payload.turnID)
-            if let runID = targetTurn?.rootRunID {
-                cancelActiveTurnTask(runID: runID)
-                await backgroundManager.terminateTasks(runID: runID)
-            } else {
-                cancelActiveTurnTasks(for: envelope.payload.sessionID)
-                await backgroundManager.terminateTasks(sessionID: envelope.payload.sessionID)
-            }
-            await agent?.cancelSession(envelope.payload.sessionID)
-            try await coord.cancelTurn(turnID: envelope.payload.turnID)
+        guard let targetTurn = await coord.getTurn(turnID: envelope.payload.turnID) else {
+            throw RuntimeError(category: .validation, code: "turnNotFound", message: "未找到处于排队状态的 Turn \(envelope.payload.turnID.rawValue)", retryability: .none, source: .client)
         }
+        if targetTurn.status == .running {
+            throw RuntimeError(category: .validation, code: "turnAlreadyRunning", message: "Turn 正在运行，请使用 cancelRun 取消执行", retryability: .none, source: .client)
+        }
+        if targetTurn.status.isTerminal {
+            let watermark = await coord.eventLog.currentWatermark()
+            let receipt = CommandReceipt<VoidResult>(
+                commandID: envelope.commandID,
+                applied: true,
+                revision: nextRevision(),
+                observedThrough: [watermark],
+                result: VoidResult()
+            )
+            await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            return receipt
+        }
+        // 取消排队中的 Turn：严格局部移出队列，绝不干扰当前正在运行的 Run 或杀死后台任务
+        try await coord.cancelTurn(turnID: envelope.payload.turnID)
         let watermark = await coord.eventLog.currentWatermark()
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
@@ -2831,12 +2863,35 @@ extension CoreHost {
         if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
             return cached
         }
-        cancelActiveTurnTask(runID: envelope.payload.runID)
-        await backgroundManager.terminateTasks(runID: envelope.payload.runID)
-        await agent?.cancelSession(envelope.payload.sessionID)
         let coord = try await coordinator(for: envelope.payload.sessionID)
-        let nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
-        try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+        guard let run = await coord.getRun(runID: envelope.payload.runID) else {
+            throw RuntimeError(category: .validation, code: "runNotFound", message: "Run \(envelope.payload.runID.rawValue) 不存在", retryability: .none, source: .client)
+        }
+        if run.status.isTerminal {
+            let watermark = await coord.eventLog.currentWatermark()
+            let receipt = CommandReceipt<VoidResult>(
+                commandID: envelope.commandID,
+                applied: true,
+                revision: nextRevision(),
+                observedThrough: [watermark],
+                result: VoidResult()
+            )
+            await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            return receipt
+        }
+
+        let nextTurnToRun: SessionTurnCoordinator.NextTurnToRun?
+        if run.status == .queued {
+            // Target is queued: cancel only queued run, NEVER cancel active tasks or session!
+            nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
+        } else {
+            // Target is running: perform targeted cancellation of this active run
+            cancelActiveTurnTask(runID: envelope.payload.runID)
+            await backgroundManager.terminateTasks(runID: envelope.payload.runID)
+            try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+            nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
+        }
+
         let watermark = await coord.eventLog.currentWatermark()
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,

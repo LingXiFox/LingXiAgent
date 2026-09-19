@@ -1248,7 +1248,7 @@ public actor SessionRuntime {
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
         } catch is CancellationError {
-            await backgroundManager.terminateAll()
+            await backgroundManager.terminateTasks(sessionID: sessionID)
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler, executionID: executionID)
         } catch {
@@ -1381,7 +1381,7 @@ public actor SessionRuntime {
 
     public func cancelCurrentTurn() async {
         abortActiveProviderStream()
-        await backgroundManager.terminateAll()
+        await backgroundManager.terminateTasks(sessionID: sessionID)
         guard let execution = activeExecution else { turnRunning = false; return }
         execution.task.cancel()
         lifecycle("cancellationRequested", waitingOn: "turnTask")
@@ -1391,7 +1391,7 @@ public actor SessionRuntime {
     public func shutdown() async {
         shuttingDown = true
         abortActiveProviderStream()
-        await backgroundManager.terminateAll()
+        await backgroundManager.terminateTasks(sessionID: sessionID)
         guard let execution = activeExecution else { turnRunning = false; return }
         execution.task.cancel()
         lifecycle("cancellationRequested", waitingOn: "turnTask")

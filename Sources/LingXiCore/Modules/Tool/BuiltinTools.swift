@@ -1478,6 +1478,8 @@ public struct RunBackgroundCommandTool: ToolExecutor {
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: RunBackgroundCommandArguments = try decodeArguments(arguments)
         let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        let effectiveSessionID = ToolExecutionContext.sessionID ?? AgentExecutionContext.current?.sessionID
+        let effectiveRunID = ToolExecutionContext.runID ?? AgentExecutionContext.current.map { RunID($0.runID.rawValue) }
         let snapshot = try await manager.spawn(
             command: input.command,
             timeoutSeconds: input.timeoutSeconds,
@@ -1486,7 +1488,9 @@ public struct RunBackgroundCommandTool: ToolExecutor {
             profile: profile,
             description: input.description,
             customID: input.taskId,
-            lifecycleTrace: ToolExecutionContext.lifecycleTrace
+            lifecycleTrace: ToolExecutionContext.lifecycleTrace,
+            sessionID: effectiveSessionID,
+            runID: effectiveRunID
         )
         return try json(snapshot)
     }

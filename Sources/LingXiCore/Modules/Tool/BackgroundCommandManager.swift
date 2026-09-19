@@ -290,6 +290,11 @@ public actor BackgroundCommandManager {
         }
     }
 
+    public func taskOwner(id: String) -> (sessionID: SessionID?, runID: RunID?)? {
+        guard let record = tasks[id] else { return nil }
+        return (record.sessionID, record.runID)
+    }
+
     public func generateSystemNotice(currentStep: Int) -> String? {
         // Refresh statuses of all tasks
         for record in tasks.values {

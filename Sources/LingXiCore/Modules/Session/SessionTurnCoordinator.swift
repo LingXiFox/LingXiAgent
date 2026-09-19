@@ -181,6 +181,60 @@ public actor SessionTurnCoordinator {
         }
     }
 
+    /// 从持久化 EventLog 中恢复尚未完结的排队 Turns 和 Runs（防止 Core 重启后丢失持久化的 Queued Turn）
+    public func restoreHistoricalQueue() async {
+        let allEvents = await eventLog.allEvents()
+        guard !allEvents.isEmpty else { return }
+
+        var createdTurns: [TurnID: TurnSnapshot] = [:]
+        var createdRuns: [RunID: RunSnapshot] = [:]
+        var queuedRunIDs: [RunID] = []
+        var terminalTurnIDs: Set<TurnID> = []
+        var terminalRunIDs: Set<RunID> = []
+
+        for envelope in allEvents {
+            switch envelope.payload {
+            case let .turnCreated(snap):
+                createdTurns[snap.turnID] = snap
+            case let .turnCompleted(turnID, _), let .turnFailed(turnID, _):
+                terminalTurnIDs.insert(turnID)
+            case let .runCreated(snap):
+                createdRuns[snap.runID] = snap
+            case let .runCompleted(runID, _), let .runFailed(runID, _), let .runCancelled(runID, _):
+                terminalRunIDs.insert(runID)
+            case let .runQueued(runID):
+                if !queuedRunIDs.contains(runID) {
+                    queuedRunIDs.append(runID)
+                }
+            default:
+                break
+            }
+        }
+
+        // Populate memory state for historical turns and runs
+        for (turnID, snap) in createdTurns {
+            if turns[turnID] == nil {
+                turns[turnID] = snap
+            }
+        }
+        for (runID, snap) in createdRuns {
+            if runs[runID] == nil {
+                runs[runID] = snap
+            }
+        }
+
+        // Reconstruct queuedTurns: must have been queued or created with queued status, and not yet terminal
+        for runID in queuedRunIDs {
+            if !terminalRunIDs.contains(runID), let run = runs[runID] {
+                if let turn = turns[run.turnID], !terminalTurnIDs.contains(turn.turnID) {
+                    if !queuedTurns.contains(where: { $0.turnID == turn.turnID }) {
+                        queuedTurns.append(turn)
+                    }
+                }
+            }
+        }
+    }
+
     public func isTurnQueued(turnID: TurnID) -> Bool {
         queuedTurns.contains(where: { $0.turnID == turnID })
     }
@@ -232,6 +286,8 @@ public actor SessionTurnCoordinator {
             runs[queuedRunID] = queuedRun
             queuedTurns.append(queuedTurn)
             turns[turnID] = queuedTurn
+            let queuedCausal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queuedRunID, rootRunID: queuedRunID)
+            await eventLog.append(causal: queuedCausal, payload: .runCreated(queuedRun))
             await eventLog.append(causal: causal, payload: .runQueued(runID: queuedRunID))
             return SubmitTurnDecision(turn: queuedTurn, status: .queued, runID: queuedRunID, shouldStartExecution: false)
         } else {
@@ -324,110 +380,117 @@ public actor SessionTurnCoordinator {
     }
 
     public func finishRun(runID: RunID, reason: TerminalReason, error: RuntimeError? = nil) async -> NextTurnToRun? {
-        guard let run = runs[runID] else { return nil }
+        guard let run = runs[runID], !run.status.isTerminal else {
+            // Idempotent guard: already terminal or not found. Never advance queue twice!
+            return nil
+        }
         let turnID = run.turnID
         let causal = CausalContext(sessionID: sessionID, turnID: turnID, runID: runID, rootRunID: run.rootRunID)
 
-        if let error {
-            let failedRun = RunSnapshot(
-                runID: runID,
-                sessionID: sessionID,
+        let terminalStatus: RunStatus
+        if reason == .userCancelled {
+            terminalStatus = .cancelled
+        } else if error != nil || reason == .runtimeFailure {
+            terminalStatus = .failed
+        } else {
+            terminalStatus = .completed
+        }
+
+        let terminalRun = RunSnapshot(
+            runID: runID,
+            sessionID: sessionID,
+            turnID: turnID,
+            rootRunID: run.rootRunID,
+            status: terminalStatus,
+            model: run.model,
+            createdAt: run.createdAt,
+            completedAt: Date(),
+            terminalReason: reason
+        )
+        runs[runID] = terminalRun
+
+        if let turn = turns[turnID] {
+            let turnStatus: TurnStatus = (terminalStatus == .cancelled) ? .cancelled : ((terminalStatus == .failed) ? .failed : .completed)
+            turns[turnID] = TurnSnapshot(
                 turnID: turnID,
-                rootRunID: run.rootRunID,
-                status: .failed,
-                model: run.model,
-                createdAt: run.createdAt,
-                completedAt: Date(),
-                terminalReason: reason
+                sessionID: sessionID,
+                userMessage: turn.userMessage,
+                executionIntent: turn.executionIntent,
+                status: turnStatus,
+                rootRunID: run.rootRunID ?? runID,
+                createdAt: turn.createdAt,
+                completedAt: Date()
             )
-            runs[runID] = failedRun
-            if let turn = turns[turnID] {
-                turns[turnID] = TurnSnapshot(
-                    turnID: turnID,
-                    sessionID: sessionID,
-                    userMessage: turn.userMessage,
-                    executionIntent: turn.executionIntent,
-                    status: .failed,
-                    rootRunID: run.rootRunID ?? runID,
-                    createdAt: turn.createdAt,
-                    completedAt: Date()
-                )
-            }
+        }
+
+        if terminalStatus == .cancelled {
+            await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "userCancelled"))
+            await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
+        } else if let error {
             await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: error))
             await eventLog.append(causal: causal, payload: .turnFailed(turnID: turnID, error: error))
         } else {
-            let completedRun = RunSnapshot(
-                runID: runID,
-                sessionID: sessionID,
-                turnID: turnID,
-                rootRunID: run.rootRunID,
-                status: .completed,
-                model: run.model,
-                createdAt: run.createdAt,
-                completedAt: Date(),
-                terminalReason: reason
-            )
-            runs[runID] = completedRun
-            if let turn = turns[turnID] {
-                turns[turnID] = TurnSnapshot(
-                    turnID: turnID,
-                    sessionID: sessionID,
-                    userMessage: turn.userMessage,
-                    executionIntent: turn.executionIntent,
-                    status: .completed,
-                    rootRunID: run.rootRunID ?? runID,
-                    createdAt: turn.createdAt,
-                    completedAt: Date()
-                )
-            }
             await eventLog.append(causal: causal, payload: .runCompleted(runID: runID, terminalReason: reason))
             await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: reason))
         }
 
-        if activeRootRunID == runID {
+        let wasActiveRoot = (activeRootRunID == runID)
+        if wasActiveRoot {
             activeRootRunID = nil
         }
 
-        return await scheduleNextQueuedTurn()
+        // Only the winner terminal transition of an active root run may advance the queue!
+        if wasActiveRoot {
+            return await scheduleNextQueuedTurn()
+        } else {
+            return nil
+        }
     }
 
     public func cancelRun(runID: RunID, reason: String? = nil) async throws -> NextTurnToRun? {
         guard let run = runs[runID] else {
             throw RuntimeError(category: .validation, code: "runNotFound", message: "Run \(runID.rawValue) 不存在", retryability: .none, source: .client)
         }
-        let causal = CausalContext(sessionID: sessionID, turnID: run.turnID, runID: runID, rootRunID: run.rootRunID)
-        let cancelledRun = RunSnapshot(
-            runID: runID,
-            sessionID: sessionID,
-            turnID: run.turnID,
-            rootRunID: run.rootRunID,
-            status: .cancelled,
-            model: run.model,
-            createdAt: run.createdAt,
-            completedAt: Date(),
-            terminalReason: .userCancelled
-        )
-        runs[runID] = cancelledRun
-        if let turn = turns[run.turnID] {
-            turns[run.turnID] = TurnSnapshot(
-                turnID: run.turnID,
+        if run.status.isTerminal {
+            // Already terminal, idempotent no-op!
+            return nil
+        }
+
+        // If target run is queued: remove from queuedTurns and mark cancelled, NEVER advance queue!
+        if run.status == .queued {
+            queuedTurns.removeAll(where: { $0.rootRunID == runID || $0.turnID == run.turnID })
+            let causal = CausalContext(sessionID: sessionID, turnID: run.turnID, runID: runID, rootRunID: run.rootRunID)
+            let cancelledRun = RunSnapshot(
+                runID: runID,
                 sessionID: sessionID,
-                userMessage: turn.userMessage,
-                executionIntent: turn.executionIntent,
+                turnID: run.turnID,
+                rootRunID: run.rootRunID,
                 status: .cancelled,
-                rootRunID: run.rootRunID ?? runID,
-                createdAt: turn.createdAt,
-                completedAt: Date()
+                model: run.model,
+                createdAt: run.createdAt,
+                completedAt: Date(),
+                terminalReason: .userCancelled
             )
+            runs[runID] = cancelledRun
+            if let turn = turns[run.turnID] {
+                turns[run.turnID] = TurnSnapshot(
+                    turnID: run.turnID,
+                    sessionID: sessionID,
+                    userMessage: turn.userMessage,
+                    executionIntent: turn.executionIntent,
+                    status: .cancelled,
+                    rootRunID: run.rootRunID ?? runID,
+                    createdAt: turn.createdAt,
+                    completedAt: Date()
+                )
+            }
+            await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: reason ?? "userCancelled"))
+            await eventLog.append(causal: causal, payload: .turnCompleted(turnID: run.turnID, terminalReason: .userCancelled))
+            return nil
         }
-        await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: reason ?? "userCancelled"))
-        await eventLog.append(causal: causal, payload: .turnCompleted(turnID: run.turnID, terminalReason: .userCancelled))
 
-        if activeRootRunID == runID {
-            activeRootRunID = nil
-        }
-
-        return await scheduleNextQueuedTurn()
+        // Target run is running: route through single terminalization path
+        return await finishRun(runID: runID, reason: .userCancelled)
     }
 
     private func scheduleNextQueuedTurn() async -> NextTurnToRun? {

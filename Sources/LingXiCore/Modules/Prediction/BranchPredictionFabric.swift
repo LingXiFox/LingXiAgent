@@ -9,6 +9,7 @@ public enum ActionToken: Hashable, Sendable, Codable, CustomStringConvertible {
     case subagent(task: String)
     case finish
     case userInterrupt
+    case cancel
 
     public var description: String {
         switch self {
@@ -24,6 +25,8 @@ public enum ActionToken: Hashable, Sendable, Codable, CustomStringConvertible {
             return "finish"
         case .userInterrupt:
             return "userInterrupt"
+        case .cancel:
+            return "cancel"
         }
     }
 }
@@ -33,26 +36,31 @@ public struct PredictionResult: Sendable, Equatable {
     public struct Candidate: Sendable, Equatable {
         public let token: ActionToken
         public let probability: Double
+        public let count: Int
 
-        public init(token: ActionToken, probability: Double) {
+        public init(token: ActionToken, probability: Double, count: Int = 0) {
             self.token = token
             self.probability = probability
+            self.count = count
         }
     }
 
     public let top1: ActionToken?
     public let topConfidence: Double
+    public let support: Int
     public let matchedOrder: Int
     public let candidates: [Candidate]
 
     public init(
         top1: ActionToken?,
         topConfidence: Double,
+        support: Int = 0,
         matchedOrder: Int,
         candidates: [Candidate]
     ) {
         self.top1 = top1
         self.topConfidence = topConfidence
+        self.support = support
         self.matchedOrder = matchedOrder
         self.candidates = candidates
     }
@@ -99,7 +107,10 @@ public final class VariableOrderMarkovPredictor: @unchecked Sendable {
     }
 
     private func contextKey(_ tokens: [ActionToken]) -> String {
-        tokens.map(\.description).joined(separator: "|")
+        tokens.map { token in
+            let desc = token.description
+            return "\(desc.utf8.count):\(desc)"
+        }.joined(separator: ";")
     }
 
     /// Train offline with multiple standardized action sequences.
@@ -135,7 +146,7 @@ public final class VariableOrderMarkovPredictor: @unchecked Sendable {
         defer { lock.unlock() }
 
         guard totalPriors > 0 else {
-            return PredictionResult(top1: nil, topConfidence: 0.0, matchedOrder: 0, candidates: [])
+            return PredictionResult(top1: nil, topConfidence: 0.0, support: 0, matchedOrder: 0, candidates: [])
         }
 
         // Try higher order down to 1
@@ -145,13 +156,15 @@ public final class VariableOrderMarkovPredictor: @unchecked Sendable {
             let key = contextKey(ctxSlice)
             if let counts = transitionCounts[key], !counts.isEmpty {
                 let total = Double(counts.values.reduce(0, +))
+                let totalCount = counts.values.reduce(0, +)
                 if total > 0 {
-                    let sorted = counts.map { (token: $0.key, prob: Double($0.value) / total) }
+                    let sorted = counts.map { (token: $0.key, prob: Double($0.value) / total, count: $0.value) }
                         .sorted { $0.prob > $1.prob }
-                    let candidates = sorted.map { PredictionResult.Candidate(token: $0.token, probability: $0.prob) }
+                    let candidates = sorted.map { PredictionResult.Candidate(token: $0.token, probability: $0.prob, count: $0.count) }
                     return PredictionResult(
                         top1: candidates.first?.token,
                         topConfidence: candidates.first?.probability ?? 0.0,
+                        support: totalCount,
                         matchedOrder: order,
                         candidates: candidates
                     )
@@ -161,12 +174,13 @@ public final class VariableOrderMarkovPredictor: @unchecked Sendable {
 
         // Fallback to order 0 (global prior distribution)
         let total = Double(totalPriors)
-        let sorted = priorCounts.map { (token: $0.key, prob: Double($0.value) / total) }
+        let sorted = priorCounts.map { (token: $0.key, prob: Double($0.value) / total, count: $0.value) }
             .sorted { $0.prob > $1.prob }
-        let candidates = sorted.map { PredictionResult.Candidate(token: $0.token, probability: $0.prob) }
+        let candidates = sorted.map { PredictionResult.Candidate(token: $0.token, probability: $0.prob, count: $0.count) }
         return PredictionResult(
             top1: candidates.first?.token,
             topConfidence: candidates.first?.probability ?? 0.0,
+            support: totalPriors,
             matchedOrder: 0,
             candidates: candidates
         )
@@ -265,6 +279,8 @@ public struct TrajectoryExtractor: Sendable {
 
     public func extract(from events: [SessionEventEnvelope]) -> [ActionToken] {
         var tokens: [ActionToken] = []
+        var seenCancelledRuns: Set<RunID> = []
+        var seenCancelledTurns: Set<TurnID> = []
 
         for record in events {
             switch record.payload {
@@ -272,10 +288,32 @@ public struct TrajectoryExtractor: Sendable {
                 tokens.append(.tool(name: inv.toolID.rawValue))
             case .assistantMessageCommitted:
                 tokens.append(.directAnswer)
-            case .runCompleted:
-                tokens.append(.finish)
-            case .runCancelled, .turnCompleted(_, terminalReason: .userCancelled):
-                tokens.append(.userInterrupt)
+            case let .runCompleted(runID, terminalReason):
+                if terminalReason == .userCancelled {
+                    if !seenCancelledRuns.contains(runID) {
+                        seenCancelledRuns.insert(runID)
+                        tokens.append(.cancel)
+                    }
+                } else {
+                    tokens.append(.finish)
+                }
+            case let .runCancelled(runID, _):
+                if !seenCancelledRuns.contains(runID) {
+                    seenCancelledRuns.insert(runID)
+                    tokens.append(.cancel)
+                }
+            case let .turnCompleted(turnID, terminalReason):
+                if terminalReason == .userCancelled {
+                    if let runID = record.causal.runID {
+                        if !seenCancelledRuns.contains(runID) {
+                            seenCancelledRuns.insert(runID)
+                            tokens.append(.cancel)
+                        }
+                    } else if !seenCancelledTurns.contains(turnID) {
+                        seenCancelledTurns.insert(turnID)
+                        tokens.append(.cancel)
+                    }
+                }
             default:
                 break
             }

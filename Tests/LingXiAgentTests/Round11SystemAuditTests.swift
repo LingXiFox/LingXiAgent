@@ -224,7 +224,7 @@ struct Round11SystemAuditTests {
             .tool(name: "file_search"),
             .tool(name: "file_read"),
             .directAnswer,
-            .userInterrupt
+            .cancel
         ])
     }
 }

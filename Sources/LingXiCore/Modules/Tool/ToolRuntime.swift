@@ -39,6 +39,7 @@ public struct ToolExecutionObserver: Sendable {
 package enum ToolExecutionContext {
     @TaskLocal static var observer: ToolExecutionObserver?
     @TaskLocal static var sessionID: SessionID?
+    @TaskLocal static var runID: RunID?
     @TaskLocal static var toolCallID: ToolCallID?
     @TaskLocal static var lifecycleTrace: ToolLifecycleTrace?
 }
@@ -780,10 +781,13 @@ public struct ToolRuntime: Sendable {
             let mutates = capabilities.contains(.projectWrite) || capabilities.contains(.repositoryWrite) || capabilities.contains(.destructive)
             await observer?.executionClaimed(ToolExecutionClaim(mutatesProject: mutates))
             lifecycleTrace?.record(.executorStart)
+            let boundRunID = currentRunID.map { RunID($0) }
             let operation: @Sendable () async throws -> String = {
                 try await ToolExecutionContext.$observer.withValue(observer) {
                     try await ToolExecutionContext.$sessionID.withValue(sessionID) {
-                        try await tool.execute(arguments: call.arguments, profile: effectiveProfile)
+                        try await ToolExecutionContext.$runID.withValue(boundRunID) { () async throws -> String in
+                            try await tool.execute(arguments: call.arguments, profile: effectiveProfile)
+                        }
                     }
                 }
             }

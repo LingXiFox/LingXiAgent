@@ -422,7 +422,13 @@ public actor AgentRuntime {
     // MARK: - 对话
 
     /// 在 Session 中发起一轮对话，返回该轮的 DMA 通道。
-    public func sendMessage(_ sessionID: SessionID, _ content: String, executionIntent: TurnExecutionIntent? = nil) async throws -> OpenedStream {
+    public func sendMessage(
+        _ sessionID: SessionID,
+        _ content: String,
+        executionIntent: TurnExecutionIntent? = nil,
+        explicitRunID: AgentRunID? = nil,
+        explicitModel: ModelSelection? = nil
+    ) async throws -> OpenedStream {
         guard !activeSessions.contains(sessionID) else { throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次") }
         // Preserve the established contract: an unavailable provider still records the user turn.
         if modelBus.gateway.modelID == nil { return try await runtime(for: sessionID).startTurn(content) }
@@ -430,7 +436,17 @@ public actor AgentRuntime {
             // Reserve before the first await so concurrent callers cannot create a second lane.
             activeSessions.insert(sessionID)
             let session = try await store.session(sessionID)
-            let run = try await createRun(session: session, parentRunID: nil, requestedModel: nil, title: session.title, profile: behaviorProfile.executionProfile)
+            let reqModel = explicitModel ?? (executionIntent?.modelSelection.flatMap { selection in
+                ModelSelection(modelID: selection)
+            })
+            let run = try await createRun(
+                session: session,
+                parentRunID: nil,
+                explicitRunID: explicitRunID,
+                requestedModel: reqModel,
+                title: session.title,
+                profile: behaviorProfile.executionProfile
+            )
             let permConfig = executionIntent?.permissionConfiguration
                 ?? (behaviorProfile.executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (behaviorProfile.executionProfile?.permissionProfile == "workspace" ? .askWorkspace : .strict))
             let runContext = RunExecutionContext(
@@ -712,10 +728,10 @@ public actor AgentRuntime {
         return runtime
     }
 
-    private func createRun(session: Session, parentRunID: AgentRunID?, requestedModel: ModelSelection? = nil, resolvedModel: (selection: ModelSelection, assembly: ModelRuntimeAssembly)? = nil, title: String?, profile: SubagentExecutionProfile? = nil, emitEvent: Bool = true) async throws -> AgentRunInfo {
+    private func createRun(session: Session, parentRunID: AgentRunID?, explicitRunID: AgentRunID? = nil, requestedModel: ModelSelection? = nil, resolvedModel: (selection: ModelSelection, assembly: ModelRuntimeAssembly)? = nil, title: String?, profile: SubagentExecutionProfile? = nil, emitEvent: Bool = true) async throws -> AgentRunInfo {
         let effectiveProfile = profile ?? (session.kind == .primary ? behaviorProfile.executionProfile : nil)
         let resolved = try await (resolvedModel != nil ? resolvedModel! : modelResolver.resolve(requestedModel, subagent: session.kind == .subagent))
-        let id = AgentRunID(UUID().uuidString)
+        let id = explicitRunID ?? AgentRunID(UUID().uuidString)
         let root = parentRunID.flatMap { runs[$0]?.rootRunID } ?? id
         var selection = resolved.selection
         if selection.reasoning == nil, session.reasoningEffort != .auto {
