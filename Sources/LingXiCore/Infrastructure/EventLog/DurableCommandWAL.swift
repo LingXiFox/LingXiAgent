@@ -68,11 +68,13 @@ public actor DurableCommandWAL {
         }
     }
 
+    public private(set) var quarantinedCorruptWALs: [String] = []
+
     /// 开始事务：写入 .wal 文件
-    public func beginTransaction(commandID: CommandID, commandName: String) {
+    public func beginTransaction(commandID: CommandID, commandName: String) throws {
         guard let walDir else { return }
         let record = StagedWALRecord(commandID: commandID.rawValue, commandName: commandName, stage: "staged")
-        writeWAL(record, to: walDir)
+        try writeWAL(record, to: walDir)
     }
 
     /// 记录状态机变更 (Phase 2)
@@ -84,7 +86,7 @@ public actor DurableCommandWAL {
         runID: RunID? = nil,
         initialRuntimeSequence: UInt64? = nil,
         initialSessionSequence: UInt64? = nil
-    ) {
+    ) throws {
         guard let walDir else { return }
         var record = readWAL(commandID: commandID) ?? StagedWALRecord(commandID: commandID.rawValue, commandName: "unknown")
         if let createdSessionID { record.createdSessionID = createdSessionID.rawValue }
@@ -95,35 +97,52 @@ public actor DurableCommandWAL {
         if let initialSessionSequence { record.initialSessionSequence = initialSessionSequence }
         record.stage = "stateMutated"
         record.updatedAt = Date()
-        writeWAL(record, to: walDir)
+        try writeWAL(record, to: walDir)
     }
 
     /// 记录语义事件已追加 (Phase 3)
-    public func recordEventsAppended(commandID: CommandID) {
+    public func recordEventsAppended(commandID: CommandID) throws {
         guard let walDir else { return }
         guard var record = readWAL(commandID: commandID) else { return }
         record.stage = "eventsAppended"
         record.updatedAt = Date()
-        writeWAL(record, to: walDir)
+        try writeWAL(record, to: walDir)
     }
 
     public struct CommittedTransactionRecord: Codable, Sendable {
         public let commandID: String
+        public let commandName: String?
+        public let payloadFingerprint: String?
         public let receiptType: String
         public let receiptData: Data
 
-        public init(commandID: String, receiptType: String, receiptData: Data) {
+        public init(
+            commandID: String,
+            commandName: String? = nil,
+            payloadFingerprint: String? = nil,
+            receiptType: String,
+            receiptData: Data
+        ) {
             self.commandID = commandID
+            self.commandName = commandName
+            self.payloadFingerprint = payloadFingerprint
             self.receiptType = receiptType
             self.receiptData = receiptData
         }
     }
 
     /// 提交事务：将 receipt 写入 committed_tx 并原子删除 .wal (Phase 4)
-    public func commitTransaction<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) throws {
+    public func commitTransaction<R: Codable & Sendable>(
+        commandID: CommandID,
+        commandName: String? = nil,
+        payloadFingerprint: String? = nil,
+        receipt: CommandReceipt<R>
+    ) throws {
         let receiptData = try JSONEncoder().encode(receipt)
         let record = CommittedTransactionRecord(
             commandID: commandID.rawValue,
+            commandName: commandName,
+            payloadFingerprint: payloadFingerprint,
             receiptType: String(reflecting: R.self),
             receiptData: receiptData
         )
@@ -132,7 +151,7 @@ public actor DurableCommandWAL {
         if let committedDir {
             let committedURL = committedDir.appendingPathComponent("\(safeKey).json")
             // Invariant: Receipt write to disk must succeed BEFORE removing .wal
-            try data.write(to: committedURL)
+            try data.write(to: committedURL, options: .atomic)
         }
         if let walDir {
             let walURL = walDir.appendingPathComponent("\(safeKey).wal")
@@ -143,28 +162,64 @@ public actor DurableCommandWAL {
         }
     }
 
-    /// 检查并获取已提交的 receipt
-    public func getCommittedReceipt<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> CommandReceipt<R>? {
-        guard let committedDir else { return nil }
+    /// 严格查找并校验已提交事务 receipt
+    public func lookupCommittedReceipt<R: Codable & Sendable>(
+        commandID: CommandID,
+        commandName: String? = nil,
+        payloadFingerprint: String? = nil,
+        as type: R.Type
+    ) -> IdempotencyJournal.LookupResult<R> {
+        guard let committedDir else { return .notFound }
         let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
         let fileURL = committedDir.appendingPathComponent("\(safeKey).json")
-        if let data = try? Data(contentsOf: fileURL) {
-            if let record = try? JSONDecoder().decode(CommittedTransactionRecord.self, from: data) {
-                guard record.receiptType == String(reflecting: R.self) else { return nil }
-                return try? JSONDecoder().decode(CommandReceipt<R>.self, from: record.receiptData)
-            }
-            if let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: data) {
-                return receipt
-            }
+        let data: Data
+        if let d = try? Data(contentsOf: fileURL) {
+            data = d
+        } else {
+            let legacyURL = committedDir.appendingPathComponent("\(commandID.rawValue).json")
+            guard let d = try? Data(contentsOf: legacyURL) else { return .notFound }
+            data = d
         }
-        // Fallback for legacy raw name
-        let legacyURL = committedDir.appendingPathComponent("\(commandID.rawValue).json")
-        guard let data = try? Data(contentsOf: legacyURL) else { return nil }
+
+        let expectedType = String(reflecting: R.self)
         if let record = try? JSONDecoder().decode(CommittedTransactionRecord.self, from: data) {
-            guard record.receiptType == String(reflecting: R.self) else { return nil }
-            return try? JSONDecoder().decode(CommandReceipt<R>.self, from: record.receiptData)
+            if record.receiptType != expectedType {
+                return .conflict(existingType: record.receiptType, requestedType: expectedType, reason: "Receipt type mismatch in durable WAL: existing=\(record.receiptType) requested=\(expectedType)")
+            }
+            if let expectedName = commandName, let recordedName = record.commandName, expectedName != recordedName {
+                return .conflict(existingType: record.receiptType, requestedType: expectedType, reason: "Command method mismatch in durable WAL: recorded=\(recordedName) requested=\(expectedName)")
+            }
+            if let expectedFP = payloadFingerprint, let recordedFP = record.payloadFingerprint, expectedFP != recordedFP {
+                return .conflict(existingType: record.receiptType, requestedType: expectedType, reason: "Payload fingerprint mismatch in durable WAL")
+            }
+            guard let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: record.receiptData) else {
+                return .conflict(existingType: record.receiptType, requestedType: expectedType, reason: "Receipt decode failure in durable WAL")
+            }
+            return .hit(receipt)
         }
-        return try? JSONDecoder().decode(CommandReceipt<R>.self, from: data)
+
+        // Backward compatibility for legacy raw CommandReceipt<R> JSON
+        if let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: data) {
+            return .hit(receipt)
+        }
+        return .notFound
+    }
+
+    /// 检查并获取已提交的 receipt (兼容旧调用)
+    public func getCommittedReceipt<R: Codable & Sendable>(
+        commandID: CommandID,
+        commandName: String? = nil,
+        payloadFingerprint: String? = nil,
+        as type: R.Type
+    ) -> CommandReceipt<R>? {
+        if case let .hit(receipt) = lookupCommittedReceipt(commandID: commandID, commandName: commandName, payloadFingerprint: payloadFingerprint, as: type) {
+            return receipt
+        }
+        return nil
+    }
+
+    public func getCommittedReceipt<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> CommandReceipt<R>? {
+        getCommittedReceipt(commandID: commandID, commandName: nil, payloadFingerprint: nil, as: type)
     }
 
     /// 进程重启恢复：回滚所有未达到 committed 阶段的孤儿状态与孤儿事件
@@ -183,13 +238,19 @@ public actor DurableCommandWAL {
                 let corruptURL = fileURL.deletingPathExtension().appendingPathExtension("corrupt")
                 try? FileManager.default.removeItem(at: corruptURL)
                 try? FileManager.default.moveItem(at: fileURL, to: corruptURL)
+                quarantinedCorruptWALs.append(fileURL.lastPathComponent)
                 continue
             }
 
             // 发现未提交的崩溃事务，必须自动消除未提交副作用！
+            var rollbackSuccess = true
             // 1. 如果该事务曾创建会话，删除未提交会话
             if let createdSession = record.createdSessionID {
-                try? await sessionStore.deleteSession(SessionID(createdSession))
+                do {
+                    try await sessionStore.deleteSession(SessionID(createdSession))
+                } catch {
+                    rollbackSuccess = false
+                }
             }
 
             // 2. 如果该事务曾追加 Runtime 事件，截断回退至 initialRuntimeSequence
@@ -207,11 +268,15 @@ public actor DurableCommandWAL {
                     if let turnIDStr = record.turnID {
                         await coord.rollbackTurnID(TurnID(turnIDStr), runID: record.runID.flatMap { RunID($0) })
                     }
+                } else {
+                    rollbackSuccess = false
                 }
             }
 
-            // 4. 清除 .wal
-            try? FileManager.default.removeItem(at: fileURL)
+            // 4. 清除 .wal (仅在回滚成功后清除；回滚失败时保留供人工/诊断分析)
+            if rollbackSuccess {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
         }
     }
 
@@ -228,11 +293,10 @@ public actor DurableCommandWAL {
         return try? JSONDecoder().decode(StagedWALRecord.self, from: data)
     }
 
-    private func writeWAL(_ record: StagedWALRecord, to dir: URL) {
+    private func writeWAL(_ record: StagedWALRecord, to dir: URL) throws {
         let safeKey = CommandStorageSecurity.safeStorageKey(for: CommandID(record.commandID))
         let url = dir.appendingPathComponent("\(safeKey).wal")
-        if let data = try? JSONEncoder().encode(record) {
-            try? data.write(to: url)
-        }
+        let data = try JSONEncoder().encode(record)
+        try data.write(to: url, options: .atomic)
     }
 }

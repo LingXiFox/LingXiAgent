@@ -1269,7 +1269,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 "behaviorProfile": currentBehaviorProfile.rawValue,
                 "persistence": persistence == nil ? "ephemeral" : "durable",
                 "subagentMaxConcurrent": String(subagentLimits.maxConcurrentSubagents),
-                "subagentMaxDepth": String(subagentLimits.maxSubagentDepth)
+                "subagentMaxDepth": String(subagentLimits.maxSubagentDepth),
+                "quarantinedCorruptWALs": (await commandWAL.quarantinedCorruptWALs).joined(separator: ",")
             ],
             trace: trace,
             recentErrors: await diagnosticsStore.recentErrors(),
@@ -2338,10 +2339,25 @@ extension CoreHost {
         case .notFound:
             break
         }
-        if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: type) {
-            return cached
+        switch await commandWAL.lookupCommittedReceipt(
+            commandID: envelope.commandID,
+            commandName: commandName,
+            payloadFingerprint: fingerprint,
+            as: type
+        ) {
+        case .hit(let receipt):
+            return receipt
+        case let .conflict(existingType, requestedType, reason):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) conflict in durable WAL: \(reason) (existing=\(existingType), requested=\(requestedType))",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            return nil
         }
-        return nil
     }
 
     private func recordIdempotency<R: Codable & Sendable, P: Encodable>(
@@ -2371,7 +2387,7 @@ extension CoreHost {
             throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
         }
 
-        await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "createSession")
+        try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "createSession")
         await ProviderRateScheduler.shared.reset()
 
         let initialRuntimeSeq = await runtimeEventLog.currentSequence()
@@ -2386,7 +2402,7 @@ extension CoreHost {
         let coord = try await coordinator(for: session.id)
         let initialSessionSeq = await coord.eventLog.currentSequence()
 
-        await commandWAL.recordState(
+        try await commandWAL.recordState(
             commandID: envelope.commandID,
             createdSessionID: session.id,
             sessionID: session.id,
@@ -2416,7 +2432,7 @@ extension CoreHost {
             reasoningEffort: session.reasoningEffort
         )
         await runtimeEventLog.append(payload: .sessionCreated(summary))
-        await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+        try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
         if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
             fflush(stdout)
@@ -2440,7 +2456,13 @@ extension CoreHost {
             ],
             result: summary
         )
-        try await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+        let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+        try await commandWAL.commitTransaction(
+            commandID: envelope.commandID,
+            commandName: "createSession",
+            payloadFingerprint: fingerprint,
+            receipt: receipt
+        )
         try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
 
         if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
@@ -2554,6 +2576,8 @@ extension CoreHost {
                 return cached
             }
 
+            try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "revertLastTurn")
+
             let oldRevision = (try? await sessionStore.currentRevision(sessionID)) ?? 0
             let newRevision = try await sessionStore.bumpRevision(sessionID)
             FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.begin sessionID=\(sessionID.rawValue) oldRevision=\(oldRevision) newRevision=\(newRevision)\n".utf8))
@@ -2648,7 +2672,13 @@ extension CoreHost {
                     revision: newRevision
                 )
             )
-            try await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+            let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+            try await commandWAL.commitTransaction(
+                commandID: envelope.commandID,
+                commandName: "revertLastTurn",
+                payloadFingerprint: fingerprint,
+                receipt: receipt
+            )
             try await recordIdempotency(envelope: envelope, commandName: "revertLastTurn", receipt: receipt)
             return receipt
         }
@@ -2789,13 +2819,12 @@ extension CoreHost {
                 throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
             }
 
-            await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
+            try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
 
             let coord = try await coordinator(for: sessionID)
             let initialRuntimeSeq = await runtimeEventLog.currentSequence()
             let initialSessionSeq = await coord.eventLog.currentSequence()
 
-            let isBusy = await coord.activeRootRunID != nil
             let msgID = MessageID()
             let userSnapshot = MessageSnapshot(
                 messageID: msgID,
@@ -2804,19 +2833,19 @@ extension CoreHost {
                 attachments: envelope.payload.input.attachments,
                 createdAt: Date()
             )
-            if !isBusy {
-                _ = try await sessionStore.appendMessage(
-                    sessionID,
-                    message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: userSnapshot.createdAt)
-                )
-            }
             let decision = await coord.submitTurn(
                 input: envelope.payload.input,
                 intent: envelope.payload.executionIntent,
                 userMessage: userSnapshot
             )
+            if decision.shouldStartExecution {
+                _ = try await sessionStore.appendMessage(
+                    sessionID,
+                    message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: userSnapshot.createdAt)
+                )
+            }
 
-            await commandWAL.recordState(
+            try await commandWAL.recordState(
                 commandID: envelope.commandID,
                 createdSessionID: nil,
                 sessionID: sessionID,
@@ -2836,7 +2865,7 @@ extension CoreHost {
                 throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
             }
 
-            await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+            try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
                 fflush(stdout)
@@ -2858,7 +2887,13 @@ extension CoreHost {
                 observedThrough: [watermark],
                 result: result
             )
-            try await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+            let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+            try await commandWAL.commitTransaction(
+                commandID: envelope.commandID,
+                commandName: "submitTurn",
+                payloadFingerprint: fingerprint,
+                receipt: receipt
+            )
             try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {

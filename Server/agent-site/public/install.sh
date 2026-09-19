@@ -82,8 +82,19 @@ mkdir -p "$INSTALL_ROOT/sessions"
 
 echo -e "${GRAY}[2/5] 准备本地安装路径: ${BOLD}${BIN_DIR}${RESET}"
 
-# 3. 部署二进制文件
+# 3. 部署二进制文件与 Sidecars
 INSTALLED=false
+
+install_sidecars() {
+    local src_dir="$1"
+    if [ -d "$src_dir/Sidecars/browser-host" ]; then
+        mkdir -p "$INSTALL_ROOT/sidecars/browser-host"
+        mkdir -p "$BIN_DIR/Sidecars/browser-host"
+        cp -R "$src_dir/Sidecars/browser-host/"* "$INSTALL_ROOT/sidecars/browser-host/"
+        cp -R "$src_dir/Sidecars/browser-host/"* "$BIN_DIR/Sidecars/browser-host/"
+        echo -e "${GRAY}[*] 已成功部署 Browser Sidecar 运行时${RESET}"
+    fi
+}
 
 # 场景 A: 如果当前目录下存在 Package.swift 且是 LingXiAgent 源码目录
 if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null; then
@@ -101,6 +112,7 @@ if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null
         if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
         fi
+        install_sidecars "."
         INSTALLED=true
         echo -e "${GREEN}[✓] 本地编译并成功安装至 ${TARGET_BIN}${RESET}"
     fi
@@ -134,6 +146,7 @@ if [ "$INSTALLED" = false ]; then
             if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
             fi
+            install_sidecars "$TMP_DIR"
             INSTALLED=true
             echo -e "${GREEN}[✓] 预编译二进制安装成功!${RESET}"
         fi
@@ -161,6 +174,7 @@ if [ "$INSTALLED" = false ]; then
             if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
             fi
+            install_sidecars "$CLONE_DIR"
         )
         rm -rf "$CLONE_DIR"
         INSTALLED=true

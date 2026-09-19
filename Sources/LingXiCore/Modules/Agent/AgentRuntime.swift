@@ -182,13 +182,45 @@ public actor AgentRuntime {
                 let calls = try await persistence.toolBatches(sessionID: run.sessionID).flatMap(\.toolCallStates).filter { $0.provenance.agentRunID == run.runID }
                 if !calls.isEmpty {
                     let waiting = calls.contains { $0.state == .waitingForHuman || ($0.request != nil && $0.reply == nil) }
-                    run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: waiting ? .waitingForUser : .recoveryRequired, modelSelection: run.modelSelection, startedAt: run.startedAt, latestActivityAt: .now, usage: run.usage, title: run.title)
+                    let recoveredStatus: AgentRunStatus = waiting ? .waitingForUser : .failed
+                    let recoveredError = waiting ? nil : CoreError(code: .toolCancelled, message: "Core 重启，运行已中断 (interrupted by system crash)")
+                    run = AgentRunInfo(
+                        runID: run.runID,
+                        sessionID: run.sessionID,
+                        projectID: run.projectID,
+                        parentRunID: run.parentRunID,
+                        rootRunID: run.rootRunID,
+                        agentKind: run.agentKind,
+                        status: recoveredStatus,
+                        modelSelection: run.modelSelection,
+                        startedAt: run.startedAt,
+                        finishedAt: waiting ? nil : .now,
+                        latestActivityAt: .now,
+                        error: recoveredError,
+                        usage: run.usage,
+                        title: run.title
+                    )
                     if waiting {
                         activeSessions.insert(run.sessionID)
                     }
                     try await persistence.saveAgentRun(run)
                 } else {
-                    run = AgentRunInfo(runID: run.runID, sessionID: run.sessionID, projectID: run.projectID, parentRunID: run.parentRunID, rootRunID: run.rootRunID, agentKind: run.agentKind, status: .recoveryRequired, modelSelection: run.modelSelection, startedAt: run.startedAt, finishedAt: .now, latestActivityAt: .now, error: CoreError(code: .toolCancelled, message: "Core 重启，运行需要恢复"), usage: run.usage, title: run.title)
+                    run = AgentRunInfo(
+                        runID: run.runID,
+                        sessionID: run.sessionID,
+                        projectID: run.projectID,
+                        parentRunID: run.parentRunID,
+                        rootRunID: run.rootRunID,
+                        agentKind: run.agentKind,
+                        status: .failed,
+                        modelSelection: run.modelSelection,
+                        startedAt: run.startedAt,
+                        finishedAt: .now,
+                        latestActivityAt: .now,
+                        error: CoreError(code: .toolCancelled, message: "Core 重启，运行已中断 (interrupted by system crash)"),
+                        usage: run.usage,
+                        title: run.title
+                    )
                     try await persistence.saveAgentRun(run)
                 }
             }
