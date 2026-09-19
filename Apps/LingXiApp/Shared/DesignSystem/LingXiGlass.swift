@@ -1,7 +1,8 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 /// LingXi Glass 视觉系统规范
-/// 统一承载四级玻璃质感、蓝紫青绿环境光晕染色、超细边框与柔和微阴影。
+/// 统一承载四级玻璃质感、系统级物理 Material 材质分层、蓝紫青绿环境光晕染色、超细边框与 Reduce Transparency 降级。
 public enum LingXiGlass {
     /// 四级玻璃材质层级
     public enum Tier {
@@ -66,8 +67,10 @@ public enum LingXiGlass {
     }
 }
 
-/// 玻璃容器修饰符
+/// 玻璃容器修饰符（结合系统 Material 与无障碍降级）
 public struct GlassmorphicModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     public let tier: LingXiGlass.Tier
     public let cornerRadius: CGFloat
     public let ambientColor: Color?
@@ -82,20 +85,43 @@ public struct GlassmorphicModifier: ViewModifier {
         self.ambientColor = ambientColor
     }
 
+    @ViewBuilder
+    private var materialBackground: some View {
+        if reduceTransparency {
+            LingXiGlass.Palette.surfaceElevated.opacity(0.98)
+        } else {
+            switch tier {
+            case .window:
+                Rectangle().fill(.ultraThinMaterial)
+            case .panel:
+                Rectangle().fill(.thinMaterial)
+            case .card:
+                Rectangle().fill(.regularMaterial)
+            case .floating:
+                Rectangle().fill(.thickMaterial)
+            }
+        }
+    }
+
     public func body(content: Content) -> some View {
         content
             .background {
                 ZStack {
-                    // 环境微光晕染色层
-                    if let ambient = ambientColor {
+                    // 环境微光晕染色层 (仅在正常透明度模式下生效)
+                    if !reduceTransparency, let ambient = ambientColor {
                         ambient
                             .opacity(0.08)
                             .blur(radius: tier.blurRadius)
                     }
                     
-                    // 核心材质基底
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(LingXiGlass.Palette.deepBackground.opacity(tier.backgroundOpacity))
+                    // 核心材质基底：真实系统 Material 物理层
+                    materialBackground
+                    
+                    // 叠加轻微品牌底色以保持 Cyber 深色质感
+                    if !reduceTransparency {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(LingXiGlass.Palette.deepBackground.opacity(tier.backgroundOpacity * 0.4))
+                    }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -133,3 +159,4 @@ public extension View {
         modifier(GlassmorphicModifier(tier: tier, cornerRadius: cornerRadius, ambientColor: ambientColor))
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 public struct MainGlassView: View {
@@ -33,3 +34,4 @@ public struct MainGlassView: View {
         .lingXiGlass(tier: .window, cornerRadius: 0)
     }
 }
+#endif

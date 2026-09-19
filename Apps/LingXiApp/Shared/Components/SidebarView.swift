@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 public struct SidebarView: View {
@@ -85,7 +86,7 @@ public struct SidebarView: View {
                             ambientColor: session.isActive ? LingXiGlass.Palette.neonPurple : nil
                         )
                         .onTapGesture {
-                            model.selectedSessionID = session.id
+                            runtime.switchSession(id: session.id)
                             onSelectSession(session.id)
                         }
                     }
@@ -119,3 +120,4 @@ public struct SidebarView: View {
         .lingXiGlass(tier: .panel, cornerRadius: 0)
     }
 }
+#endif

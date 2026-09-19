@@ -25,10 +25,27 @@ private enum VNextWireError: Error {
     case invalidResponse
 }
 
+private actor ClientWireWriter {
+    private let handle: FileHandle
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func write(data: Data) throws {
+        try handle.write(contentsOf: data)
+    }
+
+    func close() {
+        try? handle.close()
+    }
+}
+
 /// VNext JSON-lines transport. The wire adapter stays in Client; Application never sees it.
 public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private let process: Process?
     private let input: FileHandle
+    private let writer: ClientWireWriter
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let lock = NSLock()
@@ -56,7 +73,9 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         process.standardOutput = outputPipe
         process.standardError = FileHandle.nullDevice
         self.process = process
-        self.input = inputPipe.fileHandleForWriting
+        let inputHandle = inputPipe.fileHandleForWriting
+        self.input = inputHandle
+        self.writer = ClientWireWriter(handle: inputHandle)
         try process.run()
         Self.trace("process.run.end")
         Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
@@ -65,6 +84,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public init(inputHandle: FileHandle, outputPipe: Pipe, process: Process? = nil) {
         self.process = process
         self.input = inputHandle
+        self.writer = ClientWireWriter(handle: inputHandle)
         Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
@@ -108,6 +128,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
             return (error, continuations)
         }
         for continuation in continuations { continuation.resume(throwing: error) }
+        await writer.close()
         try? input.close()
 
         if let process {
@@ -288,10 +309,22 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private func unsupported<Response: Decodable>() async throws -> Response { throw CoreError(code: .unsupportedCommand, message: "VNext stdio operation is not exposed") }
     private func unsupportedVoid() async throws { throw CoreError(code: .unsupportedCommand, message: "VNext stdio operation is not exposed") }
 
+    private func takePending(_ id: String) -> CheckedContinuation<Data, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending.removeValue(forKey: id)
+    }
+
     private func send(method: String, payload: Data?, id: String? = nil) async throws -> Data {
         let requestID = id ?? makeID()
         debug("send.begin id=\(requestID) method=\(method)")
-        let data = try encoder.encode(VNextWireRequest(id: requestID, method: method, payload: payload)) + Data("\n".utf8)
+        let wireRequest = VNextWireRequest(id: requestID, method: method, payload: payload)
+        let data = try encoder.encode(wireRequest) + Data("\n".utf8)
+        let maxFrameBytes = 64 * 1024 * 1024
+        guard data.count <= maxFrameBytes else {
+            throw CoreError(code: .transport, message: "Request payload \(data.count) bytes exceeds 64MB frame limit")
+        }
+
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
@@ -303,21 +336,21 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
                 pending[requestID] = continuation
                 lock.unlock()
 
-                do {
-                    try input.write(contentsOf: data)
-                } catch {
-                    lock.lock()
-                    pending.removeValue(forKey: requestID)
-                    lock.unlock()
-                    continuation.resume(throwing: error)
+                Task {
+                    do {
+                        try await writer.write(data: data)
+                    } catch {
+                        if let winner = takePending(requestID) {
+                            winner.resume(throwing: error)
+                        }
+                    }
                 }
             }
         } onCancel: { [weak self] in
             guard let self else { return }
-            self.lock.lock()
-            let continuation = self.pending.removeValue(forKey: requestID)
-            self.lock.unlock()
-            continuation?.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(requestID) cancelled"))
+            if let winner = self.takePending(requestID) {
+                winner.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(requestID) cancelled"))
+            }
         }
     }
 
@@ -339,9 +372,10 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private func handle(_ data: Data) {
         if let response = try? decoder.decode(VNextWireResponse.self, from: data) {
             debug("response id=\(response.id)")
-            lock.lock(); let continuation = pending.removeValue(forKey: response.id); lock.unlock()
-            if let error = response.error { continuation?.resume(throwing: error) }
-            else { continuation?.resume(returning: response.payload ?? Data()) }
+            if let winner = takePending(response.id) {
+                if let error = response.error { winner.resume(throwing: error) }
+                else { winner.resume(returning: response.payload ?? Data()) }
+            }
             return
         }
         guard let push = try? decoder.decode(VNextWirePush.self, from: data) else { return }
@@ -354,7 +388,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     }
 
     private func fail(_ error: CoreError) {
-        lock.lock(); guard terminalError == nil else { lock.unlock(); return }; terminalError = error; let values = pending.values; pending.removeAll(); lock.unlock()
+        lock.lock()
+        guard terminalError == nil else { lock.unlock(); return }
+        terminalError = error
+        let values = Array(pending.values)
+        pending.removeAll()
+        lock.unlock()
         for continuation in values { continuation.resume(throwing: error) }
         updateState(.failed(detail: error.message))
     }

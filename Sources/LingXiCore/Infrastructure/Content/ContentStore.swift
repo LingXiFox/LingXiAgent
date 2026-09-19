@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import LingXiPlatform
 import LingXiProtocol
 
@@ -20,9 +19,9 @@ public actor ContentStore {
         var totalBytesWritten: Int
     }
 
-    private struct StoredContent {
+    private struct StoredMetadata: Sendable {
         let id: ContentID
-        let data: Data
+        let byteCount: Int
         let mediaType: String?
         let digest: String
         let filename: String?
@@ -32,6 +31,7 @@ public actor ContentStore {
 
     private struct PersistedMeta: Codable {
         let id: String
+        let byteCount: Int?
         let mediaType: String?
         let digest: String
         let filename: String?
@@ -40,10 +40,12 @@ public actor ContentStore {
     }
 
     private var inProgress: [String: InProgressUpload] = [:]
-    private var contents: [ContentID: StoredContent] = [:]
+    private var metaCache: [ContentID: StoredMetadata] = [:]
+    private var byteCache: [ContentID: Data] = [:]
     private var memoryKeys: [ContentID] = []
     private var currentMemoryBytes: Int = 0
     private let maxMemoryBytes: Int = 32 * 1024 * 1024 // 32MB 内存上限
+    private let maxCacheableSingleItemBytes: Int = 8 * 1024 * 1024 // 单个项目 <=8MB 才进 byteCache
     private let storageDirectory: URL?
 
     // 内存与上传硬配额及超时限制 (Audit Round 7 Phase E)
@@ -79,19 +81,24 @@ public actor ContentStore {
         inProgress.values.reduce(0) { $0 + $1.totalBytesWritten }
     }
 
-    private func rememberContent(_ stored: StoredContent) {
-        if let old = contents[stored.id] {
-            currentMemoryBytes -= old.data.count
-            memoryKeys.removeAll(where: { $0 == stored.id })
+    private func rememberMetadata(_ meta: StoredMetadata) {
+        metaCache[meta.id] = meta
+    }
+
+    private func cacheBytes(id: ContentID, data: Data) {
+        guard data.count <= maxCacheableSingleItemBytes else { return }
+        if let old = byteCache[id] {
+            currentMemoryBytes -= old.count
+            memoryKeys.removeAll(where: { $0 == id })
         }
-        contents[stored.id] = stored
-        currentMemoryBytes += stored.data.count
-        memoryKeys.append(stored.id)
+        byteCache[id] = data
+        currentMemoryBytes += data.count
+        memoryKeys.append(id)
 
         while currentMemoryBytes > maxMemoryBytes, !memoryKeys.isEmpty {
             let evictedKey = memoryKeys.removeFirst()
-            if let evicted = contents.removeValue(forKey: evictedKey) {
-                currentMemoryBytes -= evicted.data.count
+            if let evicted = byteCache.removeValue(forKey: evictedKey) {
+                currentMemoryBytes -= evicted.count
             }
         }
     }
@@ -146,8 +153,17 @@ public actor ContentStore {
             )
         }
 
-        // 幂等处理网络重试导致的重复分片，避免重复追加损坏数据 (Audit Round 8 Phase D)
+        // 幂等处理网络重试导致的重复分片，避免重复追加损坏数据；冲突 payload 严格防御 (Audit Round 9 Phase B)
         if upload.receivedIndices.contains(chunkIndex) {
+            if let existing = upload.chunks[chunkIndex], existing != data {
+                throw RuntimeError(
+                    category: .validation,
+                    code: "chunkConflict",
+                    message: "Chunk index \(chunkIndex) payload conflicts with previously received chunk",
+                    retryability: .none,
+                    source: .client
+                )
+            }
             return
         }
 
@@ -261,21 +277,19 @@ public actor ContentStore {
 
         let contentID = ContentID(UUID().uuidString)
         let digestString: String
-        let assembledData: Data
 
         if let stagingURL = upload.stagingFileURL, let dir = storageDirectory {
             let calculatedDigest: String
             do {
                 let handle = try FileHandle(forReadingFrom: stagingURL)
                 defer { try? handle.close() }
-                var hasher = SHA256()
+                var hasher = LingXiPlatform.crypto.makeSHA256Hasher()
                 while true {
                     let chunk = handle.readData(ofLength: 64 * 1024)
                     if chunk.isEmpty { break }
                     hasher.update(data: chunk)
                 }
-                let digestBytes = hasher.finalize()
-                calculatedDigest = "sha256:" + digestBytes.map { String(format: "%02x", $0) }.joined()
+                calculatedDigest = "sha256:" + hasher.finalizeHex()
             } catch {
                 try? FileManager.default.removeItem(at: stagingURL)
                 inProgress.removeValue(forKey: request.uploadID)
@@ -288,7 +302,6 @@ public actor ContentStore {
                 )
             }
             digestString = calculatedDigest
-            assembledData = (upload.totalBytesWritten <= 8 * 1024 * 1024) ? ((try? Data(contentsOf: stagingURL)) ?? Data()) : Data()
 
             if let expected = request.expectedDigest, !expected.isEmpty {
                 guard expected.lowercased() == digestString.lowercased() else {
@@ -312,6 +325,7 @@ public actor ContentStore {
 
             let meta = PersistedMeta(
                 id: contentID.rawValue,
+                byteCount: upload.totalBytesWritten,
                 mediaType: upload.proposedMediaType,
                 digest: digestString,
                 filename: upload.filename,
@@ -332,6 +346,24 @@ public actor ContentStore {
                     source: .core
                 )
             }
+
+            let storedMeta = StoredMetadata(
+                id: contentID,
+                byteCount: upload.totalBytesWritten,
+                mediaType: upload.proposedMediaType,
+                digest: digestString,
+                filename: upload.filename,
+                scope: upload.scope,
+                createdAt: meta.createdAt
+            )
+            rememberMetadata(storedMeta)
+
+            // 仅对不超过单项阈值的小文件进行内存 byte 预热缓存，严禁将空 Data 写入 byte 缓存 (Audit Round 9 Phase B)
+            if upload.totalBytesWritten <= maxCacheableSingleItemBytes {
+                if let smallData = try? Data(contentsOf: finalFileURL) {
+                    cacheBytes(id: contentID, data: smallData)
+                }
+            }
         } else {
             var memData = Data()
             for idx in sortedIndices {
@@ -340,7 +372,6 @@ public actor ContentStore {
                 }
             }
             digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(memData)
-            assembledData = memData
 
             if let expected = request.expectedDigest, !expected.isEmpty {
                 guard expected.lowercased() == digestString.lowercased() else {
@@ -354,20 +385,51 @@ public actor ContentStore {
                     )
                 }
             }
+
+            let createdAt = Date()
+            if let dir = storageDirectory {
+                let finalFileURL = dir.appendingPathComponent(contentID.rawValue)
+                let metaURL = dir.appendingPathComponent("\(contentID.rawValue).meta.json")
+                do {
+                    try memData.write(to: finalFileURL, options: .atomic)
+                    let meta = PersistedMeta(
+                        id: contentID.rawValue,
+                        byteCount: memData.count,
+                        mediaType: upload.proposedMediaType,
+                        digest: digestString,
+                        filename: upload.filename,
+                        scope: upload.scope,
+                        createdAt: createdAt
+                    )
+                    let metaData = try JSONEncoder().encode(meta)
+                    try metaData.write(to: metaURL, options: .atomic)
+                } catch {
+                    try? FileManager.default.removeItem(at: finalFileURL)
+                    try? FileManager.default.removeItem(at: metaURL)
+                    throw RuntimeError(
+                        category: .runtime,
+                        code: "storageWriteFailed",
+                        message: "Failed to persist content body or metadata: \(error.localizedDescription)",
+                        retryability: .none,
+                        source: .core
+                    )
+                }
+            }
+
+            let storedMeta = StoredMetadata(
+                id: contentID,
+                byteCount: memData.count,
+                mediaType: upload.proposedMediaType,
+                digest: digestString,
+                filename: upload.filename,
+                scope: upload.scope,
+                createdAt: createdAt
+            )
+            rememberMetadata(storedMeta)
+            cacheBytes(id: contentID, data: memData)
         }
 
         inProgress.removeValue(forKey: request.uploadID)
-
-        let stored = StoredContent(
-            id: contentID,
-            data: assembledData,
-            mediaType: upload.proposedMediaType,
-            digest: digestString,
-            filename: upload.filename,
-            scope: upload.scope,
-            createdAt: Date()
-        )
-        rememberContent(stored)
 
         let finalByteCount = upload.totalBytesWritten
         let tokenEstimate = max(1, finalByteCount / 4)
@@ -394,15 +456,7 @@ public actor ContentStore {
     ) throws -> ContentRef {
         let digestString = "sha256:" + LingXiPlatform.crypto.sha256Hex(data)
         let contentID = ContentID(UUID().uuidString)
-        let stored = StoredContent(
-            id: contentID,
-            data: data,
-            mediaType: mediaType,
-            digest: digestString,
-            filename: filename,
-            scope: scope,
-            createdAt: Date()
-        )
+        let createdAt = Date()
 
         if let dir = storageDirectory {
             let fileURL = dir.appendingPathComponent(contentID.rawValue)
@@ -411,11 +465,12 @@ public actor ContentStore {
                 try data.write(to: fileURL, options: .atomic)
                 let meta = PersistedMeta(
                     id: contentID.rawValue,
+                    byteCount: data.count,
                     mediaType: mediaType,
                     digest: digestString,
                     filename: filename,
                     scope: scope,
-                    createdAt: stored.createdAt
+                    createdAt: createdAt
                 )
                 let metaData = try JSONEncoder().encode(meta)
                 try metaData.write(to: metaURL, options: .atomic)
@@ -432,7 +487,18 @@ public actor ContentStore {
             }
         }
 
-        rememberContent(stored)
+        let storedMeta = StoredMetadata(
+            id: contentID,
+            byteCount: data.count,
+            mediaType: mediaType,
+            digest: digestString,
+            filename: filename,
+            scope: scope,
+            createdAt: createdAt
+        )
+        rememberMetadata(storedMeta)
+        cacheBytes(id: contentID, data: data)
+
         let tokenEstimate = max(1, data.count / 4)
         return ContentRef(
             id: contentID,
@@ -443,18 +509,10 @@ public actor ContentStore {
         )
     }
 
-    /// 仅解析元数据与文件大小，绝对不将冷文件正文加载至内存 (Audit Round 7 Phase E)
-    private func resolveMetadata(id: ContentID) throws -> (meta: PersistedMeta, byteCount: Int) {
-        if let stored = contents[id] {
-            let meta = PersistedMeta(
-                id: id.rawValue,
-                mediaType: stored.mediaType,
-                digest: stored.digest,
-                filename: stored.filename,
-                scope: stored.scope,
-                createdAt: stored.createdAt
-            )
-            return (meta, stored.data.count)
+    /// 仅解析元数据与文件大小，绝对不将冷文件正文加载至内存 (Audit Round 7 Phase E & Round 9 Phase B)
+    private func resolveMetadata(id: ContentID) throws -> StoredMetadata {
+        if let stored = metaCache[id] {
+            return stored
         }
         if let dir = storageDirectory {
             let fileURL = dir.appendingPathComponent(id.rawValue)
@@ -472,40 +530,35 @@ public actor ContentStore {
                         source: .core
                     )
                 }
-                let attrs = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)) ?? [:]
-                let fileSize = (attrs[.size] as? Int) ?? 0
-                return (meta, fileSize)
-            }
-        }
-        throw RuntimeError(
-            category: .tool,
-            code: "resourceNotFound",
-            message: "Content ID \(id.rawValue) 不存在",
-            retryability: .none,
-            source: .core
-        )
-    }
 
-    private func resolveContent(id: ContentID) throws -> StoredContent {
-        if let stored = contents[id] {
-            return stored
-        }
-        if let dir = storageDirectory {
-            let fileURL = dir.appendingPathComponent(id.rawValue)
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                let (meta, _) = try resolveMetadata(id: id)
-                let data = (try? Data(contentsOf: fileURL)) ?? Data()
-                let loaded = StoredContent(
+                let actualByteCount: Int
+                if let count = meta.byteCount {
+                    actualByteCount = count
+                } else {
+                    guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                          let fileSize = attrs[.size] as? Int else {
+                        throw RuntimeError(
+                            category: .runtime,
+                            code: "storageReadFailed",
+                            message: "Failed to read content attributes for \(id.rawValue)",
+                            retryability: .none,
+                            source: .core
+                        )
+                    }
+                    actualByteCount = fileSize
+                }
+
+                let storedMeta = StoredMetadata(
                     id: id,
-                    data: data,
+                    byteCount: actualByteCount,
                     mediaType: meta.mediaType,
                     digest: meta.digest,
                     filename: meta.filename,
                     scope: meta.scope,
                     createdAt: meta.createdAt
                 )
-                rememberContent(loaded)
-                return loaded
+                metaCache[id] = storedMeta
+                return storedMeta
             }
         }
         throw RuntimeError(
@@ -518,22 +571,7 @@ public actor ContentStore {
     }
 
     public func read(id: ContentID, authorization: ContentAuthorizationContext = .system) throws -> Data {
-        let stored = try resolveContent(id: id)
-        guard authorization.isAuthorized(for: stored.scope) else {
-            throw RuntimeError(
-                category: .permission,
-                code: "contentAccessDenied",
-                message: "Access to Content \(id.rawValue) with scope \(stored.scope) is denied for given authorization context",
-                retryability: .none,
-                source: .core
-            )
-        }
-        return stored.data
-    }
-
-    /// 纯 Cold 磁盘范围读取：直接通过 FileHandle seek & read，绝不将全量大文件载入内存 (Audit Round 7 Phase E)
-    public func readRange(id: ContentID, offset: Int, length: Int, authorization: ContentAuthorizationContext = .system) throws -> Data {
-        let (meta, _) = try resolveMetadata(id: id)
+        let meta = try resolveMetadata(id: id)
         guard authorization.isAuthorized(for: meta.scope) else {
             throw RuntimeError(
                 category: .permission,
@@ -543,36 +581,103 @@ public actor ContentStore {
                 source: .core
             )
         }
-        guard offset >= 0, length > 0 else {
-            return Data()
+
+        if let cachedData = byteCache[id] {
+            return cachedData
         }
 
         if let dir = storageDirectory {
             let fileURL = dir.appendingPathComponent(id.rawValue)
-            if FileManager.default.fileExists(atPath: fileURL.path),
-               let handle = try? FileHandle(forReadingFrom: fileURL) {
-                defer { try? handle.close() }
-                try handle.seek(toOffset: UInt64(offset))
-                let chunk = try handle.read(upToCount: length) ?? Data()
-                return chunk
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                throw RuntimeError(
+                    category: .tool,
+                    code: "resourceNotFound",
+                    message: "Content ID \(id.rawValue) 不存在于磁盘",
+                    retryability: .none,
+                    source: .core
+                )
+            }
+            do {
+                let data = try Data(contentsOf: fileURL)
+                cacheBytes(id: id, data: data)
+                return data
+            } catch {
+                throw RuntimeError(
+                    category: .runtime,
+                    code: "storageReadFailed",
+                    message: "Failed to read content file: \(error.localizedDescription)",
+                    retryability: .none,
+                    source: .core
+                )
             }
         }
 
-        // 内存回退切片
-        if let stored = contents[id] {
-            guard offset < stored.data.count else {
-                return Data()
+        throw RuntimeError(
+            category: .tool,
+            code: "resourceNotFound",
+            message: "Content ID \(id.rawValue) 不存在",
+            retryability: .none,
+            source: .core
+        )
+    }
+
+    /// 纯 Cold 磁盘范围读取：直接通过 FileHandle seek & read，绝不将全量大文件载入内存 (Audit Round 7 Phase E & Round 9 Phase B)
+    public func readRange(id: ContentID, offset: Int, length: Int, authorization: ContentAuthorizationContext = .system) throws -> Data {
+        let meta = try resolveMetadata(id: id)
+        guard authorization.isAuthorized(for: meta.scope) else {
+            throw RuntimeError(
+                category: .permission,
+                code: "contentAccessDenied",
+                message: "Access to Content \(id.rawValue) with scope \(meta.scope) is denied for given authorization context",
+                retryability: .none,
+                source: .core
+            )
+        }
+        guard offset >= 0, length > 0, offset < meta.byteCount else {
+            return Data()
+        }
+
+        let end = min(meta.byteCount, offset + length)
+        let sliceLength = end - offset
+
+        if let cachedData = byteCache[id] {
+            return cachedData.subdata(in: offset..<end)
+        }
+
+        if let dir = storageDirectory {
+            let fileURL = dir.appendingPathComponent(id.rawValue)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                throw RuntimeError(
+                    category: .tool,
+                    code: "resourceNotFound",
+                    message: "Content ID \(id.rawValue) 不存在于磁盘",
+                    retryability: .none,
+                    source: .core
+                )
             }
-            let end = min(stored.data.count, offset + length)
-            return stored.data.subdata(in: offset..<end)
+            do {
+                let handle = try FileHandle(forReadingFrom: fileURL)
+                defer { try? handle.close() }
+                try handle.seek(toOffset: UInt64(offset))
+                let chunk = try handle.read(upToCount: sliceLength) ?? Data()
+                return chunk
+            } catch {
+                throw RuntimeError(
+                    category: .runtime,
+                    code: "storageReadFailed",
+                    message: "Failed to read content range from disk: \(error.localizedDescription)",
+                    retryability: .none,
+                    source: .core
+                )
+            }
         }
 
         return Data()
     }
 
-    /// 纯元数据读取：完全不读取正文数据，零正文内存开销 (Audit Round 7 Phase E)
+    /// 纯元数据读取：完全不读取正文数据，零正文内存开销 (Audit Round 7 Phase E & Round 9 Phase B)
     public func metadata(id: ContentID, authorization: ContentAuthorizationContext = .system) throws -> ContentMetadata {
-        let (meta, byteCount) = try resolveMetadata(id: id)
+        let meta = try resolveMetadata(id: id)
         guard authorization.isAuthorized(for: meta.scope) else {
             throw RuntimeError(
                 category: .permission,
@@ -582,11 +687,11 @@ public actor ContentStore {
                 source: .core
             )
         }
-        let tokenEstimate = max(1, byteCount / 4)
+        let tokenEstimate = max(1, meta.byteCount / 4)
         let ref = ContentRef(
             id: id,
             mediaType: meta.mediaType,
-            byteCount: byteCount,
+            byteCount: meta.byteCount,
             tokenEstimate: tokenEstimate,
             digest: meta.digest
         )

@@ -1,7 +1,7 @@
+#if canImport(SwiftUI)
 import Foundation
 import SwiftUI
 import Combine
-import LingXiProtocol
 
 // MARK: - Attachment Presentation (抽象附件契约，杜绝直接暴露本地路径)
 
@@ -111,21 +111,36 @@ public struct SessionItemPresentation: Identifiable, Sendable, Equatable {
     }
 }
 
-// MARK: - Runtime Telemetry Presentation (P-Core, E-Core, Cache, Retrieval)
+// MARK: - Runtime Telemetry Presentation (P-Core, E-Core, Codebase Graph, Cache, Retrieval)
 
 public struct RuntimeInspectorPresentation: Sendable, Equatable {
-    public var pcoreNodes: Int
-    public var pcoreEdges: Int
+    // P-Core: Resident Working Set (Token 预算与上下文窗口保留)
+    public var residentTokens: Int
+    public var workingSetCapacity: Int
+    public var contextWindowUsage: Double // 0.0 - 1.0
+
+    // Codebase Graph: 语义图谱独立结构
+    public var codebaseNodes: Int
+    public var codebaseEdges: Int
+
+    // E-Core: 短时记忆与热度
     public var ecoreHeat: Double // 0.0 - 1.0
+
+    // Provider & Cache
     public var cacheHitRatio: Double // 0.0 - 1.0
     public var tokensPerSecond: Double
+
+    // Services
     public var retrievalWarmup: String
     public var activeMCPCount: Int
     public var activeBackgroundTasks: Int
 
     public init(
-        pcoreNodes: Int = 1250,
-        pcoreEdges: Int = 3480,
+        residentTokens: Int = 48200,
+        workingSetCapacity: Int = 128000,
+        contextWindowUsage: Double = 0.38,
+        codebaseNodes: Int = 1250,
+        codebaseEdges: Int = 3480,
         ecoreHeat: Double = 0.42,
         cacheHitRatio: Double = 0.78,
         tokensPerSecond: Double = 54.2,
@@ -133,8 +148,11 @@ public struct RuntimeInspectorPresentation: Sendable, Equatable {
         activeMCPCount: Int = 4,
         activeBackgroundTasks: Int = 0
     ) {
-        self.pcoreNodes = pcoreNodes
-        self.pcoreEdges = pcoreEdges
+        self.residentTokens = residentTokens
+        self.workingSetCapacity = workingSetCapacity
+        self.contextWindowUsage = contextWindowUsage
+        self.codebaseNodes = codebaseNodes
+        self.codebaseEdges = codebaseEdges
         self.ecoreHeat = ecoreHeat
         self.cacheHitRatio = cacheHitRatio
         self.tokensPerSecond = tokensPerSecond
@@ -144,9 +162,10 @@ public struct RuntimeInspectorPresentation: Sendable, Equatable {
     }
 }
 
-// MARK: - Domain Presentation Models (ObservableObject isolated domains)
+// MARK: - Domain Presentation Models (ObservableObject isolated domains on MainActor)
 
-public final class SidebarPresentationModel: ObservableObject, @unchecked Sendable {
+@MainActor
+public final class SidebarPresentationModel: ObservableObject {
     @Published public var sessions: [SessionItemPresentation] = []
     @Published public var selectedSessionID: String?
     @Published public var workspace: WorkspaceSummaryPresentation
@@ -162,10 +181,15 @@ public final class SidebarPresentationModel: ObservableObject, @unchecked Sendab
     }
 }
 
-public final class ConversationPresentationModel: ObservableObject, @unchecked Sendable {
+@MainActor
+public final class ConversationPresentationModel: ObservableObject {
     @Published public var sessionID: String = ""
     @Published public var items: [TimelineItemPresentation] = []
     @Published public var isGenerating: Bool = false
+
+    private var streamingBuffer: String = ""
+    private var lastCoalescedPublishTime: Date = Date.distantPast
+    private let coalesceInterval: TimeInterval = 0.04 // 40ms 合批刷新阈值
 
     public init(sessionID: String = "", items: [TimelineItemPresentation] = []) {
         self.sessionID = sessionID
@@ -173,14 +197,27 @@ public final class ConversationPresentationModel: ObservableObject, @unchecked S
     }
 
     public func appendOrUpdateStreamingChunk(chunk: String) {
+        streamingBuffer.append(chunk)
+        let now = Date()
+        if now.timeIntervalSince(lastCoalescedPublishTime) >= coalesceInterval {
+            flushStreamingBuffer()
+            lastCoalescedPublishTime = now
+        }
+    }
+
+    public func flushStreamingBuffer() {
+        guard !streamingBuffer.isEmpty else { return }
+        let flushedText = streamingBuffer
+        streamingBuffer = ""
         if let lastIndex = items.indices.last, case .assistant(let existing, _) = items[lastIndex].kind {
-            items[lastIndex].kind = .assistant(content: existing + chunk, isStreaming: true)
+            items[lastIndex].kind = .assistant(content: existing + flushedText, isStreaming: true)
         } else {
-            items.append(TimelineItemPresentation(kind: .assistant(content: chunk, isStreaming: true)))
+            items.append(TimelineItemPresentation(kind: .assistant(content: flushedText, isStreaming: true)))
         }
     }
 
     public func finalizeStreaming() {
+        flushStreamingBuffer()
         if let lastIndex = items.indices.last, case .assistant(let text, _) = items[lastIndex].kind {
             items[lastIndex].kind = .assistant(content: text, isStreaming: false)
         }
@@ -188,7 +225,8 @@ public final class ConversationPresentationModel: ObservableObject, @unchecked S
     }
 }
 
-public final class RuntimeInspectorPresentationModel: ObservableObject, @unchecked Sendable {
+@MainActor
+public final class RuntimeInspectorPresentationModel: ObservableObject {
     @Published public var telemetry: RuntimeInspectorPresentation = RuntimeInspectorPresentation()
     @Published public var isExpanded: Bool = true
 
@@ -197,7 +235,8 @@ public final class RuntimeInspectorPresentationModel: ObservableObject, @uncheck
     }
 }
 
-public final class ComposerModel: ObservableObject, @unchecked Sendable {
+@MainActor
+public final class ComposerModel: ObservableObject {
     @Published public var text: String = ""
     @Published public var selectedMode: String = "build"
     @Published public var attachments: [AttachmentPresentation] = []
@@ -214,3 +253,4 @@ public final class ComposerModel: ObservableObject, @unchecked Sendable {
         isSubmitting = false
     }
 }
+#endif

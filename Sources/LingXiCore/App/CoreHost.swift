@@ -3887,7 +3887,7 @@ extension CoreHost {
         try await getWorkspaceSummary(envelope: envelope)
     }
 
-    /// 原子切换 Core 工作区数据面与控制面，消除 split-brain (Audit Round 5 Phase A, Round 7 Phase A)
+    /// 原子切换 Core 工作区数据面与控制面，消除 split-brain (Audit Round 5 Phase A, Round 7 Phase A & Round 9 Phase D)
     public func applyWorkspaceTransition(to newURL: URL) async throws {
         // 关键防御：若存在活跃的 Agent/Turn 运行，硬性拒绝工作区切换，消除过渡态 split-brain (Audit Round 7 Phase A)
         if let agent = self.agent, await agent.hasActiveRuns {
@@ -3897,18 +3897,16 @@ extension CoreHost {
         // 先计算目标版本 targetRevision，确保组件构造与 AgentRuntime 始终与 CoreHost 处于同一最新世代 (Audit Round 8 Phase B)
         let targetRevision = self.workspaceRevision &+ 1
 
+        // 1. 局部 Candidate 构造与全面校验 (任何一步抛错，CoreHost 原状态保持 100% 完整，绝不半途损坏状态)
         let stdURL = newURL.standardizedFileURL
-        self.workspaceURL = stdURL
         let sensitivePaths = SensitivePathPolicy(root: stdURL)
-        let workspace = try WorkspaceRoot(path: stdURL.path, sensitivePathPolicy: sensitivePaths)
-        self.projectScanner = ProjectScanner(root: stdURL, sensitivePathPolicy: sensitivePaths)
-        await self.extensionPlatform.updateProjectRoot(stdURL)
+        let candidateWorkspace = try WorkspaceRoot(path: stdURL.path, sensitivePathPolicy: sensitivePaths)
+        let candidateScanner = ProjectScanner(root: stdURL, sensitivePathPolicy: sensitivePaths)
+        let candidateInstructions = try AgentInstructionSet.load(workspace: stdURL)
 
-        // 重新装配 Agent 指令集与系统上下文事实
-        let instructions = try AgentInstructionSet.load(workspace: stdURL)
         let environment = ProcessInfo.processInfo.environment
         let defaultAccessScope = (agentSettings.executionProfile == .fullAccess) ? "fullAccess" : "workspace"
-        self.behaviorSystemContext = { [agentSettings] profile, execProfile in
+        let candidateBehaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String? = { [agentSettings] profile, execProfile in
             let scope: String
             if let execProfile {
                 scope = (execProfile.permissionProfile == "fullAccess") ? "fullAccess" : "workspace"
@@ -3925,61 +3923,72 @@ extension CoreHost {
             return AgentBehaviorInstructions.render(
                 profile: profile,
                 configured: agentSettings.systemContext,
-                repository: instructions,
+                repository: candidateInstructions,
                 environmentFacts: facts
             )
         }
 
-        // 重构内置工具集并注入 ToolRuntime
-        let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: self.projectScanner, pager: contextPager) : nil
-        self.cacheController = ContextCacheController(contextPager: contextPager, scanner: self.projectScanner, compactor: compactor)
-        let newRegistry = ToolRegistry.builtin(
-            workspace: workspace,
+        let candidateCodeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: candidateWorkspace, scanner: candidateScanner, pager: contextPager) : nil
+        let candidateCacheController = ContextCacheController(contextPager: contextPager, scanner: candidateScanner, compactor: compactor)
+        let candidateRegistry = ToolRegistry.builtin(
+            workspace: candidateWorkspace,
             contextPager: contextPager,
-            scanner: self.projectScanner,
+            scanner: candidateScanner,
             questions: questions,
             processes: processes,
             backgroundManager: backgroundManager,
-            codeIntelligence: codeIntelligence,
-            cacheController: cacheController,
+            codeIntelligence: candidateCodeIntelligence,
+            cacheController: candidateCacheController,
             webSearchEndpoint: environment["LINGXI_WEB_SEARCH_ENDPOINT"].flatMap(URL.init(string:)),
             tavilyAPIKey: environment["TAVILY_API_KEY"],
             graphEngine: self.codebaseGraphEngine,
             todoStore: self.todoStore,
             browserManager: self.browserSessionManager
         )
-        let mutationCoordinator = ToolMutationCoordinator(pager: contextPager, scanner: self.projectScanner)
-        self.toolRuntime = ToolRuntime(
-            registry: newRegistry,
+        let candidateMutationCoordinator = ToolMutationCoordinator(pager: contextPager, scanner: candidateScanner)
+        let candidateToolRuntime = ToolRuntime(
+            registry: candidateRegistry,
             permissions: permissionEngine,
-            mutations: mutationCoordinator,
+            mutations: candidateMutationCoordinator,
             outputArchive: ToolOutputArchive(persistence: persistence),
             outputSink: { [dataPlane] chunk in await dataPlane.emit(chunk) },
             mcpPager: mcpPager,
             subagents: subagentService,
-            cacheController: cacheController,
+            cacheController: candidateCacheController,
             deadlinePolicy: executionDeadlinePolicy,
             workspacePath: stdURL.path,
             workspaceRevision: targetRevision
         )
 
-        // 重新关联统一检索变更钩子，并重新绑定 E-Core 变更钩子 (Audit Round 7 Phase D)
-        if let retrievalTool = newRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
+        // 重新关联统一检索变更钩子，并重新绑定 E-Core 变更钩子
+        var candidateEcoreToken: ECoreObjectStore.MutationSubscriptionToken? = nil
+        if let retrievalTool = candidateRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
             let runtime = retrievalTool.retrievalRuntime
-            await mutationCoordinator.addMutationHook {
+            await candidateMutationCoordinator.addMutationHook {
                 await runtime.markDirty(source: .workspace, projectRoot: stdURL)
             }
             if let oldToken = self.ecoreMutationSubscriptionToken {
                 await self.cacheController.ecoreStore.removeMutationHook(token: oldToken)
                 self.ecoreMutationSubscriptionToken = nil
             }
-            let newToken = await self.cacheController.ecoreStore.addMutationHook {
+            let newToken = await candidateCacheController.ecoreStore.addMutationHook {
                 await runtime.markDirty(source: .ecore, projectRoot: stdURL)
             }
-            self.ecoreMutationSubscriptionToken = newToken
+            candidateEcoreToken = newToken
         }
 
-        // 关键闭环：更新 AgentRuntime 内部持有的 ToolRuntime、Scanner、Pager 和 BehaviorContext，并丢弃旧 SessionRuntime 缓存
+        // 2. Candidate 构造与钩子注册全部成功，执行原子提交 (Atomic Swap)
+        await self.extensionPlatform.updateProjectRoot(stdURL)
+        self.workspaceURL = stdURL
+        self.projectScanner = candidateScanner
+        self.behaviorSystemContext = candidateBehaviorSystemContext
+        self.cacheController = candidateCacheController
+        self.toolRuntime = candidateToolRuntime
+        if let token = candidateEcoreToken {
+            self.ecoreMutationSubscriptionToken = token
+        }
+
+        // 关键闭环：更新 AgentRuntime 内部持有的 ToolRuntime、Scanner、Pager 和 BehaviorContext
         if let agent = self.agent {
             await agent.updateWorkspaceComponents(
                 toolRuntime: self.toolRuntime,

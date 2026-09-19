@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 public struct RuntimeInspectorView: View {
@@ -21,15 +22,46 @@ public struct RuntimeInspectorView: View {
             }
             .padding(.bottom, 4)
 
-            // P-Core Codebase Graph
-            telemetryCard(title: "P-CORE GRAPH", symbol: "point.3.connected.trianglepath.dotted") {
+            // P-Core Memory Working Set (Token resident working set & context budget)
+            telemetryCard(title: "P-CORE WORKING SET", symbol: "cpu") {
+                VStack(spacing: 6) {
+                    HStack {
+                        Text("Resident")
+                            .font(.system(size: 11))
+                            .foregroundColor(LingXiGlass.Palette.textSecondary)
+                        Spacer()
+                        Text("\(model.telemetry.residentTokens / 1000)k / \(model.telemetry.workingSetCapacity / 1000)k")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(LingXiGlass.Palette.textPrimary)
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.white.opacity(0.1))
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [LingXiGlass.Palette.cyberCyan, LingXiGlass.Palette.neonPurple],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, model.telemetry.contextWindowUsage))))
+                        }
+                    }
+                    .frame(height: 6)
+                }
+            }
+
+            // Codebase Graph (Independent semantic graph)
+            telemetryCard(title: "CODEBASE GRAPH", symbol: "point.3.connected.trianglepath.dotted") {
                 VStack(spacing: 4) {
                     HStack {
                         Text("Nodes")
                             .font(.system(size: 11))
                             .foregroundColor(LingXiGlass.Palette.textSecondary)
                         Spacer()
-                        Text("\(model.telemetry.pcoreNodes)")
+                        Text("\(model.telemetry.codebaseNodes)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundColor(LingXiGlass.Palette.textPrimary)
                     }
@@ -38,7 +70,7 @@ public struct RuntimeInspectorView: View {
                             .font(.system(size: 11))
                             .foregroundColor(LingXiGlass.Palette.textSecondary)
                         Spacer()
-                        Text("\(model.telemetry.pcoreEdges)")
+                        Text("\(model.telemetry.codebaseEdges)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundColor(LingXiGlass.Palette.textPrimary)
                     }
@@ -161,3 +193,4 @@ public struct RuntimeInspectorView: View {
         .lingXiGlass(tier: .card, cornerRadius: 8)
     }
 }
+#endif

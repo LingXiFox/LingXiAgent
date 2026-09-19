@@ -1,6 +1,6 @@
+#if canImport(SwiftUI)
 import Foundation
 import SwiftUI
-import LingXiProtocol
 
 /// Phase 0 预设场景类型
 public enum GUIFixtureScenario: String, CaseIterable, Identifiable, Sendable {
@@ -24,7 +24,8 @@ public enum GUIFixtureScenario: String, CaseIterable, Identifiable, Sendable {
 /// - 0 Browser helper
 /// - 0 user HOME writes
 /// - 0 filesystem mutations
-public final class FakeFrontendRuntime: @unchecked Sendable {
+@MainActor
+public final class FakeFrontendRuntime {
     public let sidebarModel: SidebarPresentationModel
     public let conversationModel: ConversationPresentationModel
     public let inspectorModel: RuntimeInspectorPresentationModel
@@ -47,6 +48,39 @@ public final class FakeFrontendRuntime: @unchecked Sendable {
         streamingTask = nil
         self.currentScenario = scenario
         applyScenario(scenario)
+    }
+
+    public func switchSession(id: String) {
+        sidebarModel.selectedSessionID = id
+        for i in sidebarModel.sessions.indices {
+            let item = sidebarModel.sessions[i]
+            sidebarModel.sessions[i] = SessionItemPresentation(
+                id: item.id,
+                title: item.title,
+                lastUpdated: item.lastUpdated,
+                messageCount: item.messageCount,
+                mode: item.mode,
+                isActive: (item.id == id)
+            )
+        }
+        conversationModel.sessionID = id
+        switch id {
+        case "sess-2":
+            conversationModel.items = [
+                TimelineItemPresentation(kind: .user(content: "Analyze cache hit ratio and throughput.", attachments: [])),
+                TimelineItemPresentation(kind: .assistant(content: "Cache hit ratio is currently stable at 78.4% with 54.2 tokens/sec.", isStreaming: false))
+            ]
+        case "sess-3":
+            conversationModel.items = [
+                TimelineItemPresentation(kind: .user(content: "Inspect LingXi Glass visual system.", attachments: [])),
+                TimelineItemPresentation(kind: .assistant(content: "System Material layers with accessibility fallback are fully operational.", isStreaming: false))
+            ]
+        default:
+            conversationModel.items = [
+                TimelineItemPresentation(kind: .user(content: "Please check the workspace revision barrier.", attachments: [])),
+                TimelineItemPresentation(kind: .assistant(content: "Verified workspace revision progression barrier.", isStreaming: false))
+            ]
+        }
     }
 
     private func applyScenario(_ scenario: GUIFixtureScenario) {
@@ -72,8 +106,11 @@ public final class FakeFrontendRuntime: @unchecked Sendable {
             conversationModel.items = []
             conversationModel.isGenerating = false
             inspectorModel.telemetry = RuntimeInspectorPresentation(
-                pcoreNodes: 0,
-                pcoreEdges: 0,
+                residentTokens: 0,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.0,
+                codebaseNodes: 0,
+                codebaseEdges: 0,
                 ecoreHeat: 0.0,
                 cacheHitRatio: 1.0,
                 tokensPerSecond: 0.0,
@@ -106,8 +143,11 @@ public final class FakeFrontendRuntime: @unchecked Sendable {
             ]
             conversationModel.isGenerating = false
             inspectorModel.telemetry = RuntimeInspectorPresentation(
-                pcoreNodes: 1450,
-                pcoreEdges: 3920,
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
                 ecoreHeat: 0.35,
                 cacheHitRatio: 0.88,
                 tokensPerSecond: 64.0,
@@ -130,8 +170,11 @@ public final class FakeFrontendRuntime: @unchecked Sendable {
             ]
             conversationModel.isGenerating = true
             inspectorModel.telemetry = RuntimeInspectorPresentation(
-                pcoreNodes: 1450,
-                pcoreEdges: 3920,
+                residentTokens: 96000,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.75,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
                 ecoreHeat: 0.85,
                 cacheHitRatio: 0.94,
                 tokensPerSecond: 128.5,
@@ -228,3 +271,4 @@ public final class FakeFrontendRuntime: @unchecked Sendable {
         }
     }
 }
+#endif

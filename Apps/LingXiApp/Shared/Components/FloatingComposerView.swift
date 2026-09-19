@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 public struct FloatingComposerView: View {
@@ -98,3 +99,4 @@ public struct FloatingComposerView: View {
         onSend(trimmed, model.selectedMode, model.attachments)
     }
 }
+#endif

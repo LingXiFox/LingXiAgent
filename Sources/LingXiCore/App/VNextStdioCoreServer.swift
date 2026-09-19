@@ -25,22 +25,30 @@ private struct StreamSubscription: Codable { let streamID: StreamID; let afterIn
 private final class ConnectionTaskRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var tasks: [String: Task<Void, Never>] = [:]
+    private var finishedIDs: Set<String> = []
 
     func register(id: String, task: Task<Void, Never>) {
         lock.lock()
-        tasks[id] = task
-        lock.unlock()
+        defer { lock.unlock() }
+        if finishedIDs.contains(id) {
+            finishedIDs.remove(id)
+        } else {
+            tasks[id] = task
+        }
     }
 
     func unregister(id: String) {
         lock.lock()
-        _ = tasks.removeValue(forKey: id)
-        lock.unlock()
+        defer { lock.unlock() }
+        if tasks.removeValue(forKey: id) == nil {
+            finishedIDs.insert(id)
+        }
     }
 
     func cancel(id: String) {
         lock.lock()
         let task = tasks.removeValue(forKey: id)
+        finishedIDs.insert(id)
         lock.unlock()
         task?.cancel()
     }
@@ -49,6 +57,7 @@ private final class ConnectionTaskRegistry: @unchecked Sendable {
         lock.lock()
         let all = Array(tasks.values)
         tasks.removeAll()
+        finishedIDs.removeAll()
         lock.unlock()
         for task in all {
             task.cancel()
@@ -91,6 +100,7 @@ public struct VNextStdioCoreServer: Sendable {
         }
         await withTaskCancellationHandler {
             var buffer = Data()
+            let maxLineBytes = 32 * 1024 * 1024 // 32MB 单行帧限制，防海量流输入 OOM (Audit Round 9 Phase C)
             do {
                 for await chunk in chunks {
                     guard !Task.isCancelled else { break }
@@ -100,6 +110,10 @@ public struct VNextStdioCoreServer: Sendable {
                         buffer.removeSubrange(...newline)
                         guard let request = try? JSONDecoder().decode(VNextWireRequest.self, from: line) else { continue }
                         handle(request, writer: writer)
+                    }
+                    if buffer.count > maxLineBytes {
+                        buffer.removeAll()
+                        await writer.reply(id: "system", payload: nil, error: CoreError(code: .transport, message: "Frame size exceeds 32MB limit"))
                     }
                 }
             }

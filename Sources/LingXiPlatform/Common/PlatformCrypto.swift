@@ -100,6 +100,49 @@ public enum PlatformCrypto: Sendable {
         throw NSError(domain: "PlatformCrypto", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hardware AES.GCM requires platform crypto provider"])
         #endif
     }
+
+    /// 创建流式 SHA-256 增量哈希器，抹平平台差异，实现增量流式 Hash 计算
+    public static func makeSHA256Hasher() -> PlatformSHA256Hasher {
+        PlatformSHA256Hasher()
+    }
+}
+
+/// 跨平台流式 SHA-256 哈希器
+public struct PlatformSHA256Hasher: Sendable {
+    #if canImport(CryptoKit)
+    private var hasher: CryptoKit.SHA256
+    #else
+    private var state: CompactSHA256StreamState
+    #endif
+
+    public init() {
+        #if canImport(CryptoKit)
+        self.hasher = CryptoKit.SHA256()
+        #else
+        self.state = CompactSHA256StreamState()
+        #endif
+    }
+
+    public mutating func update(data: Data) {
+        #if canImport(CryptoKit)
+        hasher.update(data: data)
+        #else
+        state.update(data: data)
+        #endif
+    }
+
+    public mutating func finalizeData() -> Data {
+        #if canImport(CryptoKit)
+        let digest = hasher.finalize()
+        return Data(digest)
+        #else
+        return state.finalize()
+        #endif
+    }
+
+    public mutating func finalizeHex() -> String {
+        return finalizeData().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 #if !canImport(CryptoKit)
@@ -132,9 +175,8 @@ private enum CompactHMACSHA256 {
     }
 }
 
-/// 零外部依赖的标准 FIPS 180-4 SHA-256 纯 Swift 实现
-/// 专门为无原生 CryptoKit 的 Linux / Windows 环境提供确定性兜底
-private enum CompactSHA256 {
+/// 零外部依赖的标准 FIPS 180-4 SHA-256 流式状态机
+struct CompactSHA256StreamState: Sendable {
     private static let k: [UInt32] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -146,70 +188,107 @@ private enum CompactSHA256 {
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
     ]
 
-    static func hash(_ data: Data) -> Data {
-        var message = Array(data)
-        let bitLength = UInt64(data.count) * 8
-        message.append(0x80)
-        while (message.count % 64) != 56 {
-            message.append(0x00)
+    private var h: [UInt32] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]
+    private var buffer = [UInt8]()
+    private var totalBytes: UInt64 = 0
+
+    init() {
+        buffer.reserveCapacity(64)
+    }
+
+    mutating func update(data: Data) {
+        totalBytes &+= UInt64(data.count)
+        var offset = 0
+        let count = data.count
+        data.withUnsafeBytes { rawBuffer in
+            guard let ptr = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            if !buffer.isEmpty {
+                let needed = 64 - buffer.count
+                let toTake = min(needed, count)
+                buffer.append(contentsOf: UnsafeBufferPointer(start: ptr, count: toTake))
+                offset += toTake
+                if buffer.count == 64 {
+                    processChunk(buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                }
+            }
+            while offset + 64 <= count {
+                let chunk = Array(UnsafeBufferPointer(start: ptr + offset, count: 64))
+                processChunk(chunk)
+                offset += 64
+            }
+            if offset < count {
+                buffer.append(contentsOf: UnsafeBufferPointer(start: ptr + offset, count: count - offset))
+            }
+        }
+    }
+
+    private mutating func processChunk(_ chunk: [UInt8]) {
+        var w = [UInt32](repeating: 0, count: 64)
+        for i in 0..<16 {
+            let off = i * 4
+            w[i] = (UInt32(chunk[off]) << 24) |
+                   (UInt32(chunk[off + 1]) << 16) |
+                   (UInt32(chunk[off + 2]) << 8) |
+                   UInt32(chunk[off + 3])
+        }
+        for i in 16..<64 {
+            let s0 = (w[i - 15] >> 7 | w[i - 15] << 25) ^
+                     (w[i - 15] >> 18 | w[i - 15] << 14) ^
+                     (w[i - 15] >> 3)
+            let s1 = (w[i - 2] >> 17 | w[i - 2] << 15) ^
+                     (w[i - 2] >> 19 | w[i - 2] << 13) ^
+                     (w[i - 2] >> 10)
+            w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
+        }
+
+        var a = h[0], b = h[1], c = h[2], d = h[3]
+        var e = h[4], f = h[5], g = h[6], hVal = h[7]
+
+        for i in 0..<64 {
+            let s1 = (e >> 6 | e << 26) ^ (e >> 11 | e << 21) ^ (e >> 25 | e << 7)
+            let ch = (e & f) ^ (~e & g)
+            let temp1 = hVal &+ s1 &+ ch &+ Self.k[i] &+ w[i]
+            let s0 = (a >> 2 | a << 30) ^ (a >> 13 | a << 19) ^ (a >> 22 | a << 10)
+            let maj = (a & b) ^ (a & c) ^ (b & c)
+            let temp2 = s0 &+ maj
+
+            hVal = g
+            g = f
+            f = e
+            e = d &+ temp1
+            d = c
+            c = b
+            b = a
+            a = temp1 &+ temp2
+        }
+
+        h[0] = h[0] &+ a
+        h[1] = h[1] &+ b
+        h[2] = h[2] &+ c
+        h[3] = h[3] &+ d
+        h[4] = h[4] &+ e
+        h[5] = h[5] &+ f
+        h[6] = h[6] &+ g
+        h[7] = h[7] &+ hVal
+    }
+
+    mutating func finalize() -> Data {
+        let bitLength = totalBytes * 8
+        buffer.append(0x80)
+        while (buffer.count % 64) != 56 {
+            buffer.append(0x00)
+            if buffer.count == 64 {
+                processChunk(buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
         }
         var bigEndianBits = bitLength.bigEndian
-        withUnsafeBytes(of: &bigEndianBits) { message.append(contentsOf: $0) }
-
-        var h: [UInt32] = [
-            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-        ]
-
-        var w = [UInt32](repeating: 0, count: 64)
-        for chunkStart in stride(from: 0, to: message.count, by: 64) {
-            for i in 0..<16 {
-                let offset = chunkStart + i * 4
-                w[i] = (UInt32(message[offset]) << 24) |
-                       (UInt32(message[offset + 1]) << 16) |
-                       (UInt32(message[offset + 2]) << 8) |
-                       UInt32(message[offset + 3])
-            }
-            for i in 16..<64 {
-                let s0 = (w[i - 15] >> 7 | w[i - 15] << 25) ^
-                         (w[i - 15] >> 18 | w[i - 15] << 14) ^
-                         (w[i - 15] >> 3)
-                let s1 = (w[i - 2] >> 17 | w[i - 2] << 15) ^
-                         (w[i - 2] >> 19 | w[i - 2] << 13) ^
-                         (w[i - 2] >> 10)
-                w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
-            }
-
-            var a = h[0], b = h[1], c = h[2], d = h[3]
-            var e = h[4], f = h[5], g = h[6], hVal = h[7]
-
-            for i in 0..<64 {
-                let s1 = (e >> 6 | e << 26) ^ (e >> 11 | e << 21) ^ (e >> 25 | e << 7)
-                let ch = (e & f) ^ (~e & g)
-                let temp1 = hVal &+ s1 &+ ch &+ k[i] &+ w[i]
-                let s0 = (a >> 2 | a << 30) ^ (a >> 13 | a << 19) ^ (a >> 22 | a << 10)
-                let maj = (a & b) ^ (a & c) ^ (b & c)
-                let temp2 = s0 &+ maj
-
-                hVal = g
-                g = f
-                f = e
-                e = d &+ temp1
-                d = c
-                c = b
-                b = a
-                a = temp1 &+ temp2
-            }
-
-            h[0] = h[0] &+ a
-            h[1] = h[1] &+ b
-            h[2] = h[2] &+ c
-            h[3] = h[3] &+ d
-            h[4] = h[4] &+ e
-            h[5] = h[5] &+ f
-            h[6] = h[6] &+ g
-            h[7] = h[7] &+ hVal
-        }
+        withUnsafeBytes(of: &bigEndianBits) { buffer.append(contentsOf: $0) }
+        processChunk(buffer)
 
         var result = Data(capacity: 32)
         for value in h {
@@ -217,6 +296,16 @@ private enum CompactSHA256 {
             withUnsafeBytes(of: &be) { result.append(contentsOf: $0) }
         }
         return result
+    }
+}
+
+/// 零外部依赖的标准 FIPS 180-4 SHA-256 纯 Swift 实现
+/// 专门为无原生 CryptoKit 的 Linux / Windows 环境提供确定性兜底
+private enum CompactSHA256 {
+    static func hash(_ data: Data) -> Data {
+        var state = CompactSHA256StreamState()
+        state.update(data: data)
+        return state.finalize()
     }
 }
 #endif

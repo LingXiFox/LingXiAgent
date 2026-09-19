@@ -2,15 +2,27 @@ import Foundation
 
 private actor MutationGate {
     private var acquired = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
 
     func execute(_ operation: @escaping @Sendable () async throws -> String) async throws -> String {
+        try Task.checkCancellation()
         if acquired {
-            await withCheckedContinuation { waiters.append($0) }
+            let waiterID = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    waiters.append((id: waiterID, continuation: continuation))
+                }
+            } onCancel: {
+                Task { [self] in
+                    await self.cancelWaiter(id: waiterID)
+                }
+            }
         } else {
             acquired = true
         }
+
         do {
+            try Task.checkCancellation()
             let result = try await operation()
             release()
             return result
@@ -20,9 +32,20 @@ private actor MutationGate {
         }
     }
 
+    private func cancelWaiter(id: UUID) {
+        if let idx = waiters.firstIndex(where: { $0.id == id }) {
+            let item = waiters.remove(at: idx)
+            item.continuation.resume(throwing: CancellationError())
+        }
+    }
+
     private func release() {
-        if waiters.isEmpty { acquired = false }
-        else { waiters.removeFirst().resume() }
+        if waiters.isEmpty {
+            acquired = false
+        } else {
+            let item = waiters.removeFirst()
+            item.continuation.resume()
+        }
     }
 }
 
@@ -40,6 +63,14 @@ public actor ToolMutationCoordinator {
     public init(pager: ContextPager? = nil, scanner: ProjectScanner? = nil) {
         self.pager = pager
         self.scanner = scanner
+    }
+
+    public var isDirty: Bool {
+        mutationRevision > reconciledRevision
+    }
+
+    public var currentRevision: UInt64 {
+        mutationRevision
     }
 
     public func addMutationHook(_ hook: @escaping @Sendable () async -> Void) {
@@ -80,10 +111,11 @@ public actor ToolMutationCoordinator {
             let targetRevision = mutationRevision
             do {
                 try await reconcile()
+                reconciledRevision = targetRevision
             } catch {
-                // Reconcile errors are logged/swallowed so mutation callers aren't disrupted
+                // Reconcile 失败时保持 dirty 状态，绝不伪造成功递增已同步版本 (Audit Round 9 Phase D)
+                break
             }
-            reconciledRevision = targetRevision
         }
     }
 }

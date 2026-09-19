@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 public struct ConversationTimelineView: View {
@@ -174,3 +175,4 @@ public struct ConversationTimelineView: View {
         }
     }
 }
+#endif

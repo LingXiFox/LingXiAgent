@@ -1,8 +1,10 @@
+#if canImport(SwiftUI)
 import Foundation
 import Testing
 @testable import LingXiFrontendKit
 @testable import LingXiProtocol
 
+@MainActor
 @Suite("macOS GUI Phase 0 Hard Gate & Architecture Tests")
 struct LingXiAppPhase0Tests {
 
@@ -48,6 +50,9 @@ struct LingXiAppPhase0Tests {
                         conversation.appendOrUpdateStreamingChunk(chunk: " [\(i)]")
                     }
                 }
+                await MainActor.run {
+                    conversation.finalizeStreaming()
+                }
             }
 
             // Task 2: Continuous user typing in Composer
@@ -90,11 +95,13 @@ struct LingXiAppPhase0Tests {
     func testAllFixtureScenarios() async throws {
         let runtime = FakeFrontendRuntime(scenario: .empty)
         #expect(runtime.conversationModel.items.isEmpty)
-        #expect(runtime.inspectorModel.telemetry.pcoreNodes == 0)
+        #expect(runtime.inspectorModel.telemetry.residentTokens == 0)
+        #expect(runtime.inspectorModel.telemetry.codebaseNodes == 0)
 
         runtime.switchScenario(.conversation)
         #expect(runtime.conversationModel.items.count == 4)
-        #expect(runtime.inspectorModel.telemetry.pcoreNodes == 1450)
+        #expect(runtime.inspectorModel.telemetry.residentTokens == 52400)
+        #expect(runtime.inspectorModel.telemetry.codebaseNodes == 1450)
 
         runtime.switchScenario(.permission)
         let hasWaitingPermission = runtime.conversationModel.items.contains {
@@ -116,4 +123,21 @@ struct LingXiAppPhase0Tests {
         runtime.switchScenario(.backgroundTask)
         #expect(runtime.inspectorModel.telemetry.activeBackgroundTasks == 2)
     }
+
+    @Test("Phase 0 Architecture: switchSession synchronizes selected session and transcript")
+    func testSessionSwitchingSynchronization() async throws {
+        let runtime = FakeFrontendRuntime(scenario: .conversation)
+        #expect(runtime.sidebarModel.selectedSessionID == "sess-1")
+        #expect(runtime.conversationModel.sessionID == "sess-1")
+
+        runtime.switchSession(id: "sess-2")
+        #expect(runtime.sidebarModel.selectedSessionID == "sess-2")
+        #expect(runtime.conversationModel.sessionID == "sess-2")
+        #expect(runtime.conversationModel.items.count == 2)
+
+        runtime.switchSession(id: "sess-3")
+        #expect(runtime.sidebarModel.selectedSessionID == "sess-3")
+        #expect(runtime.conversationModel.sessionID == "sess-3")
+    }
 }
+#endif
