@@ -100,6 +100,7 @@ struct ProviderHTTPTests {
     private func collect(_ stream: AsyncThrowingStream<ModelEvent, Error>) async throws -> [ModelEvent] {
         var events: [ModelEvent] = []
         for try await event in stream {
+            if case .heartbeat = event { continue }
             events.append(event)
         }
         return events
@@ -404,7 +405,6 @@ struct ProviderHTTPTests {
         let provider = OpenAIResponsesProvider(config: ProviderConfig(baseURL: URL(string: "https://stub.test/v1")!, apiKey: nil, model: "stub", wireProtocol: .responses), session: StubURLProtocol.makeSession())
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "Read both files")
@@ -415,6 +415,7 @@ struct ProviderHTTPTests {
         #expect(snapshot.messages.map(\.role) == [.user, .assistant, .tool, .assistant])
         #expect(snapshot.messages[1].parts.compactMap { if case let .toolCall(call) = $0 { call.callID.rawValue } else { nil } }.allSatisfy { $0.hasPrefix("lingxi:") })
         #expect(snapshot.messages[2].parts.count == 2)
+        await host.shutdown()
     }
 
     @Test func dualWireProvidersPreserveToolLoopSessionSemantics() async throws {
@@ -619,13 +620,14 @@ struct ProviderHTTPTests {
         try "B".write(to: root.appendingPathComponent("B.md"), atomically: true, encoding: .utf8)
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "Read both files")
         var text = ""
         for try await chunk in stream where chunk.kind == .text { text += chunk.text }
-        return (try await client.session(sessionID).messages.map(\.role), text)
+        let result = (try await client.session(sessionID).messages.map(\.role), text)
+        await host.shutdown()
+        return result
     }
 
     private func runCapturedToolLoop(provider: any ModelProvider, reasoning: String? = nil) async throws -> LegacySessionSnapshot {
@@ -636,11 +638,12 @@ struct ProviderHTTPTests {
         let selection = ModelSelection(providerID: "default", modelID: "stub", reasoning: reasoning)
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), defaultModelSelection: selection, workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "Read A.md")
         for try await _ in stream {}
-        return try await client.session(sessionID)
+        let snapshot = try await client.session(sessionID)
+        await host.shutdown()
+        return snapshot
     }
 }

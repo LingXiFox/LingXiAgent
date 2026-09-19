@@ -46,7 +46,9 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
         config.httpMaximumConnectionsPerHost = 16
         config.timeoutIntervalForRequest = 45
         config.timeoutIntervalForResource = 300
+        #if canImport(Darwin)
         config.waitsForConnectivity = false
+        #endif
         return URLSession(configuration: config)
     }()
 
@@ -57,6 +59,7 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
     }
 
     public func send(_ request: URLRequest, context: ProviderHTTPRequestContext) async throws -> ProviderHTTPResponse {
+        #if canImport(Darwin)
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -108,5 +111,43 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
             }),
             body: body
         )
+        #else
+        return try await sendNonDarwin(request: request)
+        #endif
     }
+
+    #if !canImport(Darwin)
+    private func sendNonDarwin(request: URLRequest) async throws -> ProviderHTTPResponse {
+        return try await withCheckedThrowingContinuation { continuation in
+            let task = session.dataTask(with: request) { data, response, error in
+                if let error {
+                    if let urlErr = error as? URLError, urlErr.code == .timedOut {
+                        continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "Provider request timed out"))
+                    } else if let urlErr = error as? URLError, urlErr.code == .cancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else {
+                        continuation.resume(throwing: CoreError(code: .transportLost, message: "Provider transport failed: \(error.localizedDescription)"))
+                    }
+                    return
+                }
+                guard let http = response as? HTTPURLResponse else {
+                    continuation.resume(throwing: CoreError(code: .provider, message: "Provider 返回非 HTTP 响应"))
+                    return
+                }
+                let body = AsyncThrowingStream<Data, Error> { streamContinuation in
+                    if let data, !data.isEmpty {
+                        streamContinuation.yield(data)
+                    }
+                    streamContinuation.finish()
+                }
+                let headers = Dictionary(uniqueKeysWithValues: http.allHeaderFields.compactMap { key, value in
+                    guard let key = key as? String else { return nil }
+                    return (key, String(describing: value))
+                })
+                continuation.resume(returning: ProviderHTTPResponse(statusCode: http.statusCode, headers: headers, body: body))
+            }
+            task.resume()
+        }
+    }
+    #endif
 }

@@ -98,7 +98,6 @@ struct AgentBehaviorTests {
             workspaceRoot: try WorkspaceRoot(path: root.path)
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let permissionTask = Task { () -> PermissionRequest? in
             for await event in await client.events() {
@@ -124,6 +123,7 @@ struct AgentBehaviorTests {
         #expect(results.map(\.success) == [true, false])
         #expect(provider.recorder.requests[0].messages.first?.content.contains("Build profile") == true)
         #expect(provider.recorder.requests[2].messages.first?.content.contains("Plan profile") == true)
+        await host.shutdown()
     }
 
     @Test func nestedAgentInstructionsHaveScopedPrecedenceAndProvenance() throws {

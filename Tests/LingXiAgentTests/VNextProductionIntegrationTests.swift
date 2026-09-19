@@ -102,7 +102,6 @@ struct VNextProductionIntegrationTests {
             outputPipe: serverToClient
         )
         let client = try await LingXiClientVNext(transport: transport, handshakeImmediately: true)
-        defer { Task { await client.disconnect() } }
 
         // Create session
         let sessionReceipt = try await client.session.create(workspace: tempDir.path)
@@ -203,6 +202,7 @@ struct VNextProductionIntegrationTests {
         #expect(committed2.finalIndex == 0)
         // 1 reasoning frame -> index 0 -> finalIndex == 0
         #expect(step2CompletedEvent == 0)
+        await client.disconnect()
     }
 
     // MARK: - 2. Queued Turn Execution Test
@@ -218,7 +218,6 @@ struct VNextProductionIntegrationTests {
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
-        defer { Task { await client.disconnect() } }
 
         let session = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(session.result?.sessionID)
@@ -273,6 +272,7 @@ struct VNextProductionIntegrationTests {
         #expect(t1?.status == .completed)
         #expect(t2?.status == .completed)
         #expect(t3?.status == .completed)
+        await client.disconnect()
     }
 
     // MARK: - 3. Mode / Permission Switching Test
@@ -402,7 +402,6 @@ struct VNextProductionIntegrationTests {
         let transport = VNextStdioTransport(inputHandle: clientToServer.fileHandleForWriting, outputPipe: serverToClient)
         let client = try await LingXiClientVNext(transport: transport, handshakeImmediately: true)
         let store = await ApplicationStore(client: client)
-        defer { Task { await client.disconnect() } }
 
         let sessionReceipt = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(sessionReceipt.result?.sessionID)
@@ -440,6 +439,7 @@ struct VNextProductionIntegrationTests {
         #expect(state.toolNodes[first.callID]?.result?.callID == first.callID)
         #expect(state.toolNodes[second.callID]?.result?.callID == second.callID)
         #expect(state.activeToolCallIDs.isEmpty)
+        await client.disconnect()
     }
 
     @Test("Question projects to active interaction and resumes the next model step")
@@ -463,7 +463,6 @@ struct VNextProductionIntegrationTests {
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
         let store = await ApplicationStore(client: client)
-        defer { Task { await client.disconnect() } }
 
         let session = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(session.result?.sessionID)
@@ -525,6 +524,7 @@ struct VNextProductionIntegrationTests {
             return false
         }))
         #expect(provider.recorder.requests.count == 2)
+        await client.disconnect()
     }
 
     @Test("Workflow decisions project to the active interaction")
@@ -539,7 +539,6 @@ struct VNextProductionIntegrationTests {
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
         let store = await ApplicationStore(client: client)
-        defer { Task { await client.disconnect() } }
 
         let session = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(session.result?.sessionID)
@@ -571,6 +570,7 @@ struct VNextProductionIntegrationTests {
         #expect(state.activeInteraction?.kind == .decision)
         #expect(state.status == .actionRequired)
         #expect(state.activeInteraction?.decisionRequest == request)
+        await client.disconnect()
     }
 
     @Test("Workspace rejection requires YOLO before writing outside the workspace")
@@ -606,7 +606,6 @@ struct VNextProductionIntegrationTests {
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
         let store = await ApplicationStore(client: client)
-        defer { Task { await client.disconnect() } }
 
         let session = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(session.result?.sessionID)
@@ -655,6 +654,7 @@ struct VNextProductionIntegrationTests {
             return false
         }))
         #expect(provider.recorder.requests.count == 4)
+        await client.disconnect()
     }
 
     // MARK: - 7. Host Discovers Skills and MCPs
@@ -705,7 +705,7 @@ struct VNextProductionIntegrationTests {
         let workspace = try WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
         let credStore = try FileCredentialStore(dataRoot: userHome.appendingPathComponent("vault"), passphrase: "integration-test")
         let configStore = try ConfigurationStore(dataRoot: userHome)
-        let platform = ExtensionPlatform(globalRoot: userHome, projectRoot: workspace.url, permissions: PermissionEngine(defaultDecision: .allow))
+        let platform = ExtensionPlatform(globalRoot: userHome, projectRoot: workspace.url, permissions: PermissionEngine(defaultDecision: .allow), enablePlugins: false)
         let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
 
         let host = try CoreHost(
@@ -726,6 +726,7 @@ struct VNextProductionIntegrationTests {
         print("REAL DISCOVERY: found \(skills.count) skills, \(mcps.count) MCPs")
         #expect(skills.count >= 30)
         #expect(mcps.count >= 6)
+        await host.shutdown()
     }
 
     @Test

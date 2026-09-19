@@ -55,7 +55,6 @@ struct PECoreRealWorldValidationTests {
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -186,6 +185,7 @@ struct PECoreRealWorldValidationTests {
 
         let debt8 = await cacheController.scheduler.debtState(for: sessionID)
         #expect(debt8.cacheDebt < debtAfterCompact.cacheDebt || debt8.consecutiveHits > 0)
+        await host.shutdown()
     }
 
     // MARK: - 2. 真实远端网络测试 (Live Remote Endpoint, 默认跳过避免98秒时延与配额消耗)
@@ -236,7 +236,6 @@ struct PECoreRealWorldValidationTests {
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -577,5 +576,6 @@ struct PECoreRealWorldValidationTests {
         print("  • 真实费用节省金额:                  ¥\(String(format: "%.6f", savingsAmount))")
         print("  • 综合成本下降比例:                  \(String(format: "%.2f", savingsPercent))%")
         print("================================================================================\n")
+        await host.shutdown()
     }
 }

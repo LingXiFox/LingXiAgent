@@ -19,7 +19,6 @@ struct ProductionProjectionTests {
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "projection")
@@ -33,6 +32,7 @@ struct ProductionProjectionTests {
         #expect(projection.l2.layer == .l2)
         #expect(projection.l3.layer == .l3)
         #expect(projection.l1 != projection.l2)
+        await host.shutdown()
     }
 
     @Test func extensionProjectionDiscoversProjectSkills() async throws {
@@ -43,9 +43,9 @@ struct ProductionProjectionTests {
         try Data("Projection skill".utf8).write(to: skill)
         let host = try CoreHost(workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let values = try await LingXiClient.inProcess(endpoint: host).listExtensions(kind: .skill)
         #expect(values.contains { $0.id == "projection" && $0.kind == .skill })
+        await host.shutdown()
     }
 
     private func temporaryRoot() -> URL {

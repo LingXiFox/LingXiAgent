@@ -100,7 +100,6 @@ struct CodeIntelligenceTests {
         ])
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: workspace, permissionDecision: .allow, toolRegistry: registry)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let session = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: session, content: "Add Result")
@@ -110,6 +109,7 @@ struct CodeIntelligenceTests {
         #expect(provider.recorder.requests[1].tools.contains { $0.id == ToolID("code_intelligence") })
         #expect(provider.recorder.requests[3].tools.contains { $0.id == ToolID("write_file") })
         #expect(FileManager.default.fileExists(atPath: root.appending(path: "Sources/Result.swift").path))
+        await host.shutdown()
     }
 
     private func makeIntelligence(_ root: URL, lsp: LSPClient) throws -> CodeIntelligence {

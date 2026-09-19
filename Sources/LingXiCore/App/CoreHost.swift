@@ -50,6 +50,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private var behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
     private let agentSettings: AgentSettings
     private let restoreScheduler: SessionRestoreScheduler?
+    private var codeIntelligence: CodeIntelligence?
     package var agent: AgentRuntime?
     public var residentAgentRuntimesCount: Int {
         get async {
@@ -102,10 +103,17 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     package var toolRuntimeRef: ToolRuntime { toolRuntime }
     package var workspaceRevisionRef: UInt64 { workspaceRevision }
     public var currentWorkspaceRevision: UInt64 { workspaceRevision }
+    public var ecoreStoreRef: ECoreObjectStore { cacheController.ecoreStore }
     package var backgroundManagerRef: BackgroundCommandManager { backgroundManager }
     package var workflowRuntimeRef: WorkflowRuntime? { workflows }
     package var performanceStoreRef: PerformanceStore { performanceStore }
     public private(set) var effectiveContextPolicy: EffectiveContextPolicy
+
+    private func recordInitialECoreToken(_ token: ECoreObjectStore.MutationSubscriptionToken) {
+        if self.ecoreMutationSubscriptionToken == nil {
+            self.ecoreMutationSubscriptionToken = token
+        }
+    }
 
     // MARK: - Protocol vNext State
     public enum CommitFailpoint: String, Sendable, Equatable {
@@ -164,14 +172,17 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         backgroundManager: BackgroundCommandManager? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
+        let processName = ProcessInfo.processInfo.processName.lowercased()
+        let arguments = ProcessInfo.processInfo.arguments
         let isTesting = startupPolicy == .unitTest
             || startupPolicy?.allowExternalProcesses == false
             || environment["XCTestConfigurationFilePath"] != nil
             || environment["LINGXI_TEST_MODE"] != nil
-            || ProcessInfo.processInfo.processName.contains("Test")
-            || ProcessInfo.processInfo.processName.contains("xctest")
-            || ProcessInfo.processInfo.arguments.first?.contains("PackageTests") == true
+            || processName.contains("test")
+            || processName.contains("xctest")
+            || arguments.contains(where: { $0.localizedCaseInsensitiveContains("test") })
             || NSClassFromString("XCTestCase") != nil
+            || NSClassFromString("Testing.Test") != nil
         let effectivePolicy = startupPolicy ?? (isTesting ? .unitTest : CoreHostStartupPolicy.defaultPolicy)
         self.startupPolicy = effectivePolicy
         let isTestingEnv = isTesting || effectivePolicy == .unitTest || !effectivePolicy.allowExternalProcesses
@@ -226,7 +237,15 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             version: Self.coreVersion,
             protocolVersion: Self.protocolVersion
         )
-        let baseWorkspace = try workspaceRoot ?? WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
+        let baseWorkspace: WorkspaceRoot
+        if let workspaceRoot {
+            baseWorkspace = workspaceRoot
+        } else if isTestingEnv {
+            let defaultTestPath = dataRoot?.path ?? layout.root.path
+            baseWorkspace = try WorkspaceRoot(path: defaultTestPath)
+        } else {
+            baseWorkspace = try WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
+        }
         let persistentRoot = (dataRoot != nil || !isTestingEnv) ? layout.persistence : nil
         let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url)
         let workspace = try WorkspaceRoot(path: baseWorkspace.url.path, sensitivePathPolicy: sensitivePaths)
@@ -330,6 +349,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             ecoreStore: ecoreStore
         )
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: scanner, pager: pager) : nil
+        self.codeIntelligence = codeIntelligence
         let effectiveRegistry = toolRegistry ?? ToolRegistry.builtin(
             workspace: workspace,
             contextPager: pager,
@@ -385,13 +405,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         if let retrievalTool = effectiveRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
             let runtime = retrievalTool.retrievalRuntime
             let projectURL = workspace.url
-            Task {
+            Task { [weak self, ecoreStore] in
                 await mutationCoordinator.addMutationHook {
                     await runtime.markDirty(source: .workspace, projectRoot: projectURL)
                 }
-                await ecoreStore.addMutationHook {
+                let token = await ecoreStore.addMutationHook {
                     await runtime.markDirty(source: .ecore, projectRoot: projectURL)
                 }
+                await self?.recordInitialECoreToken(token)
             }
         }
     }
@@ -653,7 +674,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             restoreScheduler: restoreScheduler,
             diagnostics: diagnosticsStore,
             backgroundManager: self.backgroundManager,
-            providerActivityRegistry: self.providerActivityRegistry
+            providerActivityRegistry: self.providerActivityRegistry,
+            workspaceRevision: self.workspaceRevision
         )
         self.agent = agent
         let workflows = await agent.makeWorkflowRuntime()
@@ -710,6 +732,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         await backgroundManager.terminateAll()
         await extensionPlatform.terminatePlugins()
         await browserSessionManager.shutdown()
+        await codeIntelligence?.shutdown()
+        codeIntelligence = nil
         lifecycle("cleanupCompleted", waitingOn: "processes")
         await providerActivityRegistry.reset()
         registryRefreshTask?.cancel()
@@ -3929,7 +3953,13 @@ extension CoreHost {
         }
 
         let candidateCodeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: candidateWorkspace, scanner: candidateScanner, pager: contextPager) : nil
-        let candidateCacheController = ContextCacheController(contextPager: contextPager, scanner: candidateScanner, compactor: compactor)
+        let candidateCacheController = ContextCacheController(
+            contextPager: contextPager,
+            scanner: candidateScanner,
+            compactor: compactor,
+            policy: self.effectiveContextPolicy,
+            ecoreStore: self.cacheController.ecoreStore
+        )
         let candidateRegistry = ToolRegistry.builtin(
             workspace: candidateWorkspace,
             contextPager: contextPager,
@@ -3960,33 +3990,39 @@ extension CoreHost {
             workspaceRevision: targetRevision
         )
 
-        // 重新关联统一检索变更钩子，并重新绑定 E-Core 变更钩子
-        var candidateEcoreToken: ECoreObjectStore.MutationSubscriptionToken? = nil
+        // 重新关联统一检索变更钩子 (Candidate 阶段仅注册 candidateMutation 钩子，不触碰原 Host 外部状态)
+        let candidateRetrievalRuntime: RetrievalRuntime?
         if let retrievalTool = candidateRegistry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
             let runtime = retrievalTool.retrievalRuntime
+            candidateRetrievalRuntime = runtime
             await candidateMutationCoordinator.addMutationHook {
                 await runtime.markDirty(source: .workspace, projectRoot: stdURL)
             }
-            if let oldToken = self.ecoreMutationSubscriptionToken {
-                await self.cacheController.ecoreStore.removeMutationHook(token: oldToken)
-                self.ecoreMutationSubscriptionToken = nil
-            }
+        } else {
+            candidateRetrievalRuntime = nil
+        }
+
+        // 2. Candidate 构造与全面校验全部成功，执行原子提交 (Atomic Swap)
+        if let oldToken = self.ecoreMutationSubscriptionToken {
+            await self.cacheController.ecoreStore.removeMutationHook(token: oldToken)
+            self.ecoreMutationSubscriptionToken = nil
+        }
+        if let runtime = candidateRetrievalRuntime {
             let newToken = await candidateCacheController.ecoreStore.addMutationHook {
                 await runtime.markDirty(source: .ecore, projectRoot: stdURL)
             }
-            candidateEcoreToken = newToken
+            self.ecoreMutationSubscriptionToken = newToken
         }
-
-        // 2. Candidate 构造与钩子注册全部成功，执行原子提交 (Atomic Swap)
         await self.extensionPlatform.updateProjectRoot(stdURL)
         self.workspaceURL = stdURL
         self.projectScanner = candidateScanner
         self.behaviorSystemContext = candidateBehaviorSystemContext
         self.cacheController = candidateCacheController
         self.toolRuntime = candidateToolRuntime
-        if let token = candidateEcoreToken {
-            self.ecoreMutationSubscriptionToken = token
+        if let oldCI = self.codeIntelligence {
+            await oldCI.shutdown()
         }
+        self.codeIntelligence = candidateCodeIntelligence
 
         // 关键闭环：更新 AgentRuntime 内部持有的 ToolRuntime、Scanner、Pager 和 BehaviorContext
         if let agent = self.agent {

@@ -122,7 +122,6 @@ struct LingXiClientVNextTests {
         let corePath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/out/Products/Debug/LingXiCoreHost").path
         let client = try await LingXiClientVNext.stdioCore(corePath: corePath, interactive: false)
-        defer { Task { await client.disconnect() } }
 
         let session = try await client.session.create()
         let sessionID = try #require(session.result?.sessionID)
@@ -136,6 +135,7 @@ struct LingXiClientVNextTests {
         }
         let payloads: [SessionEventPayload] = events.map { $0.payload }
         #expect(payloads.contains { if case .runStarted = $0 { return true }; return false })
+        await client.disconnect()
     }
 
     // MARK: - 3. Scoped EventWatermark Await & Sync

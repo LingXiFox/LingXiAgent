@@ -375,7 +375,6 @@ struct AgentToolLoopTests {
         ])
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: root.appendingPathComponent("data", isDirectory: true), permissionDecision: .allow, interactive: true)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let replyTask = Task {
             for await event in await client.events() {
@@ -402,6 +401,7 @@ struct AgentToolLoopTests {
         #expect({ if case .question = state.request { return true }; return false }())
         #expect({ if case .question = state.reply { return true }; return false }())
         #expect(state.result?.callID == question.callID)
+        await host.shutdown()
     }
 
     @Test func restartRepliesToDurableQuestionAndContinuesExactlyOnce() async throws {
@@ -438,7 +438,6 @@ struct AgentToolLoopTests {
 
         let second = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .allow, interactive: true)
         await second.start()
-        defer { Task { await second.shutdown() } }
         let secondClient = LingXiClient.inProcess(endpoint: second)
         #expect(try await secondClient.listAgentRuns(sessionID).first?.status == .waitingForUser)
         #expect(await second.questions.request(request.questionID) == request)
@@ -453,6 +452,7 @@ struct AgentToolLoopTests {
         #expect(provider.recorder.requests.count == 2)
         #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
         #expect(snapshot.messages.last?.content == "恢复完成。")
+        await second.shutdown()
     }
 
     @Test func restartPermissionReplyResumesAllowAndDenyWithoutReplayingTheBatch() async throws {
@@ -522,7 +522,6 @@ struct AgentToolLoopTests {
             interactive: true
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let permissionTask = Task { () -> PermissionRequest? in
             for await event in await client.events() {
@@ -544,6 +543,7 @@ struct AgentToolLoopTests {
         let result = snapshot.messages.flatMap(\.parts).compactMap { if case let .toolResult(result) = $0 { result } else { nil } }.first
         #expect(result?.success == true)
         #expect(snapshot.messages.last?.content == "授权后完成。")
+        await host.shutdown()
     }
 
     @Test func restartSchedulesReadOnlyRemainderAndSettlesMutationClaimAsUnknown() async throws {
@@ -571,7 +571,6 @@ struct AgentToolLoopTests {
         let restoreScheduler = SessionRestoreScheduler()
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: data, permissionDecision: .allow, toolRegistry: ToolRegistry([DelayedReadTool(recorder: recorder)]), restoreScheduler: restoreScheduler)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         await restoreScheduler.waitUntilReady()
         #expect(await recorder.snapshot().isEmpty)
@@ -586,5 +585,6 @@ struct AgentToolLoopTests {
         #expect(results.first { $0.callID == mutation.callID }?.metadata["verificationRequired"] == "true")
         #expect(snapshot.messages.filter { $0.role == .tool }.count == 1)
         #expect(provider.recorder.requests.count == 1)
+        await host.shutdown()
     }
 }

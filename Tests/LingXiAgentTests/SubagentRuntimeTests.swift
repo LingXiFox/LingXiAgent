@@ -49,7 +49,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ParentChildProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: primary, content: "parent task")
@@ -70,6 +69,7 @@ struct SubagentRuntimeTests {
         #expect(childRun.status == .completed)
         #expect(try await client.subagentResult(childRun.runID).finalText == "child result")
         #expect((try await client.session(primary)).messages.allSatisfy { !$0.content.contains("child result") })
+        await host.shutdown()
     }
 
     @Test func modelResolverRejectsUnallowedChildModel() async {
@@ -85,7 +85,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ChildQuestionProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: true)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let reply = Task { () -> QuestionRequest? in
             for await event in await client.events() {
@@ -106,6 +105,7 @@ struct SubagentRuntimeTests {
         let deadline = Date().addingTimeInterval(2)
         while try await client.getAgentRun(runID).status != .completed, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(try await client.getAgentRun(runID).status == .completed)
+        await host.shutdown()
     }
     @Test func invalidProfileSpawnFailureLeavesZeroChildSessions() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -113,7 +113,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: InvalidProfileProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: primary, content: "start") {}
@@ -122,6 +121,7 @@ struct SubagentRuntimeTests {
         #expect(tree.children.isEmpty)
         let children = try await client.listChildSessions(primary)
         #expect(children.isEmpty)
+        await host.shutdown()
     }
 
     @Test func invalidModelSelectionSpawnFailureLeavesZeroChildSessions() async throws {
@@ -130,7 +130,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: InvalidModelProvider(), modelID: ModelID("allowed-model")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: primary, content: "start") {}
@@ -139,6 +138,7 @@ struct SubagentRuntimeTests {
         #expect(tree.children.isEmpty)
         let children = try await client.listChildSessions(primary)
         #expect(children.isEmpty)
+        await host.shutdown()
     }
 
     @Test func createRunFailureInjectionRollsBackChildSession() async throws {
@@ -152,7 +152,6 @@ struct SubagentRuntimeTests {
         }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ParentChildProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: dataRoot, permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         await host.persistence?.armFailpoint(.beforeSaveAgentRun(.subagent))
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
@@ -166,6 +165,7 @@ struct SubagentRuntimeTests {
         #expect(persistedSessions.filter { $0.kind == .subagent }.isEmpty)
         let persistedRuns = try await host.persistence?.loadAgentRuns() ?? []
         #expect(persistedRuns.filter { $0.agentKind == .subagent }.isEmpty)
+        await host.shutdown()
     }
 
     @Test func successfulParallelFooAndBarCreatesExactlyTwoChildrenAndTwoRuns() async throws {
@@ -174,7 +174,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ParallelFooBarProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: primary, content: "start") {}
@@ -194,6 +193,7 @@ struct SubagentRuntimeTests {
             #expect(runs.count == 1)
             #expect(runs.first?.status == .completed)
         }
+        await host.shutdown()
     }
 
     @Test func retryFailedSpawnDoesNotCreateOrphanOrDuplicateChildren() async throws {
@@ -202,7 +202,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: RetrySpawnProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: primary, content: "start") {}
@@ -219,6 +218,7 @@ struct SubagentRuntimeTests {
         #expect(child.latestRun?.status == .completed)
         let children = try await client.listChildSessions(primary)
         #expect(children.count == 1)
+        await host.shutdown()
     }
 
     @Test func restartAfterFailedPreCommitSpawnHasNoOrphanChildren() async throws {
@@ -242,7 +242,6 @@ struct SubagentRuntimeTests {
 
         let secondHost = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: dataRoot, permissionDecision: .allow)
         await secondHost.start()
-        defer { Task { await secondHost.shutdown() } }
         let secondClient = LingXiClient.inProcess(endpoint: secondHost)
         let secondTree = try await secondClient.getAgentTree(primary)
         #expect(secondTree.children.isEmpty)
@@ -252,6 +251,7 @@ struct SubagentRuntimeTests {
         #expect(persistedSessions.filter { $0.kind == .subagent }.isEmpty)
         let persistedRuns = try await secondHost.persistence?.loadAgentRuns() ?? []
         #expect(persistedRuns.filter { $0.agentKind == .subagent }.isEmpty)
+        await secondHost.shutdown()
     }
 
     @Test func childQuestionEscalationDoesNotMutateRootSession() async throws {
@@ -260,7 +260,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ChildQuestionProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: true)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
 
@@ -292,6 +291,7 @@ struct SubagentRuntimeTests {
         let originChildSessionID = try #require(request.originSessionID)
         let childSession = try await client.session(originChildSessionID)
         #expect(childSession.messages.contains { $0.parts.contains { if case let .toolCall(c) = $0 { c.toolID == ToolID("question") } else { false } } })
+        await host.shutdown()
     }
 
     @Test func childQuestionAndAnswerExcludedFromNextRootModelRequest() async throws {
@@ -302,7 +302,6 @@ struct SubagentRuntimeTests {
         let provider = RecordingChildQuestionProvider(recorder: recorder)
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: true)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
 
@@ -330,6 +329,7 @@ struct SubagentRuntimeTests {
         let turn2Request = try #require(rootRequests.first)
         #expect(!turn2Request.messages.contains(where: { $0.content.contains("Continue child?") }))
         #expect(!turn2Request.messages.contains(where: { $0.content.contains("child answered") }))
+        await host.shutdown()
     }
 
     @Test func concurrentChildQuestionsRouteSeparatelyWithoutContamination() async throws {
@@ -338,7 +338,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ConcurrentChildQuestionProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: true)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
 
@@ -391,6 +390,7 @@ struct SubagentRuntimeTests {
 
         let rootSession = try await client.session(primary)
         #expect(rootSession.messages.allSatisfy { !$0.content.contains("A1-selected") && !$0.content.contains("B2-selected") })
+        await host.shutdown()
     }
 
     @Test func nestedChildQuestionBelongsOnlyToOriginGrandchild() async throws {
@@ -399,7 +399,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: NestedChildQuestionProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: true)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
 
@@ -438,6 +437,7 @@ struct SubagentRuntimeTests {
 
         let rootSession = try await client.session(primary)
         #expect(rootSession.messages.allSatisfy { !$0.content.contains("Grandchild Question") })
+        await host.shutdown()
     }
 
     @Test func restartWhileWaitingForQuestionRehydratesAndRoutesCleanly() async throws {
@@ -480,7 +480,6 @@ struct SubagentRuntimeTests {
 
         let secondHost = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: dataRoot, permissionDecision: .allow, interactive: true)
         await secondHost.start()
-        defer { Task { await secondHost.shutdown() } }
         let secondClient = LingXiClient.inProcess(endpoint: secondHost)
 
         let rootSession = try await secondClient.session(primary)
@@ -499,6 +498,7 @@ struct SubagentRuntimeTests {
         }
         #expect(resumed.sessionID == childSessionID)
         #expect(resumed.status == .completed)
+        await secondHost.shutdown()
     }
 
     @Test func contextProfileOmittedInheritsEndpointAndPasses() async throws {
@@ -507,7 +507,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ParentChildProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: primary, content: "start") {}
@@ -521,6 +520,7 @@ struct SubagentRuntimeTests {
         let child = try #require(tree.children.first)
         #expect(child.latestRun?.status == .completed)
         #expect(tree.children.count == 1)
+        await host.shutdown()
     }
 
     @Test func contextProfileBelowMinimumViableFailsPreFlightAndLeavesZeroChildren() async throws {
@@ -556,7 +556,6 @@ struct SubagentRuntimeTests {
         let assembly = ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: endpointProfile)
         let host = try CoreHost(providerAssembly: assembly, workspaceRoot: workspace, permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         let initialProjection = try #require(await client.contextProjection(primary))
@@ -578,6 +577,7 @@ struct SubagentRuntimeTests {
         let child = try #require(tree.children.first)
         #expect(child.latestRun?.status == .completed)
         #expect(tree.children.count == 1)
+        await host.shutdown()
     }
 
     @Test func parallelChildrenOneValidOneInvalidSmallProfileLeavesOnlyValidChild() async throws {
@@ -586,7 +586,6 @@ struct SubagentRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ParallelValidAndInvalidSmallContextProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: primary, content: "start") {}
@@ -603,6 +602,7 @@ struct SubagentRuntimeTests {
         #expect(validChild.latestRun?.status == .completed)
         let allChildren = try await client.listChildSessions(primary)
         #expect(allChildren.count == 1)
+        await host.shutdown()
     }
 
     @Test func budgetProfileOverrideDoesNotAlterPhysicalHardLimit() {

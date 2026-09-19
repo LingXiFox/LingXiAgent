@@ -54,6 +54,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
         let loadedRuns = try await persistence.loadAgentRuns()
         let target = loadedRuns.first { $0.runID == orphanRun.runID }
         #expect(target?.status == AgentRunStatus.recoveryRequired)
+        await host.shutdown()
     }
 
     @Test func applicationStorePreservesUserSelectedModelAcrossRefresh() async throws {
@@ -92,6 +93,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
         // Ensure refreshBasics does not wipe non-empty currentModelID
         let currentModel = await store.state.currentModelID
         #expect(currentModel != nil)
+        await host.shutdown()
     }
 
     @Test func unresolvableModelReportsRuntimeFailureInsteadOfCompleted() async throws {
@@ -129,6 +131,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
             }
         }
         #expect(observedFailure, "Turn execution must report .failed with clear error, never .completed silently")
+        await host.shutdown()
     }
 
     @Test func unresolvableModelWithDefaultProviderFailsFastAndDoesNotFallbackSilently() async throws {
@@ -174,6 +177,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
             }
         }
         #expect(observedFailure, "Turn must fail fast when requested model is unresolvable, even if default provider exists")
+        await host.shutdown()
     }
 
     @Test func permissionHierarchyFollowsCliThenConfigThenDefaultsToAskWorkspace() async throws {
@@ -236,6 +240,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
         #expect(selectReceipt.applied == true)
         #expect(selectReceipt.result?.modelID == "opencode-zen/muse-spark-1.3-contributor-free")
         #expect(selectReceipt.result?.providerID == "opencode-zen")
+        await host.shutdown()
     }
 
     @Test func customProviderWithoutSchemaAndWithInheritedBuiltinModelsSucceeds() async throws {
@@ -277,6 +282,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
         #expect(selectReceipt.applied == true)
         #expect(selectReceipt.result?.modelID == "deepseek-api/deepseek-chat")
         #expect(selectReceipt.result?.providerID == "deepseek-api")
+        await host.shutdown()
     }
 }
 

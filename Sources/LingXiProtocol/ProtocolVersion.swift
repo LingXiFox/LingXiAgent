@@ -29,3 +29,9 @@ public struct ProtocolVersion: Codable, Sendable, Equatable, Comparable, CustomS
         return self.major == clientVersion.major
     }
 }
+
+/// 跨两端统一的协议常量 (Audit Round 10 Phase C)
+public enum ProtocolConstants {
+    /// 统一 VNext JSON-lines frame 大小上限 (32MB)
+    public static let maxFrameBytes: Int = 32 * 1024 * 1024
+}

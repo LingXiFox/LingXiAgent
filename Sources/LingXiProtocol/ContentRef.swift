@@ -245,8 +245,51 @@ public struct ContentBinaryPayload: Codable, Sendable, Equatable {
         self.base64Data = data.base64EncodedString()
     }
 
+    public init(base64Data: String) throws {
+        guard Data(base64Encoded: base64Data) != nil else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: [], debugDescription: "Invalid base64 payload in ContentBinaryPayload")
+            )
+        }
+        self.base64Data = base64Data
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case base64Data
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let str = try container.decode(String.self, forKey: .base64Data)
+        guard Data(base64Encoded: str) != nil else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .base64Data,
+                in: container,
+                debugDescription: "Invalid base64 encoding in ContentBinaryPayload"
+            )
+        }
+        self.base64Data = str
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(base64Data, forKey: .base64Data)
+    }
+
     public var data: Data {
-        Data(base64Encoded: base64Data) ?? Data()
+        guard let d = Data(base64Encoded: base64Data) else {
+            return Data()
+        }
+        return d
+    }
+
+    public func decodedData() throws -> Data {
+        guard let d = Data(base64Encoded: base64Data) else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: [], debugDescription: "Invalid base64 payload in ContentBinaryPayload")
+            )
+        }
+        return d
     }
 }
 

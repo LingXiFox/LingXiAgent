@@ -374,7 +374,6 @@ struct Round6SystemAuditTests {
 
         let transport = VNextStdioTransport(inputHandle: clientToServer.fileHandleForWriting, outputPipe: serverToClient)
         let client = try await LingXiClientVNext(transport: transport, handshakeImmediately: true)
-        defer { Task { await client.disconnect() } }
 
         // Test chunked upload over Stdio
         let chunk0 = Data("Hello, Stdio Data Plane! ".utf8)
@@ -407,6 +406,7 @@ struct Round6SystemAuditTests {
         let rangeData = try await client.resource.range(ref: contentRef, offset: 7, length: 5)
         let expectedSubdata = expectedData.subdata(in: 7..<12)
         #expect(rangeData == expectedSubdata)
+        await client.disconnect()
     }
 
     @Test("Phase 4: Graceful shutdown cleans up server event subscriptions and terminates boundedly")

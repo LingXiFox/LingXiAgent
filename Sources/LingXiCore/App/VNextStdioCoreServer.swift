@@ -26,6 +26,8 @@ private final class ConnectionTaskRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var tasks: [String: Task<Void, Never>] = [:]
     private var finishedIDs: Set<String> = []
+    private var finishedIDOrder: [String] = []
+    private let maxTombstones = 1024
 
     func register(id: String, task: Task<Void, Never>) {
         lock.lock()
@@ -41,26 +43,44 @@ private final class ConnectionTaskRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if tasks.removeValue(forKey: id) == nil {
-            finishedIDs.insert(id)
+            recordFinished(id)
         }
     }
 
     func cancel(id: String) {
         lock.lock()
         let task = tasks.removeValue(forKey: id)
-        finishedIDs.insert(id)
+        recordFinished(id)
         lock.unlock()
         task?.cancel()
     }
 
-    func cancelAll() {
+    private func recordFinished(_ id: String) {
+        finishedIDs.insert(id)
+        finishedIDOrder.append(id)
+        if finishedIDOrder.count > maxTombstones {
+            let oldest = finishedIDOrder.removeFirst()
+            finishedIDs.remove(oldest)
+        }
+    }
+
+    private func extractAndClearTasks() -> [Task<Void, Never>] {
         lock.lock()
+        defer { lock.unlock() }
         let all = Array(tasks.values)
         tasks.removeAll()
         finishedIDs.removeAll()
-        lock.unlock()
+        finishedIDOrder.removeAll()
+        return all
+    }
+
+    func drainAll() async {
+        let all = extractAndClearTasks()
         for task in all {
             task.cancel()
+        }
+        for task in all {
+            _ = await task.value
         }
     }
 }
@@ -79,10 +99,12 @@ public struct VNextStdioCoreServer: Sendable {
     }
 
     public func run() async throws {
-        defer {
-            connectionTasks.cancelAll()
-        }
         let writer = VNextWireWriter(output: output)
+        defer {
+            Task { [connectionTasks] in
+                await connectionTasks.drainAll()
+            }
+        }
         let chunks = AsyncStream<Data> { continuation in
             continuation.onTermination = { _ in
                 input.readabilityHandler = nil
@@ -100,7 +122,7 @@ public struct VNextStdioCoreServer: Sendable {
         }
         await withTaskCancellationHandler {
             var buffer = Data()
-            let maxLineBytes = 32 * 1024 * 1024 // 32MB 单行帧限制，防海量流输入 OOM (Audit Round 9 Phase C)
+            let maxLineBytes = ProtocolConstants.maxFrameBytes
             do {
                 for await chunk in chunks {
                     guard !Task.isCancelled else { break }
@@ -108,12 +130,29 @@ public struct VNextStdioCoreServer: Sendable {
                     while let newline = buffer.firstIndex(of: 0x0A) {
                         let line = buffer[..<newline]
                         buffer.removeSubrange(...newline)
-                        guard let request = try? JSONDecoder().decode(VNextWireRequest.self, from: line) else { continue }
-                        handle(request, writer: writer)
+
+                        // 关键防御：严格在 JSON decode 之前拦截超大单行，杜绝大内存分配 (Audit Round 10 Phase C)
+                        if line.count > maxLineBytes {
+                            await writer.reply(id: "system", payload: nil, error: CoreError(code: .transport, message: "Line size \(line.count) exceeds maximum frame limit of \(maxLineBytes)"))
+                            continue
+                        }
+
+                        do {
+                            let request = try JSONDecoder().decode(VNextWireRequest.self, from: line)
+                            handle(request, writer: writer)
+                        } catch {
+                            // 关键修复：恶意或异常格式不静默丢弃，尝试定位 requestID 回复错误响应，杜绝客户端永久挂死 (Audit Round 10 Phase C)
+                            if let jsonObject = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                               let reqID = jsonObject["id"] as? String {
+                                await writer.reply(id: reqID, payload: nil, error: CoreError(code: .unsupportedCommand, message: "Malformed JSON request payload: \(error.localizedDescription)"))
+                            } else {
+                                await writer.reply(id: "system", payload: nil, error: CoreError(code: .unsupportedCommand, message: "Malformed JSON request frame"))
+                            }
+                        }
                     }
                     if buffer.count > maxLineBytes {
                         buffer.removeAll()
-                        await writer.reply(id: "system", payload: nil, error: CoreError(code: .transport, message: "Frame size exceeds 32MB limit"))
+                        await writer.reply(id: "system", payload: nil, error: CoreError(code: .transport, message: "Accumulated frame size exceeds \(maxLineBytes) limit"))
                     }
                 }
             }

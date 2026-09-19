@@ -208,7 +208,6 @@ struct ContextCompactionTests {
         ])
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: ModelContextProfile(contextWindowTokens: 18_000)), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         for index in 0..<4 {
@@ -237,6 +236,7 @@ struct ContextCompactionTests {
         #expect(cache.derivedL3Hits > cacheBefore.derivedL3Hits)
         #expect(cache.sessionL2DerivedPromotions > cacheBefore.sessionL2DerivedPromotions)
         #expect(cache.derivedPageInCount > cacheBefore.derivedPageInCount)
+        await host.shutdown()
     }
 
     @Test func smallSessionCompactIsSafeNoOp() async throws {
@@ -246,7 +246,6 @@ struct ContextCompactionTests {
         let provider = ScriptedFakeProvider(script: [[.textDelta("ok"), .completed(.stop)]])
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path))
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "small")
@@ -255,6 +254,7 @@ struct ContextCompactionTests {
         let result = try await client.compact(sessionID)
         #expect(result.noEligibleReduction)
         #expect(try await client.session(sessionID) == before)
+        await host.shutdown()
     }
 
     @Test func eightStepToolLoopPagesHistoricalBatchesWithoutBreakingLiveProtocol() async throws {
@@ -274,7 +274,6 @@ struct ContextCompactionTests {
         let provider = ScriptedFakeProvider(script: script)
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake"), contextProfile: ModelContextProfile(contextWindowTokens: 12_000)), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "analyze tool evidence")
@@ -288,5 +287,6 @@ struct ContextCompactionTests {
         #expect((try await client.session(sessionID)).messages.count == 16)
         let cache = try await client.projectCache()
         #expect(cache.historicalToolEvidencePages > 0)
+        await host.shutdown()
     }
 }

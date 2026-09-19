@@ -32,7 +32,9 @@ public final class FakeFrontendRuntime {
     public let composerModel: ComposerModel
 
     public private(set) var currentScenario: GUIFixtureScenario = .conversation
+    private var currentGeneration: UInt64 = 0
     private var streamingTask: Task<Void, Never>?
+    private var activeReplyTasks: [Task<Void, Never>] = []
 
     public init(scenario: GUIFixtureScenario = .conversation) {
         self.sidebarModel = SidebarPresentationModel()
@@ -43,14 +45,24 @@ public final class FakeFrontendRuntime {
         applyScenario(scenario)
     }
 
-    public func switchScenario(_ scenario: GUIFixtureScenario) {
+    private func cancelPendingAsyncOperations() {
+        currentGeneration &+= 1
         streamingTask?.cancel()
         streamingTask = nil
+        for task in activeReplyTasks {
+            task.cancel()
+        }
+        activeReplyTasks.removeAll()
+    }
+
+    public func switchScenario(_ scenario: GUIFixtureScenario) {
+        cancelPendingAsyncOperations()
         self.currentScenario = scenario
         applyScenario(scenario)
     }
 
     public func switchSession(id: String) {
+        cancelPendingAsyncOperations()
         sidebarModel.selectedSessionID = id
         for i in sidebarModel.sessions.indices {
             let item = sidebarModel.sessions[i]
@@ -83,6 +95,137 @@ public final class FakeFrontendRuntime {
         }
     }
 
+    private func canonicalTelemetry(for scenario: GUIFixtureScenario) -> RuntimeInspectorPresentation {
+        switch scenario {
+        case .empty:
+            return RuntimeInspectorPresentation(
+                residentTokens: 0,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.0,
+                codebaseNodes: 0,
+                codebaseEdges: 0,
+                ecoreHeat: 0.0,
+                cacheHitRatio: 1.0,
+                tokensPerSecond: 0.0,
+                retrievalWarmup: "idle",
+                activeMCPCount: 0,
+                activeBackgroundTasks: 0
+            )
+        case .conversation:
+            return RuntimeInspectorPresentation(
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.35,
+                cacheHitRatio: 0.88,
+                tokensPerSecond: 64.0,
+                retrievalWarmup: "ready",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 0
+            )
+        case .streaming:
+            return RuntimeInspectorPresentation(
+                residentTokens: 96000,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.75,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.85,
+                cacheHitRatio: 0.94,
+                tokensPerSecond: 128.5,
+                retrievalWarmup: "ready",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 0
+            )
+        case .toolHeavy:
+            return RuntimeInspectorPresentation(
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.35,
+                cacheHitRatio: 0.88,
+                tokensPerSecond: 64.0,
+                retrievalWarmup: "ready",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 1
+            )
+        case .permission:
+            return RuntimeInspectorPresentation(
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.35,
+                cacheHitRatio: 0.88,
+                tokensPerSecond: 64.0,
+                retrievalWarmup: "ready",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 0
+            )
+        case .contextPressure:
+            return RuntimeInspectorPresentation(
+                residentTokens: 117760,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.92,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.96,
+                cacheHitRatio: 0.42,
+                tokensPerSecond: 45.0,
+                retrievalWarmup: "ready",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 0
+            )
+        case .mcpFailure:
+            return RuntimeInspectorPresentation(
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.35,
+                cacheHitRatio: 0.88,
+                tokensPerSecond: 64.0,
+                retrievalWarmup: "degraded",
+                activeMCPCount: 3,
+                activeBackgroundTasks: 0
+            )
+        case .backgroundTask:
+            return RuntimeInspectorPresentation(
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.35,
+                cacheHitRatio: 0.88,
+                tokensPerSecond: 64.0,
+                retrievalWarmup: "ready",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 2
+            )
+        case .providerReconnect:
+            return RuntimeInspectorPresentation(
+                residentTokens: 52400,
+                workingSetCapacity: 128000,
+                contextWindowUsage: 0.41,
+                codebaseNodes: 1450,
+                codebaseEdges: 3920,
+                ecoreHeat: 0.35,
+                cacheHitRatio: 0.88,
+                tokensPerSecond: 0.0,
+                retrievalWarmup: "reconnecting",
+                activeMCPCount: 4,
+                activeBackgroundTasks: 0
+            )
+        }
+    }
+
     private func applyScenario(_ scenario: GUIFixtureScenario) {
         // 1. 初始化标准 Sidebar 数据
         sidebarModel.workspace = WorkspaceSummaryPresentation(
@@ -99,25 +242,15 @@ public final class FakeFrontendRuntime {
         ]
         sidebarModel.selectedSessionID = "sess-1"
 
-        // 2. 根据场景装配 Conversation 与 Inspector 数据
+        // 2. 严格装配规范 Baseline Telemetry，杜绝跨场景属性继承污染 (Audit Round 10 Phase F)
+        inspectorModel.telemetry = canonicalTelemetry(for: scenario)
+
+        // 3. 根据场景装配 Conversation 数据
         switch scenario {
         case .empty:
             conversationModel.sessionID = "sess-empty"
             conversationModel.items = []
             conversationModel.isGenerating = false
-            inspectorModel.telemetry = RuntimeInspectorPresentation(
-                residentTokens: 0,
-                workingSetCapacity: 128000,
-                contextWindowUsage: 0.0,
-                codebaseNodes: 0,
-                codebaseEdges: 0,
-                ecoreHeat: 0.0,
-                cacheHitRatio: 1.0,
-                tokensPerSecond: 0.0,
-                retrievalWarmup: "idle",
-                activeMCPCount: 0,
-                activeBackgroundTasks: 0
-            )
 
         case .conversation:
             conversationModel.sessionID = "sess-1"
@@ -142,19 +275,6 @@ public final class FakeFrontendRuntime {
                 ))
             ]
             conversationModel.isGenerating = false
-            inspectorModel.telemetry = RuntimeInspectorPresentation(
-                residentTokens: 52400,
-                workingSetCapacity: 128000,
-                contextWindowUsage: 0.41,
-                codebaseNodes: 1450,
-                codebaseEdges: 3920,
-                ecoreHeat: 0.35,
-                cacheHitRatio: 0.88,
-                tokensPerSecond: 64.0,
-                retrievalWarmup: "ready",
-                activeMCPCount: 4,
-                activeBackgroundTasks: 0
-            )
 
         case .streaming:
             conversationModel.sessionID = "sess-1"
@@ -169,20 +289,6 @@ public final class FakeFrontendRuntime {
                 ))
             ]
             conversationModel.isGenerating = true
-            inspectorModel.telemetry = RuntimeInspectorPresentation(
-                residentTokens: 96000,
-                workingSetCapacity: 128000,
-                contextWindowUsage: 0.75,
-                codebaseNodes: 1450,
-                codebaseEdges: 3920,
-                ecoreHeat: 0.85,
-                cacheHitRatio: 0.94,
-                tokensPerSecond: 128.5,
-                retrievalWarmup: "ready",
-                activeMCPCount: 4,
-                activeBackgroundTasks: 0
-            )
-            // 启动轻量定时模拟追加
             startMockStreaming()
 
         case .toolHeavy:
@@ -195,7 +301,6 @@ public final class FakeFrontendRuntime {
                 TimelineItemPresentation(kind: .terminal(title: "Subagent Finished", isSuccess: true, message: "Child run completed with 0 errors."))
             ]
             conversationModel.isGenerating = false
-            inspectorModel.telemetry.activeBackgroundTasks = 1
 
         case .permission:
             conversationModel.sessionID = "sess-1"
@@ -212,8 +317,6 @@ public final class FakeFrontendRuntime {
                 TimelineItemPresentation(kind: .assistant(content: "Context window utilization is at 92%. Active compaction triggered.", isStreaming: false))
             ]
             conversationModel.isGenerating = false
-            inspectorModel.telemetry.ecoreHeat = 0.96
-            inspectorModel.telemetry.cacheHitRatio = 0.42
 
         case .mcpFailure:
             conversationModel.sessionID = "sess-1"
@@ -223,7 +326,6 @@ public final class FakeFrontendRuntime {
                 TimelineItemPresentation(kind: .terminal(title: "MCP Fault Injected", isSuccess: false, message: "MCP Server 'sqlite' terminated unexpectedly. Core fail-closed safely."))
             ]
             conversationModel.isGenerating = false
-            inspectorModel.telemetry.activeMCPCount = 3
 
         case .backgroundTask:
             conversationModel.sessionID = "sess-1"
@@ -231,7 +333,6 @@ public final class FakeFrontendRuntime {
                 TimelineItemPresentation(kind: .user(content: "Run test suite in background", attachments: [])),
                 TimelineItemPresentation(kind: .tool(callID: "bg-1", toolName: "background_run", summary: "swift test --filter Round8SystemAuditTests (PID: 48920)", status: "running"))
             ]
-            inspectorModel.telemetry.activeBackgroundTasks = 2
 
         case .providerReconnect:
             conversationModel.sessionID = "sess-1"
@@ -239,19 +340,20 @@ public final class FakeFrontendRuntime {
                 TimelineItemPresentation(kind: .user(content: "Send streaming query", attachments: [])),
                 TimelineItemPresentation(kind: .assistant(content: "Provider connection dropped. Automatically reconnecting via ProviderConnectionFlow...", isStreaming: true))
             ]
-            inspectorModel.telemetry.tokensPerSecond = 0.0
         }
     }
 
     private func startMockStreaming() {
+        let generation = currentGeneration
+        let targetSessionID = conversationModel.sessionID
         streamingTask = Task { @MainActor [weak self] in
             let mockTokens = ["LingXi", " Glass", " delivers", " zero-lag", " glassmorphism", " with", " completely", " isolated", " UI", " state."]
             for token in mockTokens {
                 try? await Task.sleep(nanoseconds: 120_000_000)
-                guard !Task.isCancelled, let self else { break }
+                guard !Task.isCancelled, let self, self.currentGeneration == generation, self.conversationModel.sessionID == targetSessionID else { break }
                 self.conversationModel.appendOrUpdateStreamingChunk(chunk: token)
             }
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self, self.currentGeneration == generation, self.conversationModel.sessionID == targetSessionID else { return }
             self.conversationModel.finalizeStreaming()
         }
     }
@@ -261,14 +363,16 @@ public final class FakeFrontendRuntime {
         conversationModel.items.append(userItem)
         composerModel.clear()
 
-        // 模拟 Assistant 回复
-        Task { @MainActor [weak self] in
+        let generation = currentGeneration
+        let targetSessionID = conversationModel.sessionID
+        let replyTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 200_000_000)
-            guard let self else { return }
+            guard !Task.isCancelled, let self, self.currentGeneration == generation, self.conversationModel.sessionID == targetSessionID else { return }
             self.conversationModel.items.append(TimelineItemPresentation(
                 kind: .assistant(content: "Echo [\(mode)]: \(text)", isStreaming: false)
             ))
         }
+        activeReplyTasks.append(replyTask)
     }
 }
 #endif

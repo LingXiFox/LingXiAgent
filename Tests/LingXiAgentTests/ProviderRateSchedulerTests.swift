@@ -53,7 +53,6 @@ import LingXiClient
         let selection = ModelSelection(providerID: endpoint.providerID, accountID: endpoint.accountID, profileID: endpoint.profileID, modelID: endpoint.modelID.rawValue)
         let host = try CoreHost(providerAssembly: assembly, modelRuntimes: ["\(endpoint.accountID!)::\(endpoint.profileID!)": assembly], defaultModelSelection: selection, workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
 
@@ -64,6 +63,7 @@ import LingXiClient
         #expect(trace.retryCount == 1)
         #expect(trace.rateLimit429Count == 1)
         #expect(diagnostics.trace.contains { $0.event == "provider.call.trace" && $0.metadata["retryCount"] == "1" && $0.metadata["rateLimit429Count"] == "1" })
+        await host.shutdown()
     }
 
     @Test func retryDelayContributesToRateWaitMetrics() async throws {

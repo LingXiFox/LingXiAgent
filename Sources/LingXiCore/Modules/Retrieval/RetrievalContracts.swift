@@ -151,7 +151,7 @@ public enum RetrievalCorpusClassifier {
             }
         }
         let lower = path.lowercased()
-        let filename = URL(fileURLWithPath: lower).lastPathComponent
+        let filename = (lower as NSString).lastPathComponent
         if lower.hasSuffix(".md") || lower.hasSuffix(".markdown") || lower.hasSuffix(".txt") || lower.hasSuffix(".rst") || lower.hasSuffix(".adoc") {
             return true
         }

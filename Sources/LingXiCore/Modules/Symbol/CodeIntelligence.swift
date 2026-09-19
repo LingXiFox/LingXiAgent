@@ -191,6 +191,10 @@ public actor CodeIntelligence {
 
     public func status() async -> LSPClientState { await lsp.lifecycle() }
     public func refresh() async { _ = try? await pager.rebuildStaleFiles(using: scanner) }
+    public func shutdown() async {
+        await lsp.stop()
+        await coordinator.shutdownAll()
+    }
 
     public func symbols(_ query: String) async -> [CodeIntelligenceSymbol] {
         await refresh()

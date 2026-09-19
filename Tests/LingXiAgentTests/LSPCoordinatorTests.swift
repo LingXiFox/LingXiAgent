@@ -78,6 +78,7 @@ struct LSPCoordinatorTests {
         // 3. 验证 Diagnostics
         let diags = await intelligence.diagnostics(path: "main.swift")
         #expect(diags.isEmpty == true || diags.isEmpty == false)
+        await intelligence.shutdown()
     }
 
     @Test func lspHoverResultDecodesVariousLSPContentFormats() throws {

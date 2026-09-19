@@ -76,7 +76,8 @@ public actor AgentRuntime {
         restoreScheduler: SessionRestoreScheduler? = nil,
         diagnostics: RuntimeDiagnosticsStore? = nil,
         backgroundManager: BackgroundCommandManager? = nil,
-        providerActivityRegistry: ProviderActivityRegistry? = nil
+        providerActivityRegistry: ProviderActivityRegistry? = nil,
+        workspaceRevision: UInt64 = 1
     ) {
         self.store = store
         self.contextEngine = contextEngine
@@ -107,11 +108,12 @@ public actor AgentRuntime {
         self.diagnostics = diagnostics
         self.backgroundManager = backgroundManager ?? BackgroundCommandManager()
         self.providerActivityRegistry = providerActivityRegistry ?? ProviderActivityRegistry()
+        self.workspaceRevision = workspaceRevision
     }
 
     // MARK: - Workspace Transition
 
-    public private(set) var workspaceRevision: UInt64 = 0
+    public private(set) var workspaceRevision: UInt64 = 1
 
     public func updateWorkspaceComponents(
         toolRuntime: ToolRuntime,

@@ -147,7 +147,6 @@ struct CancellationRaceTests {
         let provider = HangingProvider()
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -174,6 +173,7 @@ struct CancellationRaceTests {
 
         let activities = await ProviderActivityRegistry.shared.activeActivities(for: sessionID)
         #expect(activities.isEmpty)
+        await host.shutdown()
     }
 
     // Scenario 2: provider streaming 时 Esc → 立即终止，后续 delta 不上屏
@@ -185,7 +185,6 @@ struct CancellationRaceTests {
         let provider = SteppedStreamingProvider()
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -221,6 +220,7 @@ struct CancellationRaceTests {
         let deltas = await receivedDeltas.value
         #expect(deltas.contains("chunk 1"))
         #expect(!deltas.contains("chunk 2"))
+        await host.shutdown()
     }
 
     // Scenario 3: rate-limit cooldown 时 Esc → scheduler wait 立即退出
@@ -266,7 +266,6 @@ struct CancellationRaceTests {
         let provider = ToolThenHangProvider()
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -288,6 +287,7 @@ struct CancellationRaceTests {
         let updatedRun = try #require(updatedRuns.first { $0.runID == run.runID })
         #expect(updatedRun.status == .cancelled)
         #expect(updatedRun.terminalReason == .userCancelled)
+        await host.shutdown()
     }
 
     // Scenario 5: parallel subagents 时 Esc parent → 全部 child cancelled
@@ -299,7 +299,6 @@ struct CancellationRaceTests {
         let provider = ParallelSubagentHangingProvider()
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -336,6 +335,7 @@ struct CancellationRaceTests {
                 #expect(childRun.terminalReason == .userCancelled)
             }
         }
+        await host.shutdown()
     }
 
     // Scenario 6: cancelled provider 后来又返回迟到 response → 丢弃，不改变 run 状态
@@ -347,7 +347,6 @@ struct CancellationRaceTests {
         let provider = ControllableProvider()
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -377,6 +376,7 @@ struct CancellationRaceTests {
 
         let session = try await client.session(sessionID)
         #expect(!session.messages.contains { $0.content.contains("late unauthorized message") })
+        await host.shutdown()
     }
 }
 

@@ -135,6 +135,7 @@ public final class BM25IndexSnapshot: Sendable {
         // 关键特性：docID 单调自增遍历，天然保证了 postingsByTermID 中每个 termID 的 Posting 按 docID 递增有序！
         for (docIdx, chunk) in chunks.enumerated() {
             let docID = Int32(docIdx)
+            #if canImport(ObjectiveC)
             autoreleasepool {
                 let tf = tokenizer.termFrequencies(chunk.indexableText)
                 var currentDocLen: Int32 = 0
@@ -159,6 +160,32 @@ public final class BM25IndexSnapshot: Sendable {
                 lengths.append(currentDocLen)
                 totalLen += Int64(currentDocLen)
             }
+            #else
+            do {
+                let tf = tokenizer.termFrequencies(chunk.indexableText)
+                var currentDocLen: Int32 = 0
+
+                for (term, count) in tf {
+                    let termCount = UInt16(min(count, Int(UInt16.max)))
+                    currentDocLen += Int32(termCount)
+
+                    let termID: Int32
+                    if let existingID = termDict[term] {
+                        termID = existingID
+                    } else {
+                        termID = nextTermID
+                        termDict[term] = termID
+                        nextTermID += 1
+                        postings.append([])
+                    }
+
+                    postings[Int(termID)].append(CompactPosting(docID: docID, termFrequency: termCount))
+                }
+
+                lengths.append(currentDocLen)
+                totalLen += Int64(currentDocLen)
+            }
+            #endif
         }
 
         self.termDictionary = termDict

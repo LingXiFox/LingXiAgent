@@ -78,7 +78,6 @@ struct BackgroundCommandTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let manager = BackgroundCommandManager()
-        defer { Task { await manager.terminateAll() } }
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
         let manageTool = ManageBackgroundCommandTool(manager: manager)
 
@@ -96,6 +95,7 @@ struct BackgroundCommandTests {
         """
         let pollResult = try await manageTool.execute(arguments: pollArgs, profile: .workspace)
         #expect(pollResult.contains("timed_out"))
+        await manager.terminateAll()
     }
 
     @Test func testManualTermination() async throws {
@@ -103,7 +103,6 @@ struct BackgroundCommandTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let manager = BackgroundCommandManager()
-        defer { Task { await manager.terminateAll() } }
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
         let manageTool = ManageBackgroundCommandTool(manager: manager)
 
@@ -117,6 +116,7 @@ struct BackgroundCommandTests {
         """
         let termResult = try await manageTool.execute(arguments: terminateArgs, profile: .workspace)
         #expect(termResult.contains("terminated"))
+        await manager.terminateAll()
     }
 
     @Test func testProactiveSystemNoticeGeneration() async throws {

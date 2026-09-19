@@ -371,17 +371,6 @@ public struct OpenAICompatibleProvider: ModelProvider {
         )
     }
 
-    static func collectText(_ bytes: URLSession.AsyncBytes) async throws -> String {
-        var data = Data()
-        var count = 0
-        for try await byte in bytes {
-            data.append(byte)
-            count += 1
-            if count > 64 * 1024 { break }
-        }
-        return String(decoding: data, as: UTF8.self)
-    }
-
     static func collectText(_ stream: AsyncThrowingStream<Data, Error>) async throws -> String {
         var data = Data()
         var count = 0

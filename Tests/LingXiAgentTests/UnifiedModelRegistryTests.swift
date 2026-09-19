@@ -743,7 +743,6 @@ struct UnifiedModelRegistryTests {
             credentialStore: credStore
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let models = try await client.listProviderModels()
@@ -763,6 +762,7 @@ struct UnifiedModelRegistryTests {
         #expect(status.configured)
         #expect(status.model == "openai-codex/gpt-6-astra")
         #expect(status.baseURL == "https://chatgpt.com/backend-api/codex")
+        await host.shutdown()
     }
 
     @Test func testOpenAICodexAccountIDExtraction() {

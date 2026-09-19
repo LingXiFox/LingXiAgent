@@ -193,7 +193,6 @@ import Foundation
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -231,6 +230,7 @@ import Foundation
         #expect(turn2Usage > turn1Usage)
         #expect(turn2Input > turn1Input)
         #expect(turn2Usage > turn2Input)
+        await host.shutdown()
     }
 
     @Test("Strict Append-Only telemetry accurately detects mutations without false positives (Issue #44)")

@@ -190,6 +190,7 @@ public final class ConversationPresentationModel: ObservableObject {
     private var streamingBuffer: String = ""
     private var lastCoalescedPublishTime: Date = Date.distantPast
     private let coalesceInterval: TimeInterval = 0.04 // 40ms 合批刷新阈值
+    private var flushTask: Task<Void, Never>? = nil
 
     public init(sessionID: String = "", items: [TimelineItemPresentation] = []) {
         self.sessionID = sessionID
@@ -200,12 +201,25 @@ public final class ConversationPresentationModel: ObservableObject {
         streamingBuffer.append(chunk)
         let now = Date()
         if now.timeIntervalSince(lastCoalescedPublishTime) >= coalesceInterval {
+            flushTask?.cancel()
+            flushTask = nil
             flushStreamingBuffer()
             lastCoalescedPublishTime = now
+        } else if flushTask == nil {
+            // 启动 40ms 兜底定时器，流暂停时也能自动刷新已缓冲 token，绝不无限挂起 (Audit Round 10 Phase F)
+            flushTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.flushStreamingBuffer()
+                self.lastCoalescedPublishTime = Date()
+                self.flushTask = nil
+            }
         }
     }
 
     public func flushStreamingBuffer() {
+        flushTask?.cancel()
+        flushTask = nil
         guard !streamingBuffer.isEmpty else { return }
         let flushedText = streamingBuffer
         streamingBuffer = ""
@@ -217,6 +231,8 @@ public final class ConversationPresentationModel: ObservableObject {
     }
 
     public func finalizeStreaming() {
+        flushTask?.cancel()
+        flushTask = nil
         flushStreamingBuffer()
         if let lastIndex = items.indices.last, case .assistant(let text, _) = items[lastIndex].kind {
             items[lastIndex].kind = .assistant(content: text, isStreaming: false)

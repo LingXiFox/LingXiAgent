@@ -46,7 +46,6 @@ struct ACPServerTests {
 
         let coreHost = try CoreHost(dataRoot: tmpDir)
         await coreHost.start()
-        defer { Task { await coreHost.shutdown() } }
 
         let server = LingXiACPServer(service: coreHost)
 
@@ -92,5 +91,6 @@ struct ACPServerTests {
         let errOutStr = String(decoding: errOutData, as: UTF8.self)
 
         #expect(errOutStr.contains("-32601"))
+        await coreHost.shutdown()
     }
 }

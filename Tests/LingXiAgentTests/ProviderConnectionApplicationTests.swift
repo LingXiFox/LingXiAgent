@@ -83,7 +83,6 @@ struct ProviderConnectionApplicationTests {
         let credentialStore = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
         let host = try CoreHost(configurationStore: configurationStore, credentialStore: credentialStore)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let service = ProviderConnectionService(client: .inProcess(endpoint: host))
         let products = try await service.listConnectableProducts()
@@ -100,6 +99,7 @@ struct ProviderConnectionApplicationTests {
         let disconnected = try await service.disconnect(accountID: account.id, deleteUnusedCredential: false)
         #expect(disconnected.credentialDeleted == false)
         #expect(try await credentialStore.secret(for: account.credentialRef!) == "integration-secret")
+        await host.shutdown()
     }
 
     @Test func disconnectDoesNotDeleteASharedCredentialUntilTheLastAccountIsGone() async throws {
@@ -109,7 +109,6 @@ struct ProviderConnectionApplicationTests {
         let credentialStore = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
         let host = try CoreHost(configurationStore: configurationStore, credentialStore: credentialStore)
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let reference = try await client.storeProviderCredential("shared-secret")
@@ -122,6 +121,7 @@ struct ProviderConnectionApplicationTests {
         let secondResult = try await client.disconnectProviderAccount("second", deleteUnusedCredential: true)
         #expect(secondResult.credentialDeleted == true)
         #expect(try await credentialStore.secret(for: reference) == nil)
+        await host.shutdown()
     }
 
     private func temporaryRoot() -> URL {

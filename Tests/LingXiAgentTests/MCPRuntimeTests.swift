@@ -89,7 +89,6 @@ struct MCPRuntimeTests {
         ])
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, mcpPager: pager)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let session = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: session, content: "find marker") {}
@@ -98,6 +97,7 @@ struct MCPRuntimeTests {
         #expect(requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 1])
         #expect(requests[2].tools.first(where: { $0.rawInputSchema != nil })?.id == ToolID(alias))
         #expect((try await client.session(session)).messages.last?.content == "MCPAnchor-729")
+        await host.shutdown()
     }
 
     @Test func httpFixtureDiscoversPaginatedCatalogSupportsSSEAndGet() async throws {
@@ -131,13 +131,13 @@ struct MCPRuntimeTests {
         ])
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, mcpPager: pager)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let session = try await client.createSession()
         for try await _ in try await client.sendMessage(sessionID: session, content: "find phase12 marker") {}
         let requests = provider.recorder.requests
         #expect(requests.map { $0.tools.filter { $0.rawInputSchema != nil }.count } == [0, 0, 1, 1])
         #expect((try await client.session(session)).messages.last?.content == "MCPAnchor-729")
+        await host.shutdown()
     }
 
     @Test func httpFixtureRejectsOriginAndSlowCallTimesOut() async throws {

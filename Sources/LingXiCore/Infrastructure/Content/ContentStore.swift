@@ -14,6 +14,7 @@ public actor ContentStore {
         var updatedAt: Date
         var stagingFileURL: URL?
         var chunks: [UInt64: Data]
+        var chunkDigests: [UInt64: String]
         var receivedIndices: Set<UInt64>
         var nextExpectedChunkIndex: UInt64
         var totalBytesWritten: Int
@@ -134,6 +135,7 @@ public actor ContentStore {
             updatedAt: now,
             stagingFileURL: stagingURL,
             chunks: [:],
+            chunkDigests: [:],
             receivedIndices: [],
             nextExpectedChunkIndex: 0,
             totalBytesWritten: 0
@@ -153,9 +155,21 @@ public actor ContentStore {
             )
         }
 
-        // 幂等处理网络重试导致的重复分片，避免重复追加损坏数据；冲突 payload 严格防御 (Audit Round 9 Phase B)
+        let chunkDigest = LingXiPlatform.crypto.sha256Hex(data)
+
+        // 幂等处理网络重试导致的重复分片，避免重复追加损坏数据；生产磁盘与内存模式均严格冲突校验 (Audit Round 9 Phase B & Round 10 Phase B)
         if upload.receivedIndices.contains(chunkIndex) {
-            if let existing = upload.chunks[chunkIndex], existing != data {
+            if let existingDigest = upload.chunkDigests[chunkIndex] {
+                if existingDigest != chunkDigest {
+                    throw RuntimeError(
+                        category: .validation,
+                        code: "chunkConflict",
+                        message: "Chunk index \(chunkIndex) payload conflicts with previously received chunk",
+                        retryability: .none,
+                        source: .client
+                    )
+                }
+            } else if let existing = upload.chunks[chunkIndex], existing != data {
                 throw RuntimeError(
                     category: .validation,
                     code: "chunkConflict",
@@ -221,15 +235,22 @@ public actor ContentStore {
         }
 
         if let stagingURL = upload.stagingFileURL {
-            // 磁盘暂存：直接流式写入磁盘，避免大文件堆积在内存 (Audit Round 7 Phase E)
+            // 磁盘暂存：精确寻道写入，写入异常立即 truncate 回滚，杜绝重试数据拼接损坏 (Audit Round 10 Phase B)
             let handle = try FileHandle(forWritingTo: stagingURL)
             defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
+            let writeOffset = UInt64(upload.totalBytesWritten)
+            do {
+                try handle.seek(toOffset: writeOffset)
+                try handle.write(contentsOf: data)
+            } catch {
+                try? handle.truncate(atOffset: writeOffset)
+                throw error
+            }
         } else {
             upload.chunks[chunkIndex] = data
         }
 
+        upload.chunkDigests[chunkIndex] = chunkDigest
         upload.receivedIndices.insert(chunkIndex)
         upload.nextExpectedChunkIndex += 1
         upload.totalBytesWritten += data.count
@@ -533,6 +554,17 @@ public actor ContentStore {
 
                 let actualByteCount: Int
                 if let count = meta.byteCount {
+                    if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                       let fileSize = attrs[.size] as? Int,
+                       fileSize != count {
+                        throw RuntimeError(
+                            category: .validation,
+                            code: "contentLengthMismatch",
+                            message: "Content body size (\(fileSize) bytes) does not match metadata (\(count) bytes) for \(id.rawValue)",
+                            retryability: .none,
+                            source: .core
+                        )
+                    }
                     actualByteCount = count
                 } else {
                     guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
@@ -637,8 +669,18 @@ public actor ContentStore {
             return Data()
         }
 
-        let end = min(meta.byteCount, offset + length)
+        // 安全计算范围终点，防止 offset + length 整数溢出导致 Swift trap (Audit Round 10 Phase B)
+        let end: Int
+        let (sum, overflow) = offset.addingReportingOverflow(length)
+        if overflow || sum >= meta.byteCount {
+            end = meta.byteCount
+        } else {
+            end = sum
+        }
         let sliceLength = end - offset
+        guard sliceLength > 0 else {
+            return Data()
+        }
 
         if let cachedData = byteCache[id] {
             return cachedData.subdata(in: offset..<end)

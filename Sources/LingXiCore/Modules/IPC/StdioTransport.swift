@@ -131,45 +131,56 @@ public final class StdioTransport: @unchecked Sendable {
 
     /// 循环读取确切数量的字节，克服底层管道的 partial read 语义
     public func readExact(count: Int) throws -> Data {
-        readLock.lock()
-        defer { readLock.unlock() }
+        while true {
+            readLock.lock()
+            guard let handle = outputHandle else {
+                readLock.unlock()
+                throw StdioTransportError.notConnected
+            }
 
-        guard let handle = outputHandle else {
-            throw StdioTransportError.notConnected
-        }
+            if readBuffer.count >= count {
+                let result = readBuffer.prefix(count)
+                readBuffer.removeFirst(count)
+                readLock.unlock()
+                return Data(result)
+            }
+            readLock.unlock()
 
-        while readBuffer.count < count {
+            // 绝不在持有锁时进行阻塞系统调用
             let chunk = handle.availableData
             if chunk.isEmpty {
+                readLock.lock()
+                defer { readLock.unlock() }
                 if readBuffer.count == count {
-                    break
+                    let result = readBuffer
+                    readBuffer.removeAll()
+                    return Data(result)
                 }
                 throw StdioTransportError.streamClosed
             }
-            readBuffer.append(chunk)
-        }
 
-        let result = readBuffer.prefix(count)
-        readBuffer.removeFirst(count)
-        return Data(result)
+            readLock.lock()
+            readBuffer.append(chunk)
+            readLock.unlock()
+        }
     }
 
     /// 高效读取整行（基于换行符 \n），优先使用内存缓冲区，单次批量系统调用
     public func readLine(maxBytes: Int = 10 * 1024 * 1024) throws -> Data? {
-        readLock.lock()
-        defer { readLock.unlock() }
-
-        guard let handle = outputHandle else {
-            throw StdioTransportError.notConnected
-        }
-
         let newlineByte = UInt8(ascii: "\n")
         let crByte = UInt8(ascii: "\r")
 
         while true {
+            readLock.lock()
+            guard let handle = outputHandle else {
+                readLock.unlock()
+                throw StdioTransportError.notConnected
+            }
+
             if let newlineIndex = readBuffer.firstIndex(of: newlineByte) {
                 var lineData = Data(readBuffer[..<newlineIndex])
                 readBuffer.removeSubrange(..<readBuffer.index(after: newlineIndex))
+                readLock.unlock()
                 if lineData.last == crByte {
                     lineData.removeLast()
                 }
@@ -177,11 +188,16 @@ public final class StdioTransport: @unchecked Sendable {
             }
 
             if readBuffer.count > maxBytes {
+                readLock.unlock()
                 throw StdioTransportError.readFailed
             }
+            readLock.unlock()
 
+            // 绝不在持有锁时进行阻塞系统调用
             let chunk = handle.availableData
             if chunk.isEmpty {
+                readLock.lock()
+                defer { readLock.unlock() }
                 if readBuffer.isEmpty {
                     return nil
                 } else {
@@ -196,27 +212,35 @@ public final class StdioTransport: @unchecked Sendable {
                     return remaining
                 }
             }
+
+            readLock.lock()
             readBuffer.append(chunk)
+            readLock.unlock()
         }
     }
 
     /// 从内部缓冲高效获取下一个单字节（纯内存操作，缓冲为空时读取可用数据）
     public func readByte() throws -> UInt8? {
         readLock.lock()
-        defer { readLock.unlock() }
-
+        if !readBuffer.isEmpty {
+            let b = readBuffer.removeFirst()
+            readLock.unlock()
+            return b
+        }
         guard let handle = outputHandle else {
+            readLock.unlock()
             throw StdioTransportError.notConnected
         }
+        readLock.unlock()
 
-        if !readBuffer.isEmpty {
-            return readBuffer.removeFirst()
-        }
-
+        // 绝不在持有锁时进行阻塞系统调用
         let chunk = handle.availableData
         if chunk.isEmpty {
             return nil
         }
+
+        readLock.lock()
+        defer { readLock.unlock() }
         readBuffer.append(chunk)
         return readBuffer.removeFirst()
     }
@@ -231,24 +255,26 @@ public final class StdioTransport: @unchecked Sendable {
         // 1. 优先销毁子进程树，使操作系统内核自动关闭管道写入端，向父进程读端注入 EOF
         managedProcess.terminate(force: true)
 
-        // 2. 关闭父进程写端
+        // 2. 关闭父进程写端与错误流
         writeLock.lock()
         let inH = inputHandle
         inputHandle = nil
         writeLock.unlock()
         try? inH?.close()
 
-        // 3. 此时由于对端已关闭，阻塞在 read(2) 上的 Reader 必定瞬间收到 EOF 并释放 readLock
+        let errH = errorHandle
+        errorHandle = nil
+        try? errH?.close()
+
+        // 3. 微秒级持锁取出读端句柄并置空，绝不发生阻塞
         readLock.lock()
         let outH = outputHandle
         outputHandle = nil
         readBuffer.removeAll()
         readLock.unlock()
-        try? outH?.close()
 
-        let errH = errorHandle
-        errorHandle = nil
-        try? errH?.close()
+        // 4. 关闭输出句柄打断阻塞中的可用数据读取
+        try? outH?.close()
     }
 
     deinit {

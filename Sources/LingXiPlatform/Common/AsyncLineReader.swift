@@ -70,7 +70,10 @@ public enum AsyncLineReader: Sendable {
                 }
             } else {
                 #if !os(Windows)
-                var leftover = Data()
+                final class LineAccumulator: @unchecked Sendable {
+                    var leftover = Data()
+                }
+                let accumulator = LineAccumulator()
                 let newline = UInt8(ascii: "\n")
                 let cr = UInt8(ascii: "\r")
 
@@ -78,8 +81,8 @@ public enum AsyncLineReader: Sendable {
                     let data = h.availableData
                     if data.isEmpty {
                         h.readabilityHandler = nil
-                        if !leftover.isEmpty {
-                            var lineData = leftover
+                        if !accumulator.leftover.isEmpty {
+                            var lineData = accumulator.leftover
                             if lineData.last == cr {
                                 lineData.removeLast()
                             }
@@ -87,21 +90,21 @@ public enum AsyncLineReader: Sendable {
                             if !line.isEmpty {
                                 continuation.yield(line)
                             }
-                            leftover.removeAll()
+                            accumulator.leftover.removeAll()
                         }
                         continuation.finish()
                         return
                     }
 
-                    leftover.append(data)
-                    while let newlineIndex = leftover.firstIndex(of: newline) {
-                        var lineData = leftover.subdata(in: leftover.startIndex..<newlineIndex)
+                    accumulator.leftover.append(data)
+                    while let newlineIndex = accumulator.leftover.firstIndex(of: newline) {
+                        var lineData = accumulator.leftover.subdata(in: accumulator.leftover.startIndex..<newlineIndex)
                         if lineData.last == cr {
                             lineData.removeLast()
                         }
                         let line = String(decoding: lineData, as: UTF8.self)
                         continuation.yield(line)
-                        leftover.removeSubrange(leftover.startIndex...newlineIndex)
+                        accumulator.leftover.removeSubrange(accumulator.leftover.startIndex...newlineIndex)
                     }
                 }
 

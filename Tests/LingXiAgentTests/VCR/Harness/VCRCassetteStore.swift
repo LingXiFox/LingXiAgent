@@ -322,12 +322,21 @@ actor VCRCassetteStore {
         if normalized == "tools" { return true }
         if normalized == "output",
            let leftString = left as? String,
-           let rightString = right as? String,
-           let leftObject = try? JSONSerialization.jsonObject(with: Data(leftString.utf8)) as? [String: Any],
-           let rightObject = try? JSONSerialization.jsonObject(with: Data(rightString.utf8)) as? [String: Any],
-           leftObject["code"] != nil,
-           rightObject["error"] != nil {
-            return true
+           let rightString = right as? String {
+            if let leftObject = try? JSONSerialization.jsonObject(with: Data(leftString.utf8)) as? [String: Any],
+               let rightObject = try? JSONSerialization.jsonObject(with: Data(rightString.utf8)) as? [String: Any],
+               leftObject["code"] != nil,
+               rightObject["error"] != nil {
+                return true
+            }
+            if let leftArray = try? JSONSerialization.jsonObject(with: Data(leftString.utf8)) as? [[String: Any]],
+               let rightArray = try? JSONSerialization.jsonObject(with: Data(rightString.utf8)) as? [[String: Any]] {
+                let leftToolIDs = Set(leftArray.compactMap { ($0["tool_id"] as? String) ?? ($0["name"] as? String) })
+                let rightToolIDs = Set(rightArray.compactMap { ($0["tool_id"] as? String) ?? ($0["name"] as? String) })
+                if !leftToolIDs.isEmpty && leftToolIDs.isSubset(of: rightToolIDs) {
+                    return true
+                }
+            }
         }
         if normalized == "runid" || (normalized == "rawvalue" && parent?.replacingOccurrences(of: "_", with: "").lowercased().contains("run") == true) { return true }
         if let left = left as? [String: Any], let right = right as? [String: Any] {

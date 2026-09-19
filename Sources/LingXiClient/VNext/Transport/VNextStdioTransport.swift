@@ -32,7 +32,8 @@ private actor ClientWireWriter {
         self.handle = handle
     }
 
-    func write(data: Data) throws {
+    func write(data: Data, shouldCancel: () -> Bool = { false }) throws {
+        guard !shouldCancel() else { return }
         try handle.write(contentsOf: data)
     }
 
@@ -51,6 +52,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var nextID = 0
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
+    private var cancelledRequestIDs: Set<String> = []
     private var runtimeContinuations: [String: AsyncStream<RuntimeEventEnvelope>.Continuation] = [:]
     private var sessionContinuations: [String: AsyncStream<SessionEventEnvelope>.Continuation] = [:]
     private var frameContinuations: [String: AsyncStream<StreamFrame>.Continuation] = [:]
@@ -315,14 +317,20 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         return pending.removeValue(forKey: id)
     }
 
+    private func isRequestCancelled(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelledRequestIDs.contains(id)
+    }
+
     private func send(method: String, payload: Data?, id: String? = nil) async throws -> Data {
         let requestID = id ?? makeID()
         debug("send.begin id=\(requestID) method=\(method)")
         let wireRequest = VNextWireRequest(id: requestID, method: method, payload: payload)
         let data = try encoder.encode(wireRequest) + Data("\n".utf8)
-        let maxFrameBytes = 64 * 1024 * 1024
+        let maxFrameBytes = ProtocolConstants.maxFrameBytes
         guard data.count <= maxFrameBytes else {
-            throw CoreError(code: .transport, message: "Request payload \(data.count) bytes exceeds 64MB frame limit")
+            throw CoreError(code: .transport, message: "Request payload \(data.count) bytes exceeds \(maxFrameBytes) frame limit")
         }
 
         return try await withTaskCancellationHandler {
@@ -338,7 +346,11 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
                 Task {
                     do {
-                        try await writer.write(data: data)
+                        // 关键安全防御：写入前检测 cancellation，已取消的命令绝不上管道，杜绝副作用晚发 (Audit Round 10 Phase C)
+                        try await writer.write(data: data) { [weak self] in
+                            guard let self else { return true }
+                            return self.isRequestCancelled(requestID)
+                        }
                     } catch {
                         if let winner = takePending(requestID) {
                             winner.resume(throwing: error)
@@ -348,6 +360,9 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
             }
         } onCancel: { [weak self] in
             guard let self else { return }
+            self.lock.lock()
+            self.cancelledRequestIDs.insert(requestID)
+            self.lock.unlock()
             if let winner = self.takePending(requestID) {
                 winner.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(requestID) cancelled"))
             }

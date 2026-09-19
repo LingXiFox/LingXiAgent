@@ -283,7 +283,6 @@ struct RealProviderSmokeTests {
         defer { try? FileManager.default.removeItem(at: rootURL) }
         let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: rootURL.path), permissionDecision: .allow, mcpPager: pager)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let answer = try await within("phase12-http-mcp", seconds: 180) {
@@ -295,6 +294,7 @@ struct RealProviderSmokeTests {
         #expect(residency.first == 0)
         #expect(residency.contains(1))
         #expect(residency.last == 0)
+        await host.shutdown()
     }
 
     @Test func realProviderPhaseThirteenMultiAgentSmoke() async throws {
@@ -309,7 +309,6 @@ struct RealProviderSmokeTests {
         try Data("public struct Bar { public let value = 2 }\n".utf8).write(to: rootURL.appendingPathComponent("Bar.swift"))
         let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: rootURL.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let root = try await client.createSession()
         _ = try await within("phase13-spawn", seconds: 120) {
@@ -333,6 +332,7 @@ struct RealProviderSmokeTests {
         }
         #expect(answer.localizedCaseInsensitiveContains("Foo"))
         #expect(answer.localizedCaseInsensitiveContains("Bar"))
+        await host.shutdown()
     }
 
     @Test func realProviderResponsesSmoke() async throws {
@@ -350,7 +350,6 @@ struct RealProviderSmokeTests {
         try "ResponsesToolAnchor-729".write(to: root.appendingPathComponent("anchor.txt"), atomically: true, encoding: .utf8)
         let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
-        defer { Task { await host.shutdown() } }
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
         let text = try await within("responses-text") {
@@ -366,6 +365,7 @@ struct RealProviderSmokeTests {
         #expect(calledTool)
         #expect(receivedToolResult)
         #expect(tool.contains("ResponsesToolAnchor-729"))
+        await host.shutdown()
     }
 
     @MainActor
@@ -415,7 +415,6 @@ struct RealProviderSmokeTests {
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = try await LingXiClientVNext(transport: InProcessTransport(service: host), handshakeImmediately: true)
         let store = await ApplicationStore(client: client, autoConnect: false)
@@ -440,6 +439,7 @@ struct RealProviderSmokeTests {
                 break
             }
         }
+        await host.shutdown()
     }
 
     @Test func testPrefixCacheWithRealProvider() async throws {
@@ -475,7 +475,6 @@ struct RealProviderSmokeTests {
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -523,5 +522,6 @@ struct RealProviderSmokeTests {
         } else {
             print("[PrefixCacheSmoke] NOTE: Provider responded without prompt cache hits (may be cold cache or provider unsupported).")
         }
+        await host.shutdown()
     }
 }

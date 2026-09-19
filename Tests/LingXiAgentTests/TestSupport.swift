@@ -9,6 +9,7 @@ public func withTestCoreHost<T: Sendable>(
     storageLayout: CoreStorageLayout? = nil,
     _ operation: @Sendable (CoreHost) async throws -> T
 ) async throws -> T {
+    let isCallerOwned = storageLayout != nil
     let layout = storageLayout ?? CoreStorageLayout.temporarySandbox()
     try layout.ensureDirectoriesExist()
     let host = try CoreHost(
@@ -20,11 +21,15 @@ public func withTestCoreHost<T: Sendable>(
     do {
         let result = try await operation(host)
         await host.shutdown()
-        try? FileManager.default.removeItem(at: layout.root)
+        if !isCallerOwned {
+            try? FileManager.default.removeItem(at: layout.root)
+        }
         return result
     } catch {
         await host.shutdown()
-        try? FileManager.default.removeItem(at: layout.root)
+        if !isCallerOwned {
+            try? FileManager.default.removeItem(at: layout.root)
+        }
         throw error
     }
 }

@@ -139,7 +139,9 @@ public struct ProjectScanner: Sendable {
     }
 
     private func page(path: String, startLine: Int, endLine: Int, content: String, version: String) -> ContextPage {
-        let extensionName = URL(fileURLWithPath: path).pathExtension.lowercased()
+        let nsPath = path as NSString
+        let extensionName = nsPath.pathExtension.lowercased()
+        let lastComponent = nsPath.lastPathComponent
         let sourceType: ContextPageSourceType
         let components = path.split(separator: "/").map { $0.lowercased() }
         if components.contains(where: { Self.researchArchiveDirectories.contains($0) }) { sourceType = .researchArchive }
@@ -147,7 +149,7 @@ public struct ProjectScanner: Sendable {
         else if path == "README.md" { sourceType = .projectMetadata }
         else if path.hasPrefix("Tests/") { sourceType = .test }
         else if ["md", "txt"].contains(extensionName) { sourceType = .documentation }
-        else if ["json", "yaml", "yml", "toml", "xcconfig"].contains(extensionName) || URL(fileURLWithPath: path).lastPathComponent == "Package.swift" { sourceType = .configuration }
+        else if ["json", "yaml", "yml", "toml", "xcconfig"].contains(extensionName) || lastComponent == "Package.swift" { sourceType = .configuration }
         else { sourceType = .sourceFile }
         let heading = content.split(separator: "\n").first(where: { $0.hasPrefix("#") }).map(String.init)
         return ContextPage(projectRoot: projectRoot, path: path, startLine: startLine, endLine: endLine, content: content, version: version, sourceType: sourceType, metadata: ContextPageMetadata(path: path, language: extensionName.isEmpty ? nil : extensionName, heading: heading))

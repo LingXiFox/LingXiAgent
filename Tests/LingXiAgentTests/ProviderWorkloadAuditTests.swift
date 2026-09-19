@@ -141,7 +141,6 @@ import Foundation
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -183,6 +182,7 @@ import Foundation
         #expect(session.messages.count == 2)
         #expect(session.messages[0].role == .user)
         #expect(session.messages[1].role == .assistant)
+        await host.shutdown()
     }
 
     @Test func simpleCodingPromptProducesSingleDirectInferenceAndZeroSubagents() async throws {
@@ -215,7 +215,6 @@ import Foundation
             permissionDecision: .allow
         )
         await host.start()
-        defer { Task { await host.shutdown() } }
 
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
@@ -244,6 +243,7 @@ import Foundation
         #expect(traces[0].reason == "initial_turn_prompt")
         #expect(traces[0].actualUsage?.inputTokens == 810)
         #expect(traces[0].retryAttempt == 0)
+        await host.shutdown()
     }
 
     @Test func toolSchemaCostIsAccuratelyEstimatedAndMatchesWireFraming() async throws {

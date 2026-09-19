@@ -159,17 +159,17 @@ struct Round9SystemAuditTests {
 
     // MARK: - Phase C: VNext IPC Concurrency & Wire Framing
 
-    @Test("Phase C: VNext transport enforces 64MB frame limitation")
+    @Test("Phase C: VNext transport enforces frame limitation")
     func testVNextFrameSizeLimitation() async throws {
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let transport = VNextStdioTransport(inputHandle: inputPipe.fileHandleForWriting, outputPipe: outputPipe)
 
-        // Attempting to send payload exceeding 64MB throws frame size violation
-        let oversizedData = Data(count: 65 * 1024 * 1024)
+        // 仅分配刚超过 32MB 上限的轻量 payload，杜绝双 Base64 产生数百 MB 临时内存 (Audit Round 10 Phase E)
+        let oversizedData = Data(count: ProtocolConstants.maxFrameBytes + 128)
         do {
             try await transport.uploadContentChunk(uploadID: "oversized-test", chunkIndex: 0, data: oversizedData)
-            Issue.record("Expected 64MB frame limitation error to be thrown")
+            Issue.record("Expected frame limitation error to be thrown")
         } catch let err as CoreError {
             #expect(err.code == .transport)
         }
