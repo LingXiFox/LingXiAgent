@@ -1,4 +1,12 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WinSDK)
+import WinSDK
+#endif
 import Foundation
 @testable import LingXiCore
 
@@ -23,7 +31,9 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         var reuse: Int32 = 1
         guard setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw POSIXError(.EINVAL) }
         var address = sockaddr_in()
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = 0
         address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
@@ -53,10 +63,10 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         let clients = activeClients
         lock.unlock()
         guard shouldClose else { return }
-        Darwin.shutdown(listener, SHUT_RDWR)
-        Darwin.close(listener)
+        _ = shutdown(listener, SHUT_RDWR)
+        _ = close(listener)
         for client in clients {
-            Darwin.shutdown(client, SHUT_RDWR)
+            _ = shutdown(client, SHUT_RDWR)
         }
         lifecycle.wait()
         lock.lock(); state = "stopped"; lock.unlock()
@@ -92,7 +102,7 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
     private func handle(_ client: Int32) {
         defer {
             lock.lock(); activeClients.remove(client); lock.unlock()
-            Darwin.close(client)
+            _ = close(client)
         }
         guard let request = readRequest(client) else { return }
         lock.lock(); requestCount += 1; state = "handling"; lock.unlock()
