@@ -6,6 +6,28 @@ private struct VNextWireRequest: Codable {
     let id: String
     let method: String
     let payload: Data?
+    let commandID: CommandID?
+    let expectedRevision: UInt64?
+    let issuedAt: Date?
+    let requestID: RequestID?
+
+    init(
+        id: String,
+        method: String,
+        payload: Data?,
+        commandID: CommandID? = nil,
+        expectedRevision: UInt64? = nil,
+        issuedAt: Date? = nil,
+        requestID: RequestID? = nil
+    ) {
+        self.id = id
+        self.method = method
+        self.payload = payload
+        self.commandID = commandID
+        self.expectedRevision = expectedRevision
+        self.issuedAt = issuedAt
+        self.requestID = requestID
+    }
 }
 
 private struct VNextWireResponse: Codable {
@@ -153,81 +175,81 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         updateState(.disconnected)
     }
 
-    public func getRuntimeInfo(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeInfo> { try await response("runtime.info", envelope.payload) }
-    public func getRuntimeHealth(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeHealth> { try await response("runtime.health", envelope.payload) }
-    public func getRuntimeCapabilities(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeCapabilities> { try await response("runtime.capabilities", envelope.payload) }
-    public func getEffectiveConfiguration(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<EffectiveConfigurationSnapshot> { try await response("runtime.config", envelope.payload) }
-    public func reloadConfiguration(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("runtime.config.reload", envelope.payload) }
-    public func updateTypedSetting(envelope: CommandEnvelope<UpdateTypedSettingRequest>) async throws -> CommandReceipt<VoidResult> { try await command("runtime.setting.update", envelope.payload) }
+    public func getRuntimeInfo(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeInfo> { try await response("runtime.info", envelope) }
+    public func getRuntimeHealth(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeHealth> { try await response("runtime.health", envelope) }
+    public func getRuntimeCapabilities(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeCapabilities> { try await response("runtime.capabilities", envelope) }
+    public func getEffectiveConfiguration(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<EffectiveConfigurationSnapshot> { try await response("runtime.config", envelope) }
+    public func reloadConfiguration(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("runtime.config.reload", envelope) }
+    public func updateTypedSetting(envelope: CommandEnvelope<UpdateTypedSettingRequest>) async throws -> CommandReceipt<VoidResult> { try await command("runtime.setting.update", envelope) }
 
-    public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.create", envelope.payload) }
-    public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.rename", envelope.payload) }
-    public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.set_reasoning_effort", envelope.payload) }
-    public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("session.delete", envelope.payload) }
-    public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> { try await command("session.revert_last_turn", envelope.payload) }
-    public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> { try await response("session.get", envelope.payload) }
-    public func listSessions(envelope: QueryEnvelope<PageRequest>) async throws -> ResponseEnvelope<Page<SessionSummary>> { try await response("session.list", envelope.payload) }
-    public func getSessionSnapshot(envelope: QueryEnvelope<GetSessionSnapshotRequest>) async throws -> ResponseEnvelope<SessionSnapshot> { try await response("session.snapshot", envelope.payload) }
+    public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.create", envelope) }
+    public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.rename", envelope) }
+    public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.set_reasoning_effort", envelope) }
+    public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("session.delete", envelope) }
+    public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> { try await command("session.revert_last_turn", envelope) }
+    public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> { try await response("session.get", envelope) }
+    public func listSessions(envelope: QueryEnvelope<PageRequest>) async throws -> ResponseEnvelope<Page<SessionSummary>> { try await response("session.list", envelope) }
+    public func getSessionSnapshot(envelope: QueryEnvelope<GetSessionSnapshotRequest>) async throws -> ResponseEnvelope<SessionSnapshot> { try await response("session.snapshot", envelope) }
 
-    public func submitTurn(envelope: CommandEnvelope<SubmitTurnRequest>) async throws -> CommandReceipt<SubmitTurnResult> { try await command("turn.submit", envelope.payload) }
-    public func cancelTurn(envelope: CommandEnvelope<CancelTurnRequest>) async throws -> CommandReceipt<VoidResult> { try await command("turn.cancel", envelope.payload) }
-    public func getTurn(envelope: QueryEnvelope<GetTurnRequest>) async throws -> ResponseEnvelope<TurnSnapshot> { try await response("turn.get", envelope.payload) }
-    public func listTurns(envelope: QueryEnvelope<ListTurnsRequest>) async throws -> ResponseEnvelope<Page<TurnSnapshot>> { try await response("turn.list", envelope.payload) }
+    public func submitTurn(envelope: CommandEnvelope<SubmitTurnRequest>) async throws -> CommandReceipt<SubmitTurnResult> { try await command("turn.submit", envelope) }
+    public func cancelTurn(envelope: CommandEnvelope<CancelTurnRequest>) async throws -> CommandReceipt<VoidResult> { try await command("turn.cancel", envelope) }
+    public func getTurn(envelope: QueryEnvelope<GetTurnRequest>) async throws -> ResponseEnvelope<TurnSnapshot> { try await response("turn.get", envelope) }
+    public func listTurns(envelope: QueryEnvelope<ListTurnsRequest>) async throws -> ResponseEnvelope<Page<TurnSnapshot>> { try await response("turn.list", envelope) }
 
-    public func cancelRun(envelope: CommandEnvelope<CancelRunRequest>) async throws -> CommandReceipt<VoidResult> { try await command("run.cancel", envelope.payload) }
-    public func resumeRun(envelope: CommandEnvelope<ResumeRunRequest>) async throws -> CommandReceipt<RunSnapshot> { try await command("run.resume", envelope.payload) }
-    public func getRun(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<RunSnapshot> { try await response("run.get", envelope.payload) }
-    public func listRuns(envelope: QueryEnvelope<ListRunsRequest>) async throws -> ResponseEnvelope<Page<RunSnapshot>> { try await response("run.list", envelope.payload) }
-    public func getAgentTree(envelope: QueryEnvelope<GetAgentTreeRequest>) async throws -> ResponseEnvelope<AgentTreeNode> { try await response("agent.tree", envelope.payload) }
+    public func cancelRun(envelope: CommandEnvelope<CancelRunRequest>) async throws -> CommandReceipt<VoidResult> { try await command("run.cancel", envelope) }
+    public func resumeRun(envelope: CommandEnvelope<ResumeRunRequest>) async throws -> CommandReceipt<RunSnapshot> { try await command("run.resume", envelope) }
+    public func getRun(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<RunSnapshot> { try await response("run.get", envelope) }
+    public func listRuns(envelope: QueryEnvelope<ListRunsRequest>) async throws -> ResponseEnvelope<Page<RunSnapshot>> { try await response("run.list", envelope) }
+    public func getAgentTree(envelope: QueryEnvelope<GetAgentTreeRequest>) async throws -> ResponseEnvelope<AgentTreeNode> { try await response("agent.tree", envelope) }
 
-    public func listPendingInteractions(envelope: QueryEnvelope<ListInteractionsRequest>) async throws -> ResponseEnvelope<[InteractionSnapshot]> { try await response("interaction.list", envelope.payload) }
-    public func resolveInteraction(envelope: CommandEnvelope<ResolveInteractionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("interaction.resolve", envelope.payload) }
+    public func listPendingInteractions(envelope: QueryEnvelope<ListInteractionsRequest>) async throws -> ResponseEnvelope<[InteractionSnapshot]> { try await response("interaction.list", envelope) }
+    public func resolveInteraction(envelope: CommandEnvelope<ResolveInteractionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("interaction.resolve", envelope) }
 
-    public func listProviders(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAccountInfo]> { try await response("provider.list", envelope.payload) }
-    public func getProviderStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderStatus> { try await response("provider.status", envelope.payload) }
-    public func getProvider(envelope: QueryEnvelope<GetProviderRequest>) async throws -> ResponseEnvelope<ProviderAccountInfo> { try await response("provider.get", envelope.payload) }
-    public func testProvider(envelope: CommandEnvelope<TestProviderRequest>) async throws -> CommandReceipt<TestProviderResult> { try await command("provider.test", envelope.payload) }
-    public func configureProvider(envelope: CommandEnvelope<ConfigureProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> { try await command("provider.configure", envelope.payload) }
-    public func removeProvider(envelope: CommandEnvelope<RemoveProviderRequest>) async throws -> CommandReceipt<VoidResult> { try await command("provider.remove", envelope.payload) }
-    public func reloadProviders(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("provider.reload", envelope.payload) }
+    public func listProviders(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAccountInfo]> { try await response("provider.list", envelope) }
+    public func getProviderStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderStatus> { try await response("provider.status", envelope) }
+    public func getProvider(envelope: QueryEnvelope<GetProviderRequest>) async throws -> ResponseEnvelope<ProviderAccountInfo> { try await response("provider.get", envelope) }
+    public func testProvider(envelope: CommandEnvelope<TestProviderRequest>) async throws -> CommandReceipt<TestProviderResult> { try await command("provider.test", envelope) }
+    public func configureProvider(envelope: CommandEnvelope<ConfigureProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> { try await command("provider.configure", envelope) }
+    public func removeProvider(envelope: CommandEnvelope<RemoveProviderRequest>) async throws -> CommandReceipt<VoidResult> { try await command("provider.remove", envelope) }
+    public func reloadProviders(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("provider.reload", envelope) }
 
-    public func listModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderModelInfo]> { try await response("model.list", envelope.payload) }
-    public func getModelSelection(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ModelSelectionInfo> { try await response("model.selection", envelope.payload) }
-    public func selectModel(envelope: CommandEnvelope<SelectModelRequest>) async throws -> CommandReceipt<ModelSelectionInfo> { try await command("model.select", envelope.payload) }
-    public func getModel(envelope: QueryEnvelope<GetModelRequest>) async throws -> ResponseEnvelope<ProviderModelInfo> { try await response("model.get", envelope.payload) }
-    public func getModelCapabilities(envelope: QueryEnvelope<GetModelCapabilitiesRequest>) async throws -> ResponseEnvelope<ModelCapabilitiesInfo> { try await response("model.capabilities", envelope.payload) }
-    public func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo> { try await command("model.select", envelope.payload) }
+    public func listModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderModelInfo]> { try await response("model.list", envelope) }
+    public func getModelSelection(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ModelSelectionInfo> { try await response("model.selection", envelope) }
+    public func selectModel(envelope: CommandEnvelope<SelectModelRequest>) async throws -> CommandReceipt<ModelSelectionInfo> { try await command("model.select", envelope) }
+    public func getModel(envelope: QueryEnvelope<GetModelRequest>) async throws -> ResponseEnvelope<ProviderModelInfo> { try await response("model.get", envelope) }
+    public func getModelCapabilities(envelope: QueryEnvelope<GetModelCapabilitiesRequest>) async throws -> ResponseEnvelope<ModelCapabilitiesInfo> { try await response("model.capabilities", envelope) }
+    public func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo> { try await command("model.select", envelope) }
 
-    public func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot> { try await response("context.state", envelope.payload) }
-    public func getContextPolicy(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ContextCachePolicySnapshot> { try await response("context.policy", envelope.payload) }
-    public func compactContext(envelope: CommandEnvelope<CompactContextRequest>) async throws -> CommandReceipt<VoidResult> { try await command("context.compact", envelope.payload) }
-    public func searchContext(envelope: QueryEnvelope<SearchContextRequest>) async throws -> ResponseEnvelope<[ContextSearchResultItem]> { try await response("context.search", envelope.payload) }
-    public func getContextEntry(envelope: QueryEnvelope<GetContextEntryRequest>) async throws -> ResponseEnvelope<ContextEntryItem> { try await response("context.entry", envelope.payload) }
-    public func updateContextPolicy(envelope: CommandEnvelope<UpdateContextPolicyRequest>) async throws -> CommandReceipt<ContextCachePolicySnapshot> { try await command("context.policy.update", envelope.payload) }
+    public func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot> { try await response("context.state", envelope) }
+    public func getContextPolicy(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ContextCachePolicySnapshot> { try await response("context.policy", envelope) }
+    public func compactContext(envelope: CommandEnvelope<CompactContextRequest>) async throws -> CommandReceipt<VoidResult> { try await command("context.compact", envelope) }
+    public func searchContext(envelope: QueryEnvelope<SearchContextRequest>) async throws -> ResponseEnvelope<[ContextSearchResultItem]> { try await response("context.search", envelope) }
+    public func getContextEntry(envelope: QueryEnvelope<GetContextEntryRequest>) async throws -> ResponseEnvelope<ContextEntryItem> { try await response("context.entry", envelope) }
+    public func updateContextPolicy(envelope: CommandEnvelope<UpdateContextPolicyRequest>) async throws -> CommandReceipt<ContextCachePolicySnapshot> { try await command("context.policy.update", envelope) }
 
-    public func listExtensions(envelope: QueryEnvelope<ListExtensionsRequest>) async throws -> ResponseEnvelope<[ExtensionInfo]> { try await response("extension.list", envelope.payload) }
-    public func getExtensionStatus(envelope: QueryEnvelope<GetExtensionStatusRequest>) async throws -> ResponseEnvelope<ExtensionInfo> { try await response("extension.status", envelope.payload) }
-    public func getExtension(envelope: QueryEnvelope<GetExtensionRequest>) async throws -> ResponseEnvelope<ExtensionInfo> { try await response("extension.get", envelope.payload) }
-    public func installExtension(envelope: CommandEnvelope<InstallExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.install", envelope.payload) }
-    public func uninstallExtension(envelope: CommandEnvelope<UninstallExtensionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("extension.uninstall", envelope.payload) }
-    public func enableExtension(envelope: CommandEnvelope<EnableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.enable", envelope.payload) }
-    public func disableExtension(envelope: CommandEnvelope<DisableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.disable", envelope.payload) }
-    public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("extension.reload", envelope.payload) }
-    public func configureExtension(envelope: CommandEnvelope<ConfigureExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.configure", envelope.payload) }
-    public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> { try await command("extension.executeCommand", envelope.payload) }
+    public func listExtensions(envelope: QueryEnvelope<ListExtensionsRequest>) async throws -> ResponseEnvelope<[ExtensionInfo]> { try await response("extension.list", envelope) }
+    public func getExtensionStatus(envelope: QueryEnvelope<GetExtensionStatusRequest>) async throws -> ResponseEnvelope<ExtensionInfo> { try await response("extension.status", envelope) }
+    public func getExtension(envelope: QueryEnvelope<GetExtensionRequest>) async throws -> ResponseEnvelope<ExtensionInfo> { try await response("extension.get", envelope) }
+    public func installExtension(envelope: CommandEnvelope<InstallExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.install", envelope) }
+    public func uninstallExtension(envelope: CommandEnvelope<UninstallExtensionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("extension.uninstall", envelope) }
+    public func enableExtension(envelope: CommandEnvelope<EnableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.enable", envelope) }
+    public func disableExtension(envelope: CommandEnvelope<DisableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.disable", envelope) }
+    public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> { try await command("extension.reload", envelope) }
+    public func configureExtension(envelope: CommandEnvelope<ConfigureExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> { try await command("extension.configure", envelope) }
+    public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> { try await command("extension.executeCommand", envelope) }
 
-    public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope.payload) }
-    public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> { try await command("workspace.set", envelope.payload) }
-    public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope.payload) }
-    public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> { try await response("workspace.diff", envelope.payload) }
+    public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope) }
+    public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> { try await command("workspace.set", envelope) }
+    public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope) }
+    public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> { try await response("workspace.diff", envelope) }
 
-    public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> { try await command("content.beginUpload", envelope.payload) }
+    public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> { try await command("content.beginUpload", envelope) }
     public func uploadContentChunk(uploadID: String, chunkIndex: UInt64, data: Data) async throws {
         let req = UploadContentChunkRequest(uploadID: uploadID, chunkIndex: chunkIndex, data: data)
-        let _: CommandReceipt<VoidResult> = try await command("content.uploadChunk", req)
+        let _: CommandReceipt<VoidResult> = try await commandPayload("content.uploadChunk", req)
     }
-    public func commitContentUpload(envelope: CommandEnvelope<CommitContentUploadRequest>) async throws -> CommandReceipt<ContentRef> { try await command("content.commitUpload", envelope.payload) }
-    public func abortContentUpload(envelope: CommandEnvelope<AbortContentUploadRequest>) async throws -> CommandReceipt<VoidResult> { try await command("content.abortUpload", envelope.payload) }
+    public func commitContentUpload(envelope: CommandEnvelope<CommitContentUploadRequest>) async throws -> CommandReceipt<ContentRef> { try await command("content.commitUpload", envelope) }
+    public func abortContentUpload(envelope: CommandEnvelope<AbortContentUploadRequest>) async throws -> CommandReceipt<VoidResult> { try await command("content.abortUpload", envelope) }
     public func getContentMetadata(ref: ContentRef, authorization: ContentAuthorizationContext) async throws -> ContentMetadata {
         let req = GetContentMetadataRequest(ref: ref, authorization: authorization)
         return try await rawResponse("content.getMetadata", req)
@@ -243,15 +265,15 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         return payload.data
     }
 
-    public func getDiagnostics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeDiagnosticsBundle> { try await response("diagnostics.get", envelope.payload) }
-    public func getPerformanceMetrics(envelope: QueryEnvelope<GetPerformanceMetricsRequest>) async throws -> ResponseEnvelope<TurnPerformanceReport?> { try await response("diagnostics.performance", envelope.payload) }
-    public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> { try await response("diagnostics.providerMetrics", envelope.payload) }
-    public func getRunTrace(envelope: QueryEnvelope<GetRunTraceRequest>) async throws -> ResponseEnvelope<RunTraceInfo> { try await response("diagnostics.runTrace", envelope.payload) }
-    public func listCredentials(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[CredentialRef]> { try await response("credential.list", envelope.payload) }
-    public func storeCredential(envelope: CommandEnvelope<StoreCredentialRequest>) async throws -> CommandReceipt<CredentialResult> { try await command("credential.store", envelope.payload) }
-    public func deleteCredential(envelope: CommandEnvelope<DeleteCredentialRequest>) async throws -> CommandReceipt<VoidResult> { try await command("credential.delete", envelope.payload) }
-    public func getCredentialStatus(envelope: QueryEnvelope<GetCredentialStatusRequest>) async throws -> ResponseEnvelope<CredentialStatusInfo> { try await response("credential.status", envelope.payload) }
-    public func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult> { try await command("credential.test", envelope.payload) }
+    public func getDiagnostics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeDiagnosticsBundle> { try await response("diagnostics.get", envelope) }
+    public func getPerformanceMetrics(envelope: QueryEnvelope<GetPerformanceMetricsRequest>) async throws -> ResponseEnvelope<TurnPerformanceReport?> { try await response("diagnostics.performance", envelope) }
+    public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> { try await response("diagnostics.providerMetrics", envelope) }
+    public func getRunTrace(envelope: QueryEnvelope<GetRunTraceRequest>) async throws -> ResponseEnvelope<RunTraceInfo> { try await response("diagnostics.runTrace", envelope) }
+    public func listCredentials(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[CredentialRef]> { try await response("credential.list", envelope) }
+    public func storeCredential(envelope: CommandEnvelope<StoreCredentialRequest>) async throws -> CommandReceipt<CredentialResult> { try await command("credential.store", envelope) }
+    public func deleteCredential(envelope: CommandEnvelope<DeleteCredentialRequest>) async throws -> CommandReceipt<VoidResult> { try await command("credential.delete", envelope) }
+    public func getCredentialStatus(envelope: QueryEnvelope<GetCredentialStatusRequest>) async throws -> ResponseEnvelope<CredentialStatusInfo> { try await response("credential.status", envelope) }
+    public func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult> { try await command("credential.test", envelope) }
 
     public func subscribeRuntimeEvents(after: EventCursor?) async -> AsyncStream<RuntimeEventEnvelope> {
         let id = makeID()
@@ -295,8 +317,18 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         return stream
     }
 
-    private func response<Request: Encodable, Response: Codable & Sendable>(_ method: String, _ payload: Request) async throws -> ResponseEnvelope<Response> {
-        try decoder.decode(ResponseEnvelope<Response>.self, from: await send(method: method, payload: encoder.encode(payload)))
+    private func response<Request: Codable & Sendable, Response: Codable & Sendable>(_ method: String, _ envelope: QueryEnvelope<Request>) async throws -> ResponseEnvelope<Response> {
+        let payloadData = try encoder.encode(envelope.payload)
+        let resData = try await send(
+            method: method,
+            payload: payloadData,
+            id: envelope.requestID.rawValue,
+            commandID: nil,
+            expectedRevision: nil,
+            issuedAt: envelope.issuedAt,
+            requestID: envelope.requestID
+        )
+        return try decoder.decode(ResponseEnvelope<Response>.self, from: resData)
     }
 
     private func rawResponse<Request: Encodable, Response: Decodable>(_ method: String, _ payload: Request) async throws -> Response {
@@ -304,7 +336,21 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         return try decoder.decode(Response.self, from: resData)
     }
 
-    private func command<Request: Encodable, Result: Codable & Sendable>(_ method: String, _ payload: Request) async throws -> CommandReceipt<Result> {
+    private func command<Request: Codable & Sendable, Result: Codable & Sendable>(_ method: String, _ envelope: CommandEnvelope<Request>) async throws -> CommandReceipt<Result> {
+        let payloadData = try encoder.encode(envelope.payload)
+        let resData = try await send(
+            method: method,
+            payload: payloadData,
+            id: envelope.commandID.rawValue,
+            commandID: envelope.commandID,
+            expectedRevision: envelope.expectedRevision,
+            issuedAt: envelope.issuedAt,
+            requestID: nil
+        )
+        return try decoder.decode(CommandReceipt<Result>.self, from: resData)
+    }
+
+    private func commandPayload<Request: Encodable, Result: Codable & Sendable>(_ method: String, _ payload: Request) async throws -> CommandReceipt<Result> {
         try decoder.decode(CommandReceipt<Result>.self, from: await send(method: method, payload: encoder.encode(payload)))
     }
 
@@ -329,10 +375,26 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         cancelledRequestIDs.remove(id)
     }
 
-    private func send(method: String, payload: Data?, id: String? = nil) async throws -> Data {
-        let requestID = id ?? makeID()
-        debug("send.begin id=\(requestID) method=\(method)")
-        let wireRequest = VNextWireRequest(id: requestID, method: method, payload: payload)
+    private func send(
+        method: String,
+        payload: Data?,
+        id: String? = nil,
+        commandID: CommandID? = nil,
+        expectedRevision: UInt64? = nil,
+        issuedAt: Date? = nil,
+        requestID: RequestID? = nil
+    ) async throws -> Data {
+        let wireID = id ?? makeID()
+        debug("send.begin id=\(wireID) method=\(method)")
+        let wireRequest = VNextWireRequest(
+            id: wireID,
+            method: method,
+            payload: payload,
+            commandID: commandID,
+            expectedRevision: expectedRevision,
+            issuedAt: issuedAt,
+            requestID: requestID
+        )
         let data = try encoder.encode(wireRequest) + Data("\n".utf8)
         let maxFrameBytes = ProtocolConstants.maxFrameBytes
         guard data.count <= maxFrameBytes else {
@@ -347,21 +409,21 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
                     continuation.resume(throwing: terminalError)
                     return
                 }
-                pending[requestID] = continuation
+                pending[wireID] = continuation
                 lock.unlock()
 
                 Task {
                     defer {
-                        self.removeCancelledRequest(requestID)
+                        self.removeCancelledRequest(wireID)
                     }
                     do {
                         // 关键安全防御：写入前检测 cancellation，已取消的命令绝不上管道，杜绝副作用晚发 (Audit Round 10 Phase C)
                         try await writer.write(data: data) { [weak self] in
                             guard let self else { return true }
-                            return self.isRequestCancelled(requestID)
+                            return self.isRequestCancelled(wireID)
                         }
                     } catch {
-                        if let winner = takePending(requestID) {
+                        if let winner = takePending(wireID) {
                             winner.resume(throwing: error)
                         }
                     }
@@ -370,10 +432,10 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         } onCancel: { [weak self] in
             guard let self else { return }
             self.lock.lock()
-            self.cancelledRequestIDs.insert(requestID)
+            self.cancelledRequestIDs.insert(wireID)
             self.lock.unlock()
-            if let winner = self.takePending(requestID) {
-                winner.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(requestID) cancelled"))
+            if let winner = self.takePending(wireID) {
+                winner.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(wireID) cancelled"))
             }
         }
     }

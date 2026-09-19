@@ -988,3 +988,78 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         todos = try container.decodeIfPresent([TodoItemData].self, forKey: .todos) ?? []
     }
 }
+
+// MARK: - Branch Prediction Telemetry DTO
+
+/// PredictionSnapshot: Read-only telemetry snapshot of Branch Predictor state.
+/// Designed for TUI/GUI diagnostics inspection; strictly immutable and isolated from model decision authority.
+public struct PredictionSnapshot: Codable, Sendable, Equatable {
+    public struct CandidateDTO: Codable, Sendable, Equatable {
+        public let action: String
+        public let probability: Double
+        public let count: Int
+
+        public init(action: String, probability: Double, count: Int) {
+            self.action = action
+            self.probability = probability
+            self.count = count
+        }
+    }
+
+    public let epoch: UInt64
+    public let sessionID: String
+    public let runID: String?
+    public let top1Action: String?
+    public let topConfidence: Double
+    public let support: Int
+    public let matchedOrder: Int
+    public let candidates: [CandidateDTO]
+    public let mode: String // e.g. "shadow"
+    public let isLowSupport: Bool
+    public let isStale: Bool
+    public let timestamp: Date
+
+    public init(
+        epoch: UInt64,
+        sessionID: String,
+        runID: String? = nil,
+        top1Action: String?,
+        topConfidence: Double,
+        support: Int,
+        matchedOrder: Int,
+        candidates: [CandidateDTO],
+        mode: String = "shadow",
+        isLowSupport: Bool? = nil,
+        isStale: Bool = false,
+        timestamp: Date = Date()
+    ) {
+        self.epoch = epoch
+        self.sessionID = sessionID
+        self.runID = runID
+        self.top1Action = top1Action
+        self.topConfidence = topConfidence
+        self.support = support
+        self.matchedOrder = matchedOrder
+        self.candidates = candidates
+        self.mode = mode
+        self.isLowSupport = isLowSupport ?? (support < 3)
+        self.isStale = isStale
+        self.timestamp = timestamp
+    }
+
+    /// Compact telemetry strip formatted for TUI/GUI observability display, adhering to Round 13 audit invariants
+    public var compactSummary: String {
+        guard !candidates.isEmpty else {
+            return "Branch · (no prior) · SHADOW"
+        }
+
+        let branchParts = candidates.prefix(3).map { cand in
+            let pct = Int((cand.probability * 100).rounded())
+            let shortAction = cand.action.replacingOccurrences(of: "tool:", with: "").uppercased()
+            return "\(shortAction) \(pct)%"
+        }.joined(separator: " · ")
+
+        let statusTag = isStale ? "STALE" : (isLowSupport ? "LOW SUPPORT" : mode.uppercased())
+        return "Branch · \(branchParts) (h=\(matchedOrder), n=\(support), \(statusTag))"
+    }
+}

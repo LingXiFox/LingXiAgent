@@ -9,6 +9,9 @@ public actor SessionTurnCoordinator {
 
     public private(set) var activeRootRunID: RunID?
     private var queuedTurns: [TurnSnapshot] = []
+    public var queuedTurnsSnapshot: [TurnSnapshot] {
+        queuedTurns
+    }
     private var turns: [TurnID: TurnSnapshot] = [:]
     private var runs: [RunID: RunSnapshot] = [:]
     private var interactions: [InteractionID: InteractionSnapshot] = [:]
@@ -181,7 +184,7 @@ public actor SessionTurnCoordinator {
         }
     }
 
-    /// 从持久化 EventLog 中恢复尚未完结的排队 Turns 和 Runs（防止 Core 重启后丢失持久化的 Queued Turn）
+    /// Rebuilds queued and historical state from durable EventLog, aborting started-but-nonterminal runs and preserving queued FIFO
     public func restoreHistoricalQueue() async {
         let allEvents = await eventLog.allEvents()
         guard !allEvents.isEmpty else { return }
@@ -189,6 +192,7 @@ public actor SessionTurnCoordinator {
         var createdTurns: [TurnID: TurnSnapshot] = [:]
         var createdRuns: [RunID: RunSnapshot] = [:]
         var queuedRunIDs: [RunID] = []
+        var startedRunIDs: Set<RunID> = []
         var terminalTurnIDs: Set<TurnID> = []
         var terminalRunIDs: Set<RunID> = []
 
@@ -200,6 +204,8 @@ public actor SessionTurnCoordinator {
                 terminalTurnIDs.insert(turnID)
             case let .runCreated(snap):
                 createdRuns[snap.runID] = snap
+            case let .runStarted(runID):
+                startedRunIDs.insert(runID)
             case let .runCompleted(runID, _), let .runFailed(runID, _), let .runCancelled(runID, _):
                 terminalRunIDs.insert(runID)
             case let .runQueued(runID):
@@ -211,7 +217,7 @@ public actor SessionTurnCoordinator {
             }
         }
 
-        // Populate memory state for historical turns and runs
+        // 1. Populate memory state for historical turns and runs
         for (turnID, snap) in createdTurns {
             if turns[turnID] == nil {
                 turns[turnID] = snap
@@ -223,9 +229,50 @@ public actor SessionTurnCoordinator {
             }
         }
 
-        // Reconstruct queuedTurns: must have been queued or created with queued status, and not yet terminal
+        // 2. Critical Safety: Runs started before crash but not terminal must be marked as failed/aborted,
+        // and never requeued from scratch to avoid repeated side effects.
+        for runID in startedRunIDs where !terminalRunIDs.contains(runID) {
+            if let existing = runs[runID] {
+                let abortedRun = RunSnapshot(
+                    runID: runID,
+                    sessionID: sessionID,
+                    turnID: existing.turnID,
+                    rootRunID: existing.rootRunID,
+                    status: .failed,
+                    model: existing.model,
+                    createdAt: existing.createdAt,
+                    completedAt: Date(),
+                    terminalReason: .runtimeFailure
+                )
+                runs[runID] = abortedRun
+                terminalRunIDs.insert(runID)
+
+                if let turn = turns[existing.turnID], !terminalTurnIDs.contains(turn.turnID) {
+                    let abortedTurn = TurnSnapshot(
+                        turnID: turn.turnID,
+                        sessionID: sessionID,
+                        userMessage: turn.userMessage,
+                        executionIntent: turn.executionIntent,
+                        status: .failed,
+                        rootRunID: turn.rootRunID,
+                        createdAt: turn.createdAt,
+                        completedAt: Date()
+                    )
+                    turns[turn.turnID] = abortedTurn
+                    terminalTurnIDs.insert(turn.turnID)
+                }
+
+                // Persist terminal events to ensure deterministic replay semantics
+                let causal = CausalContext(sessionID: sessionID, turnID: existing.turnID, runID: runID, rootRunID: existing.rootRunID)
+                let runtimeErr = RuntimeError(category: .runtime, code: "interruptedBySystemCrash", message: "Run interrupted by system crash", retryability: .afterDelay, source: .core)
+                await eventLog.append(causal: causal, payload: .runFailed(runID: runID, error: runtimeErr))
+                await eventLog.append(causal: causal, payload: .turnFailed(turnID: existing.turnID, error: runtimeErr))
+            }
+        }
+
+        // 3. Reconstruct queuedTurns: Only restore turns queued but never started, preserving original FIFO order
         for runID in queuedRunIDs {
-            if !terminalRunIDs.contains(runID), let run = runs[runID] {
+            if !terminalRunIDs.contains(runID), !startedRunIDs.contains(runID), let run = runs[runID] {
                 if let turn = turns[run.turnID], !terminalTurnIDs.contains(turn.turnID) {
                     if !queuedTurns.contains(where: { $0.turnID == turn.turnID }) {
                         queuedTurns.append(turn)
@@ -233,6 +280,12 @@ public actor SessionTurnCoordinator {
                 }
             }
         }
+    }
+
+    /// Attempt to schedule the next queued turn from the restored queue when coordinator is idle
+    public func scheduleNextQueuedTurnIfIdle() async -> NextTurnToRun? {
+        guard activeRootRunID == nil else { return nil }
+        return await scheduleNextQueuedTurn()
     }
 
     public func isTurnQueued(turnID: TurnID) -> Bool {
@@ -262,8 +315,8 @@ public actor SessionTurnCoordinator {
         ))
         await eventLog.append(causal: causal, payload: .userMessageCommitted(userMessage))
 
-        // 2. Check Root Run concurrency (max 1 active Root Run)
-        if activeRootRunID != nil {
+        // 2. Check Root Run concurrency & Queue FIFO (max 1 active Root Run; never bypass queued turns)
+        if activeRootRunID != nil || !queuedTurns.isEmpty {
             let queuedRunID = RunID()
             let queuedTurn = TurnSnapshot(
                 turnID: turnID,
@@ -500,6 +553,7 @@ public actor SessionTurnCoordinator {
             let nextRunID = next.rootRunID ?? RunID()
             activeRootRunID = nextRunID
 
+            let existingRun = runs[nextRunID]
             let nextRun = RunSnapshot(
                 runID: nextRunID,
                 sessionID: sessionID,
@@ -507,7 +561,7 @@ public actor SessionTurnCoordinator {
                 rootRunID: nextRunID,
                 status: .running,
                 model: next.executionIntent.modelSelection ?? "default",
-                createdAt: Date()
+                createdAt: existingRun?.createdAt ?? Date()
             )
             runs[nextRunID] = nextRun
 
@@ -523,7 +577,10 @@ public actor SessionTurnCoordinator {
             turns[next.turnID] = runningTurn
 
             let nextCausal = CausalContext(sessionID: sessionID, turnID: next.turnID, runID: nextRunID, rootRunID: nextRunID)
-            await eventLog.append(causal: nextCausal, payload: .runCreated(nextRun))
+            // Invariant: If this Run was already created during queueing, NEVER emit duplicate .runCreated!
+            if existingRun == nil {
+                await eventLog.append(causal: nextCausal, payload: .runCreated(nextRun))
+            }
             await eventLog.append(causal: nextCausal, payload: .runStarted(runID: nextRunID))
 
             return NextTurnToRun(turn: runningTurn, runID: nextRunID)

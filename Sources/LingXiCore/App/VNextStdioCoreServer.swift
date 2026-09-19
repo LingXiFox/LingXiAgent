@@ -5,6 +5,28 @@ private struct VNextWireRequest: Codable {
     let id: String
     let method: String
     let payload: Data?
+    let commandID: CommandID?
+    let expectedRevision: UInt64?
+    let issuedAt: Date?
+    let requestID: RequestID?
+
+    init(
+        id: String,
+        method: String,
+        payload: Data?,
+        commandID: CommandID? = nil,
+        expectedRevision: UInt64? = nil,
+        issuedAt: Date? = nil,
+        requestID: RequestID? = nil
+    ) {
+        self.id = id
+        self.method = method
+        self.payload = payload
+        self.commandID = commandID
+        self.expectedRevision = expectedRevision
+        self.issuedAt = issuedAt
+        self.requestID = requestID
+    }
 }
 
 private struct VNextWireResponse: Codable {
@@ -166,70 +188,70 @@ public struct VNextStdioCoreServer: Sendable {
             guard !Task.isCancelled else { return }
             do {
                 switch request.method {
-                case "runtime.info": try await reply(request, try await service.getRuntimeInfo(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "runtime.health": try await reply(request, try await service.getRuntimeHealth(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "runtime.capabilities": try await reply(request, try await service.getRuntimeCapabilities(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "runtime.config": try await reply(request, try await service.getEffectiveConfiguration(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "runtime.config.reload": try await reply(request, try await service.reloadConfiguration(envelope: CommandEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "runtime.setting.update": try await reply(request, try await service.updateTypedSetting(envelope: CommandEnvelope(payload: decode(UpdateTypedSettingRequest.self, request.payload))), writer)
-                case "session.create": try await reply(request, try await service.createSession(envelope: CommandEnvelope(payload: decode(CreateSessionRequest.self, request.payload))), writer)
-                case "session.rename": try await reply(request, try await service.renameSession(envelope: CommandEnvelope(payload: decode(RenameSessionRequest.self, request.payload))), writer)
-                case "session.set_reasoning_effort": try await reply(request, try await service.setSessionReasoningEffort(envelope: CommandEnvelope(payload: decode(SetSessionReasoningEffortRequest.self, request.payload))), writer)
-                case "session.delete": try await reply(request, try await service.deleteSession(envelope: CommandEnvelope(payload: decode(DeleteSessionRequest.self, request.payload))), writer)
-                case "session.revert_last_turn": try await reply(request, try await service.revertLastTurn(envelope: CommandEnvelope(payload: decode(RevertLastTurnRequest.self, request.payload))), writer)
-                case "session.get": try await reply(request, try await service.getSession(envelope: QueryEnvelope(payload: decode(GetSessionRequest.self, request.payload))), writer)
-                case "session.list": try await reply(request, try await service.listSessions(envelope: QueryEnvelope(payload: decode(PageRequest.self, request.payload))), writer)
-                case "session.snapshot": try await reply(request, try await service.getSessionSnapshot(envelope: QueryEnvelope(payload: decode(GetSessionSnapshotRequest.self, request.payload))), writer)
-                case "turn.submit": try await reply(request, try await service.submitTurn(envelope: CommandEnvelope(payload: decode(SubmitTurnRequest.self, request.payload))), writer)
-                case "turn.cancel": try await reply(request, try await service.cancelTurn(envelope: CommandEnvelope(payload: decode(CancelTurnRequest.self, request.payload))), writer)
-                case "turn.get": try await reply(request, try await service.getTurn(envelope: QueryEnvelope(payload: decode(GetTurnRequest.self, request.payload))), writer)
-                case "turn.list": try await reply(request, try await service.listTurns(envelope: QueryEnvelope(payload: decode(ListTurnsRequest.self, request.payload))), writer)
-                case "run.cancel": try await reply(request, try await service.cancelRun(envelope: CommandEnvelope(payload: decode(CancelRunRequest.self, request.payload))), writer)
-                case "run.resume": try await reply(request, try await service.resumeRun(envelope: CommandEnvelope(payload: decode(ResumeRunRequest.self, request.payload))), writer)
-                case "run.get": try await reply(request, try await service.getRun(envelope: QueryEnvelope(payload: decode(GetRunRequest.self, request.payload))), writer)
-                case "run.list": try await reply(request, try await service.listRuns(envelope: QueryEnvelope(payload: decode(ListRunsRequest.self, request.payload))), writer)
-                case "agent.tree": try await reply(request, try await service.getAgentTree(envelope: QueryEnvelope(payload: decode(GetAgentTreeRequest.self, request.payload))), writer)
-                case "interaction.list": try await reply(request, try await service.listPendingInteractions(envelope: QueryEnvelope(payload: decode(ListInteractionsRequest.self, request.payload))), writer)
-                case "interaction.resolve": try await reply(request, try await service.resolveInteraction(envelope: CommandEnvelope(payload: decode(ResolveInteractionRequest.self, request.payload))), writer)
-                case "provider.list": try await reply(request, try await service.listProviders(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "provider.status": try await reply(request, try await service.getProviderStatus(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "provider.get": try await reply(request, try await service.getProvider(envelope: QueryEnvelope(payload: decode(GetProviderRequest.self, request.payload))), writer)
-                case "provider.test": try await reply(request, try await service.testProvider(envelope: CommandEnvelope(payload: decode(TestProviderRequest.self, request.payload))), writer)
-                case "provider.configure": try await reply(request, try await service.configureProvider(envelope: CommandEnvelope(payload: decode(ConfigureProviderRequest.self, request.payload))), writer)
-                case "provider.remove": try await reply(request, try await service.removeProvider(envelope: CommandEnvelope(payload: decode(RemoveProviderRequest.self, request.payload))), writer)
-                case "provider.reload": try await reply(request, try await service.reloadProviders(envelope: CommandEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "model.list": try await reply(request, try await service.listModels(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "model.selection": try await reply(request, try await service.getModelSelection(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "model.select": try await reply(request, try await service.selectModel(envelope: CommandEnvelope(payload: decode(SelectModelRequest.self, request.payload))), writer)
-                case "model.get": try await reply(request, try await service.getModel(envelope: QueryEnvelope(payload: decode(GetModelRequest.self, request.payload))), writer)
-                case "model.capabilities": try await reply(request, try await service.getModelCapabilities(envelope: QueryEnvelope(payload: decode(GetModelCapabilitiesRequest.self, request.payload))), writer)
-                case "context.state": try await reply(request, try await service.getContextState(envelope: QueryEnvelope(payload: decode(GetContextStateRequest.self, request.payload))), writer)
-                case "context.policy": try await reply(request, try await service.getContextPolicy(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "context.policy.update": try await reply(request, try await service.updateContextPolicy(envelope: CommandEnvelope(payload: decode(UpdateContextPolicyRequest.self, request.payload))), writer)
-                case "context.compact": try await reply(request, try await service.compactContext(envelope: CommandEnvelope(payload: decode(CompactContextRequest.self, request.payload))), writer)
-                case "context.search": try await reply(request, try await service.searchContext(envelope: QueryEnvelope(payload: decode(SearchContextRequest.self, request.payload))), writer)
-                case "context.entry": try await reply(request, try await service.getContextEntry(envelope: QueryEnvelope(payload: decode(GetContextEntryRequest.self, request.payload))), writer)
-                case "extension.list": try await reply(request, try await service.listExtensions(envelope: QueryEnvelope(payload: decode(ListExtensionsRequest.self, request.payload))), writer)
-                case "extension.status": try await reply(request, try await service.getExtensionStatus(envelope: QueryEnvelope(payload: decode(GetExtensionStatusRequest.self, request.payload))), writer)
-                case "extension.get": try await reply(request, try await service.getExtension(envelope: QueryEnvelope(payload: decode(GetExtensionRequest.self, request.payload))), writer)
-                case "extension.install": try await reply(request, try await service.installExtension(envelope: CommandEnvelope(payload: decode(InstallExtensionRequest.self, request.payload))), writer)
-                case "extension.uninstall": try await reply(request, try await service.uninstallExtension(envelope: CommandEnvelope(payload: decode(UninstallExtensionRequest.self, request.payload))), writer)
-                case "extension.enable": try await reply(request, try await service.enableExtension(envelope: CommandEnvelope(payload: decode(EnableExtensionRequest.self, request.payload))), writer)
-                case "extension.disable": try await reply(request, try await service.disableExtension(envelope: CommandEnvelope(payload: decode(DisableExtensionRequest.self, request.payload))), writer)
-                case "extension.reload": try await reply(request, try await service.reloadExtensions(envelope: CommandEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "extension.configure": try await reply(request, try await service.configureExtension(envelope: CommandEnvelope(payload: decode(ConfigureExtensionRequest.self, request.payload))), writer)
-                case "extension.executeCommand": try await reply(request, try await service.executeExtensionCommand(envelope: CommandEnvelope(payload: decode(ExecuteExtensionCommandRequest.self, request.payload))), writer)
-                case "workspace.get": try await reply(request, try await service.getWorkspace(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "workspace.set": try await reply(request, try await service.setWorkspace(envelope: CommandEnvelope(payload: decode(SetWorkspaceRequest.self, request.payload))), writer)
-                case "workspace.diff": try await reply(request, try await service.getWorkspaceDiffSummary(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "content.beginUpload": try await reply(request, try await service.beginContentUpload(envelope: CommandEnvelope(payload: decode(BeginContentUploadRequest.self, request.payload))), writer)
+                case "runtime.info": try await reply(request, try await service.getRuntimeInfo(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "runtime.health": try await reply(request, try await service.getRuntimeHealth(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "runtime.capabilities": try await reply(request, try await service.getRuntimeCapabilities(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "runtime.config": try await reply(request, try await service.getEffectiveConfiguration(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "runtime.config.reload": try await reply(request, try await service.reloadConfiguration(envelope: commandEnvelope(request, as: VoidResult.self)), writer)
+                case "runtime.setting.update": try await reply(request, try await service.updateTypedSetting(envelope: commandEnvelope(request, as: UpdateTypedSettingRequest.self)), writer)
+                case "session.create": try await reply(request, try await service.createSession(envelope: commandEnvelope(request, as: CreateSessionRequest.self)), writer)
+                case "session.rename": try await reply(request, try await service.renameSession(envelope: commandEnvelope(request, as: RenameSessionRequest.self)), writer)
+                case "session.set_reasoning_effort": try await reply(request, try await service.setSessionReasoningEffort(envelope: commandEnvelope(request, as: SetSessionReasoningEffortRequest.self)), writer)
+                case "session.delete": try await reply(request, try await service.deleteSession(envelope: commandEnvelope(request, as: DeleteSessionRequest.self)), writer)
+                case "session.revert_last_turn": try await reply(request, try await service.revertLastTurn(envelope: commandEnvelope(request, as: RevertLastTurnRequest.self)), writer)
+                case "session.get": try await reply(request, try await service.getSession(envelope: queryEnvelope(request, as: GetSessionRequest.self)), writer)
+                case "session.list": try await reply(request, try await service.listSessions(envelope: queryEnvelope(request, as: PageRequest.self)), writer)
+                case "session.snapshot": try await reply(request, try await service.getSessionSnapshot(envelope: queryEnvelope(request, as: GetSessionSnapshotRequest.self)), writer)
+                case "turn.submit": try await reply(request, try await service.submitTurn(envelope: commandEnvelope(request, as: SubmitTurnRequest.self)), writer)
+                case "turn.cancel": try await reply(request, try await service.cancelTurn(envelope: commandEnvelope(request, as: CancelTurnRequest.self)), writer)
+                case "turn.get": try await reply(request, try await service.getTurn(envelope: queryEnvelope(request, as: GetTurnRequest.self)), writer)
+                case "turn.list": try await reply(request, try await service.listTurns(envelope: queryEnvelope(request, as: ListTurnsRequest.self)), writer)
+                case "run.cancel": try await reply(request, try await service.cancelRun(envelope: commandEnvelope(request, as: CancelRunRequest.self)), writer)
+                case "run.resume": try await reply(request, try await service.resumeRun(envelope: commandEnvelope(request, as: ResumeRunRequest.self)), writer)
+                case "run.get": try await reply(request, try await service.getRun(envelope: queryEnvelope(request, as: GetRunRequest.self)), writer)
+                case "run.list": try await reply(request, try await service.listRuns(envelope: queryEnvelope(request, as: ListRunsRequest.self)), writer)
+                case "agent.tree": try await reply(request, try await service.getAgentTree(envelope: queryEnvelope(request, as: GetAgentTreeRequest.self)), writer)
+                case "interaction.list": try await reply(request, try await service.listPendingInteractions(envelope: queryEnvelope(request, as: ListInteractionsRequest.self)), writer)
+                case "interaction.resolve": try await reply(request, try await service.resolveInteraction(envelope: commandEnvelope(request, as: ResolveInteractionRequest.self)), writer)
+                case "provider.list": try await reply(request, try await service.listProviders(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "provider.status": try await reply(request, try await service.getProviderStatus(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "provider.get": try await reply(request, try await service.getProvider(envelope: queryEnvelope(request, as: GetProviderRequest.self)), writer)
+                case "provider.test": try await reply(request, try await service.testProvider(envelope: commandEnvelope(request, as: TestProviderRequest.self)), writer)
+                case "provider.configure": try await reply(request, try await service.configureProvider(envelope: commandEnvelope(request, as: ConfigureProviderRequest.self)), writer)
+                case "provider.remove": try await reply(request, try await service.removeProvider(envelope: commandEnvelope(request, as: RemoveProviderRequest.self)), writer)
+                case "provider.reload": try await reply(request, try await service.reloadProviders(envelope: commandEnvelope(request, as: VoidResult.self)), writer)
+                case "model.list": try await reply(request, try await service.listModels(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "model.selection": try await reply(request, try await service.getModelSelection(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "model.select": try await reply(request, try await service.selectModel(envelope: commandEnvelope(request, as: SelectModelRequest.self)), writer)
+                case "model.get": try await reply(request, try await service.getModel(envelope: queryEnvelope(request, as: GetModelRequest.self)), writer)
+                case "model.capabilities": try await reply(request, try await service.getModelCapabilities(envelope: queryEnvelope(request, as: GetModelCapabilitiesRequest.self)), writer)
+                case "context.state": try await reply(request, try await service.getContextState(envelope: queryEnvelope(request, as: GetContextStateRequest.self)), writer)
+                case "context.policy": try await reply(request, try await service.getContextPolicy(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "context.policy.update": try await reply(request, try await service.updateContextPolicy(envelope: commandEnvelope(request, as: UpdateContextPolicyRequest.self)), writer)
+                case "context.compact": try await reply(request, try await service.compactContext(envelope: commandEnvelope(request, as: CompactContextRequest.self)), writer)
+                case "context.search": try await reply(request, try await service.searchContext(envelope: queryEnvelope(request, as: SearchContextRequest.self)), writer)
+                case "context.entry": try await reply(request, try await service.getContextEntry(envelope: queryEnvelope(request, as: GetContextEntryRequest.self)), writer)
+                case "extension.list": try await reply(request, try await service.listExtensions(envelope: queryEnvelope(request, as: ListExtensionsRequest.self)), writer)
+                case "extension.status": try await reply(request, try await service.getExtensionStatus(envelope: queryEnvelope(request, as: GetExtensionStatusRequest.self)), writer)
+                case "extension.get": try await reply(request, try await service.getExtension(envelope: queryEnvelope(request, as: GetExtensionRequest.self)), writer)
+                case "extension.install": try await reply(request, try await service.installExtension(envelope: commandEnvelope(request, as: InstallExtensionRequest.self)), writer)
+                case "extension.uninstall": try await reply(request, try await service.uninstallExtension(envelope: commandEnvelope(request, as: UninstallExtensionRequest.self)), writer)
+                case "extension.enable": try await reply(request, try await service.enableExtension(envelope: commandEnvelope(request, as: EnableExtensionRequest.self)), writer)
+                case "extension.disable": try await reply(request, try await service.disableExtension(envelope: commandEnvelope(request, as: DisableExtensionRequest.self)), writer)
+                case "extension.reload": try await reply(request, try await service.reloadExtensions(envelope: commandEnvelope(request, as: VoidResult.self)), writer)
+                case "extension.configure": try await reply(request, try await service.configureExtension(envelope: commandEnvelope(request, as: ConfigureExtensionRequest.self)), writer)
+                case "extension.executeCommand": try await reply(request, try await service.executeExtensionCommand(envelope: commandEnvelope(request, as: ExecuteExtensionCommandRequest.self)), writer)
+                case "workspace.get": try await reply(request, try await service.getWorkspace(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "workspace.set": try await reply(request, try await service.setWorkspace(envelope: commandEnvelope(request, as: SetWorkspaceRequest.self)), writer)
+                case "workspace.diff": try await reply(request, try await service.getWorkspaceDiffSummary(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "content.beginUpload": try await reply(request, try await service.beginContentUpload(envelope: commandEnvelope(request, as: BeginContentUploadRequest.self)), writer)
                 case "content.uploadChunk":
                     let req = try decode(UploadContentChunkRequest.self, request.payload)
                     try await service.uploadContentChunk(uploadID: req.uploadID, chunkIndex: req.chunkIndex, data: req.payload.data)
-                    let receipt = CommandReceipt<VoidResult>(commandID: CommandID(request.id), applied: true, revision: 0, observedThrough: [], result: VoidResult())
+                    let receipt = CommandReceipt<VoidResult>(commandID: request.commandID ?? CommandID(request.id), applied: true, revision: 0, observedThrough: [], result: VoidResult())
                     try await reply(request, receipt, writer)
-                case "content.commitUpload": try await reply(request, try await service.commitContentUpload(envelope: CommandEnvelope(payload: decode(CommitContentUploadRequest.self, request.payload))), writer)
-                case "content.abortUpload": try await reply(request, try await service.abortContentUpload(envelope: CommandEnvelope(payload: decode(AbortContentUploadRequest.self, request.payload))), writer)
+                case "content.commitUpload": try await reply(request, try await service.commitContentUpload(envelope: commandEnvelope(request, as: CommitContentUploadRequest.self)), writer)
+                case "content.abortUpload": try await reply(request, try await service.abortContentUpload(envelope: commandEnvelope(request, as: AbortContentUploadRequest.self)), writer)
                 case "content.getMetadata":
                     let req = try decode(GetContentMetadataRequest.self, request.payload)
                     let auth = sanitizeContentAuthorization(req.authorization)
@@ -250,15 +272,15 @@ public struct VNextStdioCoreServer: Sendable {
                     let payload = ContentBinaryPayload(data: data)
                     guard !Task.isCancelled else { return }
                     await writer.reply(id: request.id, payload: try? JSONEncoder().encode(payload), error: nil)
-                case "diagnostics.get": try await reply(request, try await service.getDiagnostics(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "diagnostics.performance": try await reply(request, try await service.getPerformanceMetrics(envelope: QueryEnvelope(payload: decode(GetPerformanceMetricsRequest.self, request.payload))), writer)
-                case "diagnostics.providerMetrics": try await reply(request, try await service.getProviderMetrics(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "diagnostics.runTrace": try await reply(request, try await service.getRunTrace(envelope: QueryEnvelope(payload: decode(GetRunTraceRequest.self, request.payload))), writer)
-                case "credential.list": try await reply(request, try await service.listCredentials(envelope: QueryEnvelope(payload: decode(VoidResult.self, request.payload))), writer)
-                case "credential.store": try await reply(request, try await service.storeCredential(envelope: CommandEnvelope(payload: decode(StoreCredentialRequest.self, request.payload))), writer)
-                case "credential.delete": try await reply(request, try await service.deleteCredential(envelope: CommandEnvelope(payload: decode(DeleteCredentialRequest.self, request.payload))), writer)
-                case "credential.status": try await reply(request, try await service.getCredentialStatus(envelope: QueryEnvelope(payload: decode(GetCredentialStatusRequest.self, request.payload))), writer)
-                case "credential.test": try await reply(request, try await service.testCredential(envelope: CommandEnvelope(payload: decode(TestCredentialRequest.self, request.payload))), writer)
+                case "diagnostics.get": try await reply(request, try await service.getDiagnostics(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "diagnostics.performance": try await reply(request, try await service.getPerformanceMetrics(envelope: queryEnvelope(request, as: GetPerformanceMetricsRequest.self)), writer)
+                case "diagnostics.providerMetrics": try await reply(request, try await service.getProviderMetrics(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "diagnostics.runTrace": try await reply(request, try await service.getRunTrace(envelope: queryEnvelope(request, as: GetRunTraceRequest.self)), writer)
+                case "credential.list": try await reply(request, try await service.listCredentials(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "credential.store": try await reply(request, try await service.storeCredential(envelope: commandEnvelope(request, as: StoreCredentialRequest.self)), writer)
+                case "credential.delete": try await reply(request, try await service.deleteCredential(envelope: commandEnvelope(request, as: DeleteCredentialRequest.self)), writer)
+                case "credential.status": try await reply(request, try await service.getCredentialStatus(envelope: queryEnvelope(request, as: GetCredentialStatusRequest.self)), writer)
+                case "credential.test": try await reply(request, try await service.testCredential(envelope: commandEnvelope(request, as: TestCredentialRequest.self)), writer)
                 case "events.runtime":
                     guard !Task.isCancelled else { return }
                     await writer.reply(id: request.id, payload: nil, error: nil)
@@ -327,6 +349,25 @@ public struct VNextStdioCoreServer: Sendable {
     private func reply<T: Encodable>(_ request: VNextWireRequest, _ value: T, _ writer: VNextWireWriter) async throws {
         guard !Task.isCancelled else { return }
         await writer.reply(id: request.id, payload: try JSONEncoder().encode(value), error: nil)
+    }
+
+    private func commandEnvelope<P: Codable & Sendable>(_ request: VNextWireRequest, as type: P.Type) throws -> CommandEnvelope<P> {
+        let payload = try decode(type, request.payload)
+        return CommandEnvelope(
+            commandID: request.commandID ?? CommandID(request.id),
+            issuedAt: request.issuedAt ?? Date(),
+            expectedRevision: request.expectedRevision,
+            payload: payload
+        )
+    }
+
+    private func queryEnvelope<P: Codable & Sendable>(_ request: VNextWireRequest, as type: P.Type) throws -> QueryEnvelope<P> {
+        let payload = try decode(type, request.payload)
+        return QueryEnvelope(
+            requestID: request.requestID ?? RequestID(request.id),
+            issuedAt: request.issuedAt ?? Date(),
+            payload: payload
+        )
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ payload: Data?) throws -> T {

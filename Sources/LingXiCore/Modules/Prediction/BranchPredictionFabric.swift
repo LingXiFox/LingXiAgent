@@ -159,7 +159,12 @@ public final class VariableOrderMarkovPredictor: @unchecked Sendable {
                 let totalCount = counts.values.reduce(0, +)
                 if total > 0 {
                     let sorted = counts.map { (token: $0.key, prob: Double($0.value) / total, count: $0.value) }
-                        .sorted { $0.prob > $1.prob }
+                        .sorted {
+                            if abs($0.prob - $1.prob) > 1e-9 {
+                                return $0.prob > $1.prob
+                            }
+                            return $0.token.description < $1.token.description
+                        }
                     let candidates = sorted.map { PredictionResult.Candidate(token: $0.token, probability: $0.prob, count: $0.count) }
                     return PredictionResult(
                         top1: candidates.first?.token,
@@ -175,7 +180,12 @@ public final class VariableOrderMarkovPredictor: @unchecked Sendable {
         // Fallback to order 0 (global prior distribution)
         let total = Double(totalPriors)
         let sorted = priorCounts.map { (token: $0.key, prob: Double($0.value) / total, count: $0.value) }
-            .sorted { $0.prob > $1.prob }
+            .sorted {
+                if abs($0.prob - $1.prob) > 1e-9 {
+                    return $0.prob > $1.prob
+                }
+                return $0.token.description < $1.token.description
+            }
         let candidates = sorted.map { PredictionResult.Candidate(token: $0.token, probability: $0.prob, count: $0.count) }
         return PredictionResult(
             top1: candidates.first?.token,
@@ -319,5 +329,85 @@ public struct TrajectoryExtractor: Sendable {
             }
         }
         return tokens
+    }
+
+    /// Splits event log into isolated episode sequences divided by Run and terminal state boundaries.
+    /// Invariant: Prevents falsely learning transitions across Run boundaries (e.g. preceding .finish -> subsequent .tool).
+    public func extractEpisodes(from events: [SessionEventEnvelope]) -> [[ActionToken]] {
+        var episodes: [[ActionToken]] = []
+        var current: [ActionToken] = []
+        var seenCancelledRuns: Set<RunID> = []
+
+        for record in events {
+            switch record.payload {
+            case let .toolRequested(inv):
+                current.append(.tool(name: inv.toolID.rawValue))
+            case .assistantMessageCommitted:
+                current.append(.directAnswer)
+            case let .runCompleted(runID, terminalReason):
+                if terminalReason == .userCancelled {
+                    if !seenCancelledRuns.contains(runID) {
+                        seenCancelledRuns.insert(runID)
+                        current.append(.cancel)
+                    }
+                } else {
+                    current.append(.finish)
+                }
+                if !current.isEmpty {
+                    episodes.append(current)
+                    current = []
+                }
+            case let .runCancelled(runID, _):
+                if !seenCancelledRuns.contains(runID) {
+                    seenCancelledRuns.insert(runID)
+                    current.append(.cancel)
+                }
+                if !current.isEmpty {
+                    episodes.append(current)
+                    current = []
+                }
+            case .runFailed:
+                current.append(.cancel)
+                if !current.isEmpty {
+                    episodes.append(current)
+                    current = []
+                }
+            default:
+                break
+            }
+        }
+
+        if !current.isEmpty {
+            episodes.append(current)
+        }
+        return episodes
+    }
+}
+
+// MARK: - Prediction Snapshot Extension
+
+extension PredictionResult {
+    public func makeSnapshot(
+        epoch: UInt64,
+        sessionID: String,
+        runID: String? = nil,
+        isStale: Bool = false
+    ) -> PredictionSnapshot {
+        let dtos = candidates.map {
+            PredictionSnapshot.CandidateDTO(action: $0.token.description, probability: $0.probability, count: $0.count)
+        }
+        return PredictionSnapshot(
+            epoch: epoch,
+            sessionID: sessionID,
+            runID: runID,
+            top1Action: top1?.description,
+            topConfidence: topConfidence,
+            support: support,
+            matchedOrder: matchedOrder,
+            candidates: dtos,
+            mode: "shadow",
+            isLowSupport: support < 3,
+            isStale: isStale
+        )
     }
 }

@@ -1763,6 +1763,19 @@ extension CoreHost {
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog, todoStore: self.todoStore)
         await coord.restoreHistoricalQueue()
         sessionCoordinators[sessionID] = coord
+        if let next = await coord.scheduleNextQueuedTurnIfIdle() {
+            let task = Task { [weak self, weak coord] () -> Void in
+                await self?.executeTurnRun(
+                    sessionID: sessionID,
+                    turnID: next.turn.turnID,
+                    runID: next.runID,
+                    input: UserInput(text: next.turn.userMessage.text),
+                    executionIntent: next.turn.executionIntent,
+                    coordinator: coord
+                )
+            }
+            registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+        }
         return coord
     }
 
