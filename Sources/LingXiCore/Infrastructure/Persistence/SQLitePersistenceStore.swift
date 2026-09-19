@@ -233,6 +233,13 @@ public actor SQLitePersistenceStore {
         return (revertedPrompt, toDelete.count)
     }
 
+    public func deleteMessage(messageID: MessageID) throws {
+        try Self.transaction(state) {
+            try Self.execute(state, "DELETE FROM message_parts WHERE message_id = ?", [messageID.rawValue])
+            try Self.execute(state, "DELETE FROM messages WHERE message_id = ?", [messageID.rawValue])
+        }
+    }
+
     public func clearCompactionAndDerived(sessionID: SessionID) throws {
         try Self.transaction(state) {
             try Self.execute(state, "DELETE FROM compaction_state WHERE session_id = ?", [sessionID.rawValue])

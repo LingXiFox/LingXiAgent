@@ -5,7 +5,7 @@ import LingXiProtocol
 /// 当前实现：InMemorySessionStore；未来 SQLite 到来时替换实现，
 /// AgentRuntime / SessionRuntime / TUI 的领域逻辑不变。
 public protocol SessionStore: Actor, Sendable {
-    func create(kind: SessionKind, parentSessionID: SessionID?, rootSessionID: SessionID?, spawnedByRunID: AgentRunID?, spawnedByToolCallID: ToolCallID?, title: String?) async throws -> Session
+    func create(id: SessionID?, kind: SessionKind, parentSessionID: SessionID?, rootSessionID: SessionID?, spawnedByRunID: AgentRunID?, spawnedByToolCallID: ToolCallID?, title: String?) async throws -> Session
     func session(_ id: SessionID) async throws -> Session
     func listSessions() async throws -> [Session]
     func updateTitle(_ id: SessionID, title: String?) async throws -> Session
@@ -18,6 +18,7 @@ public protocol SessionStore: Actor, Sendable {
     func appendMessage(_ sessionID: SessionID, message: Message) async throws -> Message
     @discardableResult
     func appendMessage(_ sessionID: SessionID, message: Message, expectedRevision: UInt64?) async throws -> Message
+    func removeMessage(_ sessionID: SessionID, messageID: MessageID) async throws
     @discardableResult
     func bumpRevision(_ sessionID: SessionID) async throws -> UInt64
     func currentRevision(_ sessionID: SessionID) async throws -> UInt64
@@ -32,8 +33,12 @@ public extension SessionStore {
         try await revertLastTurn(sessionID, bumpRevision: true)
     }
 
+    func create(kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
+        try await create(id: nil, kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title)
+    }
+
     func create() async throws -> Session {
-        try await create(kind: .primary, parentSessionID: nil, rootSessionID: nil, spawnedByRunID: nil, spawnedByToolCallID: nil, title: nil)
+        try await create(id: nil, kind: .primary, parentSessionID: nil, rootSessionID: nil, spawnedByRunID: nil, spawnedByToolCallID: nil, title: nil)
     }
 
     @discardableResult
@@ -65,13 +70,21 @@ public actor InMemorySessionStore: SessionStore {
 
     public init() {}
 
-    public func create(kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
+    public func create(id: SessionID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
         guard parentSessionID == nil || sessions[parentSessionID!] != nil else { throw CoreError(code: .sessionNotFound, message: "Parent Session 不存在") }
-        let id = SessionID(UUID().uuidString)
-        let session = Session(id: id, createdAt: Date(), kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID ?? parentSessionID.flatMap { sessions[$0]?.rootSessionID } ?? id, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title)
+        let sessionID = id ?? SessionID(UUID().uuidString)
+        let session = Session(id: sessionID, createdAt: Date(), kind: kind, parentSessionID: parentSessionID, rootSessionID: rootSessionID ?? parentSessionID.flatMap { sessions[$0]?.rootSessionID } ?? sessionID, spawnedByRunID: spawnedByRunID, spawnedByToolCallID: spawnedByToolCallID, title: title)
         sessions[session.id] = session
-        order.append(session.id)
+        if !order.contains(session.id) {
+            order.append(session.id)
+        }
         return session
+    }
+
+    public func removeMessage(_ sessionID: SessionID, messageID: MessageID) async throws {
+        guard var session = sessions[sessionID] else { return }
+        session.removeMessage(messageID: messageID)
+        sessions[sessionID] = session
     }
 
     public func session(_ id: SessionID) async throws -> Session {
@@ -160,7 +173,7 @@ public actor PersistentSessionStore: SessionStore {
 
     public init(persistence: SQLitePersistenceStore) { self.persistence = persistence }
 
-    public func create(kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
+    public func create(id: SessionID? = nil, kind: SessionKind = .primary, parentSessionID: SessionID? = nil, rootSessionID: SessionID? = nil, spawnedByRunID: AgentRunID? = nil, spawnedByToolCallID: ToolCallID? = nil, title: String? = nil) async throws -> Session {
         let main = try await persistence.mainRootBinding()
         let parentRoot: SessionID?
         if let parentSessionID {
@@ -168,13 +181,13 @@ public actor PersistentSessionStore: SessionStore {
         } else {
             parentRoot = nil
         }
-        let id = SessionID(UUID().uuidString)
+        let sessionID = id ?? SessionID(UUID().uuidString)
         let session = Session(
-            id: id,
+            id: sessionID,
             createdAt: .now,
             kind: kind,
             parentSessionID: parentSessionID,
-            rootSessionID: rootSessionID ?? parentRoot ?? id,
+            rootSessionID: rootSessionID ?? parentRoot ?? sessionID,
             spawnedByRunID: spawnedByRunID,
             spawnedByToolCallID: spawnedByToolCallID,
             title: title,
@@ -183,6 +196,10 @@ public actor PersistentSessionStore: SessionStore {
         )
         try await persistence.createSession(session)
         return session
+    }
+
+    public func removeMessage(_ sessionID: SessionID, messageID: MessageID) async throws {
+        try await persistence.deleteMessage(messageID: messageID)
     }
 
     public func session(_ id: SessionID) async throws -> Session {

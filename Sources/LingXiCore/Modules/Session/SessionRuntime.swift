@@ -790,15 +790,16 @@ public actor SessionRuntime {
                 let cancellableEvents = AsyncThrowingStream<ModelEvent, Error> { cont in
                     streamContinuation = cont
                 }
-                activeStreamContinuation = streamContinuation
+                let continuation = streamContinuation
+                activeStreamContinuation = continuation
                 let pumpTask = Task {
                     do {
                         for try await event in events {
-                            streamContinuation?.yield(event)
+                            continuation?.yield(event)
                         }
-                        streamContinuation?.finish()
+                        continuation?.finish()
                     } catch {
-                        streamContinuation?.finish(throwing: error)
+                        continuation?.finish(throwing: error)
                     }
                 }
                 defer {
@@ -875,7 +876,7 @@ public actor SessionRuntime {
                         }
                     }
                 } onCancel: {
-                    streamContinuation?.finish(throwing: CancellationError())
+                    continuation?.finish(throwing: CancellationError())
                 }
                 try ensureExecuting(executionID)
                 if modelBus.gateway.endpoint?.wireProtocol == .chatCompletions,

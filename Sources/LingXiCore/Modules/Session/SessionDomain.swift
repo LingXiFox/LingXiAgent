@@ -91,6 +91,11 @@ public struct Session: Sendable, Equatable {
         updatedAt = message.createdAt
     }
 
+    public mutating func removeMessage(messageID: MessageID) {
+        messages.removeAll { $0.id == messageID }
+        updatedAt = Date()
+    }
+
     @discardableResult
     public mutating func bumpRevision() -> UInt64 {
         revision += 1

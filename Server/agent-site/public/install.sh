@@ -92,6 +92,12 @@ install_sidecars() {
         mkdir -p "$BIN_DIR/Sidecars/browser-host"
         cp -R "$src_dir/Sidecars/browser-host/"* "$INSTALL_ROOT/sidecars/browser-host/"
         cp -R "$src_dir/Sidecars/browser-host/"* "$BIN_DIR/Sidecars/browser-host/"
+        if command -v npm >/dev/null 2>&1; then
+            (
+                cd "$INSTALL_ROOT/sidecars/browser-host"
+                npm install --omit=dev --silent 2>/dev/null || true
+            )
+        fi
         echo -e "${GRAY}[*] 已成功部署 Browser Sidecar 运行时${RESET}"
     fi
 }

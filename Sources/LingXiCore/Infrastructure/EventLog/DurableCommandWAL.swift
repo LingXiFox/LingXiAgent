@@ -8,6 +8,7 @@ public struct StagedWALRecord: Codable, Sendable, Equatable {
     public var stage: String // "staged", "eventsAppended", "committed"
     public var createdSessionID: String?
     public var sessionID: String?
+    public var stagedUserMessageID: String?
     public var turnID: String?
     public var runID: String?
     public var initialRuntimeSequence: UInt64?
@@ -22,6 +23,7 @@ public struct StagedWALRecord: Codable, Sendable, Equatable {
         stage: String = "staged",
         createdSessionID: String? = nil,
         sessionID: String? = nil,
+        stagedUserMessageID: String? = nil,
         turnID: String? = nil,
         runID: String? = nil,
         initialRuntimeSequence: UInt64? = nil,
@@ -35,6 +37,7 @@ public struct StagedWALRecord: Codable, Sendable, Equatable {
         self.stage = stage
         self.createdSessionID = createdSessionID
         self.sessionID = sessionID
+        self.stagedUserMessageID = stagedUserMessageID
         self.turnID = turnID
         self.runID = runID
         self.initialRuntimeSequence = initialRuntimeSequence
@@ -70,10 +73,27 @@ public actor DurableCommandWAL {
 
     public private(set) var quarantinedCorruptWALs: [String] = []
 
-    /// 开始事务：写入 .wal 文件
-    public func beginTransaction(commandID: CommandID, commandName: String) throws {
+    /// 开始事务：写入 .wal 文件（真正 Write-Ahead：支持在 mutation 发生前落盘定位标识）
+    public func beginTransaction(
+        commandID: CommandID,
+        commandName: String,
+        createdSessionID: String? = nil,
+        sessionID: String? = nil,
+        stagedUserMessageID: String? = nil,
+        initialRuntimeSequence: UInt64? = nil,
+        initialSessionSequence: UInt64? = nil
+    ) throws {
         guard let walDir else { return }
-        let record = StagedWALRecord(commandID: commandID.rawValue, commandName: commandName, stage: "staged")
+        let record = StagedWALRecord(
+            commandID: commandID.rawValue,
+            commandName: commandName,
+            stage: "staged",
+            createdSessionID: createdSessionID,
+            sessionID: sessionID,
+            stagedUserMessageID: stagedUserMessageID,
+            initialRuntimeSequence: initialRuntimeSequence,
+            initialSessionSequence: initialSessionSequence
+        )
         try writeWAL(record, to: walDir)
     }
 
@@ -82,6 +102,7 @@ public actor DurableCommandWAL {
         commandID: CommandID,
         createdSessionID: SessionID? = nil,
         sessionID: SessionID? = nil,
+        stagedUserMessageID: MessageID? = nil,
         turnID: TurnID? = nil,
         runID: RunID? = nil,
         initialRuntimeSequence: UInt64? = nil,
@@ -91,6 +112,7 @@ public actor DurableCommandWAL {
         var record = readWAL(commandID: commandID) ?? StagedWALRecord(commandID: commandID.rawValue, commandName: "unknown")
         if let createdSessionID { record.createdSessionID = createdSessionID.rawValue }
         if let sessionID { record.sessionID = sessionID.rawValue }
+        if let stagedUserMessageID { record.stagedUserMessageID = stagedUserMessageID.rawValue }
         if let turnID { record.turnID = turnID.rawValue }
         if let runID { record.runID = runID.rawValue }
         if let initialRuntimeSequence { record.initialRuntimeSequence = initialRuntimeSequence }
@@ -242,6 +264,20 @@ public actor DurableCommandWAL {
                 continue
             }
 
+            // P0-D 核心不变量防御：检查该 transaction 是否已经在 committedDir 中成功提交！
+            // 如果已存在 committed receipt，说明这是 commitTransaction 后的清理遗留（stale WAL），
+            // 绝对不能反向回滚已提交的成功事实！直接清理 stale WAL 即可。
+            let cmdID = CommandID(record.commandID)
+            let safeKey = CommandStorageSecurity.safeStorageKey(for: cmdID)
+            let committedURL = committedDir?.appendingPathComponent("\(safeKey).json")
+            let legacyCommittedURL = committedDir?.appendingPathComponent("\(cmdID.rawValue).json")
+            let isCommitted = (committedURL != nil && FileManager.default.fileExists(atPath: committedURL!.path)) ||
+                              (legacyCommittedURL != nil && FileManager.default.fileExists(atPath: legacyCommittedURL!.path))
+            if isCommitted {
+                try? FileManager.default.removeItem(at: fileURL)
+                continue
+            }
+
             // 发现未提交的崩溃事务，必须自动消除未提交副作用！
             var rollbackSuccess = true
             // 1. 如果该事务曾创建会话，删除未提交会话
@@ -253,12 +289,23 @@ public actor DurableCommandWAL {
                 }
             }
 
-            // 2. 如果该事务曾追加 Runtime 事件，截断回退至 initialRuntimeSequence
+            // 2. 如果该事务曾把用户消息写入了 SessionStore（running Turn 崩溃），必须精准移除该消息，彻底根除 orphan prompt！
+            if let msgIDStr = record.stagedUserMessageID, let sessionIDStr = record.sessionID {
+                let sessionID = SessionID(sessionIDStr)
+                let msgID = MessageID(msgIDStr)
+                do {
+                    try await sessionStore.removeMessage(sessionID, messageID: msgID)
+                } catch {
+                    rollbackSuccess = false
+                }
+            }
+
+            // 3. 如果该事务曾追加 Runtime 事件，截断回退至 initialRuntimeSequence
             if let initialRuntimeSeq = record.initialRuntimeSequence {
                 await runtimeEventLog.truncateEvents(afterSequence: initialRuntimeSeq)
             }
 
-            // 3. 如果该事务曾追加 Session 事件或创建 Turn/Run，回滚 Session 状态
+            // 4. 如果该事务曾追加 Session 事件或创建 Turn/Run，回滚 Session 状态
             if let sessionIDStr = record.sessionID ?? record.createdSessionID {
                 let sessionID = SessionID(sessionIDStr)
                 if let coord = try? await coordinatorProvider(sessionID) {
@@ -273,7 +320,7 @@ public actor DurableCommandWAL {
                 }
             }
 
-            // 4. 清除 .wal (仅在回滚成功后清除；回滚失败时保留供人工/诊断分析)
+            // 5. 清除 .wal (仅在回滚成功后清除；回滚失败时保留供人工/诊断分析)
             if rollbackSuccess {
                 try? FileManager.default.removeItem(at: fileURL)
             }

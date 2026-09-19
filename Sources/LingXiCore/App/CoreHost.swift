@@ -2387,94 +2387,110 @@ extension CoreHost {
             throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
         }
 
-        try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "createSession")
-        await ProviderRateScheduler.shared.reset()
-
+        let preallocatedSessionID = SessionID(UUID().uuidString)
         let initialRuntimeSeq = await runtimeEventLog.currentSequence()
-        let session = try await sessionStore.create(
-            kind: .primary,
-            parentSessionID: nil,
-            rootSessionID: nil,
-            spawnedByRunID: nil,
-            spawnedByToolCallID: nil,
-            title: envelope.payload.workspace.flatMap { URL(fileURLWithPath: $0).lastPathComponent }
-        )
-        let coord = try await coordinator(for: session.id)
-        let initialSessionSeq = await coord.eventLog.currentSequence()
 
-        try await commandWAL.recordState(
-            commandID: envelope.commandID,
-            createdSessionID: session.id,
-            sessionID: session.id,
-            turnID: nil,
-            runID: nil,
-            initialRuntimeSequence: initialRuntimeSeq,
-            initialSessionSequence: initialSessionSeq
-        )
-
-        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
-            fflush(stdout)
-            kill(getpid(), SIGKILL)
-        }
-
-        if activeFailpoint == .afterStateMutationBeforeEventAppend {
-            try? await sessionStore.deleteSession(session.id)
-            throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after mutation before event append", retryability: .afterDelay, source: .core)
-        }
-
-        let summary = SessionSummary(
-            sessionID: session.id,
-            title: session.title,
-            createdAt: session.createdAt,
-            updatedAt: session.updatedAt,
-            turnCount: 0,
-            mode: envelope.payload.defaultMode,
-            reasoningEffort: session.reasoningEffort
-        )
-        await runtimeEventLog.append(payload: .sessionCreated(summary))
-        try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
-
-        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
-            fflush(stdout)
-            kill(getpid(), SIGKILL)
-        }
-
-        if activeFailpoint == .afterEventAppendBeforeReceipt {
-            await runtimeEventLog.rollbackLastAppended()
-            try? await sessionStore.deleteSession(session.id)
-            sessionCoordinators.removeValue(forKey: session.id)
-            throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
-        }
-
-        let receipt = CommandReceipt<SessionSummary>(
-            commandID: envelope.commandID,
-            applied: true,
-            revision: nextRevision(),
-            observedThrough: [
-                await runtimeEventLog.currentWatermark(),
-                await coord.eventLog.currentWatermark()
-            ],
-            result: summary
-        )
-        let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
-        try await commandWAL.commitTransaction(
+        // P0-A: Write-Ahead Invariant - 事前落盘定位标识，即使在 create 过程中被强杀也能精准定位回滚
+        try await commandWAL.beginTransaction(
             commandID: envelope.commandID,
             commandName: "createSession",
-            payloadFingerprint: fingerprint,
-            receipt: receipt
+            createdSessionID: preallocatedSessionID.rawValue,
+            initialRuntimeSequence: initialRuntimeSeq
         )
-        try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
+        await ProviderRateScheduler.shared.reset()
 
-        if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
-            fflush(stdout)
-            kill(getpid(), SIGKILL)
+        do {
+            let session = try await sessionStore.create(
+                id: preallocatedSessionID,
+                kind: .primary,
+                parentSessionID: nil,
+                rootSessionID: nil,
+                spawnedByRunID: nil,
+                spawnedByToolCallID: nil,
+                title: envelope.payload.workspace.flatMap { URL(fileURLWithPath: $0).lastPathComponent }
+            )
+            let coord = try await coordinator(for: session.id)
+            let initialSessionSeq = await coord.eventLog.currentSequence()
+
+            try await commandWAL.recordState(
+                commandID: envelope.commandID,
+                createdSessionID: session.id,
+                sessionID: session.id,
+                turnID: nil,
+                runID: nil,
+                initialRuntimeSequence: initialRuntimeSeq,
+                initialSessionSequence: initialSessionSeq
+            )
+
+            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+                fflush(stdout)
+                kill(getpid(), SIGKILL)
+            }
+
+            if activeFailpoint == .afterStateMutationBeforeEventAppend {
+                try? await sessionStore.deleteSession(session.id)
+                throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after mutation before event append", retryability: .afterDelay, source: .core)
+            }
+
+            let summary = SessionSummary(
+                sessionID: session.id,
+                title: session.title,
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt,
+                turnCount: 0,
+                mode: envelope.payload.defaultMode,
+                reasoningEffort: session.reasoningEffort
+            )
+            await runtimeEventLog.append(payload: .sessionCreated(summary))
+            try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+
+            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+                fflush(stdout)
+                kill(getpid(), SIGKILL)
+            }
+
+            if activeFailpoint == .afterEventAppendBeforeReceipt {
+                await runtimeEventLog.rollbackLastAppended()
+                try? await sessionStore.deleteSession(session.id)
+                sessionCoordinators.removeValue(forKey: session.id)
+                throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
+            }
+
+            let receipt: CommandReceipt<SessionSummary> = CommandReceipt<SessionSummary>(
+                commandID: envelope.commandID,
+                applied: true,
+                revision: nextRevision(),
+                observedThrough: [
+                    await runtimeEventLog.currentWatermark(),
+                    await coord.eventLog.currentWatermark()
+                ],
+                result: summary
+            )
+            let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+            try await commandWAL.commitTransaction(
+                commandID: envelope.commandID,
+                commandName: "createSession",
+                payloadFingerprint: fingerprint,
+                receipt: receipt
+            )
+            try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
+
+            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+                fflush(stdout)
+                kill(getpid(), SIGKILL)
+            }
+
+            if activeFailpoint == .afterCommitBeforeResponse {
+                throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
+            }
+
+            return receipt
+        } catch {
+            // P0-B: 活进程 I/O 或中间步骤失败时的状态机补偿：绝不在系统中遗留孤儿 Session
+            try? await sessionStore.deleteSession(preallocatedSessionID)
+            sessionCoordinators.removeValue(forKey: preallocatedSessionID)
+            throw error
         }
-
-        if activeFailpoint == .afterCommitBeforeResponse {
-            throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
-        }
-
-        return receipt
     }
 
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
@@ -2576,7 +2592,7 @@ extension CoreHost {
                 return cached
             }
 
-            try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "revertLastTurn")
+            try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "revertLastTurn", sessionID: sessionID.rawValue)
 
             let oldRevision = (try? await sessionStore.currentRevision(sessionID)) ?? 0
             let newRevision = try await sessionStore.bumpRevision(sessionID)
@@ -2819,13 +2835,21 @@ extension CoreHost {
                 throw RuntimeError(category: .runtime, code: "injectedCrashBeforeMutation", message: "Injected crash before state mutation", retryability: .afterDelay, source: .core)
             }
 
-            try await commandWAL.beginTransaction(commandID: envelope.commandID, commandName: "submitTurn")
-
+            let msgID = MessageID()
             let coord = try await coordinator(for: sessionID)
             let initialRuntimeSeq = await runtimeEventLog.currentSequence()
             let initialSessionSeq = await coord.eventLog.currentSequence()
 
-            let msgID = MessageID()
+            // P0-A & P0-B: Write-Ahead Invariant - 事前落盘定位元数据（包含预分配的 msgID 与初始 sequence）
+            try await commandWAL.beginTransaction(
+                commandID: envelope.commandID,
+                commandName: "submitTurn",
+                sessionID: sessionID.rawValue,
+                stagedUserMessageID: msgID.rawValue,
+                initialRuntimeSequence: initialRuntimeSeq,
+                initialSessionSequence: initialSessionSeq
+            )
+
             let userSnapshot = MessageSnapshot(
                 messageID: msgID,
                 role: .user,
@@ -2838,87 +2862,98 @@ extension CoreHost {
                 intent: envelope.payload.executionIntent,
                 userMessage: userSnapshot
             )
-            if decision.shouldStartExecution {
-                _ = try await sessionStore.appendMessage(
-                    sessionID,
-                    message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: userSnapshot.createdAt)
-                )
-            }
 
-            try await commandWAL.recordState(
-                commandID: envelope.commandID,
-                createdSessionID: nil,
-                sessionID: sessionID,
-                turnID: decision.turn.turnID,
-                runID: decision.runID,
-                initialRuntimeSequence: initialRuntimeSeq,
-                initialSessionSequence: initialSessionSeq
-            )
-
-            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
-                fflush(stdout)
-                kill(getpid(), SIGKILL)
-            }
-
-            if activeFailpoint == .afterStateMutationBeforeEventAppend {
-                await coord.rollbackTurn(decision: decision)
-                throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
-            }
-
-            try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
-
-            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
-                fflush(stdout)
-                kill(getpid(), SIGKILL)
-            }
-
-            if activeFailpoint == .afterEventAppendBeforeReceipt {
-                await coord.eventLog.rollbackLastAppended()
-                await coord.rollbackTurn(decision: decision)
-                throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
-            }
-
-            let watermark = await coord.eventLog.currentWatermark()
-            let result = SubmitTurnResult(turnID: decision.turn.turnID, status: decision.status, runID: decision.runID)
-            let receipt = CommandReceipt<SubmitTurnResult>(
-                commandID: envelope.commandID,
-                applied: true,
-                revision: nextRevision(),
-                observedThrough: [watermark],
-                result: result
-            )
-            let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
-            try await commandWAL.commitTransaction(
-                commandID: envelope.commandID,
-                commandName: "submitTurn",
-                payloadFingerprint: fingerprint,
-                receipt: receipt
-            )
-            try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
-
-            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
-                fflush(stdout)
-                kill(getpid(), SIGKILL)
-            }
-
-            if activeFailpoint == .afterCommitBeforeResponse {
-                throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
-            }
-
-            if decision.shouldStartExecution, let runID = decision.runID {
-                let task = Task { [weak self, weak coord] () -> Void in
-                    await self?.executeTurnRun(
-                        sessionID: sessionID,
-                        turnID: decision.turn.turnID,
-                        runID: runID,
-                        input: envelope.payload.input,
-                        executionIntent: envelope.payload.executionIntent,
-                        coordinator: coord
+            do {
+                if decision.shouldStartExecution {
+                    _ = try await sessionStore.appendMessage(
+                        sessionID,
+                        message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: userSnapshot.createdAt)
                     )
                 }
-                registerActiveTurnTask(task, runID: runID, sessionID: sessionID)
+
+                try await commandWAL.recordState(
+                    commandID: envelope.commandID,
+                    createdSessionID: nil,
+                    sessionID: sessionID,
+                    stagedUserMessageID: msgID,
+                    turnID: decision.turn.turnID,
+                    runID: decision.runID,
+                    initialRuntimeSequence: initialRuntimeSeq,
+                    initialSessionSequence: initialSessionSeq
+                )
+
+                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+                    fflush(stdout)
+                    kill(getpid(), SIGKILL)
+                }
+
+                if activeFailpoint == .afterStateMutationBeforeEventAppend {
+                    await coord.rollbackTurn(decision: decision)
+                    throw RuntimeError(category: .runtime, code: "injectedCrashAfterMutation", message: "Injected crash after state mutation before event append", retryability: .afterDelay, source: .core)
+                }
+
+                try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
+
+                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+                    fflush(stdout)
+                    kill(getpid(), SIGKILL)
+                }
+
+                if activeFailpoint == .afterEventAppendBeforeReceipt {
+                    await coord.eventLog.rollbackLastAppended()
+                    await coord.rollbackTurn(decision: decision)
+                    throw RuntimeError(category: .runtime, code: "injectedCrashAfterEventBeforeReceipt", message: "Injected crash after event append before receipt record", retryability: .afterDelay, source: .core)
+                }
+
+                let watermark = await coord.eventLog.currentWatermark()
+                let result = SubmitTurnResult(turnID: decision.turn.turnID, status: decision.status, runID: decision.runID)
+                let receipt = CommandReceipt<SubmitTurnResult>(
+                    commandID: envelope.commandID,
+                    applied: true,
+                    revision: nextRevision(),
+                    observedThrough: [watermark],
+                    result: result
+                )
+                let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+                try await commandWAL.commitTransaction(
+                    commandID: envelope.commandID,
+                    commandName: "submitTurn",
+                    payloadFingerprint: fingerprint,
+                    receipt: receipt
+                )
+                try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
+
+                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+                    fflush(stdout)
+                    kill(getpid(), SIGKILL)
+                }
+
+                if activeFailpoint == .afterCommitBeforeResponse {
+                    throw RuntimeError(category: .runtime, code: "injectedCrashAfterCommitBeforeResponse", message: "Injected crash after durable commit before response", retryability: .afterDelay, source: .core)
+                }
+
+                if decision.shouldStartExecution, let runID = decision.runID {
+                    let task = Task { [weak self, weak coord] () -> Void in
+                        await self?.executeTurnRun(
+                            sessionID: sessionID,
+                            turnID: decision.turn.turnID,
+                            runID: runID,
+                            input: envelope.payload.input,
+                            executionIntent: envelope.payload.executionIntent,
+                            coordinator: coord
+                        )
+                    }
+                    registerActiveTurnTask(task, runID: runID, sessionID: sessionID)
+                }
+                return receipt
+            } catch {
+                // P0-B: 活进程状态补偿 - 消除孤儿 prompt 并回滚 Coordinator，杜绝 phantom active run
+                if decision.shouldStartExecution {
+                    try? await sessionStore.removeMessage(sessionID, messageID: msgID)
+                }
+                await coord.rollbackTurn(decision: decision)
+                throw error
             }
-            return receipt
         }
     }
 

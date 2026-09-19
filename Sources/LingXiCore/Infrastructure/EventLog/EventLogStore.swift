@@ -40,11 +40,6 @@ public actor SessionEventLog {
                let meta = try? JSONDecoder().decode(PersistedMeta.self, from: metaData) {
                 resolvedGen = generationID ?? EventLogGenerationID(meta.generationID)
                 resolvedSeq = meta.sequence
-            } else {
-                let meta = PersistedMeta(generationID: resolvedGen.rawValue, sequence: resolvedSeq)
-                if let data = try? JSONEncoder().encode(meta) {
-                    try? data.write(to: metaURL)
-                }
             }
 
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
@@ -58,6 +53,19 @@ public actor SessionEventLog {
                         loadedEvents.append(envelope)
                     }
                 }
+            }
+
+            // P0-C 单一同态权威校准：以实际成功落盘的 events.jsonl 末尾 cursor 为最终事实，消除 crash split-brain
+            if let lastSeq = loadedEvents.last?.cursor.sequence {
+                resolvedSeq = lastSeq
+            } else if loadedEvents.isEmpty {
+                resolvedSeq = 0
+            }
+
+            // 将权威 sequence 原子校准写回 meta.json，确保 meta 与 events 100% 对齐
+            let correctedMeta = PersistedMeta(generationID: resolvedGen.rawValue, sequence: resolvedSeq)
+            if let data = try? JSONEncoder().encode(correctedMeta) {
+                try? data.write(to: metaURL, options: .atomic)
             }
         }
 
@@ -90,11 +98,6 @@ public actor SessionEventLog {
 
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
-            let metaURL = sessionDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
             if let envelopeData = try? JSONEncoder().encode(envelope),
                let lineStr = String(data: envelopeData, encoding: .utf8) {
@@ -108,6 +111,11 @@ public actor SessionEventLog {
                 } else {
                     try? Data(lineToAppend.utf8).write(to: eventsURL)
                 }
+            }
+            let metaURL = sessionDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
             }
         }
 
@@ -123,11 +131,6 @@ public actor SessionEventLog {
         sequence = max(0, sequence - 1)
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
-            let metaURL = sessionDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
             var newContent = ""
             for env in events {
@@ -136,7 +139,12 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL)
+            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            let metaURL = sessionDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
         }
     }
 
@@ -145,11 +153,6 @@ public actor SessionEventLog {
         sequence = targetSeq
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
-            let metaURL = sessionDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
             var newContent = ""
             for env in events {
@@ -158,7 +161,12 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL)
+            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            let metaURL = sessionDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
         }
     }
 
@@ -288,11 +296,6 @@ public actor RuntimeEventLog {
                let meta = try? JSONDecoder().decode(PersistedMeta.self, from: metaData) {
                 resolvedGen = generationID ?? EventLogGenerationID(meta.generationID)
                 resolvedSeq = meta.sequence
-            } else {
-                let meta = PersistedMeta(generationID: resolvedGen.rawValue, sequence: resolvedSeq)
-                if let data = try? JSONEncoder().encode(meta) {
-                    try? data.write(to: metaURL)
-                }
             }
 
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
@@ -306,6 +309,19 @@ public actor RuntimeEventLog {
                         loadedEvents.append(envelope)
                     }
                 }
+            }
+
+            // P0-C 单一同态权威校准：以实际成功落盘的 events.jsonl 末尾 cursor 为最终事实，消除 crash split-brain
+            if let lastSeq = loadedEvents.last?.cursor.sequence {
+                resolvedSeq = lastSeq
+            } else if loadedEvents.isEmpty {
+                resolvedSeq = 0
+            }
+
+            // 将权威 sequence 原子校准写回 meta.json，确保 meta 与 events 100% 对齐
+            let correctedMeta = PersistedMeta(generationID: resolvedGen.rawValue, sequence: resolvedSeq)
+            if let data = try? JSONEncoder().encode(correctedMeta) {
+                try? data.write(to: metaURL, options: .atomic)
             }
         }
 
@@ -338,11 +354,6 @@ public actor RuntimeEventLog {
 
         if let dir = storageDirectory {
             let runtimeDir = dir.appendingPathComponent("runtime", isDirectory: true)
-            let metaURL = runtimeDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
             if let envelopeData = try? JSONEncoder().encode(envelope),
                let lineStr = String(data: envelopeData, encoding: .utf8) {
@@ -356,6 +367,11 @@ public actor RuntimeEventLog {
                 } else {
                     try? Data(lineToAppend.utf8).write(to: eventsURL)
                 }
+            }
+            let metaURL = runtimeDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
             }
         }
 
@@ -371,11 +387,6 @@ public actor RuntimeEventLog {
         sequence = max(0, sequence - 1)
         if let dir = storageDirectory {
             let runtimeDir = dir.appendingPathComponent("runtime", isDirectory: true)
-            let metaURL = runtimeDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
             var newContent = ""
             for env in events {
@@ -384,7 +395,12 @@ public actor RuntimeEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL)
+            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            let metaURL = runtimeDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
         }
     }
 
@@ -393,11 +409,6 @@ public actor RuntimeEventLog {
         sequence = targetSeq
         if let dir = storageDirectory {
             let runtimeDir = dir.appendingPathComponent("runtime", isDirectory: true)
-            let metaURL = runtimeDir.appendingPathComponent("meta.json")
-            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL)
-            }
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
             var newContent = ""
             for env in events {
@@ -406,7 +417,12 @@ public actor RuntimeEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL)
+            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            let metaURL = runtimeDir.appendingPathComponent("meta.json")
+            let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
+            if let data = try? JSONEncoder().encode(meta) {
+                try? data.write(to: metaURL, options: .atomic)
+            }
         }
     }
 
