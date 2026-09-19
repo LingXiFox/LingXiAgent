@@ -8,12 +8,20 @@ import Glibc
 import WinSDK
 #endif
 
+#if os(Windows) || canImport(WinSDK)
+private typealias PlatformSocket = SOCKET
+private let kInvalidSocket: SOCKET = INVALID_SOCKET
+#else
+private typealias PlatformSocket = Int32
+private let kInvalidSocket: Int32 = -1
+#endif
+
 /// 跨平台本地回环回调服务器 (PlatformLoopbackServer)。
 /// 负责在本地分配短暂或首选端口并监听 OAuth/SSO 授权重定向，
 /// 将底层 POSIX / 系统 Socket 细节完全隔离在 LingXiPlatform 内，
 /// 具备三平台兼容、poll 超时控制与安全的资源生命周期释放。
 public final class PlatformLoopbackServer: @unchecked Sendable {
-    private var serverSock: Int32 = -1
+    private var serverSock: PlatformSocket = kInvalidSocket
     public private(set) var port: UInt16 = 0
     private var isClosed = false
     private let lock = NSLock()
@@ -30,14 +38,20 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
         #endif
 
         #if canImport(Darwin) || canImport(Glibc) || os(Windows) || canImport(WinSDK)
-        let sock = socket(AF_INET, sockType, 0)
+        let sock: PlatformSocket = socket(AF_INET, sockType, 0)
+        #if os(Windows) || canImport(WinSDK)
+        guard sock != INVALID_SOCKET else {
+            throw CoreError(code: .transport, message: "Failed to allocate socket for loopback server")
+        }
+        #else
         guard sock >= 0 else {
             throw CoreError(code: .transport, message: "Failed to allocate socket for loopback server")
         }
+        #endif
 
         var reuse: Int32 = 1
         #if os(Windows) || canImport(WinSDK)
-        setsockopt(SOCKET(UInt(bitPattern: Int(sock))), SOL_SOCKET, SO_REUSEADDR, withUnsafePointer(to: &reuse) { $0.withMemoryRebound(to: CChar.self, capacity: 1) { $0 } }, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, withUnsafePointer(to: &reuse) { $0.withMemoryRebound(to: CChar.self, capacity: 1) { $0 } }, socklen_t(MemoryLayout<Int32>.size))
         #else
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
         #endif
@@ -49,11 +63,7 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
 
         var bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                #if os(Windows) || canImport(WinSDK)
-                return bind(SOCKET(UInt(bitPattern: Int(sock))), $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                #else
-                return bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                #endif
+                bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
 
@@ -62,11 +72,7 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
             addr.sin_port = 0
             bindResult = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    #if os(Windows) || canImport(WinSDK)
-                    return bind(SOCKET(UInt(bitPattern: Int(sock))), $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                    #else
-                    return bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                    #endif
+                    bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
         }
@@ -80,21 +86,13 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
         var actualAddr = sockaddr_in()
         withUnsafeMutablePointer(to: &actualAddr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                #if os(Windows) || canImport(WinSDK)
-                _ = getsockname(SOCKET(UInt(bitPattern: Int(sock))), $0, &len)
-                #else
                 _ = getsockname(sock, $0, &len)
-                #endif
             }
         }
         self.port = UInt16(bigEndian: actualAddr.sin_port)
         self.serverSock = sock
 
-        #if os(Windows) || canImport(WinSDK)
-        listen(SOCKET(UInt(bitPattern: Int(sock))), 1)
-        #else
         listen(sock, 1)
-        #endif
         #else
         throw CoreError(code: .transport, message: "Loopback socket is not supported on this platform")
         #endif
@@ -107,18 +105,26 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
     public func closeServer() {
         lock.lock()
         defer { lock.unlock() }
+        #if os(Windows) || canImport(WinSDK)
+        if !isClosed && serverSock != INVALID_SOCKET {
+            Self.closeSocket(serverSock)
+            serverSock = INVALID_SOCKET
+            isClosed = true
+        }
+        #else
         if !isClosed && serverSock >= 0 {
             Self.closeSocket(serverSock)
             serverSock = -1
             isClosed = true
         }
+        #endif
     }
 
-    private static func closeSocket(_ sock: Int32) {
+    private static func closeSocket(_ sock: PlatformSocket) {
         #if canImport(Darwin) || canImport(Glibc)
         close(sock)
         #elseif os(Windows) || canImport(WinSDK)
-        closesocket(SOCKET(UInt(bitPattern: Int(sock))))
+        closesocket(sock)
         #endif
     }
 
@@ -134,10 +140,17 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 let sock = self.serverSock
                 self.lock.unlock()
 
+                #if os(Windows) || canImport(WinSDK)
+                guard sock != INVALID_SOCKET else {
+                    continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "Socket already closed"))
+                    return
+                }
+                #else
                 guard sock >= 0 else {
                     continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "Socket already closed"))
                     return
                 }
+                #endif
 
                 #if canImport(Darwin) || canImport(Glibc)
                 // 使用 poll 实施严格超时控制，防止无限阻塞

@@ -21,7 +21,12 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
     private var acceptTask: Task<Void, Never>?
 
     init() throws {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        #if canImport(Glibc)
+        let sockType = Int32(SOCK_STREAM.rawValue)
+        #else
+        let sockType = SOCK_STREAM
+        #endif
+        let fd = socket(AF_INET, sockType, 0)
         guard fd >= 0 else { throw POSIXError(.ENFILE) }
         var reuse: Int32 = 1
         guard setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw POSIXError(.EINVAL) }
@@ -48,7 +53,7 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
     func stop() {
         lock.lock(); let shouldClose = running; running = false; lock.unlock()
         guard shouldClose else { return }
-        _ = shutdown(listener, SHUT_RDWR)
+        _ = shutdown(listener, Int32(SHUT_RDWR))
         _ = close(listener)
         acceptTask?.cancel()
     }
