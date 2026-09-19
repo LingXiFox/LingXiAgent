@@ -36,6 +36,11 @@ jobs:
           if [ -d "$BIN_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_PATH/LingXiAgent_LingXiCore.bundle" staging/
           fi
+          mkdir -p staging/Sidecars/browser-host
+          if [ -d "Sidecars/browser-host" ]; then
+            cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
+            cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
+          fi
           tar -czf "dist/lingxiagent-macos-arm64.tar.gz" -C staging .
           shasum -a 256 "dist/lingxiagent-macos-arm64.tar.gz" > "dist/lingxiagent-macos-arm64.tar.gz.sha256"
 
@@ -47,6 +52,7 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    continue-on-error: true
     container:
       image: swift:latest
     steps:
@@ -68,6 +74,11 @@ jobs:
           if [ -d "$BIN_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_PATH/LingXiAgent_LingXiCore.bundle" staging/
           fi
+          mkdir -p staging/Sidecars/browser-host
+          if [ -d "Sidecars/browser-host" ]; then
+            cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
+            cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
+          fi
           tar -czf "dist/lingxiagent-linux-x86_64.tar.gz" -C staging .
           sha256sum "dist/lingxiagent-linux-x86_64.tar.gz" > "dist/lingxiagent-linux-x86_64.tar.gz.sha256"
 
@@ -79,6 +90,7 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -111,6 +123,7 @@ jobs:
 
   publish-release:
     needs: [build-macos, build-linux, build-windows]
+    if: always() && needs.build-macos.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

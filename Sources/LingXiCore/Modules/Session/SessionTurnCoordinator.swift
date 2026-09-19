@@ -200,15 +200,16 @@ public actor SessionTurnCoordinator {
             switch envelope.payload {
             case let .turnCreated(snap):
                 createdTurns[snap.turnID] = snap
-            case let .turnCompleted(turnID, _):
+            case let .turnCompleted(turnID, terminalReason):
                 terminalTurnIDs.insert(turnID)
                 if let t = createdTurns[turnID] {
+                    let status: TurnStatus = (terminalReason == .userCancelled) ? .cancelled : .completed
                     createdTurns[turnID] = TurnSnapshot(
                         turnID: t.turnID,
                         sessionID: t.sessionID,
                         userMessage: t.userMessage,
                         executionIntent: t.executionIntent,
-                        status: .completed,
+                        status: status,
                         rootRunID: t.rootRunID,
                         createdAt: t.createdAt,
                         completedAt: envelope.timestamp
@@ -486,7 +487,10 @@ public actor SessionTurnCoordinator {
             completedAt: Date()
         )
         turns[turnID] = cancelledTurn
-        let causal = CausalContext(sessionID: sessionID, turnID: turnID)
+        let causal = CausalContext(sessionID: sessionID, turnID: turnID, runID: queued.rootRunID, rootRunID: queued.rootRunID)
+        if let runID = queued.rootRunID {
+            await eventLog.append(causal: causal, payload: .runCancelled(runID: runID, reason: "Turn cancelled while queued"))
+        }
         await eventLog.append(causal: causal, payload: .turnCompleted(turnID: turnID, terminalReason: .userCancelled))
     }
 

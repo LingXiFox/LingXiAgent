@@ -439,11 +439,21 @@ public actor RuntimeEventLog {
 public actor IdempotencyJournal {
     public struct JournalEntry: Codable, Sendable {
         public let commandID: String
+        public let commandName: String?
+        public let payloadFingerprint: String?
         public let receiptType: String
         public let receiptData: Data
 
-        public init(commandID: String, receiptType: String, receiptData: Data) {
+        public init(
+            commandID: String,
+            commandName: String? = nil,
+            payloadFingerprint: String? = nil,
+            receiptType: String,
+            receiptData: Data
+        ) {
             self.commandID = commandID
+            self.commandName = commandName
+            self.payloadFingerprint = payloadFingerprint
             self.receiptType = receiptType
             self.receiptData = receiptData
         }
@@ -451,7 +461,7 @@ public actor IdempotencyJournal {
 
     public enum LookupResult<R: Codable & Sendable> {
         case hit(CommandReceipt<R>)
-        case conflict(existingType: String, requestedType: String)
+        case conflict(existingType: String, requestedType: String, reason: String)
         case notFound
     }
 
@@ -480,30 +490,53 @@ public actor IdempotencyJournal {
         }
     }
 
-    public func lookup<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> LookupResult<R> {
+    public func lookup<R: Codable & Sendable>(
+        commandID: CommandID,
+        commandName: String? = nil,
+        payloadFingerprint: String? = nil,
+        as type: R.Type
+    ) -> LookupResult<R> {
         guard let entry = journal[commandID] else { return .notFound }
         let expectedType = String(reflecting: R.self)
         if entry.receiptType != "unknown" && entry.receiptType != expectedType {
-            return .conflict(existingType: entry.receiptType, requestedType: expectedType)
+            return .conflict(existingType: entry.receiptType, requestedType: expectedType, reason: "Receipt type mismatch: existing=\(entry.receiptType) requested=\(expectedType)")
+        }
+        if let expectedName = commandName, let recordedName = entry.commandName, expectedName != recordedName {
+            return .conflict(existingType: entry.receiptType, requestedType: expectedType, reason: "Command method mismatch: recorded=\(recordedName) requested=\(expectedName)")
+        }
+        if let expectedFP = payloadFingerprint, let recordedFP = entry.payloadFingerprint, expectedFP != recordedFP {
+            return .conflict(existingType: entry.receiptType, requestedType: expectedType, reason: "Payload fingerprint mismatch for identical CommandID")
         }
         guard let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: entry.receiptData) else {
-            return .conflict(existingType: entry.receiptType, requestedType: expectedType)
+            return .conflict(existingType: entry.receiptType, requestedType: expectedType, reason: "Receipt decode failure")
         }
         return .hit(receipt)
     }
 
-    public func get<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> CommandReceipt<R>? {
-        if case let .hit(receipt) = lookup(commandID: commandID, as: type) {
+    public func get<R: Codable & Sendable>(
+        commandID: CommandID,
+        commandName: String? = nil,
+        payloadFingerprint: String? = nil,
+        as type: R.Type
+    ) -> CommandReceipt<R>? {
+        if case let .hit(receipt) = lookup(commandID: commandID, commandName: commandName, payloadFingerprint: payloadFingerprint, as: type) {
             return receipt
         }
         return nil
     }
 
-    public func record<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) throws {
+    public func record<R: Codable & Sendable>(
+        commandID: CommandID,
+        commandName: String? = nil,
+        payloadFingerprint: String? = nil,
+        receipt: CommandReceipt<R>
+    ) throws {
         try CommandStorageSecurity.validate(commandID)
         let data = try JSONEncoder().encode(receipt)
         let entry = JournalEntry(
             commandID: commandID.rawValue,
+            commandName: commandName,
+            payloadFingerprint: payloadFingerprint,
             receiptType: String(reflecting: R.self),
             receiptData: data
         )

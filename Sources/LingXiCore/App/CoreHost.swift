@@ -1,6 +1,34 @@
 import Foundation
 import LingXiProtocol
 
+private actor InFlightMutationLock {
+    private var activeCommandIDs: Set<CommandID> = []
+    private var waiters: [CommandID: [CheckedContinuation<Void, Never>]] = [:]
+
+    func acquire(commandID: CommandID) async {
+        if activeCommandIDs.contains(commandID) {
+            await withCheckedContinuation { continuation in
+                waiters[commandID, default: []].append(continuation)
+            }
+        }
+        activeCommandIDs.insert(commandID)
+    }
+
+    func release(commandID: CommandID) {
+        if var list = waiters[commandID], !list.isEmpty {
+            let next = list.removeFirst()
+            if list.isEmpty {
+                waiters.removeValue(forKey: commandID)
+            } else {
+                waiters[commandID] = list
+            }
+            next.resume()
+        } else {
+            activeCommandIDs.remove(commandID)
+        }
+    }
+}
+
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public static let coreVersion = "0.2.0-alpha.1"
@@ -127,6 +155,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let runtimeEventLog: RuntimeEventLog
     private var sessionCoordinators: [SessionID: SessionTurnCoordinator] = [:]
     private let idempotencyJournal: IdempotencyJournal
+    private let inFlightLock = InFlightMutationLock()
     public let commandWAL: DurableCommandWAL
     public let contentStore: ContentStore
     public let sessionMutationLock: SessionMutationLock
@@ -713,8 +742,15 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         setState(.ready)
         await diagnosticsStore.record(kind: .core, event: "core.start.completed")
         // Post-ready startup recovery: now that WAL reconciliation is complete and Core is ready,
-        // safely trigger execution of any remaining queued turns across known sessions.
-        for (sessionID, _) in sessionCoordinators {
+        // safely trigger execution of any remaining queued turns across all persisted sessions.
+        var allSessionIDs = Set(sessionCoordinators.keys)
+        if let storedSessions = try? await sessionStore.listSessions() {
+            for session in storedSessions {
+                allSessionIDs.insert(session.id)
+            }
+        }
+        for sessionID in allSessionIDs {
+            _ = try? await coordinator(for: sessionID)
             await scheduleNextTurnIfReady(for: sessionID)
         }
     }
@@ -1867,6 +1903,29 @@ extension CoreHost {
         )
     }
 
+    private func dispatchNextTurnRunIfAny(
+        _ next: SessionTurnCoordinator.NextTurnToRun?,
+        sessionID: SessionID,
+        coordinator: SessionTurnCoordinator?,
+        delayMs: Int = 0
+    ) {
+        guard let next else { return }
+        let task = Task { [weak self, weak coordinator] () -> Void in
+            if delayMs > 0 {
+                try? await Task.sleep(for: .milliseconds(delayMs))
+            }
+            await self?.executeTurnRun(
+                sessionID: sessionID,
+                turnID: next.turn.turnID,
+                runID: next.runID,
+                input: UserInput(text: next.turn.userMessage.text),
+                executionIntent: next.turn.executionIntent,
+                coordinator: coordinator
+            )
+        }
+        registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
+    }
+
     private func executeTurnRun(
         sessionID: SessionID,
         turnID: TurnID,
@@ -1878,7 +1937,8 @@ extension CoreHost {
         guard let coordinator else { return }
         defer { unregisterActiveTurnTask(runID: runID, sessionID: sessionID) }
         if Task.isCancelled {
-            _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+            dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
             return
         }
 
@@ -1895,7 +1955,8 @@ extension CoreHost {
                 }
             } catch {
                 let runtimeErr = RuntimeError(category: .runtime, code: "persistUserMessageFailed", message: "Failed to persist user message: \(error)", retryability: .none, source: .core)
-                _ = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+                let next = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
+                dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
         }
@@ -1928,19 +1989,7 @@ extension CoreHost {
                 runtimeErr = RuntimeError(category: .runtime, code: "noProviderConfigured", message: "未配置可用模型 Provider，请检查 providers.json 或运行 lingxiagent auth", retryability: .none, source: .core)
             }
             let next = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
-            if let next {
-                let task = Task { [weak self, weak coordinator] () -> Void in
-                    await self?.executeTurnRun(
-                        sessionID: sessionID,
-                        turnID: next.turn.turnID,
-                        runID: next.runID,
-                        input: UserInput(text: next.turn.userMessage.text),
-                        executionIntent: next.turn.executionIntent,
-                        coordinator: coordinator
-                    )
-                }
-                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
-            }
+            dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
             return
         }
         var currentStepID: ModelStepID?
@@ -2021,7 +2070,8 @@ extension CoreHost {
                             metadata: computeMetadata("cancelled")
                         )
                     }
-                    _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                    let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                    dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                     return
                 }
                 let chunkStepID = chunk.modelStepID ?? (currentStepID ?? ModelStepID())
@@ -2114,25 +2164,14 @@ extension CoreHost {
                 )
             }
             if Task.isCancelled {
-                _ = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
+                dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
             let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
             await coordinator.recordContextStateChanged(freshContextState, causal: CausalContext(sessionID: sessionID))
             let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .completed)
-            if let next = nextTurnToRun {
-                let task = Task { [weak self, weak coordinator] () -> Void in
-                    await self?.executeTurnRun(
-                        sessionID: sessionID,
-                        turnID: next.turn.turnID,
-                        runID: next.runID,
-                        input: UserInput(text: next.turn.userMessage.text),
-                        executionIntent: next.turn.executionIntent,
-                        coordinator: coordinator
-                    )
-                }
-                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
-            }
+            dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator)
         } catch is CancellationError {
             if currentStepID != nil {
                 await closeModelStepStreaming(
@@ -2149,19 +2188,7 @@ extension CoreHost {
                 )
             }
             let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .userCancelled)
-            if let next = nextTurnToRun {
-                let task = Task { [weak self, weak coordinator] () -> Void in
-                    await self?.executeTurnRun(
-                        sessionID: sessionID,
-                        turnID: next.turn.turnID,
-                        runID: next.runID,
-                        input: UserInput(text: next.turn.userMessage.text),
-                        executionIntent: next.turn.executionIntent,
-                        coordinator: coordinator
-                    )
-                }
-                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
-            }
+            dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator)
         } catch {
             if Task.isCancelled {
                 if currentStepID != nil {
@@ -2179,19 +2206,7 @@ extension CoreHost {
                     )
                 }
                 let next = await coordinator.finishRun(runID: runID, reason: .userCancelled)
-                if let next {
-                    let task = Task { [weak self, weak coordinator] () -> Void in
-                        await self?.executeTurnRun(
-                            sessionID: sessionID,
-                            turnID: next.turn.turnID,
-                            runID: next.runID,
-                            input: UserInput(text: next.turn.userMessage.text),
-                            executionIntent: next.turn.executionIntent,
-                            coordinator: coordinator
-                        )
-                    }
-                    registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
-                }
+                dispatchNextTurnRunIfAny(next, sessionID: sessionID, coordinator: coordinator)
                 return
             }
             if currentStepID != nil {
@@ -2210,20 +2225,7 @@ extension CoreHost {
             }
             let runtimeErr = (error as? RuntimeError) ?? (error as? CoreError)?.asRuntimeError ?? RuntimeError(category: .runtime, code: "executionError", message: error.localizedDescription, retryability: .none, source: .core)
             let nextTurnToRun = await coordinator.finishRun(runID: runID, reason: .runtimeFailure, error: runtimeErr)
-            if let next = nextTurnToRun {
-                let task = Task { [weak self, weak coordinator] () -> Void in
-                    try? await Task.sleep(for: .milliseconds(200))
-                    await self?.executeTurnRun(
-                        sessionID: sessionID,
-                        turnID: next.turn.turnID,
-                        runID: next.runID,
-                        input: UserInput(text: next.turn.userMessage.text),
-                        executionIntent: next.turn.executionIntent,
-                        coordinator: coordinator
-                    )
-                }
-                registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
-            }
+            dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: sessionID, coordinator: coordinator, delayMs: 200)
         }
     }
 
@@ -2309,25 +2311,60 @@ extension CoreHost {
         )
     }
 
-    // MARK: - Session
-    public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+    // MARK: - Idempotency & In-Flight Concurrency Control
+    private func checkIdempotency<R: Codable & Sendable, P: Encodable>(
+        envelope: CommandEnvelope<P>,
+        commandName: String,
+        as type: R.Type
+    ) async throws -> CommandReceipt<R>? {
         try CommandStorageSecurity.validate(envelope.commandID)
-        if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SessionSummary.self) {
-            return cached
-        }
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SessionSummary.self) {
+        let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+        switch await idempotencyJournal.lookup(
+            commandID: envelope.commandID,
+            commandName: commandName,
+            payloadFingerprint: fingerprint,
+            as: type
+        ) {
         case .hit(let receipt):
             return receipt
-        case .conflict(let existingType, let requestedType):
+        case let .conflict(existingType, requestedType, reason):
             throw RuntimeError(
                 category: .validation,
                 code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                message: "CommandID \(envelope.commandID.rawValue) conflict: \(reason) (existing=\(existingType), requested=\(requestedType))",
                 retryability: .none,
                 source: .client
             )
         case .notFound:
             break
+        }
+        if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: type) {
+            return cached
+        }
+        return nil
+    }
+
+    private func recordIdempotency<R: Codable & Sendable, P: Encodable>(
+        envelope: CommandEnvelope<P>,
+        commandName: String,
+        receipt: CommandReceipt<R>
+    ) async throws {
+        let fingerprint = CommandStorageSecurity.fingerprint(envelope.payload)
+        try await idempotencyJournal.record(
+            commandID: envelope.commandID,
+            commandName: commandName,
+            payloadFingerprint: fingerprint,
+            receipt: receipt
+        )
+    }
+
+    // MARK: - Session
+    public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "createSession", as: SessionSummary.self) {
+            return cached
         }
 
         if activeFailpoint == .beforeStateMutation {
@@ -2403,8 +2440,8 @@ extension CoreHost {
             ],
             result: summary
         )
-        await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
 
         if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
             fflush(stdout)
@@ -2419,20 +2456,11 @@ extension CoreHost {
     }
 
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SessionSummary.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "renameSession", as: SessionSummary.self) {
+            return cached
         }
         let session = try await sessionStore.updateTitle(envelope.payload.sessionID, title: envelope.payload.title)
         let coord = try await coordinator(for: session.id)
@@ -2456,25 +2484,16 @@ extension CoreHost {
             ],
             result: summary
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "renameSession", receipt: receipt)
         return receipt
     }
 
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SessionSummary.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "setSessionReasoningEffort", as: SessionSummary.self) {
+            return cached
         }
         let session = try await sessionStore.updateReasoningEffort(envelope.payload.sessionID, effort: envelope.payload.effort)
         let coord = try await coordinator(for: session.id)
@@ -2498,25 +2517,16 @@ extension CoreHost {
             ],
             result: summary
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "setSessionReasoningEffort", receipt: receipt)
         return receipt
     }
 
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: VoidResult.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "deleteSession", as: VoidResult.self) {
+            return cached
         }
         try await sessionStore.deleteSession(envelope.payload.sessionID)
         sessionCoordinators.removeValue(forKey: envelope.payload.sessionID)
@@ -2530,30 +2540,18 @@ extension CoreHost {
             ],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "deleteSession", receipt: receipt)
         return receipt
     }
 
     public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> {
-        try CommandStorageSecurity.validate(envelope.commandID)
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
         let sessionID = envelope.payload.sessionID
         return try await sessionMutationLock.withExclusiveMutation(sessionID) {
-            if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: RevertLastTurnResult.self) {
+            if let cached = try await checkIdempotency(envelope: envelope, commandName: "revertLastTurn", as: RevertLastTurnResult.self) {
                 return cached
-            }
-            switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: RevertLastTurnResult.self) {
-            case .hit(let receipt):
-                return receipt
-            case .conflict(let existingType, let requestedType):
-                throw RuntimeError(
-                    category: .validation,
-                    code: "commandIDConflict",
-                    message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                    retryability: .none,
-                    source: .client
-                )
-            case .notFound:
-                break
             }
 
             let oldRevision = (try? await sessionStore.currentRevision(sessionID)) ?? 0
@@ -2650,8 +2648,8 @@ extension CoreHost {
                     revision: newRevision
                 )
             )
-            await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
-            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+            try await recordIdempotency(envelope: envelope, commandName: "revertLastTurn", receipt: receipt)
             return receipt
         }
     }
@@ -2778,25 +2776,13 @@ extension CoreHost {
 
     // MARK: - Turn / Run
     public func submitTurn(envelope: CommandEnvelope<SubmitTurnRequest>) async throws -> CommandReceipt<SubmitTurnResult> {
-        try CommandStorageSecurity.validate(envelope.commandID)
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
         let sessionID = envelope.payload.sessionID
         return try await sessionMutationLock.withExclusiveMutation(sessionID) {
-            if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SubmitTurnResult.self) {
+            if let cached = try await checkIdempotency(envelope: envelope, commandName: "submitTurn", as: SubmitTurnResult.self) {
                 return cached
-            }
-            switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SubmitTurnResult.self) {
-            case .hit(let receipt):
-                return receipt
-            case .conflict(let existingType, let requestedType):
-                throw RuntimeError(
-                    category: .validation,
-                    code: "commandIDConflict",
-                    message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                    retryability: .none,
-                    source: .client
-                )
-            case .notFound:
-                break
             }
 
             if activeFailpoint == .beforeStateMutation {
@@ -2872,8 +2858,8 @@ extension CoreHost {
                 observedThrough: [watermark],
                 result: result
             )
-            await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
-            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+            try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
                 fflush(stdout)
@@ -2902,20 +2888,11 @@ extension CoreHost {
     }
 
     public func cancelTurn(envelope: CommandEnvelope<CancelTurnRequest>) async throws -> CommandReceipt<VoidResult> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: VoidResult.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "cancelTurn", as: VoidResult.self) {
+            return cached
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
         guard let targetTurn = await coord.getTurn(turnID: envelope.payload.turnID) else {
@@ -2933,7 +2910,7 @@ extension CoreHost {
                 observedThrough: [watermark],
                 result: VoidResult()
             )
-            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try await recordIdempotency(envelope: envelope, commandName: "cancelTurn", receipt: receipt)
             return receipt
         }
         // 取消排队中的 Turn：严格局部移出队列，绝不干扰当前正在运行的 Run 或杀死后台任务
@@ -2946,7 +2923,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "cancelTurn", receipt: receipt)
         return receipt
     }
 
@@ -2975,20 +2952,11 @@ extension CoreHost {
     }
 
     public func cancelRun(envelope: CommandEnvelope<CancelRunRequest>) async throws -> CommandReceipt<VoidResult> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: VoidResult.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "cancelRun", as: VoidResult.self) {
+            return cached
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
         guard let run = await coord.getRun(runID: envelope.payload.runID) else {
@@ -3003,7 +2971,7 @@ extension CoreHost {
                 observedThrough: [watermark],
                 result: VoidResult()
             )
-            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try await recordIdempotency(envelope: envelope, commandName: "cancelRun", receipt: receipt)
             return receipt
         }
 
@@ -3027,38 +2995,17 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
-        if let next = nextTurnToRun {
-            let task = Task { [weak self, weak coord] () -> Void in
-                await self?.executeTurnRun(
-                    sessionID: envelope.payload.sessionID,
-                    turnID: next.turn.turnID,
-                    runID: next.runID,
-                    input: UserInput(text: next.turn.userMessage.text),
-                    executionIntent: next.turn.executionIntent,
-                    coordinator: coord
-                )
-            }
-            registerActiveTurnTask(task, runID: next.runID, sessionID: envelope.payload.sessionID)
-        }
+        try await recordIdempotency(envelope: envelope, commandName: "cancelRun", receipt: receipt)
+        dispatchNextTurnRunIfAny(nextTurnToRun, sessionID: envelope.payload.sessionID, coordinator: coord)
         return receipt
     }
 
     public func resumeRun(envelope: CommandEnvelope<ResumeRunRequest>) async throws -> CommandReceipt<RunSnapshot> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: RunSnapshot.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "resumeRun", as: RunSnapshot.self) {
+            return cached
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
         guard let run = await coord.getRun(runID: envelope.payload.runID) else {
@@ -3073,7 +3020,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: run
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "resumeRun", receipt: receipt)
         return receipt
     }
 
@@ -3114,7 +3061,10 @@ extension CoreHost {
     }
 
     public func resolveInteraction(envelope: CommandEnvelope<ResolveInteractionRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "resolveInteraction", as: VoidResult.self) {
             return cached
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
@@ -3149,7 +3099,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "resolveInteraction", receipt: receipt)
         return receipt
     }
 
@@ -3180,7 +3130,10 @@ extension CoreHost {
 
     // MARK: - Content / Resource Data Plane & Control Plane
     public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: BeginContentUploadResponse.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "beginContentUpload", as: BeginContentUploadResponse.self) {
             return cached
         }
         let response = try await contentStore.beginUpload(request: envelope.payload)
@@ -3192,7 +3145,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: response
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "beginContentUpload", receipt: receipt)
         return receipt
     }
 
@@ -3201,7 +3154,10 @@ extension CoreHost {
     }
 
     public func commitContentUpload(envelope: CommandEnvelope<CommitContentUploadRequest>) async throws -> CommandReceipt<ContentRef> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: ContentRef.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "commitContentUpload", as: ContentRef.self) {
             return cached
         }
         let ref = try await contentStore.commitUpload(request: envelope.payload)
@@ -3213,12 +3169,15 @@ extension CoreHost {
             observedThrough: [watermark],
             result: ref
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "commitContentUpload", receipt: receipt)
         return receipt
     }
 
     public func abortContentUpload(envelope: CommandEnvelope<AbortContentUploadRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "abortContentUpload", as: VoidResult.self) {
             return cached
         }
         await contentStore.abortUpload(uploadID: envelope.payload.uploadID)
@@ -3230,7 +3189,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "abortContentUpload", receipt: receipt)
         return receipt
     }
 
@@ -3263,15 +3222,23 @@ extension CoreHost {
     }
 
     public func reloadConfiguration(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "reloadConfiguration", as: VoidResult.self) {
+            return cached
+        }
         _ = try? await configurationStore?.load()
         let watermark = await runtimeEventLog.currentWatermark()
-        return CommandReceipt(
+        let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: VoidResult()
         )
+        try await recordIdempotency(envelope: envelope, commandName: "reloadConfiguration", receipt: receipt)
+        return receipt
     }
 
     // MARK: - 4. Run Extended
@@ -3330,20 +3297,11 @@ extension CoreHost {
     }
 
     public func selectModel(envelope: CommandEnvelope<SelectModelRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: ModelSelectionInfo.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "selectModel", as: ModelSelectionInfo.self) {
+            return cached
         }
         let selection = try await modelSelection(for: envelope.payload.model)
         let agent = try requireAgent()
@@ -3368,7 +3326,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: result
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "selectModel", receipt: receipt)
         return receipt
     }
 
@@ -3690,7 +3648,10 @@ extension CoreHost {
     }
 
     public func compactContext(envelope: CommandEnvelope<CompactContextRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "compactContext", as: VoidResult.self) {
             return cached
         }
         if let agent = try? requireAgent() {
@@ -3705,7 +3666,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "compactContext", receipt: receipt)
         return receipt
     }
 
@@ -3796,7 +3757,10 @@ extension CoreHost {
 
     // MARK: - 13. Credential
     public func storeCredential(envelope: CommandEnvelope<StoreCredentialRequest>) async throws -> CommandReceipt<CredentialResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: CredentialResult.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "storeCredential", as: CredentialResult.self) {
             return cached
         }
         let writeReq = ProviderCredentialWriteRequest(secret: envelope.payload.secret)
@@ -3809,12 +3773,15 @@ extension CoreHost {
             observedThrough: [watermark],
             result: CredentialResult(reference: res.reference)
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "storeCredential", receipt: receipt)
         return receipt
     }
 
     public func deleteCredential(envelope: CommandEnvelope<DeleteCredentialRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "deleteCredential", as: VoidResult.self) {
             return cached
         }
         try await deleteProviderCredential(envelope.payload.reference)
@@ -3826,7 +3793,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "deleteCredential", receipt: receipt)
         return receipt
     }
 
@@ -3851,21 +3818,35 @@ extension CoreHost {
     }
 
     public func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "testCredential", as: TestCredentialResult.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let store = try? requireCredentialStore()
         let exists = (try? await store?.secret(for: envelope.payload.reference)) != nil
-        return CommandReceipt(
+        let receipt = CommandReceipt<TestCredentialResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: TestCredentialResult(reference: envelope.payload.reference, isValid: exists)
         )
+        try await recordIdempotency(envelope: envelope, commandName: "testCredential", receipt: receipt)
+        return receipt
     }
 
     // MARK: - Extended API Matrix Implementations
 
     public func updateTypedSetting(envelope: CommandEnvelope<UpdateTypedSettingRequest>) async throws -> CommandReceipt<VoidResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "updateTypedSetting", as: VoidResult.self) {
+            return cached
+        }
         let key = envelope.payload.key
         let value = envelope.payload.value
         if key == "permissionConfiguration" || key == "permission" {
@@ -3887,13 +3868,15 @@ extension CoreHost {
             await backgroundManager.terminateAll()
         }
         let watermark = await runtimeEventLog.currentWatermark()
-        return CommandReceipt(
+        let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: VoidResult()
         )
+        try await recordIdempotency(envelope: envelope, commandName: "updateTypedSetting", receipt: receipt)
+        return receipt
     }
 
     public func getProvider(envelope: QueryEnvelope<GetProviderRequest>) async throws -> ResponseEnvelope<ProviderAccountInfo> {
@@ -3910,18 +3893,32 @@ extension CoreHost {
     }
 
     public func testProvider(envelope: CommandEnvelope<TestProviderRequest>) async throws -> CommandReceipt<TestProviderResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "testProvider", as: TestProviderResult.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let result = TestProviderResult(providerID: envelope.payload.providerID, reachable: true, latencyMs: 12.5, message: "OK")
-        return CommandReceipt(
+        let receipt = CommandReceipt<TestProviderResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: result
         )
+        try await recordIdempotency(envelope: envelope, commandName: "testProvider", receipt: receipt)
+        return receipt
     }
 
     public func configureProvider(envelope: CommandEnvelope<ConfigureProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "configureProvider", as: ProviderAccountInfo.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let info = ProviderAccountInfo(
             id: envelope.payload.accountID,
@@ -3933,37 +3930,55 @@ extension CoreHost {
             availability: "configured"
         )
         runtimeProviderAccounts[info.id] = info
-        return CommandReceipt(
+        let receipt = CommandReceipt<ProviderAccountInfo>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: info
         )
+        try await recordIdempotency(envelope: envelope, commandName: "configureProvider", receipt: receipt)
+        return receipt
     }
 
     public func removeProvider(envelope: CommandEnvelope<RemoveProviderRequest>) async throws -> CommandReceipt<VoidResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "removeProvider", as: VoidResult.self) {
+            return cached
+        }
         runtimeProviderAccounts.removeValue(forKey: envelope.payload.accountID)
         _ = try? await deleteProviderAccount(id: envelope.payload.accountID, deleteUnusedCredential: false)
         let watermark = await runtimeEventLog.currentWatermark()
-        return CommandReceipt(
+        let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: VoidResult()
         )
+        try await recordIdempotency(envelope: envelope, commandName: "removeProvider", receipt: receipt)
+        return receipt
     }
 
     public func reloadProviders(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "reloadProviders", as: VoidResult.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
-        return CommandReceipt(
+        let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: VoidResult()
         )
+        try await recordIdempotency(envelope: envelope, commandName: "reloadProviders", receipt: receipt)
+        return receipt
     }
 
     public func getModel(envelope: QueryEnvelope<GetModelRequest>) async throws -> ResponseEnvelope<ProviderModelInfo> {
@@ -4031,15 +4046,23 @@ extension CoreHost {
     }
 
     public func updateContextPolicy(envelope: CommandEnvelope<UpdateContextPolicyRequest>) async throws -> CommandReceipt<ContextCachePolicySnapshot> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "updateContextPolicy", as: ContextCachePolicySnapshot.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let policy = ContextCachePolicySnapshot(policy: effectiveContextPolicy)
-        return CommandReceipt(
+        let receipt = CommandReceipt<ContextCachePolicySnapshot>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: policy
         )
+        try await recordIdempotency(envelope: envelope, commandName: "updateContextPolicy", receipt: receipt)
+        return receipt
     }
 
     public func getExtension(envelope: QueryEnvelope<GetExtensionRequest>) async throws -> ResponseEnvelope<ExtensionInfo> {
@@ -4053,6 +4076,12 @@ extension CoreHost {
     }
 
     public func installExtension(envelope: CommandEnvelope<InstallExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "installExtension", as: ExtensionInfo.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let info = ExtensionInfo(
             id: envelope.payload.name,
@@ -4064,30 +4093,46 @@ extension CoreHost {
         )
         runtimeExtensions[info.id] = info
         await notifyExtensionCatalogChanged()
-        return CommandReceipt(
+        let receipt = CommandReceipt<ExtensionInfo>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: info
         )
+        try await recordIdempotency(envelope: envelope, commandName: "installExtension", receipt: receipt)
+        return receipt
     }
 
     public func uninstallExtension(envelope: CommandEnvelope<UninstallExtensionRequest>) async throws -> CommandReceipt<VoidResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "uninstallExtension", as: VoidResult.self) {
+            return cached
+        }
         runtimeExtensions.removeValue(forKey: envelope.payload.id)
         try? await extensionPlatform.uninstallPlugin(id: envelope.payload.id)
         let watermark = await runtimeEventLog.currentWatermark()
         await notifyExtensionCatalogChanged()
-        return CommandReceipt(
+        let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: VoidResult()
         )
+        try await recordIdempotency(envelope: envelope, commandName: "uninstallExtension", receipt: receipt)
+        return receipt
     }
 
     public func enableExtension(envelope: CommandEnvelope<EnableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "enableExtension", as: ExtensionInfo.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         try? await extensionPlatform.enable(id: envelope.payload.id)
         let desc = await extensionPlatform.registry.descriptor(id: envelope.payload.id)
@@ -4101,16 +4146,24 @@ extension CoreHost {
         )
         runtimeExtensions[info.id] = info
         await notifyExtensionCatalogChanged()
-        return CommandReceipt(
+        let receipt = CommandReceipt<ExtensionInfo>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: info
         )
+        try await recordIdempotency(envelope: envelope, commandName: "enableExtension", receipt: receipt)
+        return receipt
     }
 
     public func disableExtension(envelope: CommandEnvelope<DisableExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "disableExtension", as: ExtensionInfo.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         try? await extensionPlatform.disable(id: envelope.payload.id)
         let desc = await extensionPlatform.registry.descriptor(id: envelope.payload.id)
@@ -4124,13 +4177,15 @@ extension CoreHost {
         )
         runtimeExtensions[info.id] = info
         await notifyExtensionCatalogChanged()
-        return CommandReceipt(
+        let receipt = CommandReceipt<ExtensionInfo>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: info
         )
+        try await recordIdempotency(envelope: envelope, commandName: "disableExtension", receipt: receipt)
+        return receipt
     }
 
     public func notifyExtensionCatalogChanged() async {
@@ -4138,19 +4193,33 @@ extension CoreHost {
     }
 
     public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "reloadExtensions", as: VoidResult.self) {
+            return cached
+        }
         _ = await extensionPlatform.discover()
         let watermark = await runtimeEventLog.currentWatermark()
         await notifyExtensionCatalogChanged()
-        return CommandReceipt(
+        let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: VoidResult()
         )
+        try await recordIdempotency(envelope: envelope, commandName: "reloadExtensions", receipt: receipt)
+        return receipt
     }
 
     public func configureExtension(envelope: CommandEnvelope<ConfigureExtensionRequest>) async throws -> CommandReceipt<ExtensionInfo> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "configureExtension", as: ExtensionInfo.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let info = ExtensionInfo(
             id: envelope.payload.id,
@@ -4161,30 +4230,23 @@ extension CoreHost {
             lifecycleState: "active"
         )
         runtimeExtensions[info.id] = info
-        return CommandReceipt(
+        let receipt = CommandReceipt<ExtensionInfo>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: info
         )
+        try await recordIdempotency(envelope: envelope, commandName: "configureExtension", receipt: receipt)
+        return receipt
     }
 
     public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
-        try CommandStorageSecurity.validate(envelope.commandID)
-        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: ExtensionCommandExecutionResult.self) {
-        case .hit(let receipt):
-            return receipt
-        case .conflict(let existingType, let requestedType):
-            throw RuntimeError(
-                category: .validation,
-                code: "commandIDConflict",
-                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
-                retryability: .none,
-                source: .client
-            )
-        case .notFound:
-            break
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "executeExtensionCommand", as: ExtensionCommandExecutionResult.self) {
+            return cached
         }
         let watermark = await runtimeEventLog.currentWatermark()
         let result = try await extensionPlatform.executePluginCommand(
@@ -4206,7 +4268,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: execResult
         )
-        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try await recordIdempotency(envelope: envelope, commandName: "executeExtensionCommand", receipt: receipt)
         return receipt
     }
 
@@ -4346,6 +4408,12 @@ extension CoreHost {
     }
 
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "setWorkspace", as: WorkspaceSummary.self) {
+            return cached
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let newURL = URL(fileURLWithPath: envelope.payload.workspaceRoot)
         try await applyWorkspaceTransition(to: newURL)
@@ -4379,13 +4447,15 @@ extension CoreHost {
             codebaseEdges: edges,
             indexingState: indexingState
         )
-        return CommandReceipt(
+        let receipt = CommandReceipt<WorkspaceSummary>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
             result: summary
         )
+        try await recordIdempotency(envelope: envelope, commandName: "setWorkspace", receipt: receipt)
+        return receipt
     }
 
     public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> {

@@ -17,6 +17,7 @@ public func withTestCoreHost<T: Sendable>(
         startupPolicy: .unitTest,
         providerAssembly: providerAssembly,
         workspaceRoot: WorkspaceRoot(path: workspaceRoot.path),
+        dataRoot: layout.root,
         storageLayout: layout
     )
     await host.start()

@@ -33,4 +33,15 @@ public enum CommandStorageSecurity {
     public static func safeStorageKey(for commandID: CommandID) -> String {
         PlatformCrypto.sha256Hex(commandID.rawValue)
     }
+
+    /// Derives a secure fingerprint from encodable payload to prevent cross-intent collision under identical CommandID.
+    public static func fingerprint<T: Encodable>(_ payload: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let data = try? encoder.encode(payload) {
+            return PlatformCrypto.sha256Hex(data)
+        }
+        return "unhashed"
+    }
 }
+

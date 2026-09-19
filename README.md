@@ -3,7 +3,7 @@
 <p align="center">
   <span style="font-size: 64px;">🦊</span><br/>
   <strong>Native Swift AI Coding Agent with Heterogeneous Dual-Core Architecture</strong><br/>
-  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · 全面支持 macOS · Linux · Windows</em>
+  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS 原生优先 · Linux / Windows 实验性跨平台支持</em>
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 ---
 
 > [!IMPORTANT]
-> **全平台原生支持 (Platform Support)**
-> - **全面支持**：本项目已完成原生跨平台重构，全面支持 **macOS** (Apple Silicon / Intel)、**Linux** (Ubuntu / Debian / Arch，x86_64 与 AArch64) 与 **Windows** (x86_64 与 ARM64)。
-> - **底层保障**：由独立底座模块 `LingXiPlatform` 负责三平台纯原生系统调用抽象、Bubblewrap 容器沙箱、Win32 控制台虚拟终端处理与进程树级联深度灭活。
+> **平台支持现状 (Platform Support)**
+> - **macOS 原生一级支持**：全面支持 **macOS** (Apple Silicon / Intel)，具备完整的原生交互与运行时保障。
+> - **跨平台实验性推进**：**Linux** (Ubuntu / Debian / Arch，x86_64 与 AArch64) 与 **Windows** (x86_64 与 ARM64) 实验性跨平台支持持续推进中。底层由独立模块 `LingXiPlatform` 提供抽象。
 
 ---
 

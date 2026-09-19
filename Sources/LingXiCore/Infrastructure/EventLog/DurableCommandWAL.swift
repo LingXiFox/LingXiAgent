@@ -107,13 +107,32 @@ public actor DurableCommandWAL {
         writeWAL(record, to: walDir)
     }
 
+    public struct CommittedTransactionRecord: Codable, Sendable {
+        public let commandID: String
+        public let receiptType: String
+        public let receiptData: Data
+
+        public init(commandID: String, receiptType: String, receiptData: Data) {
+            self.commandID = commandID
+            self.receiptType = receiptType
+            self.receiptData = receiptData
+        }
+    }
+
     /// 提交事务：将 receipt 写入 committed_tx 并原子删除 .wal (Phase 4)
-    public func commitTransaction<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) {
-        guard let data = try? JSONEncoder().encode(receipt) else { return }
+    public func commitTransaction<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) throws {
+        let receiptData = try JSONEncoder().encode(receipt)
+        let record = CommittedTransactionRecord(
+            commandID: commandID.rawValue,
+            receiptType: String(reflecting: R.self),
+            receiptData: receiptData
+        )
+        let data = try JSONEncoder().encode(record)
         let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
         if let committedDir {
             let committedURL = committedDir.appendingPathComponent("\(safeKey).json")
-            try? data.write(to: committedURL)
+            // Invariant: Receipt write to disk must succeed BEFORE removing .wal
+            try data.write(to: committedURL)
         }
         if let walDir {
             let walURL = walDir.appendingPathComponent("\(safeKey).wal")
@@ -129,12 +148,22 @@ public actor DurableCommandWAL {
         guard let committedDir else { return nil }
         let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
         let fileURL = committedDir.appendingPathComponent("\(safeKey).json")
-        if let data = try? Data(contentsOf: fileURL), let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: data) {
-            return receipt
+        if let data = try? Data(contentsOf: fileURL) {
+            if let record = try? JSONDecoder().decode(CommittedTransactionRecord.self, from: data) {
+                guard record.receiptType == String(reflecting: R.self) else { return nil }
+                return try? JSONDecoder().decode(CommandReceipt<R>.self, from: record.receiptData)
+            }
+            if let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: data) {
+                return receipt
+            }
         }
         // Fallback for legacy raw name
         let legacyURL = committedDir.appendingPathComponent("\(commandID.rawValue).json")
         guard let data = try? Data(contentsOf: legacyURL) else { return nil }
+        if let record = try? JSONDecoder().decode(CommittedTransactionRecord.self, from: data) {
+            guard record.receiptType == String(reflecting: R.self) else { return nil }
+            return try? JSONDecoder().decode(CommandReceipt<R>.self, from: record.receiptData)
+        }
         return try? JSONDecoder().decode(CommandReceipt<R>.self, from: data)
     }
 
@@ -150,7 +179,10 @@ public actor DurableCommandWAL {
         for fileURL in fileURLs where fileURL.pathExtension == "wal" {
             guard let data = try? Data(contentsOf: fileURL),
                   let record = try? JSONDecoder().decode(StagedWALRecord.self, from: data) else {
-                try? FileManager.default.removeItem(at: fileURL)
+                // Invariant: Never silently delete corrupted WAL files. Quarantine them as .corrupt.
+                let corruptURL = fileURL.deletingPathExtension().appendingPathExtension("corrupt")
+                try? FileManager.default.removeItem(at: corruptURL)
+                try? FileManager.default.moveItem(at: fileURL, to: corruptURL)
                 continue
             }
 
