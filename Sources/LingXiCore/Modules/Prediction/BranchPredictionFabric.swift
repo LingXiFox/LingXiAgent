@@ -335,50 +335,68 @@ public struct TrajectoryExtractor: Sendable {
     /// Invariant: Prevents falsely learning transitions across Run boundaries (e.g. preceding .finish -> subsequent .tool).
     public func extractEpisodes(from events: [SessionEventEnvelope]) -> [[ActionToken]] {
         var episodes: [[ActionToken]] = []
-        var current: [ActionToken] = []
+        var runEpisodes: [RunID: [ActionToken]] = [:]
+        var anonymousEpisode: [ActionToken] = []
         var seenCancelledRuns: Set<RunID> = []
 
         for record in events {
+            let runID = record.causal.runID
             switch record.payload {
             case let .toolRequested(inv):
-                current.append(.tool(name: inv.toolID.rawValue))
+                let token = ActionToken.tool(name: inv.toolID.rawValue)
+                if let runID {
+                    runEpisodes[runID, default: []].append(token)
+                } else {
+                    anonymousEpisode.append(token)
+                }
             case .assistantMessageCommitted:
-                current.append(.directAnswer)
-            case let .runCompleted(runID, terminalReason):
+                let token = ActionToken.directAnswer
+                if let runID {
+                    runEpisodes[runID, default: []].append(token)
+                } else {
+                    anonymousEpisode.append(token)
+                }
+            case let .runCompleted(completedRunID, terminalReason):
+                let targetID = runID ?? completedRunID
+                var tokens = runEpisodes.removeValue(forKey: targetID) ?? []
                 if terminalReason == .userCancelled {
-                    if !seenCancelledRuns.contains(runID) {
-                        seenCancelledRuns.insert(runID)
-                        current.append(.cancel)
+                    if !seenCancelledRuns.contains(targetID) {
+                        seenCancelledRuns.insert(targetID)
+                        tokens.append(.cancel)
                     }
                 } else {
-                    current.append(.finish)
+                    tokens.append(.finish)
                 }
-                if !current.isEmpty {
-                    episodes.append(current)
-                    current = []
+                if !tokens.isEmpty {
+                    episodes.append(tokens)
                 }
-            case let .runCancelled(runID, _):
-                if !seenCancelledRuns.contains(runID) {
-                    seenCancelledRuns.insert(runID)
-                    current.append(.cancel)
+            case let .runCancelled(cancelledRunID, _):
+                let targetID = runID ?? cancelledRunID
+                var tokens = runEpisodes.removeValue(forKey: targetID) ?? []
+                if !seenCancelledRuns.contains(targetID) {
+                    seenCancelledRuns.insert(targetID)
+                    tokens.append(.cancel)
                 }
-                if !current.isEmpty {
-                    episodes.append(current)
-                    current = []
+                if !tokens.isEmpty {
+                    episodes.append(tokens)
                 }
-            case .runFailed:
-                current.append(.cancel)
-                if !current.isEmpty {
-                    episodes.append(current)
-                    current = []
+            case let .runFailed(failedRunID, _):
+                let targetID = runID ?? failedRunID
+                let tokens = runEpisodes.removeValue(forKey: targetID) ?? []
+                // Runtime failure is an execution fault, NOT user cancellation; finish trajectory cleanly
+                if !tokens.isEmpty {
+                    episodes.append(tokens)
                 }
             default:
                 break
             }
         }
 
-        if !current.isEmpty {
-            episodes.append(current)
+        for (_, tokens) in runEpisodes where !tokens.isEmpty {
+            episodes.append(tokens)
+        }
+        if !anonymousEpisode.isEmpty {
+            episodes.append(anonymousEpisode)
         }
         return episodes
     }

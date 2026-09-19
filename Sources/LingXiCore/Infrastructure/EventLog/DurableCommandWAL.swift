@@ -110,21 +110,31 @@ public actor DurableCommandWAL {
     /// 提交事务：将 receipt 写入 committed_tx 并原子删除 .wal (Phase 4)
     public func commitTransaction<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) {
         guard let data = try? JSONEncoder().encode(receipt) else { return }
+        let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
         if let committedDir {
-            let committedURL = committedDir.appendingPathComponent("\(commandID.rawValue).json")
+            let committedURL = committedDir.appendingPathComponent("\(safeKey).json")
             try? data.write(to: committedURL)
         }
         if let walDir {
-            let walURL = walDir.appendingPathComponent("\(commandID.rawValue).wal")
+            let walURL = walDir.appendingPathComponent("\(safeKey).wal")
             try? FileManager.default.removeItem(at: walURL)
+            // Also clean legacy path if it existed
+            let legacyURL = walDir.appendingPathComponent("\(commandID.rawValue).wal")
+            try? FileManager.default.removeItem(at: legacyURL)
         }
     }
 
     /// 检查并获取已提交的 receipt
     public func getCommittedReceipt<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> CommandReceipt<R>? {
         guard let committedDir else { return nil }
-        let fileURL = committedDir.appendingPathComponent("\(commandID.rawValue).json")
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
+        let fileURL = committedDir.appendingPathComponent("\(safeKey).json")
+        if let data = try? Data(contentsOf: fileURL), let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: data) {
+            return receipt
+        }
+        // Fallback for legacy raw name
+        let legacyURL = committedDir.appendingPathComponent("\(commandID.rawValue).json")
+        guard let data = try? Data(contentsOf: legacyURL) else { return nil }
         return try? JSONDecoder().decode(CommandReceipt<R>.self, from: data)
     }
 
@@ -175,13 +185,20 @@ public actor DurableCommandWAL {
 
     private func readWAL(commandID: CommandID) -> StagedWALRecord? {
         guard let walDir else { return nil }
-        let url = walDir.appendingPathComponent("\(commandID.rawValue).wal")
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
+        let url = walDir.appendingPathComponent("\(safeKey).wal")
+        if let data = try? Data(contentsOf: url), let record = try? JSONDecoder().decode(StagedWALRecord.self, from: data) {
+            return record
+        }
+        // Fallback for legacy raw name
+        let legacyURL = walDir.appendingPathComponent("\(commandID.rawValue).wal")
+        guard let data = try? Data(contentsOf: legacyURL) else { return nil }
         return try? JSONDecoder().decode(StagedWALRecord.self, from: data)
     }
 
     private func writeWAL(_ record: StagedWALRecord, to dir: URL) {
-        let url = dir.appendingPathComponent("\(record.commandID).wal")
+        let safeKey = CommandStorageSecurity.safeStorageKey(for: CommandID(record.commandID))
+        let url = dir.appendingPathComponent("\(safeKey).wal")
         if let data = try? JSONEncoder().encode(record) {
             try? data.write(to: url)
         }

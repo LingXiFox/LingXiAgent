@@ -435,13 +435,27 @@ public actor RuntimeEventLog {
     }
 }
 
-/// IdempotencyJournal：持久化命令去重日志，保证相同 commandID 不重复副作用。
+/// IdempotencyJournal: Persistent deduplication journal ensuring at-most-once side-effects per CommandID.
 public actor IdempotencyJournal {
-    private struct Entry {
-        let receiptData: Data
+    public struct JournalEntry: Codable, Sendable {
+        public let commandID: String
+        public let receiptType: String
+        public let receiptData: Data
+
+        public init(commandID: String, receiptType: String, receiptData: Data) {
+            self.commandID = commandID
+            self.receiptType = receiptType
+            self.receiptData = receiptData
+        }
     }
 
-    private var journal: [CommandID: Entry] = [:]
+    public enum LookupResult<R: Codable & Sendable> {
+        case hit(CommandReceipt<R>)
+        case conflict(existingType: String, requestedType: String)
+        case notFound
+    }
+
+    private var journal: [CommandID: JournalEntry] = [:]
     private let storageDirectory: URL?
 
     public init(storageDirectory: URL? = nil) {
@@ -451,27 +465,55 @@ public actor IdempotencyJournal {
             try? FileManager.default.createDirectory(at: journalDir, withIntermediateDirectories: true)
             if let fileURLs = try? FileManager.default.contentsOfDirectory(at: journalDir, includingPropertiesForKeys: nil) {
                 for fileURL in fileURLs where fileURL.pathExtension == "json" {
-                    let cmdStr = fileURL.deletingPathExtension().lastPathComponent
                     if let data = try? Data(contentsOf: fileURL) {
-                        journal[CommandID(cmdStr)] = Entry(receiptData: data)
+                        if let entry = try? JSONDecoder().decode(JournalEntry.self, from: data) {
+                            journal[CommandID(entry.commandID)] = entry
+                        } else {
+                            // Backward compatibility for legacy raw receipt format
+                            let cmdStr = fileURL.deletingPathExtension().lastPathComponent
+                            let legacy = JournalEntry(commandID: cmdStr, receiptType: "unknown", receiptData: data)
+                            journal[CommandID(cmdStr)] = legacy
+                        }
                     }
                 }
             }
         }
     }
 
-    public func get<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> CommandReceipt<R>? {
-        guard let entry = journal[commandID] else { return nil }
-        return try? JSONDecoder().decode(CommandReceipt<R>.self, from: entry.receiptData)
+    public func lookup<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> LookupResult<R> {
+        guard let entry = journal[commandID] else { return .notFound }
+        let expectedType = String(reflecting: R.self)
+        if entry.receiptType != "unknown" && entry.receiptType != expectedType {
+            return .conflict(existingType: entry.receiptType, requestedType: expectedType)
+        }
+        guard let receipt = try? JSONDecoder().decode(CommandReceipt<R>.self, from: entry.receiptData) else {
+            return .conflict(existingType: entry.receiptType, requestedType: expectedType)
+        }
+        return .hit(receipt)
     }
 
-    public func record<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) {
-        guard let data = try? JSONEncoder().encode(receipt) else { return }
-        journal[commandID] = Entry(receiptData: data)
+    public func get<R: Codable & Sendable>(commandID: CommandID, as type: R.Type) -> CommandReceipt<R>? {
+        if case let .hit(receipt) = lookup(commandID: commandID, as: type) {
+            return receipt
+        }
+        return nil
+    }
+
+    public func record<R: Codable & Sendable>(commandID: CommandID, receipt: CommandReceipt<R>) throws {
+        try CommandStorageSecurity.validate(commandID)
+        let data = try JSONEncoder().encode(receipt)
+        let entry = JournalEntry(
+            commandID: commandID.rawValue,
+            receiptType: String(reflecting: R.self),
+            receiptData: data
+        )
+        journal[commandID] = entry
         if let dir = storageDirectory {
             let journalDir = dir.appendingPathComponent("idempotency", isDirectory: true)
-            let fileURL = journalDir.appendingPathComponent("\(commandID.rawValue).json")
-            try? data.write(to: fileURL)
+            let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
+            let fileURL = journalDir.appendingPathComponent("\(safeKey).json")
+            let recordData = try JSONEncoder().encode(entry)
+            try recordData.write(to: fileURL)
         }
     }
 
@@ -479,8 +521,11 @@ public actor IdempotencyJournal {
         journal.removeValue(forKey: commandID)
         if let dir = storageDirectory {
             let journalDir = dir.appendingPathComponent("idempotency", isDirectory: true)
-            let fileURL = journalDir.appendingPathComponent("\(commandID.rawValue).json")
+            let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
+            let fileURL = journalDir.appendingPathComponent("\(safeKey).json")
             try? FileManager.default.removeItem(at: fileURL)
+            let legacyURL = journalDir.appendingPathComponent("\(commandID.rawValue).json")
+            try? FileManager.default.removeItem(at: legacyURL)
         }
     }
 }

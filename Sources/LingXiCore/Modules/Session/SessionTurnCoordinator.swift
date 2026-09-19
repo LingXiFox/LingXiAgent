@@ -200,14 +200,96 @@ public actor SessionTurnCoordinator {
             switch envelope.payload {
             case let .turnCreated(snap):
                 createdTurns[snap.turnID] = snap
-            case let .turnCompleted(turnID, _), let .turnFailed(turnID, _):
+            case let .turnCompleted(turnID, _):
                 terminalTurnIDs.insert(turnID)
+                if let t = createdTurns[turnID] {
+                    createdTurns[turnID] = TurnSnapshot(
+                        turnID: t.turnID,
+                        sessionID: t.sessionID,
+                        userMessage: t.userMessage,
+                        executionIntent: t.executionIntent,
+                        status: .completed,
+                        rootRunID: t.rootRunID,
+                        createdAt: t.createdAt,
+                        completedAt: envelope.timestamp
+                    )
+                }
+            case let .turnFailed(turnID, _):
+                terminalTurnIDs.insert(turnID)
+                if let t = createdTurns[turnID] {
+                    createdTurns[turnID] = TurnSnapshot(
+                        turnID: t.turnID,
+                        sessionID: t.sessionID,
+                        userMessage: t.userMessage,
+                        executionIntent: t.executionIntent,
+                        status: .failed,
+                        rootRunID: t.rootRunID,
+                        createdAt: t.createdAt,
+                        completedAt: envelope.timestamp
+                    )
+                }
             case let .runCreated(snap):
                 createdRuns[snap.runID] = snap
             case let .runStarted(runID):
                 startedRunIDs.insert(runID)
-            case let .runCompleted(runID, _), let .runFailed(runID, _), let .runCancelled(runID, _):
+                if let r = createdRuns[runID], !terminalRunIDs.contains(runID) {
+                    createdRuns[runID] = RunSnapshot(
+                        runID: r.runID,
+                        sessionID: r.sessionID,
+                        turnID: r.turnID,
+                        rootRunID: r.rootRunID,
+                        status: .running,
+                        model: r.model,
+                        createdAt: r.createdAt,
+                        completedAt: nil,
+                        terminalReason: nil
+                    )
+                }
+            case let .runCompleted(runID, terminalReason):
                 terminalRunIDs.insert(runID)
+                if let r = createdRuns[runID] {
+                    createdRuns[runID] = RunSnapshot(
+                        runID: r.runID,
+                        sessionID: r.sessionID,
+                        turnID: r.turnID,
+                        rootRunID: r.rootRunID,
+                        status: .completed,
+                        model: r.model,
+                        createdAt: r.createdAt,
+                        completedAt: envelope.timestamp,
+                        terminalReason: terminalReason
+                    )
+                }
+            case let .runFailed(runID, _):
+                terminalRunIDs.insert(runID)
+                if let r = createdRuns[runID] {
+                    createdRuns[runID] = RunSnapshot(
+                        runID: r.runID,
+                        sessionID: r.sessionID,
+                        turnID: r.turnID,
+                        rootRunID: r.rootRunID,
+                        status: .failed,
+                        model: r.model,
+                        createdAt: r.createdAt,
+                        completedAt: envelope.timestamp,
+                        terminalReason: .runtimeFailure
+                    )
+                }
+            case let .runCancelled(runID, _):
+                terminalRunIDs.insert(runID)
+                if let r = createdRuns[runID] {
+                    createdRuns[runID] = RunSnapshot(
+                        runID: r.runID,
+                        sessionID: r.sessionID,
+                        turnID: r.turnID,
+                        rootRunID: r.rootRunID,
+                        status: .cancelled,
+                        model: r.model,
+                        createdAt: r.createdAt,
+                        completedAt: envelope.timestamp,
+                        terminalReason: .userCancelled
+                    )
+                }
             case let .runQueued(runID):
                 if !queuedRunIDs.contains(runID) {
                     queuedRunIDs.append(runID)
@@ -219,14 +301,10 @@ public actor SessionTurnCoordinator {
 
         // 1. Populate memory state for historical turns and runs
         for (turnID, snap) in createdTurns {
-            if turns[turnID] == nil {
-                turns[turnID] = snap
-            }
+            turns[turnID] = snap
         }
         for (runID, snap) in createdRuns {
-            if runs[runID] == nil {
-                runs[runID] = snap
-            }
+            runs[runID] = snap
         }
 
         // 2. Critical Safety: Runs started before crash but not terminal must be marked as failed/aborted,

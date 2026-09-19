@@ -319,10 +319,11 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
     private func response<Request: Codable & Sendable, Response: Codable & Sendable>(_ method: String, _ envelope: QueryEnvelope<Request>) async throws -> ResponseEnvelope<Response> {
         let payloadData = try encoder.encode(envelope.payload)
+        let attemptID = makeID()
         let resData = try await send(
             method: method,
             payload: payloadData,
-            id: envelope.requestID.rawValue,
+            id: attemptID,
             commandID: nil,
             expectedRevision: nil,
             issuedAt: envelope.issuedAt,
@@ -338,10 +339,11 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
     private func command<Request: Codable & Sendable, Result: Codable & Sendable>(_ method: String, _ envelope: CommandEnvelope<Request>) async throws -> CommandReceipt<Result> {
         let payloadData = try encoder.encode(envelope.payload)
+        let attemptID = makeID()
         let resData = try await send(
             method: method,
             payload: payloadData,
-            id: envelope.commandID.rawValue,
+            id: attemptID,
             commandID: envelope.commandID,
             expectedRevision: envelope.expectedRevision,
             issuedAt: envelope.issuedAt,

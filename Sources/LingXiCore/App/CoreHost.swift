@@ -712,6 +712,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
         setState(.ready)
         await diagnosticsStore.record(kind: .core, event: "core.start.completed")
+        // Post-ready startup recovery: now that WAL reconciliation is complete and Core is ready,
+        // safely trigger execution of any remaining queued turns across known sessions.
+        for (sessionID, _) in sessionCoordinators {
+            await scheduleNextTurnIfReady(for: sessionID)
+        }
     }
 
     public func shutdown() async {
@@ -1752,8 +1757,6 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
 extension CoreHost {
 
-    // MARK: - Helper Methods
-
     public func coordinator(for sessionID: SessionID) async throws -> SessionTurnCoordinator {
         if let existing = sessionCoordinators[sessionID] {
             return existing
@@ -1763,6 +1766,13 @@ extension CoreHost {
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog, todoStore: self.todoStore)
         await coord.restoreHistoricalQueue()
         sessionCoordinators[sessionID] = coord
+        return coord
+    }
+
+    /// Explicit lifecycle scheduler: triggers execution of restored queued turns only when Host is ready
+    public func scheduleNextTurnIfReady(for sessionID: SessionID) async {
+        guard state == .ready else { return }
+        guard let coord = sessionCoordinators[sessionID] else { return }
         if let next = await coord.scheduleNextQueuedTurnIfIdle() {
             let task = Task { [weak self, weak coord] () -> Void in
                 await self?.executeTurnRun(
@@ -1776,7 +1786,6 @@ extension CoreHost {
             }
             registerActiveTurnTask(task, runID: next.runID, sessionID: sessionID)
         }
-        return coord
     }
 
     private func nextRevision() -> UInt64 {
@@ -2302,11 +2311,23 @@ extension CoreHost {
 
     // MARK: - Session
     public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        try CommandStorageSecurity.validate(envelope.commandID)
         if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SessionSummary.self) {
             return cached
         }
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SessionSummary.self) {
-            return cached
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SessionSummary.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
 
         if activeFailpoint == .beforeStateMutation {
@@ -2383,7 +2404,7 @@ extension CoreHost {
             result: summary
         )
         await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
 
         if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
             fflush(stdout)
@@ -2398,8 +2419,20 @@ extension CoreHost {
     }
 
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SessionSummary.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SessionSummary.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         let session = try await sessionStore.updateTitle(envelope.payload.sessionID, title: envelope.payload.title)
         let coord = try await coordinator(for: session.id)
@@ -2423,13 +2456,25 @@ extension CoreHost {
             ],
             result: summary
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SessionSummary.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SessionSummary.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         let session = try await sessionStore.updateReasoningEffort(envelope.payload.sessionID, effort: envelope.payload.effort)
         let coord = try await coordinator(for: session.id)
@@ -2453,13 +2498,25 @@ extension CoreHost {
             ],
             result: summary
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: VoidResult.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         try await sessionStore.deleteSession(envelope.payload.sessionID)
         sessionCoordinators.removeValue(forKey: envelope.payload.sessionID)
@@ -2473,13 +2530,32 @@ extension CoreHost {
             ],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
     public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> {
+        try CommandStorageSecurity.validate(envelope.commandID)
         let sessionID = envelope.payload.sessionID
         return try await sessionMutationLock.withExclusiveMutation(sessionID) {
+            if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: RevertLastTurnResult.self) {
+                return cached
+            }
+            switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: RevertLastTurnResult.self) {
+            case .hit(let receipt):
+                return receipt
+            case .conflict(let existingType, let requestedType):
+                throw RuntimeError(
+                    category: .validation,
+                    code: "commandIDConflict",
+                    message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                    retryability: .none,
+                    source: .client
+                )
+            case .notFound:
+                break
+            }
+
             let oldRevision = (try? await sessionStore.currentRevision(sessionID)) ?? 0
             let newRevision = try await sessionStore.bumpRevision(sessionID)
             FileHandle.standardError.write(Data("[CORE_HOST] session.rewind.begin sessionID=\(sessionID.rawValue) oldRevision=\(oldRevision) newRevision=\(newRevision)\n".utf8))
@@ -2574,6 +2650,8 @@ extension CoreHost {
                     revision: newRevision
                 )
             )
+            await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
+            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
             return receipt
         }
     }
@@ -2700,13 +2778,25 @@ extension CoreHost {
 
     // MARK: - Turn / Run
     public func submitTurn(envelope: CommandEnvelope<SubmitTurnRequest>) async throws -> CommandReceipt<SubmitTurnResult> {
+        try CommandStorageSecurity.validate(envelope.commandID)
         let sessionID = envelope.payload.sessionID
         return try await sessionMutationLock.withExclusiveMutation(sessionID) {
             if let cached = await commandWAL.getCommittedReceipt(commandID: envelope.commandID, as: SubmitTurnResult.self) {
                 return cached
             }
-            if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: SubmitTurnResult.self) {
-                return cached
+            switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: SubmitTurnResult.self) {
+            case .hit(let receipt):
+                return receipt
+            case .conflict(let existingType, let requestedType):
+                throw RuntimeError(
+                    category: .validation,
+                    code: "commandIDConflict",
+                    message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                    retryability: .none,
+                    source: .client
+                )
+            case .notFound:
+                break
             }
 
             if activeFailpoint == .beforeStateMutation {
@@ -2783,7 +2873,7 @@ extension CoreHost {
                 result: result
             )
             await commandWAL.commitTransaction(commandID: envelope.commandID, receipt: receipt)
-            await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
                 fflush(stdout)
@@ -2812,8 +2902,20 @@ extension CoreHost {
     }
 
     public func cancelTurn(envelope: CommandEnvelope<CancelTurnRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: VoidResult.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
         guard let targetTurn = await coord.getTurn(turnID: envelope.payload.turnID) else {
@@ -2831,7 +2933,7 @@ extension CoreHost {
                 observedThrough: [watermark],
                 result: VoidResult()
             )
-            await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
             return receipt
         }
         // 取消排队中的 Turn：严格局部移出队列，绝不干扰当前正在运行的 Run 或杀死后台任务
@@ -2844,7 +2946,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -2873,8 +2975,20 @@ extension CoreHost {
     }
 
     public func cancelRun(envelope: CommandEnvelope<CancelRunRequest>) async throws -> CommandReceipt<VoidResult> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: VoidResult.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: VoidResult.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
         guard let run = await coord.getRun(runID: envelope.payload.runID) else {
@@ -2889,7 +3003,7 @@ extension CoreHost {
                 observedThrough: [watermark],
                 result: VoidResult()
             )
-            await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+            try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
             return receipt
         }
 
@@ -2913,7 +3027,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         if let next = nextTurnToRun {
             let task = Task { [weak self, weak coord] () -> Void in
                 await self?.executeTurnRun(
@@ -2931,8 +3045,20 @@ extension CoreHost {
     }
 
     public func resumeRun(envelope: CommandEnvelope<ResumeRunRequest>) async throws -> CommandReceipt<RunSnapshot> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: RunSnapshot.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: RunSnapshot.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         let coord = try await coordinator(for: envelope.payload.sessionID)
         guard let run = await coord.getRun(runID: envelope.payload.runID) else {
@@ -2947,7 +3073,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: run
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3023,7 +3149,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3066,7 +3192,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: response
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3087,7 +3213,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: ref
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3104,7 +3230,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3204,8 +3330,20 @@ extension CoreHost {
     }
 
     public func selectModel(envelope: CommandEnvelope<SelectModelRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
-        if let cached = await idempotencyJournal.get(commandID: envelope.commandID, as: ModelSelectionInfo.self) {
-            return cached
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: ModelSelectionInfo.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
         }
         let selection = try await modelSelection(for: envelope.payload.model)
         let agent = try requireAgent()
@@ -3230,7 +3368,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: result
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3567,7 +3705,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3671,7 +3809,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: CredentialResult(reference: res.reference)
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -3688,7 +3826,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: VoidResult()
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
@@ -4033,6 +4171,21 @@ extension CoreHost {
     }
 
     public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
+        try CommandStorageSecurity.validate(envelope.commandID)
+        switch await idempotencyJournal.lookup(commandID: envelope.commandID, as: ExtensionCommandExecutionResult.self) {
+        case .hit(let receipt):
+            return receipt
+        case .conflict(let existingType, let requestedType):
+            throw RuntimeError(
+                category: .validation,
+                code: "commandIDConflict",
+                message: "CommandID \(envelope.commandID.rawValue) already used with type \(existingType), cannot reuse as \(requestedType)",
+                retryability: .none,
+                source: .client
+            )
+        case .notFound:
+            break
+        }
         let watermark = await runtimeEventLog.currentWatermark()
         let result = try await extensionPlatform.executePluginCommand(
             name: envelope.payload.name,
@@ -4053,7 +4206,7 @@ extension CoreHost {
             observedThrough: [watermark],
             result: execResult
         )
-        await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
+        try? await idempotencyJournal.record(commandID: envelope.commandID, receipt: receipt)
         return receipt
     }
 
