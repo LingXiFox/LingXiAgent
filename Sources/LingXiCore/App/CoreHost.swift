@@ -2399,6 +2399,7 @@ extension CoreHost {
         )
         await ProviderRateScheduler.shared.reset()
 
+        var isTransactionCommitted = false
         do {
             let session = try await sessionStore.create(
                 id: preallocatedSessionID,
@@ -2473,6 +2474,7 @@ extension CoreHost {
                 payloadFingerprint: fingerprint,
                 receipt: receipt
             )
+            isTransactionCommitted = true
             try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
@@ -2486,9 +2488,12 @@ extension CoreHost {
 
             return receipt
         } catch {
-            // P0-B: 活进程 I/O 或中间步骤失败时的状态机补偿：绝不在系统中遗留孤儿 Session
-            try? await sessionStore.deleteSession(preallocatedSessionID)
-            sessionCoordinators.removeValue(forKey: preallocatedSessionID)
+            // P0-A Commit Boundary Invariant:
+            // 事务一旦成功 commit，后续 post-commit/delivery 故障绝不能反向删除已提交的 Session！
+            if !isTransactionCommitted {
+                try? await sessionStore.deleteSession(preallocatedSessionID)
+                sessionCoordinators.removeValue(forKey: preallocatedSessionID)
+            }
             throw error
         }
     }
@@ -2608,8 +2613,22 @@ extension CoreHost {
                 let mutations = (try? await p.loadFileMutations(sessionID: sessionID)) ?? []
                 if !mutations.isEmpty {
                     let rollbackEngine = FileRollbackEngine()
-                    let report = try? await rollbackEngine.rollbackMutations(mutations, workspaceRoot: workspaceURL)
-                    FileHandle.standardError.write(Data("[CORE_HOST] session.files.reverted sessionID=\(sessionID.rawValue) restored=\(report?.restoredCount ?? 0) deleted=\(report?.deletedCount ?? 0) hasConflicts=\(report?.hasConflicts ?? false)\n".utf8))
+                    do {
+                        let report = try await rollbackEngine.rollbackMutations(mutations, workspaceRoot: workspaceURL)
+                        FileHandle.standardError.write(Data("[CORE_HOST] session.files.reverted sessionID=\(sessionID.rawValue) restored=\(report.restoredCount) deleted=\(report.deletedCount) hasConflicts=\(report.hasConflicts)\n".utf8))
+                        if report.hasConflicts {
+                            throw RuntimeError(
+                                category: .runtime,
+                                code: "fileRollbackConflict",
+                                message: "File rollback encountered conflict. Workspace changes could not be cleanly reverted.",
+                                retryability: .afterUserAction,
+                                source: .core
+                            )
+                        }
+                    } catch {
+                        FileHandle.standardError.write(Data("[CORE_HOST] session.files.revert.failed sessionID=\(sessionID.rawValue) error=\(error)\n".utf8))
+                        throw error
+                    }
                 }
             }
 
@@ -2863,11 +2882,12 @@ extension CoreHost {
                 userMessage: userSnapshot
             )
 
+            var isTransactionCommitted = false
             do {
                 if decision.shouldStartExecution {
                     _ = try await sessionStore.appendMessage(
                         sessionID,
-                        message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: userSnapshot.createdAt)
+                        message: Message(id: msgID, role: .user, content: envelope.payload.input.text, createdAt: Date())
                     )
                 }
 
@@ -2921,6 +2941,7 @@ extension CoreHost {
                     payloadFingerprint: fingerprint,
                     receipt: receipt
                 )
+                isTransactionCommitted = true
                 try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
 
                 if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
@@ -2947,11 +2968,14 @@ extension CoreHost {
                 }
                 return receipt
             } catch {
-                // P0-B: 活进程状态补偿 - 消除孤儿 prompt 并回滚 Coordinator，杜绝 phantom active run
-                if decision.shouldStartExecution {
-                    try? await sessionStore.removeMessage(sessionID, messageID: msgID)
+                // P0-A Commit Boundary Invariant:
+                // 事务一旦成功 commit，后续 post-commit 故障绝不能反向删除已提交的 User Message 或回滚 Turn！
+                if !isTransactionCommitted {
+                    if decision.shouldStartExecution {
+                        try? await sessionStore.removeMessage(sessionID, messageID: msgID)
+                    }
+                    await coord.rollbackTurn(decision: decision)
                 }
-                await coord.rollbackTurn(decision: decision)
                 throw error
             }
         }

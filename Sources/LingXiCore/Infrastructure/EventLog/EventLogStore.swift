@@ -43,16 +43,37 @@ public actor SessionEventLog {
             }
 
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
-            if let linesData = try? Data(contentsOf: eventsURL),
-               let linesStr = String(data: linesData, encoding: .utf8) {
-                let lines = linesStr.split(separator: "\n")
+            if let fileData = try? Data(contentsOf: eventsURL), !fileData.isEmpty {
                 let decoder = JSONDecoder()
-                for line in lines {
-                    if let lineData = line.data(using: .utf8),
-                       let envelope = try? decoder.decode(SessionEventEnvelope.self, from: lineData) {
-                        loadedEvents.append(envelope)
+                var validByteOffset: UInt64 = 0
+                var currentLineStart = 0
+                let totalBytes = fileData.count
+
+                for i in 0..<totalBytes {
+                    if fileData[i] == 0x0A { // 换行符 '\n'
+                        let lineRange = currentLineStart..<i
+                        currentLineStart = i + 1
+                        if lineRange.isEmpty { continue }
+                        let lineBytes = fileData.subdata(in: lineRange)
+                        if let envelope = try? decoder.decode(SessionEventEnvelope.self, from: lineBytes) {
+                            loadedEvents.append(envelope)
+                            validByteOffset = UInt64(i + 1)
+                        }
                     }
                 }
+
+                // P0-B: 自动识别并截断 torn/partial tail，防止后续 append 粘在坏 tail 上导致永久污染
+                if validByteOffset < UInt64(totalBytes) {
+                    if let fileHandle = try? FileHandle(forWritingTo: eventsURL) {
+                        try? fileHandle.truncate(atOffset: validByteOffset)
+                        try? fileHandle.close()
+                    }
+                }
+            }
+
+            // P1: 长 Session 重启 retention 截断，防止内存无限制膨胀
+            if loadedEvents.count > maxRetainedEvents {
+                loadedEvents = Array(loadedEvents.suffix(maxRetainedEvents))
             }
 
             // P0-C 单一同态权威校准：以实际成功落盘的 events.jsonl 末尾 cursor 为最终事实，消除 crash split-brain
@@ -148,7 +169,7 @@ public actor SessionEventLog {
         }
     }
 
-    public func truncateEvents(afterSequence targetSeq: UInt64) {
+    public func truncateEvents(afterSequence targetSeq: UInt64) throws {
         events.removeAll { $0.cursor.sequence > targetSeq }
         sequence = targetSeq
         if let dir = storageDirectory {
@@ -161,12 +182,11 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
-            }
+            let data = try JSONEncoder().encode(meta)
+            try data.write(to: metaURL, options: .atomic)
         }
     }
 
@@ -299,16 +319,37 @@ public actor RuntimeEventLog {
             }
 
             let eventsURL = runtimeDir.appendingPathComponent("events.jsonl")
-            if let linesData = try? Data(contentsOf: eventsURL),
-               let linesStr = String(data: linesData, encoding: .utf8) {
-                let lines = linesStr.split(separator: "\n")
+            if let fileData = try? Data(contentsOf: eventsURL), !fileData.isEmpty {
                 let decoder = JSONDecoder()
-                for line in lines {
-                    if let lineData = line.data(using: .utf8),
-                       let envelope = try? decoder.decode(RuntimeEventEnvelope.self, from: lineData) {
-                        loadedEvents.append(envelope)
+                var validByteOffset: UInt64 = 0
+                var currentLineStart = 0
+                let totalBytes = fileData.count
+
+                for i in 0..<totalBytes {
+                    if fileData[i] == 0x0A { // 换行符 '\n'
+                        let lineRange = currentLineStart..<i
+                        currentLineStart = i + 1
+                        if lineRange.isEmpty { continue }
+                        let lineBytes = fileData.subdata(in: lineRange)
+                        if let envelope = try? decoder.decode(RuntimeEventEnvelope.self, from: lineBytes) {
+                            loadedEvents.append(envelope)
+                            validByteOffset = UInt64(i + 1)
+                        }
                     }
                 }
+
+                // P0-B: 自动识别并截断 torn/partial tail，防止后续 append 粘在坏 tail 上导致永久污染
+                if validByteOffset < UInt64(totalBytes) {
+                    if let fileHandle = try? FileHandle(forWritingTo: eventsURL) {
+                        try? fileHandle.truncate(atOffset: validByteOffset)
+                        try? fileHandle.close()
+                    }
+                }
+            }
+
+            // P1: 长 Runtime EventLog 重启 retention 截断，防止内存无限制膨胀
+            if loadedEvents.count > maxRetainedEvents {
+                loadedEvents = Array(loadedEvents.suffix(maxRetainedEvents))
             }
 
             // P0-C 单一同态权威校准：以实际成功落盘的 events.jsonl 末尾 cursor 为最终事实，消除 crash split-brain
@@ -404,7 +445,7 @@ public actor RuntimeEventLog {
         }
     }
 
-    public func truncateEvents(afterSequence targetSeq: UInt64) {
+    public func truncateEvents(afterSequence targetSeq: UInt64) throws {
         events.removeAll { $0.cursor.sequence > targetSeq }
         sequence = targetSeq
         if let dir = storageDirectory {
@@ -417,12 +458,11 @@ public actor RuntimeEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
-            if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
-            }
+            let data = try JSONEncoder().encode(meta)
+            try data.write(to: metaURL, options: .atomic)
         }
     }
 
@@ -483,6 +523,7 @@ public actor IdempotencyJournal {
 
     private var journal: [CommandID: JournalEntry] = [:]
     private let storageDirectory: URL?
+    public private(set) var quarantinedCorruptEntries: [String] = []
 
     public init(storageDirectory: URL? = nil) {
         self.storageDirectory = storageDirectory
@@ -491,15 +532,24 @@ public actor IdempotencyJournal {
             try? FileManager.default.createDirectory(at: journalDir, withIntermediateDirectories: true)
             if let fileURLs = try? FileManager.default.contentsOfDirectory(at: journalDir, includingPropertiesForKeys: nil) {
                 for fileURL in fileURLs where fileURL.pathExtension == "json" {
-                    if let data = try? Data(contentsOf: fileURL) {
-                        if let entry = try? JSONDecoder().decode(JournalEntry.self, from: data) {
-                            journal[CommandID(entry.commandID)] = entry
-                        } else {
-                            // Backward compatibility for legacy raw receipt format
-                            let cmdStr = fileURL.deletingPathExtension().lastPathComponent
-                            let legacy = JournalEntry(commandID: cmdStr, receiptType: "unknown", receiptData: data)
-                            journal[CommandID(cmdStr)] = legacy
-                        }
+                    guard let data = try? Data(contentsOf: fileURL), !data.isEmpty else {
+                        // 损坏或空文件，隔离为 .corrupt
+                        let corruptURL = fileURL.deletingPathExtension().appendingPathExtension("corrupt")
+                        try? FileManager.default.removeItem(at: corruptURL)
+                        try? FileManager.default.moveItem(at: fileURL, to: corruptURL)
+                        quarantinedCorruptEntries.append(fileURL.lastPathComponent)
+                        continue
+                    }
+
+                    if let entry = try? JSONDecoder().decode(JournalEntry.self, from: data) {
+                        journal[CommandID(entry.commandID)] = entry
+                    } else {
+                        // Invariant: Never assume SHA-256 hash filename is raw commandID!
+                        // If file is corrupt or not a valid JournalEntry, quarantine it.
+                        let corruptURL = fileURL.deletingPathExtension().appendingPathExtension("corrupt")
+                        try? FileManager.default.removeItem(at: corruptURL)
+                        try? FileManager.default.moveItem(at: fileURL, to: corruptURL)
+                        quarantinedCorruptEntries.append(fileURL.lastPathComponent)
                     }
                 }
             }
@@ -556,14 +606,14 @@ public actor IdempotencyJournal {
             receiptType: String(reflecting: R.self),
             receiptData: data
         )
-        journal[commandID] = entry
         if let dir = storageDirectory {
             let journalDir = dir.appendingPathComponent("idempotency", isDirectory: true)
             let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
             let fileURL = journalDir.appendingPathComponent("\(safeKey).json")
             let recordData = try JSONEncoder().encode(entry)
-            try recordData.write(to: fileURL)
+            try recordData.write(to: fileURL, options: .atomic)
         }
+        journal[commandID] = entry
     }
 
     public func rollback(commandID: CommandID) {

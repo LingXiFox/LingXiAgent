@@ -264,15 +264,24 @@ public actor DurableCommandWAL {
                 continue
             }
 
-            // P0-D 核心不变量防御：检查该 transaction 是否已经在 committedDir 中成功提交！
-            // 如果已存在 committed receipt，说明这是 commitTransaction 后的清理遗留（stale WAL），
-            // 绝对不能反向回滚已提交的成功事实！直接清理 stale WAL 即可。
+            // P0-D & P1/P0 核心不变量防御：检查该 transaction 是否已经在 committedDir 中成功提交！
+            // 必须验证文件不仅存在，且能正确反序列化为合法的 CommittedTransactionRecord。
             let cmdID = CommandID(record.commandID)
             let safeKey = CommandStorageSecurity.safeStorageKey(for: cmdID)
             let committedURL = committedDir?.appendingPathComponent("\(safeKey).json")
             let legacyCommittedURL = committedDir?.appendingPathComponent("\(cmdID.rawValue).json")
-            let isCommitted = (committedURL != nil && FileManager.default.fileExists(atPath: committedURL!.path)) ||
-                              (legacyCommittedURL != nil && FileManager.default.fileExists(atPath: legacyCommittedURL!.path))
+
+            var isCommitted = false
+            if let committedURL, let d = try? Data(contentsOf: committedURL), !d.isEmpty {
+                if (try? JSONDecoder().decode(CommittedTransactionRecord.self, from: d)) != nil {
+                    isCommitted = true
+                }
+            }
+            if !isCommitted, let legacyCommittedURL, let d = try? Data(contentsOf: legacyCommittedURL), !d.isEmpty {
+                if (try? JSONDecoder().decode(CommittedTransactionRecord.self, from: d)) != nil {
+                    isCommitted = true
+                }
+            }
             if isCommitted {
                 try? FileManager.default.removeItem(at: fileURL)
                 continue
@@ -302,21 +311,33 @@ public actor DurableCommandWAL {
 
             // 3. 如果该事务曾追加 Runtime 事件，截断回退至 initialRuntimeSequence
             if let initialRuntimeSeq = record.initialRuntimeSequence {
-                await runtimeEventLog.truncateEvents(afterSequence: initialRuntimeSeq)
+                do {
+                    try await runtimeEventLog.truncateEvents(afterSequence: initialRuntimeSeq)
+                } catch {
+                    rollbackSuccess = false
+                }
             }
 
             // 4. 如果该事务曾追加 Session 事件或创建 Turn/Run，回滚 Session 状态
-            if let sessionIDStr = record.sessionID ?? record.createdSessionID {
+            // P0-D Invariant: 若事务是未提交的 createSession，Step 1 已删除会话，无需且不能再调用 coordinatorProvider(createdSessionID)
+            if let sessionIDStr = record.sessionID, record.createdSessionID == nil {
                 let sessionID = SessionID(sessionIDStr)
                 if let coord = try? await coordinatorProvider(sessionID) {
                     if let initialSessionSeq = record.initialSessionSequence {
-                        await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
+                        do {
+                            try await coord.eventLog.truncateEvents(afterSequence: initialSessionSeq)
+                        } catch {
+                            rollbackSuccess = false
+                        }
                     }
                     if let turnIDStr = record.turnID {
                         await coord.rollbackTurnID(TurnID(turnIDStr), runID: record.runID.flatMap { RunID($0) })
                     }
                 } else {
-                    rollbackSuccess = false
+                    // 若会话在外部已不复存在，说明无需额外回滚；若会话依然存在但获取 coordinator 失败，才标记回滚未完成
+                    if (try? await sessionStore.session(sessionID)) != nil {
+                        rollbackSuccess = false
+                    }
                 }
             }
 

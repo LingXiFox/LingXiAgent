@@ -92,13 +92,26 @@ install_sidecars() {
         mkdir -p "$BIN_DIR/Sidecars/browser-host"
         cp -R "$src_dir/Sidecars/browser-host/"* "$INSTALL_ROOT/sidecars/browser-host/"
         cp -R "$src_dir/Sidecars/browser-host/"* "$BIN_DIR/Sidecars/browser-host/"
+        
         if command -v npm >/dev/null 2>&1; then
+            local npm_success=true
             (
                 cd "$INSTALL_ROOT/sidecars/browser-host"
-                npm install --omit=dev --silent 2>/dev/null || true
-            )
+                npm install --omit=dev --silent || exit 1
+            ) || npm_success=false
+
+            if [ "$npm_success" = true ]; then
+                # 建立软链接，确保可执行文件从 bin/Sidecars 优先加载时同样能正确解析 node_modules
+                if [ -d "$INSTALL_ROOT/sidecars/browser-host/node_modules" ]; then
+                    ln -sfn "$INSTALL_ROOT/sidecars/browser-host/node_modules" "$BIN_DIR/Sidecars/browser-host/node_modules"
+                fi
+                echo -e "${GRAY}[*] 已成功部署 Browser Sidecar 运行时 (Playwright 依赖就绪)${RESET}"
+            else
+                echo -e "${AMBER}[!] Browser Sidecar npm 依赖安装失败，网页浏览能力将降级为受限模式${RESET}"
+            fi
+        else
+            echo -e "${AMBER}[!] 未检测到 npm 环境，Browser Sidecar 未安装依赖；如需使用浏览器工具，请安装 Node.js 后进入 ~/.lingxiagent/sidecars/browser-host 执行 npm install${RESET}"
         fi
-        echo -e "${GRAY}[*] 已成功部署 Browser Sidecar 运行时${RESET}"
     fi
 }
 
