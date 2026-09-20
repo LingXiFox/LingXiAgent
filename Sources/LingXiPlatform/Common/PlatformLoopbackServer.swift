@@ -146,6 +146,18 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 self.lock.unlock()
 
                 #if os(Windows) || canImport(WinSDK)
+                // Winsock is initialized per thread. WSAStartup ran on the thread that built
+                // this server, not on this GCD worker, so every socket call here would fail
+                // with WSANOTINITIALISED unless we bind Winsock to the current thread too.
+                var callbackWSAData = WSADATA()
+                guard WSAStartup(WORD(0x0202), &callbackWSAData) == 0 else {
+                    continuation.resume(throwing: CoreError(code: .transport, message: "Failed to initialize Winsock on callback thread"))
+                    return
+                }
+                defer { WSACleanup() }
+                #endif
+
+                #if os(Windows) || canImport(WinSDK)
                 guard sock != INVALID_SOCKET else {
                     continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "Socket already closed"))
                     return
@@ -157,7 +169,49 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 }
                 #endif
 
-                #if canImport(Darwin) || canImport(Glibc)
+                #if os(Windows) || canImport(WinSDK)
+                var fds = fd_set()
+                fds.fd_count = 1
+                withUnsafeMutablePointer(to: &fds.fd_array) { ptr in
+                    ptr.withMemoryRebound(to: SOCKET.self, capacity: 1) { sockPtr in
+                        sockPtr.pointee = sock
+                    }
+                }
+                var tv = timeval()
+                let totalMs = Int(timeoutSeconds * 1000.0)
+                tv.tv_sec = Int32(totalMs / 1000)
+                tv.tv_usec = Int32((totalMs % 1000) * 1000)
+                let pollRes = select(0, &fds, nil, nil, &tv)
+
+                if pollRes == 0 {
+                    continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "OAuth callback timed out after \(timeoutSeconds) seconds"))
+                    return
+                } else if pollRes == SOCKET_ERROR {
+                    continuation.resume(throwing: CoreError(code: .transport, message: "Select failed on loopback socket: \(WSAGetLastError())"))
+                    return
+                }
+
+                var clientAddr = sockaddr_in()
+                var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                let clientSock: PlatformSocket = withUnsafeMutablePointer(to: &clientAddr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        accept(sock, $0, &clientLen)
+                    }
+                }
+
+                guard clientSock != INVALID_SOCKET else {
+                    continuation.resume(throwing: CoreError(code: .transport, message: "Failed to accept loopback connection"))
+                    return
+                }
+
+                var buf = [CChar](repeating: 0, count: 4096)
+                let bytesRead = recv(clientSock, &buf, 4095, 0)
+                guard bytesRead > 0 else {
+                    Self.closeSocket(clientSock)
+                    continuation.resume(throwing: CoreError(code: .transport, message: "Empty loopback request"))
+                    return
+                }
+                #elseif canImport(Darwin) || canImport(Glibc)
                 // 使用 poll 实施严格超时控制，防止无限阻塞
                 var pfd = pollfd(fd: sock, events: Int16(POLLIN), revents: 0)
                 let timeoutMs = Int32(max(1.0, timeoutSeconds * 1000.0))
@@ -173,7 +227,7 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
 
                 var clientAddr = sockaddr_in()
                 var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-                let clientSock = withUnsafeMutablePointer(to: &clientAddr) {
+                let clientSock: PlatformSocket = withUnsafeMutablePointer(to: &clientAddr) {
                     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                         accept(sock, $0, &clientLen)
                     }
@@ -187,17 +241,21 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 var buf = [CChar](repeating: 0, count: 4096)
                 let bytesRead = read(clientSock, &buf, 4095)
                 guard bytesRead > 0 else {
-                    close(clientSock)
+                    Self.closeSocket(clientSock)
                     continuation.resume(throwing: CoreError(code: .transport, message: "Empty loopback request"))
                     return
                 }
+                #else
+                continuation.resume(throwing: CoreError(code: .transport, message: "Unsupported platform for loopback callback"))
+                return
+                #endif
 
-                let uint8Bytes = buf.prefix(bytesRead).map { UInt8(bitPattern: $0) }
+                let uint8Bytes = buf.prefix(Int(bytesRead)).map { UInt8(bitPattern: $0) }
                 let reqStr = String(decoding: uint8Bytes, as: UTF8.self)
                 guard let firstLine = reqStr.components(separatedBy: "\r\n").first,
                       let urlPart = firstLine.components(separatedBy: " ").dropFirst().first,
                       let comp = URLComponents(string: "http://127.0.0.1\(urlPart)") else {
-                    close(clientSock)
+                    Self.closeSocket(clientSock)
                     continuation.resume(throwing: CoreError(code: .toolArgumentInvalid, message: "Invalid callback HTTP request"))
                     return
                 }
@@ -240,41 +298,40 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 </html>
                 """
 
-                if let error = error {
-                    _ = errorHTML.withCString { ptr in
-                        write(clientSock, ptr, errorHTML.utf8.count)
+                let sendResponse: (String) -> Void = { html in
+                    _ = html.withCString { ptr in
+                        #if os(Windows) || canImport(WinSDK)
+                        send(clientSock, ptr, Int32(html.utf8.count), 0)
+                        #else
+                        write(clientSock, ptr, html.utf8.count)
+                        #endif
                     }
-                    close(clientSock)
+                }
+
+                if let error = error {
+                    sendResponse(errorHTML)
+                    Self.closeSocket(clientSock)
                     continuation.resume(throwing: CoreError(code: .permissionDenied, message: "OAuth callback returned error: \(error)"))
                     return
                 }
 
                 guard state == expectedState else {
-                    _ = errorHTML.withCString { ptr in
-                        write(clientSock, ptr, errorHTML.utf8.count)
-                    }
-                    close(clientSock)
+                    sendResponse(errorHTML)
+                    Self.closeSocket(clientSock)
                     continuation.resume(throwing: CoreError(code: .permissionDenied, message: "OAuth callback state mismatch (CSRF protection)"))
                     return
                 }
 
                 guard let authCode = code, !authCode.isEmpty else {
-                    _ = errorHTML.withCString { ptr in
-                        write(clientSock, ptr, errorHTML.utf8.count)
-                    }
-                    close(clientSock)
+                    sendResponse(errorHTML)
+                    Self.closeSocket(clientSock)
                     continuation.resume(throwing: CoreError(code: .toolArgumentInvalid, message: "Missing code parameter in OAuth callback"))
                     return
                 }
 
-                _ = responseHTML.withCString { ptr in
-                    write(clientSock, ptr, responseHTML.utf8.count)
-                }
-                close(clientSock)
+                sendResponse(responseHTML)
+                Self.closeSocket(clientSock)
                 continuation.resume(returning: authCode)
-                #else
-                continuation.resume(throwing: CoreError(code: .transport, message: "Unsupported platform for loopback callback"))
-                #endif
             }
         }
     }

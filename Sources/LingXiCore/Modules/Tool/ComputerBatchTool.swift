@@ -120,7 +120,7 @@ public struct ComputerBatchTool: ToolExecutor {
                     bringToFront: bringToFront
                 ))
             }
-            let attachMs = String(format: "%.1f", Double(attachStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+            let attachMs = String(format: "%.1f", attachStart.duration(to: clock.now).asMilliseconds)
             let winTitle = attachedWindow?.title ?? targetWindow ?? targetApp ?? "Unknown"
             let boundsDesc = attachedWindow.map { "bounds: (\(Int($0.bounds.origin.x)), \(Int($0.bounds.origin.y)), \(Int($0.bounds.width)), \(Int($0.bounds.height)))" } ?? "no window bounds"
             let modeDesc = bringToFront ? "Foreground focus" : "Non-disruptive background mode (TUI visibility preserved)"
@@ -130,13 +130,13 @@ public struct ComputerBatchTool: ToolExecutor {
         var targetHandle: DesktopTargetHandle? = attachedWindow?.toTargetHandle(revision: 1)
 
         if let attachedWindow, bringToFront {
-            await LingXiPlatform.desktopHelper.attachTargetBounds(attachedWindow.bounds)
+            await environment.desktopHelper.attachTargetBounds(attachedWindow.bounds)
         }
 
         defer {
             if bringToFront {
                 Task {
-                    await LingXiPlatform.desktopHelper.attachTargetBounds(nil)
+                    await environment.desktopHelper.attachTargetBounds(nil)
                 }
             }
         }
@@ -208,7 +208,7 @@ public struct ComputerBatchTool: ToolExecutor {
                         foundDesc = "Found '\(matchedNode.name ?? query)' (role: \(matchedNode.role)) at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(bounds.origin.x)), \(Int(bounds.origin.y)), \(Int(bounds.width)), \(Int(bounds.height)))"
                         foundSuccess = true
                     } else {
-                        if let visionHit = try? await LingXiPlatform.desktopHelper.findVisualElement(matching: query, windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds) {
+                        if let visionHit = try? await environment.desktopHelper.findVisualElement(matching: query, windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds) {
                             let cx = visionHit.bounds.origin.x + visionHit.bounds.width / 2.0
                             let cy = visionHit.bounds.origin.y + visionHit.bounds.height / 2.0
                             foundDesc = "Found '\(visionHit.text)' via Native Vision OCR at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(visionHit.bounds.origin.x)), \(Int(visionHit.bounds.origin.y)), \(Int(visionHit.bounds.width)), \(Int(visionHit.bounds.height)))"
@@ -218,7 +218,7 @@ public struct ComputerBatchTool: ToolExecutor {
                         }
                     }
                 }
-                let inspectMs = String(format: "%.1f", Double(inspectStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                let inspectMs = String(format: "%.1f", inspectStart.duration(to: clock.now).asMilliseconds)
                 let outcomeLabel = foundSuccess ? "matched" : "not found"
                 stepSummaries.append("Step \(stepIndex) [Find / Inspect \"\(query)\"]: \(inspectMs)ms (\(outcomeLabel) - \(foundDesc))")
                 stepIndex += 1
@@ -244,7 +244,7 @@ public struct ComputerBatchTool: ToolExecutor {
                             frame = try await captureBackend.captureFrame(source: mainSource, cropRect: nil)
                             targetDesc = "Main display"
                         }
-                        let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                        let shotMs = String(format: "%.1f", shotStart.duration(to: clock.now).asMilliseconds)
                         let digest = LingXiPlatform.crypto.sha256Hex(frame.data)
                         let contentRef = "content://sha256:\(digest)"
                         let contentDir = CoreStorageLayout.current.content
@@ -252,7 +252,7 @@ public struct ComputerBatchTool: ToolExecutor {
                         try? frame.data.write(to: contentDir.appendingPathComponent("\(digest).png"))
                         stepSummaries.append("Step \(stepIndex) [Screenshot]: \(shotMs)ms (\(targetDesc) captured: \(frame.pixelWidth)x\(frame.pixelHeight) px, scale \(frame.scaleFactor), contentRef: \(contentRef))")
                     } catch {
-                        let shotMs = String(format: "%.1f", Double(shotStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                        let shotMs = String(format: "%.1f", shotStart.duration(to: clock.now).asMilliseconds)
                         stepSummaries.append("Step \(stepIndex) [Screenshot]: FAILED (\(shotMs)ms - Screen capture failed: \(error))")
                         hasFailedStep = true
                     }
@@ -285,7 +285,7 @@ public struct ComputerBatchTool: ToolExecutor {
                             if type == "type" {
                                 let text = (item["text"] as? String) ?? ""
                                 if (try? await a11y.performAction(nodeID: matchedNode.id, action: .setValue(text))) != nil {
-                                    let directMs = String(format: "%.1f", Double(locateStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                                    let directMs = String(format: "%.1f", locateStart.duration(to: clock.now).asMilliseconds)
                                     stepSummaries.append("Step \(stepIndex) [Type \"\(text)\" into '\(query)']: \(directMs)ms (Background AX direct injection - zero window occlusion)")
                                     stepIndex += 1
                                     axDirectHandled = true
@@ -293,7 +293,7 @@ public struct ComputerBatchTool: ToolExecutor {
                                 }
                             } else if type == "click" || type == "click_element" {
                                 if (try? await a11y.performAction(nodeID: matchedNode.id, action: .press)) != nil {
-                                    let directMs = String(format: "%.1f", Double(locateStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                                    let directMs = String(format: "%.1f", locateStart.duration(to: clock.now).asMilliseconds)
                                     stepSummaries.append("Step \(stepIndex) [Click '\(query)']: \(directMs)ms (Background AX direct press - zero window occlusion)")
                                     stepIndex += 1
                                     axDirectHandled = true
@@ -302,7 +302,7 @@ public struct ComputerBatchTool: ToolExecutor {
                             }
                         }
 
-                        let locateMs = String(format: "%.1f", Double(locateStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+                        let locateMs = String(format: "%.1f", locateStart.duration(to: clock.now).asMilliseconds)
                         if let x, let y {
                             let sourceKind = (matchedNode.role == "VisualElement") ? "Native Vision OCR" : "Accessibility Tree"
                             matchedDesc = "auto-located '\(query)' via \(sourceKind) at (\(String(format: "%.1f", x)), \(String(format: "%.1f", y))) in \(locateMs)ms"
@@ -321,7 +321,7 @@ public struct ComputerBatchTool: ToolExecutor {
             // 若显式指定了 element_query 但未能在无障碍或视觉树中命中，给出当前窗口的候选文字建议，并严格标记失败
             if elementLookupFailed, let query = elementQuery {
                 var visibleSuggestion = ""
-                if let candidates = try? await LingXiPlatform.desktopHelper.recognizeVisualCandidates(windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds, limit: 8), !candidates.isEmpty {
+                if let candidates = try? await environment.desktopHelper.recognizeVisualCandidates(windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds, limit: 8), !candidates.isEmpty {
                     let sampleList = candidates.map { "\"\($0)\"" }.joined(separator: ", ")
                     visibleSuggestion = " Visible candidates in window: [\(sampleList)]"
                 }
@@ -490,7 +490,7 @@ public struct ComputerBatchTool: ToolExecutor {
                 intentHint: intentHint
             )
 
-            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = LingXiPlatform.desktopHelper.mainDisplayGeometry()
+            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = environment.desktopHelper.mainDisplayGeometry()
 
             let initialObservation = Observation(
                 sessionID: EnvironmentSessionID(rawValue: "desktop-session"),
@@ -529,7 +529,7 @@ public struct ComputerBatchTool: ToolExecutor {
             failureMessage = result.failureReason
         }
 
-        let totalBatchMs = String(format: "%.1f", Double(batchStartTime.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
+        let totalBatchMs = String(format: "%.1f", batchStartTime.duration(to: clock.now).asMilliseconds)
 
         // 审计报告 #19：严格区分工具调用与动作结果，有任何步骤失败则整体标记为 FAILED
         let overallSuccess = executionSuccess && !hasFailedStep

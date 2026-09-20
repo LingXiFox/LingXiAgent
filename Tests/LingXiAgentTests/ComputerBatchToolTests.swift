@@ -31,7 +31,8 @@ struct ComputerBatchToolTests {
             accessibility: MockTestAccessibilityBackend(),
             input: MockTestInputBackend(),
             windows: MockTestWindowBackend(),
-            probe: MockTestProbe()
+            probe: MockTestProbe(),
+            desktopHelper: HeadlessDesktopHelperAdapter()
         )
         let tool = ComputerBatchTool(environment: mockEnv)
 
@@ -81,7 +82,8 @@ struct ComputerBatchToolTests {
         let mockEnv = DesktopEnvironment(
             capture: MockTestCaptureBackend(),
             accessibility: MockTestAccessibilityBackend(),
-            probe: MockTestProbe()
+            probe: MockTestProbe(),
+            desktopHelper: HeadlessDesktopHelperAdapter()
         )
         let tool = ComputerBatchTool(environment: mockEnv)
 
@@ -115,7 +117,8 @@ struct ComputerBatchToolTests {
         let mockEnv = DesktopEnvironment(
             accessibility: MockTestAccessibilityBackend(),
             windows: MockTestWindowBackend(),
-            probe: MockTestProbe()
+            probe: MockTestProbe(),
+            desktopHelper: HeadlessDesktopHelperAdapter()
         )
         let tool = ComputerBatchTool(environment: mockEnv)
 
@@ -148,7 +151,8 @@ struct ComputerBatchToolTests {
             accessibility: MockTestAccessibilityBackend(),
             input: MockTestInputBackend(),
             windows: MockTestWindowBackend(),
-            probe: MockTestProbe()
+            probe: MockTestProbe(),
+            desktopHelper: HeadlessDesktopHelperAdapter()
         )
         let tool = ComputerBatchTool(environment: mockEnv)
 
@@ -204,7 +208,8 @@ struct ComputerBatchToolTests {
             capture: MockTestCaptureBackend(),
             accessibility: MockTestAccessibilityBackend(),
             windows: MockTestWindowBackend(),
-            probe: MockTestProbe()
+            probe: MockTestProbe(),
+            desktopHelper: HeadlessDesktopHelperAdapter()
         )
         let tool = ComputerBatchTool(environment: mockEnv)
 

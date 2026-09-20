@@ -91,13 +91,18 @@ struct BackgroundCommandTests {
         """
         _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
-        // Wait for watchdog to trigger (1.5s > 1s)
-        try? await Task.sleep(for: .milliseconds(1600))
-
+        // Wait for the watchdog to reap the 1s-timeout task. Poll for the resulting
+        // state instead of sleeping a fixed span: under a saturated runner the fixed
+        // 1.6s wait can elapse before the watchdog has been scheduled at all.
         let pollArgs = """
         {"action": "poll", "task_id": "sleep-timeout-test"}
         """
-        let pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
+        let deadline = Date().addingTimeInterval(20)
+        var pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
+        while !pollResult.contains("timed_out"), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
+        }
         #expect(pollResult.contains("timed_out"))
         await manager.terminateAll()
     }

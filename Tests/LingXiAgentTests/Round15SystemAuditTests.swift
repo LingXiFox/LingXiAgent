@@ -57,11 +57,15 @@ struct Round15SystemAuditTests {
             let snap1 = await coord.getRun(runID: runID1)
             #expect(snap1?.status == .cancelled)
 
-            // Allow brief cooperations for Turn 2 dispatch
-            try await Task.sleep(nanoseconds: 50_000_000)
-
+            // Turn 2 should pick up the handed-off lease. Poll for the transition rather
+            // than sleeping a fixed 50ms, which a saturated runner can outrun entirely.
+            var turn2Snap = try #require(await coord.getTurn(turnID: t2.result!.turnID))
+            let handoffDeadline = Date().addingTimeInterval(10)
+            while turn2Snap.status != .running && turn2Snap.status != .completed, Date() < handoffDeadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+                turn2Snap = try #require(await coord.getTurn(turnID: t2.result!.turnID))
+            }
             // Turn 2 should have started or finished (activeRootRunID transitioned away from nil orphan)
-            let turn2Snap = try #require(await coord.getTurn(turnID: t2.result!.turnID))
             #expect(turn2Snap.status == .running || turn2Snap.status == .completed)
 
             // Turn 3 should still be in queue or safely waiting

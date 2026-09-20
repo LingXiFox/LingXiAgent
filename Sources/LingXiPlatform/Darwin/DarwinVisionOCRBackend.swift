@@ -18,6 +18,15 @@ public final class DarwinVisionOCRBackend: @unchecked Sendable {
     ) async throws -> [VisualElementSnapshot] {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
+                // Without screen recording authorization the CoreGraphics capture calls below can
+                // block indefinitely, permanently pinning a GCD worker thread and eventually
+                // starving the whole pool. Preflight the permission before touching CG.
+                guard CGPreflightScreenCaptureAccess() else {
+                    continuation.resume(throwing: ActionExecutionError.inputInjectionFailed(
+                        reason: "Screen recording authorization is unavailable for visual OCR"
+                    ))
+                    return
+                }
                 do {
                     let image: CGImage
                     let baseOriginX: Double

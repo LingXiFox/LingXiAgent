@@ -288,6 +288,10 @@ public actor DesktopEnvironment {
     public nonisolated let applications: (any ApplicationBackend)?
     public nonisolated let clipboard: (any ClipboardBackend)?
     public nonisolated let probe: any CapabilityProbing
+    /// Host helper capabilities: visual OCR, overlay, screen geometry.
+    /// Must be injected through here rather than read off `LingXiPlatform.desktopHelper`,
+    /// otherwise unit tests reach the real screen capture path.
+    public nonisolated let desktopHelper: any PlatformDesktopHelperProtocol
 
     public private(set) var currentSnapshot: HostCapabilitySnapshot
     private var isSnapshotStale: Bool = false
@@ -300,6 +304,7 @@ public actor DesktopEnvironment {
         applications: (any ApplicationBackend)? = nil,
         clipboard: (any ClipboardBackend)? = nil,
         probe: any CapabilityProbing,
+        desktopHelper: any PlatformDesktopHelperProtocol = LingXiPlatform.desktopHelper,
         initialSnapshot: HostCapabilitySnapshot? = nil
     ) {
         self.capture = capture
@@ -309,6 +314,7 @@ public actor DesktopEnvironment {
         self.applications = applications
         self.clipboard = clipboard
         self.probe = probe
+        self.desktopHelper = desktopHelper
         self.isSnapshotStale = (initialSnapshot == nil)
         self.currentSnapshot = initialSnapshot ?? HostCapabilitySnapshot(
             capture: .temporarilyUnavailable(reason: "Uninitialized"),

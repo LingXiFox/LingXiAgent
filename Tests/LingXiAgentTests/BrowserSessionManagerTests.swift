@@ -31,8 +31,11 @@ struct BrowserSessionManagerTests {
 
     @Test("BrowserHostClient protocol cycle in explicit Mock mode")
     func testSidecarHandshakeAndProtocolCycleInMockMode() async throws {
-        let cwd = FileManager.default.currentDirectoryPath
-        let scriptPath = "\(cwd)/Sidecars/browser-host/index.mjs"
+        let scriptPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests/LingXiAgentTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("Sidecars/browser-host/index.mjs").path
 
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             Issue.record("Sidecar script not found at \(scriptPath)")
@@ -83,8 +86,11 @@ struct BrowserSessionManagerTests {
 
     @Test("BrowserSessionManager workflow in explicit Mock mode")
     func testBrowserSessionManagerWorkflowInMockMode() async throws {
-        let cwd = FileManager.default.currentDirectoryPath
-        let scriptPath = "\(cwd)/Sidecars/browser-host/index.mjs"
+        let scriptPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests/LingXiAgentTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("Sidecars/browser-host/index.mjs").path
 
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             Issue.record("Sidecar script not found at \(scriptPath)")

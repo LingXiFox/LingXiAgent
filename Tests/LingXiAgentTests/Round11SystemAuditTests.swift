@@ -118,7 +118,10 @@ struct Round11SystemAuditTests {
         #expect(snap1.status == BackgroundTaskStatus.terminated)
 
         let snap2 = try await manager.poll(id: "task-2")
-        #expect(snap2.status == BackgroundTaskStatus.running)
+        // The invariant is isolation, not liveness: task-2 belongs to run-2, so targeted
+        // termination of run-1 must not mark it terminated. Whether the 10s command has
+        // already exited on its own depends on runner load and is not what is under test.
+        #expect(snap2.status != BackgroundTaskStatus.terminated)
 
         // Cleanup task2
         _ = try? await manager.terminate(id: "task-2")

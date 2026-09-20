@@ -164,11 +164,11 @@ public struct ActionBatchExecutor: Sendable {
                     environment: environment,
                     observation: currentObservation
                 )
-                let stepElapsedMs = Double(stepStart.duration(to: ContinuousClock().now).components.attoseconds) / 1_000_000_000_000_000.0
+                let stepElapsedMs = stepStart.duration(to: ContinuousClock().now).asMilliseconds
                 stepDurationsMs.append(stepElapsedMs)
                 completedCount += 1
             } catch {
-                let stepElapsedMs = Double(stepStart.duration(to: ContinuousClock().now).components.attoseconds) / 1_000_000_000_000_000.0
+                let stepElapsedMs = stepStart.duration(to: ContinuousClock().now).asMilliseconds
                 stepDurationsMs.append(stepElapsedMs)
                 if batch.stopOnFailure {
                     return ActionBatchResult(

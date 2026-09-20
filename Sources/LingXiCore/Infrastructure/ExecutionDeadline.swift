@@ -1,6 +1,16 @@
 import Foundation
 import LingXiProtocol
 
+extension Duration {
+    /// Total wall-clock milliseconds. `Duration.attoseconds` requires macOS 15,
+    /// while `components.attoseconds` alone is a normalized remainder that drops
+    /// the whole-second part, so both components must be combined.
+    var asMilliseconds: Double {
+        let parts = components
+        return Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1_000_000_000_000_000
+    }
+}
+
 public enum ExecutionTimeoutCategory: String, Codable, Sendable, CaseIterable {
     case quickFilesystem
     case search

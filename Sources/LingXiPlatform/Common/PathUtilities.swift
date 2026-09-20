@@ -2,6 +2,17 @@ import Foundation
 
 /// 跨平台路径与环境变量辅助工具
 public enum PathUtilities {
+    /// Build a directory URL that is always safe for `Process.currentDirectoryURL`.
+    ///
+    /// Once a process's own working directory is deleted, `currentDirectoryPath` returns an
+    /// empty string and `URL(fileURLWithPath:)` degrades to the relative URL "./". Foundation
+    /// then rejects the assignment with an NSInvalidArgumentException that Swift cannot catch,
+    /// aborting the whole host. Fall back to the temporary directory instead.
+    public static func workingDirectoryURL(for path: String) -> URL {
+        let candidate = URL(fileURLWithPath: path.isEmpty ? NSTemporaryDirectory() : path, isDirectory: true)
+        return candidate.isFileURL ? candidate : URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    }
+
     /// 平台特定的 PATH 环境变量条目分隔符（POSIX 为 ":"，Windows 为 ";"）
     public static var pathListSeparator: Character {
         #if os(Windows)

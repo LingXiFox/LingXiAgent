@@ -70,10 +70,19 @@ jobs:
         run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 15
+        timeout-minutes: 18
         run: |
           set -euo pipefail
-          swift test --skip-build --parallel
+          # swift-testing launches every test case in a process at once by default, which
+          # starves the cooperative thread pool and stalls any test awaiting a background
+          # task (pacer frames, watchdogs, lease handoff). Probe for the width cap so older
+          # toolchains that reject the flag still run instead of failing the whole stage.
+          WIDTH_FLAG="--experimental-maximum-parallelization-width 6"
+          if ! swift test --skip-build $WIDTH_FLAG --filter 'LingXiNoSuchTestProbeForWidthFlag' > /dev/null 2>&1; then
+            echo "::warning::toolchain has no parallelization width flag, running unbounded"
+            WIDTH_FLAG=""
+          fi
+          swift test --skip-build --parallel --num-workers 2 $WIDTH_FLAG
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
@@ -166,8 +175,16 @@ jobs:
         run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 15
-        run: su -s /bin/bash -m testuser -c "swift test --skip-build --parallel --num-workers 2 --xunit-output test-results.xml < /dev/null"
+        timeout-minutes: 18
+        run: |
+          # Mirrors the macOS gate: cap swift-testing's per-process fan-out so background
+          # tasks still get scheduled. The probe keeps toolchains without the flag working.
+          WIDTH_FLAG="--experimental-maximum-parallelization-width 6"
+          if ! su -s /bin/bash -m testuser -c "swift test --skip-build $WIDTH_FLAG --filter 'LingXiNoSuchTestProbeForWidthFlag' < /dev/null" > /dev/null 2>&1; then
+            echo "::warning::toolchain has no parallelization width flag, running unbounded"
+            WIDTH_FLAG=""
+          fi
+          su -s /bin/bash -m testuser -c "swift test --skip-build --parallel --num-workers 2 $WIDTH_FLAG --xunit-output test-results.xml < /dev/null"
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3

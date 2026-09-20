@@ -178,7 +178,10 @@ public actor AgentRuntime {
 
         for persisted in runsToRestore {
             var run = persisted
-            if !run.status.isTerminal {
+            // A run awaiting the user was not interrupted by the crash. Rewriting it clears the
+            // waitingForUser marker, so the hydration loop below can never match it again and
+            // the pending question/permission would be silently dropped.
+            if !run.status.isTerminal, run.status != .waitingForUser {
                 run = AgentRunInfo(
                     runID: run.runID,
                     sessionID: run.sessionID,

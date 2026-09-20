@@ -231,7 +231,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = configuration.arguments
         process.environment = environment
-        process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        process.currentDirectoryURL = LingXiPlatform.path.workingDirectoryURL(for: FileManager.default.currentDirectoryPath)
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()

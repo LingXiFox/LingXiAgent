@@ -103,10 +103,15 @@ struct UXAndStreamingFixesTests {
 
         pacer.enqueue(frame)
 
-        // 等待微任务平滑步长调度推进
-        try await Task.sleep(nanoseconds: 50_000_000)
-
-        let chunksSoFar = await collector.count()
+        // Poll until the smooth pacing actually happens: a fixed sleep can be starved entirely
+        // on a saturated runner, while "the text does arrive split into multiple chunks" is the
+        // property this case owns.
+        var chunksSoFar = await collector.count()
+        let pacingDeadline = Date().addingTimeInterval(10)
+        while chunksSoFar < 2, Date() < pacingDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            chunksSoFar = await collector.count()
+        }
         // 应该被平滑切分为多个小块逐帧输出，而不是一次性输出 1 个大块
         #expect(chunksSoFar >= 2)
 

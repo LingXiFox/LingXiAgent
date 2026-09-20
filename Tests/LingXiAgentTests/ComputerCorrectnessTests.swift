@@ -27,12 +27,13 @@ struct ComputerCorrectnessTests {
         """
 
         let result = try await tool.execute(arguments: payload, profile: .workspace)
-        // 在 macOS 上若支持 capture，会输出 Display captured successfully；若不支持，必须明确输出 FAILED，绝不假装成功
+        // When capture is available the result must report a real captured artifact; when it is
+        // not, it must say FAILED. It may never pretend to have succeeded.
         #expect(result.contains("Screenshot"))
         if result.contains("FAILED") {
             #expect(result.contains("Action Batch Execution: FAILED"))
         } else {
-            #expect(result.contains("Display captured successfully"))
+            #expect(result.contains("captured:"), "success branch must report a real capture, got: \(result)")
             #expect(result.contains("Action Batch Execution: SUCCESS"))
         }
     }
