@@ -312,9 +312,12 @@ struct Round16SystemAuditTests {
         #expect(FileManager.default.fileExists(atPath: sidecarPackage.path), "browser-host/package.json missing in source repo!")
 
         // Verify package-release.sh packages Sidecars/browser-host
-        let releaseScriptPath = repoRoot.appendingPathComponent("scripts/package-release.sh").path
-        guard FileManager.default.fileExists(atPath: releaseScriptPath) else {
-            Issue.record("scripts/package-release.sh missing at \(releaseScriptPath)")
+        let candidatePaths = [
+            repoRoot.appendingPathComponent("Scripts/package-release.sh").path,
+            repoRoot.appendingPathComponent("scripts/package-release.sh").path
+        ]
+        guard let releaseScriptPath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            Issue.record("Scripts/package-release.sh missing at \(repoRoot.path)")
             return
         }
         let releaseScriptContent = try String(contentsOfFile: releaseScriptPath, encoding: .utf8)

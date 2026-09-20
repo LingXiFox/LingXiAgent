@@ -82,8 +82,10 @@ struct PlatformAbstractionAndDecouplingTests {
         let expectedHome = ProcessInfo.processInfo.environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
         #endif
         let expanded = PathUtilities.expandingTilde(in: "~/test_project")
-        #expect(expanded.hasPrefix(expectedHome))
-        #expect(expanded.hasSuffix("test_project"))
+        let normalizedExpanded = expanded.replacingOccurrences(of: "\\", with: "/")
+        let normalizedExpected = expectedHome.replacingOccurrences(of: "\\", with: "/")
+        #expect(normalizedExpanded.hasPrefix(normalizedExpected))
+        #expect(normalizedExpanded.hasSuffix("test_project"))
 
         let unchanged = PathUtilities.expandingTilde(in: "/absolute/path")
         #expect(unchanged == "/absolute/path")

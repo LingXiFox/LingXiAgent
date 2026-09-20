@@ -31,7 +31,14 @@ public enum PathUtilities {
         }
         if path.hasPrefix("~/") || path.hasPrefix("~\\") {
             let sub = String(path.dropFirst(2))
+            #if os(Windows)
+            let separator = "\\"
+            let cleanHome = (home.hasSuffix("/") || home.hasSuffix("\\")) ? String(home.dropLast()) : home
+            let cleanSub = sub.replacingOccurrences(of: "/", with: separator)
+            return "\(cleanHome)\(separator)\(cleanSub)"
+            #else
             return URL(fileURLWithPath: home).appendingPathComponent(sub).path
+            #endif
         }
         return path
     }

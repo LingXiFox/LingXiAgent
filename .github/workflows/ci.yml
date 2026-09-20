@@ -71,7 +71,9 @@ jobs:
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 15
-        run: swift test --skip-build --parallel --num-workers 2 --xunit-output test-results.xml < /dev/null
+        run: |
+          set -euo pipefail
+          swift test --skip-build --parallel
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
