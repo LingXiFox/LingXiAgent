@@ -55,7 +55,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "codebase_graph", "context_recall", "edit_file", "format_file", "git", "glob", "grep", "list_directory", "manage_background_command", "process", "question", "read_file", "run_background_command", "shell", "skill", "todo", "web_fetch", "web_search", "write_file"])
+        #expect(runtime.definitions.map(\.id.rawValue) == ["apply_patch", "codebase_graph", "context_recall", "edit_file", "format_file", "git", "glob", "grep", "list_directory", "manage_background_command", "process", "question", "read_file", "retrieval_search", "run_background_command", "shell", "skill", "todo", "web_fetch", "web_search", "write_file"])
         #expect(await runtime.availableDefinitions().map(\.id.rawValue).contains("search_tools"))
     }
 
@@ -556,6 +556,7 @@ struct ToolRuntimeTests {
         let skillsDir = root.appendingPathComponent(".lingxi/skills", isDirectory: true)
         try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("gamma"), withIntermediateDirectories: true)
         try "gamma skill".write(to: skillsDir.appendingPathComponent("gamma/SKILL.md"), atomically: true, encoding: .utf8)
+        await runtime.invalidateDefinitionsCache()
         let afterIds = await runtime.availableDefinitions().map(\.id.rawValue)
         #expect(afterIds.contains("skill"))
         let skillDef = try #require(await runtime.availableDefinitions().first { $0.id == ToolID("skill") })

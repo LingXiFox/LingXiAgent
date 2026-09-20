@@ -272,6 +272,10 @@ public struct ToolRuntime: Sendable {
         await definitionsCache.clear()
     }
 
+    public func invalidateDefinitionsCache() async {
+        await definitionsCache.clear()
+    }
+
     public func lease(sessionID: SessionID, runID: AgentRunID? = nil, toolID: ToolID) async {
         await dynamicLeases.lease(sessionID: sessionID, runID: runID, toolID: toolID)
     }

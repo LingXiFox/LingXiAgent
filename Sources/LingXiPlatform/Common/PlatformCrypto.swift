@@ -361,8 +361,11 @@ struct CompactAES256Standard: Sendable {
 
     init(key: [UInt8]) {
         precondition(key.count == 32)
-        var keyColumns: [[UInt8]] = (0..<8).map { i in
-            [key[i*4], key[i*4+1], key[i*4+2], key[i*4+3]]
+        var keyColumns: [[UInt8]] = []
+        keyColumns.reserveCapacity(60)
+        for i in 0..<8 {
+            let col: [UInt8] = [key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]
+            keyColumns.append(col)
         }
         var rconIdx = 1
         while keyColumns.count < 60 {
@@ -396,8 +399,11 @@ struct CompactAES256Standard: Sendable {
     }
 
     func encryptBlock(_ input: [UInt8]) -> [UInt8] {
-        var s: [[UInt8]] = (0..<4).map { i in
-            [input[i*4], input[i*4+1], input[i*4+2], input[i*4+3]]
+        var s: [[UInt8]] = []
+        s.reserveCapacity(4)
+        for i in 0..<4 {
+            let col: [UInt8] = [input[i * 4], input[i * 4 + 1], input[i * 4 + 2], input[i * 4 + 3]]
+            s.append(col)
         }
 
         for i in 0..<4 {

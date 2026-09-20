@@ -33,7 +33,7 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
         let sockType = Int32(SOCK_STREAM.rawValue)
         #elseif os(Windows) || canImport(WinSDK)
         var wsaData = WSADATA()
-        _ = WSAStartup(MAKEWORD(2, 2), &wsaData)
+        _ = WSAStartup(WORD(0x0202), &wsaData)
         let sockType = SOCK_STREAM
         #endif
 

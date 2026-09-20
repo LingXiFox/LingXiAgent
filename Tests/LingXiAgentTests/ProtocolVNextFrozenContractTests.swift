@@ -707,11 +707,26 @@ struct ProtocolVNextFrozenContractTests {
         let process = Process()
         process.executableURL = hostURL
         process.arguments = ["--crash-test", stage, dataRoot.path, commandID]
+        var env = ProcessInfo.processInfo.environment
+        env["LINGXI_CRASH_TEST_STAGE"] = stage
+        process.environment = env
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { _ in }
+
         try process.run()
+
+        let watchdog = DispatchWorkItem {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: watchdog)
         process.waitUntilExit()
+        watchdog.cancel()
+        pipe.fileHandleForReading.readabilityHandler = nil
         return process.terminationStatus
     }
 
