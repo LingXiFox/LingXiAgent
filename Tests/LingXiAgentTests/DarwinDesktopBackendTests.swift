@@ -5,6 +5,7 @@ import Foundation
 @testable import LingXiCore
 
 #if os(macOS)
+import ApplicationServices
 @Suite("macOS Darwin Desktop Backend Tests")
 struct DarwinDesktopBackendTests {
 

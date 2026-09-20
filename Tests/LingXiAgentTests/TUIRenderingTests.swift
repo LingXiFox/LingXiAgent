@@ -1414,8 +1414,12 @@ struct TUIRenderingTests {
         #expect(ToolRuntime.coreToolIDs.contains(ToolID("shell")))
     }
 
-    @Test func agentGuidelinesInstructBackgroundExecutionProtocol() {
-        let emptySet = try! AgentInstructionSet.load(workspace: FileManager.default.temporaryDirectory)
+    @Test func agentGuidelinesInstructBackgroundExecutionProtocol() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let emptySet = try AgentInstructionSet.load(workspace: tempDir, globalInstructionsURL: nil)
         let rendered = AgentBehaviorInstructions.render(
             profile: .build,
             configured: nil,

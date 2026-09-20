@@ -23,7 +23,9 @@ struct AgentInstructionSet: Sendable {
         var instructions = (try globalInstructionsURL.flatMap(loadGlobal)).map { [$0] } ?? []
 
         while let candidate = enumerator?.nextObject() as? URL {
-            let values = try candidate.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
+            guard let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]) else {
+                continue
+            }
             if values.isDirectory == true, skipped.contains(candidate.lastPathComponent) {
                 enumerator?.skipDescendants()
                 continue
