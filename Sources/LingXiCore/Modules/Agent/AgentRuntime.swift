@@ -452,8 +452,9 @@ public actor AgentRuntime {
                 title: session.title,
                 profile: behaviorProfile.executionProfile
             )
+            let currentConfig = await permissions.currentConfiguration()
             let permConfig = executionIntent?.permissionConfiguration
-                ?? (behaviorProfile.executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (behaviorProfile.executionProfile?.permissionProfile == "workspace" ? .askWorkspace : .strict))
+                ?? (behaviorProfile.executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (behaviorProfile.executionProfile?.permissionProfile == "workspace" ? .askWorkspace : currentConfig))
             let runContext = RunExecutionContext(
                 runID: run.runID.rawValue,
                 sessionID: sessionID,

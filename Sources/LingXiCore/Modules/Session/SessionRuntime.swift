@@ -349,11 +349,12 @@ public actor SessionRuntime {
             let sessionID = self.sessionID
             let deadline = deadlinePolicy.deadline(for: runID == nil ? .agentRun : .subagent, requested: executionProfile?.timeoutSeconds.map { .seconds($0) })
             let executionID = UUID()
+            let currentPermConfig = await permissions.currentConfiguration()
             let effectiveRunContext = executionContext ?? runID.map { id in
                 RunExecutionContext(
                     runID: id.rawValue,
                     sessionID: sessionID,
-                    permissionConfiguration: executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (executionProfile?.permissionProfile == "workspace" ? .askWorkspace : .strict),
+                    permissionConfiguration: executionProfile?.permissionProfile == "fullAccess" ? .yoloFullAccess : (executionProfile?.permissionProfile == "workspace" ? .askWorkspace : currentPermConfig),
                     workspacePath: projectScanner.root.path,
                     modelSelection: nil,
                     timeoutSeconds: executionProfile?.timeoutSeconds.map(Double.init),

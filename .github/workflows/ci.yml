@@ -103,20 +103,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare isolated test environment
-        run: |
-          mkdir -p /tmp/test-home /root/.lingxiagent
-          echo "HOME=/tmp/test-home" >> "$GITHUB_ENV"
-          echo "LINGXI_DATA_DIR=/tmp/test-home/.lingxiagent" >> "$GITHUB_ENV"
-          echo "LINGXI_DISABLE_PLUGINS=1" >> "$GITHUB_ENV"
-
-      - name: Install system dependencies
+      - name: Install system dependencies & setup test user
         timeout-minutes: 8
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libsqlite3-dev pkg-config python3 bubblewrap nodejs
+          useradd -m -u 1001 -s /bin/bash testuser || true
           swift --version
+
+      - name: Prepare isolated test environment
+        run: |
+          mkdir -p /tmp/test-home /tmp/test-home/.lingxiagent
+          chown -R testuser:testuser /tmp/test-home
+          git config --global --add safe.directory '*'
+          echo "HOME=/tmp/test-home" >> "$GITHUB_ENV"
+          echo "LINGXI_DATA_DIR=/tmp/test-home/.lingxiagent" >> "$GITHUB_ENV"
+          echo "LINGXI_DISABLE_PLUGINS=1" >> "$GITHUB_ENV"
 
       - name: Probe bubblewrap availability
         run: |
@@ -136,37 +139,42 @@ jobs:
           key: spm-linux-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-linux-
 
+      - name: Setup workspace ownership for testuser
+        run: |
+          chown -R testuser:testuser .
+          su -s /bin/bash -m testuser -c "git config --global --add safe.directory '*'"
+
       - name: Stage 1 - Build products + tests (single pass)
         timeout-minutes: 15
-        run: swift build --build-tests
+        run: su -s /bin/bash -m testuser -c "swift build --build-tests"
 
       - name: Stage 2 - Architecture Boundary & Platform Gate
         timeout-minutes: 5
         run: |
-          swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null
-          swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
-          swift test --skip-build --filter PlatformBuildGateTests < /dev/null
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null"
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null"
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformBuildGateTests < /dev/null"
 
       - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
         timeout-minutes: 5
-        run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
+        run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformCryptoKATTests < /dev/null"
 
       - name: Stage 4 - IPC & Process Robustness Gate
         timeout-minutes: 5
-        run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+        run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 15
-        run: swift test --skip-build --parallel --num-workers 2 --xunit-output test-results.xml < /dev/null
+        run: su -s /bin/bash -m testuser -c "swift test --skip-build --parallel --num-workers 2 --xunit-output test-results.xml < /dev/null"
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
         run: |
           set -euo pipefail
-          BIN_PATH="$(swift build --show-bin-path)"
-          "$BIN_PATH/lingxiagent"     --help      < /dev/null
-          "$BIN_PATH/LingXiCoreHost"  auth list   < /dev/null
-          "$BIN_PATH/lingxiagent"     --smoke     < /dev/null
+          BIN_PATH="$(su -s /bin/bash -m testuser -c 'swift build --show-bin-path')"
+          su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --help      < /dev/null"
+          su -s /bin/bash -m testuser -c "'$BIN_PATH/LingXiCoreHost'  auth list   < /dev/null"
+          su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --smoke     < /dev/null"
 
       - name: Upload test results
         if: always()

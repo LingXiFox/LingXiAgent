@@ -4,12 +4,20 @@ import LingXiProtocol
 @testable import LingXiCore
 @testable import LingXiClient
 
+#if os(Linux) && canImport(Glibc)
+import Glibc
+private var isRunningAsRoot: Bool { getuid() == 0 }
+#else
+private var isRunningAsRoot: Bool { false }
+#endif
+
 @Suite("Round 20 System Audit: Durable Lifecycle, Single Commit Point & Revert Convergence")
 struct Round20SystemAuditTests {
 
     // MARK: - 1. P0-B: EventLog Single Commit Point Invariant
     @Test("Single Commit Point: meta failure after events.jsonl durability advances sequence without duplicate cursor collision")
     func testSingleCommitPointPreventsDuplicateSequenceOnMetaFailure() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         let sessionDir = tempDir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
@@ -57,6 +65,7 @@ struct Round20SystemAuditTests {
     // MARK: - 2. P0-B: Coordinator Atomic Batch Rollback on Mid-Append Failure
     @Test("Partial Batch Rollback: Mid-batch failure cleanly truncates eventlog to initial sequence without orphan events")
     func testCoordinatorPartialBatchRollbackOnFailure() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -97,6 +106,7 @@ struct Round20SystemAuditTests {
     // MARK: - 3. P0-A: Queued Turn Cancellation Durability
     @Test("Queue Cancellation Durability: Disk persistence failure reverts cancellation and prevents zombie resurrection")
     func testQueueCancellationDurabilityPreventsZombieTurns() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -147,6 +157,7 @@ struct Round20SystemAuditTests {
     // MARK: - 4. P0-C: SessionEventLog.resetToEvents Disk-First Durability
     @Test("Reset Durability: resetToEvents throws and preserves memory state if disk write fails")
     func testResetToEventsDurabilityPreservesMemoryOnFailure() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

@@ -27,14 +27,14 @@ struct Round12SystemAuditTests {
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Prompt B", createdAt: Date())
         )
-        let runIDB = try #require(decisionB.runID)
+        let runIDB = try #require(decisionB.turn.rootRunID ?? decisionB.runID)
 
         let decisionC = try await coordinator.submitTurn(
             input: UserInput(text: "Prompt C"),
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Prompt C", createdAt: Date())
         )
-        _ = try #require(decisionC.runID)
+        _ = try #require(decisionC.turn.rootRunID ?? decisionC.runID)
 
         #expect(await coordinator.isTurnQueued(turnID: decisionB.turn.turnID))
         #expect(await coordinator.isTurnQueued(turnID: decisionC.turn.turnID))
@@ -174,9 +174,9 @@ struct Round12SystemAuditTests {
                 payload: SubmitTurnRequest(sessionID: sessionID, input: UserInput(text: "Run B"), executionIntent: TurnExecutionIntent())
             ))
             let decisionB = try #require(receiptB.result)
-            let runIDB = try #require(decisionB.runID)
-
             let coord = try await host.coordinator(for: sessionID)
+            let turnBSnap = await coord.getTurn(turnID: decisionB.turnID)
+            let runIDB = try #require(decisionB.runID ?? turnBSnap?.rootRunID)
             #expect(await coord.activeRootRunID == runIDA)
             #expect(await coord.isTurnQueued(turnID: decisionB.turnID))
 
@@ -224,7 +224,7 @@ struct Round12SystemAuditTests {
             userMessage: MessageSnapshot(messageID: msgIDB, role: .user, text: "Queued prompt", createdAt: Date())
         )
         let turnIDB = decisionB.turn.turnID
-        let runIDB = try #require(decisionB.runID)
+        let runIDB = try #require(decisionB.turn.rootRunID ?? decisionB.runID)
 
         #expect(await coord1.isTurnQueued(turnID: turnIDB))
 

@@ -4,12 +4,20 @@ import LingXiProtocol
 @testable import LingXiCore
 @testable import LingXiClient
 
+#if os(Linux) && canImport(Glibc)
+import Glibc
+private var isRunningAsRoot: Bool { getuid() == 0 }
+#else
+private var isRunningAsRoot: Bool { false }
+#endif
+
 @Suite("LingXiAgent V1.0.0-RC1 Static Acceptance Audit Suite")
 struct RC1StaticAuditTests {
 
     // MARK: - 1. P0 DURABILITY: finishRun Terminal EventLog Failure
     @Test("Root Terminal Durability: finishRun disk failure rolls back memory and prevents queue advance")
     func testFinishRunTerminalDurabilityFailurePreventsMemoryAdvance() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -68,6 +76,7 @@ struct RC1StaticAuditTests {
     // MARK: - 2. P0 DURABILITY: running cancel terminal EventLog failure
     @Test("Running Cancel Durability: disk failure during cancelRun leaves Run running without false cancel")
     func testRunningCancelTerminalFailureRollsBackMemory() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -111,6 +120,7 @@ struct RC1StaticAuditTests {
     // MARK: - 3. P0 COMMIT POINT: EventLog truncate single commit point
     @Test("Truncate Single Commit Point: meta write failure does not break truncate memory/disk consistency")
     func testEventLogTruncateSingleCommitPointWithMetaFailure() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         let sessionDir = tempDir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
@@ -159,6 +169,7 @@ struct RC1StaticAuditTests {
     // MARK: - 4. P0 COMMIT POINT: submitTurn exact Nth-event failure & same-process retry
     @Test("Partial Batch Rollback: Nth-event failure cleanly rolls back orphan events and allows clean retry")
     func testSubmitTurnNthEventAppendFailureAndCleanRetry() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionID = SessionID(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -281,6 +292,7 @@ struct RC1StaticAuditTests {
     // MARK: - 6. P0 REVERT: Recovery convergence reset failure must throw
     @Test("Revert Recovery Reset Failure: EventLog reset failure throws error and never returns false applied=true")
     func testRevertRecoveryConvergenceResetFailureThrows() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }

@@ -176,8 +176,8 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
             #if os(Windows) || canImport(WinSDK)
             let count = buffer.withUnsafeMutableBytes { bufPtr -> Int in
                 guard let base = bufPtr.baseAddress else { return -1 }
-                let ccharPtr = base.bindMemory(to: CChar.self, capacity: buffer.count)
-                return Int(recv(client, ccharPtr, Int32(buffer.count), 0))
+                let ccharPtr = base.bindMemory(to: CChar.self, capacity: bufPtr.count)
+                return Int(recv(client, ccharPtr, Int32(bufPtr.count), 0))
             }
             #else
             let count = recv(client, &buffer, buffer.count, 0)
@@ -196,8 +196,8 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
             #if os(Windows) || canImport(WinSDK)
             let count = buffer.withUnsafeMutableBytes { bufPtr -> Int in
                 guard let base = bufPtr.baseAddress else { return -1 }
-                let ccharPtr = base.bindMemory(to: CChar.self, capacity: buffer.count)
-                return Int(recv(client, ccharPtr, Int32(buffer.count), 0))
+                let ccharPtr = base.bindMemory(to: CChar.self, capacity: bufPtr.count)
+                return Int(recv(client, ccharPtr, Int32(bufPtr.count), 0))
             }
             #else
             let count = recv(client, &buffer, buffer.count, 0)

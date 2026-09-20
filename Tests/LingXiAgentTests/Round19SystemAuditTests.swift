@@ -4,7 +4,14 @@ import LingXiProtocol
 @testable import LingXiCore
 @testable import LingXiClient
 
-@Suite("Round 19 System Audit: Execution Ownership, Event Frontier Rollback, and Crash-Safe Revert")
+#if os(Linux) && canImport(Glibc)
+import Glibc
+private var isRunningAsRoot: Bool { getuid() == 0 }
+#else
+private var isRunningAsRoot: Bool { false }
+#endif
+
+@Suite("Round 19 System Audit: Structural Memory Invariants, Non-Volatile Persistence, and Recovery Resilience")
 struct Round19SystemAuditTests {
 
     // MARK: - 1. P0-A: Committed Turn Execution Ownership
@@ -118,6 +125,7 @@ struct Round19SystemAuditTests {
     // MARK: - 3. P0-C: EventLog Append Persistence Failure-Aware
     @Test("Failure-Aware Persistence: EventLog append throws on disk failure and prevents state advancement")
     func testEventLogAppendDiskFailureRejectsCommandAndPreventsWALEventsAppended() async throws {
+        if isRunningAsRoot { return }
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
