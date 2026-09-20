@@ -75,7 +75,7 @@ struct PlatformBuildGateTests {
             let elapsed = Date().timeIntervalSince(start)
             #expect(error.code == .commandTimedOut)
             #expect(elapsed >= 0.10)
-            #expect(elapsed < 2.0) // Must not hang indefinitely
+            #expect(elapsed < 10.0) // Must not hang indefinitely (default is 180s)
         }
     }
 

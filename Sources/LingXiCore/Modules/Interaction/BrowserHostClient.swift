@@ -57,6 +57,9 @@ public final class BrowserHostClient: @unchecked Sendable {
             return (c, [])
         }
         #elseif os(Windows)
+        if let found = LingXiPlatform.process.resolveExecutable(named: "node", customSearchPaths: nil) {
+            return (found, [])
+        }
         return ("node.exe", [])
         #endif
 

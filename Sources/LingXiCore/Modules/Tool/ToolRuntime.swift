@@ -1,8 +1,6 @@
-#if canImport(CoreFoundation)
-import CoreFoundation
-#endif
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 public protocol ToolExecutor: Sendable {
     var definition: ToolDefinition { get }
@@ -1061,25 +1059,9 @@ enum ToolSchemaValidator {
     private static func matches(_ value: Any, _ type: ToolInputType) -> Bool {
         switch type {
         case .string: return value is String
-        case .boolean: return value is Bool
-        case .integer:
-            #if canImport(CoreFoundation)
-            guard let number = value as? NSNumber else { return false }
-            return CFGetTypeID(number) != CFBooleanGetTypeID() && floor(number.doubleValue) == number.doubleValue
-            #else
-            guard !(value is Bool) else { return false }
-            if value is Int { return true }
-            if let num = value as? Double { return floor(num) == num }
-            return false
-            #endif
-        case .number:
-            #if canImport(CoreFoundation)
-            guard let number = value as? NSNumber else { return false }
-            return CFGetTypeID(number) != CFBooleanGetTypeID()
-            #else
-            guard !(value is Bool) else { return false }
-            return value is Double || value is Int || value is Float
-            #endif
+        case .boolean: return LingXiPlatform.types.isBoolean(value)
+        case .integer: return LingXiPlatform.types.isInteger(value)
+        case .number: return LingXiPlatform.types.isNumber(value)
         case .object: return value is [String: Any]
         case .array: return value is [Any]
         }

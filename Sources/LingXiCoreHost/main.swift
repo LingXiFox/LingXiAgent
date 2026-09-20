@@ -7,8 +7,7 @@ if let idx = CommandLine.arguments.firstIndex(of: "--crash-test"), CommandLine.a
     let path = CommandLine.arguments[idx + 2]
     let commandID = CommandID(CommandLine.arguments[idx + 3])
     let testDataRoot = URL(fileURLWithPath: path)
-    setenv("LINGXI_CRASH_TEST_STAGE", stage, 1)
-    let testHost = try CoreHost(dataRoot: testDataRoot)
+    let testHost = try CoreHost(dataRoot: testDataRoot, crashTestStage: stage)
     await testHost.start()
     let envelope = CommandEnvelope(
         commandID: commandID,

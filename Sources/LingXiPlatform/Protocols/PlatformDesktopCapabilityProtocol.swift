@@ -342,3 +342,24 @@ public actor DesktopEnvironment {
         return currentSnapshot
     }
 }
+
+/// 桌面环境高级辅助功能抽象（视觉 OCR、覆盖层、屏幕几何）
+public protocol PlatformDesktopHelperProtocol: Sendable {
+    func attachTargetBounds(_ bounds: CoordinateRect?) async
+    func findVisualElement(matching query: String, windowID: String?, windowBounds: CoordinateRect?) async throws -> VisualElementSnapshot?
+    func recognizeVisualCandidates(windowID: String?, windowBounds: CoordinateRect?, limit: Int) async throws -> [String]
+    func mainDisplayGeometry() -> (bounds: CoordinateRect, scaleFactor: Double)
+}
+
+public final class HeadlessDesktopHelperAdapter: PlatformDesktopHelperProtocol, @unchecked Sendable {
+    public init() {}
+    public func attachTargetBounds(_ bounds: CoordinateRect?) async {}
+    public func findVisualElement(matching query: String, windowID: String?, windowBounds: CoordinateRect?) async throws -> VisualElementSnapshot? { nil }
+    public func recognizeVisualCandidates(windowID: String?, windowBounds: CoordinateRect?, limit: Int) async throws -> [String] { [] }
+    public func mainDisplayGeometry() -> (bounds: CoordinateRect, scaleFactor: Double) {
+        (
+            CoordinateRect(origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")), width: 1920, height: 1080),
+            1.0
+        )
+    }
+}

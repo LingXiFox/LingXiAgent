@@ -119,10 +119,11 @@ struct DarwinDesktopBackendTests {
             if let mainDisplay = sources.first(where: { $0.isDisplay }) {
                 print("📸 正在捕获主屏幕真实画面: \(mainDisplay.name)...")
                 if let frame = try? await captureBackend.captureFrame(source: mainDisplay, cropRect: NormalizedRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6)) {
-                    let artifactPath = "/Users/lingxifox/.gemini/antigravity-cli/brain/81bf0d67-483f-4963-85d3-6c06cc8121f2/live_mac_screen_capture.png"
-                    try? frame.data.write(to: URL(fileURLWithPath: artifactPath))
+                    let tempArtifact = FileManager.default.temporaryDirectory.appendingPathComponent("live_mac_screen_capture_\(UUID().uuidString).png")
+                    defer { try? FileManager.default.removeItem(at: tempArtifact) }
+                    try? frame.data.write(to: tempArtifact)
                     print("✅ 真实屏幕捕获并落盘成功！尺寸: \(frame.pixelWidth)x\(frame.pixelHeight), 大小: \(frame.data.count) bytes")
-                    print("🖼️ 截图路径: \(artifactPath)")
+                    print("🖼️ 临时截图路径: \(tempArtifact.path)")
                 } else {
                     print("ℹ️ 屏幕捕获受系统权限或安全限制保护，平稳降级跳过。")
                 }

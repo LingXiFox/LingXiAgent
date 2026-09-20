@@ -165,9 +165,48 @@ public struct PlatformSHA256Hasher: Sendable {
     }
 }
 
-#if !canImport(CryptoKit)
+/// 零依赖纯 Swift 密码学引擎（在所有平台编译，供 Linux/Windows 生产环境使用，并在所有平台供 KAT 测试进行双向比对）
+public enum CompactCryptoEngine: Sendable {
+    public static func sha256(_ data: Data) -> Data {
+        CompactSHA256.hash(data)
+    }
+
+    public static func sha256Hex(_ data: Data) -> String {
+        sha256(data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func hmacSHA256(key: Data, data: Data) -> Data {
+        CompactHMACSHA256.authenticate(key: key, data: data)
+    }
+
+    public static func hmacSHA256Hex(key: Data, data: Data) -> String {
+        hmacSHA256(key: key, data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func sealAESGCM(plaintext: Data, keyData: Data, nonce: Data, authenticating: Data) throws -> (ciphertext: Data, tag: Data) {
+        let (cipher, tag) = try CompactAESGCM.seal(
+            plaintext: Array(plaintext),
+            key: Array(keyData),
+            nonce: Array(nonce),
+            aad: Array(authenticating)
+        )
+        return (Data(cipher), Data(tag))
+    }
+
+    public static func openAESGCM(ciphertext: Data, tag: Data, keyData: Data, nonce: Data, authenticating: Data) throws -> Data {
+        let plain = try CompactAESGCM.open(
+            ciphertext: Array(ciphertext),
+            tag: Array(tag),
+            key: Array(keyData),
+            nonce: Array(nonce),
+            aad: Array(authenticating)
+        )
+        return Data(plain)
+    }
+}
+
 /// 零依赖标准 HMAC-SHA256 算法实现
-private enum CompactHMACSHA256 {
+enum CompactHMACSHA256 {
     static func authenticate(key: Data, data: Data) -> Data {
         let blockSize = 64
         var formattedKey = key
@@ -299,16 +338,17 @@ struct CompactSHA256StreamState: Sendable {
     mutating func finalize() -> Data {
         let bitLength = totalBytes * 8
         buffer.append(0x80)
-        while (buffer.count % 64) != 56 {
-            buffer.append(0x00)
+        while buffer.count != 56 {
             if buffer.count == 64 {
                 processChunk(buffer)
                 buffer.removeAll(keepingCapacity: true)
             }
+            buffer.append(0x00)
         }
         var bigEndianBits = bitLength.bigEndian
         withUnsafeBytes(of: &bigEndianBits) { buffer.append(contentsOf: $0) }
         processChunk(buffer)
+        buffer.removeAll(keepingCapacity: true)
 
         var result = Data(capacity: 32)
         for value in h {
@@ -321,7 +361,7 @@ struct CompactSHA256StreamState: Sendable {
 
 /// 零外部依赖的标准 FIPS 180-4 SHA-256 纯 Swift 实现
 /// 专门为无原生 CryptoKit 的 Linux / Windows 环境提供确定性兜底
-private enum CompactSHA256 {
+enum CompactSHA256 {
     static func hash(_ data: Data) -> Data {
         var state = CompactSHA256StreamState()
         state.update(data: data)
@@ -589,4 +629,3 @@ enum CompactAESGCM {
         return plaintext
     }
 }
-#endif

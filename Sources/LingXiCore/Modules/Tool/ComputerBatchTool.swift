@@ -1,10 +1,6 @@
 import Foundation
 import LingXiProtocol
 import LingXiPlatform
-#if os(macOS)
-import Cocoa
-import CoreGraphics
-#endif
 
 /// 桌面计算机交互动作批处理工具 (computer_batch)
 /// 允许模型在一次轮次中一次性下发一连串动作指令（如：查找元素 -> 移动 -> 点击 -> 输入 -> 回车 -> 等待），
@@ -133,22 +129,16 @@ public struct ComputerBatchTool: ToolExecutor {
 
         var targetHandle: DesktopTargetHandle? = attachedWindow?.toTargetHandle(revision: 1)
 
-        #if os(macOS)
         if let attachedWindow, bringToFront {
-            await MainActor.run {
-                DarwinVirtualPointerOverlay.shared.attachTargetBounds(attachedWindow.bounds)
-            }
+            await LingXiPlatform.desktopHelper.attachTargetBounds(attachedWindow.bounds)
         }
-        #endif
 
         defer {
-            #if os(macOS)
             if bringToFront {
-                Task { @MainActor in
-                    DarwinVirtualPointerOverlay.shared.attachTargetBounds(nil)
+                Task {
+                    await LingXiPlatform.desktopHelper.attachTargetBounds(nil)
                 }
             }
-            #endif
         }
 
         let winOriginX = (windowRelative ? attachedWindow?.bounds.origin.x : 0.0) ?? 0.0
@@ -218,37 +208,14 @@ public struct ComputerBatchTool: ToolExecutor {
                         foundDesc = "Found '\(matchedNode.name ?? query)' (role: \(matchedNode.role)) at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(bounds.origin.x)), \(Int(bounds.origin.y)), \(Int(bounds.width)), \(Int(bounds.height)))"
                         foundSuccess = true
                     } else {
-                        #if os(macOS)
-                        if let winID = attachedWindow?.id {
-                            let visionHit = await withTaskGroup(of: VisualElementSnapshot?.self) { group in
-                                group.addTask {
-                                    if let hit = try? await DarwinVisionOCRBackend.shared.findElement(matching: query, windowID: winID, windowBounds: attachedWindow?.bounds) {
-                                        return hit.element
-                                    }
-                                    return nil
-                                }
-                                group.addTask {
-                                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                                    return nil
-                                }
-                                let first = await group.next() ?? nil
-                                group.cancelAll()
-                                return first
-                            }
-                            if let visionHit {
-                                let cx = visionHit.bounds.origin.x + visionHit.bounds.width / 2.0
-                                let cy = visionHit.bounds.origin.y + visionHit.bounds.height / 2.0
-                                foundDesc = "Found '\(visionHit.text)' via Native Vision OCR at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(visionHit.bounds.origin.x)), \(Int(visionHit.bounds.origin.y)), \(Int(visionHit.bounds.width)), \(Int(visionHit.bounds.height)))"
-                                foundSuccess = true
-                            } else {
-                                foundDesc = "Element '\(query)' not found in \(targetApp ?? "target window")"
-                            }
+                        if let visionHit = try? await LingXiPlatform.desktopHelper.findVisualElement(matching: query, windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds) {
+                            let cx = visionHit.bounds.origin.x + visionHit.bounds.width / 2.0
+                            let cy = visionHit.bounds.origin.y + visionHit.bounds.height / 2.0
+                            foundDesc = "Found '\(visionHit.text)' via Native Vision OCR at center (\(String(format: "%.1f", cx)), \(String(format: "%.1f", cy))), bounds: (\(Int(visionHit.bounds.origin.x)), \(Int(visionHit.bounds.origin.y)), \(Int(visionHit.bounds.width)), \(Int(visionHit.bounds.height)))"
+                            foundSuccess = true
                         } else {
-                            foundDesc = "Element '\(query)' not found in \(targetApp ?? "current window")"
+                            foundDesc = "Element '\(query)' not found in \(targetApp ?? "target window")"
                         }
-                        #else
-                        foundDesc = "Element '\(query)' not found in \(targetApp ?? "current window") accessibility tree"
-                        #endif
                     }
                 }
                 let inspectMs = String(format: "%.1f", Double(inspectStart.duration(to: clock.now).components.attoseconds) / 1_000_000_000_000_000.0)
@@ -353,16 +320,12 @@ public struct ComputerBatchTool: ToolExecutor {
 
             // 若显式指定了 element_query 但未能在无障碍或视觉树中命中，给出当前窗口的候选文字建议，并严格标记失败
             if elementLookupFailed, let query = elementQuery {
-                #if os(macOS)
                 var visibleSuggestion = ""
-                if let elements = try? await DarwinVisionOCRBackend.shared.recognizeElements(windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds), !elements.isEmpty {
-                    let sampleList = elements.prefix(8).map { "\"\($0.text)\"" }.joined(separator: ", ")
+                if let candidates = try? await LingXiPlatform.desktopHelper.recognizeVisualCandidates(windowID: attachedWindow?.id, windowBounds: attachedWindow?.bounds, limit: 8), !candidates.isEmpty {
+                    let sampleList = candidates.map { "\"\($0)\"" }.joined(separator: ", ")
                     visibleSuggestion = " Visible candidates in window: [\(sampleList)]"
                 }
                 stepSummaries.append("Step \(stepIndex) [\(type.capitalized) '\(query)']: FAILED (Element not found in accessibility or visual tree.\(visibleSuggestion))")
-                #else
-                stepSummaries.append("Step \(stepIndex) [\(type.capitalized) '\(query)']: FAILED (Element not found in accessibility tree)")
-                #endif
                 hasFailedStep = true
                 stepIndex += 1
                 continue
@@ -527,39 +490,7 @@ public struct ComputerBatchTool: ToolExecutor {
                 intentHint: intentHint
             )
 
-            #if os(macOS)
-            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = {
-                if let mainScreen = NSScreen.main {
-                    let frame = mainScreen.frame
-                    let scale = Double(mainScreen.backingScaleFactor)
-                    return (
-                        CoordinateRect(
-                            origin: TargetPosition(x: frame.origin.x, y: frame.origin.y, space: .logicalPoint(displayID: "main")),
-                            width: frame.width,
-                            height: frame.height
-                        ),
-                        scale
-                    )
-                }
-                return (
-                    CoordinateRect(
-                        origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")),
-                        width: 1920,
-                        height: 1080
-                    ),
-                    2.0
-                )
-            }()
-            #else
-            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = (
-                CoordinateRect(
-                    origin: TargetPosition(x: 0, y: 0, space: .logicalPoint(displayID: "main")),
-                    width: 1920,
-                    height: 1080
-                ),
-                1.0
-            )
-            #endif
+            let (realDisplayBounds, realScaleFactor): (CoordinateRect, Double) = LingXiPlatform.desktopHelper.mainDisplayGeometry()
 
             let initialObservation = Observation(
                 sessionID: EnvironmentSessionID(rawValue: "desktop-session"),

@@ -21,4 +21,13 @@ public protocol PlatformSystemProtocol: Sendable {
 
     /// 获取标准运行时临时目录
     var defaultTemporaryDirectory: URL { get }
+
+    /// 读取指定环境变量
+    func getEnvironmentVariable(_ name: String) -> String?
+
+    /// 设置指定环境变量
+    func setEnvironmentVariable(_ name: String, value: String)
+
+    /// 清除指定环境变量
+    func unsetEnvironmentVariable(_ name: String)
 }

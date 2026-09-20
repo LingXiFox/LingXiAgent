@@ -308,10 +308,12 @@ public final class StdioTransport: @unchecked Sendable {
 
         // 3. 等待正在读取 availableData 的 reader 与 stderr drainer 读到 EOF 并完成退出，杜绝跨线程并发 close 句柄崩溃
         readStateLock.lock()
-        let deadline = Date().addingTimeInterval(0.3)
+        let deadline = Date().addingTimeInterval(0.5)
         while (activeReaders > 0 || isDrainActive) && Date() < deadline {
             readStateLock.wait(until: deadline)
         }
+
+        let canCloseSafely = (activeReaders == 0 && !isDrainActive)
 
         readLock.lock()
         let outH = outputHandle
@@ -323,9 +325,11 @@ public final class StdioTransport: @unchecked Sendable {
         errorHandle = nil
         readStateLock.unlock()
 
-        // 4. 确认 reader 与 drain worker 退出后，安全幂等地关闭 handle
-        try? outH?.close()
-        try? errH?.close()
+        // 4. 仅当所有 reader 与 drain worker 均已退出阻塞读时，才在父进程关闭 handle，杜绝跨线程并发 close 引发 SIGILL
+        if canCloseSafely {
+            try? outH?.close()
+            try? errH?.close()
+        }
     }
 
     deinit {

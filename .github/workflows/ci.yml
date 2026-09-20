@@ -21,18 +21,37 @@ jobs:
 
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode_16.app || sudo xcode-select -s /Applications/Xcode.app || true
+          XCODE_APP=$(find /Applications -maxdepth 1 -name "Xcode_16*.app" | sort -V | tail -n 1)
+          if [ -n "$XCODE_APP" ]; then
+            sudo xcode-select -s "$XCODE_APP"
+          fi
 
-      - name: Print Swift Version
-        run: swift --version
+      - name: Print Swift & Xcode Version
+        run: |
+          swift --version
+          xcodebuild -version
 
-      - name: Build All Targets
-        run: swift build -v
+      - name: Stage 1 - Build All Executable Products
+        run: |
+          swift build -v --product lingxiagent
+          swift build -v --product LingXiCoreHost
+          swift build -v --product LingXiTUI
 
-      - name: Run Test Suite
+      - name: Stage 2 - Architecture Boundary & Platform Gate
+        run: |
+          swift test --filter PlatformBoundaryArchitectureTests
+          swift test --filter PlatformBuildGateTests
+
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
+        run: swift test --filter PlatformCryptoKATTests
+
+      - name: Stage 4 - IPC & Process Robustness Gate
+        run: swift test --filter IPCPeerRobustnessTests
+
+      - name: Stage 5 - Full Integration Test Suite
         run: swift test -v --parallel
 
-      - name: Smoke Test CLI Executables
+      - name: Stage 6 - Smoke Test CLI Executables
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
           "$BIN_PATH/lingxiagent" --help
@@ -55,16 +74,27 @@ jobs:
       - name: Print Swift Version
         run: swift --version
 
-      - name: Build All Targets
+      - name: Stage 1 - Build All Executable Products
         run: |
           swift build -v --product lingxiagent
           swift build -v --product LingXiCoreHost
           swift build -v --product LingXiTUI
 
-      - name: Run Test Suite
+      - name: Stage 2 - Architecture Boundary & Platform Gate
+        run: |
+          swift test --filter PlatformBoundaryArchitectureTests
+          swift test --filter PlatformBuildGateTests
+
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
+        run: swift test --filter PlatformCryptoKATTests
+
+      - name: Stage 4 - IPC & Process Robustness Gate
+        run: swift test --filter IPCPeerRobustnessTests
+
+      - name: Stage 5 - Full Integration Test Suite
         run: swift test -v --parallel
 
-      - name: Smoke Test CLI Executables
+      - name: Stage 6 - Smoke Test CLI Executables
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
           "$BIN_PATH/lingxiagent" --help
@@ -103,21 +133,36 @@ jobs:
       - name: Print Swift Version
         run: swift --version
 
-      - name: Build All Targets
+      - name: Stage 1 - Build All Executable Products
         shell: bash
         run: |
           swift build -v --product lingxiagent
           swift build -v --product LingXiCoreHost
           swift build -v --product LingXiTUI
 
-      - name: Run Test Suite
+      - name: Stage 2 - Architecture Boundary & Platform Gate
+        shell: bash
+        run: |
+          swift test --filter PlatformBoundaryArchitectureTests
+          swift test --filter PlatformBuildGateTests
+
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
+        shell: bash
+        run: swift test --filter PlatformCryptoKATTests
+
+      - name: Stage 4 - IPC & Process Robustness Gate
+        shell: bash
+        run: swift test --filter IPCPeerRobustnessTests
+
+      - name: Stage 5 - Full Integration Test Suite
         shell: bash
         run: swift test -v
 
-      - name: Smoke Test CLI Executables
+      - name: Stage 6 - Smoke Test CLI Executables
         shell: bash
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
+          cp "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" "$BIN_PATH/" || true
           "$BIN_PATH/lingxiagent.exe" --help
           "$BIN_PATH/LingXiCoreHost.exe" auth list
           "$BIN_PATH/lingxiagent.exe" --smoke

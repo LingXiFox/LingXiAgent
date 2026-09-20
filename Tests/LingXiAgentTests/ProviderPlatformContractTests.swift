@@ -177,25 +177,41 @@ struct ProviderPlatformContractTests {
         #expect(found?.configured == true)
     }
 
-    @Test("CoreHost listModels yields real user configured models from ~/.lingxiagent/providers.json")
-    func coreHostListModelsYieldsRealUserConfiguredModels() async throws {
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let userConfigDir = homeDir.appendingPathComponent(".lingxiagent", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: userConfigDir.appendingPathComponent("providers.json").path) else {
-            return
+    @Test("CoreHost listModels yields configured models from isolated providers.json")
+    func coreHostListModelsYieldsConfiguredModelsFromIsolatedStore() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-hermetic-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let providersJSON = """
+        {
+          "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
+          "version": 1,
+          "providers": {
+            "test-provider": {
+              "name": "Test Provider",
+              "adapter": "openai-compatible",
+              "options": {
+                "baseURL": "https://test.example.com/v1",
+                "apiKey": "{env:TEST_KEY}"
+              },
+              "models": {
+                "test-model": {
+                  "name": "Test Model",
+                  "limit": { "context": 131072, "output": 8192 }
+                }
+              }
+            }
+          }
         }
-        let host = try CoreHost(dataRoot: userConfigDir)
+        """
+        try providersJSON.data(using: .utf8)?.write(to: tempDir.appendingPathComponent("providers.json"))
+        let host = try CoreHost(dataRoot: tempDir)
         let response = try await host.listModels(envelope: QueryEnvelope(payload: VoidResult()))
         let models = response.payload
-        let content = (try? String(contentsOf: userConfigDir.appendingPathComponent("providers.json"))) ?? ""
-        if content.contains("opencode") {
-            let hasOpenCode = models.contains { $0.id == "opencode-zen/muse-spark-1.3-contributor-free" }
-            #expect(hasOpenCode)
-        }
-        if content.contains("bai") {
-            let hasBAI = models.contains { $0.id == "bai/deepseek-v4-flash" }
-            #expect(hasBAI)
-        }
+        let found = models.first { $0.id == "test-provider/test-model" }
+        #expect(found != nil)
+        #expect(found?.displayName == "Test Model")
         #expect(!models.isEmpty)
     }
 

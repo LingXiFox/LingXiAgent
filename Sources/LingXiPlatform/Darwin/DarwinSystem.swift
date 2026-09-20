@@ -54,5 +54,17 @@ public final class DarwinSystemAdapter: PlatformSystemProtocol, @unchecked Senda
             return false
         }
     }
+
+    public func getEnvironmentVariable(_ name: String) -> String? {
+        ProcessInfo.processInfo.environment[name]
+    }
+
+    public func setEnvironmentVariable(_ name: String, value: String) {
+        Darwin.setenv(name, value, 1)
+    }
+
+    public func unsetEnvironmentVariable(_ name: String) {
+        Darwin.unsetenv(name)
+    }
 }
 #endif

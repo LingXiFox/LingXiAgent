@@ -1,7 +1,5 @@
-#if canImport(CoreFoundation)
-import CoreFoundation
-#endif
 import Foundation
+import LingXiPlatform
 
 public struct ConfigurationValidationError: Error, Sendable, Equatable, CustomStringConvertible {
     public let path: String
@@ -108,12 +106,7 @@ enum JSONSchemaValidator {
     }
 
     private static func isBoolean(_ value: Any) -> Bool {
-        #if canImport(CoreFoundation)
-        guard let number = value as? NSNumber else { return false }
-        return CFGetTypeID(number) == CFBooleanGetTypeID()
-        #else
-        return value is Bool
-        #endif
+        LingXiPlatform.types.isBoolean(value)
     }
 
     private static func jsonType(of value: Any) -> String {

@@ -182,6 +182,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     public private(set) var startupPolicy: CoreHostStartupPolicy
+    public let crashTestStage: String?
     private var registryRefreshTask: Task<Void, Never>?
     private var workspaceIndexTask: Task<Void, Never>?
     private var workspaceRevision: UInt64 = 1
@@ -207,7 +208,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         credentialStore: (any CredentialStore)? = nil,
         restoreScheduler: SessionRestoreScheduler? = nil,
         extensionPlatform: ExtensionPlatform? = nil,
-        backgroundManager: BackgroundCommandManager? = nil
+        backgroundManager: BackgroundCommandManager? = nil,
+        crashTestStage: String? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
         let processName = ProcessInfo.processInfo.processName.lowercased()
@@ -235,6 +237,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             layout = CoreStorageLayout.production
         }
         self.storageLayout = layout
+        self.crashTestStage = crashTestStage ?? environment["LINGXI_CRASH_TEST_STAGE"]
         try? layout.ensureDirectoriesExist()
 
         // 实例级持有与隔离核心服务，杜绝跨 Host 单例污染 (Audit Round 7 Phase B)
@@ -2467,7 +2470,7 @@ extension CoreHost {
                 initialSessionSequence: initialSessionSeq
             )
 
-            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+            if crashTestStage == "after-mutation" {
                 triggerInjectedCrash()
             }
 
@@ -2488,7 +2491,7 @@ extension CoreHost {
             try await runtimeEventLog.append(payload: .sessionCreated(summary))
             try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
-            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+            if crashTestStage == "after-event" {
                 triggerInjectedCrash()
             }
 
@@ -2519,7 +2522,7 @@ extension CoreHost {
             isTransactionCommitted = true
             try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
 
-            if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+            if crashTestStage == "after-receipt" {
                 triggerInjectedCrash()
             }
 
@@ -3106,7 +3109,7 @@ extension CoreHost {
                     initialSessionSequence: initialSessionSeq
                 )
 
-                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
+                if crashTestStage == "after-mutation" {
                     triggerInjectedCrash()
                 }
 
@@ -3117,7 +3120,7 @@ extension CoreHost {
 
                 try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
-                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
+                if crashTestStage == "after-event" {
                     triggerInjectedCrash()
                 }
 
@@ -3165,7 +3168,7 @@ extension CoreHost {
 
                 try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
 
-                if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
+                if crashTestStage == "after-receipt" {
                     triggerInjectedCrash()
                 }
 

@@ -72,6 +72,15 @@ public enum LingXiPlatform {
     /// 纯 ANSI 软渲染控制台兜底对象
     public static let fallbackTerminal = ANSIFallbackTerminal()
 
+    /// 跨平台桌面辅助能力（视觉 OCR、覆盖层、屏幕几何）
+    public static let desktopHelper: any PlatformDesktopHelperProtocol = {
+        #if os(macOS)
+        return DarwinDesktopHelperAdapter()
+        #else
+        return HeadlessDesktopHelperAdapter()
+        #endif
+    }()
+
     /// 跨平台路径与环境变量工具
     public static let path = PathUtilities.self
 
@@ -80,4 +89,22 @@ public enum LingXiPlatform {
 
     /// 跨平台异步按行读取器
     public static let lineReader = AsyncLineReader.self
+
+    /// 跨平台类型反射与 JSON 值语义判断
+    public static let types = PlatformTypeInspector.self
+
+    /// 跨平台统一环境变量访问门面
+    public enum environment {
+        public static func get(_ name: String) -> String? {
+            LingXiPlatform.system.getEnvironmentVariable(name)
+        }
+
+        public static func set(_ name: String, value: String) {
+            LingXiPlatform.system.setEnvironmentVariable(name, value: value)
+        }
+
+        public static func unset(_ name: String) {
+            LingXiPlatform.system.unsetEnvironmentVariable(name)
+        }
+    }
 }

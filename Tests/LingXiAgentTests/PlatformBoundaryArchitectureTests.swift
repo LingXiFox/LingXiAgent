@@ -16,6 +16,9 @@ struct PlatformBoundaryArchitectureTests {
 
         let forbiddenImportPatterns = [
             "import AppKit",
+            "import Cocoa",
+            "import CoreGraphics",
+            "import CoreFoundation",
             "import Security",
             "import Darwin",
             "import Glibc",

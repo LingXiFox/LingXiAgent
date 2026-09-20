@@ -71,5 +71,25 @@ public final class LinuxSystemAdapter: PlatformSystemProtocol, @unchecked Sendab
         }
         return false
     }
+
+    public func getEnvironmentVariable(_ name: String) -> String? {
+        ProcessInfo.processInfo.environment[name]
+    }
+
+    public func setEnvironmentVariable(_ name: String, value: String) {
+        #if canImport(Glibc)
+        Glibc.setenv(name, value, 1)
+        #elseif canImport(Musl)
+        Musl.setenv(name, value, 1)
+        #endif
+    }
+
+    public func unsetEnvironmentVariable(_ name: String) {
+        #if canImport(Glibc)
+        Glibc.unsetenv(name)
+        #elseif canImport(Musl)
+        Musl.unsetenv(name)
+        #endif
+    }
 }
 #endif

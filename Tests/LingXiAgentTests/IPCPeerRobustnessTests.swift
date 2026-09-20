@@ -7,18 +7,23 @@ import Foundation
 @Suite("IPC Peer Robustness Tests (Round 3 Phase A)")
 struct IPCPeerRobustnessTests {
     private static func resolvePython() -> String {
-        if let found = LingXiPlatform.process.resolveExecutable(named: "python3", customSearchPaths: ["/usr/bin", "/bin", "/usr/local/bin"]) {
-            return found
-        }
-        if let found = LingXiPlatform.process.resolveExecutable(named: "python", customSearchPaths: ["/usr/bin", "/bin", "/usr/local/bin"]) {
-            return found
-        }
         #if os(Windows)
         if let found = LingXiPlatform.process.resolveExecutable(named: "python.exe", customSearchPaths: nil) {
             return found
         }
-        #endif
+        if let found = LingXiPlatform.process.resolveExecutable(named: "python", customSearchPaths: nil) {
+            return found
+        }
+        return "python.exe"
+        #else
+        if let found = LingXiPlatform.process.resolveExecutable(named: "python3", customSearchPaths: ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]) {
+            return found
+        }
+        if let found = LingXiPlatform.process.resolveExecutable(named: "python", customSearchPaths: ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]) {
+            return found
+        }
         return "/usr/bin/python3"
+        #endif
     }
 
     @Test("StderrRingBuffer bounded storage discards oldest chunks correctly")

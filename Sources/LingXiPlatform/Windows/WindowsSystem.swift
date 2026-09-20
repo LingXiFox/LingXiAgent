@@ -1,5 +1,6 @@
 #if os(Windows)
 import Foundation
+import WinSDK
 
 public final class WindowsSystemAdapter: PlatformSystemProtocol, @unchecked Sendable {
     public init() {}
@@ -56,5 +57,27 @@ public final class WindowsSystemAdapter: PlatformSystemProtocol, @unchecked Send
             return false
         }
     }
+
+    public func getEnvironmentVariable(_ name: String) -> String? {
+        ProcessInfo.processInfo.environment[name]
+    }
+
+    public func setEnvironmentVariable(_ name: String, value: String) {
+        let wName = name.utf16.map { WCHAR($0) } + [0]
+        let wValue = value.utf16.map { WCHAR($0) } + [0]
+        wName.withUnsafeBufferPointer { namePtr in
+            wValue.withUnsafeBufferPointer { valPtr in
+                _ = SetEnvironmentVariableW(namePtr.baseAddress, valPtr.baseAddress)
+            }
+        }
+    }
+
+    public func unsetEnvironmentVariable(_ name: String) {
+        let wName = name.utf16.map { WCHAR($0) } + [0]
+        wName.withUnsafeBufferPointer { namePtr in
+            _ = SetEnvironmentVariableW(namePtr.baseAddress, nil)
+        }
+    }
 }
 #endif
+

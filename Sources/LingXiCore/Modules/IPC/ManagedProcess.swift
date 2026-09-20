@@ -73,6 +73,14 @@ public final class ManagedProcess: @unchecked Sendable {
         guard let proc = process else { return }
         if proc.isRunning {
             LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: force)
+            let deadline = Date().addingTimeInterval(0.5)
+            while proc.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if proc.isRunning {
+                LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
+                proc.waitUntilExit()
+            }
         }
         process = nil
     }
