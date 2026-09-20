@@ -1,6 +1,6 @@
 name: CI Matrix Gate
 
-on:
+"on":
   push:
     branches: [ main, 'release/**', 'feature/**', 'fix/**' ]
   pull_request:
@@ -23,15 +23,15 @@ jobs:
     name: macOS Build & Test (arm64)
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      HOME: ${{ runner.temp }}/test-home
-      LINGXI_DATA_DIR: ${{ runner.temp }}/test-home/.lingxiagent
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare isolated test environment
         run: |
-          mkdir -p "${{ runner.temp }}/test-home"
+          TEST_HOME="${{ runner.temp }}/test-home"
+          mkdir -p "$TEST_HOME"
+          echo "HOME=$TEST_HOME" >> "$GITHUB_ENV"
+          echo "LINGXI_DATA_DIR=$TEST_HOME/.lingxiagent" >> "$GITHUB_ENV"
 
       - name: Select Xcode & print versions
         run: |
@@ -99,15 +99,14 @@ jobs:
     container:
       image: swift:6.0.3
       options: --privileged
-    env:
-      HOME: /tmp/test-home
-      LINGXI_DATA_DIR: /tmp/test-home/.lingxiagent
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare isolated test environment
         run: |
           mkdir -p /tmp/test-home /root/.lingxiagent
+          echo "HOME=/tmp/test-home" >> "$GITHUB_ENV"
+          echo "LINGXI_DATA_DIR=/tmp/test-home/.lingxiagent" >> "$GITHUB_ENV"
 
       - name: Install system dependencies
         timeout-minutes: 8
