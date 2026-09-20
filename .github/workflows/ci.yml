@@ -12,7 +12,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 让 CLI 走非交互分支，避免 smoke test 等 stdin 吊死
   CI: "1"
   LINGXI_NON_INTERACTIVE: "1"
 
@@ -23,9 +22,16 @@ jobs:
   test-macos:
     name: macOS Build & Test (arm64)
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 30
+    env:
+      HOME: ${{ runner.temp }}/test-home
+      LINGXI_DATA_DIR: ${{ runner.temp }}/test-home/.lingxiagent
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare isolated test environment
+        run: |
+          mkdir -p "${{ runner.temp }}/test-home"
 
       - name: Select Xcode & print versions
         run: |
@@ -43,17 +49,30 @@ jobs:
           key: spm-macos-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-macos-
 
-      # 一次编译，产物同时覆盖 executable 与 test bundle
-      - name: Build products + tests (single pass)
-        timeout-minutes: 25
+      - name: Stage 1 - Build products + tests (single pass)
+        timeout-minutes: 15
         run: swift build --build-tests
 
-      # 一次运行，不重新编译；前面所有 --filter stage 已被合并
-      - name: Run full test suite
-        timeout-minutes: 20
-        run: swift test --skip-build --parallel --xunit-output test-results.xml < /dev/null
+      - name: Stage 2 - Architecture Boundary & Platform Gate
+        timeout-minutes: 5
+        run: |
+          swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null
+          swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
+          swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
-      - name: Smoke test CLI executables
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
+        timeout-minutes: 5
+        run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
+
+      - name: Stage 4 - IPC & Process Robustness Gate
+        timeout-minutes: 5
+        run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+
+      - name: Stage 5 - Controlled Full Integration Test Suite
+        timeout-minutes: 15
+        run: swift test --skip-build --num-workers 2 --xunit-output test-results.xml < /dev/null
+
+      - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
         run: |
           set -euo pipefail
@@ -76,13 +95,19 @@ jobs:
   test-linux:
     name: Linux Build & Test (x86_64)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     container:
       image: swift:6.0.3
-      # bubblewrap 在 container 内需要 user namespace，否则沙箱测试会吊死
       options: --privileged
+    env:
+      HOME: /tmp/test-home
+      LINGXI_DATA_DIR: /tmp/test-home/.lingxiagent
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare isolated test environment
+        run: |
+          mkdir -p /tmp/test-home /root/.lingxiagent
 
       - name: Install system dependencies
         timeout-minutes: 8
@@ -92,7 +117,6 @@ jobs:
             libsqlite3-dev pkg-config python3 bubblewrap nodejs
           swift --version
 
-      # 沙箱不可用时让测试自己降级跳过，而不是卡在那里等
       - name: Probe bubblewrap availability
         run: |
           if bwrap --dev-bind / / true 2>/dev/null; then
@@ -111,15 +135,30 @@ jobs:
           key: spm-linux-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-linux-
 
-      - name: Build products + tests (single pass)
-        timeout-minutes: 25
+      - name: Stage 1 - Build products + tests (single pass)
+        timeout-minutes: 15
         run: swift build --build-tests
 
-      - name: Run full test suite
-        timeout-minutes: 20
-        run: swift test --skip-build --parallel --xunit-output test-results.xml < /dev/null
+      - name: Stage 2 - Architecture Boundary & Platform Gate
+        timeout-minutes: 5
+        run: |
+          swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null
+          swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
+          swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
-      - name: Smoke test CLI executables
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
+        timeout-minutes: 5
+        run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
+
+      - name: Stage 4 - IPC & Process Robustness Gate
+        timeout-minutes: 5
+        run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+
+      - name: Stage 5 - Controlled Full Integration Test Suite
+        timeout-minutes: 15
+        run: swift test --skip-build --num-workers 2 --xunit-output test-results.xml < /dev/null
+
+      - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
         run: |
           set -euo pipefail
@@ -137,22 +176,34 @@ jobs:
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
-  # Windows：暂设为非阻塞，稳定后删掉 continue-on-error
+  # Windows：逐步稳定支持（非阻塞）
   # ─────────────────────────────────────────────────────────────
   test-windows:
     name: Windows Build & Test (x86_64)
     runs-on: windows-2022
-    timeout-minutes: 60
-    continue-on-error: true      # ← Windows 稳定后删除此行
+    timeout-minutes: 45
+    continue-on-error: true
     steps:
-      # 注意：不要再叠加 ilammy/msvc-dev-cmd。
-      # gha-setup-swift 自己会配好 MSVC 环境，两者叠加会撑爆 cmd.exe 的
-      # 8191 字符 PATH 上限，导致整条 PATH 被丢弃。
-      - name: Set up Swift toolchain
-        uses: compnerd/gha-setup-swift@v0.5.0   # v0.4.0 有 PATH 重复 bug
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: "2022"
+
+      - name: Set up Swift
+        uses: compnerd/gha-setup-swift@v0.5.0
         with:
           swift-version: swift-6.0.3-release
           swift-build: 6.0.3-RELEASE
+
+      - name: Provision SQLite Native Dependencies
+        shell: cmd
+        run: |
+          call "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" install sqlite3:x64-windows
+          call "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" integrate install
+          echo INCLUDE=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\include;%INCLUDE%>> %GITHUB_ENV%
+          echo LIB=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\lib;%LIB%>> %GITHUB_ENV%
+          echo PATH=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin;%VCPKG_INSTALLATION_ROOT%;%PATH%>> %GITHUB_ENV%
 
       - uses: actions/checkout@v4
 
@@ -160,11 +211,7 @@ jobs:
         shell: pwsh
         run: |
           swift --version
-          Write-Host "PATH length = $($env:PATH.Length) (cmd.exe limit is 8191)"
-          if ($env:PATH.Length -gt 8000) {
-            Write-Host "::warning::PATH is近 cmd.exe 上限，可能被截断"
-          }
-          Get-Command swift, link, cl | Format-Table Name, Source
+          Get-Command swift, link, cl -ErrorAction SilentlyContinue | Format-Table Name, Source
 
       - name: Cache SwiftPM
         uses: actions/cache@v4
@@ -173,23 +220,32 @@ jobs:
           key: spm-windows-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-windows-
 
-      - name: Build products + tests (single pass)
+      - name: Stage 1 - Build products + tests (single pass)
         shell: bash
-        timeout-minutes: 35
+        timeout-minutes: 25
         run: swift build --build-tests
 
-      # Windows 的 XCTest 不支持 --parallel
-      - name: Run full test suite
+      - name: Stage 2 - Architecture Boundary & Platform Gate
         shell: bash
-        timeout-minutes: 20
-        run: swift test --skip-build < /dev/null
+        timeout-minutes: 5
+        run: |
+          swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null
+          swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
+          swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
-      - name: Smoke test CLI executables
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
         shell: bash
-        timeout-minutes: 3
+        timeout-minutes: 5
+        run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
+
+      - name: Stage 6 - Smoke test CLI executables
+        shell: bash
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           BIN_PATH="$(swift build --show-bin-path)"
+          cp "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" "$BIN_PATH/"
+          test -f "$BIN_PATH/sqlite3.dll"
           "$BIN_PATH/lingxiagent.exe"    --help     < /dev/null
           "$BIN_PATH/LingXiCoreHost.exe" auth list  < /dev/null
           "$BIN_PATH/lingxiagent.exe"    --smoke    < /dev/null

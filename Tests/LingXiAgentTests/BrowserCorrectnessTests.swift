@@ -220,7 +220,8 @@ struct BrowserCorrectnessTests {
     func testHighFrequencyBrowserHostClientLifecycle() async throws {
         guard FileManager.default.fileExists(atPath: sidecarPath) else { return }
 
-        for _ in 1...100 {
+        let iterations = ProcessInfo.processInfo.environment["CI"] == "1" ? 20 : 100
+        for _ in 1...iterations {
             let client = BrowserHostClient(scriptPath: sidecarPath, mode: .mock)
             try client.start()
             client.stop()

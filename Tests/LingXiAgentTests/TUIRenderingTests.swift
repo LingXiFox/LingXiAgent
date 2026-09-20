@@ -994,22 +994,25 @@ struct TUIRenderingTests {
         #expect(viewport.scrollOffset == 0)
     }
 
-    @Test func todoStorePersistsAcrossInstancesAndTUISidebarRendersTasks() {
+    @Test func todoStorePersistsAcrossInstancesAndTUISidebarRendersTasks() throws {
         let testSessionID = "test-session-\(UUID().uuidString)"
-        defer { TodoStore.shared.clear(for: testSessionID) }
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("todo-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
 
         // 1. 添加待办任务并更新
-        TodoStore.shared.addTodo(TodoItemData(id: "task-1", title: "探活 Notion MCP", status: "pending"), for: testSessionID)
-        TodoStore.shared.addTodo(TodoItemData(id: "task-2", title: "测试 Skills 技能库", status: "pending"), for: testSessionID)
+        let store1 = TodoStore(storageDir: tempDir)
+        store1.addTodo(TodoItemData(id: "task-1", title: "探活 Notion MCP", status: "pending"), for: testSessionID)
+        store1.addTodo(TodoItemData(id: "task-2", title: "测试 Skills 技能库", status: "pending"), for: testSessionID)
 
-        #expect(TodoStore.shared.getTodos(for: testSessionID).count == 2)
+        #expect(store1.getTodos(for: testSessionID).count == 2)
 
-        _ = TodoStore.shared.updateTodo(id: "task-1", status: "completed", title: nil, for: testSessionID)
-        let updatedTodos = TodoStore.shared.getTodos(for: testSessionID)
+        _ = store1.updateTodo(id: "task-1", status: "completed", title: nil, for: testSessionID)
+        let updatedTodos = store1.getTodos(for: testSessionID)
         #expect(updatedTodos.first(where: { $0.id == "task-1" })?.status == "completed")
 
         // 2. 模拟全新独立实例（跨进程模拟）读取该 session 的 todos
-        let brandNewStore = TodoStore()
+        let brandNewStore = TodoStore(storageDir: tempDir)
         let reloaded = brandNewStore.getTodos(for: testSessionID)
         #expect(reloaded.count == 2)
         #expect(reloaded.first(where: { $0.id == "task-1" })?.status == "completed")

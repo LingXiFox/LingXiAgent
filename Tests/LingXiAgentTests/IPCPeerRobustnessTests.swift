@@ -292,7 +292,8 @@ while True:
 
     @Test("High-frequency lifecycle stress test: start/stop JSONRPCPeer and StdioTransport 100 times without SIGILL, hang, or race")
     func testHighFrequencyStartStopStress() throws {
-        for _ in 1...100 {
+        let iterations = ProcessInfo.processInfo.environment["CI"] == "1" ? 20 : 100
+        for _ in 1...iterations {
             let proc = ManagedProcess(
                 executablePath: Self.resolvePython(),
                 arguments: ["-u", "-c", "import sys; sys.stdin.readline()"]

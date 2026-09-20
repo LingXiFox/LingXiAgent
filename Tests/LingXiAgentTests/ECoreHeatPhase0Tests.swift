@@ -601,30 +601,18 @@ import LingXiProtocol
 
     // 17. 真实工作区 ~/.lingxiagent/sessions 观测期指标实采
     @Test func testRealWorldECoreDataObservation() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home: URL
+        if let customHome = ProcessInfo.processInfo.environment["HOME"], !customHome.isEmpty {
+            home = URL(fileURLWithPath: customHome)
+        } else {
+            home = FileManager.default.homeDirectoryForCurrentUser
+        }
         let sessionsDir = home.appendingPathComponent(".lingxiagent", isDirectory: true).appendingPathComponent("sessions", isDirectory: true)
-        print("SESSIONS DIR IS: \(sessionsDir.path)")
-        print("EXISTS: \(FileManager.default.fileExists(atPath: sessionsDir.path))")
+        guard FileManager.default.fileExists(atPath: sessionsDir.path) else {
+            return
+        }
 
         let metrics = ECoreObservationAnalyzer.analyzeDirectory(baseDirectory: sessionsDir)
-        print("=== REAL WORLD E-CORE OBSERVATION METRICS ===")
-        print("Total Objects Found: \(metrics.totalObjects)")
-        print("Total Stored Events: \(metrics.totalStoredEvents)")
-        print("Total Recalled Events: \(metrics.totalRecalledEvents)")
-        print("Total Recall Miss Events: \(metrics.totalRecallMissEvents)")
-        print("Never Recalled Count: \(metrics.neverRecalledObjectsCount) (\(String(format: "%.2f%%", metrics.neverRecalledRatio * 100)))")
-        print("Median Heat: \(metrics.medianHeat), MAD: \(metrics.madHeat)")
-        print("P50: \(metrics.p50), P70: \(metrics.p70), P80: \(metrics.p80), P90: \(metrics.p90), P95: \(metrics.p95)")
-        print("--- Pareto Distribution ---")
-        for b in metrics.paretoDistribution {
-            print("\(b.topPercentileLabel) objects (\(b.objectCount)) -> \(b.recallCount) recalls (\(String(format: "%.2f%%", b.recallContributionRatio * 100)))")
-        }
-        print("--- Diagnostic ---")
-        print("Stored Weight Analysis: \(metrics.storedWeightAnalysis)")
-        print("Half Life Analysis: \(metrics.halfLifeAnalysis)")
-        print("Sample Sufficiency Verdict: \(metrics.sampleSufficiencyVerdict)")
-        print("=============================================")
-
         #expect(metrics.totalObjects >= 0)
     }
 
