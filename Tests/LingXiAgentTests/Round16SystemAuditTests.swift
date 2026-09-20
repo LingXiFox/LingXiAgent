@@ -303,7 +303,8 @@ struct Round16SystemAuditTests {
     // MARK: - 6. P0-E: Official Installer Sidecar Deployment Completeness
     @Test("Official Installer: Sidecars/browser-host is bundled and resolvable")
     func testOfficialInstallerDeploysBrowserSidecar() throws {
-        let repoRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let sidecarScript = repoRoot.appendingPathComponent("Sidecars/browser-host/index.mjs")
         let sidecarPackage = repoRoot.appendingPathComponent("Sidecars/browser-host/package.json")
 
@@ -312,11 +313,19 @@ struct Round16SystemAuditTests {
 
         // Verify package-release.sh packages Sidecars/browser-host
         let releaseScriptPath = repoRoot.appendingPathComponent("scripts/package-release.sh").path
+        guard FileManager.default.fileExists(atPath: releaseScriptPath) else {
+            Issue.record("scripts/package-release.sh missing at \(releaseScriptPath)")
+            return
+        }
         let releaseScriptContent = try String(contentsOfFile: releaseScriptPath, encoding: .utf8)
         #expect(releaseScriptContent.contains("Sidecars/browser-host"), "package-release.sh must package Sidecars/browser-host into archive!")
 
         // Verify install.sh installs Sidecars/browser-host
         let installScriptPath = repoRoot.appendingPathComponent("install.sh").path
+        guard FileManager.default.fileExists(atPath: installScriptPath) else {
+            Issue.record("install.sh missing at \(installScriptPath)")
+            return
+        }
         let installScriptContent = try String(contentsOfFile: installScriptPath, encoding: .utf8)
         #expect(installScriptContent.contains("install_sidecars"), "install.sh must invoke install_sidecars!")
         #expect(installScriptContent.contains("$INSTALL_ROOT/sidecars/browser-host"), "install.sh must deploy to $INSTALL_ROOT/sidecars/browser-host!")

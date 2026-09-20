@@ -7,6 +7,10 @@ import LingXiProtocol
 
 struct TUIRenderingTests {
     @Test func openTUIBindingCompletesRendererLifecycle() throws {
+        #if !os(macOS)
+        // Linux 与 Windows V1 Baseline 明确采用纯 Swift ANSI Fallback Renderer，非 macOS 跳过 libopentui 动态库依赖测试
+        return
+        #else
         let renderer = try OpenTUIRenderer(width: 24, height: 8)
         renderer.resize(width: 30, height: 10)
         renderer.draw("OpenTUI C ABI\n中文")
@@ -14,6 +18,7 @@ struct TUIRenderingTests {
         #expect(renderer.render(force: true) != 2)
         renderer.setCursor(nil)
         #expect(renderer.render() != 2)
+        #endif
     }
 
     @Test func displayWidthHandlesAsciiCJKAndEmoji() {
