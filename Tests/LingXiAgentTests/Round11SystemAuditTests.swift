@@ -29,7 +29,7 @@ struct Round11SystemAuditTests {
 
         #expect(decision2.status == TurnStatus.queued)
         #expect(decision2.shouldStartExecution == false)
-        let queuedRunID = try #require(decision2.runID)
+        let queuedRunID = try #require(decision2.turn.rootRunID ?? decision2.runID)
         #expect(decision2.turn.rootRunID == queuedRunID)
         #expect(await coordinator.isTurnQueued(turnID: decision2.turn.turnID))
 
