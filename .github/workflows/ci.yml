@@ -70,7 +70,7 @@ jobs:
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 15
-        run: swift test --skip-build --num-workers 2 --xunit-output test-results.xml < /dev/null
+        run: swift test --skip-build --parallel --num-workers 2 --xunit-output test-results.xml < /dev/null
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
@@ -155,7 +155,7 @@ jobs:
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 15
-        run: swift test --skip-build --num-workers 2 --xunit-output test-results.xml < /dev/null
+        run: swift test --skip-build --parallel --num-workers 2 --xunit-output test-results.xml < /dev/null
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
@@ -194,6 +194,7 @@ jobs:
         with:
           swift-version: swift-6.0.3-release
           swift-build: 6.0.3-RELEASE
+          update-sdk-modules: true
 
       - name: Provision SQLite Native Dependencies
         shell: cmd
