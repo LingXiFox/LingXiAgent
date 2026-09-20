@@ -162,7 +162,8 @@ jobs:
         shell: bash
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
-          cp "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" "$BIN_PATH/" || true
+          cp "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" "$BIN_PATH/"
+          test -f "$BIN_PATH/sqlite3.dll"
           "$BIN_PATH/lingxiagent.exe" --help
           "$BIN_PATH/LingXiCoreHost.exe" auth list
           "$BIN_PATH/lingxiagent.exe" --smoke

@@ -4,22 +4,6 @@ import CoreGraphics
 import Vision
 import LingXiProtocol
 
-public struct VisualElementSnapshot: Sendable, Codable, Equatable {
-    public let id: String
-    public let text: String
-    public let bounds: CoordinateRect
-    public let confidence: Float
-    public let isInteractable: Bool
-
-    public init(id: String, text: String, bounds: CoordinateRect, confidence: Float, isInteractable: Bool = true) {
-        self.id = id
-        self.text = text
-        self.bounds = bounds
-        self.confidence = confidence
-        self.isInteractable = isInteractable
-    }
-}
-
 /// 端侧本地原生视觉文字识别与定位后端 (DarwinVisionOCRBackend)。
 /// 基于 macOS 系统原生 Vision.framework 纯本地离线执行（利用 Apple Silicon 神经引擎 NPU，耗时约 10~25ms）。
 /// 作为无障碍树 (Accessibility Tree) 缺失、无法穿透或节点为空时的轻量级零依赖兜底桥。

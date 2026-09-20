@@ -343,6 +343,23 @@ public actor DesktopEnvironment {
     }
 }
 
+/// 平台无关的视觉元素快照 DTO (VisualElementSnapshot)
+public struct VisualElementSnapshot: Sendable, Codable, Equatable {
+    public let id: String
+    public let text: String
+    public let bounds: CoordinateRect
+    public let confidence: Float
+    public let isInteractable: Bool
+
+    public init(id: String, text: String, bounds: CoordinateRect, confidence: Float, isInteractable: Bool = true) {
+        self.id = id
+        self.text = text
+        self.bounds = bounds
+        self.confidence = confidence
+        self.isInteractable = isInteractable
+    }
+}
+
 /// 桌面环境高级辅助功能抽象（视觉 OCR、覆盖层、屏幕几何）
 public protocol PlatformDesktopHelperProtocol: Sendable {
     func attachTargetBounds(_ bounds: CoordinateRect?) async

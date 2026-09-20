@@ -3,11 +3,6 @@ import LingXiCore
 import LingXiProtocol
 import LingXiApplication
 import LingXiTUI
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 let args = Array(CommandLine.arguments.dropFirst())
 let route = CLIParser.parse(arguments: args)

@@ -30,7 +30,12 @@ struct PlatformBoundaryArchitectureTests {
             "LingXiApplication",
             "LingXiClient",
             "LingXiTUI",
-            "LingXiProtocol"
+            "LingXiTUIComponents",
+            "LingXiTUIApp",
+            "LingXiPluginSDK",
+            "LingXiProtocol",
+            "LingXiCoreHost",
+            "lingxiagent"
         ]
 
         var violations: [String] = []
@@ -62,6 +67,69 @@ struct PlatformBoundaryArchitectureTests {
         }
 
         #expect(violations.isEmpty, "OS-specific framework imports leaked outside Platform layer:\n\(violations.joined(separator: "\n"))")
+    }
+
+    @Test("Non-portable POSIX system calls (setenv, usleep) are forbidden outside Platform layer")
+    func testNonPortableApiCallsStayInsidePlatformLayer() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        let sourcesDir = repoRoot.appendingPathComponent("Sources")
+
+        let forbiddenCallPatterns = [
+            "setenv(",
+            "unsetenv(",
+            "usleep("
+        ]
+
+        let scannedModules = [
+            "LingXiCore",
+            "LingXiApplication",
+            "LingXiClient",
+            "LingXiTUI",
+            "LingXiTUIComponents",
+            "LingXiTUIApp",
+            "LingXiPluginSDK",
+            "LingXiProtocol",
+            "LingXiCoreHost",
+            "lingxiagent"
+        ]
+
+        var violations: [String] = []
+
+        for module in scannedModules {
+            let moduleDir = sourcesDir.appendingPathComponent(module)
+            guard FileManager.default.fileExists(atPath: moduleDir.path) else { continue }
+
+            guard let enumerator = FileManager.default.enumerator(
+                at: moduleDir,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for case let fileURL as URL in enumerator {
+                guard fileURL.pathExtension == "swift" else { continue }
+                guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
+
+                let lines = content.components(separatedBy: "\n")
+                for (lineNum, line) in lines.enumerated() {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    // Skip comment lines
+                    if trimmed.hasPrefix("//") || trimmed.hasPrefix("/*") || trimmed.hasPrefix("*") {
+                        continue
+                    }
+                    for pattern in forbiddenCallPatterns {
+                        if trimmed.contains(pattern) {
+                            violations.append("\(fileURL.lastPathComponent):\(lineNum + 1): call to '\(pattern)' in \(module)")
+                        }
+                    }
+                }
+            }
+        }
+
+        #expect(violations.isEmpty, "Non-portable system calls leaked outside Platform layer (use LingXiPlatform abstractions instead):\n\(violations.joined(separator: "\n"))")
     }
 
     @Test("Cross-platform path absolute check works on POSIX and Windows styles")

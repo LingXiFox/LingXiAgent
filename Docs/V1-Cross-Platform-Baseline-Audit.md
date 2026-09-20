@@ -73,8 +73,8 @@ LingXiAgent 确立了严格的单向依赖分层架构体系。任何操作系�
 | 13 | **执行环境沙箱** | `sandbox-exec` (Seatbelt) | `bwrap` (Bubblewrap) | Restricted Token / Job | 未安装沙箱时平稳降级并显式告警，不崩溃 |
 | 14 | **可执行文件探测** | `resolveExecutable` (PATH) | `resolveExecutable` (PATH) | `resolveExecutable` (.exe) | Windows 自动补全 `.exe` 与注册表/PATH 探测 |
 | 15 | **终端交互探测** | `isatty` | `isatty` | Windows Console Mode | 统一返回终端交互状态 |
-| 16 | **TUI 原生渲染** | OpenTUI (Zig Dylib) | OpenTUI (Zig .so) | OpenTUI (Zig .dll) | 预编译三平台原生库 |
-| 17 | **TUI ANSI 兜底渲染** | `AnsiFallbackRenderer` | `AnsiFallbackRenderer` | `AnsiFallbackRenderer` | 无原生动态库时 100% 纯 Swift ANSI 渲染 |
+| 16 | **TUI 原生渲染 (macOS)** | OpenTUI (Zig Dylib) | N/A (V1 策略) | N/A (V1 策略) | macOS 原生动态库优化加速 |
+| 17 | **TUI ANSI 生产级渲染 (跨平台)** | 自动兜底 | 正式 Renderer (Pure Swift) | 正式 Renderer (Pure Swift) | 100% 纯 Swift ANSI 真彩差分渲染，非黑屏 |
 | 18 | **桌面无障碍树 (AX)** | `DarwinAccessibilityBackend` | `LinuxAccessibilityBackend` | `WindowsUIAccessibilityBackend` | 接口统一抽象为 `PlatformDesktopCapabilityProtocol` |
 | 19 | **屏幕捕获 (ScreenCapture)** | `ScreenCaptureKit` | X11 / Wayland Portal | GDI / DXGI | 具备权限嗅探与平稳降级 |
 | 20 | **本地视觉文字识别 (OCR)** | `DarwinVisionOCRBackend` | Headless Fallback | Headless Fallback | 统一通过 `PlatformDesktopHelperProtocol` 访问 |
@@ -91,20 +91,17 @@ LingXiAgent 确立了严格的单向依赖分层架构体系。任何操作系�
    创建了 `Sources/LingXiPlatform/Common/PlatformTypeInspector.swift`，仅在 Darwin 且可导入 CoreFoundation 时调用 `CFGetTypeID(value) == CFBooleanGetTypeID()`；在 Linux 与 Windows 上，基于 Swift 类型系统内省 (`type(of: value) == Bool.self` 与 `Mirror`) 完美替代。
    `JSONSchemaValidator.swift` 与 `ToolRuntime.swift` 中的 `import CoreFoundation` 已彻底删除。
 
-2. **`PlatformDesktopHelperProtocol`**:
-   在 `Sources/LingXiPlatform/Protocols/PlatformDesktopCapabilityProtocol.swift` 中定义了平台无关的桌面辅助协议，并在 Darwin 下由 `DarwinDesktopHelperAdapter` 桥接 `NSScreen` 与 `DarwinVisionOCRBackend`，在非 Darwin 平台由 `HeadlessDesktopHelperAdapter` 提供无头实现。
+2. **`PlatformDesktopHelperProtocol` 与 `VisualElementSnapshot` 平台中立所有权**:
+   在 `Sources/LingXiPlatform/Protocols/PlatformDesktopCapabilityProtocol.swift` 中定义了平台无关的桌面辅助协议与平台中立 DTO `VisualElementSnapshot`。
+   `VisualElementSnapshot` 彻底移出 Darwin 专有文件，成为无条件编译的纯数据结构，使得 `PlatformDesktopHelperProtocol` 绝不引用任何 OS-conditioned 类型。
+   在 Darwin 下由 `DarwinDesktopHelperAdapter` 桥接 `NSScreen` 与 `DarwinVisionOCRBackend`，在非 Darwin 平台由 `HeadlessDesktopHelperAdapter` 提供无头实现。
    `Sources/LingXiCore/Modules/Tool/ComputerBatchTool.swift` 中直接引用的 `import Cocoa`、`import CoreGraphics` 以及 macOS 专用 Overlay 全部移除。
 
-3. **架构静态守卫测试 (`PlatformBoundaryArchitectureTests.swift`)**:
-   配置了强制性静态扫描门禁，任何在 `LingXiCore`、`LingXiApplication`、`LingXiClient`、`LingXiTUI`、`LingXiProtocol` 中直接出现的以下 import 将直接导致构建门禁阻断：
-   - `import AppKit`
-   - `import Cocoa`
-   - `import CoreGraphics`
-   - `import CoreFoundation`
-   - `import Security`
-   - `import Darwin`
-   - `import Glibc`
-   - `import WinSDK`
+3. **架构静态守卫与 Entrypoint 铁闸 (`PlatformBoundaryArchitectureTests.swift`)**:
+   门禁扫描范围全量覆盖 10 个正式源码根目录：`LingXiCore`、`LingXiApplication`、`LingXiClient`、`LingXiTUI`、`LingXiTUIComponents`、`LingXiTUIApp`、`LingXiPluginSDK`、`LingXiProtocol`、`LingXiCoreHost`（入口）、`lingxiagent`（入口）。
+   任何在上述模块中直接出现的以下平台库 Import 或遗留系统调用将直接导致构建阻断：
+   - 框架 Import：`AppKit`, `Cocoa`, `CoreGraphics`, `CoreFoundation`, `Security`, `Darwin`, `Glibc`, `WinSDK`
+   - 非跨平台系统调用：`setenv(`, `unsetenv(`, `usleep(`（强制必须使用 `LingXiPlatform.environment` 与平台时钟）
 
 ---
 
@@ -173,13 +170,22 @@ LingXiAgent 确立了严格的单向依赖分层架构体系。任何操作系�
 
 ---
 
-## 7. TUI 跨平台终端与渲染方案
+## 7. TUI 跨平台终端与渲染方案 (Truthful OpenTUI Baseline)
 
-1. **双轨渲染管道**:
-   - **优先原生轨道 (OpenTUI)**: 通过 FFI 加载各平台优化的 Zig 动态库（macOS `libopentui.dylib`, Linux `libopentui.so`, Windows `libopentui.dll`），提供亚毫秒级的终端局部脏矩形差分渲染。
-   - **安全回退轨道 (`AnsiFallbackRenderer`)**: 当宿主环境未部署动态库或运行在极简容器/无头环境时，自动透明降级为 100% 纯 Swift 实现的 ANSI 转义序列渲染器，保证终端界面在任何环境下均不崩溃、不乱码。
-2. **Smoke 验证**:
-   `lingxiagent --smoke` 在无真实 TTY 的测试环境下，成功完成终端与渲染管线的无头初始化和回退自检。
+在 LingXiAgent V1.0.0 正式基线中，确立诚实、客观、高可靠的跨平台渲染策略：
+
+1. **macOS 平台**：
+   - 优先加载原生 OpenTUI Zig 动态库（`libopentui.dylib`），提供基于硬件加速与脏矩形差分的极致响应。若动态库缺失则透明平滑进入 ANSI 渲染。
+2. **Linux 与 Windows 平台**：
+   - **V1.0.0 正式将纯 Swift 实现的 ANSI 差分渲染管线 (`POSIXTerminalBackend` 内置 ANSI 引擎) 确立为生产级正式 Renderer**。
+   - 该渲染器绝非简单的全屏清屏实现，而是完整具备生产级交互能力：
+     - 支持 ANSI 24-bit TrueColor 真彩色输出 (`\u{1B}[38;2;R;G;Bm`)；
+     - 逐行 `CompiledRun` 文本与样式聚合缓冲，成百倍减少 I/O 写入系统调用；
+     - 细粒度脏行缓存更新 (`changedRows` / `rowRunsCache`)，仅更新发生变化的行；
+     - 精准光标定位 (`\u{1B}[row;colH`) 与动态显隐控制；
+     - 零外部 C/Zig 动态库链接依赖，保证 Linux 与 Windows 原生单二进制自包含独立运行。
+3. **Smoke 验证**:
+   `lingxiagent --smoke` 在无真实 TTY 的受限环境下，成功完成终端与渲染管线的无头初始化和回退自检，保证 0 黑屏、0 乱码、0 崩溃。
 
 ---
 
