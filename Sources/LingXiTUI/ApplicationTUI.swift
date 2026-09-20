@@ -4237,3 +4237,13 @@ extension ApplicationTUI {
 }
 #endif
 
+extension ApplicationTUI {
+    public static func smokeCheck() throws {
+        let backend = POSIXTerminalBackend(noAltScreen: true)
+        try backend.start()
+        let frame = TUIFrame(size: backend.size)
+        backend.render(frame)
+        backend.stop()
+    }
+}
+

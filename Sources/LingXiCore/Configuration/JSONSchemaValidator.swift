@@ -1,4 +1,6 @@
+#if canImport(CoreFoundation)
 import CoreFoundation
+#endif
 import Foundation
 
 public struct ConfigurationValidationError: Error, Sendable, Equatable, CustomStringConvertible {

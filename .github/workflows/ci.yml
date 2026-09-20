@@ -35,13 +35,15 @@ jobs:
       - name: Smoke Test CLI Executables
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
-          "$BIN_PATH/lingxiagent" --help || true
+          "$BIN_PATH/lingxiagent" --help
+          "$BIN_PATH/LingXiCoreHost" auth list
+          "$BIN_PATH/lingxiagent" --smoke
 
   test-linux:
     name: Linux Build & Test (x86_64)
     runs-on: ubuntu-latest
     container:
-      image: swift:6.0
+      image: swift:6.0.3
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -65,7 +67,9 @@ jobs:
       - name: Smoke Test CLI Executables
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
-          "$BIN_PATH/lingxiagent" --help || true
+          "$BIN_PATH/lingxiagent" --help
+          "$BIN_PATH/LingXiCoreHost" auth list
+          "$BIN_PATH/lingxiagent" --smoke
 
   test-windows:
     name: Windows Build & Test (x86_64)
@@ -114,4 +118,6 @@ jobs:
         shell: bash
         run: |
           BIN_PATH="$(swift build --show-bin-path)"
-          "$BIN_PATH/lingxiagent.exe" --help || true
+          "$BIN_PATH/lingxiagent.exe" --help
+          "$BIN_PATH/LingXiCoreHost.exe" auth list
+          "$BIN_PATH/lingxiagent.exe" --smoke

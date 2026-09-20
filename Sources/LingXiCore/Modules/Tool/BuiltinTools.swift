@@ -1813,7 +1813,7 @@ public struct TodoTool: ToolExecutor {
     private let todoStore: TodoStore
 
     public init(todoStore: TodoStore? = nil) {
-        self.todoStore = todoStore ?? TodoStore()
+        self.todoStore = todoStore ?? TodoStore.shared
     }
 
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {

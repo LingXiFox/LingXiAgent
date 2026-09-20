@@ -14,6 +14,7 @@ public enum CLIRoute: Equatable, Sendable {
     case acp([String])
     case help
     case version
+    case smoke
 }
 
 public struct CLIParser: Sendable {
@@ -37,6 +38,9 @@ public struct CLIParser: Sendable {
         }
         if first == "-v" || first == "--version" || first == "version" {
             return .version
+        }
+        if first == "--smoke" || first == "smoke" {
+            return .smoke
         }
 
         // 子命令路由

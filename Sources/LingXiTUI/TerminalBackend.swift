@@ -36,7 +36,11 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         }
         if !noAltScreen {
             debug("start.terminal.setup.begin")
-            openTUI?.setupTerminal()
+            if let openTUI {
+                openTUI.setupTerminal()
+            } else {
+                FileHandle.standardOutput.write(Data("\u{1B}[?1049h\u{1B}[2J\u{1B}[H".utf8))
+            }
             debug("start.terminal.setup.end")
         }
         debug("start.mouse.enable.begin")
@@ -52,7 +56,11 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         FileHandle.standardOutput.write(Data("\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1006l\u{1B}[?7h".utf8))
         openTUI?.disableMouse()
         if !noAltScreen {
-            openTUI?.restoreTerminalModes()
+            if let openTUI {
+                openTUI.restoreTerminalModes()
+            } else {
+                FileHandle.standardOutput.write(Data("\u{1B}[?25h\u{1B}[?1049l".utf8))
+            }
         }
         openTUI = nil
         if let token = rawToken {
@@ -186,6 +194,35 @@ final class POSIXTerminalBackend: TerminalBackend, @unchecked Sendable {
         )
 
         guard let renderer = openTUI else {
+            // ANSI Fallback: Render row runs directly using standard TrueColor ANSI escape sequences
+            var outputData = Data()
+            for row in changedRows {
+                rowRunsCache[row] = compileRowRuns(row: row, frame: frame)
+                if let runs = rowRunsCache[row] {
+                    let moveCursor = "\u{1B}[\(row + 1);1H"
+                    outputData.append(Data(moveCursor.utf8))
+                    for run in runs {
+                        let fgR = UInt8(min(255, run.fg.red / 257))
+                        let fgG = UInt8(min(255, run.fg.green / 257))
+                        let fgB = UInt8(min(255, run.fg.blue / 257))
+                        let bgR = UInt8(min(255, run.bg.red / 257))
+                        let bgG = UInt8(min(255, run.bg.green / 257))
+                        let bgB = UInt8(min(255, run.bg.blue / 257))
+                        let seq = "\u{1B}[38;2;\(fgR);\(fgG);\(fgB)m\u{1B}[48;2;\(bgR);\(bgG);\(bgB)m\(run.text)\u{1B}[0m"
+                        outputData.append(Data(seq.utf8))
+                    }
+                }
+            }
+            if let cursor = frame.cursor {
+                let cursorSeq = "\u{1B}[\(cursor.y + 1);\(cursor.x + 1)H\u{1B}[?25h"
+                outputData.append(Data(cursorSeq.utf8))
+            } else {
+                let hideSeq = "\u{1B}[?25l"
+                outputData.append(Data(hideSeq.utf8))
+            }
+            if !outputData.isEmpty {
+                FileHandle.standardOutput.write(outputData)
+            }
             previousFrame = frame
             return
         }

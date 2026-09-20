@@ -12,6 +12,7 @@ import CoreGraphics
 @Suite("Computer Correctness & Safety Tests (Round 3 Phase C)")
 struct ComputerCorrectnessTests {
 
+    #if os(macOS)
     @Test("Screenshot records hard failure when capture backend is unsupported")
     func testScreenshotFailsHardWhenCaptureUnsupported() async throws {
         let tool = ComputerBatchTool()
@@ -54,6 +55,7 @@ struct ComputerCorrectnessTests {
         #expect(result.contains("Missing target"))
         #expect(result.contains("Refused to fallback to (0,0)"))
     }
+    #endif
 
     @Test("ActionBatchExecutor enforces real timeout on elementVisible and elementGone wait conditions")
     func testWaitConditionsEnforceRealTimeout() async throws {

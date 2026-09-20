@@ -1,4 +1,6 @@
+#if canImport(CoreFoundation)
 import CoreFoundation
+#endif
 import Foundation
 import LingXiProtocol
 

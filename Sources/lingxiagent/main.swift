@@ -171,6 +171,29 @@ case .help:
 case .version:
     print("lingxiagent version \(CLIParser.version) (\(CLIParser.releaseName))")
     exit(0)
+
+case .smoke:
+    print("🦊 [LingXiAgent Smoke] Initializing CoreHost subsystem...")
+    do {
+        let env = ProcessInfo.processInfo.environment
+        let dataRoot = LingXiDataRootResolver.resolve(
+            environment: env,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let configurations = try ConfigurationStore(dataRoot: dataRoot)
+        _ = try await configurations.load()
+        print("✓ CoreHost configuration & data store operational")
+
+        print("🦊 [LingXiAgent Smoke] Initializing TUI Terminal & Renderer...")
+        try ApplicationTUI.smokeCheck()
+        print("✓ TUI renderer & fallback pipeline operational")
+
+        print("✓ [LingXiAgent Smoke] All subsystems verified successfully.")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("Smoke Test Error: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
 }
 
 

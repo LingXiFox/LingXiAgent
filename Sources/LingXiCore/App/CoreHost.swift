@@ -2468,8 +2468,7 @@ extension CoreHost {
             )
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
-                fflush(stdout)
-                kill(getpid(), SIGKILL)
+                triggerInjectedCrash()
             }
 
             if activeFailpoint == .afterStateMutationBeforeEventAppend {
@@ -2490,8 +2489,7 @@ extension CoreHost {
             try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
-                fflush(stdout)
-                kill(getpid(), SIGKILL)
+                triggerInjectedCrash()
             }
 
             if activeFailpoint == .afterEventAppendBeforeReceipt {
@@ -2522,8 +2520,7 @@ extension CoreHost {
             try await recordIdempotency(envelope: envelope, commandName: "createSession", receipt: receipt)
 
             if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
-                fflush(stdout)
-                kill(getpid(), SIGKILL)
+                triggerInjectedCrash()
             }
 
             if activeFailpoint == .afterCommitBeforeResponse {
@@ -3110,8 +3107,7 @@ extension CoreHost {
                 )
 
                 if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-mutation" {
-                    fflush(stdout)
-                    kill(getpid(), SIGKILL)
+                    triggerInjectedCrash()
                 }
 
                 if activeFailpoint == .afterStateMutationBeforeEventAppend {
@@ -3122,8 +3118,7 @@ extension CoreHost {
                 try await commandWAL.recordEventsAppended(commandID: envelope.commandID)
 
                 if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-event" {
-                    fflush(stdout)
-                    kill(getpid(), SIGKILL)
+                    triggerInjectedCrash()
                 }
 
                 if activeFailpoint == .afterEventAppendBeforeReceipt {
@@ -3171,8 +3166,7 @@ extension CoreHost {
                 try await recordIdempotency(envelope: envelope, commandName: "submitTurn", receipt: receipt)
 
                 if ProcessInfo.processInfo.environment["LINGXI_CRASH_TEST_STAGE"] == "after-receipt" {
-                    fflush(stdout)
-                    kill(getpid(), SIGKILL)
+                    triggerInjectedCrash()
                 }
 
                 if activeFailpoint == .afterCommitBeforeResponse {
@@ -4786,5 +4780,15 @@ extension CoreHost {
             eventCursor: await coord.eventLog.currentCursor(),
             payload: RunTraceInfo(runID: envelope.payload.runID, sessionID: envelope.payload.sessionID, spans: ["run.start", "run.finish"])
         )
+    }
+
+    private func triggerInjectedCrash() -> Never {
+        fflush(stdout)
+        #if os(Windows)
+        exit(9)
+        #else
+        kill(getpid(), SIGKILL)
+        exit(9)
+        #endif
     }
 }
