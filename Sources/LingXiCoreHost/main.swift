@@ -26,7 +26,7 @@ if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "auth" {
         print(output)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 }
@@ -58,7 +58,7 @@ let mcp: MCPRuntimeResolution
 do {
     mcp = try await RuntimeConfigurationResolver.resolveMCP(snapshot.mcp, credentials: credentials, schemaStoreDirectory: dataRoot.appendingPathComponent("mcp-schemas", isDirectory: true), discoverTools: false, faultTolerant: true)
 } catch {
-    FileHandle.standardError.write(Data("Warning: Failed to resolve some MCP configurations: \(error.localizedDescription)\n".utf8))
+    FileHandle.standardError.write(Data("Warning: Failed to resolve some MCP configurations: \(error.userMessage)\n".utf8))
     var safeMCP = snapshot.mcp
     for i in 0..<safeMCP.servers.count {
         safeMCP.servers[i].enabled = false

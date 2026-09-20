@@ -34,7 +34,7 @@ case let .auth(authArgs):
         print(output)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -44,7 +44,7 @@ case let .mcp(mcpArgs):
         print(output)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -54,7 +54,7 @@ case let .skills(skillsArgs):
         print(output)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -63,7 +63,7 @@ case let .exec(execArgs):
         try await ExecCLI.run(arguments: execArgs)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -72,7 +72,7 @@ case let .review(reviewArgs):
         try await ReviewCLI.run(arguments: reviewArgs)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -82,7 +82,7 @@ case .doctor:
         print(output)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -111,7 +111,7 @@ case let .resume(resumeArgs):
             exit(0)
         }
     } catch {
-        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -155,7 +155,7 @@ case .acp:
         await host.shutdown()
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("ACP Server Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("ACP Server Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 
@@ -186,7 +186,7 @@ case .smoke:
         print("✓ [LingXiAgent Smoke] All subsystems verified successfully.")
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("Smoke Test Error: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("Smoke Test Error: \(error.userMessage)\n".utf8))
         exit(1)
     }
 }

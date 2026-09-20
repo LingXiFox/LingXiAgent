@@ -15,3 +15,5 @@ scratch/
 Docs/SoL-Pi/
 dist/
 lingxiagent-alpha
+test-results/
+test-results.xml

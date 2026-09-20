@@ -22,7 +22,7 @@ jobs:
   test-macos:
     name: macOS Build & Test (arm64)
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -70,28 +70,23 @@ jobs:
         run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 18
-        run: |
-          set -euo pipefail
-          # swift-testing launches every test case in a process at once by default, which
-          # starves the cooperative thread pool and stalls any test awaiting a background
-          # task (pacer frames, watchdogs, lease handoff). Probe for the width cap so older
-          # toolchains that reject the flag still run instead of failing the whole stage.
-          WIDTH_FLAG="--experimental-maximum-parallelization-width 6"
-          if ! swift test --skip-build $WIDTH_FLAG --filter 'LingXiNoSuchTestProbeForWidthFlag' > /dev/null 2>&1; then
-            echo "::warning::toolchain has no parallelization width flag, running unbounded"
-            WIDTH_FLAG=""
-          fi
-          swift test --skip-build --parallel --num-workers 2 $WIDTH_FLAG
+        timeout-minutes: 28
+        run: bash Scripts/ci-integration-tests.sh
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
         run: |
           set -euo pipefail
           BIN_PATH="$(swift build --show-bin-path)"
+          echo "::group::lingxiagent --help"
           "$BIN_PATH/lingxiagent"     --help      < /dev/null
+          echo "::endgroup::"
+          echo "::group::LingXiCoreHost auth list"
           "$BIN_PATH/LingXiCoreHost"  auth list   < /dev/null
+          echo "::endgroup::"
+          echo "::group::lingxiagent --smoke"
           "$BIN_PATH/lingxiagent"     --smoke     < /dev/null
+          echo "::endgroup::"
 
       - name: Upload test results
         if: always()
@@ -107,7 +102,7 @@ jobs:
   test-linux:
     name: Linux Build & Test (x86_64)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     container:
       image: swift:6.0.3
       options: --privileged
@@ -175,32 +170,33 @@ jobs:
         run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 18
+        timeout-minutes: 28
         run: |
-          # Mirrors the macOS gate: cap swift-testing's per-process fan-out so background
-          # tasks still get scheduled. The probe keeps toolchains without the flag working.
-          WIDTH_FLAG="--experimental-maximum-parallelization-width 6"
-          if ! su -s /bin/bash -m testuser -c "swift test --skip-build $WIDTH_FLAG --filter 'LingXiNoSuchTestProbeForWidthFlag' < /dev/null" > /dev/null 2>&1; then
-            echo "::warning::toolchain has no parallelization width flag, running unbounded"
-            WIDTH_FLAG=""
-          fi
-          su -s /bin/bash -m testuser -c "swift test --skip-build --parallel --num-workers 2 $WIDTH_FLAG --xunit-output test-results.xml < /dev/null"
+          # Mirrors the macOS gate: bounded chunks with a per-chunk watchdog, so a deadlocked
+          # group reports itself instead of hanging the whole step for 18 minutes.
+          su -s /bin/bash -m testuser -c "LINGXI_CI_XUNIT_DIR='$PWD/test-results' bash Scripts/ci-integration-tests.sh < /dev/null"
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
         run: |
           set -euo pipefail
           BIN_PATH="$(su -s /bin/bash -m testuser -c 'swift build --show-bin-path')"
+          echo "::group::lingxiagent --help"
           su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --help      < /dev/null"
+          echo "::endgroup::"
+          echo "::group::LingXiCoreHost auth list"
           su -s /bin/bash -m testuser -c "'$BIN_PATH/LingXiCoreHost'  auth list   < /dev/null"
+          echo "::endgroup::"
+          echo "::group::lingxiagent --smoke"
           su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --smoke     < /dev/null"
+          echo "::endgroup::"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-linux
-          path: test-results.xml
+          path: test-results/
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
@@ -276,9 +272,15 @@ jobs:
           BIN_PATH="$(swift build --show-bin-path)"
           cp "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" "$BIN_PATH/"
           test -f "$BIN_PATH/sqlite3.dll"
+          echo "::group::lingxiagent --help"
           "$BIN_PATH/lingxiagent.exe"    --help     < /dev/null
+          echo "::endgroup::"
+          echo "::group::LingXiCoreHost auth list"
           "$BIN_PATH/LingXiCoreHost.exe" auth list  < /dev/null
+          echo "::endgroup::"
+          echo "::group::lingxiagent --smoke"
           "$BIN_PATH/lingxiagent.exe"    --smoke    < /dev/null
+          echo "::endgroup::"
 
   # ─────────────────────────────────────────────────────────────
   gate:
