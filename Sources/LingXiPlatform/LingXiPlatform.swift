@@ -106,5 +106,13 @@ public enum LingXiPlatform {
         public static func unset(_ name: String) {
             LingXiPlatform.system.unsetEnvironmentVariable(name)
         }
+
+        public static func setEnvironmentVariable(_ name: String, value: String) {
+            LingXiPlatform.system.setEnvironmentVariable(name, value: value)
+        }
+
+        public static func unsetEnvironmentVariable(_ name: String) {
+            LingXiPlatform.system.unsetEnvironmentVariable(name)
+        }
     }
 }

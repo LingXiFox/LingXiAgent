@@ -205,8 +205,12 @@ struct UXAndStreamingFixesTests {
 
     // MARK: - 5. 精简 Agent Runtime Guidelines 注入验证
     @Test("Agent instructions inject compact runtime guidelines with prefix stability")
-    func agentCompactRuntimeGuidelinesInjected() {
-        let emptySet = try! AgentInstructionSet.load(workspace: FileManager.default.temporaryDirectory)
+    func agentCompactRuntimeGuidelinesInjected() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("agent-guidelines-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let emptySet = try AgentInstructionSet.load(workspace: tempDir)
         let rendered = AgentBehaviorInstructions.render(
             profile: .build,
             configured: nil,

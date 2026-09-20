@@ -1,10 +1,6 @@
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 import Testing
+import LingXiPlatform
 import LingXiProtocol
 import LingXiCore
 import LingXiClient
@@ -76,9 +72,12 @@ struct RealProviderSmokeTests {
         }
         let workspaceURL = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-phase9-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        defer {
+            LingXiPlatform.environment.unset("LINGXI_PERF_DEBUG")
+            try? FileManager.default.removeItem(at: workspaceURL)
+        }
 
-        setenv("LINGXI_PERF_DEBUG", "1", 1)
+        LingXiPlatform.environment.set("LINGXI_PERF_DEBUG", value: "1")
         let host = try CoreHost(
             providerAssembly: assembly,
             workspaceRoot: try WorkspaceRoot(path: workspaceURL.path),
@@ -198,7 +197,7 @@ struct RealProviderSmokeTests {
             #expect(performance.sessionL2DerivedPromotions > 0 || performance.sessionL2DerivedHits > 0)
             #expect(performance.derivedPageIns > 0)
             #expect(afterCompact.compactionGeneration > 0)
-            unsetenv("LINGXI_PERF_DEBUG")
+            LingXiPlatform.environment.unset("LINGXI_PERF_DEBUG")
             await host.shutdown()
         } catch {
             await host.shutdown()
@@ -217,9 +216,9 @@ struct RealProviderSmokeTests {
         try FileManager.default.createDirectory(at: dataRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent("Sources"), withIntermediateDirectories: true)
         try Data("public actor ContextPager {}\n".utf8).write(to: workspaceURL.appendingPathComponent("Sources/ContextPager.swift"))
-        setenv("LINGXI_PERF_DEBUG", "1", 1)
+        LingXiPlatform.environment.set("LINGXI_PERF_DEBUG", value: "1")
         defer {
-            unsetenv("LINGXI_PERF_DEBUG")
+            LingXiPlatform.environment.unset("LINGXI_PERF_DEBUG")
             try? FileManager.default.removeItem(at: dataRoot)
             try? FileManager.default.removeItem(at: workspaceURL)
         }

@@ -76,9 +76,13 @@ struct PlatformAbstractionAndDecouplingTests {
     }
 
     @Test func pathUtilitiesTildeExpansion() {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        #if os(Windows)
+        let expectedHome = ProcessInfo.processInfo.environment["USERPROFILE"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        #else
+        let expectedHome = ProcessInfo.processInfo.environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        #endif
         let expanded = PathUtilities.expandingTilde(in: "~/test_project")
-        #expect(expanded.hasPrefix(home))
+        #expect(expanded.hasPrefix(expectedHome))
         #expect(expanded.hasSuffix("test_project"))
 
         let unchanged = PathUtilities.expandingTilde(in: "/absolute/path")

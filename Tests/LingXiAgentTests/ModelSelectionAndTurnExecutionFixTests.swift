@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import LingXiPlatform
 import LingXiProtocol
 import LingXiClient
 import LingXiApplication
@@ -201,8 +202,8 @@ struct ModelSelectionAndTurnExecutionFixTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         // Write a providers.json that configures opencode-zen with env:OPENCODE_TEST_KEY
-        setenv("OPENCODE_TEST_KEY", "test-token-value-12345", 1)
-        defer { unsetenv("OPENCODE_TEST_KEY") }
+        LingXiPlatform.environment.set("OPENCODE_TEST_KEY", value: "test-token-value-12345")
+        defer { LingXiPlatform.environment.unset("OPENCODE_TEST_KEY") }
 
         let providersJson = """
         {
@@ -249,8 +250,8 @@ struct ModelSelectionAndTurnExecutionFixTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         // Environment key for deepseek
-        setenv("DEEPSEEK_API_KEY", "test-deepseek-key-67890", 1)
-        defer { unsetenv("DEEPSEEK_API_KEY") }
+        LingXiPlatform.environment.set("DEEPSEEK_API_KEY", value: "test-deepseek-key-67890")
+        defer { LingXiPlatform.environment.unset("DEEPSEEK_API_KEY") }
 
         // providers.json WITHOUT "$schema", and with empty models (inheriting from builtin catalog)
         let schemalessJson = """
