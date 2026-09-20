@@ -119,9 +119,31 @@ struct LingXiClientVNextTests {
 
     @Test("Real stdio transport delivers VNext turn lifecycle events")
     func testRealStdioTurnLifecycleEvents() async throws {
-        let corePath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(".build/out/Products/Debug/LingXiCoreHost").path
-        let client = try await LingXiClientVNext.stdioCore(corePath: corePath, interactive: false)
+        let (host, tempDir) = try await createTestHost()
+        defer {
+            Task {
+                await host.shutdown()
+                try? FileManager.default.removeItem(at: tempDir)
+            }
+        }
+
+        let serverInPipe = Pipe()
+        let serverOutPipe = Pipe()
+        let server = VNextStdioCoreServer(
+            service: host,
+            input: serverInPipe.fileHandleForReading,
+            output: serverOutPipe.fileHandleForWriting
+        )
+        let serverTask = Task {
+            try await server.run()
+        }
+        defer { serverTask.cancel() }
+
+        let transport = VNextStdioTransport(
+            inputHandle: serverInPipe.fileHandleForWriting,
+            outputPipe: serverOutPipe
+        )
+        let client = try await LingXiClientVNext(transport: transport, handshakeImmediately: true)
 
         let session = try await client.session.create()
         let sessionID = try #require(session.result?.sessionID)

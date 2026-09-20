@@ -32,6 +32,7 @@ jobs:
           mkdir -p "$TEST_HOME"
           echo "HOME=$TEST_HOME" >> "$GITHUB_ENV"
           echo "LINGXI_DATA_DIR=$TEST_HOME/.lingxiagent" >> "$GITHUB_ENV"
+          echo "LINGXI_DISABLE_PLUGINS=1" >> "$GITHUB_ENV"
 
       - name: Select Xcode & print versions
         run: |
@@ -107,6 +108,7 @@ jobs:
           mkdir -p /tmp/test-home /root/.lingxiagent
           echo "HOME=/tmp/test-home" >> "$GITHUB_ENV"
           echo "LINGXI_DATA_DIR=/tmp/test-home/.lingxiagent" >> "$GITHUB_ENV"
+          echo "LINGXI_DISABLE_PLUGINS=1" >> "$GITHUB_ENV"
 
       - name: Install system dependencies
         timeout-minutes: 8
@@ -210,6 +212,7 @@ jobs:
       - name: Diagnose environment
         shell: pwsh
         run: |
+          "LINGXI_DISABLE_PLUGINS=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           swift --version
           Get-Command swift, link, cl -ErrorAction SilentlyContinue | Format-Table Name, Source
 

@@ -131,7 +131,7 @@ public actor PluginProcessHost {
         binaryURL: URL,
         scope: ExtensionScope = .project,
         permissions: PermissionEngine,
-        watchdogTimeout: Double = 10.0
+        watchdogTimeout: Double = 3.0
     ) {
         self.binaryURL = binaryURL
         self.scope = scope
@@ -278,27 +278,20 @@ public actor PluginProcessHost {
 
         inHandle.write(lineData)
 
-        // 读回响应（单行 JSON，带超时限制）
+        // 读回响应（单行 JSON，带超时限制，严格走非阻塞 LineReader 杜绝线程池饥饿挂死）
         do {
             let result = try await withThrowingTaskGroup(of: Data.self) { group in
                 group.addTask {
-                    var buffer = Data()
-                    while true {
+                    for try await line in LingXiPlatform.lineReader.lines(from: outHandle) {
                         try Task.checkCancellation()
-                        let chunk = (try? outHandle.read(upToCount: 65536)) ?? Data()
-                        if chunk.isEmpty {
-                            throw CoreError(code: .transport, message: "Plugin process closed stdout unexpectedly")
+                        guard let lineData = line.data(using: .utf8) else { continue }
+                        let resp = try JSONDecoder().decode(PluginIPCResponse.self, from: lineData)
+                        if let error = resp.error {
+                            throw CoreError(code: .commandFailed, message: "Plugin IPC Error: \(error)")
                         }
-                        buffer.append(chunk)
-                        if let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                            let line = buffer.subdata(in: 0..<newline)
-                            let resp = try JSONDecoder().decode(PluginIPCResponse.self, from: line)
-                            if let error = resp.error {
-                                throw CoreError(code: .commandFailed, message: "Plugin IPC Error: \(error)")
-                            }
-                            return resp.result ?? Data()
-                        }
+                        return resp.result ?? Data()
                     }
+                    throw CoreError(code: .transport, message: "Plugin process closed stdout unexpectedly")
                 }
 
                 group.addTask {

@@ -22,6 +22,14 @@ private let kInvalidSocket: Int32 = -1
 private let kShutdownBoth: Int32 = Int32(SHUT_RDWR)
 #endif
 
+private enum FixtureProviderServerError: Error {
+    case socketFailed
+    case setsockoptFailed
+    case bindFailed
+    case listenFailed
+    case getsocknameFailed
+}
+
 /// Test-only localhost Provider fixture. First request emits two subagent spawn
 /// function calls; every later request emits a plain text completion. Loopback only.
 final class FixtureProviderHTTPServer: @unchecked Sendable {
@@ -45,9 +53,9 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
 
         let fd: SocketHandle = socket(AF_INET, sockType, 0)
         #if os(Windows) || canImport(WinSDK)
-        guard fd != INVALID_SOCKET else { throw POSIXError(.ENFILE) }
+        guard fd != INVALID_SOCKET else { throw FixtureProviderServerError.socketFailed }
         #else
-        guard fd >= 0 else { throw POSIXError(.ENFILE) }
+        guard fd >= 0 else { throw FixtureProviderServerError.socketFailed }
         #endif
 
         var reuse: Int32 = 1
@@ -58,7 +66,7 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
         #endif
         guard optRes == 0 else {
             Self.closeSocket(fd)
-            throw POSIXError(.EINVAL)
+            throw FixtureProviderServerError.setsockoptFailed
         }
 
         var address = sockaddr_in()
@@ -80,7 +88,7 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
         }
         guard bound == 0, listen(fd, 16) == 0 else {
             Self.closeSocket(fd)
-            throw POSIXError(.EADDRINUSE)
+            throw FixtureProviderServerError.bindFailed
         }
 
         var assigned = sockaddr_in()
@@ -89,7 +97,7 @@ final class FixtureProviderHTTPServer: @unchecked Sendable {
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
         }) == 0 else {
             Self.closeSocket(fd)
-            throw POSIXError(.EADDRNOTAVAIL)
+            throw FixtureProviderServerError.getsocknameFailed
         }
 
         listener = fd

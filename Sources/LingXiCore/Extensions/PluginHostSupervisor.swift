@@ -68,7 +68,7 @@ public actor PluginHostSupervisor {
     /// 扫描并加载所有可用插件（并行拉起与握手）
     public func discoverAndStartAll() async -> [PluginHandshakeResult] {
         await terminateAll()
-        guard isEnabled else { return [] }
+        guard isEnabled, ProcessInfo.processInfo.environment["LINGXI_DISABLE_PLUGINS"] != "1" else { return [] }
 
         // 严格遵循依赖注入根目录，绝不硬编码扫描用户个人 HOME 目录
         let searchDirectories = [

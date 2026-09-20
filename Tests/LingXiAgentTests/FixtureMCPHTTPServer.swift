@@ -4,50 +4,115 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
-#elseif canImport(WinSDK)
+#elseif os(Windows) || canImport(WinSDK)
 import WinSDK
 #endif
 import Foundation
 @testable import LingXiCore
 
+#if os(Windows) || canImport(WinSDK)
+private typealias SocketHandle = SOCKET
+private typealias SockLen = Int32
+private let kInvalidSocket: SOCKET = INVALID_SOCKET
+private let kShutdownBoth: Int32 = SD_BOTH
+#else
+private typealias SocketHandle = Int32
+private typealias SockLen = socklen_t
+private let kInvalidSocket: Int32 = -1
+private let kShutdownBoth: Int32 = Int32(SHUT_RDWR)
+#endif
+
+private enum FixtureMCPError: Error {
+    case socketFailed
+    case setsockoptFailed
+    case bindFailed
+    case listenFailed
+    case getsocknameFailed
+}
+
+private func closeSocketHandle(_ sock: SocketHandle) {
+    #if os(Windows) || canImport(WinSDK)
+    _ = closesocket(sock)
+    #else
+    _ = close(sock)
+    #endif
+}
+
 /// Test-only localhost Streamable HTTP MCP fixture. It never binds outside loopback.
 final class FixtureMCPHTTPServer: @unchecked Sendable {
     let endpoint: URL
-    private let listener: Int32
+    private let listener: SocketHandle
     private let lock = NSLock()
     private let acceptQueue = DispatchQueue(label: "LingXiAgent.FixtureMCPHTTPServer.accept.\(UUID().uuidString)")
     private let lifecycle = DispatchGroup()
     private var running = true
     private var state = "created"
     private var calls: [(toolName: String, key: String?)] = []
-    private var activeClients: Set<Int32> = []
+    private var activeClients: Set<SocketHandle> = []
     private var requestCount = 0
     private var responseStartedCount = 0
     private var responseCompletedCount = 0
 
     init() throws {
-        #if canImport(Glibc)
+        #if os(Windows) || canImport(WinSDK)
+        var wsaData = WSADATA()
+        _ = WSAStartup(WORD(0x0202), &wsaData)
+        let sockType = SOCK_STREAM
+        #elseif canImport(Glibc)
         let sockType = Int32(SOCK_STREAM.rawValue)
         #else
         let sockType = SOCK_STREAM
         #endif
-        let fd = socket(AF_INET, sockType, 0)
-        guard fd >= 0 else { throw POSIXError(.ENFILE) }
+
+        let fd: SocketHandle = socket(AF_INET, sockType, 0)
+        #if os(Windows) || canImport(WinSDK)
+        guard fd != INVALID_SOCKET else { throw FixtureMCPError.socketFailed }
+        #else
+        guard fd >= 0 else { throw FixtureMCPError.socketFailed }
+        #endif
+
         var reuse: Int32 = 1
-        guard setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw POSIXError(.EINVAL) }
+        #if os(Windows) || canImport(WinSDK)
+        let optRes = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, withUnsafePointer(to: &reuse) { $0.withMemoryRebound(to: CChar.self, capacity: 1) { $0 } }, SockLen(MemoryLayout<Int32>.size))
+        #else
+        let optRes = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, SockLen(MemoryLayout<Int32>.size))
+        #endif
+        guard optRes == 0 else {
+            closeSocketHandle(fd)
+            throw FixtureMCPError.setsockoptFailed
+        }
+
         var address = sockaddr_in()
         #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        #endif
         address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        #elseif os(Windows) || canImport(WinSDK)
+        address.sin_family = ADDRESS_FAMILY(AF_INET)
+        address.sin_addr.S_un.S_addr = inet_addr("127.0.0.1")
+        #else
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        #endif
         address.sin_port = 0
-        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
         let bound = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, SockLen(MemoryLayout<sockaddr_in>.size)) }
         }
-        guard bound == 0, listen(fd, 16) == 0 else { throw POSIXError(.EADDRINUSE) }
-        var assigned = sockaddr_in(); var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        guard withUnsafeMutablePointer(to: &assigned, { pointer in pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }) == 0 else { throw POSIXError(.EADDRNOTAVAIL) }
+        guard bound == 0, listen(fd, 16) == 0 else {
+            closeSocketHandle(fd)
+            throw FixtureMCPError.bindFailed
+        }
+
+        var assigned = sockaddr_in()
+        var length = SockLen(MemoryLayout<sockaddr_in>.size)
+        guard withUnsafeMutablePointer(to: &assigned, { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }) == 0 else {
+            closeSocketHandle(fd)
+            throw FixtureMCPError.getsocknameFailed
+        }
+
         listener = fd
         endpoint = URL(string: "http://127.0.0.1:\(UInt16(bigEndian: assigned.sin_port))/mcp")!
         state = "listening"
@@ -68,10 +133,11 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         let clients = activeClients
         lock.unlock()
         guard shouldClose else { return }
-        _ = shutdown(listener, Int32(SHUT_RDWR))
-        _ = close(listener)
+        _ = shutdown(listener, kShutdownBoth)
+        closeSocketHandle(listener)
         for client in clients {
-            _ = shutdown(client, Int32(SHUT_RDWR))
+            _ = shutdown(client, kShutdownBoth)
+            closeSocketHandle(client)
         }
         lifecycle.wait()
         lock.lock(); state = "stopped"; lock.unlock()
@@ -90,9 +156,14 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
 
     private func acceptLoop() {
         while active {
-            var address = sockaddr(); var length = socklen_t(MemoryLayout<sockaddr>.size)
-            let client = accept(listener, &address, &length)
+            var address = sockaddr()
+            var length = SockLen(MemoryLayout<sockaddr>.size)
+            let client: SocketHandle = accept(listener, &address, &length)
+            #if os(Windows) || canImport(WinSDK)
+            guard client != INVALID_SOCKET else { continue }
+            #else
             guard client >= 0 else { continue }
+            #endif
             lock.lock(); activeClients.insert(client); lock.unlock()
             lifecycle.enter()
             Thread.detachNewThread { [weak self] in
@@ -104,10 +175,10 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
 
     private var active: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
-    private func handle(_ client: Int32) {
+    private func handle(_ client: SocketHandle) {
         defer {
             lock.lock(); activeClients.remove(client); lock.unlock()
-            _ = close(client)
+            closeSocketHandle(client)
         }
         guard let request = readRequest(client) else { return }
         lock.lock(); requestCount += 1; state = "handling"; lock.unlock()
@@ -117,10 +188,19 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         lock.lock(); responseCompletedCount += 1; if running { state = "listening" }; lock.unlock()
     }
 
-    private func readRequest(_ client: Int32) -> (method: String, path: String, headers: [String: String], body: Data)? {
-        var data = Data(); var buffer = [UInt8](repeating: 0, count: 4096)
+    private func readRequest(_ client: SocketHandle) -> (method: String, path: String, headers: [String: String], body: Data)? {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
         while data.range(of: Data("\r\n\r\n".utf8)) == nil {
+            #if os(Windows) || canImport(WinSDK)
+            let count = buffer.withUnsafeMutableBytes { bufPtr -> Int in
+                guard let base = bufPtr.baseAddress else { return -1 }
+                let ccharPtr = base.bindMemory(to: CChar.self, capacity: buffer.count)
+                return Int(recv(client, ccharPtr, Int32(buffer.count), 0))
+            }
+            #else
             let count = recv(client, &buffer, buffer.count, 0)
+            #endif
             guard count > 0 else { return nil }
             data.append(buffer, count: count)
             guard data.count <= 128 * 1024 else { return nil }
@@ -137,7 +217,15 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
         let expected = Int(headers["content-length"] ?? "0") ?? 0
         var body = Data(data[boundary.upperBound...])
         while body.count < expected {
+            #if os(Windows) || canImport(WinSDK)
+            let count = buffer.withUnsafeMutableBytes { bufPtr -> Int in
+                guard let base = bufPtr.baseAddress else { return -1 }
+                let ccharPtr = base.bindMemory(to: CChar.self, capacity: buffer.count)
+                return Int(recv(client, ccharPtr, Int32(buffer.count), 0))
+            }
+            #else
             let count = recv(client, &buffer, buffer.count, 0)
+            #endif
             guard count > 0 else { return nil }
             body.append(buffer, count: count)
         }
@@ -182,15 +270,22 @@ final class FixtureMCPHTTPServer: @unchecked Sendable {
     private func content(_ text: String) -> [String: Any] { ["content": [["type": "text", "text": text]]] }
     private func json(id: Any, result: [String: Any]) -> (Int, String, Data) { (200, "application/json", jsonData(id: id, result: result)) }
     private func jsonData(id: Any, result: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id, "result": result], options: [.sortedKeys])) ?? Data() }
-    private func write(_ response: (Int, String, Data), to socket: Int32) {
+    private func write(_ response: (Int, String, Data), to socket: SocketHandle) {
         let reason = response.0 == 200 ? "OK" : response.0 == 204 ? "No Content" : response.0 == 400 ? "Bad Request" : response.0 == 403 ? "Forbidden" : response.0 == 404 ? "Not Found" : "Internal Server Error"
         var data = Data("HTTP/1.1 \(response.0) \(reason)\r\nContent-Type: \(response.1)\r\nContent-Length: \(response.2.count)\r\nConnection: close\r\n\r\n".utf8); data.append(response.2)
         data.withUnsafeBytes { raw in
             guard let start = raw.baseAddress else { return }
             var offset = 0
             while offset < data.count {
-                let written = send(socket, start.advanced(by: offset), data.count - offset, 0)
-                if written > 0 { offset += written }
+                #if os(Windows) || canImport(WinSDK)
+                let chunkLen = Int32(min(data.count - offset, Int(Int32.max)))
+                let ccharPtr = start.advanced(by: offset).bindMemory(to: CChar.self, capacity: Int(chunkLen))
+                let written = send(socket, ccharPtr, chunkLen, 0)
+                #else
+                let chunkLen = data.count - offset
+                let written = send(socket, start.advanced(by: offset), chunkLen, 0)
+                #endif
+                if written > 0 { offset += Int(written) }
                 else if written < 0, errno == EINTR { continue }
                 else { return }
             }
