@@ -8,6 +8,31 @@ import Testing
 @Suite("Platform Abstraction & TUI-Core Decoupling Tests")
 struct PlatformAbstractionAndDecouplingTests {
 
+    @Test func jsonNumbersAreNotMisclassifiedAsBooleans() throws {
+        // Every NSNumber bridges leniently to Bool, so `value is Bool` cannot tell a JSON
+        // integer from a JSON boolean. That made `"version": 1` validate as a boolean on
+        // Windows, so the config schema rejected the shipped defaults it ships correctly.
+        let json = #"{"version": 1, "enabled": true, "ratio": 0.5, "count": 0}"#
+        let parsed = try #require(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        )
+
+        #expect(!LingXiPlatform.types.isBoolean(parsed["version"]!))
+        #expect(LingXiPlatform.types.isBoolean(parsed["enabled"]!))
+        #expect(!LingXiPlatform.types.isBoolean(parsed["ratio"]!))
+        #expect(!LingXiPlatform.types.isBoolean(parsed["count"]!))
+
+        #expect(LingXiPlatform.types.isInteger(parsed["version"]!))
+        #expect(LingXiPlatform.types.isInteger(parsed["count"]!))
+        #expect(!LingXiPlatform.types.isInteger(parsed["enabled"]!))
+        #expect(!LingXiPlatform.types.isNumber(parsed["enabled"]!))
+        #expect(LingXiPlatform.types.isNumber(parsed["ratio"]!))
+
+        // Same contract for values that never went through NSNumber.
+        #expect(LingXiPlatform.types.isBoolean(true))
+        #expect(!LingXiPlatform.types.isBoolean(1))
+    }
+
     @MainActor
     @Test func frontendProtocolAndTUIConformance() async {
         let tui = ApplicationTUI()

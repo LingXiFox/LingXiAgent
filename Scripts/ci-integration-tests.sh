@@ -30,7 +30,7 @@ ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests}"
 SWIFT_TEST=(swift test --skip-build)
 script_start=$(date +%s)
 
-if ! raw_list="$("${SWIFT_TEST[@]}" --list-tests 2>/dev/null)"; then
+if ! raw_list="$("${SWIFT_TEST[@]}" --list-tests < /dev/null 2>/dev/null)"; then
   echo "error: swift test --list-tests failed"
   exit 1
 fi
@@ -95,10 +95,11 @@ dump_stacks() {
   local pid=$1
   case "$(uname -s)" in
     Darwin)
+      # Keep the deep frames: the leaf call is the whole point of capturing this.
       sample "$pid" 2 -mayDie 2>/dev/null \
         | awk '/^[[:space:]]*[0-9]+ Thread_/{p=1} p{print}' \
-        | sed -E 's/ \(in [^)]*\)//; s/ \+ [0-9]+$//' \
-        | grep -E "Thread_|#[0-9]+ " | head -60
+        | sed -E 's/ \(in [^)]*\)//; s/ \+ [0-9]+$//; s/^[[:space:]]+//' \
+        | head -200
       ;;
     *)
       local t
@@ -135,7 +136,10 @@ for chunk in "${chunks[@]}"; do
     mkdir -p "$XUNIT_DIR"
     run_args+=(--xunit-output "$XUNIT_DIR/test-results-chunk-$index.xml")
   fi
-  "${run_args[@]}" > "$chunk_log" 2>&1 &
+  # /dev/null on stdin is mandatory, not cosmetic: the stdio transport tests spawn a child
+  # that waits for EOF, and under Actions it would otherwise inherit a runner pipe that never
+  # closes (the same deadlock < /dev/null was added for in the other stages).
+  "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &
   runner=$!
   chunk_start=$(date +%s)
 

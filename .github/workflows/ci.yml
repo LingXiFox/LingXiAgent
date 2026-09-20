@@ -41,6 +41,13 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Provide ripgrep for the search tools
+        run: |
+          # grep and glob shell out to `rg`; without it the tools fail closed and every
+          # search-backed test errors. Resolve-or-install keeps the step cheap when present.
+          command -v rg > /dev/null 2>&1 && exit 0
+          brew install ripgrep
+
       - name: Cache SwiftPM
         uses: actions/cache@v4
         with:
@@ -114,7 +121,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            libsqlite3-dev pkg-config python3 bubblewrap nodejs
+            libsqlite3-dev pkg-config python3 bubblewrap nodejs ripgrep
           useradd -m -u 1001 -s /bin/bash testuser || true
           swift --version
 
