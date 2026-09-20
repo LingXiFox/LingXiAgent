@@ -50,7 +50,7 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          apt-get update && apt-get install -y libsqlite3-dev pkg-config python3 bubblewrap
+          apt-get update && apt-get install -y libsqlite3-dev pkg-config python3 bubblewrap nodejs
 
       - name: Print Swift Version
         run: swift --version

@@ -66,6 +66,10 @@ public final class StdioTransport: @unchecked Sendable {
     private var readBuffer: Data = Data()
     private let writeLock = NSLock()
     private let readLock = NSLock()
+    private let readStateLock = NSCondition()
+    private var isClosed = false
+    private var activeReaders: Int = 0
+    private var isDrainActive = false
 
     public init(managedProcess: ManagedProcess, stderrCapacity: Int = 256 * 1024) {
         self.managedProcess = managedProcess
@@ -74,14 +78,10 @@ public final class StdioTransport: @unchecked Sendable {
 
     /// 启动子进程并建立 Stdio 双向通信管道，同时启动后台 stderr 持续排空任务
     public func connect() throws {
-        writeLock.lock()
-        readLock.lock()
-        defer {
-            readLock.unlock()
-            writeLock.unlock()
-        }
+        readStateLock.lock()
+        defer { readStateLock.unlock() }
 
-        guard inputHandle == nil && outputHandle == nil else { return }
+        guard inputHandle == nil && outputHandle == nil && !isClosed else { return }
 
         let inPipe = Pipe()
         let outPipe = Pipe()
@@ -98,7 +98,8 @@ public final class StdioTransport: @unchecked Sendable {
         let errH = errPipe.fileHandleForReading
         self.errorHandle = errH
 
-        // 启动后台专用线程持续 drain stderr，防止子进程写满管道死锁，且不占用 Swift 合作线程池
+        // 启动后台专用线程持续 drain stderr，拥有 errorHandle 读取所有权
+        self.isDrainActive = true
         let drainThread = Thread { [weak self, errH] in
             while true {
                 let chunk = errH.availableData
@@ -108,9 +109,17 @@ public final class StdioTransport: @unchecked Sendable {
                 guard let self else { break }
                 self.stderrBuffer.append(chunk)
             }
+            self?.signalDrainFinished()
         }
         drainThread.name = "org.lingxi.stdio.stderrDrain"
         drainThread.start()
+    }
+
+    private func signalDrainFinished() {
+        readStateLock.lock()
+        defer { readStateLock.unlock() }
+        isDrainActive = false
+        readStateLock.broadcast()
     }
 
     /// 线程安全地写入原始字节流（受独立的写锁保护，保证写入原子性，绝不阻塞读循环）
@@ -118,7 +127,11 @@ public final class StdioTransport: @unchecked Sendable {
         writeLock.lock()
         defer { writeLock.unlock() }
 
-        guard managedProcess.isRunning, let handle = inputHandle else {
+        readStateLock.lock()
+        let closed = isClosed
+        readStateLock.unlock()
+
+        guard !closed, managedProcess.isRunning, let handle = inputHandle else {
             throw StdioTransportError.notConnected
         }
 
@@ -129,15 +142,32 @@ public final class StdioTransport: @unchecked Sendable {
         }
     }
 
+    private func beginRead() throws -> FileHandle {
+        readStateLock.lock()
+        defer { readStateLock.unlock() }
+        if isClosed {
+            throw StdioTransportError.closed
+        }
+        guard let handle = outputHandle else {
+            throw StdioTransportError.notConnected
+        }
+        activeReaders += 1
+        return handle
+    }
+
+    private func endRead() {
+        readStateLock.lock()
+        defer { readStateLock.unlock() }
+        activeReaders -= 1
+        if activeReaders == 0 {
+            readStateLock.broadcast()
+        }
+    }
+
     /// 循环读取确切数量的字节，克服底层管道的 partial read 语义
     public func readExact(count: Int) throws -> Data {
         while true {
             readLock.lock()
-            guard let handle = outputHandle else {
-                readLock.unlock()
-                throw StdioTransportError.notConnected
-            }
-
             if readBuffer.count >= count {
                 let result = readBuffer.prefix(count)
                 readBuffer.removeFirst(count)
@@ -146,8 +176,13 @@ public final class StdioTransport: @unchecked Sendable {
             }
             readLock.unlock()
 
-            // 绝不在持有锁时进行阻塞系统调用
-            let chunk = handle.availableData
+            let handle = try beginRead()
+            let chunk: Data
+            do {
+                chunk = handle.availableData
+            }
+            endRead()
+
             if chunk.isEmpty {
                 readLock.lock()
                 defer { readLock.unlock() }
@@ -172,11 +207,6 @@ public final class StdioTransport: @unchecked Sendable {
 
         while true {
             readLock.lock()
-            guard let handle = outputHandle else {
-                readLock.unlock()
-                throw StdioTransportError.notConnected
-            }
-
             if let newlineIndex = readBuffer.firstIndex(of: newlineByte) {
                 var lineData = Data(readBuffer[..<newlineIndex])
                 readBuffer.removeSubrange(..<readBuffer.index(after: newlineIndex))
@@ -193,8 +223,13 @@ public final class StdioTransport: @unchecked Sendable {
             }
             readLock.unlock()
 
-            // 绝不在持有锁时进行阻塞系统调用
-            let chunk = handle.availableData
+            let handle = try beginRead()
+            let chunk: Data
+            do {
+                chunk = handle.availableData
+            }
+            endRead()
+
             if chunk.isEmpty {
                 readLock.lock()
                 defer { readLock.unlock() }
@@ -227,14 +262,15 @@ public final class StdioTransport: @unchecked Sendable {
             readLock.unlock()
             return b
         }
-        guard let handle = outputHandle else {
-            readLock.unlock()
-            throw StdioTransportError.notConnected
-        }
         readLock.unlock()
 
-        // 绝不在持有锁时进行阻塞系统调用
-        let chunk = handle.availableData
+        let handle = try beginRead()
+        let chunk: Data
+        do {
+            chunk = handle.availableData
+        }
+        endRead()
+
         if chunk.isEmpty {
             return nil
         }
@@ -252,29 +288,44 @@ public final class StdioTransport: @unchecked Sendable {
 
     /// 关闭管道并终止子进程（先终止子进程使内核自动发送管道 EOF，解除阻塞并防止死锁）
     public func close() {
+        readStateLock.lock()
+        guard !isClosed else {
+            readStateLock.unlock()
+            return
+        }
+        isClosed = true
+        readStateLock.unlock()
+
         // 1. 优先销毁子进程树，使操作系统内核自动关闭管道写入端，向父进程读端注入 EOF
         managedProcess.terminate(force: true)
 
-        // 2. 关闭父进程写端与错误流
+        // 2. 关闭父进程写端
         writeLock.lock()
         let inH = inputHandle
         inputHandle = nil
         writeLock.unlock()
         try? inH?.close()
 
-        let errH = errorHandle
-        errorHandle = nil
-        try? errH?.close()
+        // 3. 等待正在读取 availableData 的 reader 与 stderr drainer 读到 EOF 并完成退出，杜绝跨线程并发 close 句柄崩溃
+        readStateLock.lock()
+        let deadline = Date().addingTimeInterval(0.3)
+        while (activeReaders > 0 || isDrainActive) && Date() < deadline {
+            readStateLock.wait(until: deadline)
+        }
 
-        // 3. 微秒级持锁取出读端句柄并置空，绝不发生阻塞
         readLock.lock()
         let outH = outputHandle
         outputHandle = nil
         readBuffer.removeAll()
         readLock.unlock()
 
-        // 4. 关闭输出句柄打断阻塞中的可用数据读取
+        let errH = errorHandle
+        errorHandle = nil
+        readStateLock.unlock()
+
+        // 4. 确认 reader 与 drain worker 退出后，安全幂等地关闭 handle
         try? outH?.close()
+        try? errH?.close()
     }
 
     deinit {

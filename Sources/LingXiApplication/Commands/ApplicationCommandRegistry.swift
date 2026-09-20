@@ -16,8 +16,11 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
     private var commandsByName: [String: ApplicationCommand] = [:]
     private var aliasToCanonical: [String: String] = [:]
     private var pluginCommands: [String: ApplicationCommand] = [:]
+    public let customRoots: [URL]?
 
-    public init() {}
+    public init(customRoots: [URL]? = nil) {
+        self.customRoots = customRoots
+    }
 
     /// 注册命令（支持 Builtin 与 Extension 贡献）
     public func register(_ command: ApplicationCommand) {
@@ -139,14 +142,18 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
 
     /// 发现项目级与全局级自定义 Markdown 指令
     public func discoverCustomMarkdownCommands() -> [ApplicationCommand] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let currentDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-
-        let candidateDirs = [
-            currentDir.appendingPathComponent(".lingxi/commands"),
-            home.appendingPathComponent(".lingxiagent/commands"),
-            home.appendingPathComponent(".lingxi/commands")
-        ]
+        let candidateDirs: [URL]
+        if let customRoots {
+            candidateDirs = customRoots
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            let currentDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            candidateDirs = [
+                currentDir.appendingPathComponent(".lingxi/commands"),
+                home.appendingPathComponent(".lingxiagent/commands"),
+                home.appendingPathComponent(".lingxi/commands")
+            ]
+        }
 
         var results: [ApplicationCommand] = []
         var seenNames = Set<String>()
@@ -235,14 +242,18 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
     }
 
     private func resolveCustomMarkdownCommand(name: String, args: [String], client: LingXiClientVNext?, sessionID: SessionID?) async -> ApplicationCommandResult? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
         let currentDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-
-        let candidatePaths = [
-            currentDir.appendingPathComponent(".lingxi/commands/\(name).md"),
-            home.appendingPathComponent(".lingxiagent/commands/\(name).md"),
-            home.appendingPathComponent(".lingxi/commands/\(name).md")
-        ]
+        let candidatePaths: [URL]
+        if let customRoots {
+            candidatePaths = customRoots.map { $0.appendingPathComponent("\(name).md") }
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            candidatePaths = [
+                currentDir.appendingPathComponent(".lingxi/commands/\(name).md"),
+                home.appendingPathComponent(".lingxiagent/commands/\(name).md"),
+                home.appendingPathComponent(".lingxi/commands/\(name).md")
+            ]
+        }
 
         for path in candidatePaths {
             guard FileManager.default.fileExists(atPath: path.path) else { continue }

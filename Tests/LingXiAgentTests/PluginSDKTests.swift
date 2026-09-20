@@ -191,7 +191,24 @@ struct PluginSDKTests {
     }
 
     @Test func applicationCommandRegistryAggregatesBuiltinPluginAndCustomCommands() async throws {
-        let registry = ApplicationCommandRegistry()
+        // 创建隔离的临时自定义命令 fixture，保证测试 100% Hermetic
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-cmd-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let auditFixtureURL = tempDir.appendingPathComponent("audit.md")
+        let auditContent = """
+        ---
+        description: 对当前代码仓或指定路径进行架构合规性审查
+        category: Custom
+        arguments: "[file-or-dir]"
+        type: prompt
+        ---
+        🦊 [自定义提示词宏 /audit] 已展开：审查 $ARGUMENTS
+        """
+        try auditContent.write(to: auditFixtureURL, atomically: true, encoding: .utf8)
+
+        let registry = ApplicationCommandRegistry(customRoots: [tempDir])
         registry.register(ApplicationCommand(name: "test-builtin", description: "Builtin test", category: "General") { _ in
             ApplicationCommandResult(output: "builtin-ok")
         })

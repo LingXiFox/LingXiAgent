@@ -284,6 +284,22 @@ while True:
         }
         #expect(didCatchCancel)
     }
+
+    @Test("High-frequency lifecycle stress test: start/stop JSONRPCPeer and StdioTransport 100 times without SIGILL, hang, or race")
+    func testHighFrequencyStartStopStress() throws {
+        for _ in 1...100 {
+            let proc = ManagedProcess(
+                executablePath: Self.resolvePython(),
+                arguments: ["-u", "-c", "import sys; sys.stdin.readline()"]
+            )
+            let transport = StdioTransport(managedProcess: proc)
+            let framer = LineDelimitedJSONFramer()
+            let peer = JSONRPCPeer(transport: transport, framer: framer)
+
+            try peer.start()
+            peer.stop()
+        }
+    }
 }
 
 // Thread-safe recorder for testing

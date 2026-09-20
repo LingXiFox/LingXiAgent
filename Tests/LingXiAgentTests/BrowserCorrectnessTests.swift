@@ -215,4 +215,15 @@ struct BrowserCorrectnessTests {
 
         try await client.closeSession(sessionID: sessionID)
     }
+
+    @Test("High-frequency BrowserHostClient start/stop stress test (100 iterations)")
+    func testHighFrequencyBrowserHostClientLifecycle() async throws {
+        guard FileManager.default.fileExists(atPath: sidecarPath) else { return }
+
+        for _ in 1...100 {
+            let client = BrowserHostClient(scriptPath: sidecarPath, mode: .mock)
+            try client.start()
+            client.stop()
+        }
+    }
 }

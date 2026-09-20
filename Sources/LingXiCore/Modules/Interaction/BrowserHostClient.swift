@@ -105,7 +105,6 @@ public final class BrowserHostClient: @unchecked Sendable {
 
     public func stop() {
         peer.stop()
-        transport?.close()
     }
 
     deinit {

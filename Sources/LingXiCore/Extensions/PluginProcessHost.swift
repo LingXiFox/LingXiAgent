@@ -51,24 +51,37 @@ private final class PluginProcessState: @unchecked Sendable {
             return p
         }
 
-        closeHandles()
-        guard let proc, proc.isRunning else { return }
+        // Close stdin first so process can detect EOF and exit gracefully
+        let (inH, outH, errH) = lock.withLock {
+            let ih = stdinHandle
+            let oh = stdoutHandle
+            let eh = errorHandle
+            stdinHandle = nil
+            stdoutHandle = nil
+            errorHandle = nil
+            return (ih, oh, eh)
+        }
+        try? inH?.close()
 
-        proc.terminate()
-        let didExit: Bool = await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let start = Date()
-                while proc.isRunning && Date().timeIntervalSince(start) < timeout {
-                    usleep(20_000)
-                }
-                continuation.resume(returning: !proc.isRunning)
-            }
+        guard let proc, proc.isRunning else {
+            try? outH?.close()
+            try? errH?.close()
+            return
         }
 
-        if !didExit && proc.isRunning {
+        proc.terminate()
+        let start = Date()
+        while proc.isRunning && Date().timeIntervalSince(start) < timeout {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        if proc.isRunning {
             LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
             proc.waitUntilExit()
         }
+
+        try? outH?.close()
+        try? errH?.close()
     }
 
     func killForcefully() {
@@ -78,10 +91,27 @@ private final class PluginProcessState: @unchecked Sendable {
             return p
         }
 
-        closeHandles()
-        guard let proc, proc.isRunning else { return }
+        let (inH, outH, errH) = lock.withLock {
+            let ih = stdinHandle
+            let oh = stdoutHandle
+            let eh = errorHandle
+            stdinHandle = nil
+            stdoutHandle = nil
+            errorHandle = nil
+            return (ih, oh, eh)
+        }
+        try? inH?.close()
+
+        guard let proc, proc.isRunning else {
+            try? outH?.close()
+            try? errH?.close()
+            return
+        }
         proc.terminate()
         LingXiPlatform.process.terminateProcessTree(pid: proc.processIdentifier, force: true)
+        proc.waitUntilExit()
+        try? outH?.close()
+        try? errH?.close()
     }
 }
 
@@ -144,7 +174,7 @@ public actor PluginProcessHost {
 
         // 持续 Drain stderr 防止 64KB pipe 缓冲区写满导致插件进程挂死
         let drainThread = Thread { [weak errH] in
-            while let chunk = errH?.availableData, !chunk.isEmpty {}
+            while let chunk = try? errH?.read(upToCount: 16384), !chunk.isEmpty {}
         }
         drainThread.name = "org.lingxi.plugin.stderrDrain"
         drainThread.start()
@@ -255,7 +285,7 @@ public actor PluginProcessHost {
                     var buffer = Data()
                     while true {
                         try Task.checkCancellation()
-                        let chunk = outHandle.availableData
+                        let chunk = (try? outHandle.read(upToCount: 65536)) ?? Data()
                         if chunk.isEmpty {
                             throw CoreError(code: .transport, message: "Plugin process closed stdout unexpectedly")
                         }
@@ -282,11 +312,7 @@ public actor PluginProcessHost {
             }
             return result
         } catch {
-            // 打破孤儿读取线程的阻塞，清理失联或超时的插件进程
-            try? outHandle.close()
-            if let coreErr = error as? CoreError, coreErr.code == .commandTimedOut {
-                await terminate()
-            }
+            await terminate()
             throw error
         }
     }

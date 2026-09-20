@@ -273,6 +273,7 @@ public actor ContextCacheController {
         sessionEpochs[sessionID] = current + 1
         sessionEpochReasons[sessionID] = reason
         previousPromptTokensBySession[sessionID] = nil
+        currentTurnFingerprintBySession[sessionID] = nil
         lastTurnFingerprintBySession[sessionID] = nil
         lastHistorySignaturesBySession[sessionID] = nil
         turnsInEpochBySession[sessionID] = 0

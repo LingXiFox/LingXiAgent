@@ -195,7 +195,9 @@ struct Round13SystemAuditTests {
             intent: TurnExecutionIntent(),
             userMessage: MessageSnapshot(messageID: MessageID(), role: .user, text: "Queued B", createdAt: Date())
         )
-        let runIDB = try #require(decB.runID)
+        #expect(decB.status == .queued)
+        #expect(decB.runID == nil)
+        let runIDB = try #require(decB.turn.rootRunID)
 
         // Finish A: triggers scheduling of B
         let nextToRun = try await coord.finishRun(runID: runIDA, reason: .completed)
