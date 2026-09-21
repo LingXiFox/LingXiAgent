@@ -107,7 +107,10 @@ struct IPCPeerRobustnessTests {
 
     @Test("StdioTransport readLine handles multi-line streams with CR/LF")
     func testStdioTransportReadLine() throws {
-        let pythonScript = "import sys; sys.stdout.write('Line 1\\r\\nLine 2\\nLine 3'); sys.stdout.flush()"
+        // Emit through the binary stream so the byte sequence is identical everywhere: on
+        // Windows a text-mode sys.stdout rewrites "\n" as "\r\n", which would hand readLine a
+        // second carriage return that its single trailing-CR trim cannot absorb.
+        let pythonScript = "import sys; sys.stdout.buffer.write(b'Line 1\\r\\nLine 2\\nLine 3'); sys.stdout.buffer.flush()"
         let proc = ManagedProcess(
             executablePath: Self.resolvePython(),
             arguments: ["-c", pythonScript],
