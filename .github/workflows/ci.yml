@@ -100,7 +100,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-macos
-          path: test-results/
+          path: test-results-artifact/
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
@@ -133,6 +133,14 @@ jobs:
           echo "HOME=/tmp/test-home" >> "$GITHUB_ENV"
           echo "LINGXI_DATA_DIR=/tmp/test-home/.lingxiagent" >> "$GITHUB_ENV"
           echo "LINGXI_DISABLE_PLUGINS=1" >> "$GITHUB_ENV"
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          # Ubuntu 24.04+ confines unprivileged user namespaces behind an AppArmor sysctl, and
+          # bubblewrap needs one to get the capabilities it uses to bring up the sandbox's
+          # loopback interface. This container is privileged, so the knob is writable here.
+          # Without it the workspace profile cannot run any command on the Linux gate.
+          sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
       - name: Probe bubblewrap availability
         run: |
@@ -203,7 +211,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-linux
-          path: test-results/
+          path: test-results-artifact/
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
@@ -304,7 +312,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-windows
-          path: test-results/
+          path: test-results-artifact/
           if-no-files-found: ignore
 
       - name: Stage 6 - Smoke test CLI executables

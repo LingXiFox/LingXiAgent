@@ -17,3 +17,6 @@ dist/
 lingxiagent-alpha
 test-results/
 test-results.xml
+
+# Stage 5 per-chunk reports staged for upload
+test-results-artifact/

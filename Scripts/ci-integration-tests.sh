@@ -23,6 +23,8 @@ LINGER_GRACE="${LINGXI_CI_LINGER_GRACE:-15}"
 # When set, every chunk also writes an xunit report into this directory so the CI
 # artifact keeps working even though the suite no longer runs as one invocation.
 XUNIT_DIR="${LINGXI_CI_XUNIT_DIR:-}"
+# Reports are copied here as they finish and this is what the CI uploads.
+ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
 
 # Suites listed here run alone. ProviderRateSchedulerTests needs this: its concurrency
 # assertion depends on two gateway streams overlapping, and sharing a process with the VCR
@@ -234,6 +236,17 @@ for chunk in "${chunks[@]}"; do
     tail -20 "$chunk_log"
   else
     printf 'ok  chunk %-3s %4ss  %s tests\n' "$index" "$elapsed" "$ran"
+  fi
+  if [ -n "$XUNIT_DIR" ]; then
+    chunk_xml="$XUNIT_DIR/test-results-chunk-$index.xml"
+    # Stage the report as soon as its chunk is over. A killed chunk can leave its own report
+    # open, and one busy file makes actions/upload-artifact fail the whole directory, which
+    # costs the per-test detail for the seventy chunks that did finish.
+    if [ -f "$chunk_xml" ]; then
+      mkdir -p "$ARTIFACT_DIR"
+      cp "$chunk_xml" "$ARTIFACT_DIR/" 2>/dev/null \
+        || echo "note: could not stage chunk ${index}'s report"
+    fi
   fi
   rm -f "$chunk_log"
   echo "::endgroup::"
