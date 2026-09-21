@@ -17,8 +17,18 @@ public enum EnvironmentSanitizer {
             }
         }
         // The allow-list above intentionally excludes every LINGXI_* value, including test sentinels.
+        for key in osBootstrapKeys {
+            if let value = environment[key] { result[key] = value }
+        }
         return result
     }
+
+    /// A child process on Windows cannot boot without knowing where the OS lives: .NET and
+    /// PowerShell fail to load their providers without SystemRoot, and nothing resolves an
+    /// executable or a scratch directory without PATHEXT, COMSPEC and TEMP. None of these carry
+    /// credentials, so they join the minimal environment rather than being stripped with it.
+    /// They are absent on POSIX, which keeps that side of the sanitizer unchanged.
+    static let osBootstrapKeys = ["SystemRoot", "windir", "USERPROFILE", "COMSPEC", "PATHEXT", "TEMP", "TMP"]
 }
 
 func sha256Hex(_ content: String) -> String {

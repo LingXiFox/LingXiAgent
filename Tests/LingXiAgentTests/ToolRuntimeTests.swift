@@ -339,6 +339,19 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(EnvironmentSanitizer.sanitized(from: ["PATH": "/usr/bin:/bin", "LINGXI_TEST_SENTINEL": "secret"])["LINGXI_TEST_SENTINEL"] == nil)
+        // A Windows child cannot even start without these, so check they survive while the
+        // credential-shaped names next to them do not.
+        let windowsShaped = [
+            "PATH": #"C:\Windows\System32"#, "SystemRoot": #"C:\Windows"#, "windir": #"C:\Windows"#,
+            "USERPROFILE": #"C:\Users\tester"#, "COMSPEC": #"C:\Windows\System32\cmd.exe"#,
+            "PATHEXT": ".COM;.EXE;.BAT", "TEMP": #"C:\Users\tester\AppData\Local\Temp"#,
+            "TOKEN_SECRET": "secret", "AWS_SECRET_ACCESS_KEY": "secret",
+        ]
+        let kept = EnvironmentSanitizer.sanitized(from: windowsShaped)
+        for key in EnvironmentSanitizer.osBootstrapKeys {
+            #expect(kept[key] == windowsShaped[key], "\(key) must reach the child process")
+        }
+        #expect(kept["TOKEN_SECRET"] == nil && kept["AWS_SECRET_ACCESS_KEY"] == nil)
         let runtime = try runtime(root: root)
         let result = await runtime.execute(
             ToolCall(callID: ToolCallID("shell"), toolID: ToolID("shell"), arguments: #"{"command":"printf sandboxed > output.txt","timeout_ms":15000}"#),
