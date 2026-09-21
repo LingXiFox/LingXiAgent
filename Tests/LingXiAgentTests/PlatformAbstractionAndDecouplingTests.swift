@@ -25,8 +25,13 @@ struct PlatformAbstractionAndDecouplingTests {
         #expect(LingXiPlatform.types.isInteger(parsed["version"]!))
         #expect(LingXiPlatform.types.isInteger(parsed["count"]!))
         #expect(!LingXiPlatform.types.isInteger(parsed["enabled"]!))
+        #expect(!LingXiPlatform.types.isInteger(parsed["ratio"]!))
         #expect(!LingXiPlatform.types.isNumber(parsed["enabled"]!))
         #expect(LingXiPlatform.types.isNumber(parsed["ratio"]!))
+
+        // Char-backed integers must not be mistaken for booleans: objCType reports "c" for
+        // them as well, so the CoreFoundation type ID has to decide this on Darwin.
+        #expect(!LingXiPlatform.types.isBoolean(NSNumber(value: Int8(1))))
 
         // Same contract for values that never went through NSNumber.
         #expect(LingXiPlatform.types.isBoolean(true))
