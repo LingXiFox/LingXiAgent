@@ -147,6 +147,7 @@ public actor SessionEventLog {
                 try fileHandle.write(contentsOf: lineData)
                 try fileHandle.synchronize()
             } else {
+                try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
                 try lineData.write(to: eventsURL, options: .atomic)
             }
 
@@ -468,6 +469,7 @@ public actor RuntimeEventLog {
                 try fileHandle.write(contentsOf: lineData)
                 try fileHandle.synchronize()
             } else {
+                try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
                 try lineData.write(to: eventsURL, options: .atomic)
             }
 

@@ -110,15 +110,20 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         activeTurnTasksBySession[sessionID]?.removeValue(forKey: runID)
     }
 
-    private func cancelActiveTurnTask(runID: RunID) {
+    @discardableResult
+    private func cancelActiveTurnTask(runID: RunID) -> Task<Void, Never>? {
+        var cancelledTask: Task<Void, Never>?
         if let task = activeTurnTasks.removeValue(forKey: runID) {
             task.cancel()
+            cancelledTask = task
         }
         for sessionID in activeTurnTasksBySession.keys {
             if let task = activeTurnTasksBySession[sessionID]?.removeValue(forKey: runID) {
                 task.cancel()
+                if cancelledTask == nil { cancelledTask = task }
             }
         }
+        return cancelledTask
     }
 
     private func cancelActiveTurnTasks(for sessionID: SessionID) {
@@ -2093,13 +2098,24 @@ extension CoreHost {
         }
 
         do {
-            let stream = try await agent.sendMessage(
-                sessionID,
-                input.text,
-                executionIntent: executionIntent,
-                explicitRunID: AgentRunID(runID.rawValue),
-                explicitModel: explicitModelSelection
-            )
+            var stream: OpenedStream?
+            var retries = 5
+            while true {
+                do {
+                    stream = try await agent.sendMessage(
+                        sessionID,
+                        input.text,
+                        executionIntent: executionIntent,
+                        explicitRunID: AgentRunID(runID.rawValue),
+                        explicitModel: explicitModelSelection
+                    )
+                    break
+                } catch let err as CoreError where err.code == .turnAlreadyRunning && retries > 0 && !Task.isCancelled {
+                    retries -= 1
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            }
+            guard let stream else { return }
 
             for try await chunk in stream.chunks {
                 if Task.isCancelled {
@@ -3289,9 +3305,10 @@ extension CoreHost {
             nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
         } else {
             // Target is running: perform targeted cancellation of this active run
-            cancelActiveTurnTask(runID: envelope.payload.runID)
+            let cancelledTask = cancelActiveTurnTask(runID: envelope.payload.runID)
             await backgroundManager.terminateTasks(runID: envelope.payload.runID)
             try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+            _ = await cancelledTask?.result
             nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
         }
 

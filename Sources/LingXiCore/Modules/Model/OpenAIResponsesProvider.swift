@@ -692,17 +692,19 @@ private struct ResponseRequestBody: Encodable {
         enum Keys: String, CodingKey { case type, role, content, callID = "call_id", name, arguments, output, id, status }
 
         func encode(to encoder: Encoder) throws {
-            var values = encoder.container(keyedBy: Keys.self)
             switch self {
             case let .message(role, content):
+                var values = encoder.container(keyedBy: Keys.self)
                 try values.encode(role, forKey: .role); try values.encode(content, forKey: .content)
             case let .functionCall(callID, name, arguments, itemID):
+                var values = encoder.container(keyedBy: Keys.self)
                 try values.encode("function_call", forKey: .type)
                 try values.encode(callID, forKey: .callID)
                 try values.encode(name, forKey: .name)
                 try values.encode(arguments, forKey: .arguments)
                 if let itemID { try values.encode(itemID, forKey: .id) }
             case let .functionOutput(callID, output):
+                var values = encoder.container(keyedBy: Keys.self)
                 try values.encode("function_call_output", forKey: .type); try values.encode(callID, forKey: .callID); try values.encode(output, forKey: .output)
             case let .opaque(data):
                 try JSONDecoder().decode(JSONValue.self, from: data).encode(to: encoder)
