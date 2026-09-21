@@ -622,8 +622,12 @@ public struct ListDirectoryTool: ToolExecutor {
         )
         return try entries.filter { !workspace.sensitivePathPolicy.isSensitive($0) }.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { entry in
             let values = try entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            let kind = values.isDirectory == true ? "directory" : "file"
-            let size = values.fileSize.map(String.init) ?? "-"
+            let isDirectoryEntry = values.isDirectory == true
+            let kind = isDirectoryEntry ? "directory" : "file"
+            // A directory's st_size is an implementation detail of the filesystem (an inode's
+            // linked-entry count on ext4, a fixed allocation on APFS), so it carries no meaning
+            // that survives a platform change.
+            let size = isDirectoryEntry ? "-" : (values.fileSize.map(String.init) ?? "-")
             return "\(entry.lastPathComponent)\t\(kind)\t\(size)"
         }.joined(separator: "\n")
     }
