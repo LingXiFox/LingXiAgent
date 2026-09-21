@@ -498,7 +498,13 @@ struct ProviderHTTPTests {
         #expect(second["store"] as? Bool == false)
         #expect(second["previous_response_id"] == nil)
         let input = try #require(second["input"] as? [[String: Any]])
-        let reasoningIndex = try #require(input.firstIndex { $0["type"] as? String == "reasoning" })
+        // The bare "no reasoning item" verdict says nothing about which half failed, and both
+        // halves - carrying the opaque part and replaying it - are in different components.
+        let itemTypes = input.map { ($0["type"] as? String) ?? "?" }
+        let reasoningIndex = try #require(
+            input.firstIndex { $0["type"] as? String == "reasoning" },
+            "second request carried no reasoning item; input types were \(itemTypes), assistant parts were \(snapshot.messages[1].parts.count)"
+        )
         let callIndex = try #require(input.firstIndex { $0["type"] as? String == "function_call" })
         let outputIndex = try #require(input.firstIndex { $0["type"] as? String == "function_call_output" })
         #expect(reasoningIndex < callIndex && callIndex < outputIndex)
@@ -542,7 +548,11 @@ struct ProviderHTTPTests {
         let body = try #require(await secondTransport.bodies().first)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let input = try #require(json["input"] as? [[String: Any]])
-        #expect(input.first { $0["type"] as? String == "reasoning" }?["encrypted_content"] as? String == "opaque-state")
+        // Whether the second provider found anything at all distinguishes a provenance file that
+        // never survived the restart from a continuation that was read and then not replayed.
+        let staged = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let reasoning = input.first { $0["type"] as? String == "reasoning" }
+        #expect(reasoning?["encrypted_content"] as? String == "opaque-state", "input types were \(input.map { ($0["type"] as? String) ?? "?" }), provenance files=\(staged.count)")
         #expect(input.first { $0["type"] as? String == "function_call" }?["call_id"] as? String == "provider-call")
         #expect(input.first { $0["type"] as? String == "function_call_output" }?["call_id"] as? String == "provider-call")
     }
