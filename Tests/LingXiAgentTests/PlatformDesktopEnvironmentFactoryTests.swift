@@ -23,8 +23,13 @@ struct PlatformDesktopEnvironmentFactoryTests {
         // Linux 平台下
         #expect(snapshot.applicationManagement == .available)
         #elseif os(Windows)
-        // Windows 平台下
-        #expect(snapshot.applicationManagement == .available)
+        // WindowsDesktopEnvironment reports application management as unsupported until native
+        // Win32 process control exists, so this used to assert the one thing the platform stub
+        // promises it does not do. Pin what the factory actually owes here.
+        switch snapshot.applicationManagement {
+        case .unsupported: break
+        default: Issue.record("Windows must report application management unsupported until the Win32 stub is implemented, got \(snapshot.applicationManagement)")
+        }
         #endif
     }
 }
