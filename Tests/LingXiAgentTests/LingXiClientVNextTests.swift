@@ -4,7 +4,7 @@ import LingXiProtocol
 import LingXiCore
 @testable import LingXiClient
 
-@Suite("LingXiClientVNextTests")
+@Suite("LingXiClientVNextTests", .serialized)
 struct LingXiClientVNextTests {
 
     private func createTestHost() async throws -> (CoreHost, URL) {

@@ -299,11 +299,18 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
                 """
 
                 let sendResponse: (String) -> Void = { html in
+                    #if canImport(Darwin)
+                    _ = Darwin.signal(SIGPIPE, SIG_IGN)
+                    #elseif canImport(Glibc)
+                    _ = Glibc.signal(SIGPIPE, SIG_IGN)
+                    #endif
                     _ = html.withCString { ptr in
                         #if os(Windows) || canImport(WinSDK)
                         send(clientSock, ptr, Int32(html.utf8.count), 0)
+                        #elseif canImport(Glibc)
+                        send(clientSock, ptr, html.utf8.count, Int32(MSG_NOSIGNAL))
                         #else
-                        write(clientSock, ptr, html.utf8.count)
+                        send(clientSock, ptr, html.utf8.count, 0)
                         #endif
                     }
                 }

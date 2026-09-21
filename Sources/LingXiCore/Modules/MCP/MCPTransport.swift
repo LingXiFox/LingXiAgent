@@ -3,6 +3,11 @@ import LingXiProtocol
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public enum MCPTransportKind: String, Sendable, Codable { case stdio, streamableHTTP }
 public enum MCPProtocolPreference: String, Sendable, Codable { case auto, modern, legacy }
@@ -222,6 +227,11 @@ public struct MCPStdioTransport: MCPToolInvoker {
     }
     private func request(method: String, parameters: [String: Any]) async throws -> Data {
         try Task.checkCancellation()
+        #if canImport(Darwin)
+        _ = Darwin.signal(SIGPIPE, SIG_IGN)
+        #elseif canImport(Glibc)
+        _ = Glibc.signal(SIGPIPE, SIG_IGN)
+        #endif
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
         guard let command = configuration.command, LingXiPlatform.path.isAbsolute(command), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
         var environment = EnvironmentSanitizer.sanitized()
@@ -238,7 +248,11 @@ public struct MCPStdioTransport: MCPToolInvoker {
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         // Server diagnostics must never fill an unread pipe or enter the JSON-RPC stream.
+        #if os(Windows)
         process.standardError = FileHandle.nullDevice
+        #else
+        process.standardError = FileHandle(forWritingAtPath: "/dev/null") ?? FileHandle.nullDevice
+        #endif
 
         do {
             try process.run()
@@ -292,6 +306,9 @@ public struct MCPStdioTransport: MCPToolInvoker {
             timeoutBox.didTimeout = true
             if process.isRunning {
                 process.terminate()
+                #if !os(Windows)
+                kill(process.processIdentifier, SIGKILL)
+                #endif
             }
             try? stdinHandle.close()
         }
@@ -301,6 +318,9 @@ public struct MCPStdioTransport: MCPToolInvoker {
             try? stdinHandle.close()
             if process.isRunning {
                 process.terminate()
+                #if !os(Windows)
+                kill(process.processIdentifier, SIGKILL)
+                #endif
             }
         }
 
@@ -372,8 +392,12 @@ public struct MCPStdioTransport: MCPToolInvoker {
             }
             return finalData
         } onCancel: {
+            watchdog.cancel()
             if process.isRunning {
                 process.terminate()
+                #if !os(Windows)
+                kill(process.processIdentifier, SIGKILL)
+                #endif
             }
             try? stdinHandle.close()
         }

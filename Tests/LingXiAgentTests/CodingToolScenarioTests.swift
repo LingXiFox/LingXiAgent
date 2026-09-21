@@ -21,15 +21,19 @@ struct CodingToolScenarioTests {
     private var shCommand: String? {
         #if os(Windows)
         let candidates = [
-            "sh",
             #"C:\Program Files\Git\bin\sh.exe"#,
             #"C:\Program Files\Git\usr\bin\sh.exe"#,
-            #"C:\Program Files (x86)\Git\bin\sh.exe"#
+            #"C:\Program Files (x86)\Git\bin\sh.exe"#,
+            #"C:\Program Files (x86)\Git\usr\bin\sh.exe"#
         ]
         for c in candidates {
-            if FileManager.default.fileExists(atPath: c) || LingXiPlatform.process.resolveExecutable(named: c, customSearchPaths: nil) != nil {
-                return c.contains(" ") ? "\"\(c)\"" : c
+            if FileManager.default.fileExists(atPath: c) {
+                return "\"\(c)\""
             }
+        }
+        if let resolved = LingXiPlatform.process.resolveExecutable(named: "sh.exe", customSearchPaths: nil)
+            ?? LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: nil) {
+            return resolved.contains(" ") ? "\"\(resolved)\"" : resolved
         }
         return nil
         #else

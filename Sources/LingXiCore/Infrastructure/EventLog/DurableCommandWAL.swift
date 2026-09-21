@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 /// StagedWALRecord：描述单个 Command 事务的在途/已提交状态。
 public struct StagedWALRecord: Codable, Sendable, Equatable {
@@ -242,7 +243,7 @@ public actor DurableCommandWAL {
         if let committedDir {
             let committedURL = committedDir.appendingPathComponent("\(safeKey).json")
             // Invariant: Receipt write to disk must succeed BEFORE removing .wal
-            try data.write(to: committedURL, options: .atomic)
+            try data.writePlatformSafe(to: committedURL)
         }
         if let walDir {
             let walURL = walDir.appendingPathComponent("\(safeKey).wal")
@@ -440,6 +441,6 @@ public actor DurableCommandWAL {
         let safeKey = CommandStorageSecurity.safeStorageKey(for: CommandID(record.commandID))
         let url = dir.appendingPathComponent("\(safeKey).wal")
         let data = try JSONEncoder().encode(record)
-        try data.write(to: url, options: .atomic)
+        try data.writePlatformSafe(to: url)
     }
 }

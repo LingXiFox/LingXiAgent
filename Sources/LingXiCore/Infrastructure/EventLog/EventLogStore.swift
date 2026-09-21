@@ -1,15 +1,6 @@
 import Foundation
 import LingXiProtocol
-
-private extension Data {
-    func writePlatformSafe(to url: URL) throws {
-        #if os(Windows)
-        try write(to: url, options: [])
-        #else
-        try write(to: url, options: .atomic)
-        #endif
-    }
-}
+import LingXiPlatform
 
 /// SessionEventLog：管理单个 Session 的因果事件日志与 Replay 边界。
 public actor SessionEventLog {

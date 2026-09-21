@@ -19,7 +19,11 @@ public final class WindowsProcessAdapter: PlatformProcessProtocol, @unchecked Se
         let defaultPaths = [
             "\(sysRoot)\\System32",
             sysRoot,
-            "\(sysRoot)\\System32\\WindowsPowerShell\\v1.0"
+            "\(sysRoot)\\System32\\WindowsPowerShell\\v1.0",
+            #"C:\Program Files\Git\bin"#,
+            #"C:\Program Files\Git\usr\bin"#,
+            #"C:\Program Files (x86)\Git\bin"#,
+            #"C:\Program Files (x86)\Git\usr\bin"#
         ]
         var searchPaths = customSearchPaths ?? []
         searchPaths.append(contentsOf: defaultPaths)
