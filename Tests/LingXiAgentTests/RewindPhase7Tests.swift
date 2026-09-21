@@ -147,6 +147,7 @@ struct RewindPhase7Tests {
             let res = try #require(receipt.result)
             #expect(res.revertedPrompt == "Persisted Turn 2 Q")
             expectedFinalRevision = try #require(res.revision)
+            await host.shutdown()
         }
 
         // 模拟进程完全退出，全新初始化 PersistentSessionStore 与 CoreHost
@@ -174,6 +175,7 @@ struct RewindPhase7Tests {
             #expect(snap.recentTurns.count == 1)
             #expect(snap.recentTurns.first?.userMessage.text == "Persisted Turn 1 Q")
             #expect(snap.activeRootRun == nil)
+            await rebootHost.shutdown()
         }
     }
 }

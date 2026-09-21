@@ -212,12 +212,13 @@ struct Round9SystemAuditTests {
         let coordinator = ToolMutationCoordinator()
 
         let (gateAcquiredStream, gateAcquiredContinuation) = AsyncStream<Void>.makeStream()
+        let (releaseTask1Stream, releaseTask1Continuation) = AsyncStream<Void>.makeStream()
 
-        // Task 1 holds the gate for 300ms
+        // Task 1 holds the gate until explicitly released after task2 cancellation verification
         let task1 = Task {
             try await coordinator.execute {
                 gateAcquiredContinuation.yield()
-                try? await Task.sleep(nanoseconds: 300_000_000)
+                for await _ in releaseTask1Stream { break }
                 return "result-1"
             }
         }
@@ -245,7 +246,8 @@ struct Round9SystemAuditTests {
             Issue.record("Unexpected error from task2: \(error)")
         }
 
-        // Task 1 finishes normally
+        // Signal Task 1 to release the gate and finish normally
+        releaseTask1Continuation.yield()
         let res1 = try await task1.value
         #expect(res1 == "result-1")
 

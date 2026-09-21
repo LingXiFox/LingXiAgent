@@ -159,7 +159,6 @@ public struct VNextStdioCoreServer: Sendable {
                 }
             }
         } onCancel: {
-            input.readabilityHandler = nil
             try? input.close()
         }
         await connectionTasks.drainAll()

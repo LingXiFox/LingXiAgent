@@ -73,7 +73,7 @@ public actor SQLitePersistenceStore {
         }
     }
 
-    deinit { sqlite3_close(catalog); sqlite3_close(state) }
+    deinit { sqlite3_close_v2(catalog); sqlite3_close_v2(state) }
 
     public func mainRootBinding() throws -> RootBinding {
         guard let binding = try rootBindings(projectID: projectID).first(where: { $0.kind == .main && $0.lifecycleState == .active }) else { throw PersistenceError.missingMainRoot(projectID) }
@@ -330,7 +330,7 @@ public actor SQLitePersistenceStore {
         let catalogPath = dataRoot.appendingPathComponent("catalog.sqlite")
         guard FileManager.default.fileExists(atPath: catalogPath.path) else { return [] }
         guard let catalogDB = Self.openReadOnly(catalogPath) else { return [] }
-        defer { sqlite3_close(catalogDB) }
+        defer { sqlite3_close_v2(catalogDB) }
 
         let roots = try rows(catalogDB, "SELECT project_id, absolute_root FROM root_bindings WHERE kind = 'main' AND lifecycle_state = 'active'", [])
         var summaries: [SessionSummary] = []
@@ -342,7 +342,7 @@ public actor SQLitePersistenceStore {
             let stateURL = dataRoot.appendingPathComponent("projects/\(pID)/state.sqlite")
             guard FileManager.default.fileExists(atPath: stateURL.path) else { continue }
             guard let stateDB = Self.openReadOnly(stateURL) else { continue }
-            defer { sqlite3_close(stateDB) }
+            defer { sqlite3_close_v2(stateDB) }
 
             let query = """
             SELECT 
@@ -410,7 +410,7 @@ public actor SQLitePersistenceStore {
         let catalogPath = dataRoot.appendingPathComponent("catalog.sqlite")
         guard FileManager.default.fileExists(atPath: catalogPath.path) else { return nil }
         guard let catalogDB = Self.openReadOnly(catalogPath) else { return nil }
-        defer { sqlite3_close(catalogDB) }
+        defer { sqlite3_close_v2(catalogDB) }
 
         let roots = try rows(catalogDB, "SELECT project_id, absolute_root FROM root_bindings WHERE kind = 'main' AND lifecycle_state = 'active'", [])
         for row in roots {
@@ -420,7 +420,7 @@ public actor SQLitePersistenceStore {
             let stateURL = dataRoot.appendingPathComponent("projects/\(pID)/state.sqlite")
             guard FileManager.default.fileExists(atPath: stateURL.path) else { continue }
             guard let stateDB = Self.openReadOnly(stateURL) else { continue }
-            defer { sqlite3_close(stateDB) }
+            defer { sqlite3_close_v2(stateDB) }
             let exists = (try? scalar(stateDB, "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1", [sessionID.rawValue])) != nil
             if exists {
                 return (ProjectID(pID), absRoot)
@@ -438,7 +438,7 @@ public actor SQLitePersistenceStore {
         }
         let otherStateURL = dataRoot.appendingPathComponent("projects/\(info.projectID.rawValue)/state.sqlite")
         guard let otherDB = Self.openReadOnly(otherStateURL) else { return nil }
-        defer { sqlite3_close(otherDB) }
+        defer { sqlite3_close_v2(otherDB) }
 
         let rows = try Self.rows(otherDB, "SELECT session_id, project_id, kind, parent_session_id, root_session_id, spawned_by_run_id, spawned_by_tool_call_id, title, cwd_root_binding_id, cwd_relative_path, created_at, updated_at FROM sessions WHERE session_id = ? LIMIT 1", [id.rawValue])
         guard let row = rows.first, row.count >= 12 else { return nil }
@@ -770,18 +770,24 @@ public actor SQLitePersistenceStore {
     private static func date(_ value: Date) -> String { String(value.timeIntervalSince1970) }
     private static func parseDate(_ value: String) -> Date { Date(timeIntervalSince1970: Double(value) ?? 0) }
     private static func open(_ url: URL) throws -> OpaquePointer {
-        var db: OpaquePointer?; guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else { throw PersistenceError.sqlite("open \(url.lastPathComponent)") }; return db
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
+            if let db { sqlite3_close_v2(db) }
+            throw PersistenceError.sqlite("open \(url.lastPathComponent)")
+        }
+        sqlite3_busy_timeout(db, 10_000)
+        return db
     }
-    private static func configure(_ db: OpaquePointer) throws { try script(db, "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000") }
+    private static func configure(_ db: OpaquePointer) throws { try script(db, "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000") }
     /// Read-only opens never run `configure()`, so without an explicit busy timeout a
     /// concurrent WAL checkpoint surfaces immediately as "database is locked".
     private static func openReadOnly(_ url: URL) -> OpaquePointer? {
         var handle: OpaquePointer?
         guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db = handle else {
-            sqlite3_close(handle)
+            if let handle { sqlite3_close_v2(handle) }
             return nil
         }
-        sqlite3_busy_timeout(db, 5_000)
+        sqlite3_busy_timeout(db, 10_000)
         return db
     }
     private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void) throws {
@@ -847,7 +853,7 @@ public actor SQLitePersistenceStore {
             guard FileManager.default.fileExists(atPath: stateURL.path) else { continue }
             if let db = try? open(stateURL) {
                 _ = try? script(db, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
-                sqlite3_close(db)
+                sqlite3_close_v2(db)
             }
         }
     }

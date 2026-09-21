@@ -281,9 +281,15 @@ public struct MCPStdioTransport: MCPToolInvoker {
         let chunks = LingXiPlatform.lineReader.dataChunks(from: stdoutHandle)
 
         let watchdog = Task {
-            do { try await Task.sleep(for: .seconds(timeoutSeconds)) }
-            catch { return }
-            try? stdoutHandle.close()
+            do {
+                try await Task.sleep(for: .seconds(timeoutSeconds))
+            } catch {
+                return
+            }
+            if process.isRunning {
+                process.terminate()
+            }
+            try? stdinHandle.close()
         }
         defer {
             watchdog.cancel()
@@ -294,64 +300,71 @@ public struct MCPStdioTransport: MCPToolInvoker {
             }
         }
 
-        try stdinHandle.write(contentsOf: initData)
-        try stdinHandle.write(contentsOf: Data("\n".utf8))
+        return try await withTaskCancellationHandler {
+            try stdinHandle.write(contentsOf: initData)
+            try stdinHandle.write(contentsOf: Data("\n".utf8))
 
-        var buffer = Data()
-        var initCompleted = false
-        var targetResultData: Data?
+            var buffer = Data()
+            var initCompleted = false
+            var targetResultData: Data?
 
-        for try await chunk in chunks {
-            try Task.checkCancellation()
-            buffer.append(chunk)
-            guard buffer.count <= 8 * 1_024 * 1_024 else {
-                throw CoreError(code: .mcpDiscoveryLimitExceeded, message: "MCP stdio response exceeded 8 MiB")
-            }
-
-            while let newlineRange = buffer.range(of: Data("\n".utf8)) {
-                let lineData = buffer.subdata(in: 0..<newlineRange.lowerBound)
-                buffer.removeSubrange(0..<newlineRange.upperBound)
-
-                guard !lineData.isEmpty else { continue }
-                guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-                    continue
+            for try await chunk in chunks {
+                try Task.checkCancellation()
+                buffer.append(chunk)
+                guard buffer.count <= 8 * 1_024 * 1_024 else {
+                    throw CoreError(code: .mcpDiscoveryLimitExceeded, message: "MCP stdio response exceeded 8 MiB")
                 }
 
-                let msgId = json["id"] as? String
-                let numId = json["id"] as? Int
+                while let newlineRange = buffer.range(of: Data("\n".utf8)) {
+                    let lineData = buffer.subdata(in: 0..<newlineRange.lowerBound)
+                    buffer.removeSubrange(0..<newlineRange.upperBound)
 
-                if !initCompleted && (msgId == "init-1" || numId == 1) {
-                    initCompleted = true
-                    try stdinHandle.write(contentsOf: notifyData)
-                    try stdinHandle.write(contentsOf: Data("\n".utf8))
-
-                    try stdinHandle.write(contentsOf: targetReqData)
-                    try stdinHandle.write(contentsOf: Data("\n".utf8))
-                } else if msgId == reqId {
-                    if let err = json["error"] as? [String: Any], let errMsg = err["message"] as? String {
-                        if errMsg.lowercased().contains("credential") || errMsg.lowercased().contains("accesskey") || errMsg.lowercased().contains("unauthorized") || errMsg.lowercased().contains("auth") {
-                            throw CoreError(code: .permissionDenied, message: "Authentication required: \(errMsg)")
-                        } else {
-                            throw CoreError(code: .toolExecutionFailed, message: "MCP error: \(errMsg)")
-                        }
+                    guard !lineData.isEmpty else { continue }
+                    guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                        continue
                     }
-                    targetResultData = lineData
-                    break
+
+                    let msgId = json["id"] as? String
+                    let numId = json["id"] as? Int
+
+                    if !initCompleted && (msgId == "init-1" || numId == 1) {
+                        initCompleted = true
+                        try stdinHandle.write(contentsOf: notifyData)
+                        try stdinHandle.write(contentsOf: Data("\n".utf8))
+
+                        try stdinHandle.write(contentsOf: targetReqData)
+                        try stdinHandle.write(contentsOf: Data("\n".utf8))
+                    } else if msgId == reqId {
+                        if let err = json["error"] as? [String: Any], let errMsg = err["message"] as? String {
+                            if errMsg.lowercased().contains("credential") || errMsg.lowercased().contains("accesskey") || errMsg.lowercased().contains("unauthorized") || errMsg.lowercased().contains("auth") {
+                                throw CoreError(code: .permissionDenied, message: "Authentication required: \(errMsg)")
+                            } else {
+                                throw CoreError(code: .toolExecutionFailed, message: "MCP error: \(errMsg)")
+                            }
+                        }
+                        targetResultData = lineData
+                        break
+                    }
                 }
+                if targetResultData != nil { break }
             }
-            if targetResultData != nil { break }
-        }
 
-        try Task.checkCancellation()
+            try Task.checkCancellation()
 
-        guard let finalData = targetResultData else {
-            let elapsed = ContinuousClock().now - startTime
-            if elapsed >= .seconds(timeoutSeconds) {
-                throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
+            guard let finalData = targetResultData else {
+                let elapsed = ContinuousClock().now - startTime
+                if elapsed >= .seconds(timeoutSeconds) {
+                    throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
+                }
+                throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method)")
             }
-            throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method)")
+            return finalData
+        } onCancel: {
+            if process.isRunning {
+                process.terminate()
+            }
+            try? stdinHandle.close()
         }
-        return finalData
     }
 }
 
