@@ -500,7 +500,7 @@ struct ProviderHTTPTests {
         let input = try #require(second["input"] as? [[String: Any]])
         // The bare "no reasoning item" verdict says nothing about which half failed, and both
         // halves - carrying the opaque part and replaying it - are in different components.
-        let itemTypes = input.map { ($0["type"] as? String) ?? "?" }
+        let itemTypes = inputItemShapes(input)
         let reasoningIndex = try #require(
             input.firstIndex { $0["type"] as? String == "reasoning" },
             "second request carried no reasoning item; input types were \(itemTypes), assistant parts were \(snapshot.messages[1].parts.count)"
@@ -551,8 +551,10 @@ struct ProviderHTTPTests {
         // Whether the second provider found anything at all distinguishes a provenance file that
         // never survived the restart from a continuation that was read and then not replayed.
         let staged = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let recorded = try? await ProviderProvenanceStore(directory: directory)
+            .continuation(for: firstRequestID, wire: .responses)
         let reasoning = input.first { $0["type"] as? String == "reasoning" }
-        #expect(reasoning?["encrypted_content"] as? String == "opaque-state", "input types were \(input.map { ($0["type"] as? String) ?? "?" }), provenance files=\(staged.count)")
+        #expect(reasoning?["encrypted_content"] as? String == "opaque-state", "input types were \(inputItemShapes(input)), provenance files=\(staged.count), recorded orderedItems=\(recorded?.orderedItems.count ?? -1) references=\(recorded?.references.count ?? -1)")
         #expect(input.first { $0["type"] as? String == "function_call" }?["call_id"] as? String == "provider-call")
         #expect(input.first { $0["type"] as? String == "function_call_output" }?["call_id"] as? String == "provider-call")
     }
@@ -641,6 +643,16 @@ struct ProviderHTTPTests {
         let result = (try await client.session(sessionID).messages.map(\.role), text)
         await host.shutdown()
         return result
+    }
+
+    /// Names each Responses input item by whatever identifies it, so a follow-up request that
+    /// lost its reasoning item reads as a shape change rather than a bare "?" for every slot.
+    private func inputItemShapes(_ input: [[String: Any]]) -> [String] {
+        input.map { item in
+            if let type = item["type"] as? String { return type }
+            if let role = item["role"] as? String { return "role:\(role)" }
+            return "shapeless"
+        }
     }
 
     private func runCapturedToolLoop(provider: any ModelProvider, reasoning: String? = nil) async throws -> LegacySessionSnapshot {
