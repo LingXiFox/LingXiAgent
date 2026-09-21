@@ -180,8 +180,10 @@ case .smoke:
         print("✓ CoreHost configuration & data store operational")
 
         print("🦊 [LingXiAgent Smoke] Initializing TUI Terminal & Renderer...")
-        try ApplicationTUI.smokeCheck()
-        print("✓ TUI renderer & fallback pipeline operational")
+        let walkedTerminal = try ApplicationTUI.smokeCheck()
+        print(walkedTerminal
+            ? "✓ TUI renderer & fallback pipeline operational"
+            : "· no controlling terminal: raw-mode legs skipped, frame pipeline verified headless")
 
         print("✓ [LingXiAgent Smoke] All subsystems verified successfully.")
         exit(0)

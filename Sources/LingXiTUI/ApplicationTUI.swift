@@ -1,5 +1,6 @@
 import Foundation
 import LingXiApplication
+import LingXiPlatform
 import LingXiProtocol
 import LingXiTUIComponents
 
@@ -4238,12 +4239,19 @@ extension ApplicationTUI {
 #endif
 
 extension ApplicationTUI {
-    public static func smokeCheck() throws {
+    /// Renders one frame and reports whether the terminal legs were walked, so the caller can say
+    /// which of the two it actually verified.
+    public static func smokeCheck() throws -> Bool {
         let backend = POSIXTerminalBackend(noAltScreen: true)
-        try backend.start()
+        // Raw mode is a tcsetattr on the controlling terminal, and a piped or CI run has none -
+        // EIO there is not a defect, so the check falls back to the frame pipeline, which is the
+        // renderer path a redirected run would take anyway.
+        let interactive = LingXiPlatform.terminal.isInteractive()
+        if interactive { try backend.start() }
         let frame = TUIFrame(size: backend.size)
         backend.render(frame)
-        backend.stop()
+        if interactive { backend.stop() }
+        return interactive
     }
 }
 
