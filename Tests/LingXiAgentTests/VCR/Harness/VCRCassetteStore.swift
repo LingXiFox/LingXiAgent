@@ -139,7 +139,12 @@ actor VCRCassetteStore {
             }
             guard structural.count == 1, let candidate = structural.first else {
                 let roles = structural.map(\.role).sorted().joined(separator: ",")
-                throw CassetteMismatch(message: "unbound run candidate count=\(structural.count) roles=[\(roles)]")
+                // With no candidate at all the count alone says nothing about why, so name the
+                // first path where this step's recorded request and the replayed one diverge.
+                let difference = exchanges.first { $0.wire == context.wireProtocol && $0.step == context.step }
+                    .flatMap { nearby in comparableRequests[nearby.sequence] }
+                    .flatMap { Self.firstDifferencePath(recorded: $0.normalized, replayed: normalized.0) } ?? "none"
+                throw CassetteMismatch(message: "unbound run candidate count=\(structural.count) roles=[\(roles)] step=\(context.step) difference=\(difference)")
             }
             guard roleBindings[candidate.role] == nil || roleBindings[candidate.role] == execution else {
                 throw CassetteMismatch(message: "role \(candidate.role) already bound")

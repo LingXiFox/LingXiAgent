@@ -245,11 +245,16 @@ struct VCRNormalizer {
         if let range = text.range(of: "Agent Runtime Guidelines:") {
             text = String(text[..<range.lowerBound])
         }
-        return text.split(separator: "\n", omittingEmptySubsequences: false).filter {
-            let line = $0.trimmingCharacters(in: .whitespaces)
-            return !line.hasPrefix("- currentDirectory:") && !line.hasPrefix("- cwd:")
-                && !line.hasPrefix("- homeDirectory:") && !line.hasPrefix("- userHome:")
-                && !line.hasPrefix("- shell:") && !line.hasPrefix("- gitRepository:")
+        return text.split(separator: "\n", omittingEmptySubsequences: false).compactMap { rawLine -> String? in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            // The OS name is the one environment fact the cassette cannot carry across machines:
+            // it is whatever recorded the run, not what replays it. Keep the line so its presence
+            // is still part of the comparison, and drop the value.
+            if line.hasPrefix("- platform:") { return "- platform: <platform>" }
+            if line.hasPrefix("- currentDirectory:") || line.hasPrefix("- cwd:")
+                || line.hasPrefix("- homeDirectory:") || line.hasPrefix("- userHome:")
+                || line.hasPrefix("- shell:") || line.hasPrefix("- gitRepository:") { return nil }
+            return String(rawLine)
         }.joined(separator: "\n")
     }
 
