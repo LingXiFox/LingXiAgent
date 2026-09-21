@@ -238,15 +238,14 @@ for chunk in "${chunks[@]}"; do
     printf 'ok  chunk %-3s %4ss  %s tests\n' "$index" "$elapsed" "$ran"
   fi
   if [ -n "$XUNIT_DIR" ]; then
-    chunk_xml="$XUNIT_DIR/test-results-chunk-$index.xml"
-    # Stage the report as soon as its chunk is over. A killed chunk can leave its own report
-    # open, and one busy file makes actions/upload-artifact fail the whole directory, which
-    # costs the per-test detail for the seventy chunks that did finish.
-    if [ -f "$chunk_xml" ]; then
+    # swift-testing appends its own suffix to --xunit-output, so the report is named after the
+    # chunk rather than exactly as asked for; stage whatever name it actually wrote.
+    for report in "$XUNIT_DIR"/test-results-chunk-"$index"*.xml; do
+      [ -f "$report" ] || continue
       mkdir -p "$ARTIFACT_DIR"
-      cp "$chunk_xml" "$ARTIFACT_DIR/" 2>/dev/null \
+      cp "$report" "$ARTIFACT_DIR/" 2>/dev/null \
         || echo "note: could not stage chunk ${index}'s report"
-    fi
+    done
   fi
   rm -f "$chunk_log"
   echo "::endgroup::"
