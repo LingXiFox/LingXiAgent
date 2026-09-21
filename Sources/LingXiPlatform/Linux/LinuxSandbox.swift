@@ -86,7 +86,7 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
 
     private static func launch(bwrap: String, denyNetwork: Bool) -> Bool {
         let workspace = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lingxi-sandbox-probe-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appendingPathComponent("lingxi-sandbox-probe-\(UUID().uuidString)")
         do {
             try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         } catch {
