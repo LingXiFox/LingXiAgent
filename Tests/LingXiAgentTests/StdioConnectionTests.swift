@@ -34,7 +34,7 @@ struct StdioConnectionTests {
     @Test func malformedJSONFailsPendingRequestAndActiveStream() async throws {
         let fixture = try await openStream()
         let pending = Task { try await fixture.connection.send(.ping) }
-        _ = try readMessage(from: fixture.requests.fileHandleForReading)
+        _ = try await readMessage(from: fixture.requests.fileHandleForReading)
         await fixture.connection.handle(line: "not-json")
 
         await expectTransportError { _ = try await pending.value }
@@ -44,7 +44,7 @@ struct StdioConnectionTests {
     @Test func eofFailsPendingRequestAndActiveStream() async throws {
         let fixture = try await openStream()
         let pending = Task { try await fixture.connection.send(.ping) }
-        _ = try readMessage(from: fixture.requests.fileHandleForReading)
+        _ = try await readMessage(from: fixture.requests.fileHandleForReading)
         await fixture.connection.inputDidClose()
 
         await expectTransportError { _ = try await pending.value }
@@ -56,11 +56,11 @@ struct StdioConnectionTests {
         let responses = Pipe()
         let connection = StdioConnection(input: requests.fileHandleForWriting)
         let opening = Task { try await connection.openTestStream() }
-        let request = try readMessage(from: requests.fileHandleForReading)
+        let request = try await readMessage(from: requests.fileHandleForReading)
         let server = StdioCoreServer(endpoint: endpoint, input: .nullDevice, output: responses.fileHandleForWriting)
         server.handleMessage(request)
 
-        let messages = try readThroughStreamEnd(from: responses.fileHandleForReading)
+        let messages = try await readThroughStreamEnd(from: responses.fileHandleForReading)
         for message in messages { await connection.handle(message) }
         let stream = try await opening.value
         var chunks: [StreamChunk] = []
@@ -76,7 +76,7 @@ struct StdioConnectionTests {
         let requests = Pipe()
         let connection = StdioConnection(input: requests.fileHandleForWriting)
         let opening = Task { try await connection.openTestStream() }
-        guard case let .request(id, .openTestStream) = try readMessage(from: requests.fileHandleForReading) else {
+        guard case let .request(id, .openTestStream) = try await readMessage(from: requests.fileHandleForReading) else {
             throw CoreError(code: .transport, message: "未收到 stream request")
         }
         await connection.handle(.response(id: id, response: .streamOpened(StreamID("stream-1"))))
@@ -85,31 +85,47 @@ struct StdioConnectionTests {
 
     /// `FileHandle.availableData` blocks until a byte arrives or the pipe closes, so a write
     /// that never comes takes the whole test process down with it instead of failing one case.
-    /// Under CI that never-write is observable on these pipes, so every fixture read is bounded
-    /// and says so in the error.
+    /// The read also has to stay off the cooperative pool: these fixtures wait for bytes that
+    /// another task in the same process produces, and parking a cooperative thread while waiting
+    /// starves that producer on a runner with few cores, which is what the bounded read exposed.
+    /// So the blocking call runs on a global queue and the test awaits a continuation a deadline
+    /// can also fail.
     private static let fixtureReadTimeout: TimeInterval = 20
 
-    private func availableData(from handle: FileHandle, timeout: TimeInterval) throws -> Data {
-        let finished = DispatchSemaphore(value: 0)
-        final class Box: @unchecked Sendable { var data = Data() }
-        let box = Box()
-        DispatchQueue.global().async {
-            box.data = handle.availableData
-            finished.signal()
+    private final class Claim: @unchecked Sendable {
+        private let lock = NSLock()
+        private var taken = false
+
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if taken { return false }
+            taken = true
+            return true
         }
-        guard finished.wait(timeout: .now() + timeout) == .success else {
-            throw CoreError(code: .commandTimedOut, message: "fixture 管道在 \(timeout)s 内没有产出")
-        }
-        return box.data
     }
 
-    private func readMessage(from handle: FileHandle) throws -> WireMessage {
-        let data = try availableData(from: handle, timeout: Self.fixtureReadTimeout)
+    private func availableData(from handle: FileHandle, timeout: TimeInterval) async throws -> Data {
+        let claimed = Claim()
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+            DispatchQueue.global().async {
+                let data = handle.availableData
+                if claimed.claim() { continuation.resume(returning: data) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                guard claimed.claim() else { return }
+                continuation.resume(throwing: CoreError(code: .commandTimedOut, message: "fixture 管道在 \(timeout)s 内没有产出"))
+            }
+        }
+    }
+
+    private func readMessage(from handle: FileHandle) async throws -> WireMessage {
+        let data = try await availableData(from: handle, timeout: Self.fixtureReadTimeout)
         guard !data.isEmpty else { throw CoreError(code: .transport, message: "fixture EOF") }
         return try JSONDecoder().decode(WireMessage.self, from: data.trimmingTrailingNewline())
     }
 
-    private func readThroughStreamEnd(from handle: FileHandle) throws -> [WireMessage] {
+    private func readThroughStreamEnd(from handle: FileHandle) async throws -> [WireMessage] {
         var messages: [WireMessage] = []
         let deadline = Date().addingTimeInterval(Self.fixtureReadTimeout)
         while !messages.contains(where: \.isStreamEnd) {
@@ -117,7 +133,7 @@ struct StdioConnectionTests {
             guard remaining > 0 else {
                 throw CoreError(code: .commandTimedOut, message: "已读到 \(messages.count) 条仍未见 stream end")
             }
-            let data = try availableData(from: handle, timeout: remaining)
+            let data = try await availableData(from: handle, timeout: remaining)
             guard !data.isEmpty else { throw CoreError(code: .transport, message: "fixture EOF") }
             for line in data.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                 messages.append(try JSONDecoder().decode(WireMessage.self, from: Data(line)))
