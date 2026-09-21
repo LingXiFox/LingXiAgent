@@ -19,8 +19,8 @@ struct Round5SystemAuditTests {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         // Place test files in both workspaces
-        try "func inProjectA() {}".write(to: wsA.appendingPathComponent("A.swift"), atomically: true, encoding: .utf8)
-        try "func inProjectB() {}".write(to: wsB.appendingPathComponent("B.swift"), atomically: true, encoding: .utf8)
+        try "func inProjectA() {}".write(to: wsA.appendingPathComponent("A.swift"), atomically: false, encoding: .utf8)
+        try "func inProjectB() {}".write(to: wsB.appendingPathComponent("B.swift"), atomically: false, encoding: .utf8)
 
         let sandbox = CoreStorageLayout.temporarySandbox()
         try sandbox.ensureDirectoriesExist()
@@ -98,7 +98,7 @@ struct Round5SystemAuditTests {
 
         try "struct AuditTestPayload { let id = 1 }".write(
             to: tempDir.appendingPathComponent("Payload.swift"),
-            atomically: true,
+            atomically: false,
             encoding: .utf8
         )
 

@@ -142,7 +142,7 @@ struct UnifiedRetrievalPhaseGTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let sampleFile = tempDir.appendingPathComponent("Greeter.swift")
-        try "class ProductionGreeter { func greet(name: String) -> String { \"Hello, \\(name)\" } }".write(to: sampleFile, atomically: true, encoding: .utf8)
+        try "class ProductionGreeter { func greet(name: String) -> String { \"Hello, \\(name)\" } }".write(to: sampleFile, atomically: false, encoding: .utf8)
 
         let workspace = try WorkspaceRoot(path: tempDir.path)
         let toolRegistry = ToolRegistry.builtin(workspace: workspace)

@@ -269,7 +269,7 @@ import LingXiProtocol
         let logURL = await store.telemetryLogger.eventLogURL(for: sID)
         let telemetryDir = logURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: telemetryDir, withIntermediateDirectories: true)
-        try "".write(to: logURL, atomically: true, encoding: .utf8)
+        try "".write(to: logURL, atomically: false, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: logURL.path)
         defer {
             try? FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: logURL.path)

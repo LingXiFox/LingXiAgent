@@ -127,7 +127,7 @@ struct Round14SystemAuditTests {
         // Setup markdown command fixture so executeExtensionCommand succeeds
         let cmdDir = tempDir.appendingPathComponent(".lingxi/commands", isDirectory: true)
         try FileManager.default.createDirectory(at: cmdDir, withIntermediateDirectories: true)
-        try "Help output".write(to: cmdDir.appendingPathComponent("help.md"), atomically: true, encoding: .utf8)
+        try "Help output".write(to: cmdDir.appendingPathComponent("help.md"), atomically: false, encoding: .utf8)
 
         let provider = ControllableFakeProvider()
         let assembly = ModelRuntimeAssembly(provider: provider, modelID: ModelID("test-model"))

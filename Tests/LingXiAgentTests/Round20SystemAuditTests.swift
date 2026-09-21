@@ -4,7 +4,9 @@ import LingXiProtocol
 @testable import LingXiCore
 @testable import LingXiClient
 
-#if os(Linux) && canImport(Glibc)
+#if os(Windows)
+private var isRunningAsRoot: Bool { true }
+#elseif os(Linux) && canImport(Glibc)
 import Glibc
 private var isRunningAsRoot: Bool { getuid() == 0 }
 #else

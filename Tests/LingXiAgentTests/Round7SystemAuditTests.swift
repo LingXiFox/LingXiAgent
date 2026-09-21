@@ -78,7 +78,7 @@ struct Round7SystemAuditTests {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         let fileA = wsA.appendingPathComponent("secret.txt")
-        try "Secret in A".write(to: fileA, atomically: true, encoding: .utf8)
+        try "Secret in A".write(to: fileA, atomically: false, encoding: .utf8)
 
         // Create ToolRuntime for Workspace B
         let permissionEngine = PermissionEngine(configuration: .strict)

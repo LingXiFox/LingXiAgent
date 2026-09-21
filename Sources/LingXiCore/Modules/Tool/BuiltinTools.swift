@@ -1297,8 +1297,8 @@ public struct ShellTool: ToolExecutor {
                 )
             }
             #if os(Windows)
-            let shellExe = LingXiPlatform.process.resolveExecutable(named: "powershell.exe", customSearchPaths: nil) ?? "C:\\Windows\\System32\\cmd.exe"
-            let shellArgs = shellExe.lowercased().contains("powershell") ? ["-NoProfile", "-NonInteractive", "-Command", shell] : ["/c", shell]
+            let shellExe = LingXiPlatform.process.resolveExecutable(named: "cmd.exe", customSearchPaths: ["C:\\Windows\\System32"]) ?? "C:\\Windows\\System32\\cmd.exe"
+            let shellArgs = ["/c", shell]
             command = (shellExe, shellArgs)
             #else
             let shellExe = LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: ["/bin", "/usr/bin"]) ?? "/bin/sh"

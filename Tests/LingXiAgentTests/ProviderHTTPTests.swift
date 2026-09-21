@@ -403,8 +403,8 @@ struct ProviderHTTPTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "A".write(to: root.appendingPathComponent("A.md"), atomically: true, encoding: .utf8)
-        try "B".write(to: root.appendingPathComponent("B.md"), atomically: true, encoding: .utf8)
+        try "A".write(to: root.appendingPathComponent("A.md"), atomically: false, encoding: .utf8)
+        try "B".write(to: root.appendingPathComponent("B.md"), atomically: false, encoding: .utf8)
         let provider = OpenAIResponsesProvider(config: ProviderConfig(baseURL: URL(string: "https://stub.test/v1")!, apiKey: nil, model: "stub", wireProtocol: .responses), session: StubURLProtocol.makeSession())
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
@@ -631,8 +631,8 @@ struct ProviderHTTPTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "A".write(to: root.appendingPathComponent("A.md"), atomically: true, encoding: .utf8)
-        try "B".write(to: root.appendingPathComponent("B.md"), atomically: true, encoding: .utf8)
+        try "A".write(to: root.appendingPathComponent("A.md"), atomically: false, encoding: .utf8)
+        try "B".write(to: root.appendingPathComponent("B.md"), atomically: false, encoding: .utf8)
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
         let client = LingXiClient.inProcess(endpoint: host)
@@ -659,7 +659,7 @@ struct ProviderHTTPTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "A".write(to: root.appendingPathComponent("A.md"), atomically: true, encoding: .utf8)
+        try "A".write(to: root.appendingPathComponent("A.md"), atomically: false, encoding: .utf8)
         let selection = ModelSelection(providerID: "default", modelID: "stub", reasoning: reasoning)
         let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("stub")), defaultModelSelection: selection, workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()

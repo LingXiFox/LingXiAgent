@@ -681,7 +681,7 @@ struct VNextProductionIntegrationTests {
         ---
         # Test Skill
         """
-        try skillMD.write(to: skillsDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try skillMD.write(to: skillsDir.appendingPathComponent("SKILL.md"), atomically: false, encoding: .utf8)
 
         let workspace = try WorkspaceRoot(path: tempDir.path)
         let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test")

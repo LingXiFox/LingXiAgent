@@ -22,7 +22,7 @@ struct CodebaseGraphIdentityIncrementalTests {
         struct WriteTool {
             func execute() {}
         }
-        """.write(to: file, atomically: true, encoding: .utf8)
+        """.write(to: file, atomically: false, encoding: .utf8)
 
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
 
@@ -52,12 +52,12 @@ struct CodebaseGraphIdentityIncrementalTests {
         func callerA() {
             calleeB()
         }
-        """.write(to: fileA, atomically: true, encoding: .utf8)
+        """.write(to: fileA, atomically: false, encoding: .utf8)
 
         try """
         func calleeB() {
         }
-        """.write(to: fileB, atomically: true, encoding: .utf8)
+        """.write(to: fileB, atomically: false, encoding: .utf8)
 
         // 1. Initial full index
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
@@ -75,7 +75,7 @@ struct CodebaseGraphIdentityIncrementalTests {
             let x = 42
         }
         func newHelperB() {}
-        """.write(to: fileB, atomically: true, encoding: .utf8)
+        """.write(to: fileB, atomically: false, encoding: .utf8)
 
         // 3. Incremental index (forceReindex: false)
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: false)
@@ -100,12 +100,12 @@ struct CodebaseGraphIdentityIncrementalTests {
         func appMain() {
             deprecatedAction()
         }
-        """.write(to: file1, atomically: true, encoding: .utf8)
+        """.write(to: file1, atomically: false, encoding: .utf8)
 
         try """
         func deprecatedAction() {
         }
-        """.write(to: file2, atomically: true, encoding: .utf8)
+        """.write(to: file2, atomically: false, encoding: .utf8)
 
         // Initial index: 2 files
         let initialOverview = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
@@ -150,7 +150,7 @@ struct CodebaseGraphIdentityIncrementalTests {
 
         func targetOne() {}
         func targetTwo() {}
-        """.write(to: file, atomically: true, encoding: .utf8)
+        """.write(to: file, atomically: false, encoding: .utf8)
 
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
 
@@ -185,7 +185,7 @@ struct CodebaseGraphIdentityIncrementalTests {
         }
 
         func validCall() {}
-        """.write(to: file, atomically: true, encoding: .utf8)
+        """.write(to: file, atomically: false, encoding: .utf8)
 
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
 

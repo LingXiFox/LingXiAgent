@@ -350,7 +350,7 @@ struct RealProviderSmokeTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-responses-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "ResponsesToolAnchor-729".write(to: root.appendingPathComponent("anchor.txt"), atomically: true, encoding: .utf8)
+        try "ResponsesToolAnchor-729".write(to: root.appendingPathComponent("anchor.txt"), atomically: false, encoding: .utf8)
         let host = try CoreHost(providerAssembly: assembly, workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow)
         await host.start()
         let client = LingXiClient.inProcess(endpoint: host)

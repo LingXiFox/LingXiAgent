@@ -131,7 +131,7 @@ struct PluginSDKTests {
         Please review: $ARGUMENTS in $WORKSPACE.
         First target: $1, Second target: $2.
         """
-        try markdown.write(to: file, atomically: true, encoding: .utf8)
+        try markdown.write(to: file, atomically: false, encoding: .utf8)
 
         let parsed = CustomCommandEngine.parse(fileURL: file, isProjectScope: true)
         #expect(parsed != nil)
@@ -206,7 +206,7 @@ struct PluginSDKTests {
         ---
         🦊 [自定义提示词宏 /audit] 已展开：审查 $ARGUMENTS
         """
-        try auditContent.write(to: auditFixtureURL, atomically: true, encoding: .utf8)
+        try auditContent.write(to: auditFixtureURL, atomically: false, encoding: .utf8)
 
         let registry = ApplicationCommandRegistry(customRoots: [tempDir])
         registry.register(ApplicationCommand(name: "test-builtin", description: "Builtin test", category: "General") { _ in

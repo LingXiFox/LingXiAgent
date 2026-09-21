@@ -227,7 +227,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
           }
         }
         """
-        try providersJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: true, encoding: .utf8)
+        try providersJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: false, encoding: .utf8)
 
         let host = try CoreHost(
             dataRoot: tempDir,
@@ -269,7 +269,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
           }
         }
         """
-        try schemalessJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: true, encoding: .utf8)
+        try schemalessJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: false, encoding: .utf8)
 
         let host = try CoreHost(
             dataRoot: tempDir,

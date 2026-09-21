@@ -92,7 +92,7 @@ struct AgentToolLoopTests {
     @Test func toolResultReturnsToSecondModelStepAsStructuredHistory() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "LingXiAgent project".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "LingXiAgent project".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let provider = ScriptedFakeProvider(script: [
             [.reasoningDelta("need file"), .toolCallStarted(callID: call().callID, toolID: call().toolID), .toolCallDelta(callID: call().callID, arguments: call().arguments), .toolCallCompleted(call()), .completed(.toolCalls)],
             [.textDelta("这个项目叫 LingXiAgent。"), .completed(.stop)],
@@ -202,7 +202,7 @@ struct AgentToolLoopTests {
     @Test func stepLimitFailsInsteadOfLoopingForever() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "Loop".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "Loop".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let provider = ScriptedFakeProvider(script: [[
             .toolCallStarted(callID: call().callID, toolID: call().toolID), .toolCallCompleted(call()), .completed(.toolCalls),
         ]])
@@ -232,7 +232,7 @@ struct AgentToolLoopTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         for i in 1...5 {
-            try "file \(i)".write(to: root.appendingPathComponent("file\(i).txt"), atomically: true, encoding: .utf8)
+            try "file \(i)".write(to: root.appendingPathComponent("file\(i).txt"), atomically: false, encoding: .utf8)
         }
         let provider = ScriptedFakeProvider(script: (1...10).map { i in
             let c = ToolCall(callID: ToolCallID("call-\(i)"), toolID: ToolID("read_file"), arguments: #"{"path":"file\#(i).txt"}"#)
@@ -269,7 +269,7 @@ struct AgentToolLoopTests {
     @Test func consecutiveIdenticalReadIsRecordedOnceAndSecondCallIsBlocked() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "LingXiAgent".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "LingXiAgent".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let first = call()
         let second = ToolCall(callID: ToolCallID("call-readme-2"), toolID: first.toolID, arguments: first.arguments)
         let provider = ScriptedFakeProvider(script: [
@@ -460,7 +460,7 @@ struct AgentToolLoopTests {
             let root = try fixture()
             let data = root.appendingPathComponent("data", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: root) }
-            try "restart".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+            try "restart".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
             let read = ToolCall(callID: ToolCallID("restart-\(decision.rawValue)"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
             let provider = ScriptedFakeProvider(script: [
                 [.toolCallCompleted(read), .completed(.toolCalls)],
@@ -506,7 +506,7 @@ struct AgentToolLoopTests {
         let root = try fixture()
         let data = root.appendingPathComponent("data", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "restart".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "restart".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let read = ToolCall(callID: ToolCallID("wait-past-deadline"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
         let provider = ScriptedFakeProvider(script: [
             [.toolCallCompleted(read), .completed(.toolCalls)],

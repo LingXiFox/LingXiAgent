@@ -29,7 +29,7 @@ struct AgentBehaviorTests {
     @Test func buildRecoversFromFailedVerificationAndCompletes() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "source".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "source".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let read = call("read", "read_file", #"{"path":"README.md"}"#)
         let broken = call("broken", "write_file", #"{"path":"output.txt","content":"broken"}"#)
         let test = call("test", "shell", #"{"command":"test \"$(cat output.txt)\" = fixed"}"#)
@@ -133,11 +133,11 @@ struct AgentBehaviorTests {
         defer { try? FileManager.default.removeItem(at: globalRoot) }
         let global = globalRoot.appendingPathComponent("AGENTS.md")
         try FileManager.default.createDirectory(at: global.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "global rule".write(to: global, atomically: true, encoding: .utf8)
-        try "root rule".write(to: root.appendingPathComponent("AGENTS.md"), atomically: true, encoding: .utf8)
+        try "global rule".write(to: global, atomically: false, encoding: .utf8)
+        try "root rule".write(to: root.appendingPathComponent("AGENTS.md"), atomically: false, encoding: .utf8)
         let nested = root.appendingPathComponent("Sources/Feature", isDirectory: true)
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
-        try "nested rule".write(to: nested.appendingPathComponent("AGENTS.md"), atomically: true, encoding: .utf8)
+        try "nested rule".write(to: nested.appendingPathComponent("AGENTS.md"), atomically: false, encoding: .utf8)
         let instructions = try AgentInstructionSet.load(workspace: root, globalInstructionsURL: global)
 
         let applicable = instructions.applicable(to: nested.appendingPathComponent("Code.swift"))

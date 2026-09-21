@@ -16,7 +16,7 @@ struct Round6SystemAuditTests {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         let testFile = tempRoot.appendingPathComponent("test.txt")
-        try "hello round 6".write(to: testFile, atomically: true, encoding: .utf8)
+        try "hello round 6".write(to: testFile, atomically: false, encoding: .utf8)
 
         let permissionEngine = PermissionEngine(configuration: .strict)
         let workspace = try WorkspaceRoot(path: tempRoot.path)
@@ -173,8 +173,8 @@ struct Round6SystemAuditTests {
 
         let fileA = wsA.appendingPathComponent("A_ONLY.txt")
         let fileB = wsB.appendingPathComponent("B_ONLY.txt")
-        try "Content A".write(to: fileA, atomically: true, encoding: .utf8)
-        try "Content B".write(to: fileB, atomically: true, encoding: .utf8)
+        try "Content A".write(to: fileA, atomically: false, encoding: .utf8)
+        try "Content B".write(to: fileB, atomically: false, encoding: .utf8)
 
         let sandbox = CoreStorageLayout.temporarySandbox()
         try sandbox.ensureDirectoriesExist()
@@ -467,7 +467,7 @@ struct Round6SystemAuditTests {
 
         // Create a dummy file in workspace
         let dummySwift = workspaceDir.appendingPathComponent("App.swift")
-        try "func startApp() { print(\"running\") }".write(to: dummySwift, atomically: true, encoding: .utf8)
+        try "func startApp() { print(\"running\") }".write(to: dummySwift, atomically: false, encoding: .utf8)
 
         let engine = CodebaseGraphEngine(
             cachePolicy: .persistent(cacheDir),

@@ -55,10 +55,10 @@ struct CodingToolContractTests {
     @Test func searchUsesGitignoreFiltersAndReportsTruncation() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "ignored.txt\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
-        try "needle\n".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
-        try "needle\n".write(to: root.appendingPathComponent("ignored.txt"), atomically: true, encoding: .utf8)
-        try "needle\n".write(to: root.appendingPathComponent("second.txt"), atomically: true, encoding: .utf8)
+        try "ignored.txt\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        try "needle\n".write(to: root.appendingPathComponent("visible.txt"), atomically: false, encoding: .utf8)
+        try "needle\n".write(to: root.appendingPathComponent("ignored.txt"), atomically: false, encoding: .utf8)
+        try "needle\n".write(to: root.appendingPathComponent("second.txt"), atomically: false, encoding: .utf8)
         let tools = try runtime(root: root)
 
         let glob = await tools.execute(call("glob", "glob", #"{"pattern":"*.txt","max_results":1}"#), sessionID: SessionID("s")) { _ in }
@@ -73,7 +73,7 @@ struct CodingToolContractTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("file.txt")
-        try "one\none\n".write(to: file, atomically: true, encoding: .utf8)
+        try "one\none\n".write(to: file, atomically: false, encoding: .utf8)
         let tools = try runtime(root: root)
         let hash = sha256Hex("one\none\n")
 
@@ -104,14 +104,19 @@ struct CodingToolContractTests {
     @Test func permissionsAndShellDiagnosticsAreResourceScoped() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "original".write(to: root.appendingPathComponent("protected.txt"), atomically: true, encoding: .utf8)
+        try "original".write(to: root.appendingPathComponent("protected.txt"), atomically: false, encoding: .utf8)
         let tools = try runtime(root: root, rules: [
             PermissionResourceRule(action: .edit, resourcePattern: "*/protected.txt", decision: .deny),
             PermissionResourceRule(action: .shell, resourcePattern: "*blocked*", decision: .deny)
         ])
         let write = await tools.execute(call("write", "write_file", #"{"path":"protected.txt","content":"changed","overwrite":true}"#), sessionID: SessionID("s")) { _ in }
         #expect(write.error?.code == CoreError.Code.permissionDenied.rawValue)
-        let shell = await tools.execute(call("shell", "shell", #"{"command":"printf out; printf err >&2; exit 7"}"#), sessionID: SessionID("s")) { _ in }
+        #if os(Windows)
+        let shellCommand = #"powershell -NoProfile -Command "[Console]::Out.Write('out'); [Console]::Error.Write('err'); exit 7""#
+        #else
+        let shellCommand = "printf out; printf err >&2; exit 7"
+        #endif
+        let shell = await tools.execute(call("shell", "shell", #"{"command":""# + shellCommand + #""}"#), sessionID: SessionID("s")) { _ in }
         #expect(shell.exitCode == 7)
         #expect(shell.diagnostics?.stdout == "out")
         #expect(shell.diagnostics?.stderr == "err")
@@ -161,7 +166,7 @@ struct CodingToolContractTests {
         try FileManager.default.createDirectory(at: spaceDir, withIntermediateDirectories: true)
         let pbxproj = spaceDir.appendingPathComponent("project.pbxproj")
         let content = "/* Begin PBXBuildFile section */\nSWIFT_VERSION = 5.0;\n/* End PBXBuildFile section */\n"
-        try content.write(to: pbxproj, atomically: true, encoding: .utf8)
+        try content.write(to: pbxproj, atomically: false, encoding: .utf8)
         let tools = try runtime(root: root)
 
         // 1. Search directly on a single file path with spaces
@@ -198,7 +203,7 @@ struct CodingToolContractTests {
         let nestedDir = root.appendingPathComponent("NestedApp/NestedApp/NestedApp/Models", isDirectory: true)
         try FileManager.default.createDirectory(at: nestedDir, withIntermediateDirectories: true)
         let targetFile = nestedDir.appendingPathComponent("FirmwareRelease.swift")
-        try "struct FirmwareRelease: Sendable {}".write(to: targetFile, atomically: true, encoding: .utf8)
+        try "struct FirmwareRelease: Sendable {}".write(to: targetFile, atomically: false, encoding: .utf8)
 
         let tools = try runtime(root: root)
 

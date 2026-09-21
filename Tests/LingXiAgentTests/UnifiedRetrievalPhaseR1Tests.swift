@@ -66,16 +66,16 @@ struct UnifiedRetrievalPhaseR1Tests {
 
         // 创建代码文件与文档文件
         let swiftFile = tempDir.appendingPathComponent("Foo.swift")
-        try "func doSomething() { print(42) }\n".write(to: swiftFile, atomically: true, encoding: .utf8)
+        try "func doSomething() { print(42) }\n".write(to: swiftFile, atomically: false, encoding: .utf8)
 
         let readmeFile = tempDir.appendingPathComponent("README.md")
-        try "# Project Readme\nThis is a test readme.\n".write(to: readmeFile, atomically: true, encoding: .utf8)
+        try "# Project Readme\nThis is a test readme.\n".write(to: readmeFile, atomically: false, encoding: .utf8)
 
         let agentsFile = tempDir.appendingPathComponent("AGENTS.md")
-        try "# Agents Guide\nSystem instruction.\n".write(to: agentsFile, atomically: true, encoding: .utf8)
+        try "# Agents Guide\nSystem instruction.\n".write(to: agentsFile, atomically: false, encoding: .utf8)
 
         let licenseFile = tempDir.appendingPathComponent("LICENSE")
-        try "MIT License\nCopyright (c) 2026\n".write(to: licenseFile, atomically: true, encoding: .utf8)
+        try "MIT License\nCopyright (c) 2026\n".write(to: licenseFile, atomically: false, encoding: .utf8)
 
         let scanner = ProjectScanner(root: tempDir)
         let codebaseProvider = CodebaseRetrievalProvider(scanner: scanner)
@@ -377,7 +377,7 @@ struct UnifiedRetrievalPhaseR1Tests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let sampleFile = tempDir.appendingPathComponent("Sample.swift")
-        try "struct SampleService { func executeTask() {} }\n".write(to: sampleFile, atomically: true, encoding: .utf8)
+        try "struct SampleService { func executeTask() {} }\n".write(to: sampleFile, atomically: false, encoding: .utf8)
 
         let tool = RetrievalSearchTool(projectRoot: tempDir)
 

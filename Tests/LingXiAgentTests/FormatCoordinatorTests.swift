@@ -55,7 +55,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let testFile = tempDir.appendingPathComponent("notes.unknownext")
-        try? "hello world".write(to: testFile, atomically: true, encoding: .utf8)
+        try? "hello world".write(to: testFile, atomically: false, encoding: .utf8)
 
         let coordinator = FormatCoordinator()
         let result = await coordinator.format(fileURL: testFile, workspaceRoot: tempDir)
@@ -71,7 +71,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let testFile = tempDir.appendingPathComponent("main.swift")
-        try? "let x=1\n".write(to: testFile, atomically: true, encoding: .utf8)
+        try? "let x=1\n".write(to: testFile, atomically: false, encoding: .utf8)
 
         // 配置一个不存在的格式化器
         let customConfig = FormatterConfig(

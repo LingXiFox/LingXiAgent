@@ -75,9 +75,9 @@ import Foundation
 
         // Create test files
         let file1 = root.appending(path: "FileA.swift")
-        try "func alpha() { print(\"alpha\") }".write(to: file1, atomically: true, encoding: .utf8)
+        try "func alpha() { print(\"alpha\") }".write(to: file1, atomically: false, encoding: .utf8)
         let file2 = root.appending(path: "FileB.swift")
-        try "func beta() { print(\"beta\") }".write(to: file2, atomically: true, encoding: .utf8)
+        try "func beta() { print(\"beta\") }".write(to: file2, atomically: false, encoding: .utf8)
 
         let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
         let scanner = ProjectScanner(root: root)
@@ -124,7 +124,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: root) }
 
         let file = root.appending(path: "Isolated.swift")
-        try "struct SecretFact { let x = 42 }".write(to: file, atomically: true, encoding: .utf8)
+        try "struct SecretFact { let x = 42 }".write(to: file, atomically: false, encoding: .utf8)
 
         let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
         let scanner = ProjectScanner(root: root)

@@ -23,21 +23,21 @@ struct CodebaseGraphCompactIndexTests {
         func callerB() {
             targetBar()
         }
-        """.write(to: file1, atomically: true, encoding: .utf8)
+        """.write(to: file1, atomically: false, encoding: .utf8)
 
         // File 2 defines targetFoo
         let file2 = tempDir.appendingPathComponent("Foo.swift")
         try? """
         func targetFoo() {
         }
-        """.write(to: file2, atomically: true, encoding: .utf8)
+        """.write(to: file2, atomically: false, encoding: .utf8)
 
         // File 3 defines targetBar
         let file3 = tempDir.appendingPathComponent("Bar.swift")
         try? """
         func targetBar() {
         }
-        """.write(to: file3, atomically: true, encoding: .utf8)
+        """.write(to: file3, atomically: false, encoding: .utf8)
 
         let overview = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
         #expect(overview.totalFiles == 3)
@@ -88,7 +88,7 @@ struct CodebaseGraphCompactIndexTests {
             calc()
         }
         func calc() {}
-        """.write(to: file, atomically: true, encoding: .utf8)
+        """.write(to: file, atomically: false, encoding: .utf8)
 
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
 
@@ -107,7 +107,7 @@ struct CodebaseGraphCompactIndexTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let file = tempDir.appendingPathComponent("Hello.swift")
-        try? "func hello() {}".write(to: file, atomically: true, encoding: .utf8)
+        try? "func hello() {}".write(to: file, atomically: false, encoding: .utf8)
 
         // Index will persist V2 cache
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)

@@ -79,7 +79,7 @@ struct PersistenceTests {
         try FileManager.default.createDirectory(at: sourceA, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: sourceB, withIntermediateDirectories: true)
         let oldURL = sourceA.appendingPathComponent("Foo.swift")
-        try "struct Foo {}\nstruct Uses { let value: Foo }\n".write(to: oldURL, atomically: true, encoding: .utf8)
+        try "struct Foo {}\nstruct Uses { let value: Foo }\n".write(to: oldURL, atomically: false, encoding: .utf8)
 
         let persistence = try SQLitePersistenceStore(dataRoot: fixture.appendingPathComponent("data"), mainRoot: root)
         let pages = ProjectPageStore(persistence: persistence)
@@ -132,7 +132,7 @@ struct PersistenceTests {
         defer { try? FileManager.default.removeItem(at: fixture) }
         let root = fixture.appendingPathComponent("Root", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try "struct CacheAnchor {}\n".write(to: root.appendingPathComponent("Anchor.swift"), atomically: true, encoding: .utf8)
+        try "struct CacheAnchor {}\n".write(to: root.appendingPathComponent("Anchor.swift"), atomically: false, encoding: .utf8)
         let data = fixture.appendingPathComponent("data", isDirectory: true)
         let first = try SQLitePersistenceStore(dataRoot: data, mainRoot: root)
         let projectID = first.projectID

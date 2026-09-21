@@ -135,10 +135,9 @@ public actor BackgroundCommandManager {
         let shellExecutable: String
         let shellArgs: [String]
         #if os(Windows)
-        let resolvedShell = LingXiPlatform.process.resolveExecutable(named: "powershell.exe", customSearchPaths: nil) ?? "C:\\Windows\\System32\\cmd.exe"
-        let isPowerShell = resolvedShell.lowercased().contains("powershell")
+        let resolvedShell = LingXiPlatform.process.resolveExecutable(named: "cmd.exe", customSearchPaths: ["C:\\Windows\\System32"]) ?? "C:\\Windows\\System32\\cmd.exe"
         shellExecutable = resolvedShell
-        shellArgs = isPowerShell ? ["-NoProfile", "-NonInteractive", "-Command", trimmedCommand] : ["/c", trimmedCommand]
+        shellArgs = ["/c", trimmedCommand]
         #else
         shellExecutable = LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: ["/bin", "/usr/bin"]) ?? "/bin/sh"
         shellArgs = ["-c", trimmedCommand]
@@ -360,6 +359,11 @@ public actor BackgroundCommandManager {
 
     private func updateStatusIfExited(_ record: BackgroundTaskRecord) {
         guard record.status == .running else { return }
+        let now = Date()
+        if now.timeIntervalSince(record.startedAt) >= Double(record.timeoutSeconds) {
+            handleTimeout(taskID: record.id, expectedRecord: record)
+            return
+        }
         let procSnap = record.process.snapshot(id: record.id, stdoutCursor: nil, stderrCursor: nil)
         if !procSnap.running {
             record.status = .exited

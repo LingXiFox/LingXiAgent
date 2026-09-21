@@ -225,7 +225,7 @@ struct Round15SystemAuditTests {
         // Write a corrupt .wal file (invalid JSON content)
         let corruptFileName = "corrupted-test-record.wal"
         let corruptFileURL = walDir.appendingPathComponent(corruptFileName)
-        try "corrupted non-json bytes {[[".write(to: corruptFileURL, atomically: true, encoding: .utf8)
+        try "corrupted non-json bytes {[[".write(to: corruptFileURL, atomically: false, encoding: .utf8)
 
         let wal = DurableCommandWAL(storageDirectory: tempDir)
         let sessionStore = InMemorySessionStore()

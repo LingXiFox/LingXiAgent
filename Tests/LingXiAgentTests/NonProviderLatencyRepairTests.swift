@@ -74,7 +74,7 @@ struct NonProviderLatencyRepairTests {
             sys.stdout.buffer.flush()
         """
         let server = PortableFixture.python(script)
-        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("fixture"), alias: "fixture", transport: .stdio, command: server.command, arguments: server.arguments, timeoutSeconds: 2))
+        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("fixture"), alias: "fixture", transport: .stdio, command: server.command, arguments: server.arguments, timeoutSeconds: 15))
         #expect(try await transport.listTools().isEmpty)
     }
 

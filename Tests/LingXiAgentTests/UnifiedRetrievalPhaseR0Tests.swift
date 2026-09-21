@@ -186,7 +186,7 @@ import LingXiProtocol
             }
         }
         """
-        try sampleCode.write(to: sampleFile, atomically: true, encoding: .utf8)
+        try sampleCode.write(to: sampleFile, atomically: false, encoding: .utf8)
 
         let provider = CodebaseRetrievalProvider(projectRoot: tempDir)
         let chunks = try await provider.enumerateChunks(projectRoot: tempDir)

@@ -60,7 +60,7 @@ struct LSPCoordinatorTests {
             return "Hello, " + name
         }
         """
-        try sourceCode.write(to: testFile, atomically: true, encoding: .utf8)
+        try sourceCode.write(to: testFile, atomically: false, encoding: .utf8)
 
         let workspace = try WorkspaceRoot(path: tmpDir.path)
         let scanner = ProjectScanner(root: tmpDir, minimumPageBytes: 32, maximumPageBytes: 64)

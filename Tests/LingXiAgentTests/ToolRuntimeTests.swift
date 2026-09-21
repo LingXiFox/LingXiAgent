@@ -41,7 +41,7 @@ struct ToolRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let sub = root.appendingPathComponent("Fixtures", isDirectory: true)
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
-        try "x".write(to: sub.appendingPathComponent("Bar.txt"), atomically: true, encoding: .utf8)
+        try "x".write(to: sub.appendingPathComponent("Bar.txt"), atomically: false, encoding: .utf8)
         let runtime = try runtime(root: root)
         let result = await runtime.execute(
             ToolCall(callID: ToolCallID("glob"), toolID: ToolID("glob"), arguments: #"{"path":"Fixtures","pattern":"*.txt"}"#),
@@ -109,8 +109,8 @@ struct ToolRuntimeTests {
     @Test func readFileAndListDirectoryStayInsideWorkspace() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "LingXiAgent".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
-        try "x".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "LingXiAgent".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
+        try "x".write(to: root.appendingPathComponent("a.txt"), atomically: false, encoding: .utf8)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("dir"), withIntermediateDirectories: true)
         let runtime = try runtime(root: root)
 
@@ -135,7 +135,7 @@ struct ToolRuntimeTests {
         }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("folder"), withIntermediateDirectories: true)
         try Data(repeating: 0x61, count: ReadFileTool.maximumBytes + 1).write(to: root.appendingPathComponent("large.txt"))
-        try "outside".write(to: outside.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
+        try "outside".write(to: outside.appendingPathComponent("secret.txt"), atomically: false, encoding: .utf8)
         try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("escape").path, withDestinationPath: outside.path)
         let runtime = try runtime(root: root)
 
@@ -182,7 +182,7 @@ struct ToolRuntimeTests {
     @Test func listDirectoryRejectsFilesAndEscape() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "x".write(to: root.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+        try "x".write(to: root.appendingPathComponent("file.txt"), atomically: false, encoding: .utf8)
         let runtime = try runtime(root: root)
         let file = await runtime.execute(call("list_directory", "file.txt"), sessionID: SessionID("s")) { _ in }
         #expect(file.error?.code == CoreError.Code.toolExecutionFailed.rawValue)
@@ -193,7 +193,7 @@ struct ToolRuntimeTests {
     @Test func askContainsResolvedResourceAndAllowOnceExecutes() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "approved".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "approved".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let workspace = try WorkspaceRoot(path: root.path)
         let call = call("read_file")
         let tool = ReadFileTool(workspace: workspace)
@@ -250,7 +250,7 @@ struct ToolRuntimeTests {
     @Test func autoPermissionDoesNotReportAnInteractiveAsk() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "ok".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "ok".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let runtime = ToolRuntime(
             registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
             permissions: PermissionEngine(configuration: .agent)
@@ -265,7 +265,7 @@ struct ToolRuntimeTests {
     @Test func permissionWaitDoesNotConsumeToolDeadline() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "ok".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "ok".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let permissions = PermissionEngine(defaultDecision: .ask)
         let runtime = ToolRuntime(
             registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
@@ -397,7 +397,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("file.txt")
-        try "before".write(to: file, atomically: true, encoding: .utf8)
+        try "before".write(to: file, atomically: false, encoding: .utf8)
         let runtime = try runtime(root: root)
 
         let missingVersion = await runtime.execute(ToolCall(callID: ToolCallID("write-missing"), toolID: ToolID("write_file"), arguments: #"{"path":"file.txt","content":"after"}"#), sessionID: SessionID("s")) { _ in }
@@ -417,7 +417,7 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".aws"), withIntermediateDirectories: true)
-        try "secret".write(to: root.appendingPathComponent(".aws/credentials"), atomically: true, encoding: .utf8)
+        try "secret".write(to: root.appendingPathComponent(".aws/credentials"), atomically: false, encoding: .utf8)
         let runtime = try runtime(root: root)
         let secret = await runtime.execute(call("read_file", ".aws/credentials"), sessionID: SessionID("s")) { _ in }
         #expect(secret.error?.code == CoreError.Code.workspaceViolation.rawValue)
@@ -587,9 +587,9 @@ struct ToolRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let skillsDir = root.appendingPathComponent(".lingxi/skills", isDirectory: true)
         try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("alpha"), withIntermediateDirectories: true)
-        try "alpha skill".write(to: skillsDir.appendingPathComponent("alpha/SKILL.md"), atomically: true, encoding: .utf8)
+        try "alpha skill".write(to: skillsDir.appendingPathComponent("alpha/SKILL.md"), atomically: false, encoding: .utf8)
         try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("beta"), withIntermediateDirectories: true)
-        try "beta skill".write(to: skillsDir.appendingPathComponent("beta/SKILL.md"), atomically: true, encoding: .utf8)
+        try "beta skill".write(to: skillsDir.appendingPathComponent("beta/SKILL.md"), atomically: false, encoding: .utf8)
         let runtime = try runtime(root: root)
         let skillDef = try #require(await runtime.availableDefinitions().first { $0.id == ToolID("skill") })
         #expect(skillDef.inputSchema.properties["name"]?.enumValues == ["alpha", "beta"])
@@ -603,7 +603,7 @@ struct ToolRuntimeTests {
         #expect(!beforeIds.contains("skill"))
         let skillsDir = root.appendingPathComponent(".lingxi/skills", isDirectory: true)
         try FileManager.default.createDirectory(at: skillsDir.appendingPathComponent("gamma"), withIntermediateDirectories: true)
-        try "gamma skill".write(to: skillsDir.appendingPathComponent("gamma/SKILL.md"), atomically: true, encoding: .utf8)
+        try "gamma skill".write(to: skillsDir.appendingPathComponent("gamma/SKILL.md"), atomically: false, encoding: .utf8)
         await runtime.invalidateDefinitionsCache()
         let afterIds = await runtime.availableDefinitions().map(\.id.rawValue)
         #expect(afterIds.contains("skill"))
@@ -614,7 +614,7 @@ struct ToolRuntimeTests {
     @Test func allBuiltinToolsProduceToolResultsWithConsistentToolNameOnSuccessAndFailure() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
-        try "hello world".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "hello world".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let toolRuntime = try runtime(root: root)
 
         // Success path: read_file

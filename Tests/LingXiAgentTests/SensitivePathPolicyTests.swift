@@ -106,10 +106,10 @@ struct SensitivePathPolicyTests {
         let vaultFile = mockConfigDir.appendingPathComponent("credentials.vault")
         let keyFile = mockConfigDir.appendingPathComponent(".vault_key")
 
-        try "{\"model\":\"opencode-zen\"}".write(to: configFile, atomically: true, encoding: .utf8)
-        try "{\"providers\":[]}".write(to: providersFile, atomically: true, encoding: .utf8)
-        try "encrypted-vault-bytes".write(to: vaultFile, atomically: true, encoding: .utf8)
-        try "secret-key".write(to: keyFile, atomically: true, encoding: .utf8)
+        try "{\"model\":\"opencode-zen\"}".write(to: configFile, atomically: false, encoding: .utf8)
+        try "{\"providers\":[]}".write(to: providersFile, atomically: false, encoding: .utf8)
+        try "encrypted-vault-bytes".write(to: vaultFile, atomically: false, encoding: .utf8)
+        try "secret-key".write(to: keyFile, atomically: false, encoding: .utf8)
 
         let workspace = try WorkspaceRoot(path: tempWorkspace.path)
         let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(defaultDecision: .allow))

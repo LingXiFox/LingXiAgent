@@ -280,12 +280,16 @@ public struct MCPStdioTransport: MCPToolInvoker {
         let startTime = ContinuousClock().now
         let chunks = LingXiPlatform.lineReader.dataChunks(from: stdoutHandle)
 
+        final class TimeoutBox: @unchecked Sendable { var didTimeout = false }
+        let timeoutBox = TimeoutBox()
+
         let watchdog = Task {
             do {
                 try await Task.sleep(for: .seconds(timeoutSeconds))
             } catch {
                 return
             }
+            timeoutBox.didTimeout = true
             if process.isRunning {
                 process.terminate()
             }
@@ -353,7 +357,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
 
             guard let finalData = targetResultData else {
                 let elapsed = ContinuousClock().now - startTime
-                if elapsed >= .seconds(timeoutSeconds) {
+                if timeoutBox.didTimeout || elapsed >= .seconds(max(0, timeoutSeconds - 0.05)) {
                     throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
                 }
                 throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method)")

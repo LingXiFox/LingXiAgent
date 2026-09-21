@@ -45,7 +45,7 @@ struct PlatformBuildGateTests {
     func asyncLineReaderDecodesLinesCorrectly() async throws {
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("line_reader_test_\(UUID().uuidString).txt")
         let content = "line1\nline2\r\nline3\nlast_line_without_newline"
-        try content.write(to: tempFile, atomically: true, encoding: .utf8)
+        try content.write(to: tempFile, atomically: false, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let handle = try FileHandle(forReadingFrom: tempFile)

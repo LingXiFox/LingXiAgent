@@ -14,7 +14,7 @@ struct Round4SystemHardeningTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let sampleFile = tempDir.appendingPathComponent("Main.swift")
-        try "func hello() { print(\"Hello\") }".write(to: sampleFile, atomically: true, encoding: .utf8)
+        try "func hello() { print(\"Hello\") }".write(to: sampleFile, atomically: false, encoding: .utf8)
 
         let engine = CodebaseGraphEngine()
         

@@ -244,13 +244,11 @@ public actor ECoreObjectStore {
             let metaURL = objectsDir.appendingPathComponent("\(objectID.rawValue).meta.json", isDirectory: false)
 
             if !FileManager.default.fileExists(atPath: targetURL.path) {
-                try content.write(to: tempURL, atomically: true, encoding: .utf8)
-                _ = try? FileManager.default.removeItem(at: targetURL)
-                try FileManager.default.moveItem(at: tempURL, to: targetURL)
+                try content.write(to: targetURL, atomically: false, encoding: .utf8)
             }
 
             let metaData = try JSONEncoder().encode(metadata)
-            try metaData.write(to: metaURL, options: .atomic)
+            try metaData.write(to: metaURL, options: [])
 
             if metadataCache[sessionID] == nil {
                 metadataCache[sessionID] = [:]

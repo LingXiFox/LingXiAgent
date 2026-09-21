@@ -7,7 +7,7 @@ public enum AsyncLineReader: Sendable {
     /// 从 FileHandle 异步流式读取 Data 数据块，支持 Darwin、Linux 与 Windows 全平台
     public static func dataChunks(from handle: FileHandle, bufferSize: Int = 4096) -> AsyncThrowingStream<Data, any Error> {
         AsyncThrowingStream { continuation in
-            #if os(Windows)
+            #if os(Windows) || os(Linux)
             let useDirectRead = true
             #else
             var statBuf = stat()
@@ -61,7 +61,7 @@ public enum AsyncLineReader: Sendable {
     /// 从 FileHandle 异步流式解码行
     public static func lines(from handle: FileHandle, bufferSize: Int = 4096) -> AsyncThrowingStream<String, any Error> {
         AsyncThrowingStream { continuation in
-            #if os(Windows)
+            #if os(Windows) || os(Linux)
             let useDirectRead = true
             #else
             var statBuf = stat()

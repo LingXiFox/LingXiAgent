@@ -264,7 +264,7 @@ struct ContextCompactionTests {
         // Paging only happens once the accumulated loop overflows the model input window, and that
         // window shrinks with however many tool schemas the host registered, so the per-batch payload
         // has to clear the limit by a wide margin for the premise to hold on any runner.
-        try String(repeating: "evidence ", count: 400).write(to: root.appending(path: "evidence.txt"), atomically: true, encoding: .utf8)
+        try String(repeating: "evidence ", count: 400).write(to: root.appending(path: "evidence.txt"), atomically: false, encoding: .utf8)
         let counts = [2, 1, 3, 1, 2, 1, 1]
         var sequence = 0
         let script = counts.map { count -> [ModelEvent] in

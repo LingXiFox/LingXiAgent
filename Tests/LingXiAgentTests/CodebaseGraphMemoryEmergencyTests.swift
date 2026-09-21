@@ -105,10 +105,10 @@ struct CodebaseGraphMemoryEmergencyTests {
         }
 
         let fileA = tempDirA.appendingPathComponent("SampleA.swift")
-        try? "func sampleA() {}\n".write(to: fileA, atomically: true, encoding: .utf8)
+        try? "func sampleA() {}\n".write(to: fileA, atomically: false, encoding: .utf8)
 
         let fileB = tempDirB.appendingPathComponent("SampleB.swift")
-        try? "func sampleB() {}\n".write(to: fileB, atomically: true, encoding: .utf8)
+        try? "func sampleB() {}\n".write(to: fileB, atomically: false, encoding: .utf8)
 
         // Index Workspace A
         _ = await engine.indexWorkspace(workspaceURL: tempDirA)
@@ -135,13 +135,13 @@ struct CodebaseGraphMemoryEmergencyTests {
         func alpha() {
             beta()
         }
-        """.write(to: file1, atomically: true, encoding: .utf8)
+        """.write(to: file1, atomically: false, encoding: .utf8)
 
         let file2 = tempDir.appendingPathComponent("Beta.swift")
         try? """
         func beta() {
         }
-        """.write(to: file2, atomically: true, encoding: .utf8)
+        """.write(to: file2, atomically: false, encoding: .utf8)
 
         // Pass 1
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)

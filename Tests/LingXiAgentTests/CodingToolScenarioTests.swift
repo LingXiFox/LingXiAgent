@@ -22,8 +22,8 @@ struct CodingToolScenarioTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "#!/bin/sh\nexpr \"$1\" - \"$2\"\n".write(to: root.appendingPathComponent("calculator.sh"), atomically: true, encoding: .utf8)
-        try "#!/bin/sh\ntest \"$(sh calculator.sh 2 3)\" = 5\n".write(to: root.appendingPathComponent("test.sh"), atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nexpr \"$1\" - \"$2\"\n".write(to: root.appendingPathComponent("calculator.sh"), atomically: false, encoding: .utf8)
+        try "#!/bin/sh\ntest \"$(sh calculator.sh 2 3)\" = 5\n".write(to: root.appendingPathComponent("test.sh"), atomically: false, encoding: .utf8)
         try runGit(["init"], in: root)
         try runGit(["config", "user.email", "fixture@example.invalid"], in: root)
         try runGit(["config", "user.name", "P15 Fixture"], in: root)

@@ -809,8 +809,8 @@ struct FullCoreStackV1Tests {
     private func installWorkspaceFixture(at root: URL) throws {
         let fixtures = root.appendingPathComponent("Fixtures", isDirectory: true)
         try FileManager.default.createDirectory(at: fixtures, withIntermediateDirectories: true)
-        try "public struct Foo { public let marker = \"FooAnchor-729\" }\n".write(to: fixtures.appendingPathComponent("Foo.swift"), atomically: true, encoding: .utf8)
-        try "public struct Bar { public let marker = \"BarAnchor-729\" }\n".write(to: fixtures.appendingPathComponent("Bar.swift"), atomically: true, encoding: .utf8)
+        try "public struct Foo { public let marker = \"FooAnchor-729\" }\n".write(to: fixtures.appendingPathComponent("Foo.swift"), atomically: false, encoding: .utf8)
+        try "public struct Bar { public let marker = \"BarAnchor-729\" }\n".write(to: fixtures.appendingPathComponent("Bar.swift"), atomically: false, encoding: .utf8)
         let skillTarget = root.appendingPathComponent(".lingxi/skills/fixture-analysis", isDirectory: true)
         try FileManager.default.createDirectory(at: skillTarget, withIntermediateDirectories: true)
         let skillSource = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/Skills/fixture-analysis/SKILL.md")

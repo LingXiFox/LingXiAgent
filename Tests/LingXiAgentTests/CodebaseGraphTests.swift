@@ -25,7 +25,7 @@ import Foundation
             }
         }
         """
-        try serviceCode.write(to: serviceFile, atomically: true, encoding: .utf8)
+        try serviceCode.write(to: serviceFile, atomically: false, encoding: .utf8)
 
         // 2. 创建模拟控制器文件 Controller.swift
         let controllerFile = tempDir.appendingPathComponent("Controller.swift")
@@ -39,7 +39,7 @@ import Foundation
             }
         }
         """
-        try controllerCode.write(to: controllerFile, atomically: true, encoding: .utf8)
+        try controllerCode.write(to: controllerFile, atomically: false, encoding: .utf8)
 
         // 3. 执行图谱索引
         let engine = CodebaseGraphEngine()
@@ -82,7 +82,7 @@ import Foundation
         }
         public func parseConfig() {}
         """
-        try code.write(to: codeFile, atomically: true, encoding: .utf8)
+        try code.write(to: codeFile, atomically: false, encoding: .utf8)
 
         let engine = CodebaseGraphEngine()
         _ = await engine.indexWorkspace(workspaceURL: tempDir, forceReindex: true)
@@ -104,7 +104,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let sampleFile = tempDir.appendingPathComponent("Sample.swift")
-        try "public func helloWorld() {}".write(to: sampleFile, atomically: true, encoding: .utf8)
+        try "public func helloWorld() {}".write(to: sampleFile, atomically: false, encoding: .utf8)
 
         let engine = CodebaseGraphEngine()
         #expect(await engine.isIndexed == false)

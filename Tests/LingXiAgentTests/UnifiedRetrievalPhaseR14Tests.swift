@@ -141,7 +141,7 @@ struct UnifiedRetrievalPhaseR14Tests {
             public func sendRequest() {}
         }
         """
-        try code.write(to: testFile, atomically: true, encoding: .utf8)
+        try code.write(to: testFile, atomically: false, encoding: .utf8)
 
         let graphEngine = CodebaseGraphEngine.shared
         _ = await graphEngine.indexWorkspace(workspaceURL: tempDir)

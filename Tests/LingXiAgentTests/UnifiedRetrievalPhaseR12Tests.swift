@@ -19,7 +19,7 @@ struct UnifiedRetrievalPhaseR12Tests {
 
         // 写入一个测试文件
         let testFile = tempDir.appendingPathComponent("Service.swift")
-        try "class TestService { func doWork() {} }".write(to: testFile, atomically: true, encoding: .utf8)
+        try "class TestService { func doWork() {} }".write(to: testFile, atomically: false, encoding: .utf8)
 
         let registry = UnifiedRetrievalRegistry.standard(projectRoot: tempDir)
         let runtime = RetrievalRuntime(registry: registry)

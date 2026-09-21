@@ -24,7 +24,7 @@ import Testing
         # \(name)
         \(body)
         """
-        try content.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try content.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: false, encoding: .utf8)
     }
 
     @Test func skillsListEmptyWhenNoSkillsDiscovered() async throws {

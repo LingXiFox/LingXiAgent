@@ -107,8 +107,8 @@ struct Round8SystemAuditTests {
         // Create marker files in A and B
         let fileA = tempDirA.appendingPathComponent("markerA.txt")
         let fileB = tempDirB.appendingPathComponent("markerB.txt")
-        try "Content A".write(to: fileA, atomically: true, encoding: .utf8)
-        try "Content B".write(to: fileB, atomically: true, encoding: .utf8)
+        try "Content A".write(to: fileA, atomically: false, encoding: .utf8)
+        try "Content B".write(to: fileB, atomically: false, encoding: .utf8)
 
         try await withTestCoreHost(workspaceRoot: tempDirA) { host in
             let initialRevision = await host.currentWorkspaceRevision
