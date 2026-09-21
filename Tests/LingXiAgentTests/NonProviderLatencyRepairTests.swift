@@ -54,18 +54,27 @@ struct NonProviderLatencyRepairTests {
     }
 
     @Test func mcpStdioDrainsLargeDiagnosticsAndCompletesHandshake() async throws {
-        // Reviewed fixture using only the system awk: flood stderr, then answer initialize/tools/list.
-        let script = #"""
-        BEGIN { for (i = 0; i < 20000; i++) print "fixture diagnostic output" > "/dev/stderr"; close("/dev/stderr") }
-        /"id"/ {
-            id = $0
-            sub(/^.*"id"[ ]*:[ ]*"/, "", id)
-            sub(/".*$/, "", id)
-            printf "{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"result\":{\"tools\":[]}}\n", id
-            fflush()
-        }
-        """#
-        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("fixture"), alias: "fixture", transport: .stdio, command: "/usr/bin/awk", arguments: [script], timeoutSeconds: 2))
+        // Reviewed fixture: flood stderr past the pipe buffer, then answer initialize/tools/list.
+        // awk was the original interpreter and only exists on a POSIX userland; python speaks the
+        // same JSON as the transport instead of regex-scraping an id out of the request line.
+        let script = """
+        import json, sys
+        for _ in range(20000):
+            sys.stderr.write("fixture diagnostic output\\n")
+        sys.stderr.flush()
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except ValueError:
+                continue
+            if "id" not in request:
+                continue
+            response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"tools": []}})
+            sys.stdout.buffer.write((response + "\\n").encode("utf-8"))
+            sys.stdout.buffer.flush()
+        """
+        let server = PortableFixture.python(script)
+        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("fixture"), alias: "fixture", transport: .stdio, command: server.command, arguments: server.arguments, timeoutSeconds: 2))
         #expect(try await transport.listTools().isEmpty)
     }
 

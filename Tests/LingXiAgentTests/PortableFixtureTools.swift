@@ -60,6 +60,29 @@ enum PortableFixture {
         ) ?? "/usr/bin/git"
     }
 
+    /// Interpreter for fixtures that script a protocol rather than a shell one-liner.
+    static func pythonInterpreter() -> String {
+        #if os(Windows) || canImport(WinSDK)
+        let names = ["python.exe", "python"]
+        let paths: [String]? = nil
+        let fallback = "python.exe"
+        #else
+        let names = ["python3", "python"]
+        let paths: [String]? = ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]
+        let fallback = "/usr/bin/python3"
+        #endif
+        for name in names {
+            if let found = LingXiPlatform.process.resolveExecutable(named: name, customSearchPaths: paths) {
+                return found
+            }
+        }
+        return fallback
+    }
+
+    static func python(_ script: String) -> (command: String, arguments: [String]) {
+        (pythonInterpreter(), ["-c", script])
+    }
+
     #if os(Windows) || canImport(WinSDK)
     /// A child that reads one line from stdin and writes it back verbatim.
     ///
