@@ -261,7 +261,10 @@ struct ContextCompactionTests {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try String(repeating: "evidence ", count: 200).write(to: root.appending(path: "evidence.txt"), atomically: true, encoding: .utf8)
+        // Paging only happens once the accumulated loop overflows the model input window, and that
+        // window shrinks with however many tool schemas the host registered, so the per-batch payload
+        // has to clear the limit by a wide margin for the premise to hold on any runner.
+        try String(repeating: "evidence ", count: 400).write(to: root.appending(path: "evidence.txt"), atomically: true, encoding: .utf8)
         let counts = [2, 1, 3, 1, 2, 1, 1]
         var sequence = 0
         let script = counts.map { count -> [ModelEvent] in
