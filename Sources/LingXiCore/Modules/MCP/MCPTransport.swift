@@ -278,26 +278,16 @@ public struct MCPStdioTransport: MCPToolInvoker {
         let targetReqData = try JSONSerialization.data(withJSONObject: targetReq)
 
         let startTime = ContinuousClock().now
-        let (chunks, continuation) = AsyncStream<Data>.makeStream()
-        stdoutHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                continuation.finish()
-            } else {
-                continuation.yield(data)
-            }
-        }
+        let chunks = LingXiPlatform.lineReader.dataChunks(from: stdoutHandle)
 
         let watchdog = Task {
             do { try await Task.sleep(for: .seconds(timeoutSeconds)) }
             catch { return }
-            continuation.finish()
+            try? stdoutHandle.close()
         }
         defer {
             watchdog.cancel()
-            stdoutHandle.readabilityHandler = nil
-            continuation.finish()
+            try? stdoutHandle.close()
             try? stdinHandle.close()
             if process.isRunning {
                 process.terminate()
@@ -311,7 +301,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
         var initCompleted = false
         var targetResultData: Data?
 
-        for await chunk in chunks {
+        for try await chunk in chunks {
             try Task.checkCancellation()
             buffer.append(chunk)
             guard buffer.count <= 8 * 1_024 * 1_024 else {

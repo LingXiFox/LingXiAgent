@@ -5,11 +5,17 @@ import LingXiProtocol
 /// 子进程只继承运行命令所需的环境，避免把宿主机凭据传给工具。
 public enum EnvironmentSanitizer {
     public static func sanitized(from environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        let envPath = environment["PATH"] ?? environment["Path"] ?? environment["path"]
+        #if os(Windows)
+        let defaultPath = "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0"
+        #else
+        let defaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+        #endif
         var result = [
-            "PATH": environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": environment["HOME"] ?? NSHomeDirectory(),
+            "PATH": envPath ?? defaultPath,
+            "HOME": environment["HOME"] ?? environment["USERPROFILE"] ?? NSHomeDirectory(),
             "LANG": environment["LANG"] ?? "en_US.UTF-8",
-            "TMPDIR": environment["TMPDIR"] ?? FileManager.default.temporaryDirectory.path,
+            "TMPDIR": environment["TMPDIR"] ?? environment["TEMP"] ?? environment["TMP"] ?? FileManager.default.temporaryDirectory.path,
         ]
         for (key, value) in environment where key.hasPrefix("LC_") || ["DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"].contains(key) || key.hasPrefix("ALIBABA_CLOUD_") || key.hasPrefix("ALICLOUD_") {
             if key != "DEVELOPER_DIR" || FileManager.default.fileExists(atPath: value) {
@@ -18,7 +24,9 @@ public enum EnvironmentSanitizer {
         }
         // The allow-list above intentionally excludes every LINGXI_* value, including test sentinels.
         for key in osBootstrapKeys {
-            if let value = environment[key] { result[key] = value }
+            if let entry = environment.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame }) {
+                result[key] = entry.value
+            }
         }
         return result
     }
@@ -28,7 +36,11 @@ public enum EnvironmentSanitizer {
     /// executable or a scratch directory without PATHEXT, COMSPEC and TEMP. None of these carry
     /// credentials, so they join the minimal environment rather than being stripped with it.
     /// They are absent on POSIX, which keeps that side of the sanitizer unchanged.
-    static let osBootstrapKeys = ["SystemRoot", "windir", "USERPROFILE", "COMSPEC", "PATHEXT", "TEMP", "TMP"]
+    public static let osBootstrapKeys = [
+        "SystemRoot", "windir", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)",
+        "ProgramData", "CommonProgramFiles", "CommonProgramFiles(x86)",
+        "USERPROFILE", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA", "PSModulePath"
+    ]
 }
 
 func sha256Hex(_ content: String) -> String {
@@ -141,8 +153,29 @@ final class ManagedToolProcess: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = error
+        #if os(Windows)
+        let outHandle = output.fileHandleForReading
+        let errHandle = error.fileHandleForReading
+        Task { [weak self, stdout] in
+            do {
+                for try await chunk in LingXiPlatform.lineReader.dataChunks(from: outHandle) {
+                    stdout.append(chunk)
+                }
+            } catch {}
+            self?.markEOF(phase: .stdoutEOF)
+        }
+        Task { [weak self, stderr] in
+            do {
+                for try await chunk in LingXiPlatform.lineReader.dataChunks(from: errHandle) {
+                    stderr.append(chunk)
+                }
+            } catch {}
+            self?.markEOF(phase: .stderrEOF)
+        }
+        #else
         output.fileHandleForReading.readabilityHandler = { [weak self, stdout] handle in self?.read(handle, into: stdout, phase: .stdoutEOF) }
         error.fileHandleForReading.readabilityHandler = { [weak self, stderr] handle in self?.read(handle, into: stderr, phase: .stderrEOF) }
+        #endif
         process.terminationHandler = { [weak self] process in self?.handleTermination(status: process.terminationStatus) }
     }
 
@@ -229,13 +262,7 @@ final class ManagedToolProcess: @unchecked Sendable {
         }
     }
 
-    private func read(_ handle: FileHandle, into buffer: ByteRingBuffer, phase: ToolLifecyclePhase) {
-        let data = handle.availableData
-        if !data.isEmpty {
-            buffer.append(data)
-            return
-        }
-        handle.readabilityHandler = nil
+    private func markEOF(phase: ToolLifecyclePhase) {
         let shouldRecord: Bool
         let pid = process.processIdentifier
         let exitCode = exitStatus
@@ -255,6 +282,16 @@ final class ManagedToolProcess: @unchecked Sendable {
 
         if shouldRecord { lifecycleTrace?.record(phase, processPID: pid, exitCode: exitCode) }
         if canFinish { finish() }
+    }
+
+    private func read(_ handle: FileHandle, into buffer: ByteRingBuffer, phase: ToolLifecyclePhase) {
+        let data = handle.availableData
+        if !data.isEmpty {
+            buffer.append(data)
+            return
+        }
+        handle.readabilityHandler = nil
+        markEOF(phase: phase)
     }
 
     private func handleTermination(status: Int32) {

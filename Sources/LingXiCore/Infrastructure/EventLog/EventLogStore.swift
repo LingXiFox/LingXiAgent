@@ -236,6 +236,7 @@ public actor SessionEventLog {
         let newSeq = newEvents.last?.cursor.sequence ?? 0
         if let dir = storageDirectory {
             let sessionDir = dir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
             let eventsURL = sessionDir.appendingPathComponent("events.jsonl")
             var newContent = ""
             for env in newEvents {
@@ -244,12 +245,26 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            do {
+                try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            } catch {
+                #if os(Windows)
+                try Data(newContent.utf8).write(to: eventsURL)
+                #else
+                throw error
+                #endif
+            }
 
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: newSeq)
             if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
+                do {
+                    try data.write(to: metaURL, options: .atomic)
+                } catch {
+                    #if os(Windows)
+                    try? data.write(to: metaURL)
+                    #endif
+                }
             }
         }
 

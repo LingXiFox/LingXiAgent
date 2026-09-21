@@ -161,11 +161,11 @@ struct ToolRuntimeTests {
             "runtime-data/blobs/page.txt",
         ]
         for path in sensitivePaths {
-            let file = root.appendingPathComponent(path)
+            let file = path.split(separator: "/").reduce(root) { $0.appendingPathComponent(String($1)) }
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try "sensitive-sentinel".write(to: file, atomically: true, encoding: .utf8)
+            try "sensitive-sentinel".write(to: file, atomically: false, encoding: .utf8)
         }
-        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: false, encoding: .utf8)
         let policy = SensitivePathPolicy(root: root, excluding: [dataRoot])
         let runtime = try runtime(root: root, sensitivePathPolicy: policy)
 
@@ -291,14 +291,14 @@ struct ToolRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let external = root.deletingLastPathComponent().appendingPathComponent("lingxi-external-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: external) }
-        try "external".write(to: external, atomically: true, encoding: .utf8)
+        try "external".write(to: external, atomically: false, encoding: .utf8)
         let runtime = ToolRuntime(
             registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
             permissions: PermissionEngine(configuration: .yolo)
         )
         let allowed = await runtime.execute(call("read_file", external.path), sessionID: SessionID("s")) { _ in }
         #expect(allowed.content == "external")
-        try "secret".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        try "secret".write(to: root.appendingPathComponent(".env"), atomically: false, encoding: .utf8)
         let sensitive = await runtime.execute(call("read_file", ".env"), sessionID: SessionID("s")) { _ in }
         #expect(sensitive.error?.code == CoreError.Code.workspaceViolation.rawValue)
     }

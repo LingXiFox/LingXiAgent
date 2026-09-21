@@ -179,7 +179,15 @@ private func writableFile(_ file: URL) throws {
 
 private func writeText(_ content: String, to file: URL) throws {
     try writableFile(file)
-    try Data(content.utf8).write(to: file, options: .atomic)
+    do {
+        try Data(content.utf8).write(to: file, options: .atomic)
+    } catch {
+        #if os(Windows)
+        try Data(content.utf8).write(to: file)
+        #else
+        throw error
+        #endif
+    }
 }
 
 private func fileVersion(_ file: URL) throws -> String {
@@ -757,11 +765,12 @@ private func ignoredByWorkspaceGitignore(_ paths: [String], root: URL, includeIg
     else { return paths }
     let patterns = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty && !$0.hasPrefix("#") }
     return paths.filter { original in
-        let path = original.hasPrefix("./") ? String(original.dropFirst(2)) : original
+        var path = original.replacingOccurrences(of: "\\", with: "/")
+        if path.hasPrefix("./") { path = String(path.dropFirst(2)) }
         var ignored = false
         for raw in patterns {
             let negated = raw.hasPrefix("!")
-            let pattern = negated ? String(raw.dropFirst()) : raw
+            let pattern = (negated ? String(raw.dropFirst()) : raw).replacingOccurrences(of: "\\", with: "/")
             let matches: Bool
             if !pattern.contains("/") { matches = path.split(separator: "/").contains(pattern[...]) }
             else { matches = (try? regex(forGlob: pattern).firstMatch(in: path, range: NSRange(path.startIndex..., in: path))) != nil }
@@ -806,17 +815,22 @@ private func runRipgrep(arguments: [String], root: URL, workspace: WorkspaceRoot
 }
 
 private func workspaceRelativeSearchPath(_ path: String, root: URL, workspace: WorkspaceRoot) -> String {
-    if LingXiPlatform.path.isAbsolute(path) {
-        let wsPath = workspace.url.path
-        if path == wsPath { return "." }
-        if path.hasPrefix(wsPath + "/") {
-            return String(path.dropFirst(wsPath.count + 1))
+    var normalized = path.replacingOccurrences(of: "\\", with: "/")
+    if LingXiPlatform.path.isAbsolute(normalized) {
+        let wsPath = workspace.url.path.replacingOccurrences(of: "\\", with: "/")
+        if normalized == wsPath { return "." }
+        if normalized.hasPrefix(wsPath + "/") {
+            return String(normalized.dropFirst(wsPath.count + 1))
         }
     }
-    let local = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
-    if root.path == workspace.url.path { return local }
-    let prefix = relativePath(root, workspace: workspace)
-    return prefix == "." || prefix.isEmpty ? local : prefix + "/" + local
+    if normalized.hasPrefix("./") {
+        normalized = String(normalized.dropFirst(2))
+    }
+    let rootPath = root.path.replacingOccurrences(of: "\\", with: "/")
+    let wsPath = workspace.url.path.replacingOccurrences(of: "\\", with: "/")
+    if rootPath == wsPath { return normalized }
+    let prefix = relativePath(root, workspace: workspace).replacingOccurrences(of: "\\", with: "/")
+    return prefix == "." || prefix.isEmpty ? normalized : prefix + "/" + normalized
 }
 
 public struct GrepTool: ToolExecutor {

@@ -122,26 +122,11 @@ public struct VNextStdioCoreServer: Sendable {
 
     public func run() async throws {
         let writer = VNextWireWriter(output: output)
-        let chunks = AsyncStream<Data> { continuation in
-            continuation.onTermination = { _ in
-                input.readabilityHandler = nil
-                try? input.close()
-            }
-            input.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    input.readabilityHandler = nil
-                    continuation.finish()
-                } else {
-                    continuation.yield(data)
-                }
-            }
-        }
-        await withTaskCancellationHandler {
+        try await withTaskCancellationHandler {
             var buffer = Data()
             let maxLineBytes = ProtocolConstants.maxFrameBytes
             do {
-                for await chunk in chunks {
+                for try await chunk in LingXiPlatform.lineReader.dataChunks(from: input) {
                     guard !Task.isCancelled else { break }
                     buffer.append(chunk)
                     while let newline = buffer.firstIndex(of: 0x0A) {

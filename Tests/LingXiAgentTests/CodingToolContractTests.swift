@@ -33,10 +33,10 @@ struct CodingToolContractTests {
         let root = try fixture()
         let external = try fixture()
         defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: external) }
-        try (1...5).map(String.init).joined(separator: "\n").write(to: root.appendingPathComponent("large.txt"), atomically: true, encoding: .utf8)
+        try (1...5).map(String.init).joined(separator: "\n").write(to: root.appendingPathComponent("large.txt"), atomically: false, encoding: .utf8)
         try Data([0, 1]).write(to: root.appendingPathComponent("binary.bin"))
-        try "secret".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
-        try "outside".write(to: external.appendingPathComponent("outside.txt"), atomically: true, encoding: .utf8)
+        try "secret".write(to: root.appendingPathComponent(".env"), atomically: false, encoding: .utf8)
+        try "outside".write(to: external.appendingPathComponent("outside.txt"), atomically: false, encoding: .utf8)
         let tools = try runtime(root: root)
 
         let page = await tools.execute(call("read", "read_file", #"{"path":"large.txt","start_line":2,"max_lines":2,"line_numbers":true}"#), sessionID: SessionID("s")) { _ in }

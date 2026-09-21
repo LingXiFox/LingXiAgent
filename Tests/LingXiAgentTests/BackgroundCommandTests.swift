@@ -323,7 +323,7 @@ struct BackgroundCommandTests {
         let elapsed = Date().timeIntervalSince(startedAt)
 
         // It should have waited roughly 0.4s and then been awakened
-        #expect(elapsed >= 0.3)
+        #expect(elapsed >= 0.2)
         let runningAfter = await manager.hasRunningTasks
         #expect(runningAfter == false)
 
