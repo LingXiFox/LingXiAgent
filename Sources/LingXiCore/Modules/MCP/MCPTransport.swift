@@ -1,12 +1,8 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 #if canImport(FoundationNetworking)
 import FoundationNetworking
-#endif
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
 #endif
 
 public enum MCPTransportKind: String, Sendable, Codable { case stdio, streamableHTTP }
@@ -305,10 +301,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
             }
             timeoutBox.didTimeout = true
             if process.isRunning {
-                process.terminate()
-                #if !os(Windows)
-                kill(process.processIdentifier, SIGKILL)
-                #endif
+                Platform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
             }
             try? stdinHandle.close()
         }
@@ -317,10 +310,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
             try? stdoutHandle.close()
             try? stdinHandle.close()
             if process.isRunning {
-                process.terminate()
-                #if !os(Windows)
-                kill(process.processIdentifier, SIGKILL)
-                #endif
+                Platform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
             }
         }
 
@@ -394,10 +384,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
         } onCancel: {
             watchdog.cancel()
             if process.isRunning {
-                process.terminate()
-                #if !os(Windows)
-                kill(process.processIdentifier, SIGKILL)
-                #endif
+                Platform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
             }
             try? stdinHandle.close()
         }

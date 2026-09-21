@@ -116,3 +116,5 @@ public enum LingXiPlatform {
         }
     }
 }
+
+public typealias Platform = LingXiPlatform
