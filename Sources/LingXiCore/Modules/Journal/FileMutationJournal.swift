@@ -102,7 +102,7 @@ public actor FileRollbackEngine {
 
         // 严格倒序逆向处理本轮变更
         for mutation in mutations.reversed() {
-            let targetURL = mutation.path.hasPrefix("/")
+            let targetURL = LingXiPlatform.path.isAbsolute(mutation.path)
                 ? URL(fileURLWithPath: mutation.path)
                 : workspaceRoot.appendingPathComponent(mutation.path)
 

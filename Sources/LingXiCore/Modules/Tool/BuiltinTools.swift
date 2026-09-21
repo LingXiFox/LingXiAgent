@@ -34,7 +34,7 @@ public struct WorkspaceRoot: Sendable {
         } else {
             expandedPath = cleanPath
         }
-        let input = URL(fileURLWithPath: expandedPath, relativeTo: expandedPath.hasPrefix("/") ? nil : url)
+        let input = URL(fileURLWithPath: expandedPath, relativeTo: LingXiPlatform.path.isAbsolute(expandedPath) ? nil : url)
         var candidate = input.standardizedFileURL.resolvingSymlinksInPath()
 
         // Smart Fuzzy Resolution: if file doesn't exist directly, attempt workspace-scoped unique suffix/nesting resolution
@@ -802,7 +802,7 @@ private func runRipgrep(arguments: [String], root: URL, workspace: WorkspaceRoot
 }
 
 private func workspaceRelativeSearchPath(_ path: String, root: URL, workspace: WorkspaceRoot) -> String {
-    if path.hasPrefix("/") {
+    if LingXiPlatform.path.isAbsolute(path) {
         let wsPath = workspace.url.path
         if path == wsPath { return "." }
         if path.hasPrefix(wsPath + "/") {
@@ -1183,7 +1183,7 @@ private func cwd(_ value: String?, workspace: WorkspaceRoot, profile: ExecutionP
 }
 
 func processSetup(executable: String, arguments: [String], workspace: WorkspaceRoot, cwd: URL, profile: ExecutionProfile) throws -> (ToolProcessInvocation, [String: String]) {
-    guard executable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: executable) else {
+    guard LingXiPlatform.path.isAbsolute(executable), FileManager.default.isExecutableFile(atPath: executable) else {
         throw CoreError(code: .toolArgumentInvalid, message: "executable 必须是可执行的绝对路径")
     }
     var environment = EnvironmentSanitizer.sanitized()

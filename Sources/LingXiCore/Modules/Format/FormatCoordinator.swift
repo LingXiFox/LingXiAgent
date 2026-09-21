@@ -182,7 +182,7 @@ public actor FormatCoordinator {
 
     /// 解析可执行文件路径（优先检查项目 node_modules、.venv，其次为系统全局 PATH）
     private func resolveExecutablePath(binaryName: String, workspaceRoot: URL?) -> String? {
-        if binaryName.hasPrefix("/") {
+        if LingXiPlatform.path.isAbsolute(binaryName) {
             return FileManager.default.isExecutableFile(atPath: binaryName) ? binaryName : nil
         }
 

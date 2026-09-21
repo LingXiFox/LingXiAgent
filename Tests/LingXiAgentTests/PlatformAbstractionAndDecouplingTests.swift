@@ -105,6 +105,22 @@ struct PlatformAbstractionAndDecouplingTests {
         }
     }
 
+    @Test func isAbsoluteCoversPOSIXDriveAndUNCForms() {
+        // Process launch and MCP command validation all route through this one predicate, so
+        // the Windows forms have to be pinned here rather than only discovered on a Windows
+        // runner: `hasPrefix("/")` used to reject every C:\ path and took the shell, grep,
+        // git and background-command tools down with it.
+        #expect(LingXiPlatform.path.isAbsolute("/usr/bin/true"))
+        #expect(LingXiPlatform.path.isAbsolute(#"C:\Windows\System32\cmd.exe"#))
+        #expect(LingXiPlatform.path.isAbsolute("D:/a/repo/rg.exe"))
+        #expect(LingXiPlatform.path.isAbsolute(#"\\server\share\tool.exe"#))
+
+        #expect(!LingXiPlatform.path.isAbsolute("Sources/main.swift"))
+        #expect(!LingXiPlatform.path.isAbsolute(#"Windows\System32\cmd.exe"#))
+        #expect(!LingXiPlatform.path.isAbsolute("C:"))
+        #expect(!LingXiPlatform.path.isAbsolute(""))
+    }
+
     @Test func pathUtilitiesTildeExpansion() {
         #if os(Windows)
         let expectedHome = ProcessInfo.processInfo.environment["USERPROFILE"] ?? FileManager.default.homeDirectoryForCurrentUser.path

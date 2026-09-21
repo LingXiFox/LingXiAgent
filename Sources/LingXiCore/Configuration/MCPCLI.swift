@@ -578,7 +578,7 @@ public enum MCPCLI {
             guard let cmd = server.command else {
                 throw CoreError(code: .mcpServerUnavailable, message: "Missing stdio command for server \(server.id)")
             }
-            guard cmd.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: cmd) else {
+            guard LingXiPlatform.path.isAbsolute(cmd), FileManager.default.isExecutableFile(atPath: cmd) else {
                 throw CoreError(code: .mcpServerUnavailable, message: "Command not found or not executable: \(cmd)")
             }
 

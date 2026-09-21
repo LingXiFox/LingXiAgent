@@ -311,7 +311,7 @@ public enum RuntimeConfigurationResolver {
                         await pager.recordServerStatus(.disabled, for: runtime.serverID, alias: runtime.alias)
                     }
                 case .stdio:
-                    guard stored.endpoint == nil, let command = stored.command, command.hasPrefix("/") else {
+                    guard stored.endpoint == nil, let command = stored.command, LingXiPlatform.path.isAbsolute(command) else {
                         throw ConfigurationValidationError(path: path, reason: "stdio requires an absolute command and forbids endpoint")
                     }
                     runtime = MCPServerConfiguration(

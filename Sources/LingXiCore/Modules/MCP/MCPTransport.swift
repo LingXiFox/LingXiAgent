@@ -223,7 +223,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
     private func request(method: String, parameters: [String: Any]) async throws -> Data {
         try Task.checkCancellation()
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
-        guard let command = configuration.command, command.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
+        guard let command = configuration.command, LingXiPlatform.path.isAbsolute(command), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
         var environment = EnvironmentSanitizer.sanitized()
         for (name, ref) in configuration.environment { if let value = try resolver.resolve(ref) { environment[name] = value } }
 
