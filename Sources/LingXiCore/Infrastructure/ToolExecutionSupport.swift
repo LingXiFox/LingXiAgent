@@ -36,19 +36,18 @@ public enum ShellSandboxBackend: Sendable, SandboxExecutor {
     case sandboxExec
     case unavailable
 
-    public static func workspace() -> Self {
-        LingXiPlatform.sandbox.capabilities.filesystemEnforced ? .platform : .unavailable
-    }
+    public static func workspace() -> Self { .platform }
 
     public var capabilities: SandboxCapabilities {
         LingXiPlatform.sandbox.capabilities
     }
 
     public func invocation(executable: String, arguments: [String], policy: SandboxPolicy) throws -> ToolProcessInvocation {
-        guard capabilities.filesystemEnforced else {
-            throw CoreError(code: .sandboxUnavailable, message: "当前平台未能建立沙箱隔离 (例如 macOS 缺少 sandbox-exec 或 Linux 缺少 bubblewrap)")
-        }
-        return try LingXiPlatform.sandbox.invocation(executable: executable, arguments: arguments, policy: policy)
+        // The adapter owns whether it can honour the policy. Platforms with an enforcement
+        // mechanism throw when they cannot use it, which keeps the workspace profile fail-closed
+        // there; Windows has no mechanism at all and hands back a plain invocation, so refusing
+        // there would make the profile unusable on a platform this project ships to.
+        try LingXiPlatform.sandbox.invocation(executable: executable, arguments: arguments, policy: policy)
     }
 
     func invocation(executable: String, arguments: [String], workspace: URL) throws -> ToolProcessInvocation {

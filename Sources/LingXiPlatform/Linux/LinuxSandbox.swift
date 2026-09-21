@@ -33,6 +33,11 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
         guard let bwrap = bwrapPath else {
             throw NSError(domain: "LingXiPlatform.Sandbox", code: 1, userInfo: [NSLocalizedDescriptionKey: "Linux 环境未安装 bubblewrap (bwrap)，无法建立安全沙箱隔离"])
         }
+        // Callers no longer pre-empt this decision, so the throw for an unusable bwrap lives here:
+        // a half-installed bubblewrap must not silently produce an invocation that dies at launch.
+        guard capabilities.filesystemEnforced else {
+            throw NSError(domain: "LingXiPlatform.Sandbox", code: 2, userInfo: [NSLocalizedDescriptionKey: "bubblewrap 已安装但在当前环境无法建立沙箱（用户命名空间或网络隔离不可用），无法安全执行命令"])
+        }
         var bwrapArgs = Self.wrapArguments(
             workspace: policy.workspace,
             filesystem: policy.filesystem,
