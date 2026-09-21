@@ -1,0 +1,29 @@
+# The repository stores LF. Without this, a Windows runner with git's default
+# core.autocrlf=true checks out every text file with CRLF, so the Windows leg tests
+# a byte stream the other two legs never see - fixture scripts handed to a shell,
+# JSON-lines cassettes, expected strings in assertions.
+* text=auto eol=lf
+
+# Never touch bytes in these: CRLF translation corrupts them silently.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.mov binary
+*.mp4 binary
+*.zip binary
+*.gz binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+
+# Shell and python fixtures must reach the interpreter with the endings they were written with.
+*.sh text eol=lf
+*.bash text eol=lf
+*.py text eol=lf
