@@ -78,7 +78,7 @@ jobs:
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 28
-        run: bash Scripts/ci-integration-tests.sh
+        run: LINGXI_CI_XUNIT_DIR="$PWD/test-results" bash Scripts/ci-integration-tests.sh
 
       - name: Stage 6 - Smoke test CLI executables
         timeout-minutes: 3
@@ -100,7 +100,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-macos
-          path: test-results.xml
+          path: test-results/
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
@@ -136,12 +136,12 @@ jobs:
 
       - name: Probe bubblewrap availability
         run: |
-          if bwrap --dev-bind / / true 2>/dev/null; then
-            echo "LINGXI_SANDBOX_AVAILABLE=1" >> "$GITHUB_ENV"
-          else
-            echo "::warning::bubblewrap unavailable in this container; sandbox tests will be skipped"
-            echo "LINGXI_SANDBOX_AVAILABLE=0" >> "$GITHUB_ENV"
-          fi
+          # Informational only: LinuxSandboxAdapter now probes usability itself, under the same
+          # identity that runs the tests. Probing as root used to report a sandbox that testuser
+          # could not actually create, because the netns loopback setup needs caps the user lacks.
+          su -s /bin/bash -m testuser -c 'bwrap --proc /proc --dev /dev --tmpfs /tmp --unshare-net --ro-bind /usr /usr --ro-bind /bin /bin -- true' \
+            && echo "bubblewrap usable by testuser; sandbox-backed shell tests will run" \
+            || echo "::warning::bubblewrap unusable by testuser; shell tools fall back to unsandboxed execution"
 
       - name: Cache SwiftPM
         uses: actions/cache@v4
@@ -293,7 +293,19 @@ jobs:
       - name: Stage 5 - Controlled Full Integration Test Suite
         shell: bash
         timeout-minutes: 60
-        run: bash Scripts/ci-integration-tests.sh
+        run: |
+          # `pwd -W` gives the drive-letter form; the xunit path is handed to a native
+          # swift-test process, which cannot resolve the MSYS-style path $PWD reports.
+          XUNIT_DIR="$(pwd -W 2>/dev/null || pwd)/test-results"
+          LINGXI_CI_XUNIT_DIR="$XUNIT_DIR" bash Scripts/ci-integration-tests.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows
+          path: test-results/
+          if-no-files-found: ignore
 
       - name: Stage 6 - Smoke test CLI executables
         shell: bash
