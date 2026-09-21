@@ -48,7 +48,15 @@ suite_counts="$(
 
 total_tests=$(printf '%s\n' "$raw_list" | grep -c .)
 total_suites=$(printf '%s\n' "$suite_counts" | grep -c .)
-echo "Discovered ${total_tests} tests across ${total_suites} suites."
+# swift-testing reports only its own cases: the XCTest ones are discovered above, do run, and
+# appear in neither the per-chunk summary nor the xunit report. Reconcile against them by name,
+# taken from the classes themselves so a new XCTestCase is counted without editing this.
+xctest_suites="$(grep -rhoE 'class +[A-Za-z0-9_]+ *:[[:space:]]*XCTestCase' Tests 2>/dev/null | sed -E 's/class +([A-Za-z0-9_]+) *:.*/\1/' | paste -sd'|' -)"
+xctest_cases=0
+if [ -n "$xctest_suites" ]; then
+  xctest_cases="$(printf '%s\n' "$raw_list" | grep -cE "^LingXiAgentTests\.(${xctest_suites})/" || true)"
+fi
+echo "Discovered ${total_tests} tests across ${total_suites} suites (${xctest_cases} of them XCTest)."
 echo "Chunk size ${CHUNK_SIZE}, per-chunk timeout ${CHUNK_TIMEOUT}s."
 
 escape_regex() {
@@ -252,15 +260,15 @@ for chunk in "${chunks[@]}"; do
 done
 
 echo
-# A chunk matching nothing is already a hard failure above; this aggregate is only a
-# cross-check, and the two counters legitimately differ for parameterized cases.
-if [ "$executed" -lt "$total_tests" ]; then
-  echo "::warning::${executed} tests executed vs ${total_tests} discovered; review per-chunk counts for a suite that ran nothing"
+# A chunk matching nothing is already a hard failure above; this aggregate is a cross-check
+# against the swift-testing-visible population, since XCTest cases report through neither.
+if [ "$((executed + xctest_cases))" -lt "$total_tests" ]; then
+  echo "::warning::$((executed + xctest_cases)) tests executed vs ${total_tests} discovered (${executed} swift-testing + ${xctest_cases} XCTest); review per-chunk counts for a suite that ran nothing"
 fi
 echo "================ Stage 5 summary ================"
 echo "wall time:        $(( $(date +%s) - script_start ))s"
 echo "chunks run:       ${#chunks[@]}"
-echo "tests executed:   ${executed} / ${total_tests} discovered"
+echo "tests executed:   ${executed} swift-testing + ${xctest_cases} XCTest / ${total_tests} discovered"
 echo "failures:         ${#failed_chunks[@]}"
 echo "timeouts (hang):  ${#timed_out_chunks[@]}"
 echo "lingering:        ${#lingering_chunks[@]}  (run finished, process would not exit)"
