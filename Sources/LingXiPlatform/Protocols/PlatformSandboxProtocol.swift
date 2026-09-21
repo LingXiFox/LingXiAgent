@@ -16,19 +16,24 @@ public struct SandboxPolicy: Sendable, Equatable {
     public let filesystem: SandboxFilesystemAccess
     public let network: SandboxNetworkAccess
     public let allowSubprocesses: Bool
+    /// Where the child should actually run. A sandbox that replaces the working directory has to
+    /// be told, or the command ends up at the workspace root and reports paths relative to there.
+    public let workingDirectory: URL?
 
     public init(
         workspace: URL,
         readOnlyPaths: [URL] = [],
         filesystem: SandboxFilesystemAccess = .workspaceReadWrite,
         network: SandboxNetworkAccess = .deny,
-        allowSubprocesses: Bool = true
+        allowSubprocesses: Bool = true,
+        workingDirectory: URL? = nil
     ) {
         self.workspace = workspace.standardizedFileURL.resolvingSymlinksInPath()
         self.readOnlyPaths = readOnlyPaths.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
         self.filesystem = filesystem
         self.network = network
         self.allowSubprocesses = allowSubprocesses
+        self.workingDirectory = workingDirectory.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
     }
 }
 

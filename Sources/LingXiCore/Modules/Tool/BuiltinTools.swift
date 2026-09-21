@@ -1204,7 +1204,11 @@ func processSetup(executable: String, arguments: [String], workspace: WorkspaceR
     }
     if profile == .workspace {
         let developerDirectory = environment["DEVELOPER_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-        let policy = SandboxPolicy(workspace: workspace.url, readOnlyPaths: developerDirectory.map { [$0] } ?? [])
+        let policy = SandboxPolicy(
+            workspace: workspace.url,
+            readOnlyPaths: developerDirectory.map { [$0] } ?? [],
+            workingDirectory: cwd
+        )
         return (try workspaceInvocation(executable: executable, arguments: arguments, policy: policy), environment)
     }
     return (ToolProcessInvocation(executable: executable, arguments: arguments), environment)

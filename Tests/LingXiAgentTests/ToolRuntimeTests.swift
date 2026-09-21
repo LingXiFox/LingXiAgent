@@ -36,6 +36,25 @@ private actor QuestionCapture {
 }
 
 struct ToolRuntimeTests {
+    @Test func globUnderASubdirectoryRootReportsWorkspaceRelativePathsOnce() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sub = root.appendingPathComponent("Fixtures", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try "x".write(to: sub.appendingPathComponent("Bar.txt"), atomically: true, encoding: .utf8)
+        let runtime = try runtime(root: root)
+        let result = await runtime.execute(
+            ToolCall(callID: ToolCallID("glob"), toolID: ToolID("glob"), arguments: #"{"path":"Fixtures","pattern":"*.txt"}"#),
+            sessionID: SessionID("s")
+        ) { _ in }
+        #expect(result.success)
+        // ripgrep reports paths relative to its own working directory, which is the search root.
+        // A sandbox that replaces that directory with the workspace root makes the rebase apply
+        // the prefix twice, so the invariant is checked here rather than only where it broke.
+        #expect(result.content.contains("\"Fixtures/Bar.txt\""), "reported \(result.content)")
+        #expect(!result.content.contains("Fixtures/Fixtures"), "reported \(result.content)")
+    }
+
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

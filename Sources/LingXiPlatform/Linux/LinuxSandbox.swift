@@ -42,7 +42,8 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
             workspace: policy.workspace,
             filesystem: policy.filesystem,
             readOnlyPaths: policy.readOnlyPaths,
-            denyNetwork: policy.network == .deny
+            denyNetwork: policy.network == .deny,
+            workingDirectory: policy.workingDirectory
         )
         bwrapArgs += ["--", executable] + arguments
         return ToolProcessInvocation(executable: bwrap, arguments: bwrapArgs)
@@ -54,7 +55,8 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
         workspace: URL,
         filesystem: SandboxFilesystemAccess,
         readOnlyPaths: [URL],
-        denyNetwork: Bool
+        denyNetwork: Bool,
+        workingDirectory: URL? = nil
     ) -> [String] {
         var bwrapArgs: [String] = []
 
@@ -83,8 +85,19 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
         }
 
         // 5. 工作目录
-        bwrapArgs += ["--chdir", ws]
+        bwrapArgs += ["--chdir", workingDirectory(in: workspace, requested: workingDirectory).path]
         return bwrapArgs
+    }
+
+    /// bwrap replaces the child's working directory, so a caller that asked to run somewhere
+    /// inside the workspace has to say so here or the command silently starts at the workspace
+    /// root and reports paths relative to there. Anything outside the bound workspace does not
+    /// exist inside the namespace, so it falls back to the workspace root.
+    private static func workingDirectory(in workspace: URL, requested: URL?) -> URL {
+        guard let requested else { return workspace }
+        let root = workspace.path
+        let directory = requested.path
+        return (directory == root || directory.hasPrefix(root + "/")) ? requested : workspace
     }
 
     private static let systemReadOnlyDirectories = ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"]
