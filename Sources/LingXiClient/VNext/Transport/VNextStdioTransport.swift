@@ -57,6 +57,7 @@ private actor ClientWireWriter {
     func write(data: Data, shouldCancel: () -> Bool = { false }) throws {
         guard !shouldCancel() else { return }
         try handle.write(contentsOf: data)
+        try? handle.synchronize()
     }
 
     func close() {

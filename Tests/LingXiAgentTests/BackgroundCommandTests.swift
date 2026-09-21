@@ -85,9 +85,13 @@ struct BackgroundCommandTests {
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
         let manageTool = ManageBackgroundCommandTool(manager: manager)
 
-        // Run a sleep 30 command with a 1-second timeout
+        #if os(Windows)
+        let sleepCmd = "powershell -NoProfile -Command Start-Sleep -Seconds 30"
+        #else
+        let sleepCmd = "sleep 30"
+        #endif
         let spawnArgs = """
-        {"command": "sleep 30", "timeout_seconds": 1, "task_id": "sleep-timeout-test"}
+        {"command": "\(sleepCmd)", "timeout_seconds": 1, "task_id": "sleep-timeout-test"}
         """
         _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
@@ -310,8 +314,13 @@ struct BackgroundCommandTests {
         let manager = BackgroundCommandManager()
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
 
+        #if os(Windows)
+        let wakeCmd = #"powershell -NoProfile -Command "Start-Sleep -Milliseconds 400" && echo bg-result-42"#
+        #else
+        let wakeCmd = "sleep 0.4 && echo 'bg-result-42'"
+        #endif
         let spawnArgs = """
-        {"command": "sleep 0.4 && echo 'bg-result-42'", "timeout_seconds": 10, "task_id": "wake-test-task"}
+        {"command": "\(wakeCmd)", "timeout_seconds": 10, "task_id": "wake-test-task"}
         """
         _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 

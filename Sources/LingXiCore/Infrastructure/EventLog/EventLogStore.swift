@@ -1,6 +1,16 @@
 import Foundation
 import LingXiProtocol
 
+private extension Data {
+    func writePlatformSafe(to url: URL) throws {
+        #if os(Windows)
+        try write(to: url, options: [])
+        #else
+        try write(to: url, options: .atomic)
+        #endif
+    }
+}
+
 /// SessionEventLog：管理单个 Session 的因果事件日志与 Replay 边界。
 public actor SessionEventLog {
     private struct PersistedMeta: Codable {
@@ -92,7 +102,7 @@ public actor SessionEventLog {
             // 将权威 sequence 原子校准写回 meta.json，确保 meta 与 events 100% 对齐
             let correctedMeta = PersistedMeta(generationID: resolvedGen.rawValue, sequence: resolvedSeq)
             if let data = try? JSONEncoder().encode(correctedMeta) {
-                try? data.write(to: metaURL, options: .atomic)
+                try? data.writePlatformSafe(to: metaURL)
             }
         }
 
@@ -148,7 +158,7 @@ public actor SessionEventLog {
                 try fileHandle.synchronize()
             } else {
                 try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
-                try lineData.write(to: eventsURL, options: .atomic)
+                try lineData.writePlatformSafe(to: eventsURL)
             }
 
             // P0-B Single Commit Point Invariant:
@@ -163,7 +173,7 @@ public actor SessionEventLog {
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: nextSeq)
             if let metaData = try? JSONEncoder().encode(meta) {
-                try? metaData.write(to: metaURL, options: .atomic)
+                try? metaData.writePlatformSafe(to: metaURL)
             }
         } else {
             sequence = nextSeq
@@ -193,11 +203,11 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            try? Data(newContent.utf8).writePlatformSafe(to: eventsURL)
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
             if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
+                try? data.writePlatformSafe(to: metaURL)
             }
         }
     }
@@ -214,7 +224,7 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            try Data(newContent.utf8).writePlatformSafe(to: eventsURL)
 
             // P0-C Invariant: events.jsonl 是权威落盘事实。一旦原子写入成功，截断即已不可逆生效！
             // 此时必须立即推进内存状态，杜绝后续 meta.json 缓存写失败导致磁盘已截断但内存仍是旧 sequence 的脑裂！
@@ -224,7 +234,7 @@ public actor SessionEventLog {
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: targetSeq)
             if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
+                try? data.writePlatformSafe(to: metaURL)
             }
         } else {
             events = remainingEvents
@@ -245,26 +255,12 @@ public actor SessionEventLog {
                     newContent += s + "\n"
                 }
             }
-            do {
-                try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
-            } catch {
-                #if os(Windows)
-                try Data(newContent.utf8).write(to: eventsURL)
-                #else
-                throw error
-                #endif
-            }
+            try Data(newContent.utf8).writePlatformSafe(to: eventsURL)
 
             let metaURL = sessionDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: newSeq)
             if let data = try? JSONEncoder().encode(meta) {
-                do {
-                    try data.write(to: metaURL, options: .atomic)
-                } catch {
-                    #if os(Windows)
-                    try? data.write(to: metaURL)
-                    #endif
-                }
+                try? data.writePlatformSafe(to: metaURL)
             }
         }
 
@@ -429,7 +425,7 @@ public actor RuntimeEventLog {
             // 将权威 sequence 原子校准写回 meta.json，确保 meta 与 events 100% 对齐
             let correctedMeta = PersistedMeta(generationID: resolvedGen.rawValue, sequence: resolvedSeq)
             if let data = try? JSONEncoder().encode(correctedMeta) {
-                try? data.write(to: metaURL, options: .atomic)
+                try? data.writePlatformSafe(to: metaURL)
             }
         }
 
@@ -485,7 +481,7 @@ public actor RuntimeEventLog {
                 try fileHandle.synchronize()
             } else {
                 try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
-                try lineData.write(to: eventsURL, options: .atomic)
+                try lineData.writePlatformSafe(to: eventsURL)
             }
 
             // P0-B Single Commit Point Invariant:
@@ -500,7 +496,7 @@ public actor RuntimeEventLog {
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: nextSeq)
             if let metaData = try? JSONEncoder().encode(meta) {
-                try? metaData.write(to: metaURL, options: .atomic)
+                try? metaData.writePlatformSafe(to: metaURL)
             }
         } else {
             sequence = nextSeq
@@ -530,11 +526,11 @@ public actor RuntimeEventLog {
                     newContent += s + "\n"
                 }
             }
-            try? Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            try? Data(newContent.utf8).writePlatformSafe(to: eventsURL)
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: sequence)
             if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
+                try? data.writePlatformSafe(to: metaURL)
             }
         }
     }
@@ -551,16 +547,17 @@ public actor RuntimeEventLog {
                     newContent += s + "\n"
                 }
             }
-            try Data(newContent.utf8).write(to: eventsURL, options: .atomic)
+            try Data(newContent.utf8).writePlatformSafe(to: eventsURL)
 
             // P0-C Invariant: events.jsonl 是权威落盘事实。一旦原子写入成功，截断即已不可逆生效！
+            // 此时必须立即推进内存状态，杜绝后续 meta.json 缓存写失败导致磁盘已截断但内存仍是旧 sequence 的脑裂！
             events = remainingEvents
             sequence = targetSeq
 
             let metaURL = runtimeDir.appendingPathComponent("meta.json")
             let meta = PersistedMeta(generationID: generationID.rawValue, sequence: targetSeq)
             if let data = try? JSONEncoder().encode(meta) {
-                try? data.write(to: metaURL, options: .atomic)
+                try? data.writePlatformSafe(to: metaURL)
             }
         } else {
             events = remainingEvents
@@ -713,7 +710,7 @@ public actor IdempotencyJournal {
             let safeKey = CommandStorageSecurity.safeStorageKey(for: commandID)
             let fileURL = journalDir.appendingPathComponent("\(safeKey).json")
             let recordData = try JSONEncoder().encode(entry)
-            try recordData.write(to: fileURL, options: .atomic)
+            try recordData.writePlatformSafe(to: fileURL)
         }
         journal[commandID] = entry
     }

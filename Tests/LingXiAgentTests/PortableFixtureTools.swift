@@ -27,8 +27,9 @@ enum PortableFixture {
     /// A child that stays silent and alive for about `seconds`, then exits.
     static func sleep(_ seconds: Int) -> (command: String, arguments: [String]) {
         #if os(Windows) || canImport(WinSDK)
-        // ping waits between attempts and fires the first one immediately.
-        return (cmd, ["/c", "ping -n \(seconds + 1) 127.0.0.1 >nul"])
+        let shell = LingXiPlatform.process.resolveExecutable(named: "powershell.exe", customSearchPaths: nil)
+            ?? #"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"#
+        return (shell, ["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds \(seconds)"])
         #else
         return ("/bin/sleep", ["\(seconds)"])
         #endif
@@ -80,7 +81,14 @@ enum PortableFixture {
     }
 
     static func python(_ script: String) -> (command: String, arguments: [String]) {
-        (pythonInterpreter(), ["-c", script])
+        #if os(Windows) || canImport(WinSDK)
+        let tempDir = FileManager.default.temporaryDirectory
+        let scriptFile = tempDir.appendingPathComponent("lingxi-fixture-\(UUID().uuidString).py")
+        try? script.write(to: scriptFile, atomically: false, encoding: .utf8)
+        return (pythonInterpreter(), [scriptFile.path])
+        #else
+        return (pythonInterpreter(), ["-c", script])
+        #endif
     }
 
     #if os(Windows) || canImport(WinSDK)

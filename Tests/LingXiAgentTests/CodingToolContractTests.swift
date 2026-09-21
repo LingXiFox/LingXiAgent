@@ -116,7 +116,8 @@ struct CodingToolContractTests {
         #else
         let shellCommand = "printf out; printf err >&2; exit 7"
         #endif
-        let shell = await tools.execute(call("shell", "shell", #"{"command":""# + shellCommand + #""}"#), sessionID: SessionID("s")) { _ in }
+        let commandArgs = try #require(String(data: JSONEncoder().encode(["command": shellCommand]), encoding: .utf8))
+        let shell = await tools.execute(call("shell", "shell", commandArgs), sessionID: SessionID("s")) { _ in }
         #expect(shell.exitCode == 7)
         #expect(shell.diagnostics?.stdout == "out")
         #expect(shell.diagnostics?.stderr == "err")

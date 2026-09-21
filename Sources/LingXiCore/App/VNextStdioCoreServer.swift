@@ -388,5 +388,6 @@ private actor VNextWireWriter {
     private func write<T: Encodable>(_ message: T) {
         guard let data = try? JSONEncoder().encode(message) else { return }
         try? output.write(contentsOf: data + Data("\n".utf8))
+        try? output.synchronize()
     }
 }

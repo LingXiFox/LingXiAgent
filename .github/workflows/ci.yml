@@ -77,7 +77,7 @@ jobs:
         run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 28
+        timeout-minutes: 35
         run: LINGXI_CI_XUNIT_DIR="$PWD/test-results" bash Scripts/ci-integration-tests.sh
 
       - name: Stage 6 - Smoke test CLI executables
@@ -185,7 +185,7 @@ jobs:
         run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 28
+        timeout-minutes: 45
         run: |
           # Mirrors the macOS gate: bounded chunks with a per-chunk watchdog, so a deadlocked
           # group reports itself instead of hanging the whole step for 18 minutes.

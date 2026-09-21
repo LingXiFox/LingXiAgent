@@ -305,8 +305,16 @@ public struct MCPStdioTransport: MCPToolInvoker {
         }
 
         return try await withTaskCancellationHandler {
-            try stdinHandle.write(contentsOf: initData)
-            try stdinHandle.write(contentsOf: Data("\n".utf8))
+            try Task.checkCancellation()
+            do {
+                try stdinHandle.write(contentsOf: initData)
+                try stdinHandle.write(contentsOf: Data("\n".utf8))
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                throw error
+            }
 
             var buffer = Data()
             var initCompleted = false

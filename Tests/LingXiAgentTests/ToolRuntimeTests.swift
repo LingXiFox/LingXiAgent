@@ -270,7 +270,7 @@ struct ToolRuntimeTests {
         let runtime = ToolRuntime(
             registry: .builtin(workspace: try WorkspaceRoot(path: root.path)),
             permissions: permissions,
-            deadlinePolicy: ExecutionDeadlinePolicy(settings: ExecutionTimeoutSettings(quickFilesystemSeconds: 0.01))
+            deadlinePolicy: ExecutionDeadlinePolicy(settings: ExecutionTimeoutSettings(quickFilesystemSeconds: 0.2))
         )
         let capture = PermissionCapture()
         let task = Task {
@@ -280,7 +280,7 @@ struct ToolRuntimeTests {
         }
 
         let request = await capture.wait()
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(300))
         try await permissions.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
 
         #expect((await task.value).success)
@@ -338,7 +338,7 @@ struct ToolRuntimeTests {
         let runtime = ToolRuntime(
             registry: .builtin(workspace: try WorkspaceRoot(path: root.path), questions: questions),
             permissions: PermissionEngine(defaultDecision: .allow),
-            deadlinePolicy: ExecutionDeadlinePolicy(settings: ExecutionTimeoutSettings(foregroundShellSeconds: 0.01))
+            deadlinePolicy: ExecutionDeadlinePolicy(settings: ExecutionTimeoutSettings(foregroundShellSeconds: 0.2))
         )
         let task = Task {
             await runtime.execute(
@@ -348,7 +348,7 @@ struct ToolRuntimeTests {
         }
 
         let request = await capture.wait()
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(300))
         try await questions.reply(QuestionReply(questionID: request.questionID, selectedOptionIndices: [0]))
 
         #expect((await task.value).success)
@@ -372,8 +372,18 @@ struct ToolRuntimeTests {
         }
         #expect(kept["TOKEN_SECRET"] == nil && kept["AWS_SECRET_ACCESS_KEY"] == nil)
         let runtime = try runtime(root: root)
+        #if os(Windows)
+        let writeCmd = #"powershell -NoProfile -Command "[Console]::Out.Write('sandboxed')" > output.txt"#
+        #else
+        let writeCmd = "printf sandboxed > output.txt"
+        #endif
+        struct ShellArgs: Encodable {
+            let command: String
+            let timeout_ms: Int
+        }
+        let commandArgs = try #require(String(data: JSONEncoder().encode(ShellArgs(command: writeCmd, timeout_ms: 15000)), encoding: .utf8))
         let result = await runtime.execute(
-            ToolCall(callID: ToolCallID("shell"), toolID: ToolID("shell"), arguments: #"{"command":"printf sandboxed > output.txt","timeout_ms":15000}"#),
+            ToolCall(callID: ToolCallID("shell"), toolID: ToolID("shell"), arguments: commandArgs),
             sessionID: SessionID("s")
         ) { _ in }
         #expect(result.success)
@@ -467,7 +477,12 @@ struct ToolRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let workspace = try WorkspaceRoot(path: root.path)
         let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(configuration: .yolo))
-        let call = ToolCall(callID: ToolCallID("shell-lifecycle"), toolID: ToolID("shell"), arguments: #"{"command":"ls -d \"$HOME\"; ls \"$HOME\" | head -20"}"#)
+        #if os(Windows)
+        let listCmd = "dir"
+        #else
+        let listCmd = #"ls -d \"$HOME\"; ls \"$HOME\" | head -20"#
+        #endif
+        let call = ToolCall(callID: ToolCallID("shell-lifecycle"), toolID: ToolID("shell"), arguments: #"{"command":""# + listCmd + #""}"#)
 
         let outcome = await runtime.executeWithMetrics(call, sessionID: SessionID("s")) { _ in }
         #expect(outcome.result.success)
@@ -504,7 +519,12 @@ struct ToolRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let workspace = try WorkspaceRoot(path: root.path)
         let runtime = ToolRuntime(registry: .builtin(workspace: workspace), permissions: PermissionEngine(configuration: .yolo))
-        let call = ToolCall(callID: ToolCallID("fast-exit-delayed-commit"), toolID: ToolID("shell"), arguments: #"{"command":"ls -d \"$HOME\"; ls \"$HOME\" | head -20"}"#)
+        #if os(Windows)
+        let listCmd = "dir"
+        #else
+        let listCmd = #"ls -d \"$HOME\"; ls \"$HOME\" | head -20"#
+        #endif
+        let call = ToolCall(callID: ToolCallID("fast-exit-delayed-commit"), toolID: ToolID("shell"), arguments: #"{"command":""# + listCmd + #""}"#)
 
         let outcome = await runtime.executeWithMetrics(call, sessionID: SessionID("s")) { _ in }
         #expect(outcome.result.success)

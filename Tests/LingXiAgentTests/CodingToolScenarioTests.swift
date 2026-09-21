@@ -18,7 +18,31 @@ struct CodingToolScenarioTests {
         ToolCall(callID: ToolCallID(id), toolID: ToolID(tool), arguments: arguments)
     }
 
+    private var shCommand: String? {
+        #if os(Windows)
+        let candidates = [
+            "sh",
+            #"C:\Program Files\Git\bin\sh.exe"#,
+            #"C:\Program Files\Git\usr\bin\sh.exe"#,
+            #"C:\Program Files (x86)\Git\bin\sh.exe"#
+        ]
+        for c in candidates {
+            if FileManager.default.fileExists(atPath: c) || LingXiPlatform.process.resolveExecutable(named: c, customSearchPaths: nil) != nil {
+                return c.contains(" ") ? "\"\(c)\"" : c
+            }
+        }
+        return nil
+        #else
+        return "sh"
+        #endif
+    }
+
     @Test func localCodingFixtureRunsSearchPatchTestRecoveryAndDiff() async throws {
+        #if os(Windows)
+        guard let sh = shCommand else { return }
+        #else
+        let sh = "sh"
+        #endif
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -42,13 +66,13 @@ struct CodingToolScenarioTests {
 
         let wrongPatch = await runtime.execute(call("patch-wrong", "apply_patch", #"{"patch":"*** Begin Patch\n*** Update File: calculator.sh\n-expr \"$1\" - \"$2\"\n+expr \"$1\" * \"$2\"\n*** End Patch"}"#), sessionID: SessionID("scenario")) { _ in }
         #expect(wrongPatch.success)
-        let failed = await runtime.execute(call("test-fail", "shell", #"{"command":"sh test.sh"}"#), sessionID: SessionID("scenario")) { _ in }
+        let failed = await runtime.execute(call("test-fail", "shell", #"{"command":""# + sh + #" test.sh"}"#), sessionID: SessionID("scenario")) { _ in }
         #expect(!failed.success)
         #expect(failed.exitCode != 0)
 
         let correctPatch = await runtime.execute(call("patch-correct", "apply_patch", #"{"patch":"*** Begin Patch\n*** Update File: calculator.sh\n-expr \"$1\" * \"$2\"\n+expr \"$1\" + \"$2\"\n*** End Patch"}"#), sessionID: SessionID("scenario")) { _ in }
         #expect(correctPatch.success)
-        let passed = await runtime.execute(call("test-pass", "shell", #"{"command":"sh test.sh"}"#), sessionID: SessionID("scenario")) { _ in }
+        let passed = await runtime.execute(call("test-pass", "shell", #"{"command":""# + sh + #" test.sh"}"#), sessionID: SessionID("scenario")) { _ in }
         #expect(passed.success)
         let diff = await runtime.execute(call("diff", "git", #"{"action":"diff"}"#), sessionID: SessionID("scenario")) { _ in }
         #expect(diff.success)

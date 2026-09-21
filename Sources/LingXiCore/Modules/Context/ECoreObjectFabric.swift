@@ -240,7 +240,6 @@ public actor ECoreObjectStore {
             try FileManager.default.createDirectory(at: objectsDir, withIntermediateDirectories: true)
 
             let targetURL = objectsDir.appendingPathComponent("\(objectID.rawValue).txt", isDirectory: false)
-            let tempURL = objectsDir.appendingPathComponent(".\(objectID.rawValue).\(UUID().uuidString).tmp", isDirectory: false)
             let metaURL = objectsDir.appendingPathComponent("\(objectID.rawValue).meta.json", isDirectory: false)
 
             if !FileManager.default.fileExists(atPath: targetURL.path) {
