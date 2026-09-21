@@ -18,6 +18,8 @@ set -uo pipefail
 # have fewer cores, so the same chunk size is more contended there, not less.
 CHUNK_SIZE="${LINGXI_CI_CHUNK_SIZE:-12}"
 CHUNK_TIMEOUT="${LINGXI_CI_CHUNK_TIMEOUT:-150}"
+# How long a chunk may stay alive after printing its final summary.
+LINGER_GRACE="${LINGXI_CI_LINGER_GRACE:-15}"
 # When set, every chunk also writes an xunit report into this directory so the CI
 # artifact keeps working even though the suite no longer runs as one invocation.
 XUNIT_DIR="${LINGXI_CI_XUNIT_DIR:-}"
@@ -140,6 +142,7 @@ dump_stacks() {
 
 failed_chunks=()
 timed_out_chunks=()
+lingering_chunks=()
 executed=0
 index=0
 for chunk in "${chunks[@]}"; do
@@ -169,6 +172,8 @@ for chunk in "${chunks[@]}"; do
 
   waited=0
   alive=yes
+  lingering=no
+  done_at=-1
   while kill -0 "$runner" 2>/dev/null; do
     if [ "$waited" -ge "$CHUNK_TIMEOUT" ]; then
       alive=no
@@ -182,10 +187,21 @@ for chunk in "${chunks[@]}"; do
       sleep 2
       break
     fi
+    # Some suites leave a blocking read or an un-joined task behind, so the process prints its
+    # final summary and then sits until the watchdog fires: the whole budget burnt, and results
+    # already on disk discarded. Harvest them and stop instead.
+    if [ "$done_at" -lt 0 ] && grep -qE 'Test run with [0-9]+ tests' "$chunk_log" 2>/dev/null; then
+      done_at=$waited
+    fi
+    if [ "$done_at" -ge 0 ] && [ $((waited - done_at)) -ge "$LINGER_GRACE" ]; then
+      lingering=yes
+      echo "!! Chunk ${index} completed its run but the process did not exit; harvesting and killing."
+      kill_tree "$runner"
+    fi
     sleep 5
     waited=$((waited + 5))
   done
-  [ "$alive" = yes ] && wait "$runner"
+  wait "$runner" 2>/dev/null
   status=$?
   elapsed=$(( $(date +%s) - chunk_start ))
 
@@ -198,6 +214,15 @@ for chunk in "${chunks[@]}"; do
   if [ "$alive" = no ]; then
     timed_out_chunks+=("Chunk ${index}: ${names}")
     tail -20 "$chunk_log"
+  elif [ "$lingering" = yes ]; then
+    # A distinct defect from a hung test: the plan finished, so its verdict is trustworthy,
+    # but the process never returned. Report both so neither signal is lost.
+    lingering_chunks+=("Chunk ${index}: ${names}")
+    grep -E 'Test run with [0-9]+ tests' "$chunk_log" | tail -1
+    if grep -qE 'Test run with [0-9]+ tests failed' "$chunk_log"; then
+      failed_chunks+=("Chunk ${index}: ${names}")
+      grep -E "recorded an issue|Expectation failed|Caught error|error:" "$chunk_log" | head -30
+    fi
   elif [ "$status" -ne 0 ]; then
     failed_chunks+=("Chunk ${index}: ${names}")
     echo "-- chunk ${index} exit ${status} after ${elapsed}s --"
@@ -226,10 +251,13 @@ echo "chunks run:       ${#chunks[@]}"
 echo "tests executed:   ${executed} / ${total_tests} discovered"
 echo "failures:         ${#failed_chunks[@]}"
 echo "timeouts (hang):  ${#timed_out_chunks[@]}"
+echo "lingering:        ${#lingering_chunks[@]}  (run finished, process would not exit)"
 for entry in ${failed_chunks[@]+"${failed_chunks[@]}"}; do echo "  FAILED  $entry"; done
 for entry in ${timed_out_chunks[@]+"${timed_out_chunks[@]}"}; do echo "  HUNG    $entry"; done
+for entry in ${lingering_chunks[@]+"${lingering_chunks[@]}"}; do echo "  LINGERED  $entry"; done
 
-if [ "${#failed_chunks[@]}" -gt 0 ] || [ "${#timed_out_chunks[@]}" -gt 0 ]; then
+if [ "${#failed_chunks[@]}" -gt 0 ] || [ "${#timed_out_chunks[@]}" -gt 0 ] \
+   || [ "${#lingering_chunks[@]}" -gt 0 ]; then
   exit 1
 fi
 echo "All chunks passed."
