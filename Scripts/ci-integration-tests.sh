@@ -91,6 +91,23 @@ if [ "${#chunks[@]}" -eq 0 ]; then
 fi
 echo "Planned ${#chunks[@]} chunks."
 
+kill_tree() {
+  local pid=$1
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      # Git Bash kill() does not reach the Win32 children of the runner, and pkill may not
+      # exist there at all. taskkill /T walks the process tree; the doubled slashes stop MSYS
+      # from rewriting the switches into paths.
+      taskkill //F //T //PID "$pid" > /dev/null 2>&1 \
+        || taskkill /F /T /PID "$pid" > /dev/null 2>&1
+      ;;
+    *)
+      pkill -9 -f "LingXiAgentTests" 2>/dev/null
+      ;;
+  esac
+  kill -9 "$pid" 2>/dev/null
+}
+
 dump_stacks() {
   local pid=$1
   case "$(uname -s)" in
@@ -100,6 +117,13 @@ dump_stacks() {
         | awk '/^[[:space:]]*[0-9]+ Thread_/{p=1} p{print}' \
         | sed -E 's/ \(in [^)]*\)//; s/ \+ [0-9]+$//; s/^[[:space:]]+//' \
         | head -200
+      ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      # No portable userspace stack dumper exists on Git Bash, so record the process tree
+      # instead. Combined with the chunk name in the line above, that still identifies which
+      # child is wedged; the /proc walk below would silently produce nothing there.
+      echo "note: stack capture is unavailable on Windows runners; listing processes"
+      ps -W 2>/dev/null | grep -iE "LingXiAgentTests|swift|rg\.exe" | head -30
       ;;
     *)
       local t
@@ -154,8 +178,7 @@ for chunk in "${chunks[@]}"; do
       for child in $(pgrep -P "$runner" 2>/dev/null); do
         dump_stacks "$child"
       done
-      kill -9 "$runner" 2>/dev/null
-      pkill -9 -f "LingXiAgentTests" 2>/dev/null
+      kill_tree "$runner"
       sleep 2
       break
     fi

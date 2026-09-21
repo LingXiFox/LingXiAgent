@@ -207,13 +207,12 @@ jobs:
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
-  # Windows：逐步稳定支持（非阻塞）
+  # Windows：正式发布平台，与 macOS / Linux 同等门禁
   # ─────────────────────────────────────────────────────────────
   test-windows:
     name: Windows Build & Test (x86_64)
     runs-on: windows-2022
-    timeout-minutes: 45
-    continue-on-error: true
+    timeout-minutes: 110
     steps:
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -246,6 +245,21 @@ jobs:
           swift --version
           Get-Command swift, link, cl -ErrorAction SilentlyContinue | Format-Table Name, Source
 
+      - name: Provide ripgrep for the search tools
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          # Same reason as the macOS/Linux jobs: grep and glob shell out to `rg` and fail
+          # closed without it. Chocolatey is on the runner image and its shim directory is
+          # already on PATH, so the resolver finds rg.exe there.
+          command -v rg > /dev/null 2>&1 && exit 0
+          choco install ripgrep -y --no-progress
+          if ! command -v rg > /dev/null 2>&1; then
+            echo "::error::ripgrep is not resolvable after installation"
+            exit 1
+          fi
+          rg --version | head -1
+
       - name: Cache SwiftPM
         uses: actions/cache@v4
         with:
@@ -271,6 +285,16 @@ jobs:
         timeout-minutes: 5
         run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
 
+      - name: Stage 4 - IPC & Process Robustness Gate
+        shell: bash
+        timeout-minutes: 5
+        run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+
+      - name: Stage 5 - Controlled Full Integration Test Suite
+        shell: bash
+        timeout-minutes: 60
+        run: bash Scripts/ci-integration-tests.sh
+
       - name: Stage 6 - Smoke test CLI executables
         shell: bash
         timeout-minutes: 5
@@ -293,14 +317,15 @@ jobs:
   gate:
     name: CI Gate
     runs-on: ubuntu-latest
-    needs: [test-macos, test-linux]
+    needs: [test-macos, test-linux, test-windows]
     if: always()
     steps:
       - name: Check required jobs
         run: |
           if [ "${{ needs.test-macos.result }}" != "success" ] || \
-             [ "${{ needs.test-linux.result }}" != "success" ]; then
-            echo "::error::macOS or Linux gate failed"
+             [ "${{ needs.test-linux.result }}" != "success" ] || \
+             [ "${{ needs.test-windows.result }}" != "success" ]; then
+            echo "::error::macOS, Linux or Windows gate failed"
             exit 1
           fi
           echo "Gate passed."
