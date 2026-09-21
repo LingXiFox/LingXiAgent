@@ -83,16 +83,41 @@ struct StdioConnectionTests {
         return (connection, requests, try await opening.value)
     }
 
+    /// `FileHandle.availableData` blocks until a byte arrives or the pipe closes, so a write
+    /// that never comes takes the whole test process down with it instead of failing one case.
+    /// Under CI that never-write is observable on these pipes, so every fixture read is bounded
+    /// and says so in the error.
+    private static let fixtureReadTimeout: TimeInterval = 20
+
+    private func availableData(from handle: FileHandle, timeout: TimeInterval) throws -> Data {
+        let finished = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable { var data = Data() }
+        let box = Box()
+        DispatchQueue.global().async {
+            box.data = handle.availableData
+            finished.signal()
+        }
+        guard finished.wait(timeout: .now() + timeout) == .success else {
+            throw CoreError(code: .commandTimedOut, message: "fixture 管道在 \(timeout)s 内没有产出")
+        }
+        return box.data
+    }
+
     private func readMessage(from handle: FileHandle) throws -> WireMessage {
-        let data = handle.availableData
+        let data = try availableData(from: handle, timeout: Self.fixtureReadTimeout)
         guard !data.isEmpty else { throw CoreError(code: .transport, message: "fixture EOF") }
         return try JSONDecoder().decode(WireMessage.self, from: data.trimmingTrailingNewline())
     }
 
     private func readThroughStreamEnd(from handle: FileHandle) throws -> [WireMessage] {
         var messages: [WireMessage] = []
+        let deadline = Date().addingTimeInterval(Self.fixtureReadTimeout)
         while !messages.contains(where: \.isStreamEnd) {
-            let data = handle.availableData
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                throw CoreError(code: .commandTimedOut, message: "已读到 \(messages.count) 条仍未见 stream end")
+            }
+            let data = try availableData(from: handle, timeout: remaining)
             guard !data.isEmpty else { throw CoreError(code: .transport, message: "fixture EOF") }
             for line in data.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                 messages.append(try JSONDecoder().decode(WireMessage.self, from: Data(line)))
