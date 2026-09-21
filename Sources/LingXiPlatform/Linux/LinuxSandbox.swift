@@ -85,7 +85,7 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
         }
 
         // 5. 工作目录
-        bwrapArgs += ["--chdir", workingDirectory(in: workspace, requested: workingDirectory).path]
+        bwrapArgs += ["--chdir", childWorkingDirectory(in: workspace, requested: workingDirectory).path]
         return bwrapArgs
     }
 
@@ -93,7 +93,7 @@ public final class LinuxSandboxAdapter: PlatformSandboxProtocol, @unchecked Send
     /// inside the workspace has to say so here or the command silently starts at the workspace
     /// root and reports paths relative to there. Anything outside the bound workspace does not
     /// exist inside the namespace, so it falls back to the workspace root.
-    private static func workingDirectory(in workspace: URL, requested: URL?) -> URL {
+    private static func childWorkingDirectory(in workspace: URL, requested: URL?) -> URL {
         guard let requested else { return workspace }
         let root = workspace.path
         let directory = requested.path
