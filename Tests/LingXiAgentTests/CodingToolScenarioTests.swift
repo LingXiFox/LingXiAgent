@@ -6,7 +6,7 @@ import LingXiProtocol
 struct CodingToolScenarioTests {
     private func runGit(_ arguments: [String], in root: URL) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.executableURL = URL(fileURLWithPath: PortableFixture.git())
         process.arguments = arguments
         process.currentDirectoryURL = root
         try process.run()

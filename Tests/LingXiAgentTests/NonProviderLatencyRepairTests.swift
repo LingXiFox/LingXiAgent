@@ -10,8 +10,9 @@ struct NonProviderLatencyRepairTests {
     @Test func deferredMCPDiscoveryDoesNotProbeBeforeHandshake() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let credentials = try FileCredentialStore(dataRoot: root, isMemoryOnly: true)
+        let slowServer = PortableFixture.sleep(2)
         let configuration = MCPConfiguration(servers: [
-            StoredMCPServerConfiguration(id: "slow", alias: "slow", transport: .stdio, command: "/bin/sleep", arguments: ["2"], timeoutSeconds: 0.1)
+            StoredMCPServerConfiguration(id: "slow", alias: "slow", transport: .stdio, command: slowServer.command, arguments: slowServer.arguments, timeoutSeconds: 0.1)
         ])
         let start = ContinuousClock.now
         let resolution = try await RuntimeConfigurationResolver.resolveMCP(configuration, credentials: credentials, discoverTools: false, faultTolerant: true)
@@ -25,7 +26,8 @@ struct NonProviderLatencyRepairTests {
     }
 
     @Test func mcpStdioTimeoutAndCancellationDoNotWaitForServerExit() async throws {
-        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("sleep"), alias: "sleep", transport: .stdio, command: "/bin/sleep", arguments: ["5"], timeoutSeconds: 0.1))
+        let sleepServer = PortableFixture.sleep(5)
+        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("sleep"), alias: "sleep", transport: .stdio, command: sleepServer.command, arguments: sleepServer.arguments, timeoutSeconds: 0.1))
         let start = ContinuousClock.now
         do {
             _ = try await transport.listTools()

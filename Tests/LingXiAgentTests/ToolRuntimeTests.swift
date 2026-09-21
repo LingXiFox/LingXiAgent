@@ -349,8 +349,9 @@ struct ToolRuntimeTests {
     }
 
     @Test func completedProcessIsNotRetrospectivelyTimedOut() async throws {
+        let succeeded = PortableFixture.exitSuccess()
         let process = ManagedToolProcess(
-            invocation: ToolProcessInvocation(executable: "/usr/bin/true", arguments: []),
+            invocation: ToolProcessInvocation(executable: succeeded.command, arguments: succeeded.arguments),
             cwd: FileManager.default.temporaryDirectory,
             environment: EnvironmentSanitizer.sanitized()
         )
@@ -404,7 +405,17 @@ struct ToolRuntimeTests {
         let timeout = await runtime.execute(ToolCall(callID: ToolCallID("timeout"), toolID: ToolID("shell"), arguments: #"{"command":"while :; do :; done","timeout_ms":10}"#), sessionID: SessionID("s")) { _ in }
         #expect(timeout.outcome == .timedOut)
 
-        let start = await runtime.execute(ToolCall(callID: ToolCallID("start"), toolID: ToolID("process"), arguments: #"{"action":"start","id":"managed","executable":"/bin/sh","arguments":["-c","read value; printf '%s' \"$value\""]}"#), sessionID: SessionID("s")) { _ in }
+        let stdinEcho = PortableFixture.echoStdinLine()
+        let startPayload: [String: Any] = [
+            "action": "start",
+            "id": "managed",
+            "executable": stdinEcho.command,
+            "arguments": stdinEcho.arguments,
+        ]
+        let startArguments = String(
+            decoding: try JSONSerialization.data(withJSONObject: startPayload), as: UTF8.self
+        )
+        let start = await runtime.execute(ToolCall(callID: ToolCallID("start"), toolID: ToolID("process"), arguments: startArguments), sessionID: SessionID("s")) { _ in }
         #expect(start.success)
         let input = await runtime.execute(ToolCall(callID: ToolCallID("input"), toolID: ToolID("process"), arguments: #"{"action":"input","id":"managed","input":"ready\n"}"#), sessionID: SessionID("s")) { _ in }
         #expect(input.success)

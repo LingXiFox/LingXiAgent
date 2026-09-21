@@ -240,12 +240,14 @@ struct MCPRuntimeTests {
         try await credentials.setSecret("valid-token", for: CredentialRef("valid-secret"))
 
         // 一个配置正常、一个凭据缺失
+        let healthyServer = PortableFixture.exitSuccess()
         let configuration = MCPConfiguration(servers: [
             StoredMCPServerConfiguration(
                 id: "healthy-stdio",
                 alias: "healthy",
                 transport: .stdio,
-                command: "/usr/bin/true",
+                command: healthyServer.command,
+                arguments: healthyServer.arguments,
                 environment: [MCPEnvironmentCredential(name: "TOKEN", credential: CredentialRef("valid-secret"))]
             ),
             StoredMCPServerConfiguration(

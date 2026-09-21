@@ -145,7 +145,8 @@ struct ProductionConfigurationResolutionTests {
                     id: "stdio",
                     alias: "Stdio",
                     transport: .stdio,
-                    command: "/usr/bin/true",
+                    command: PortableFixture.exitSuccess().command,
+                    arguments: PortableFixture.exitSuccess().arguments,
                     environment: [MCPEnvironmentCredential(name: "TOKEN", credential: CredentialRef("mcp-env"))]
                 ),
             ]),
@@ -183,12 +184,13 @@ struct ProductionConfigurationResolutionTests {
     }
 
     @Test func stdioMCPEnforcesConfiguredTimeout() async {
+        let slowServer = PortableFixture.sleep(1)
         let transport = MCPStdioTransport(configuration: MCPServerConfiguration(
             serverID: MCPServerID("slow"),
             alias: "Slow",
             transport: .stdio,
-            command: "/bin/sleep",
-            arguments: ["1"],
+            command: slowServer.command,
+            arguments: slowServer.arguments,
             timeoutSeconds: 0.01
         ))
         do {
