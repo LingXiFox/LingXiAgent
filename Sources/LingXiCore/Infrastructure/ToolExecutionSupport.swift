@@ -35,34 +35,13 @@ func sha256Hex(_ content: String) -> String {
     LingXiPlatform.crypto.sha256Hex(content)
 }
 
-public protocol SandboxExecutor: Sendable {
-    var capabilities: SandboxCapabilities { get }
-    func invocation(executable: String, arguments: [String], policy: SandboxPolicy) throws -> ToolProcessInvocation
-}
-
-/// 跨平台 Shell 沙箱适配后端，统一委托给 LingXiPlatform.sandbox。
-public enum ShellSandboxBackend: Sendable, SandboxExecutor {
-    case platform
-    case sandboxExec
-    case unavailable
-
-    public static func workspace() -> Self { .platform }
-
-    public var capabilities: SandboxCapabilities {
-        LingXiPlatform.sandbox.capabilities
-    }
-
-    public func invocation(executable: String, arguments: [String], policy: SandboxPolicy) throws -> ToolProcessInvocation {
-        // The adapter owns whether it can honour the policy. Platforms with an enforcement
-        // mechanism throw when they cannot use it, which keeps the workspace profile fail-closed
-        // there; Windows has no mechanism at all and hands back a plain invocation, so refusing
-        // there would make the profile unusable on a platform this project ships to.
-        try LingXiPlatform.sandbox.invocation(executable: executable, arguments: arguments, policy: policy)
-    }
-
-    func invocation(executable: String, arguments: [String], workspace: URL) throws -> ToolProcessInvocation {
-        try invocation(executable: executable, arguments: arguments, policy: SandboxPolicy(workspace: workspace))
-    }
+/// Builds the invocation for a command the workspace profile asked to run, by asking the
+/// platform adapter. Whether the policy can be honoured is the adapter's decision: platforms
+/// with an enforcement mechanism throw when they cannot use it, which keeps the workspace
+/// profile fail-closed there, while Windows has no mechanism at all and hands back a plain
+/// invocation, so refusing it would make the profile unusable on a shipped platform.
+func workspaceInvocation(executable: String, arguments: [String], policy: SandboxPolicy) throws -> ToolProcessInvocation {
+    try LingXiPlatform.sandbox.invocation(executable: executable, arguments: arguments, policy: policy)
 }
 
 private func sandboxString(_ value: String) -> String {
