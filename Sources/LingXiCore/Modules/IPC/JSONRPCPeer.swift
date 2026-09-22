@@ -20,6 +20,7 @@ public final class JSONRPCPeer: @unchecked Sendable {
     // 正在等待响应的请求 Continuation 注册表
     private var pendingRequests: [Int: CheckedContinuation<Data, any Error>] = [:]
     private var pendingTimeoutTasks: [Int: Task<Void, Never>] = [:]
+    private var cancelledRequestIDs: Set<Int> = []
 
     private var isStarted = false
 
@@ -54,14 +55,23 @@ public final class JSONRPCPeer: @unchecked Sendable {
         thread.start()
     }
 
-    /// 注册等待中的请求 continuation，如果未启动则返回 false
-    @discardableResult
-    private func registerPending(id: Int, continuation: CheckedContinuation<Data, any Error>) -> Bool {
+    private enum RegisterResult {
+        case success
+        case cancelled
+        case closed
+    }
+
+    /// 注册等待中的请求 continuation，如果未启动则返回 closed；若已被提前取消则返回 cancelled
+    private func registerPending(id: Int, continuation: CheckedContinuation<Data, any Error>) -> RegisterResult {
         lock.lock()
         defer { lock.unlock() }
-        guard isStarted else { return false }
+        guard isStarted else { return .closed }
+        if cancelledRequestIDs.contains(id) {
+            cancelledRequestIDs.remove(id)
+            return .cancelled
+        }
         pendingRequests[id] = continuation
-        return true
+        return .success
     }
 
     /// 注册超时任务，若请求已结束则立即取消任务
@@ -76,9 +86,11 @@ public final class JSONRPCPeer: @unchecked Sendable {
     }
 
     /// 根据 ID 移除并返回对应的 continuation，同时取消对应的超时计时器
+    @discardableResult
     private func removePending(id: Int) -> CheckedContinuation<Data, any Error>? {
         lock.lock()
         defer { lock.unlock() }
+        cancelledRequestIDs.remove(id)
         let timeout = pendingTimeoutTasks.removeValue(forKey: id)
         timeout?.cancel()
         return pendingRequests.removeValue(forKey: id)
@@ -92,6 +104,7 @@ public final class JSONRPCPeer: @unchecked Sendable {
             task.cancel()
         }
         pendingTimeoutTasks.removeAll()
+        cancelledRequestIDs.removeAll()
         let all = Array(pendingRequests.values)
         pendingRequests.removeAll()
         isStarted = false
@@ -154,9 +167,20 @@ public final class JSONRPCPeer: @unchecked Sendable {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, any Error>) in
-                guard self.registerPending(id: id, continuation: continuation) else {
+                if Task.isCancelled {
+                    continuation.resume(throwing: JSONRPCError.requestCancelled(id: id))
+                    return
+                }
+
+                switch self.registerPending(id: id, continuation: continuation) {
+                case .closed:
                     continuation.resume(throwing: JSONRPCError.connectionClosed)
                     return
+                case .cancelled:
+                    continuation.resume(throwing: JSONRPCError.requestCancelled(id: id))
+                    return
+                case .success:
+                    break
                 }
 
                 do {
@@ -179,7 +203,12 @@ public final class JSONRPCPeer: @unchecked Sendable {
             }
         } onCancel: { [weak self, id] in
             guard let self else { return }
-            let pending = self.removePending(id: id)
+            self.lock.lock()
+            self.cancelledRequestIDs.insert(id)
+            let pending = self.pendingRequests.removeValue(forKey: id)
+            let timeout = self.pendingTimeoutTasks.removeValue(forKey: id)
+            self.lock.unlock()
+            timeout?.cancel()
             pending?.resume(throwing: JSONRPCError.requestCancelled(id: id))
         }
     }
