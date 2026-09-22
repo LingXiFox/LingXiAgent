@@ -163,7 +163,13 @@ jobs:
 
       - name: Setup workspace ownership for testuser
         run: |
-          chown -R testuser:testuser .
+          # $HOME has to be chowned here too, not just the workspace: HOME was pointed at
+          # /tmp/test-home before the restore, so `~/.cache/...` in the cache path list is restored
+          # *as root* and creates root-owned directories under the HOME that testuser then builds in.
+          # clang's module cache (which lives under $HOME/.cache) then fails with
+          # "unable to open output file '.../SwiftShims.pcm': Permission denied" -- but only on a
+          # cache hit, which is why the misses looked fine.
+          chown -R testuser:testuser . "$HOME"
           su -s /bin/bash -m testuser -c "git config --global --add safe.directory '*'"
 
       - name: Stage 1 - Build products + tests (single pass)
