@@ -13,7 +13,7 @@ public enum SkillsCLI {
             environment: ProcessInfo.processInfo.environment,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         )
-        let pRoot = projectRoot ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true).standardizedFileURL
+        let pRoot = projectRoot ?? URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory(), isDirectory: true).standardizedFileURL
 
         let plat: ExtensionPlatform
         if let platform {

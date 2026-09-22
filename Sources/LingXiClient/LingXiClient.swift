@@ -322,7 +322,7 @@ public struct LingXiClient: Sendable {
         }
 
         // 优先检查当前工程的本地构建产物 (开发调试场景)
-        let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
+        let cwd = URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory())
         let devCandidates = [
             cwd.appendingPathComponent(".build/out/Products/Debug/\(binaryName)"),
             cwd.appendingPathComponent(".build/out/Products/Release/\(binaryName)"),

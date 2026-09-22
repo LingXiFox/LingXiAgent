@@ -3,6 +3,7 @@ import LingXiApplication
 import LingXiClient
 import LingXiProtocol
 import LingXiTUIComponents
+import LingXiPlatform
 
 private enum UIEvent: Sendable {
     case input(TUIInputEvent)
@@ -1073,7 +1074,7 @@ final class RetainedTUI: @unchecked Sendable {
 
     private func workspaceCompletionItems(query: String) -> [TUICompletionItem] {
         if referenceCandidates.isEmpty {
-            let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            let root = URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory())
             if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
                 referenceCandidates = enumerator.compactMap { value -> String? in
                     guard let url = value as? URL else { return nil }

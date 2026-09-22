@@ -24,7 +24,7 @@ public enum DoctorCLI {
             environment: ProcessInfo.processInfo.environment,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         )
-        let projRoot = projectRoot ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true).standardizedFileURL
+        let projRoot = projectRoot ?? URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory(), isDirectory: true).standardizedFileURL
 
         let credStore: CredentialStore
         if let credentialStore {

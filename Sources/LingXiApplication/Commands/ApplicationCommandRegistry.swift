@@ -147,7 +147,7 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
             candidateDirs = customRoots
         } else {
             let home = FileManager.default.homeDirectoryForCurrentUser
-            let currentDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            let currentDir = URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory())
             candidateDirs = [
                 currentDir.appendingPathComponent(".lingxi/commands"),
                 home.appendingPathComponent(".lingxiagent/commands"),
@@ -242,7 +242,7 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
     }
 
     private func resolveCustomMarkdownCommand(name: String, args: [String], client: LingXiClientVNext?, sessionID: SessionID?) async -> ApplicationCommandResult? {
-        let currentDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let currentDir = URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory())
         let candidatePaths: [URL]
         if let customRoots {
             candidatePaths = customRoots.map { $0.appendingPathComponent("\(name).md") }

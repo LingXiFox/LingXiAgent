@@ -115,7 +115,7 @@ public enum ReviewCLI {
     }
 
     private static func hasGitParent() -> Bool {
-        var current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        var current = URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory())
         for _ in 0..<10 {
             if FileManager.default.fileExists(atPath: current.appendingPathComponent(".git").path) {
                 return true

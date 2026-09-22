@@ -208,7 +208,7 @@ public final class ApplicationTUI: Frontend {
         defer { terminal.stop() }
 
         debug("connecting.frame.begin")
-        let initialWorkspace = FileManager.default.currentDirectoryPath.split(separator: "/").last.map(String.init) ?? "LingXiAgent"
+        let initialWorkspace = LingXiPlatform.process.currentWorkingDirectory().split(separator: "/").last.map(String.init) ?? "LingXiAgent"
         view.header.subtitle = options.isYoloMode ? "⚡ YOLO · Connecting" : "Connecting"
         view.statusLine.setParts(left: "● 正在连接...", right: "📂 \(initialWorkspace)")
         render()
@@ -1245,7 +1245,7 @@ public final class ApplicationTUI: Frontend {
     }
 
     private var currentDirectory: String {
-        latestState.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
+        latestState.currentWorkspace?.rootPath ?? LingXiPlatform.process.currentWorkingDirectory()
     }
 
     private func handleSessionPicker(_ event: TUIInputEvent, store: any FrontendRuntime) async {
@@ -3371,7 +3371,7 @@ public final class ApplicationTUI: Frontend {
         let feedback = copyFeedback.map { "  \($0)" } ?? ""
         if isHeroEmptyState(state) {
             let workspace = state.currentWorkspace?.rootPath.split(separator: "/").last.map(String.init)
-                ?? FileManager.default.currentDirectoryPath.split(separator: "/").last.map(String.init)
+                ?? LingXiPlatform.process.currentWorkingDirectory().split(separator: "/").last.map(String.init)
                 ?? "LingXiAgent"
             let mcpCount = state.activeMCPCount
             let skillCount = state.activeSkillCount

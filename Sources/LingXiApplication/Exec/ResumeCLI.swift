@@ -1,5 +1,6 @@
 import Foundation
 import LingXiProtocol
+import LingXiPlatform
 
 /// 交互式会话恢复与历史检索 CLI (Round 3 Phase E：彻底解耦 SQLite，收拢至纯 DTO)
 public enum ResumeCLI {
@@ -42,7 +43,7 @@ public enum ResumeCLI {
     /// 纯函数会话恢复解析与命令行格式化渲染
     public static func run(
         arguments: [String],
-        currentCwd: String = FileManager.default.currentDirectoryPath,
+        currentCwd: String = LingXiPlatform.process.currentWorkingDirectory(),
         sessions: [StoredSessionInfo]
     ) -> Action {
         var args = arguments
@@ -127,7 +128,7 @@ public enum ResumeCLI {
     /// 便捷重载：接收 SessionSummary DTO 列表
     public static func run(
         arguments: [String],
-        currentCwd: String = FileManager.default.currentDirectoryPath,
+        currentCwd: String = LingXiPlatform.process.currentWorkingDirectory(),
         summaries: [SessionSummary]
     ) -> Action {
         run(arguments: arguments, currentCwd: currentCwd, sessions: summaries.map(StoredSessionInfo.init))
@@ -136,7 +137,7 @@ public enum ResumeCLI {
     /// 异步重载：接收异步 SessionSummary 数据源
     public static func run(
         arguments: [String],
-        currentCwd: String = FileManager.default.currentDirectoryPath,
+        currentCwd: String = LingXiPlatform.process.currentWorkingDirectory(),
         provider: () async throws -> [SessionSummary]
     ) async throws -> Action {
         let summaries = try await provider()

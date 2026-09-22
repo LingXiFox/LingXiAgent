@@ -15,7 +15,7 @@ public enum OpenCodeHeaderSupport {
 
         let rawSession = modelRequest.executionID?.rawValue ?? modelRequest.requestID.rawValue
         let sessionUUID = formatUUID(from: rawSession)
-        let projectUUID = formatUUID(from: FileManager.default.currentDirectoryPath)
+        let projectUUID = formatUUID(from: LingXiPlatform.process.currentWorkingDirectory())
 
         if request.value(forHTTPHeaderField: "x-opencode-session") == nil {
             request.setValue(sessionUUID, forHTTPHeaderField: "x-opencode-session")

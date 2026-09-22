@@ -1,6 +1,7 @@
 import Foundation
 import LingXiProtocol
 import LingXiClient
+import LingXiPlatform
 
 /// 内建 20 个正式业务命令实现。
 public enum BuiltinCommands {
@@ -160,7 +161,7 @@ public enum BuiltinCommands {
                 argumentSchema: "[sessionID]"
             ) { ctx in
                 let sessions = try await ctx.client.session.listAll()
-                let currentCwd = ctx.state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
+                let currentCwd = ctx.state.currentWorkspace?.rootPath ?? LingXiPlatform.process.currentWorkingDirectory()
 
                 if let target = ctx.arguments.first {
                     // 支持短 ID / 前缀匹配
