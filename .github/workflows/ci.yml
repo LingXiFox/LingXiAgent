@@ -186,11 +186,15 @@ jobs:
         run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
 
       - name: Stage 5 - Controlled Full Integration Test Suite
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: |
           # Mirrors the macOS gate: bounded chunks with a per-chunk watchdog, so a deadlocked
-          # group reports itself instead of hanging the whole step for 18 minutes.
-          su -s /bin/bash -m testuser -c "LINGXI_CI_XUNIT_DIR='$PWD/test-results' bash Scripts/ci-integration-tests.sh < /dev/null"
+          # group reports itself instead of hanging the whole step for 18 minutes. The budget is
+          # wider than the default because the event stream showed a chunk that was slow rather
+          # than stuck -- cases waiting on outbound TCP retries in a networkless container burn
+          # ~140s and then finish -- and killing that loses results that were going to be
+          # reported. The egress itself is the defect being tracked, not the budget.
+          su -s /bin/bash -m testuser -c "LINGXI_CI_XUNIT_DIR='$PWD/test-results' LINGXI_CI_CHUNK_TIMEOUT=300 bash Scripts/ci-integration-tests.sh < /dev/null"
 
       - name: Stage 6 - Smoke test CLI executables
         # An inline `run:` inside the Linux container defaults to `sh`, which rejects
