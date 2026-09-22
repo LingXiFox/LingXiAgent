@@ -303,14 +303,17 @@ struct AgentSessionTests {
             for try await _ in stream {}
             Issue.record("失败 turn 的数据流必须抛错")
         } catch let error as CoreError {
-            #expect(error.code == .modelStream)
+            // Name what actually arrived: several runtime branches fail a turn with a
+            // cancellation error, and the message is the only thing that says which one did.
+            #expect(error.code == .modelStream, "stream threw \(error.code.rawValue): \(error.message)")
         }
 
         await waitForTurns(recorder, count: 1)
         events.cancel()
 
         #expect(recorder.failuresRecorded.count == 1)
-        #expect(recorder.failuresRecorded.first?.error.code == .modelStream)
+        #expect(recorder.failuresRecorded.first?.error.code == .modelStream,
+                "recorded failure was \(recorder.failuresRecorded.first?.error.code.rawValue ?? "nil"): \(recorder.failuresRecorded.first?.error.message ?? "nil")")
 
         let snapshot = try await client.session(sessionID)
         #expect(snapshot.messages.map(\.role) == [.user], "失败 turn 只保留 user message")
