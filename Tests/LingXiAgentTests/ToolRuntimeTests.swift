@@ -444,10 +444,11 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        // The shell tool hands the command to the platform's interpreter, so a POSIX busy loop is a
-        // syntax error on Windows and the tool reports a failure rather than a timeout.
+        // The shell tool hands the command to the platform's own shell: `cmd.exe /c` on Windows,
+        // `sh -c` elsewhere. A POSIX busy loop is therefore not a command cmd recognises, and the
+        // tool reports a failed launch rather than the timeout the test asserts.
         #if os(Windows)
-        let loopingCommand = "Start-Sleep -Seconds 30"
+        let loopingCommand = PortableFixture.sleepCommand(30)
         #else
         let loopingCommand = "while :; do :; done"
         #endif

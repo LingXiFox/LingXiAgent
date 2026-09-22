@@ -33,10 +33,10 @@ struct AgentBehaviorTests {
         let read = call("read", "read_file", #"{"path":"README.md"}"#)
         let broken = call("broken", "write_file", #"{"path":"output.txt","content":"broken"}"#)
         // The verification step has to mean the same thing on both shells: succeed only when the
-        // file currently reads "fixed". The shell tool runs PowerShell on Windows, where `test`
-        // and command substitution do not exist.
+        // file currently reads "fixed". The shell tool hands the string to `cmd.exe /c` on Windows
+        // and to `sh -c` elsewhere, so the Windows form must be cmd syntax, not PowerShell.
         #if os(Windows)
-        let verifyCommand = #"if ((Get-Content output.txt) -eq 'fixed') { exit 0 } else { exit 1 }"#
+        let verifyCommand = #"findstr /x fixed output.txt >nul"#
         #else
         let verifyCommand = #"test \"$(cat output.txt)\" = fixed"#
         #endif
