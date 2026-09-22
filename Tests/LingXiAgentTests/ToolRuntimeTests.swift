@@ -51,7 +51,18 @@ struct ToolRuntimeTests {
         // ripgrep reports paths relative to its own working directory, which is the search root.
         // A sandbox that replaces that directory with the workspace root makes the rebase apply
         // the prefix twice, so the invariant is checked here rather than only where it broke.
-        #expect(result.content.contains("\"Fixtures/Bar.txt\""), "reported \(result.content)")
+        // When it reports nothing at all, the question is whether the child could see the fixture:
+        // a sandbox that mounts a fresh tmpfs over the temp directory hides it entirely.
+        let fixtureVisible = FileManager.default.fileExists(atPath: sub.appendingPathComponent("Bar.txt").path)
+        #expect(
+            result.content.contains("\"Fixtures/Bar.txt\""),
+            """
+            reported \(result.content) \
+            (fixture visible to this process: \(fixtureVisible); \
+            cwd: \(FileManager.default.currentDirectoryPath); \
+            TMPDIR: \(ProcessInfo.processInfo.environment["TMPDIR"] ?? "<unset>"))
+            """
+        )
         #expect(!result.content.contains("Fixtures/Fixtures"), "reported \(result.content)")
     }
 
@@ -576,8 +587,24 @@ struct ToolRuntimeTests {
             #expect(presentPhases.contains(expected), "Missing phase \(expected.rawValue)")
         }
 
-        // Monotonic ordering assertion
-        #expect(allEvents == allEvents.sorted { $0.timestampNanoseconds < $1.timestampNanoseconds })
+        // Ordering, with one deliberate exception. stdout EOF, stderr EOF and the process exit are
+        // observed by three independent parties, so their relative order is not a contract the
+        // runtime can keep -- asserting a total order over the whole trace failed on Linux by 8
+        // microseconds. What does hold is the causal chain around them.
+        let stamps = Dictionary(allEvents.map { ($0.phase, Int($0.timestampNanoseconds)) }, uniquingKeysWith: min)
+        func ts(_ phase: ToolLifecyclePhase) -> Int { stamps[phase] ?? 0 }
+        #expect(ts(.requested) <= ts(.permissionStart) && ts(.permissionStart) <= ts(.permissionEnd))
+        #expect(ts(.permissionEnd) <= ts(.admitted) && ts(.admitted) <= ts(.executorStart))
+        #expect(ts(.executorStart) <= ts(.processSpawned))
+        #expect(
+            [ts(.stdoutEOF), ts(.stderrEOF), ts(.processExited)].allSatisfy {
+                ts(.processSpawned) <= $0 && $0 <= ts(.toolResultBuilt)
+            },
+            "an execution phase was recorded outside the spawn-to-result window"
+        )
+        #expect(ts(.toolResultBuilt) <= ts(.resultCommitted))
+        #expect(ts(.resultCommitted) <= ts(.applicationProjectionReceived))
+        #expect(ts(.applicationProjectionReceived) <= ts(.nextModelStepStarted))
 
         // Validate PID & exitCode propagation
         let pid = try #require(processExitedEvent.processPID)
