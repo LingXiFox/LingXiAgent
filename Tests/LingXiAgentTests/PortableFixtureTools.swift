@@ -53,6 +53,18 @@ enum PortableFixture {
         #endif
     }
 
+    /// A shell command string that stays busy for about `seconds`, for fixtures that hand the
+    /// command to the shell or background tools instead of exec'ing a program themselves. `sleep`
+    /// does not exist on Windows, so such a command exits at once and the task under test was
+    /// never running.
+    static func sleepCommand(_ seconds: Int) -> String {
+        #if os(Windows) || canImport(WinSDK)
+        return "ping -n \(seconds + 1) 127.0.0.1 >nul"
+        #else
+        return "sleep \(seconds)"
+        #endif
+    }
+
     /// Absolute path of a usable `git`, which Windows installs under a different root.
     static func git() -> String {
         LingXiPlatform.process.resolveExecutable(

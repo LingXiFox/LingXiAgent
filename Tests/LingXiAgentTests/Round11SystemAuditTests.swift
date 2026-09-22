@@ -87,7 +87,7 @@ struct Round11SystemAuditTests {
 
         // Spawn task 1 under run1
         let task1 = try await manager.spawn(
-            command: "sleep 10",
+            command: PortableFixture.sleepCommand(10),
             timeoutSeconds: 30,
             cwd: tempDir,
             workspace: workspace,
@@ -100,7 +100,7 @@ struct Round11SystemAuditTests {
 
         // Spawn task 2 under run2
         let task2 = try await manager.spawn(
-            command: "sleep 10",
+            command: PortableFixture.sleepCommand(10),
             timeoutSeconds: 30,
             cwd: tempDir,
             workspace: workspace,

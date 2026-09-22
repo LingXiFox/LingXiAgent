@@ -32,7 +32,15 @@ struct AgentBehaviorTests {
         try "source".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let read = call("read", "read_file", #"{"path":"README.md"}"#)
         let broken = call("broken", "write_file", #"{"path":"output.txt","content":"broken"}"#)
-        let test = call("test", "shell", #"{"command":"test \"$(cat output.txt)\" = fixed"}"#)
+        // The verification step has to mean the same thing on both shells: succeed only when the
+        // file currently reads "fixed". The shell tool runs PowerShell on Windows, where `test`
+        // and command substitution do not exist.
+        #if os(Windows)
+        let verifyCommand = #"if ((Get-Content output.txt) -eq 'fixed') { exit 0 } else { exit 1 }"#
+        #else
+        let verifyCommand = #"test \"$(cat output.txt)\" = fixed"#
+        #endif
+        let test = call("test", "shell", #"{"command":"\#(verifyCommand)"}"#)
         let fixed = call("fixed", "write_file", #"{"path":"output.txt","content":"fixed","overwrite":true}"#)
         let verify = call("verify", "read_file", #"{"path":"output.txt"}"#)
         let provider = ScriptedFakeProvider(script: [

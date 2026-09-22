@@ -120,7 +120,7 @@ struct BackgroundCommandTests {
         let manageTool = ManageBackgroundCommandTool(manager: manager)
 
         let spawnArgs = """
-        {"command": "sleep 60", "timeout_seconds": 120, "task_id": "manual-kill-test"}
+        {"command": "\(PortableFixture.sleepCommand(60))", "timeout_seconds": 120, "task_id": "manual-kill-test"}
         """
         _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
@@ -168,7 +168,7 @@ struct BackgroundCommandTests {
 
         // 2. Spawn a running task for cadence testing
         let runningSpawn = """
-        {"command": "sleep 10", "timeout_seconds": 60, "task_id": "cadence-task"}
+        {"command": "\(PortableFixture.sleepCommand(10))", "timeout_seconds": 60, "task_id": "cadence-task"}
         """
         _ = try await runTool.execute(arguments: runningSpawn, profile: testProfile)
 
@@ -355,7 +355,7 @@ struct BackgroundCommandTests {
         let client = try await LingXiClientVNext.connectInProcess(service: coreHost)
 
         let spawnArgs = """
-        {"command": "sleep 60", "timeout_seconds": 120, "task_id": "esc-kill-test-task"}
+        {"command": "\(PortableFixture.sleepCommand(60))", "timeout_seconds": 120, "task_id": "esc-kill-test-task"}
         """
         let toolCall = ToolCall(
             callID: ToolCallID("call-esc-1"),
