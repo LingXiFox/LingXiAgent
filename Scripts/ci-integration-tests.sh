@@ -176,6 +176,23 @@ dump_stacks() {
 failed_chunks=()
 timed_out_chunks=()
 lingering_chunks=()
+
+# A chunk can also die without ever printing a verdict. Because a redirected stdout on Windows is
+# block-buffered, the whole tail is lost with the process, so the log shows passing tests and then
+# nothing at all. The Application event log is written by the kernel outside that process, so the
+# faulting module and exception code survive there, and a process census says whether a previously
+# killed chunk left children holding the test binary.
+dump_crash_evidence() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      echo "live test processes now: $(ps -W 2>/dev/null | grep -icE 'swift-test|LingXiAgent' || echo 0)"
+      powershell -NoProfile -Command 'Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Application Error|Windows Error Reporting|\.NET Runtime" } | Select-Object -First 5 TimeCreated, ProviderName, Message | Format-List' 2>/dev/null \
+        | tr -d '\r' | head -40 \
+        || echo "note: no crash event was logged, so the test binary exited under its own power"
+      ;;
+  esac
+}
+
 executed=0
 index=0
 for chunk in "${chunks[@]}"; do
@@ -255,6 +272,7 @@ for chunk in "${chunks[@]}"; do
     victim="$(unreported_tests "$chunk_log")"
     [ -n "$victim" ] && echo "-- started but never reported: ${victim}"
     tail -20 "$chunk_log"
+    [ "$ran" -eq 0 ] && dump_crash_evidence
   elif [ "$lingering" = yes ]; then
     # A distinct defect from a hung test: the plan finished, so its verdict is trustworthy,
     # but the process never returned. Report both so neither signal is lost.
@@ -269,6 +287,9 @@ for chunk in "${chunks[@]}"; do
     echo "-- chunk ${index} exit ${status} after ${elapsed}s --"
     silent_victim="$(unreported_tests "$chunk_log")"
     [ -n "$silent_victim" ] && echo "!! chunk ${index} started but never reported: ${silent_victim}"
+    # No summary at all means the run never reached its own end, which is a different defect from
+    # a test that failed and was reported, so say which one this is and bring in the OS evidence.
+    [ "$ran" -eq 0 ] && dump_crash_evidence
     grep -E "recorded an issue|Expectation failed|Caught error|error:|Test run with" "$chunk_log" \
       | head -30
     echo "--- chunk ${index} full log ---"
