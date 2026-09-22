@@ -270,8 +270,8 @@ for chunk in "${chunks[@]}"; do
       # whether to chase a deadlock or raise the budget, so state what the log actually holds:
       # zero bytes with no start marker means the test binary never produced anything at all.
       echo "-- diagnosis: log $(wc -c < "$chunk_log" 2>/dev/null || echo 0) bytes," \
-        "$(grep -ac '"kind":"testStarted"' "$chunk_events" 2>/dev/null) started," \
-        "$(grep -ac '"kind":"testEnded"' "$chunk_events" 2>/dev/null) finished (event stream)"
+        "$(grep -ac '"kind":"testStarted"' "$chunk_events" || true) started," \
+        "$(grep -ac '"kind":"testEnded"' "$chunk_events" || true) finished (event stream)"
       dump_stacks "$runner"
       # The runner is a wrapper; the real test processes are its descendants.
       for child in $(pgrep -P "$runner" 2>/dev/null); do
