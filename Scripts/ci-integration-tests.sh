@@ -45,6 +45,16 @@ if ! raw_list="$("${SWIFT_TEST[@]}" --list-tests < /dev/null 2>/dev/null)"; then
   exit 1
 fi
 
+# swift-testing can mirror its own events into a file as they happen, which survives a watchdog
+# kill that destroys the child's block-buffered console output. Ask the installed toolchain
+# whether it accepts the option; --help does not list it, so the only real answer is to use it.
+event_flag=()
+event_probe="$(mktemp)"
+if "${SWIFT_TEST[@]}" --list-tests --event-stream-output-path "$event_probe" < /dev/null > /dev/null 2>&1; then
+  event_flag=(--event-stream-output-path)
+fi
+rm -f "$event_probe"
+
 # Keep only the suite portion of Target.Suite/test; some entries carry () suffixes.
 suite_counts="$(
   printf '%s\n' "$raw_list" \
@@ -135,6 +145,18 @@ kill_tree() {
   kill -9 "$pid" 2>/dev/null
 }
 
+# The event stream is the same information in machine form and, unlike the console, it is written
+# per event to its own file, so a chunk that is killed still says which case it was inside. The
+# console glyphs it would otherwise be parsed from are also exactly what a Windows log mangles.
+unreported_from_events() {
+  local events=$1
+  [ -s "$events" ] || return 0
+  comm -23 \
+    <(grep -a '"kind":"testStarted"' "$events" 2>/dev/null | sed -E 's/.*"testID":"([^"]*)".*/\1/' | grep -a '/' | sort -u) \
+    <(grep -a '"kind":"testEnded"' "$events" 2>/dev/null | sed -E 's/.*"testID":"([^"]*)".*/\1/' | sort -u) \
+    | paste -sd'|' - | sed 's/|/, /g'
+}
+
 # A test that vanishes mid-run leaves no result line, which is how a Windows crash shows up in
 # these logs: everything before it passed and the run simply stops. Name the started-but-never
 # reported cases so the failing chunk points at the test that died instead of at exit code 1.
@@ -214,10 +236,16 @@ for chunk in "${chunks[@]}"; do
   echo "::group::Chunk ${index}/${#chunks[@]} :: ${names}"
 
   chunk_log="$(mktemp)"
+  chunk_events="$(mktemp)"
   run_args=("${SWIFT_TEST[@]}" --filter "$filter")
   if [ -n "$XUNIT_DIR" ]; then
     mkdir -p "$XUNIT_DIR"
     run_args+=(--xunit-output "$XUNIT_DIR/test-results-chunk-$index.xml")
+  fi
+  # Probed rather than assumed: the flag is not in `swift test --help`, and passing one the
+  # installed toolchain does not know would fail every chunk in the stage.
+  if [ "${#event_flag[@]}" -gt 0 ]; then
+    run_args+=(--event-stream-output-path "$chunk_events")
   fi
   # /dev/null on stdin is mandatory, not cosmetic: the stdio transport tests spawn a child
   # that waits for EOF, and under Actions it would otherwise inherit a runner pipe that never
@@ -238,8 +266,8 @@ for chunk in "${chunks[@]}"; do
       # whether to chase a deadlock or raise the budget, so state what the log actually holds:
       # zero bytes with no start marker means the test binary never produced anything at all.
       echo "-- diagnosis: log $(wc -c < "$chunk_log" 2>/dev/null || echo 0) bytes," \
-        "$(grep -cE 'Test .* started' "$chunk_log" 2>/dev/null || echo 0) started," \
-        "$(grep -cE 'Test .* (passed|failed)' "$chunk_log" 2>/dev/null || echo 0) finished"
+        "$(grep -ac '"kind":"testStarted"' "$chunk_events" 2>/dev/null) started," \
+        "$(grep -ac '"kind":"testEnded"' "$chunk_events" 2>/dev/null) finished (event stream)"
       dump_stacks "$runner"
       # The runner is a wrapper; the real test processes are its descendants.
       for child in $(pgrep -P "$runner" 2>/dev/null); do
@@ -275,7 +303,8 @@ for chunk in "${chunks[@]}"; do
 
   if [ "$alive" = no ]; then
     timed_out_chunks+=("Chunk ${index}: ${names}")
-    victim="$(unreported_tests "$chunk_log")"
+    victim="$(unreported_from_events "$chunk_events")"
+    [ -z "$victim" ] && victim="$(unreported_tests "$chunk_log")"
     [ -n "$victim" ] && echo "-- started but never reported: ${victim}"
     tail -20 "$chunk_log"
     [ "$ran" -eq 0 ] && dump_crash_evidence
@@ -291,7 +320,8 @@ for chunk in "${chunks[@]}"; do
   elif [ "$status" -ne 0 ]; then
     failed_chunks+=("Chunk ${index}: ${names}")
     echo "-- chunk ${index} exit ${status} after ${elapsed}s --"
-    silent_victim="$(unreported_tests "$chunk_log")"
+    silent_victim="$(unreported_from_events "$chunk_events")"
+    [ -z "$silent_victim" ] && silent_victim="$(unreported_tests "$chunk_log")"
     [ -n "$silent_victim" ] && echo "!! chunk ${index} started but never reported: ${silent_victim}"
     # No summary at all means the run never reached its own end, which is a different defect from
     # a test that failed and was reported, so say which one this is and bring in the OS evidence.
@@ -317,7 +347,7 @@ for chunk in "${chunks[@]}"; do
         || echo "note: could not stage chunk ${index}'s report"
     done
   fi
-  rm -f "$chunk_log"
+  rm -f "$chunk_log" "$chunk_events"
   echo "::endgroup::"
 done
 
