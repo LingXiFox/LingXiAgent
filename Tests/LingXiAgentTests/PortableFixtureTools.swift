@@ -1,4 +1,5 @@
 import Foundation
+import LingXiCore
 import LingXiPlatform
 
 /// Platform-specialised stand-ins for the POSIX utilities test fixtures spawn.
@@ -142,6 +143,10 @@ enum PortableFixture {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: interpreter)
         process.arguments = ["-c", "import sys; sys.stdout.write('probe')"]
+        // Probe under the environment a fixture actually receives, not the test process's own.
+        // An interpreter that starts with the runner's full environment and dies under the
+        // sanitised one is exactly the "detected by presence" trap that bit the sandbox adapter.
+        process.environment = EnvironmentSanitizer.sanitized()
         process.standardOutput = sink
         process.standardError = sink
         process.standardInput = FileHandle.nullDevice

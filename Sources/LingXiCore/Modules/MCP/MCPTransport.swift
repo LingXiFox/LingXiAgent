@@ -378,7 +378,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
                 if timeoutBox.didTimeout || elapsed >= .seconds(max(0, timeoutSeconds - 0.05)) {
                     throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
                 }
-                throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method)")
+                throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method); server process \(process.isRunning ? "is still running" : "exited with status \(process.terminationStatus)")")
             }
             return finalData
         } onCancel: {
