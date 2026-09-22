@@ -50,7 +50,11 @@ fi
 # whether it accepts the option; --help does not list it, so the only real answer is to use it.
 event_flag=()
 event_probe="$(mktemp)"
-if "${SWIFT_TEST[@]}" --list-tests --event-stream-output-path "$event_probe" < /dev/null > /dev/null 2>&1; then
+# A filter matching nothing still emits runStarted/runEnded, so this asks the two questions that
+# actually matter: does the installed toolchain take the option, and can the test binary write the
+# path it is given (Git Bash hands out /tmp names a native Windows child may not resolve).
+if "${SWIFT_TEST[@]}" --filter 'LingxiProbeNoSuchSuite/' --event-stream-output-path "$event_probe" \
+     < /dev/null > /dev/null 2>&1 && [ -s "$event_probe" ]; then
   event_flag=(--event-stream-output-path)
 fi
 rm -f "$event_probe"
