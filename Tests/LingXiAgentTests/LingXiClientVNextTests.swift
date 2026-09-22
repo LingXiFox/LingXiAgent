@@ -605,20 +605,15 @@ struct LingXiClientVNextTests {
         // Submit first turn
         _ = try await client.turn.submitTurn(sessionID: sessionID, input: UserInput(text: "T1"))
 
-        // Consume initial events
+        // Consume initial events. Polling `next()` under a per-attempt timeout does not just abandon
+        // that attempt -- it ends the AsyncStream iteration for good, so the events already on their
+        // way were lost whenever the first one took longer than 100ms to arrive.
         let eventStream1 = try await client.session.events(sessionID: sessionID)
-        var consumed1: [SessionEventEnvelope] = []
-        var it1 = eventStream1.makeAsyncIterator()
-        let start1 = ContinuousClock.now
-        while consumed1.count < 1 && (ContinuousClock.now - start1) < .seconds(5) {
-            let nextTask = Task { await it1.next() }
-            let timer = Task { try await Task.sleep(for: .milliseconds(100)); nextTask.cancel() }
-            if let ev = await nextTask.value {
-                timer.cancel()
-                consumed1.append(ev)
-            }
-        }
-        let lastCursor = try #require(consumed1.last?.cursor)
+        let collector1 = EventCollector<SessionEventEnvelope>()
+        let pump1 = collector1.pump(eventStream1)
+        defer { pump1.cancel() }
+        let consumed1 = try await PortableFixture.eventually(deadlineMs: 5_000, { collector1.snapshot() }) { !$0.isEmpty }
+        let lastCursor = try #require(consumed1.last?.cursor, "no session events arrived within 5s")
 
         // 1. Force transport disconnect
         faultTransport.forceDisconnect()
@@ -638,21 +633,13 @@ struct LingXiClientVNextTests {
 
         // 3. Replay from lastCursor
         let resumedStream = try await client.session.events(sessionID: sessionID, after: lastCursor)
-        var consumed2: [SessionEventEnvelope] = []
-        var it2 = resumedStream.makeAsyncIterator()
+        let collector2 = EventCollector<SessionEventEnvelope>()
+        let pump2 = collector2.pump(resumedStream)
+        defer { pump2.cancel() }
 
         // Read replayed events
-        let start2 = ContinuousClock.now
-        while consumed2.count < 1 && (ContinuousClock.now - start2) < .seconds(10) {
-            let nextTask = Task { await it2.next() }
-            let timer = Task { try await Task.sleep(for: .milliseconds(100)); nextTask.cancel() }
-            if let ev = await nextTask.value {
-                timer.cancel()
-                consumed2.append(ev)
-            }
-        }
-
         // 不丢：T2 产生了新事件并成功消费
+        let consumed2 = try await PortableFixture.eventually(deadlineMs: 10_000, { collector2.snapshot() }) { !$0.isEmpty }
         #expect(!consumed2.isEmpty)
         // 不重：重放事件游标均严格大于断开时的 lastCursor
         for ev in consumed2 {
@@ -1069,5 +1056,34 @@ struct LingXiClientVNextTests {
         // Release whatever is still parked so a failing assertion reports a test instead of eating the chunk.
         await transport.disconnect()
         #expect(verdict == "threw:\(CoreError.Code.commandCancelled.rawValue)", "cancel-before-registration produced: \(verdict)")
+    }
+}
+
+/// Drains a stream in its own long-lived task and keeps everything it saw.
+///
+/// A test that polls `next()` with a per-attempt timeout does not abandon just that attempt: a
+/// cancelled `AsyncStream` iteration ends permanently, so every later event is lost.
+private final class EventCollector<Element: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [Element] = []
+
+    func pump(_ stream: AsyncStream<Element>) -> Task<Void, Never> {
+        Task {
+            for await item in stream {
+                append(item)
+            }
+        }
+    }
+
+    func snapshot() -> [Element] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items
+    }
+
+    private func append(_ item: Element) {
+        lock.lock()
+        items.append(item)
+        lock.unlock()
     }
 }

@@ -221,13 +221,28 @@ $p | ForEach-Object {
 ' 2>&1 | tr -d '\r' | head -20
       ;;
     *)
-      local t
+      local t sc nr fd what
       for t in /proc/"$pid"/task/*; do
         [ -d "$t" ] || continue
-        printf 'thread %s wchan=%s state=%s\n' \
+        # wchan only names the kernel wait point. For a thread parked in read(), `syscall`'s first
+        # argument is the file descriptor, and resolving it through /proc/PID/fd says which pipe it
+        # is -- the difference between "two threads sit in anon_pipe_read" and "this one owns inode
+        # 44281", which is what identifies the unread end.
+        sc="$(cat "$t/syscall" 2>/dev/null || true)"
+        nr="${sc%% *}"
+        fd=""
+        what=""
+        if [ "$nr" = "0" ]; then
+          fd="$(printf '%d\n' "$(printf '%s\n' "$sc" | awk '{print $2}')" 2>/dev/null || true)"
+          if [ -n "$fd" ]; then
+            what=" read-fd=${fd} ($(readlink "/proc/${pid}/fd/${fd}" 2>/dev/null || echo '?'))"
+          fi
+        fi
+        printf 'thread %s wchan=%s state=%s%s\n' \
           "$(basename "$t")" \
           "$(cat "$t/wchan" 2>/dev/null || echo '?')" \
-          "$(awk '{print $3}' "$t/stat" 2>/dev/null || echo '?')"
+          "$(awk '{print $3}' "$t/stat" 2>/dev/null || echo '?')" \
+          "$what"
       done | head -40
       ;;
   esac
