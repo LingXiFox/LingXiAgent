@@ -26,10 +26,19 @@ XUNIT_DIR="${LINGXI_CI_XUNIT_DIR:-}"
 # Reports are copied here as they finish and this is what the CI uploads.
 ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
 
-# Suites listed here run alone. ProviderRateSchedulerTests needs this: its concurrency
-# assertion depends on two gateway streams overlapping, and sharing a process with the VCR
-# full-stack suites makes that ordering neighbour-dependent (it fails in ~75ms, not by timeout).
-ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests}"
+# Suites listed here run alone, for two different reasons.
+#
+# ProviderRateSchedulerTests needs it for correctness: its concurrency assertion depends on two
+# gateway streams overlapping, and sharing a process with the VCR full-stack suites makes that
+# ordering neighbour-dependent (it fails in ~75ms, not by timeout).
+#
+# The rest need it for attribution and containment. Each of them has been named by the event
+# stream as the case in flight when a Windows chunk stopped reporting -- they spawn a child and
+# read its pipes, and the teardown of that pipe still has a defect open in this repo (see
+# AsyncLineReader's Windows branch). While one chunk dies it takes every other suite's results in
+# that process with it, which is how twelve unrelated suites went unreported at a time. Running
+# them alone cannot fix the defect, but it says which suite died and leaves the others to report.
+ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests LingXiClientVNextTests VNextProductionIntegrationTests ProtocolVNextFrozenContractTests Round6SystemAuditTests Round14SystemAuditTests AuthCLITests ResumeCLITests OAuthStrategyTests CodingToolScenarioTests AgentBehaviorTests ApplicationChangeSetTests ModelSelectionAndTurnExecutionFixTests}"
 
 SWIFT_TEST=(swift test --skip-build)
 # A chunk killed by the watchdog loses its entire block-buffered stdout, which is why a hang
