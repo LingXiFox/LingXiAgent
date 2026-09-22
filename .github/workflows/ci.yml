@@ -81,6 +81,7 @@ jobs:
         run: LINGXI_CI_XUNIT_DIR="$PWD/test-results" bash Scripts/ci-integration-tests.sh
 
       - name: Stage 6 - Smoke test CLI executables
+        shell: bash
         timeout-minutes: 3
         run: |
           set -euo pipefail
@@ -192,6 +193,9 @@ jobs:
           su -s /bin/bash -m testuser -c "LINGXI_CI_XUNIT_DIR='$PWD/test-results' bash Scripts/ci-integration-tests.sh < /dev/null"
 
       - name: Stage 6 - Smoke test CLI executables
+        # An inline `run:` inside the Linux container defaults to `sh`, which rejects
+        # `set -o pipefail` and fails the step before the smoke test ever launches.
+        shell: bash
         timeout-minutes: 3
         run: |
           set -euo pipefail
