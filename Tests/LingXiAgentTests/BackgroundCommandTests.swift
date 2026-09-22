@@ -315,7 +315,10 @@ struct BackgroundCommandTests {
         let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
 
         #if os(Windows)
-        let wakeCmd = #"powershell -NoProfile -Command "Start-Sleep -Milliseconds 400" && echo bg-result-42"#
+        // The manager runs this through cmd.exe, and the string is interpolated into JSON, so it
+        // must stay free of double quotes: a quoted powershell argument made the arguments
+        // unparseable and the tool answered "Tool 参数无效" instead of running anything.
+        let wakeCmd = "ping -n 2 127.0.0.1 >nul && echo bg-result-42"
         #else
         let wakeCmd = "sleep 0.4 && echo 'bg-result-42'"
         #endif

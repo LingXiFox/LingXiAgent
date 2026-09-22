@@ -444,7 +444,14 @@ struct ToolRuntimeTests {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try runtime(root: root)
-        let timeout = await runtime.execute(ToolCall(callID: ToolCallID("timeout"), toolID: ToolID("shell"), arguments: #"{"command":"while :; do :; done","timeout_ms":10}"#), sessionID: SessionID("s")) { _ in }
+        // The shell tool hands the command to the platform's interpreter, so a POSIX busy loop is a
+        // syntax error on Windows and the tool reports a failure rather than a timeout.
+        #if os(Windows)
+        let loopingCommand = "Start-Sleep -Seconds 30"
+        #else
+        let loopingCommand = "while :; do :; done"
+        #endif
+        let timeout = await runtime.execute(ToolCall(callID: ToolCallID("timeout"), toolID: ToolID("shell"), arguments: #"{"command":"\#(loopingCommand)","timeout_ms":10}"#), sessionID: SessionID("s")) { _ in }
         #expect(timeout.outcome == .timedOut)
 
         let stdinEcho = PortableFixture.echoStdinLine()
