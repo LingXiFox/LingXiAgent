@@ -75,7 +75,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
 
         _ = try await MCPCLI.run(
-            arguments: ["mcp", "add", "fetch", "--command", "/bin/echo"],
+            arguments: ["mcp", "add", "fetch", "--command", "/bin/echo", "--timeout", "1"],
             dataRoot: dir,
             credentialStore: credStore,
             configurationStore: configStore
@@ -99,7 +99,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
 
         _ = try await MCPCLI.run(
-            arguments: ["mcp", "add", "tool-srv", "--command", "/bin/cat"],
+            arguments: ["mcp", "add", "tool-srv", "--command", "/bin/cat", "--timeout", "1"],
             dataRoot: dir,
             credentialStore: credStore,
             configurationStore: configStore
@@ -196,7 +196,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
 
         _ = try await MCPCLI.run(
-            arguments: ["mcp", "add", "srv1", "--command", "/bin/echo"],
+            arguments: ["mcp", "add", "srv1", "--command", "/bin/echo", "--timeout", "1"],
             dataRoot: dir,
             credentialStore: credStore,
             configurationStore: configStore
@@ -224,7 +224,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
 
         _ = try await MCPCLI.run(
-            arguments: ["mcp", "add", "srvA", "--command", "/bin/echo"],
+            arguments: ["mcp", "add", "srvA", "--command", "/bin/echo", "--timeout", "1"],
             dataRoot: dir,
             credentialStore: credStore,
             configurationStore: configStore
@@ -246,7 +246,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
 
         _ = try await MCPCLI.run(
-            arguments: ["mcp", "add", "to-remove", "--command", "/bin/echo"],
+            arguments: ["mcp", "add", "to-remove", "--command", "/bin/echo", "--timeout", "1"],
             dataRoot: dir,
             credentialStore: credStore,
             configurationStore: configStore
@@ -288,7 +288,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
 
         _ = try await MCPCLI.run(
-            arguments: ["mcp", "add", "local-cli", "--command", "/bin/echo"],
+            arguments: ["mcp", "add", "local-cli", "--command", "/bin/echo", "--timeout", "1"],
             dataRoot: dir,
             credentialStore: credStore,
             configurationStore: configStore
