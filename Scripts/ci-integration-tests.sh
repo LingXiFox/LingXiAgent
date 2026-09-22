@@ -238,8 +238,8 @@ for chunk in "${chunks[@]}"; do
     echo "-- chunk ${index} exit ${status} after ${elapsed}s --"
     grep -E "recorded an issue|Expectation failed|Caught error|error:|Test run with" "$chunk_log" \
       | head -30
-    echo "--- chunk ${index} tail ---"
-    tail -25 "$chunk_log"
+    echo "--- chunk ${index} full log ---"
+    cat "$chunk_log"
   elif [ "$ran" -eq 0 ]; then
     failed_chunks+=("Chunk ${index} matched no tests: ${names}")
     echo "!! Chunk ${index} ran 0 tests. Filter was: ${filter}"

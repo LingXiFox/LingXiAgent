@@ -36,6 +36,7 @@ struct VNextProductionIntegrationTests {
         let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test")
         let assembly = ModelRuntimeAssembly(provider: provider, modelID: ModelID("test-model"))
         let host = try CoreHost(
+            startupPolicy: .integrationTest,
             providerAssembly: assembly,
             sessionStore: InMemorySessionStore(),
             workspaceRoot: workspace,
@@ -676,10 +677,11 @@ struct VNextProductionIntegrationTests {
         let workspace = try WorkspaceRoot(path: tempDir.path)
         let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test")
         let permissions = PermissionEngine(defaultDecision: .allow)
-        let platform = ExtensionPlatform(globalRoot: tempDir, projectRoot: workspace.url, permissions: permissions)
+        let platform = ExtensionPlatform(globalRoot: tempDir, projectRoot: workspace.url, permissions: permissions, enablePlugins: false)
         let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
 
         let host = try CoreHost(
+            startupPolicy: .integrationTest,
             providerAssembly: assembly,
             sessionStore: InMemorySessionStore(),
             workspaceRoot: workspace,
@@ -708,6 +710,7 @@ struct VNextProductionIntegrationTests {
         let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
 
         let host = try CoreHost(
+            startupPolicy: .integrationTest,
             providerAssembly: assembly,
             sessionStore: InMemorySessionStore(),
             workspaceRoot: workspace,
