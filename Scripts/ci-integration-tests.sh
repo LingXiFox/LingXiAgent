@@ -331,13 +331,14 @@ for chunk in "${chunks[@]}"; do
       rm -f "$retry_log" "$retry_events"
       case "$(uname -s)" in
         Darwin|Linux)
+          bytes_before_backtrace="$(wc -c < "$chunk_log" 2>/dev/null || echo 0)"
           kill -QUIT "$runner" 2>/dev/null
           for child in $children; do
             kill -QUIT "$child" 2>/dev/null
           done
           sleep 3
           if grep -q "Backtrace" "$chunk_log" 2>/dev/null; then
-            echo "-- runtime backtraces captured in the chunk log above"
+            printf "%s\n" "-- runtime backtraces appended after the last log dump:"; tail -c +"$((bytes_before_backtrace + 1))" "$chunk_log" 2>/dev/null | head -120
           else
             echo "-- no runtime backtrace produced; the Swift crash handler did not answer QUIT"
           fi
