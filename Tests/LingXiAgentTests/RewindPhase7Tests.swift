@@ -84,9 +84,13 @@ struct RewindPhase7Tests {
         let capturedRevision = try await store.currentRevision(session.id)
         let lease = RunLease(sessionID: session.id, turnID: TurnID("t-test"), runID: RunID("r-test"), revision: capturedRevision)
 
-        // 模拟一个异步后台任务正在准备写入迟到的 ToolResult / Assistant 消息
-        let backgroundWriter = Task { () -> Bool in
-            try? await Task.sleep(for: .milliseconds(30))
+        // The late write has to be mid-flight while the revert runs and commit only after it.
+        // Racing it against a 30ms sleep made the outcome a function of host speed: on a slower
+        // runner the write landed before the revert, where rejecting it would be wrong, and the
+        // barrier then looked broken. A gate fixes the interleaving instead of guessing it.
+        let (gateStream, gateContinuation) = AsyncStream<Void>.makeStream()
+        let backgroundWriter = Task { () -> (blocked: Bool, detail: String) in
+            for await _ in gateStream { break }
             do {
                 _ = try await store.appendMessage(
                     session.id,
@@ -94,22 +98,22 @@ struct RewindPhase7Tests {
                     content: "Stale Late Reply",
                     expectedRevision: lease.revision
                 )
-                return true
+                return (false, "stale write was accepted")
             } catch {
-                return false
+                return (true, "\(error)")
             }
         }
 
-        // 主线程在此时立即发起撤回操作
         let req = RevertLastTurnRequest(sessionID: session.id)
         let receipt = try await host.revertLastTurn(envelope: CommandEnvelope(payload: req))
+        gateContinuation.finish()
         #expect(receipt.applied == true)
         let res = try #require(receipt.result)
         #expect(res.revertedPrompt == "Question To Revert")
 
-        // 等待后台迟到写入结束
-        let writeSucceeded = await backgroundWriter.value
-        #expect(writeSucceeded == false)
+        // Wait for the late write, which now runs strictly after the revert has committed.
+        let outcome = await backgroundWriter.value
+        #expect(outcome.blocked, "late write was not rejected: \(outcome.detail)")
 
         // 确认数据库中绝对没有 "Stale Late Reply"
         let afterSession = try await store.session(session.id)
