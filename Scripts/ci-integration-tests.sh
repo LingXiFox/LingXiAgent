@@ -133,9 +133,10 @@ dump_stacks() {
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
       # No portable userspace stack dumper exists on Git Bash, so record the process tree
       # instead. Combined with the chunk name in the line above, that still identifies which
-      # child is wedged; the /proc walk below would silently produce nothing there.
+      # child is wedged; the /proc walk below would silently produce nothing there. The test
+      # binary is named after the *package*, so match that too or a live child reads as absent.
       echo "note: stack capture is unavailable on Windows runners; listing processes"
-      ps -W 2>/dev/null | grep -iE "LingXiAgentTests|swift|rg\.exe" | head -30
+      ps -W 2>/dev/null | grep -iE "LingXiAgent|PackageTests|xctest|swift|rg\.exe" | head -30
       ;;
     *)
       local t
@@ -188,6 +189,12 @@ for chunk in "${chunks[@]}"; do
     if [ "$waited" -ge "$CHUNK_TIMEOUT" ]; then
       alive=no
       echo "!! Chunk ${index} exceeded ${CHUNK_TIMEOUT}s. Capturing stacks then killing."
+      # "Hung" and "only slow" look identical from the exit status, and the difference decides
+      # whether to chase a deadlock or raise the budget, so state what the log actually holds:
+      # zero bytes with no start marker means the test binary never produced anything at all.
+      echo "-- diagnosis: log $(wc -c < "$chunk_log" 2>/dev/null || echo 0) bytes," \
+        "$(grep -cE 'Test .* started' "$chunk_log" 2>/dev/null || echo 0) started," \
+        "$(grep -cE 'Test .* (passed|failed)' "$chunk_log" 2>/dev/null || echo 0) finished"
       dump_stacks "$runner"
       # The runner is a wrapper; the real test processes are its descendants.
       for child in $(pgrep -P "$runner" 2>/dev/null); do

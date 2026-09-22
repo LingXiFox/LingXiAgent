@@ -220,7 +220,7 @@ jobs:
   test-windows:
     name: Windows Build & Test (x86_64)
     runs-on: windows-2022
-    timeout-minutes: 110
+    timeout-minutes: 130
     steps:
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -303,12 +303,15 @@ jobs:
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         shell: bash
-        timeout-minutes: 60
+        timeout-minutes: 75
         run: |
           # `pwd -W` gives the drive-letter form; the xunit path is handed to a native
           # swift-test process, which cannot resolve the MSYS-style path $PWD reports.
+          # The per-chunk budget is wider than macOS/Linux because this runner is measurably
+          # slower at starting the test bundle (one suite took 91s here against 5s elsewhere),
+          # and a budget that is too small reports slow as hung.
           XUNIT_DIR="$(pwd -W 2>/dev/null || pwd)/test-results"
-          LINGXI_CI_XUNIT_DIR="$XUNIT_DIR" bash Scripts/ci-integration-tests.sh
+          LINGXI_CI_XUNIT_DIR="$XUNIT_DIR" LINGXI_CI_CHUNK_TIMEOUT=240 bash Scripts/ci-integration-tests.sh
 
       - name: Upload test results
         if: always()
