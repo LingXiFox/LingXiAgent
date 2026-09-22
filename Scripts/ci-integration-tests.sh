@@ -350,6 +350,13 @@ for chunk in "${chunks[@]}"; do
       cp "$report" "$ARTIFACT_DIR/" 2>/dev/null \
         || echo "note: could not stage chunk ${index}'s report"
     done
+    # The xunit report only exists for a chunk that finished, so it cannot describe a hang or a
+    # death. The event stream does: it records every case that started, which is what lets a chunk
+    # be triaged after the run instead of only from the lines this script happened to print.
+    if [ -s "$chunk_events" ] && [ -d "$ARTIFACT_DIR" ]; then
+      cp "$chunk_events" "$ARTIFACT_DIR/events-chunk-$index.jsonl" 2>/dev/null \
+        || echo "note: could not stage chunk ${index}'s event stream"
+    fi
   fi
   rm -f "$chunk_log" "$chunk_events"
   echo "::endgroup::"
