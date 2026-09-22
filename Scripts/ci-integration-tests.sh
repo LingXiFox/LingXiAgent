@@ -263,7 +263,10 @@ for chunk in "${chunks[@]}"; do
   # /dev/null on stdin is mandatory, not cosmetic: the stdio transport tests spawn a child
   # that waits for EOF, and under Actions it would otherwise inherit a runner pipe that never
   # closes (the same deadlock < /dev/null was added for in the other stages).
-  ${line_buffered[@]+"${line_buffered[@]}"} "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &
+  # Ask the Swift runtime for a backtrace on a fatal signal, so the kill below can leave one
+  # behind: wchan says a thread is parked in a pipe read, only a stack says which case parked it.
+  SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all \
+    ${line_buffered[@]+"${line_buffered[@]}"} "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &
   runner=$!
   chunk_start=$(date +%s)
 
@@ -283,9 +286,28 @@ for chunk in "${chunks[@]}"; do
         "$(grep -ac '"kind":"testEnded"' "$chunk_events" || true) finished (event stream)"
       dump_stacks "$runner"
       # The runner is a wrapper; the real test processes are its descendants.
-      for child in $(pgrep -P "$runner" 2>/dev/null); do
+      children="$(pgrep -P "$runner" 2>/dev/null)"
+      for child in $children; do
         dump_stacks "$child"
       done
+      # Ask for runtime backtraces before anything dies: wchan only says a thread is parked in a
+      # pipe read, a stack says which await put it there. QUIT is a Swift backtrace signal, and it
+      # is a foreign concept on Windows, so this stays on the platforms that can answer -- and it
+      # reports whether it produced anything, so a next round can decide if it earns its keep.
+      case "$(uname -s)" in
+        Darwin|Linux)
+          kill -QUIT "$runner" 2>/dev/null
+          for child in $children; do
+            kill -QUIT "$child" 2>/dev/null
+          done
+          sleep 3
+          if grep -q "Backtrace" "$chunk_log" 2>/dev/null; then
+            echo "-- runtime backtraces captured in the chunk log above"
+          else
+            echo "-- no runtime backtrace produced; the Swift crash handler did not answer QUIT"
+          fi
+          ;;
+      esac
       kill_tree "$runner"
       sleep 2
       break
