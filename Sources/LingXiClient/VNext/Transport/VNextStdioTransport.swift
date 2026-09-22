@@ -84,6 +84,9 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private var stateContinuations: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
     private var terminalError: CoreError?
     private var currentState = ConnectionState.disconnected
+    /// Set when this transport created the pipes and already released its own copy of the ends the
+    /// child owns, so teardown does not close the same handle a second time.
+    private var parentWriteEndsClosed = false
     public let authorizationContext: ContentAuthorizationContext = .anonymous
 
     public init(corePath: String? = nil, interactive: Bool = true) throws {
@@ -106,6 +109,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         self.writer = ClientWireWriter(handle: inputHandle)
         try process.run()
         Self.trace("process.run.end")
+        // Release this process's duplicates of the child's ends immediately. While one of them is
+        // open the kernel cannot report EOF to our reader, so the read parks forever even after the
+        // core host has exited. The injected init cannot do this, because those pipes are not ours.
+        try? inputPipe.fileHandleForReading.close()
+        try? outputPipe.fileHandleForWriting.close()
+        parentWriteEndsClosed = true
         self.readTask = Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
@@ -160,11 +169,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         await writer.close()
         try? input.close()
 
-        // Drop this process's own copy of the write end first. The parent holds a duplicate of
-        // both ends of a Pipe it created, so as long as that copy stays open no reader can ever
-        // observe EOF -- and on Windows EOF, not a close issued under a pending read, is the only
-        // thing that releases a blocked read.
-        try? outputPipe.fileHandleForWriting.close()
+        // EOF, not a close issued under a pending read, is the only thing that releases a blocked
+        // read on Windows, so the write end has to be gone before anything else is. When this
+        // transport created the pipes it dropped its own duplicate at launch already.
+        if !parentWriteEndsClosed {
+            try? outputPipe.fileHandleForWriting.close()
+        }
 
         readTask?.cancel()
         readTask = nil

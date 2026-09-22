@@ -93,6 +93,14 @@ public final class StdioTransport: @unchecked Sendable {
             errorPipe: errPipe
         )
 
+        // The parent's duplicate of every child-side end has to go immediately after the launch.
+        // While any writer handle for a pipe stays open in this process, the kernel will not report
+        // end-of-file to the reader even after the child is gone -- which is exactly what a thread
+        // parked in a pipe read with no surviving child process looks like in a stack dump.
+        try? inPipe.fileHandleForReading.close()
+        try? outPipe.fileHandleForWriting.close()
+        try? errPipe.fileHandleForWriting.close()
+
         self.inputHandle = inPipe.fileHandleForWriting
         self.outputHandle = outPipe.fileHandleForReading
         let errH = errPipe.fileHandleForReading
