@@ -109,7 +109,7 @@ public struct AgentEnvironmentFacts: Sendable, Equatable {
     public init(
         platform: String = LingXiPlatform.system.osName,
         workspaceRoot: String,
-        currentDirectory: String = FileManager.default.currentDirectoryPath,
+        currentDirectory: String = LingXiPlatform.process.currentWorkingDirectory(),
         homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
         shell: String = "unknown",
         isGitRepository: Bool? = nil,

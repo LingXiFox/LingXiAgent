@@ -290,7 +290,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             let defaultTestPath = dataRoot?.path ?? layout.root.path
             baseWorkspace = try WorkspaceRoot(path: defaultTestPath)
         } else {
-            baseWorkspace = try WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
+            baseWorkspace = try WorkspaceRoot(path: LingXiPlatform.process.currentWorkingDirectory())
         }
         let persistentRoot = (dataRoot != nil || !isTestingEnv) ? layout.persistence : nil
         let sensitivePaths = SensitivePathPolicy(root: baseWorkspace.url)

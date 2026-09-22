@@ -37,7 +37,7 @@ public actor BrowserSessionManager {
         } else {
             // 多层确定性解析：Bundle -> 进程可执行文件同级/上级 -> 工作区 cwd -> 用户全局目录
             let fm = FileManager.default
-            let cwd = fm.currentDirectoryPath
+            let cwd = LingXiPlatform.process.currentWorkingDirectory()
             var candidates: [String] = []
             
             if let bundleResource = Bundle.main.resourcePath {

@@ -1,6 +1,7 @@
 import Foundation
 @_exported import LingXiProtocol
 import LingXiClient
+import LingXiPlatform
 
 /// 统一应用程序存储与调度中枢（Frontend 的唯一产品交互接口）。
 /// 封装底层 Client、Transport、EventStream、StreamFrame 与 CommandReceipt，
@@ -646,7 +647,7 @@ public actor ApplicationStore {
     private var cachedReferenceRoot: String?
 
     public func workspaceReferenceCandidates() async -> [String] {
-        let rootPath = state.currentWorkspace?.rootPath ?? FileManager.default.currentDirectoryPath
+        let rootPath = state.currentWorkspace?.rootPath ?? LingXiPlatform.process.currentWorkingDirectory()
         if cachedReferenceRoot == rootPath {
             return cachedReferenceCandidates
         }
@@ -736,7 +737,7 @@ public actor ApplicationStore {
             // 若恢复的会话属于其它工作目录，自动切换当前工作文件夹
             if let targetDir = snapshot.info.workingDirectory,
                !targetDir.isEmpty,
-               targetDir != FileManager.default.currentDirectoryPath {
+               targetDir != LingXiPlatform.process.currentWorkingDirectory() {
                 _ = FileManager.default.changeCurrentDirectoryPath(targetDir)
             }
         }

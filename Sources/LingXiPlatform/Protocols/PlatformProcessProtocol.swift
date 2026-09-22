@@ -16,6 +16,9 @@ public protocol PlatformProcessProtocol: Sendable {
 
     /// 从文件句柄安全读取已就绪的数据，在 Linux 上屏蔽 EBADF 与 closed-fd SIGILL
     func readAvailable(handle: FileHandle) -> Data
+
+    /// 当前工作目录，且在目录已被删除时仍然可调用
+    func currentWorkingDirectory() -> String
 }
 
 public extension PlatformProcessProtocol {
@@ -25,5 +28,9 @@ public extension PlatformProcessProtocol {
 
     func readAvailable(handle: FileHandle) -> Data {
         handle.availableData
+    }
+
+    func currentWorkingDirectory() -> String {
+        FileManager.default.currentDirectoryPath
     }
 }

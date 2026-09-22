@@ -92,5 +92,22 @@ public final class LinuxProcessAdapter: PlatformProcessProtocol, @unchecked Send
         return handle.availableData
         #endif
     }
+
+    /// Asking FileManager for the working directory traps once that directory has been
+    /// unlinked: getcwd() fails with ENOENT and Foundation's Linux implementation raises
+    /// rather than returning, which takes the whole process down with an illegal instruction.
+    /// A session restore that changed the working directory into a since-deleted workspace is
+    /// enough to reach this, so ask the kernel and fall back instead of trusting the getter.
+    public func currentWorkingDirectory() -> String {
+        #if canImport(Glibc)
+        var buffer = [CChar](repeating: 0, count: 4096)
+        if getcwd(&buffer, buffer.count) != nil {
+            return String(cString: buffer)
+        }
+        return NSTemporaryDirectory()
+        #else
+        return FileManager.default.currentDirectoryPath
+        #endif
+    }
 }
 #endif
