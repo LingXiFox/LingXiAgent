@@ -88,6 +88,10 @@ struct VNextProductionIntegrationTests {
         }
         defer {
             serverTask.cancel()
+            #if !os(Windows)
+            clientToServer.fileHandleForReading.readabilityHandler = nil
+            serverToClient.fileHandleForReading.readabilityHandler = nil
+            #endif
             try? clientToServer.fileHandleForReading.close()
             try? clientToServer.fileHandleForWriting.close()
             try? serverToClient.fileHandleForWriting.close()
@@ -386,6 +390,10 @@ struct VNextProductionIntegrationTests {
         let serverTask = Task.detached { try await server.run() }
         defer {
             serverTask.cancel()
+            #if !os(Windows)
+            clientToServer.fileHandleForReading.readabilityHandler = nil
+            serverToClient.fileHandleForReading.readabilityHandler = nil
+            #endif
             try? clientToServer.fileHandleForReading.close()
             try? clientToServer.fileHandleForWriting.close()
             try? serverToClient.fileHandleForWriting.close()

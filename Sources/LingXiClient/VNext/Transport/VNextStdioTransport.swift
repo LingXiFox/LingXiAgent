@@ -162,6 +162,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
         readTask?.cancel()
         readTask = nil
+        outputPipe.fileHandleForReading.readabilityHandler = nil
         try? outputPipe.fileHandleForReading.close()
 
         if let process {
@@ -187,6 +188,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     deinit {
         readTask?.cancel()
         try? input.close()
+        outputPipe.fileHandleForReading.readabilityHandler = nil
         try? outputPipe.fileHandleForReading.close()
         if let process, process.isRunning {
             LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)

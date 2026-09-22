@@ -159,6 +159,9 @@ public struct VNextStdioCoreServer: Sendable {
                 }
             }
         } onCancel: {
+            #if !os(Windows)
+            input.readabilityHandler = nil
+            #endif
             try? input.close()
         }
         await connectionTasks.drainAll()

@@ -53,13 +53,22 @@ public enum AsyncLineReader: Sendable {
                 #if !os(Windows)
                 handle.readabilityHandler = { h in
                     #if os(Linux)
-                    var checkStat = stat()
-                    guard fstat(h.fileDescriptor, &checkStat) == 0 else {
+                    var buffer = [UInt8](repeating: 0, count: bufferSize)
+                    let bytesRead = Glibc.read(h.fileDescriptor, &buffer, bufferSize)
+                    if bytesRead > 0 {
+                        continuation.yield(Data(buffer[0..<bytesRead]))
+                    } else if bytesRead == 0 {
                         h.readabilityHandler = nil
                         continuation.finish()
-                        return
+                    } else {
+                        let err = errno
+                        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
+                            return
+                        }
+                        h.readabilityHandler = nil
+                        continuation.finish()
                     }
-                    #endif
+                    #else
                     let data = h.availableData
                     if data.isEmpty {
                         h.readabilityHandler = nil
@@ -67,6 +76,7 @@ public enum AsyncLineReader: Sendable {
                     } else {
                         continuation.yield(data)
                     }
+                    #endif
                 }
                 continuation.onTermination = { @Sendable _ in
                     handle.readabilityHandler = nil
@@ -154,13 +164,36 @@ public enum AsyncLineReader: Sendable {
 
                 handle.readabilityHandler = { h in
                     #if os(Linux)
-                    var checkStat = stat()
-                    guard fstat(h.fileDescriptor, &checkStat) == 0 else {
+                    var buffer = [UInt8](repeating: 0, count: bufferSize)
+                    let bytesRead = Glibc.read(h.fileDescriptor, &buffer, bufferSize)
+                    let data: Data
+                    if bytesRead > 0 {
+                        data = Data(buffer[0..<bytesRead])
+                    } else if bytesRead == 0 {
+                        h.readabilityHandler = nil
+                        if !accumulator.leftover.isEmpty {
+                            var lineData = accumulator.leftover
+                            if lineData.last == cr {
+                                lineData.removeLast()
+                            }
+                            let line = String(decoding: lineData, as: UTF8.self)
+                            if !line.isEmpty {
+                                continuation.yield(line)
+                            }
+                            accumulator.leftover.removeAll()
+                        }
+                        continuation.finish()
+                        return
+                    } else {
+                        let err = errno
+                        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
+                            return
+                        }
                         h.readabilityHandler = nil
                         continuation.finish()
                         return
                     }
-                    #endif
+                    #else
                     let data = h.availableData
                     if data.isEmpty {
                         h.readabilityHandler = nil
@@ -178,6 +211,7 @@ public enum AsyncLineReader: Sendable {
                         continuation.finish()
                         return
                     }
+                    #endif
 
                     accumulator.leftover.append(data)
                     while let newlineIndex = accumulator.leftover.firstIndex(of: newline) {
