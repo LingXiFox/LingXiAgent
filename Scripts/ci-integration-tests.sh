@@ -251,6 +251,8 @@ $p | ForEach-Object {
 failed_chunks=()
 timed_out_chunks=()
 lingering_chunks=()
+# Set once the stage has replayed one silently-failing chunk through the test binary itself.
+direct_replay_done=""
 
 # A chunk can also die without ever printing a verdict. Because a redirected stdout on Windows is
 # block-buffered, the whole tail is lost with the process, so the log shows passing tests and then
@@ -287,6 +289,47 @@ if (-not $dl) {
 
 executed=0
 index=0
+
+# `swift test` returns 1 whatever happened to the binary it launched, so an exit whose status is an
+# exception code (0xC0000005) and a voluntary exit(1) look identical through the wrapper -- and on a
+# runner image where Windows Error Reporting does not write events, "no crash event" proves nothing
+# either. Replaying the same filter through the test binary itself is the only way to read the real
+# status without a debugger. It is a probe: its outcome is printed, never used as the verdict.
+direct_replay() {
+  local index=$1 filter=$2
+  local bin probe_log probe_pid waited=0 status candidate
+  bin="$(swift build --show-bin-path 2>/dev/null || true)"
+  for candidate in "${bin%/}/LingXiAgentPackageTests.xctest" "${bin%/}/LingXiAgentPackageTests.xctest.exe"; do
+    [ -f "$candidate" ] && break
+  done
+  if [ ! -f "$candidate" ]; then
+    echo "note: no test binary beside $bin, cannot replay directly"
+    return
+  fi
+  probe_log="$(mktemp)"
+  SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$candidate" \
+    --testing-library swift-testing --filter "$filter" < /dev/null > "$probe_log" 2>&1 &
+  probe_pid=$!
+  while kill -0 "$probe_pid" 2>/dev/null; do
+    if [ "$waited" -ge 120 ]; then
+      echo "-- direct replay still running after ${waited}s: the wedge reproduces through the binary too"
+      kill_tree "$probe_pid"
+      break
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  wait "$probe_pid" 2>/dev/null
+  status=$?
+  printf -- '-- direct replay of chunk %s: real exit status=%d (0x%08x), %ss\n' "$index" "$status" "$status" "$waited"
+  if [ "$status" -ge 3221225472 ] 2>/dev/null; then
+    echo "   ^ that is an NTSTATUS exception code, i.e. the process died from a fault, not from exit()"
+  fi
+  grep -aiE "Fatal error|Crash|Exception|EXC_|Test run with|Backtrace" "$probe_log" | tail -10
+  tail -12 "$probe_log"
+  rm -f "$probe_log"
+}
+
 for chunk in "${chunks[@]}"; do
   index=$((index + 1))
   # Trailing "/" pins a suite exactly: matching is a regex search, so without it
@@ -441,6 +484,16 @@ for chunk in "${chunks[@]}"; do
     # No summary at all means the run never reached its own end, which is a different defect from
     # a test that failed and was reported, so say which one this is and bring in the OS evidence.
     [ "$ran" -eq 0 ] && dump_crash_evidence
+    # One replay per stage is enough to answer crash-or-not, and it is Windows-only because there
+    # the test binary is a plain executable rather than a bundle.
+    if [ "$ran" -eq 0 ] && [ -z "$direct_replay_done" ]; then
+      case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)
+          direct_replay_done=yes
+          direct_replay "$index" "$filter"
+          ;;
+      esac
+    fi
     grep -E "recorded an issue|Expectation failed|Caught error|error:|Test run with" "$chunk_log" \
       | head -30
     echo "--- chunk ${index} full log ---"
