@@ -47,6 +47,47 @@ struct IPCPeerRobustnessTests {
         #expect(String(decoding: reply ?? Data(), as: UTF8.self) == "ECHO:HELLO")
     }
 
+    @Test("EOF becomes observable once the child exits")
+    func testEofIsReachableAfterChildExit() throws {
+        // What this pins: after the child's last line is consumed, the transport must report the end
+        // of the stream rather than park or hand back leftovers. Verified by control: on macOS this
+        // passes whether or not the parent closes its own duplicate of the write end, so it does NOT
+        // cover the duplicate-handle question -- it covers the reader's EOF behaviour only.
+        final class Box<Element>: @unchecked Sendable {
+            var value: Element?
+        }
+
+        let script = "import sys; sys.stdout.write('only\\n'); sys.stdout.flush()"
+        let proc = ManagedProcess(
+            executablePath: Self.resolvePython(),
+            arguments: ["-u", "-c", script]
+        )
+        let transport = StdioTransport(managedProcess: proc)
+        try transport.connect()
+        defer { transport.close() }
+
+        let first = try transport.readLine()
+        #expect(String(decoding: first ?? Data(), as: UTF8.self) == "only")
+
+        // The child writes nothing more and exits, so the next read must report the end of the
+        // stream. It is run off-thread with a bounded wait because the failure mode this pins is a
+        // read that never returns, and that must not take the whole chunk down with it.
+        let done = DispatchSemaphore(value: 0)
+        let outcome = Box<Data?>()
+        let reader = Thread {
+            outcome.value = try? transport.readLine()
+            done.signal()
+        }
+        reader.start()
+        let finished = done.wait(timeout: .now() + 15) == .success
+        #expect(finished, "readLine never returned after the child exited: the parent still holds a duplicate of the write end, so EOF is unreachable")
+        let read: Data? = outcome.value ?? nil
+        if finished {
+            let shown = read.map { String(decoding: $0, as: UTF8.self) } ?? "<nil>"
+            #expect(read == nil, "readLine returned leftover bytes instead of EOF: [\(shown)]")
+        }
+    }
+
     @Test("StdioTransport continuous stderr drain prevents child deadlock under heavy stderr writes")
     func testStderrDrainPreventsDeadlock() throws {
         // Run a python command that writes 128KB to stderr and then writes OK to stdout.

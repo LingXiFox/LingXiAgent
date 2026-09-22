@@ -109,9 +109,11 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         self.writer = ClientWireWriter(handle: inputHandle)
         try process.run()
         Self.trace("process.run.end")
-        // Release this process's duplicates of the child's ends immediately. While one of them is
-        // open the kernel cannot report EOF to our reader, so the read parks forever even after the
-        // core host has exited. The injected init cannot do this, because those pipes are not ours.
+        // A pipe reports end-of-file only once every writer has closed it, and creating the Pipe
+        // handed this process a duplicate of both ends. This side never writes to the core host's
+        // stdout nor reads its stdin, so release those copies at launch rather than holding a stream
+        // open that the child has already abandoned. The injected init below cannot do this, because
+        // those pipes belong to the caller -- which is why teardown still closes the write end there.
         try? inputPipe.fileHandleForReading.close()
         try? outputPipe.fileHandleForWriting.close()
         parentWriteEndsClosed = true
