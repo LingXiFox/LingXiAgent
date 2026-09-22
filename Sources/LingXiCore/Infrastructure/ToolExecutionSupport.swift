@@ -1,9 +1,6 @@
 import Foundation
 import LingXiProtocol
 @_exported import LingXiPlatform
-#if canImport(Glibc)
-import Glibc
-#endif
 
 /// 子进程只继承运行命令所需的环境，避免把宿主机凭据传给工具。
 public enum EnvironmentSanitizer {
@@ -288,30 +285,13 @@ final class ManagedToolProcess: @unchecked Sendable {
     }
 
     private func read(_ handle: FileHandle, into buffer: ByteRingBuffer, phase: ToolLifecyclePhase) {
-        #if os(Linux)
-        var temp = [UInt8](repeating: 0, count: 4096)
-        let bytesRead = Glibc.read(handle.fileDescriptor, &temp, temp.count)
-        if bytesRead > 0 {
-            buffer.append(Data(temp[0..<bytesRead]))
-            return
-        }
-        if bytesRead < 0 {
-            let err = errno
-            if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
-                return
-            }
-        }
-        handle.readabilityHandler = nil
-        markEOF(phase: phase)
-        #else
-        let data = handle.availableData
+        let data = LingXiPlatform.process.readAvailable(handle: handle)
         if !data.isEmpty {
             buffer.append(data)
             return
         }
         handle.readabilityHandler = nil
         markEOF(phase: phase)
-        #endif
     }
 
     private func handleTermination(status: Int32) {

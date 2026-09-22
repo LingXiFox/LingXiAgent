@@ -77,5 +77,20 @@ public final class LinuxProcessAdapter: PlatformProcessProtocol, @unchecked Send
         return handle.availableData
         #endif
     }
+
+    public func readAvailable(handle: FileHandle) -> Data {
+        let fd = handle.fileDescriptor
+        guard fd >= 0 else { return Data() }
+        #if canImport(Glibc)
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        let bytesRead = read(fd, &chunk, chunk.count)
+        if bytesRead > 0 {
+            return Data(chunk[0..<bytesRead])
+        }
+        return Data()
+        #else
+        return handle.availableData
+        #endif
+    }
 }
 #endif

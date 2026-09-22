@@ -13,10 +13,17 @@ public protocol PlatformProcessProtocol: Sendable {
 
     /// 从文件句柄非阻塞排空所有已就绪的缓冲区数据
     func nonblockingDrain(handle: FileHandle, chunkSize: Int) -> Data
+
+    /// 从文件句柄安全读取已就绪的数据，在 Linux 上屏蔽 EBADF 与 closed-fd SIGILL
+    func readAvailable(handle: FileHandle) -> Data
 }
 
 public extension PlatformProcessProtocol {
     func nonblockingDrain(handle: FileHandle, chunkSize: Int = 64 * 1024) -> Data {
+        handle.availableData
+    }
+
+    func readAvailable(handle: FileHandle) -> Data {
         handle.availableData
     }
 }
