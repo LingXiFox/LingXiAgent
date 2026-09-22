@@ -20,6 +20,13 @@ CHUNK_SIZE="${LINGXI_CI_CHUNK_SIZE:-12}"
 CHUNK_TIMEOUT="${LINGXI_CI_CHUNK_TIMEOUT:-150}"
 # How long a chunk may stay alive after printing its final summary.
 LINGER_GRACE="${LINGXI_CI_LINGER_GRACE:-15}"
+# Budget for the single retry of a chunk the watchdog killed. Short on purpose: a chunk that
+# needs it is either about to finish or is wedged for good, and the difference is the point.
+RETRY_TIMEOUT="${LINGXI_CI_RETRY_TIMEOUT:-90}"
+# Windows ships a timeout.exe with unrelated semantics, and Git Bash may resolve either one.
+# Only bound the retry when the GNU behaviour is actually there, so a name clash costs a retry
+# and never a failed stage.
+if timeout --version >/dev/null 2>&1; then TIMEOUT_CMD=(timeout -k 5 "$RETRY_TIMEOUT"); else TIMEOUT_CMD=(); fi
 # When set, every chunk also writes an xunit report into this directory so the CI
 # artifact keeps working even though the suite no longer runs as one invocation.
 XUNIT_DIR="${LINGXI_CI_XUNIT_DIR:-}"
@@ -294,6 +301,34 @@ for chunk in "${chunks[@]}"; do
       # pipe read, a stack says which await put it there. QUIT is a Swift backtrace signal, and it
       # is a foreign concept on Windows, so this stays on the platforms that can answer -- and it
       # reports whether it produced anything, so a next round can decide if it earns its keep.
+      # A killed chunk would otherwise delete the results of every case that was in flight. Run
+      # the same filter once more with a short budget: if it finishes, the coverage is recovered,
+      # and if it wedges again the answer is that the deadlock is inherent to those cases rather
+      # than something a neighbour left behind -- which is the distinction the whole Windows
+      # backlog rests on and nothing else here can establish.
+      echo "-- retrying the chunk once with a ${RETRY_TIMEOUT}s budget"
+      retry_log="$(mktemp)"
+      retry_events="$(mktemp)"
+      retry_args=("${SWIFT_TEST[@]}" --filter "$filter" --event-stream-output-path "$retry_events")
+      if [ -n "$XUNIT_DIR" ]; then
+        retry_args+=(--xunit-output "$XUNIT_DIR/test-results-chunk-$index-retry.xml")
+      fi
+      ${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} ${line_buffered[@]+"${line_buffered[@]}"} "${retry_args[@]}" < /dev/null > "$retry_log" 2>&1
+      retry_ran="$(grep -oE 'Test run with [0-9]+ test' "$retry_log" | tail -1 | grep -oE '[0-9]+' || true)"
+      if [ -n "${retry_ran:-}" ]; then
+        executed=$((executed + retry_ran))
+        echo "-- retry completed: $retry_ran tests reported on the second attempt"
+        grep -oE '[√×✘] Test run with [0-9]+ tests.*' "$retry_log" | tail -1
+        for report in "$XUNIT_DIR"/test-results-chunk-"$index"-retry*.xml; do
+          [ -f "$report" ] || continue
+          mkdir -p "$ARTIFACT_DIR"
+          cp "$report" "$ARTIFACT_DIR/" 2>/dev/null || true
+        done
+      else
+        echo "-- retry also produced no verdict: the wedge reproduces without its neighbours"
+        unreported_from_events "$retry_events" | sed 's/^/   still in flight: /'
+      fi
+      rm -f "$retry_log" "$retry_events"
       case "$(uname -s)" in
         Darwin|Linux)
           kill -QUIT "$runner" 2>/dev/null
