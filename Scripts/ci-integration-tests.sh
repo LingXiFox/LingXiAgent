@@ -32,6 +32,12 @@ ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
 ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests}"
 
 SWIFT_TEST=(swift test --skip-build)
+# A chunk killed by the watchdog loses its entire block-buffered stdout, which is why a hang
+# reports "0 bytes" and nothing can say which test was in flight. Where stdbuf is available the
+# child is line-buffered so the log survives the kill; where it is not, run unchanged rather than
+# preloading anything into the test process.
+line_buffered=()
+command -v stdbuf >/dev/null 2>&1 && line_buffered=(stdbuf -oL)
 script_start=$(date +%s)
 
 if ! raw_list="$("${SWIFT_TEST[@]}" --list-tests < /dev/null 2>/dev/null)"; then
@@ -216,7 +222,7 @@ for chunk in "${chunks[@]}"; do
   # /dev/null on stdin is mandatory, not cosmetic: the stdio transport tests spawn a child
   # that waits for EOF, and under Actions it would otherwise inherit a runner pipe that never
   # closes (the same deadlock < /dev/null was added for in the other stages).
-  "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &
+  ${line_buffered[@]+"${line_buffered[@]}"} "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &
   runner=$!
   chunk_start=$(date +%s)
 
