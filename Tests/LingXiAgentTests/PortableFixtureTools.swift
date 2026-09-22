@@ -100,7 +100,13 @@ enum PortableFixture {
     /// sits on PATH ahead of any real install, launches, prints a Store suggestion and exits.
     /// A fixture served by that stub reads as a transport that never answers, so a candidate is
     /// only chosen once it has actually executed a statement.
-    static func pythonInterpreter() -> String {
+    /// Memoised: a suite that spawns a fixture per iteration would otherwise pay a probe launch
+    /// every time, and the answer cannot change inside one process.
+    static func pythonInterpreter() -> String { cachedPythonInterpreter }
+
+    private static let cachedPythonInterpreter: String = resolvedPythonInterpreter()
+
+    private static func resolvedPythonInterpreter() -> String {
         #if os(Windows) || canImport(WinSDK)
         let names = ["python.exe", "python"]
         let paths: [String]? = nil
