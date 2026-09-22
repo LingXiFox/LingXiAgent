@@ -37,11 +37,11 @@ import LingXiProtocol
         )
         #expect(chunk != nil)
 
-        // 等待异步旁路遥测完成写入
-        try await Task.sleep(for: .milliseconds(50))
-
-        let events = await store.telemetryLogger.readEvents(for: sID)
-        #expect(events.count == 2)
+        let events = try await PortableFixture.eventually(
+            { await store.telemetryLogger.readEvents(for: sID) },
+            enough: { $0.count >= 2 }
+        )
+        try #require(events.count == 2)
         #expect(events[0].eventType == .objectStored)
         #expect(events[0].objectID == meta.objectID)
 
@@ -72,10 +72,11 @@ import LingXiProtocol
         )
         #expect(chunk == nil)
 
-        try await Task.sleep(for: .milliseconds(50))
-
-        let events = await store.telemetryLogger.readEvents(for: sID)
-        #expect(events.count == 1)
+        let events = try await PortableFixture.eventually(
+            { await store.telemetryLogger.readEvents(for: sID) },
+            enough: { $0.count >= 1 }
+        )
+        try #require(events.count == 1)
         #expect(events[0].eventType == .recallMiss)
         #expect(events[0].objectID == nonExistentID)
         #expect(events[0].offsetBytes == 10)
@@ -664,23 +665,24 @@ import LingXiProtocol
         #expect(res.content.contains("[Context Object:"))
         #expect(res.metadata["projected"] == "true")
 
-        // 等待异步旁路遥测完成写入
-        try await Task.sleep(for: .milliseconds(50))
-
-        var events = await store.telemetryLogger.readEvents(for: sessionID)
+        var events = try await PortableFixture.eventually(
+            { await store.telemetryLogger.readEvents(for: sessionID) },
+            enough: { found in found.filter { $0.eventType == .objectProjected }.count >= 1 }
+        )
         let projEvents = events.filter { $0.eventType == .objectProjected }
-        #expect(projEvents.count == 1)
+        try #require(projEvents.count == 1)
         #expect(projEvents[0].projectionCount == 1)
         #expect(projEvents[0].originalBytes == largeContent.utf8.count)
         #expect(projEvents[0].objectAge != nil && (projEvents[0].objectAge ?? -1) >= 0)
 
         // 第二次调用 project（模拟下一轮对话同一对象的再次暴露）
         _ = await projector.project(entries: [entry], session: session, ecoreStore: store)
-        try await Task.sleep(for: .milliseconds(50))
-
-        events = await store.telemetryLogger.readEvents(for: sessionID)
+        events = try await PortableFixture.eventually(
+            { await store.telemetryLogger.readEvents(for: sessionID) },
+            enough: { found in found.filter { $0.eventType == .objectProjected }.count >= 2 }
+        )
         let updatedProjEvents = events.filter { $0.eventType == .objectProjected }
-        #expect(updatedProjEvents.count == 2)
+        try #require(updatedProjEvents.count == 2)
         #expect(updatedProjEvents[1].projectionCount == 2)
     }
 

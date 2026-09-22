@@ -65,6 +65,27 @@ enum PortableFixture {
         #endif
     }
 
+    /// Re-read a value produced by background work until it is large enough, or give up.
+    ///
+    /// A fixed sleep is a guess about host speed: it wastes time when the write already landed
+    /// and loses the race when the runner is loaded, which is how a telemetry assertion ended up
+    /// indexing an empty array and aborting the whole test process. Observing the value instead
+    /// keeps the assertion honest — it still fails, but with the count it actually saw.
+    static func eventually<T: Collection>(
+        deadlineMs: Int = 5_000,
+        _ read: () async -> T,
+        enough: (T) -> Bool
+    ) async throws -> T {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .milliseconds(deadlineMs)
+        var value = await read()
+        while !enough(value), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            value = await read()
+        }
+        return value
+    }
+
     /// Absolute path of a usable `git`, which Windows installs under a different root.
     static func git() -> String {
         LingXiPlatform.process.resolveExecutable(
