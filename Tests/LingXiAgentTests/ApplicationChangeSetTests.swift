@@ -167,7 +167,7 @@ struct ApplicationChangeSetTests {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let workspace = try WorkspaceRoot(path: tempDir.path)
-        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "test")
+        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "test", iterations: 100_000)
         let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
         let host = try CoreHost(
             providerAssembly: assembly,

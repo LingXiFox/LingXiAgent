@@ -15,22 +15,32 @@ public actor FileCredentialStore: CredentialStore {
     private let dataRoot: URL
     private let permissions: any FilePermissionAdapter
     private let passphrase: String?
+    private let kdfIterations: Int
     private var cachedKey: (salt: Data, key: Data)?
 
     public let isMemoryOnly: Bool
     private var memoryStore: [String: String] = [:]
 
+    /// - Parameter iterations: PBKDF2 rounds for vaults this instance writes. It defaults to the
+    ///   production cost and cannot be lowered below the floor the reader already enforces, so the
+    ///   only caller that can get a cheap vault is one that asks for it explicitly -- tests, where a
+    ///   debug-binary derivation costs seconds per instance and a whole CI chunk with it.
     public init(
         dataRoot: URL,
         passphrase: String? = nil,
         isMemoryOnly: Bool = false,
+        iterations: Int? = nil,
         permissions: any FilePermissionAdapter = PlatformFilePermissionAdapter()
     ) throws {
+        if let iterations, iterations < 100_000 {
+            throw ConfigurationValidationError(path: "$kdf.iterations", reason: "PBKDF2 iterations must be >= 100000")
+        }
         self.dataRoot = dataRoot.standardizedFileURL
         self.vaultURL = self.dataRoot.appendingPathComponent("credentials.vault")
         self.backupURL = self.dataRoot.appendingPathComponent("credentials.vault.v1-migration-backup")
         self.permissions = permissions
         self.passphrase = passphrase?.isEmpty == false ? passphrase : nil
+        self.kdfIterations = iterations ?? Self.kdfIterations
         self.isMemoryOnly = isMemoryOnly
         if !isMemoryOnly {
             try FileManager.default.createDirectory(at: self.dataRoot, withIntermediateDirectories: true)
@@ -172,12 +182,12 @@ public actor FileCredentialStore: CredentialStore {
 
     private func write(_ values: [String: String], to url: URL) throws {
         let salt = LingXiPlatform.secureStorage.generateSecureRandomBytes(count: 16)
-        let key = try encryptionKey(salt: salt, iterations: Self.kdfIterations)
+        let key = try encryptionKey(salt: salt, iterations: kdfIterations)
         let plaintext = try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys, .withoutEscapingSlashes])
         let combined = try LingXiPlatform.crypto.sealAESGCM(plaintext: plaintext, keyData: key, authenticating: Self.associatedData)
         let vault = EncryptedVault(
             version: 2,
-            kdf: .init(name: "PBKDF2-HMAC-SHA256", iterations: Self.kdfIterations, salt: salt.base64EncodedString()),
+            kdf: .init(name: "PBKDF2-HMAC-SHA256", iterations: kdfIterations, salt: salt.base64EncodedString()),
             encryption: .init(name: "AES-256-GCM", ciphertext: combined.base64EncodedString())
         )
         let encoder = JSONEncoder()

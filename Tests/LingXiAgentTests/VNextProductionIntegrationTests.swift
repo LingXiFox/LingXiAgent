@@ -47,7 +47,7 @@ struct VNextProductionIntegrationTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let workspace = try WorkspaceRoot(path: tempDir.path)
-        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test")
+        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test", iterations: 100_000)
         let assembly = ModelRuntimeAssembly(provider: provider, modelID: ModelID("test-model"))
         let host = try CoreHost(
             startupPolicy: .integrationTest,
@@ -689,7 +689,7 @@ struct VNextProductionIntegrationTests {
         try skillMD.write(to: skillsDir.appendingPathComponent("SKILL.md"), atomically: false, encoding: .utf8)
 
         let workspace = try WorkspaceRoot(path: tempDir.path)
-        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test")
+        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "integration-test", iterations: 100_000)
         let permissions = PermissionEngine(defaultDecision: .allow)
         let platform = ExtensionPlatform(globalRoot: tempDir, projectRoot: workspace.url, permissions: permissions, enablePlugins: false)
         let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))
@@ -718,7 +718,7 @@ struct VNextProductionIntegrationTests {
         guard FileManager.default.fileExists(atPath: userHome.appendingPathComponent("skills").path) else { return }
 
         let workspace = try WorkspaceRoot(path: FileManager.default.currentDirectoryPath)
-        let credStore = try FileCredentialStore(dataRoot: userHome.appendingPathComponent("vault"), passphrase: "integration-test")
+        let credStore = try FileCredentialStore(dataRoot: userHome.appendingPathComponent("vault"), passphrase: "integration-test", iterations: 100_000)
         let configStore = try ConfigurationStore(dataRoot: userHome)
         let platform = ExtensionPlatform(globalRoot: userHome, projectRoot: workspace.url, permissions: PermissionEngine(defaultDecision: .allow), enablePlugins: false)
         let assembly = ModelRuntimeAssembly(provider: ScriptedFakeProvider(script: []), modelID: ModelID("test-model"))

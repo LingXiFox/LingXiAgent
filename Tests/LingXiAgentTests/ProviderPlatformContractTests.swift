@@ -21,7 +21,7 @@ struct ProviderPlatformContractTests {
     ]) private func runnableBuiltinContractsPreserveProductWireModelAndCredentialBoundary(contract: Contract) async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         let reference = CredentialRef("credential")
         if contract.authentication != .none { try await credentials.setSecret("\(contract.productID)-secret", for: reference) }
 
@@ -46,7 +46,7 @@ struct ProviderPlatformContractTests {
     @Test func unverifiedAndAuthenticationMismatchedProductsFailClosed() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         try await credentials.setSecret("must-not-leak", for: CredentialRef("credential"))
 
         await expectResolutionError(.providerProductUnverified(ProviderProductID(rawValue: "openai-codex"))) {
@@ -61,7 +61,7 @@ struct ProviderPlatformContractTests {
     @Test func explicitEndpointCannotSilentlyChangeTheDeclaredWire() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         let contract = Contract(productID: "openai-api", endpointID: "chat", authentication: .bearer, path: "", header: nil, wire: .responses)
         try await credentials.setSecret("endpoint-wire-secret", for: CredentialRef("credential"))
         await expectResolutionError(.providerWireUnsupported(.openAIResponses)) {
@@ -72,7 +72,7 @@ struct ProviderPlatformContractTests {
     @Test func everyNonVerifiedBuiltinProductFailsClosed() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         let products = BuiltinProviderCatalog.definitions.filter { !$0.verificationStatus.isRuntimeVerified }
         for product in products {
             do {
@@ -92,7 +92,7 @@ struct ProviderPlatformContractTests {
     @Test func customProviderOverridesUnverifiedBuiltinProduct() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         try await credentials.setSecret("opencode-key", for: CredentialRef("opencode-cred"))
 
         let config = ProvidersConfiguration(

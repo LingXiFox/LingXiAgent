@@ -839,7 +839,7 @@ struct ProtocolVNextFrozenContractTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let workspace = try WorkspaceRoot(path: tempDir.path)
-        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "test-passphrase-matrix")
+        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "test-passphrase-matrix", iterations: 100_000)
         let host = try CoreHost(sessionStore: InMemorySessionStore(), workspaceRoot: workspace, credentialStore: credStore)
         await host.start()
         let service: any LingXiProtocolService = host

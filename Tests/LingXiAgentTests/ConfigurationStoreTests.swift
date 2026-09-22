@@ -110,7 +110,7 @@ struct ConfigurationStoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let configurations = try ConfigurationStore(dataRoot: root)
         var snapshot = try await configurations.load()
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         let reference = CredentialRef("provider-main")
         let sentinel = "secret-sentinel-729"
 
@@ -184,7 +184,7 @@ struct ConfigurationStoreTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try write(["version": 1, "credentials": ["provider-main": sentinel]], to: root.appendingPathComponent("credentials.vault"))
 
-        let store = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let store = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         #expect(try await store.secret(for: CredentialRef("provider-main")) == sentinel)
         for filename in ["credentials.vault", "credentials.vault.v1-migration-backup"] {
             let contents = try String(contentsOf: root.appendingPathComponent(filename), encoding: .utf8)
@@ -192,7 +192,7 @@ struct ConfigurationStoreTests {
             #expect(contents.contains(#""version" : 2"#))
         }
 
-        let reopened = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let reopened = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         #expect(try await reopened.secret(for: CredentialRef("provider-main")) == sentinel)
 
         let unavailable = try FileCredentialStore(dataRoot: root)
@@ -209,7 +209,7 @@ struct ConfigurationStoreTests {
         try write(["version": 1, "credentials": ["provider-main": "secret-sentinel-729"]], to: vault)
         try Data("existing encrypted backup".utf8).write(to: root.appendingPathComponent("credentials.vault.v1-migration-backup"))
 
-        let store = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let store = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         await #expect(throws: ConfigurationValidationError.self) {
             _ = try await store.secret(for: CredentialRef("provider-main"))
         }
@@ -222,7 +222,7 @@ struct ConfigurationStoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try ConfigurationStore(dataRoot: root)
         _ = try await store.load()
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         try await credentials.setSecret("permission-sentinel", for: CredentialRef("test"))
 
         #expect(try permissions(at: root) == 0o700)
@@ -235,7 +235,7 @@ struct ConfigurationStoreTests {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let store = try FileCredentialStore(dataRoot: root, passphrase: nil)
+        let store = try FileCredentialStore(dataRoot: root, passphrase: nil, iterations: 100_000)
 
         // Attempting to persist without passphrase must fail-closed
         await #expect(throws: ConfigurationValidationError.self) {
@@ -374,4 +374,16 @@ struct ConfigurationStoreTests {
         return try #require(attributes[.posixPermissions] as? NSNumber).intValue
     }
     #endif
+
+    @Test func credentialVaultRecordsTheKDFCostItUsedAndStillRoundTrips() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try FileCredentialStore(dataRoot: root, passphrase: "p", iterations: 100_000)
+        try await store.setSecret("value", for: CredentialRef("kdf-probe"))
+        let vaultURL = await store.vaultURL
+        let recorded = try String(data: Data(contentsOf: vaultURL), encoding: .utf8) ?? ""
+        #expect(recorded.contains("100000"), "the vault header must carry the cost actually used")
+        #expect(try await store.secret(for: CredentialRef("kdf-probe")) == "value")
+    }
+
 }

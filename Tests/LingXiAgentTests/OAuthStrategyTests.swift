@@ -79,7 +79,7 @@ struct OAuthStrategyTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase")
+        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase", iterations: 100_000)
         let tokenRef = CredentialRef("test-oauth-token")
 
         // Initial expired token
@@ -208,7 +208,7 @@ struct OAuthStrategyTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test")
+        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test", iterations: 100_000)
         let configStore = try ConfigurationStore(dataRoot: tempDir)
 
         // 1. Initial list

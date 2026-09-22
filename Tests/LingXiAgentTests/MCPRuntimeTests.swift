@@ -236,7 +236,7 @@ struct MCPRuntimeTests {
     func faultTolerantMCPResolutionSkipsFailingServerAndPreservesHealthyTools() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        let credentials = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase", iterations: 100_000)
         try await credentials.setSecret("valid-token", for: CredentialRef("valid-secret"))
 
         // 一个配置正常、一个凭据缺失

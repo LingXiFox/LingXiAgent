@@ -80,7 +80,7 @@ struct ProviderConnectionApplicationTests {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let configurationStore = try ConfigurationStore(dataRoot: root)
-        let credentialStore = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentialStore = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         let host = try CoreHost(configurationStore: configurationStore, credentialStore: credentialStore)
         await host.start()
 
@@ -106,7 +106,7 @@ struct ProviderConnectionApplicationTests {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let configurationStore = try ConfigurationStore(dataRoot: root)
-        let credentialStore = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentialStore = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         let host = try CoreHost(configurationStore: configurationStore, credentialStore: credentialStore)
         await host.start()
 

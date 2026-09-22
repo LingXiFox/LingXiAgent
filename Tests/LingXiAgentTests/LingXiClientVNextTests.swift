@@ -12,7 +12,7 @@ struct LingXiClientVNextTests {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let workspace = try WorkspaceRoot(path: tempDir.path)
-        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "client-vnext-test")
+        let credStore = try FileCredentialStore(dataRoot: tempDir.appendingPathComponent("vault"), passphrase: "client-vnext-test", iterations: 100_000)
         let host = try CoreHost(sessionStore: InMemorySessionStore(), workspaceRoot: workspace, credentialStore: credStore)
         await host.start()
         return (host, tempDir)

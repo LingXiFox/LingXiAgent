@@ -104,7 +104,7 @@ struct ProductionConfigurationResolutionTests {
     @Test func credentialAndEndpointValidationFailBeforeRuntime() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         var missingCredential = configuration(wire: .chatCompletions)
         missingCredential.accounts[0].authentication = .bearer
         missingCredential.accounts[0].credential = CredentialRef("missing")
@@ -129,7 +129,7 @@ struct ProductionConfigurationResolutionTests {
     @Test func mcpConfigurationMapsCredentialReferencesWithoutEnvironmentReads() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         try await credentials.setSecret("bearer-secret", for: CredentialRef("mcp-bearer"))
         try await credentials.setSecret("env-secret", for: CredentialRef("mcp-env"))
         let resolution = try await RuntimeConfigurationResolver.resolveMCP(

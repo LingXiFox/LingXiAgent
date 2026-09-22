@@ -55,7 +55,7 @@ struct PublicProviderConfigurationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try ConfigurationStore(dataRoot: root)
         _ = try await store.load()
-        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase")
+        let credentials = try FileCredentialStore(dataRoot: root, passphrase: "test-passphrase", iterations: 100_000)
         try await credentials.setSecret("vault-secret", for: CredentialRef("amd-key"))
         let configuration = ProvidersConfiguration(
             model: "provider/model",

@@ -7,7 +7,7 @@ import Testing
     private func makeTestStores() throws -> (URL, FileCredentialStore, ConfigurationStore) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-doctor-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase-1234")
+        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase-1234", iterations: 100_000)
         let configStore = try ConfigurationStore(dataRoot: tempDir)
         return (tempDir, credStore, configStore)
     }

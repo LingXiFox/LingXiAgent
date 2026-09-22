@@ -721,7 +721,7 @@ struct UnifiedModelRegistryTests {
             ]
         )
         try await configStore.saveProviders(providersConfig)
-        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase")
+        let credStore = try FileCredentialStore(dataRoot: tempDir, passphrase: "test-passphrase", iterations: 100_000)
         
         // Seed OAuth token into credential store
         let oauthSecret = "mock-oauth-token-with-sub"
