@@ -102,7 +102,10 @@ struct SubagentRuntimeTests {
         for try await _ in try await client.sendMessage(sessionID: primary, content: "parent task") {}
         let request = try #require(await reply.value)
         let runID = try #require(request.originRunID)
-        let deadline = Date().addingTimeInterval(2)
+        // The contract is that the child run reaches `.completed`; the bound only exists so a
+        // deadlock cannot wait forever. Two seconds of runner budget made it a race against host
+        // speed on a loaded runner while a real scheduling bug still fails here.
+        let deadline = Date().addingTimeInterval(20)
         while try await client.getAgentRun(runID).status != .completed, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(try await client.getAgentRun(runID).status == .completed)
         await host.shutdown()

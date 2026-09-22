@@ -323,6 +323,12 @@ struct RC1StaticAuditTests {
                 let sessionDir = eventLogDir.appendingPathComponent("sessions/\(sessionID.rawValue)", isDirectory: true)
                 try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
                 try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: sessionDir.path)
+                // The premise is a directory that refuses writes. POSIX mode bits are advisory on
+                // NTFS and ignored for an administrator, so instead of assuming they took effect,
+                // ask the directory: if the probe write lands, there is no failure to induce here
+                // and the revert succeeding would be correct, not a bug.
+                let probe = sessionDir.appendingPathComponent("reset-failure-probe.json")
+                guard (try? Data("{}".utf8).write(to: probe)) == nil else { return }
             }
 
             defer {
