@@ -297,10 +297,12 @@ final class ManagedToolProcess: @unchecked Sendable {
     private func handleTermination(status: Int32) {
         let pid = process.processIdentifier
         
-        #if !os(Windows)
+        // Unbind on every platform, the way the EOF path in `read` already does. Leaving a
+        // handler installed while the process pipes are being torn down means Foundation can
+        // fire it against a handle that has since been closed, which is a death with no Swift
+        // error to read -- the shape Windows chunks were dying in.
         output.fileHandleForReading.readabilityHandler = nil
         error.fileHandleForReading.readabilityHandler = nil
-        #endif
 
         // Concurrent bounded drain: immediately drain any remaining output non-blockingly.
         nonblockingDrain(handle: output.fileHandleForReading, into: stdout)
