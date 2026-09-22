@@ -69,6 +69,8 @@ private actor ClientWireWriter {
 public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private let process: Process?
     private let input: FileHandle
+    private let outputPipe: Pipe
+    private var readTask: Task<Void, Never>?
     private let writer: ClientWireWriter
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -98,19 +100,21 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         process.standardOutput = outputPipe
         process.standardError = FileHandle.nullDevice
         self.process = process
+        self.outputPipe = outputPipe
         let inputHandle = inputPipe.fileHandleForWriting
         self.input = inputHandle
         self.writer = ClientWireWriter(handle: inputHandle)
         try process.run()
         Self.trace("process.run.end")
-        Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
+        self.readTask = Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
     public init(inputHandle: FileHandle, outputPipe: Pipe, process: Process? = nil) {
         self.process = process
         self.input = inputHandle
+        self.outputPipe = outputPipe
         self.writer = ClientWireWriter(handle: inputHandle)
-        Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
+        self.readTask = Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
     public var connectionState: ConnectionState {
@@ -156,6 +160,10 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         await writer.close()
         try? input.close()
 
+        readTask?.cancel()
+        readTask = nil
+        try? outputPipe.fileHandleForReading.close()
+
         if let process {
             let gracePeriod = 2.0
             let start = Date()
@@ -174,6 +182,15 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
             }
         }
         updateState(.disconnected)
+    }
+
+    deinit {
+        readTask?.cancel()
+        try? input.close()
+        try? outputPipe.fileHandleForReading.close()
+        if let process, process.isRunning {
+            LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
+        }
     }
 
     public func getRuntimeInfo(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeInfo> { try await response("runtime.info", envelope) }

@@ -137,7 +137,12 @@ struct LingXiClientVNextTests {
         let serverTask = Task {
             try await server.run()
         }
-        defer { serverTask.cancel() }
+        defer {
+            serverTask.cancel()
+            try? serverInPipe.fileHandleForReading.close()
+            try? serverInPipe.fileHandleForWriting.close()
+            try? serverOutPipe.fileHandleForWriting.close()
+        }
 
         let transport = VNextStdioTransport(
             inputHandle: serverInPipe.fileHandleForWriting,
@@ -604,8 +609,12 @@ struct LingXiClientVNextTests {
         let eventStream1 = try await client.session.events(sessionID: sessionID)
         var consumed1: [SessionEventEnvelope] = []
         var it1 = eventStream1.makeAsyncIterator()
-        while consumed1.count < 1 {
-            if let ev = await it1.next() {
+        let start1 = ContinuousClock.now
+        while consumed1.count < 1 && (ContinuousClock.now - start1) < .seconds(5) {
+            let nextTask = Task { await it1.next() }
+            let timer = Task { try await Task.sleep(for: .milliseconds(100)); nextTask.cancel() }
+            if let ev = await nextTask.value {
+                timer.cancel()
                 consumed1.append(ev)
             }
         }
@@ -633,8 +642,12 @@ struct LingXiClientVNextTests {
         var it2 = resumedStream.makeAsyncIterator()
 
         // Read replayed events
-        while consumed2.count < 1 {
-            if let ev = await it2.next() {
+        let start2 = ContinuousClock.now
+        while consumed2.count < 1 && (ContinuousClock.now - start2) < .seconds(10) {
+            let nextTask = Task { await it2.next() }
+            let timer = Task { try await Task.sleep(for: .milliseconds(100)); nextTask.cancel() }
+            if let ev = await nextTask.value {
+                timer.cancel()
                 consumed2.append(ev)
             }
         }
