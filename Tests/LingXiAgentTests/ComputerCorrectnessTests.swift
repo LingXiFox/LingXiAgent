@@ -230,7 +230,7 @@ struct ComputerCorrectnessTests {
         let batch = ActionBatch(
             actions: [
                 .desktop(.primitive(.wait(condition: .duration(milliseconds: 30)))),
-                .desktop(.primitive(.wait(condition: .duration(milliseconds: 60))))
+                .desktop(.primitive(.wait(condition: .duration(milliseconds: 300))))
             ],
             stopOnFailure: true
         )
@@ -244,9 +244,14 @@ struct ComputerCorrectnessTests {
         #expect(result.succeeded == true)
         #expect(result.completedStepCount == 2)
         #expect(result.stepDurationsMs.count == 2)
-        // 第一步约为 30ms，第二步约为 60ms，两者不应相等（杜绝伪造平均值）
+        // The two waits differ tenfold so an averaged per-step duration cannot pass. The separation
+        // is wide deliberately: the macOS leg measured a 30ms and a 60ms wait 0.055ms apart, which
+        // no assertion about their difference can survive.
         #expect(result.stepDurationsMs[0] >= 20.0)
-        #expect(result.stepDurationsMs[1] >= 40.0)
-        #expect(abs(result.stepDurationsMs[0] - result.stepDurationsMs[1]) > 5.0)
+        #expect(result.stepDurationsMs[1] >= 200.0)
+        #expect(
+            abs(result.stepDurationsMs[0] - result.stepDurationsMs[1]) > 50.0,
+            "measured step durations were \(result.stepDurationsMs) ms"
+        )
     }
 }
