@@ -252,7 +252,22 @@ failed_chunks=()
 timed_out_chunks=()
 lingering_chunks=()
 # Set once the stage has replayed one silently-failing chunk through the test binary itself.
-direct_replay_done=""
+direct_replays=0
+# Two samples: one from a chunk that exits early and one from a chunk that burns the budget. They
+# are different defects and the replay costs seconds, not the chunk's timeout.
+MAX_DIRECT_REPLAYS=2
+
+maybe_direct_replay() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) ;;
+    *) return 0 ;;
+  esac
+  if [ "$direct_replays" -ge "$MAX_DIRECT_REPLAYS" ]; then
+    return 0
+  fi
+  direct_replays=$((direct_replays + 1))
+  direct_replay "$1" "$2"
+}
 
 # A chunk can also die without ever printing a verdict. Because a redirected stdout on Windows is
 # block-buffered, the whole tail is lost with the process, so the log shows passing tests and then
@@ -466,6 +481,9 @@ for chunk in "${chunks[@]}"; do
     [ -n "$victim" ] && echo "-- started but never reported: ${victim}"
     tail -20 "$chunk_log"
     [ "$ran" -eq 0 ] && dump_crash_evidence
+    # A wedge deserves the same treatment as an early exit: if the binary wedges when launched
+    # directly, the wrapper is not what is holding it.
+    maybe_direct_replay "$index" "$filter"
   elif [ "$lingering" = yes ]; then
     # A distinct defect from a hung test: the plan finished, so its verdict is trustworthy,
     # but the process never returned. Report both so neither signal is lost.
@@ -484,15 +502,10 @@ for chunk in "${chunks[@]}"; do
     # No summary at all means the run never reached its own end, which is a different defect from
     # a test that failed and was reported, so say which one this is and bring in the OS evidence.
     [ "$ran" -eq 0 ] && dump_crash_evidence
-    # One replay per stage is enough to answer crash-or-not, and it is Windows-only because there
-    # the test binary is a plain executable rather than a bundle.
-    if [ "$ran" -eq 0 ] && [ -z "$direct_replay_done" ]; then
-      case "$(uname -s)" in
-        MINGW*|MSYS*|CYGWIN*|Windows_NT)
-          direct_replay_done=yes
-          direct_replay "$index" "$filter"
-          ;;
-      esac
+    # A chunk that exits early with no verdict is the same unknown as one that times out, and the
+    # wrapper's status cannot tell a fault from an exit(1); replay it through the binary itself.
+    if [ "$ran" -eq 0 ]; then
+      maybe_direct_replay "$index" "$filter"
     fi
     grep -E "recorded an issue|Expectation failed|Caught error|error:|Test run with" "$chunk_log" \
       | head -30
