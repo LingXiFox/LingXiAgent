@@ -23,12 +23,6 @@ public enum AsyncLineReader: Sendable {
 
             if useDirectRead {
                 let task = Task.detached {
-                    // The reader owns the close. Closing the handle from another thread while this
-                    // loop is inside a blocking read frees the OS handle underneath a pending
-                    // operation, which on Windows is how a transport teardown takes down the whole
-                    // process without a Swift error to read. A pipe whose peer never closes its end
-                    // therefore keeps the handle open until it does: recoverable, unlike a crash.
-                    defer { try? handle.close() }
                     do {
                         while !Task.isCancelled {
 
@@ -51,6 +45,9 @@ public enum AsyncLineReader: Sendable {
                 }
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
+                    #if os(Windows)
+                    try? handle.close()
+                    #endif
                 }
             } else {
                 #if !os(Windows)
@@ -105,8 +102,6 @@ public enum AsyncLineReader: Sendable {
                     var leftover = Data()
                     let newline = UInt8(ascii: "\n")
                     let cr = UInt8(ascii: "\r")
-                    // Same ownership as in dataChunks: the reader closes, never the cancelling thread.
-                    defer { try? handle.close() }
 
                     do {
                         while !Task.isCancelled {
@@ -154,6 +149,9 @@ public enum AsyncLineReader: Sendable {
 
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
+                    #if os(Windows)
+                    try? handle.close()
+                    #endif
                 }
             } else {
                 #if !os(Windows)
