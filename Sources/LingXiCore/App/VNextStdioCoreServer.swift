@@ -162,7 +162,11 @@ public struct VNextStdioCoreServer: Sendable {
             #if !os(Windows)
             input.readabilityHandler = nil
             #endif
-            try? input.close()
+            // The direct-read reader closes this handle itself; closing it here would free the
+            // handle while that read is still pending.
+            if !AsyncLineReader.readerOwnsClose {
+                try? input.close()
+            }
         }
         await connectionTasks.drainAll()
     }
