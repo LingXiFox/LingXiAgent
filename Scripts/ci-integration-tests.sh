@@ -207,6 +207,18 @@ dump_stacks() {
       # binary is named after the *package*, so match that too or a live child reads as absent.
       echo "note: stack capture is unavailable on Windows runners; listing processes"
       ps -W 2>/dev/null | grep -iE "LingXiAgent|PackageTests|xctest|swift|rg\.exe" | head -30
+      # Per-thread wait reasons are the closest Windows equivalent of the /proc wchan census used
+      # on Linux, and the census is what turned a "hang" into "two cases parked on a pipe read".
+      # A wedge whose threads all sit in UserRequest is an await that will never be resumed; one
+      # with a thread parked in Executive/LocalAlert is blocked in a kernel object.
+      powershell -NoProfile -Command '
+$p = @(Get-Process | Where-Object { $_.ProcessName -like "LingXiAgentPackageTests*" })
+"test binary census: $($p.Count) process(es)"
+$p | ForEach-Object {
+  $t = @($_.Threads)
+  "  pid=$($_.Id) threads=$($t.Count) handles=$($_.HandleCount) waitReasons=" + (($t | Group-Object { $_.WaitReason } | ForEach-Object { $_.Name + ":" + $_.Count }) -join ",")
+}
+' 2>&1 | tr -d '\r' | head -20
       ;;
     *)
       local t
@@ -233,10 +245,27 @@ lingering_chunks=()
 dump_crash_evidence() {
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      echo "live test processes now: $(ps -W 2>/dev/null | grep -icE 'swift-test|LingXiAgent' || echo 0)"
-      powershell -NoProfile -Command 'Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Application Error|Windows Error Reporting|\.NET Runtime" } | Select-Object -First 5 TimeCreated, ProviderName, Message | Format-List' 2>/dev/null \
-        | tr -d '\r' | head -40 \
-        || echo "note: no crash event was logged, so the test binary exited under its own power"
+      echo "live test processes now: $(ps -W 2>/dev/null | grep -icE 'swift-test|LingXiAgent' | head -1)"
+      # Every count is printed by PowerShell, never inferred from a shell exit status: `grep -c`
+      # returns 1 when the count is zero, which made the old shell-level fallback announce "no crash
+      # event" for a reason that had nothing to do with the event log. A zero now has to mean zero,
+      # and an unreadable log has to say it is unreadable rather than look like an absence.
+      # Defender is queried because it terminates processes outside the OS crash path: no WER entry,
+      # no output, a nonzero exit code -- which is precisely the shape these deaths have.
+      powershell -NoProfile -Command '
+$since = (Get-Date).AddMinutes(-20)
+$crash = @(Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=$since} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Application Error|Windows Error Reporting|\.NET Runtime" })
+"application crash events in the last 20min: $($crash.Count)"
+$crash | Select-Object -First 4 | ForEach-Object { "  " + $_.TimeCreated + " [" + $_.Provider.Name + "] " + ($_.Message -replace "\r?\n", " ") }
+$dl = Get-WinEvent -ListLog "Microsoft-Windows-Windows Defender/Operational" -ErrorAction SilentlyContinue
+if (-not $dl) {
+  "defender log: not readable on this runner"
+} else {
+  $def = @(Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Windows Defender/Operational"; StartTime=$since; ID=1116,1117} -ErrorAction SilentlyContinue)
+  "defender detections in the last 20min: $($def.Count)"
+  $def | Select-Object -First 4 | ForEach-Object { "  " + $_.TimeCreated + " " + ($_.Message -replace "\r?\n", " ") }
+}
+' 2>&1 | tr -d '\r' | head -40
       ;;
   esac
 }
