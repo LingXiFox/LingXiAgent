@@ -10,20 +10,6 @@ import Glibc
 /// 采用高效定长缓冲区与换行符扫描，按块异步读取并流式输出完整文本行。
 public enum AsyncLineReader: Sendable {
 
-    /// Whether `dataChunks`/`lines` close the handle they were given once their own reader stops.
-    ///
-    /// Where a blocking direct read is used the reader is the only party that can know the read has
-    /// finished, so a caller closing the same handle in parallel frees it underneath a pending
-    /// operation. Callers that must unblock a parked reader are the ones on the callback path, where
-    /// no such read is in flight.
-    public static let readerOwnsClose: Bool = {
-        #if os(Windows)
-        return true
-        #else
-        return false
-        #endif
-    }()
-
     /// 从 FileHandle 异步流式读取 Data 数据块，支持 Darwin、Linux 与 Windows 全平台
     public static func dataChunks(from handle: FileHandle, bufferSize: Int = 4096) -> AsyncThrowingStream<Data, any Error> {
         AsyncThrowingStream { continuation in

@@ -163,9 +163,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         readTask?.cancel()
         readTask = nil
         outputPipe.fileHandleForReading.readabilityHandler = nil
-        if !AsyncLineReader.readerOwnsClose {
-            try? outputPipe.fileHandleForReading.close()
-        }
+        try? outputPipe.fileHandleForReading.close()
 
         if let process {
             let gracePeriod = 2.0
@@ -191,9 +189,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         readTask?.cancel()
         try? input.close()
         outputPipe.fileHandleForReading.readabilityHandler = nil
-        if !AsyncLineReader.readerOwnsClose {
-            try? outputPipe.fileHandleForReading.close()
-        }
+        try? outputPipe.fileHandleForReading.close()
         if let process, process.isRunning {
             LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
         }
