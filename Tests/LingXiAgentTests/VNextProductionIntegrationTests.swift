@@ -1,9 +1,23 @@
 import Foundation
 import Testing
 import LingXiProtocol
+import LingXiPlatform
 @testable import LingXiCore
 @testable import LingXiClient
 @testable import LingXiApplication
+
+/// Removing a workspace the process may still be sitting in leaves getcwd() failing, and
+/// Foundation then traps while resolving a relative path. A session restore intentionally moves
+/// the process into the workspace it restored, so step back out before deleting it.
+private func removeTemporaryWorkspace(_ url: URL) {
+    let fm = FileManager.default
+    let current = LingXiPlatform.process.currentWorkingDirectory()
+    let root = url.path
+    if current == root || current.hasPrefix(root + "/") {
+        _ = fm.changeCurrentDirectoryPath(fm.temporaryDirectory.path)
+    }
+    try? fm.removeItem(at: url)
+}
 
 private actor EventCollector {
     private(set) var events: [SessionEventPayload] = []
@@ -72,7 +86,7 @@ struct VNextProductionIntegrationTests {
         let provider = ScriptedFakeProvider(script: script)
         let (host, tempDir) = try await createTestEnvironment(provider: provider)
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         // Real stdio / pipe pair transport
@@ -216,7 +230,7 @@ struct VNextProductionIntegrationTests {
         let provider = ControllableFakeProvider()
         let (host, tempDir) = try await createTestEnvironment(provider: provider)
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -283,7 +297,7 @@ struct VNextProductionIntegrationTests {
     func testModeAndPermissionCommandWorkflow() async throws {
         let (host, tempDir) = try await createTestEnvironment(provider: ScriptedFakeProvider(script: []))
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -331,7 +345,7 @@ struct VNextProductionIntegrationTests {
         ])
         let (host, tempDir) = try await createTestEnvironment(provider: provider, permissionDecision: .allow)
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -378,7 +392,7 @@ struct VNextProductionIntegrationTests {
         let (host, tempDir) = try await createTestEnvironment(provider: provider)
         try Data("known\n".utf8).write(to: tempDir.appendingPathComponent("one.txt"))
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         let clientToServer = Pipe()
@@ -460,7 +474,7 @@ struct VNextProductionIntegrationTests {
         ])
         let (host, tempDir) = try await createTestEnvironment(provider: provider, interactive: true)
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -534,7 +548,7 @@ struct VNextProductionIntegrationTests {
     func testWorkflowDecisionProjectsToActiveInteraction() async throws {
         let (host, tempDir) = try await createTestEnvironment(provider: ScriptedFakeProvider(script: []))
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -598,7 +612,7 @@ struct VNextProductionIntegrationTests {
         let target = desktop.appendingPathComponent("lingxi-tui.txt")
         try? FileManager.default.removeItem(at: target)
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            removeTemporaryWorkspace(tempDir)
             try? FileManager.default.removeItem(at: desktop)
         }
 
@@ -661,7 +675,7 @@ struct VNextProductionIntegrationTests {
     func testHostDiscoversSkillsAndMCPs() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
+        defer { removeTemporaryWorkspace(tempDir) }
 
         let skillsDir = tempDir.appendingPathComponent("skills/test-skill", isDirectory: true)
         try FileManager.default.createDirectory(at: skillsDir, withIntermediateDirectories: true)
