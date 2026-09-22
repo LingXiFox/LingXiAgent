@@ -1023,4 +1023,51 @@ struct LingXiClientVNextTests {
         #expect(s1Observed != nil)
         #expect(s2Observed != nil)
     }
+
+    @Test("A request cancelled before it registers fails instead of parking forever")
+    func requestCancelledBeforeRegistrationFailsInsteadOfParkingForever() async throws {
+        // No core behind either pipe, so nothing can ever answer: the only thing that could release
+        // the await is the transport's own bookkeeping, which is what makes this a regression test for
+        // the wedged VNext chunks rather than a test of error plumbing.
+        let inbound = Pipe()
+        let outbound = Pipe()
+        let transport = VNextStdioTransport(inputHandle: inbound.fileHandleForWriting, outputPipe: outbound)
+
+        let (gateWaiter, gate) = AsyncStream<Void>.makeStream()
+        let (verdicts, verdictSink) = AsyncStream<String>.makeStream()
+        let request = Task {
+            // Cancellation is requested while the task is parked here, so it is certainly in effect
+            // before send() installs its cancellation handler -- the exact ordering the bug needs.
+            _ = await gateWaiter.first(where: { _ in true })
+            do {
+                _ = try await transport.getRuntimeInfo(envelope: QueryEnvelope(payload: VoidResult()))
+                verdictSink.yield("answered")
+            } catch let error as CoreError {
+                verdictSink.yield("threw:\(error.code.rawValue)")
+            } catch {
+                verdictSink.yield("threw:other")
+            }
+            verdictSink.finish()
+        }
+        request.cancel()
+        gate.yield(())
+        gate.finish()
+
+        let verdict = await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                for await value in verdicts { return value }
+                return "parked"
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return "parked"
+            }
+            let first = (try? await group.next()) ?? "parked"
+            group.cancelAll()
+            return first
+        }
+        // Release whatever is still parked so a failing assertion reports a test instead of eating the chunk.
+        await transport.disconnect()
+        #expect(verdict == "threw:\(CoreError.Code.commandCancelled.rawValue)", "cancel-before-registration produced: \(verdict)")
+    }
 }

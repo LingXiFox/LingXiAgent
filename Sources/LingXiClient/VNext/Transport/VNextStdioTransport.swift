@@ -447,6 +447,17 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
                     continuation.resume(throwing: terminalError)
                     return
                 }
+                // onCancel has already run by the time this line executes whenever the task was
+                // cancelled before the handler was installed, and it will never run again. Registering
+                // now would park the continuation in `pending` with nothing left to resume it, which is
+                // the whole VNext stdio chunk wedge: no I/O is outstanding, the await simply has no
+                // owner. JSONRPCPeer carries the same check for the same reason.
+                if Task.isCancelled || cancelledRequestIDs.contains(wireID) {
+                    cancelledRequestIDs.remove(wireID)
+                    lock.unlock()
+                    continuation.resume(throwing: CoreError(code: .commandCancelled, message: "Request \(wireID) cancelled"))
+                    return
+                }
                 pending[wireID] = continuation
                 lock.unlock()
 
