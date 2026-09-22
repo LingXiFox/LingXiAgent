@@ -80,9 +80,13 @@ import LingXiClient
         let scheduler = ProviderRateScheduler()
         let endpoint = rateEndpoint(retryPolicy: ProviderRetryPolicy(maxRetries: 0))
         let requestID = ModelRequestID("cooldown")
-        await scheduler.recordRateLimit(endpoint: endpoint, requestID: requestID, cooldown: .milliseconds(10))
+        // Take the origin before the cooldown is recorded: recordRateLimit stamps
+        // blockedUntil with its own clock reading, which lands a fraction of a millisecond
+        // before `started` if the capture comes after it, and then a correct 10ms wait
+        // measures 9.6ms against a deadline that started earlier.
         let clock = ContinuousClock()
         let started = clock.now
+        await scheduler.recordRateLimit(endpoint: endpoint, requestID: requestID, cooldown: .milliseconds(10))
 
         try await scheduler.admit(endpoint: endpoint, requestID: requestID, estimatedTokens: 1)
 
