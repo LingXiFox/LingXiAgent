@@ -71,10 +71,7 @@ struct VNextProductionIntegrationTests {
         let provider = ScriptedFakeProvider(script: script)
         let (host, tempDir) = try await createTestEnvironment(provider: provider)
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         // Real stdio / pipe pair transport
@@ -94,6 +91,7 @@ struct VNextProductionIntegrationTests {
             try? clientToServer.fileHandleForReading.close()
             try? clientToServer.fileHandleForWriting.close()
             try? serverToClient.fileHandleForWriting.close()
+            try? serverToClient.fileHandleForReading.close()
         }
 
         let transport = VNextStdioTransport(
@@ -202,6 +200,9 @@ struct VNextProductionIntegrationTests {
         // 1 reasoning frame -> index 0 -> finalIndex == 0
         #expect(step2CompletedEvent == 0)
         await client.disconnect()
+        serverTask.cancel()
+        _ = await serverTask.result
+        await host.shutdown()
     }
 
     // MARK: - 2. Queued Turn Execution Test
@@ -210,10 +211,7 @@ struct VNextProductionIntegrationTests {
         let provider = ControllableFakeProvider()
         let (host, tempDir) = try await createTestEnvironment(provider: provider)
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -272,6 +270,7 @@ struct VNextProductionIntegrationTests {
         #expect(t2?.status == .completed)
         #expect(t3?.status == .completed)
         await client.disconnect()
+        await host.shutdown()
     }
 
     // MARK: - 3. Mode / Permission Switching Test
@@ -279,10 +278,7 @@ struct VNextProductionIntegrationTests {
     func testModeAndPermissionCommandWorkflow() async throws {
         let (host, tempDir) = try await createTestEnvironment(provider: ScriptedFakeProvider(script: []))
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -318,6 +314,8 @@ struct VNextProductionIntegrationTests {
             snap = try await client.session.snapshot(sessionID: activeSessionID)
         }
         #expect(snap.permissionConfiguration == PermissionConfiguration.yoloFullAccess)
+        await client.disconnect()
+        await host.shutdown()
     }
 
     // MARK: - 4. ContextStateSnapshot Real Metrics Test
@@ -328,10 +326,7 @@ struct VNextProductionIntegrationTests {
         ])
         let (host, tempDir) = try await createTestEnvironment(provider: provider, permissionDecision: .allow)
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -347,6 +342,8 @@ struct VNextProductionIntegrationTests {
 
         #expect(snapshot.estimatedTokens > 0)
         #expect(snapshot.l1Tokens > 0)
+        await client.disconnect()
+        await host.shutdown()
     }
 
     // MARK: - 5. TUI Local Commands Isolation Test
@@ -376,10 +373,7 @@ struct VNextProductionIntegrationTests {
         let (host, tempDir) = try await createTestEnvironment(provider: provider)
         try Data("known\n".utf8).write(to: tempDir.appendingPathComponent("one.txt"))
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         let clientToServer = Pipe()
@@ -395,6 +389,7 @@ struct VNextProductionIntegrationTests {
             try? clientToServer.fileHandleForReading.close()
             try? clientToServer.fileHandleForWriting.close()
             try? serverToClient.fileHandleForWriting.close()
+            try? serverToClient.fileHandleForReading.close()
         }
 
         let transport = VNextStdioTransport(inputHandle: clientToServer.fileHandleForWriting, outputPipe: serverToClient)
@@ -438,6 +433,9 @@ struct VNextProductionIntegrationTests {
         #expect(state.toolNodes[second.callID]?.result?.callID == second.callID)
         #expect(state.activeToolCallIDs.isEmpty)
         await client.disconnect()
+        serverTask.cancel()
+        _ = await serverTask.result
+        await host.shutdown()
     }
 
     @Test("Question projects to active interaction and resumes the next model step")
@@ -453,10 +451,7 @@ struct VNextProductionIntegrationTests {
         ])
         let (host, tempDir) = try await createTestEnvironment(provider: provider, interactive: true)
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -523,16 +518,14 @@ struct VNextProductionIntegrationTests {
         }))
         #expect(provider.recorder.requests.count == 2)
         await client.disconnect()
+        await host.shutdown()
     }
 
     @Test("Workflow decisions project to the active interaction")
     func testWorkflowDecisionProjectsToActiveInteraction() async throws {
         let (host, tempDir) = try await createTestEnvironment(provider: ScriptedFakeProvider(script: []))
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -569,6 +562,7 @@ struct VNextProductionIntegrationTests {
         #expect(state.status == .actionRequired)
         #expect(state.activeInteraction?.decisionRequest == request)
         await client.disconnect()
+        await host.shutdown()
     }
 
     @Test("Workspace rejection requires YOLO before writing outside the workspace")
@@ -595,11 +589,8 @@ struct VNextProductionIntegrationTests {
         let target = desktop.appendingPathComponent("lingxi-tui.txt")
         try? FileManager.default.removeItem(at: target)
         defer {
-            Task {
-                await host.shutdown()
-                try? FileManager.default.removeItem(at: tempDir)
-                try? FileManager.default.removeItem(at: desktop)
-            }
+            try? FileManager.default.removeItem(at: tempDir)
+            try? FileManager.default.removeItem(at: desktop)
         }
 
         let client = try await LingXiClientVNext.connectInProcess(service: host)
@@ -653,6 +644,7 @@ struct VNextProductionIntegrationTests {
         }))
         #expect(provider.recorder.requests.count == 4)
         await client.disconnect()
+        await host.shutdown()
     }
 
     // MARK: - 7. Host Discovers Skills and MCPs
@@ -693,6 +685,7 @@ struct VNextProductionIntegrationTests {
         let resp = try await host.listExtensions(envelope: req)
         let skills = resp.payload.filter { $0.kind == ExtensionKind.skill }
         #expect(skills.contains(where: { $0.id == "test-skill" }))
+        await host.shutdown()
     }
 
     @Test("User Home real skills and MCP discovery returns expected counts")
