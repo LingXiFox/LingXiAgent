@@ -107,17 +107,39 @@ kill_tree() {
   local pid=$1
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      # Git Bash kill() does not reach the Win32 children of the runner, and pkill may not
-      # exist there at all. taskkill /T walks the process tree; the doubled slashes stop MSYS
-      # from rewriting the switches into paths.
-      taskkill //F //T //PID "$pid" > /dev/null 2>&1 \
-        || taskkill /F /T /PID "$pid" > /dev/null 2>&1
+      # $! from Git Bash is an MSYS pid, and taskkill speaks Win32 pids: passing the MSYS one
+      # either misses the process entirely or hits an unrelated one that reused the number. The
+      # previous chunks' process listing is the proof - ps -W prints the MSYS pid first and the
+      # Win32 pid fourth - so resolve through that table before killing. A missed kill leaves an
+      # orphaned swift-test holding .build and the chunk's report file, which is how one timeout
+      # turns into the next several.
+      win_pid="$(ps -W 2>/dev/null | awk -v p="$pid" '$1 == p { print $4; exit }')"
+      if [ -n "$win_pid" ]; then
+        # The doubled slashes stop MSYS from rewriting the switches into paths.
+        taskkill //F //T //PID "$win_pid" > /dev/null 2>&1
+      else
+        taskkill //F //T //PID "$pid" > /dev/null 2>&1 \
+          || taskkill /F /T /PID "$pid" > /dev/null 2>&1
+      fi
       ;;
     *)
       pkill -9 -f "LingXiAgentTests" 2>/dev/null
       ;;
   esac
   kill -9 "$pid" 2>/dev/null
+}
+
+# A test that vanishes mid-run leaves no result line, which is how a Windows crash shows up in
+# these logs: everything before it passed and the run simply stops. Name the started-but-never
+# reported cases so the failing chunk points at the test that died instead of at exit code 1.
+unreported_tests() {
+  local log=$1
+  comm -23 \
+    <(grep -aoE '◊ Test .* started\.' "$log" 2>/dev/null \
+        | sed -E 's/^◊ Test //; s/ started\.$//; s/^"//; s/"$//' | grep -av '^run$' | sort -u) \
+    <(grep -aoE '[√×✘] Test .*(passed|failed|recorded an issue)' "$log" 2>/dev/null \
+        | sed -E 's/^[√×✘] Test //; s/ (passed|failed|recorded).*//; s/^"//; s/"$//' | sort -u) \
+    | paste -sd'|' - | sed 's/|/, /g'
 }
 
 dump_stacks() {
@@ -230,6 +252,8 @@ for chunk in "${chunks[@]}"; do
 
   if [ "$alive" = no ]; then
     timed_out_chunks+=("Chunk ${index}: ${names}")
+    victim="$(unreported_tests "$chunk_log")"
+    [ -n "$victim" ] && echo "-- started but never reported: ${victim}"
     tail -20 "$chunk_log"
   elif [ "$lingering" = yes ]; then
     # A distinct defect from a hung test: the plan finished, so its verdict is trustworthy,
@@ -243,6 +267,8 @@ for chunk in "${chunks[@]}"; do
   elif [ "$status" -ne 0 ]; then
     failed_chunks+=("Chunk ${index}: ${names}")
     echo "-- chunk ${index} exit ${status} after ${elapsed}s --"
+    silent_victim="$(unreported_tests "$chunk_log")"
+    [ -n "$silent_victim" ] && echo "!! chunk ${index} started but never reported: ${silent_victim}"
     grep -E "recorded an issue|Expectation failed|Caught error|error:|Test run with" "$chunk_log" \
       | head -30
     echo "--- chunk ${index} full log ---"
