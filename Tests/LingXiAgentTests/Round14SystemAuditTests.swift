@@ -29,12 +29,21 @@ struct Round14SystemAuditTests {
             )
         }
 
-        func tearDown() {
-            serverTask.cancel()
+        /// Close only the write ends. A parked reader sees EOF once its peer goes away, while
+        /// closing a read handle from here frees it underneath a read still in flight -- and each
+        /// read handle already has an owner that closes it: the transport and the server.
+        func releaseWriteEnds() {
             try? clientToServerPipe.fileHandleForWriting.close()
-            try? clientToServerPipe.fileHandleForReading.close()
             try? serverToClientPipe.fileHandleForWriting.close()
-            try? serverToClientPipe.fileHandleForReading.close()
+        }
+
+        func tearDown() async {
+            await transport.disconnect()
+            serverTask.cancel()
+            // Deliberately not awaiting serverTask: on the blocking read its cancellation can only
+            // take effect once the peer end closes, and releasing below is what closes it, so
+            // awaiting here would turn a slow teardown into a permanent wait.
+            releaseWriteEnds()
         }
     }
 
@@ -188,7 +197,7 @@ struct Round14SystemAuditTests {
 
         try await withTestCoreHost(workspaceRoot: tempDir, providerAssembly: assembly) { host in
             let harness = StdioClientServerHarness(service: host)
-            defer { harness.tearDown() }
+            defer { harness.releaseWriteEnds() }
 
             let fixedCommandID = CommandID("wire-cmd-\(UUID().uuidString)")
             let sessionReceipt = try await harness.transport.createSession(envelope: CommandEnvelope(commandID: fixedCommandID, payload: CreateSessionRequest(workspace: tempDir.path)))
@@ -199,6 +208,7 @@ struct Round14SystemAuditTests {
             let retryReceipt = try await harness.transport.createSession(envelope: CommandEnvelope(commandID: fixedCommandID, payload: CreateSessionRequest(workspace: tempDir.path)))
             #expect(retryReceipt.commandID == fixedCommandID)
             #expect(retryReceipt.result?.sessionID == sessionID)
+            await harness.tearDown()
         }
     }
 
