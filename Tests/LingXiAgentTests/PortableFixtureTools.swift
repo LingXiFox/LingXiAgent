@@ -95,6 +95,11 @@ enum PortableFixture {
     }
 
     /// Interpreter for fixtures that script a protocol rather than a shell one-liner.
+    ///
+    /// Resolving by name is not enough on Windows: a zero-byte `python.exe` app-execution alias
+    /// sits on PATH ahead of any real install, launches, prints a Store suggestion and exits.
+    /// A fixture served by that stub reads as a transport that never answers, so a candidate is
+    /// only chosen once it has actually executed a statement.
     static func pythonInterpreter() -> String {
         #if os(Windows) || canImport(WinSDK)
         let names = ["python.exe", "python"]
@@ -105,12 +110,40 @@ enum PortableFixture {
         let paths: [String]? = ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]
         let fallback = "/usr/bin/python3"
         #endif
+        var tried: [String] = []
         for name in names {
-            if let found = LingXiPlatform.process.resolveExecutable(named: name, customSearchPaths: paths) {
-                return found
+            guard let found = LingXiPlatform.process.resolveExecutable(named: name, customSearchPaths: paths) else {
+                tried.append("\(name): not on PATH")
+                continue
             }
+            if interpreterRuns(found) { return found }
+            tried.append("\(found): launched but did not execute the probe")
         }
+        print("PortableFixture: no usable Python interpreter ([\(tried.joined(separator: ", "))]); falling back to \(fallback)")
         return fallback
+    }
+
+    /// Ask an interpreter to run one statement and look for the result on disk.
+    ///
+    /// The output goes to a file rather than a pipe so that a stub which never writes anything
+    /// cannot leave this call blocked on an end that never arrives.
+    private static func interpreterRuns(_ interpreter: String) -> Bool {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lingxi-python-probe-\(UUID().uuidString).txt")
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
+        guard let sink = try? FileHandle(forWritingTo: marker) else { return false }
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: interpreter)
+        process.arguments = ["-c", "import sys; sys.stdout.write('probe')"]
+        process.standardOutput = sink
+        process.standardError = sink
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return false }
+        process.waitUntilExit()
+        try? sink.close()
+        guard process.terminationStatus == 0 else { return false }
+        return (try? String(contentsOf: marker, encoding: .utf8))?.contains("probe") ?? false
     }
 
     static func python(_ script: String) -> (command: String, arguments: [String]) {
