@@ -160,6 +160,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         await writer.close()
         try? input.close()
 
+        // Drop this process's own copy of the write end first. The parent holds a duplicate of
+        // both ends of a Pipe it created, so as long as that copy stays open no reader can ever
+        // observe EOF -- and on Windows EOF, not a close issued under a pending read, is the only
+        // thing that releases a blocked read.
+        try? outputPipe.fileHandleForWriting.close()
+
         readTask?.cancel()
         readTask = nil
         outputPipe.fileHandleForReading.readabilityHandler = nil
