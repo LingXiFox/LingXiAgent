@@ -62,7 +62,13 @@ struct NonProviderLatencyRepairTests {
         for _ in range(20000):
             sys.stderr.write("fixture diagnostic output\\n")
         sys.stderr.flush()
-        for line in sys.stdin:
+        # Iterating sys.stdin read-aheads in block sizes, which on a pipe of short requests
+        # means the first line is never returned until the peer closes. readline() hands over
+        # each line as it arrives, which is what a request/response fixture needs.
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                break
             try:
                 request = json.loads(line)
             except ValueError:
