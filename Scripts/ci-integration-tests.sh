@@ -312,17 +312,24 @@ index=0
 # status without a debugger. It is a probe: its outcome is printed, never used as the verdict.
 direct_replay() {
   local index=$1 filter=$2
-  local bin probe_log probe_pid waited=0 status candidate
-  bin="$(swift build --show-bin-path 2>/dev/null || true)"
-  for candidate in "${bin%/}/LingXiAgentPackageTests.xctest" "${bin%/}/LingXiAgentPackageTests.xctest.exe"; do
-    [ -f "$candidate" ] && break
+  local probe_log probe_pid waited=0 status candidate found=""
+  # Locate the binary by path rather than asking SwiftPM for it: `swift build --show-bin-path`
+  # takes the package lock, and a killed chunk can still be holding it, which would park the whole
+  # stage inside a diagnostic.
+  for candidate in "$PWD"/.build/*/debug/LingXiAgentPackageTests.xctest \
+                   "$PWD"/.build/*/debug/LingXiAgentPackageTests.xctest.exe \
+                   "$PWD"/.build/debug/LingXiAgentPackageTests.xctest; do
+    if [ -f "$candidate" ]; then
+      found="$candidate"
+      break
+    fi
   done
-  if [ ! -f "$candidate" ]; then
-    echo "note: no test binary beside $bin, cannot replay directly"
+  if [ -z "$found" ]; then
+    echo "note: no test binary found under $PWD/.build, cannot replay directly"
     return
   fi
   probe_log="$(mktemp)"
-  SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$candidate" \
+  SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$found" \
     --testing-library swift-testing --filter "$filter" < /dev/null > "$probe_log" 2>&1 &
   probe_pid=$!
   while kill -0 "$probe_pid" 2>/dev/null; do
