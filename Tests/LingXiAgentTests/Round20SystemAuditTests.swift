@@ -58,7 +58,7 @@ struct Round20SystemAuditTests {
         // 5. Verify all events in events.jsonl have strictly monotonic sequences
         let reloadedLog = SessionEventLog(sessionID: sessionID, storageDirectory: tempDir)
         let reloadedEvents = await reloadedLog.allEvents()
-        #expect(reloadedEvents.count == 3)
+        try #require(reloadedEvents.count == 3)
         #expect(reloadedEvents[0].cursor.sequence == 1)
         #expect(reloadedEvents[1].cursor.sequence == 2)
         #expect(reloadedEvents[2].cursor.sequence == 3)

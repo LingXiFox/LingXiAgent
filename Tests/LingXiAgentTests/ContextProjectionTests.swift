@@ -44,7 +44,7 @@ import LingXiProtocol
         // Turn 1: 0 assistant messages after toolMsg
         let session1 = Session(id: sID, createdAt: .now, messages: [toolMsg])
         let projected1 = await projection.project(entries: [entry], session: session1, ecoreStore: store)
-        #expect(projected1.count == 1)
+        try #require(projected1.count == 1)
         if case let .toolResult(res1) = projected1[0].part {
             #expect(res1.content == largeContent) // Full content!
             #expect(res1.content.contains("Row data content") == true)

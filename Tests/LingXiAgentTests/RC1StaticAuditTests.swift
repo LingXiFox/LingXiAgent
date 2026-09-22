@@ -161,7 +161,7 @@ struct RC1StaticAuditTests {
         // Reload from disk to verify full convergence
         let reloadedLog = SessionEventLog(sessionID: sessionID, storageDirectory: tempDir)
         let reloadedEvents = await reloadedLog.allEvents()
-        #expect(reloadedEvents.count == 2)
+        try #require(reloadedEvents.count == 2)
         #expect(reloadedEvents[0].cursor.sequence == 1)
         #expect(reloadedEvents[1].cursor.sequence == 2)
     }
