@@ -169,7 +169,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         readTask?.cancel()
         readTask = nil
         outputPipe.fileHandleForReading.readabilityHandler = nil
+        #if !os(Windows)
+        // On Windows the stream's own termination handler closes this handle, because that is what
+        // releases the blocking read; closing it here as well means two threads call CloseHandle on
+        // the same handle at the same moment.
         try? outputPipe.fileHandleForReading.close()
+        #endif
 
         if let process {
             let gracePeriod = 2.0
@@ -195,7 +200,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         readTask?.cancel()
         try? input.close()
         outputPipe.fileHandleForReading.readabilityHandler = nil
+        #if !os(Windows)
+        // On Windows the stream's own termination handler closes this handle, because that is what
+        // releases the blocking read; closing it here as well means two threads call CloseHandle on
+        // the same handle at the same moment.
         try? outputPipe.fileHandleForReading.close()
+        #endif
         if let process, process.isRunning {
             LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
         }

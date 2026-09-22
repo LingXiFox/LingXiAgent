@@ -161,8 +161,10 @@ public struct VNextStdioCoreServer: Sendable {
         } onCancel: {
             #if !os(Windows)
             input.readabilityHandler = nil
-            #endif
+            // Same reason as the transport: the reader's own termination handler closes this on
+            // Windows, and a second concurrent close of one handle is a race, not a safety net.
             try? input.close()
+            #endif
         }
         await connectionTasks.drainAll()
     }
