@@ -49,7 +49,7 @@ jobs:
             cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
           fi
           tar -czf "dist/lingxiagent-macos-arm64.tar.gz" -C staging .
-          shasum -a 256 "dist/lingxiagent-macos-arm64.tar.gz" > "dist/lingxiagent-macos-arm64.tar.gz.sha256"
+          (cd dist && shasum -a 256 lingxiagent-macos-arm64.tar.gz > lingxiagent-macos-arm64.tar.gz.sha256)
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -92,7 +92,9 @@ jobs:
             cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
           fi
           tar -czf "dist/lingxiagent-linux-x86_64.tar.gz" -C staging .
-          sha256sum "dist/lingxiagent-linux-x86_64.tar.gz" > "dist/lingxiagent-linux-x86_64.tar.gz.sha256"
+          # Recorded from inside dist/ so the name in the file is the bare asset name:
+          # with a "dist/" prefix the checksum cannot be verified where it is downloaded to.
+          (cd dist && sha256sum lingxiagent-linux-x86_64.tar.gz > lingxiagent-linux-x86_64.tar.gz.sha256)
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
