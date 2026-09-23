@@ -115,7 +115,10 @@ jobs:
   test-linux:
     name: Linux Build & Test (x86_64)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The stress rounds run after the normal Stage 5, so a dispatched run needs the room for both;
+    # 45 minutes is sized for a gate pass, and clipping the tail would report a stress round as a
+    # job timeout rather than as whatever it actually found.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 80 || 45 }}
     container:
       image: swift:6.0.3
       options: --privileged
