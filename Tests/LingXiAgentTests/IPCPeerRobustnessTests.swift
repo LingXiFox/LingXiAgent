@@ -4,7 +4,7 @@ import Foundation
 @testable import LingXiPlatform
 @testable import LingXiCore
 
-@Suite("IPC Peer Robustness Tests (Round 3 Phase A)")
+@Suite("IPC Peer Robustness Tests (Round 3 Phase A)", .serialized)
 struct IPCPeerRobustnessTests {
     private static func resolvePython() -> String {
         PortableFixture.pythonInterpreter()

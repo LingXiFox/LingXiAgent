@@ -445,6 +445,9 @@ direct_replay() {
     echo "   ^ that is an NTSTATUS exception code, i.e. the process died from a fault, not from exit()"
   fi
   grep -aiE "Fatal error|Crash|Exception|EXC_|Test run with|Backtrace|exited with|signal code|Process encountered" "$probe_log" | tail -10
+  # The head as well: when the driver itself complains about the child it does so early, and a
+  # tail-only view loses it behind the per-test lines.
+  head -20 "$probe_log"
   tail -12 "$probe_log"
   rm -f "$probe_log"
 }

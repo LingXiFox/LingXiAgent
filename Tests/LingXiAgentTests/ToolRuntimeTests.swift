@@ -35,6 +35,7 @@ private actor QuestionCapture {
     }
 }
 
+@Suite(.serialized)
 struct ToolRuntimeTests {
     @Test func globUnderASubdirectoryRootReportsWorkspaceRelativePathsOnce() async throws {
         let root = try fixture()
