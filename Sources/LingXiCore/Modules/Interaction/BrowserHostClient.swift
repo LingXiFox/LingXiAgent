@@ -84,7 +84,9 @@ public final class BrowserHostClient: @unchecked Sendable {
             args = extra + [scriptPath]
         }
 
-        var procEnv = ProcessInfo.processInfo.environment
+        // Inheriting the full parent environment would hand the sidecar every LINGXI_* credential
+        // var the host has. Sanitize first, then re-add only what the browser host actually needs.
+        var procEnv = EnvironmentSanitizer.sanitized()
         procEnv["LINGXI_BROWSER_HOST_MODE"] = mode.rawValue
 
         let managedProc = ManagedProcess(

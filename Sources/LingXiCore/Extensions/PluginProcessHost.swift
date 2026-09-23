@@ -152,6 +152,10 @@ public actor PluginProcessHost {
         let proc = Process()
         proc.executableURL = binaryURL
         proc.currentDirectoryURL = binaryURL.deletingLastPathComponent()
+        // Plugins must never inherit the host's provider credentials or the vault passphrase.
+        // Leaving `environment` unset makes Foundation forward every parent var, including
+        // LINGXI_CREDENTIALS_PASSPHRASE that CoreHost/main.swift puts into the process env.
+        proc.environment = EnvironmentSanitizer.sanitized()
 
         let inPipe = Pipe()
         let outPipe = Pipe()
