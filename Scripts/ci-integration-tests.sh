@@ -356,7 +356,7 @@ index=0
 # status without a debugger. It is a probe: its outcome is printed, never used as the verdict.
 direct_replay() {
   local index=$1 filter=$2
-  local probe_log probe_pid waited=0 status candidate found=""
+  local probe_log probe_pid waited=0 status candidate found="" replay
   # Locate the binary by path rather than asking SwiftPM for it: `swift build --show-bin-path`
   # takes the package lock, and a killed chunk can still be holding it, which would park the whole
   # stage inside a diagnostic.
@@ -385,12 +385,19 @@ direct_replay() {
   printf 'replay library probe: toolchain=%s[%s] buildDir=%s[%s]\n' \
     "$swift_bin" "$(ls "$swift_bin/Testing.dll" 2>/dev/null || echo missing)" \
     "$bin_dir" "$(ls "$bin_dir/Testing.dll" 2>/dev/null || echo missing)"
-  if [ ! -f "$swift_bin/Testing.dll" ] && [ ! -f "$bin_dir/Testing.dll" ]; then
-    printf 'replay: neither candidate holds Testing.dll, toolchain search says: %s\n' \
-      "$(find "$swift_bin/../.." -name 'Testing.dll' 2>/dev/null | head -3 | tr '\n' ' ')"
+  printf 'replay: where the testing library actually is: %s\n' \
+    "$(find "$swift_bin/.." "$PWD/.build" -maxdepth 6 -name 'Testing*.dll' 2>/dev/null | head -3 | tr '\n' ' ')"
+  # Two ways to get the child's status, and the choice is made by evidence rather than preference:
+  # running the binary directly is exact but needs the library path that `swift test` sets up, and
+  # this runner does not keep it next to the compiler. Falling back to the driver still answers the
+  # question, because a verbose driver reports the status of the process it launched.
+  if [ -f "$swift_bin/Testing.dll" ] || [ -f "$bin_dir/Testing.dll" ]; then
+    replay=("$found" --testing-library swift-testing --filter "$filter")
+  else
+    replay=("${SWIFT_TEST[@]}" --verbose --filter "$filter")
   fi
-  PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$found" \
-    --testing-library swift-testing --filter "$filter" < /dev/null > "$probe_log" 2>&1 &
+  PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
+    < /dev/null > "$probe_log" 2>&1 &
   probe_pid=$!
   while kill -0 "$probe_pid" 2>/dev/null; do
     if [ "$waited" -ge 120 ]; then
@@ -407,7 +414,7 @@ direct_replay() {
   if [ "$status" -ge 3221225472 ] 2>/dev/null; then
     echo "   ^ that is an NTSTATUS exception code, i.e. the process died from a fault, not from exit()"
   fi
-  grep -aiE "Fatal error|Crash|Exception|EXC_|Test run with|Backtrace" "$probe_log" | tail -10
+  grep -aiE "Fatal error|Crash|Exception|EXC_|Test run with|Backtrace|exited with|signal code|Process encountered" "$probe_log" | tail -10
   tail -12 "$probe_log"
   rm -f "$probe_log"
 }
