@@ -6,7 +6,6 @@ import LingXiClient
 import LingXiApplication
 import Testing
 
-@Suite(.serialized)
 struct BackgroundCommandTests {
     private func makeTemporaryWorkspace() throws -> (URL, WorkspaceRoot) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-bg-tests-\(UUID().uuidString)")

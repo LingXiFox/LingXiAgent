@@ -330,6 +330,15 @@ dump_crash_evidence() {
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
       echo "live test processes now: $(ps -W 2>/dev/null | grep -icE 'swift-test|LingXiAgent' | head -1)"
+      # WER local dumps are enabled by the workflow; a dump here means the process faulted, and no
+      # dump after this many deaths means something in it called exit(). Nothing else in the log can
+      # make that distinction, because the runner writes no crash event either way.
+      dumps="$(ls -t /d/a/_temp/dumps 2>/dev/null | head -3)"
+      if [ -n "$dumps" ]; then
+        printf 'crash dumps present: %s\n' "$dumps"
+      else
+        echo "crash dumps: none written for this death"
+      fi
       # Every count is printed by PowerShell, never inferred from a shell exit status: `grep -c`
       # returns 1 when the count is zero, which made the old shell-level fallback announce "no crash
       # event" for a reason that had nothing to do with the event log. A zero now has to mean zero,

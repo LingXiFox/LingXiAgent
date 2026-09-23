@@ -325,6 +325,21 @@ jobs:
         shell: bash
         timeout-minutes: 75
         run: |
+          # The last discriminator left between "the process faulted" and "the process called exit()"
+          # is a crash dump: no Windows Error Reporting event appears (0 across every round), and
+          # that is equally consistent with reporting being disabled and with a clean exit. Ask WER
+          # for user minidumps -- a few megabytes, at most a handful -- and let their existence answer
+          # the question. This is an ephemeral single-tenant runner, and the key is never read back
+          # for anything but the dump it produces.
+          powershell -NoProfile -Command '
+$key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+New-Item -Path $key -Force | Out-Null
+New-ItemProperty -Path $key -Name DumpFolder -Value "D:\a\_temp\dumps" -PropertyType ExpandString -Force | Out-Null
+New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $key -Name DumpCount -Value 8 -PropertyType DWord -Force | Out-Null
+"local dumps -> " + (Get-ItemProperty -Path $key).DumpFolder
+' 2>&1 | tail -2
+          mkdir -p /d/a/_temp/dumps 2>/dev/null || true
           # `pwd -W` gives the drive-letter form; the xunit path is handed to a native
           # swift-test process, which cannot resolve the MSYS-style path $PWD reports.
           # The per-chunk budget is wider than macOS/Linux because this runner is measurably
