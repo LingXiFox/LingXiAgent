@@ -6,6 +6,11 @@ name: CI Matrix Gate
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      stress_rounds:
+        description: 'Linux only: consecutive stress rounds for the stdio/pipe family (0 = off)'
+        required: false
+        default: '0'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -206,7 +211,7 @@ jobs:
           # than stuck -- cases waiting on outbound TCP retries in a networkless container burn
           # ~140s and then finish -- and killing that loses results that were going to be
           # reported. The egress itself is the defect being tracked, not the budget.
-          su -s /bin/bash -m testuser -c "LINGXI_CI_XUNIT_DIR='$PWD/test-results' LINGXI_CI_CHUNK_TIMEOUT=300 bash Scripts/ci-integration-tests.sh < /dev/null"
+          su -s /bin/bash -m testuser -c "LINGXI_CI_XUNIT_DIR='$PWD/test-results' LINGXI_CI_CHUNK_TIMEOUT=300 LINGXI_CI_STRESS_ROUNDS='${{ github.event.inputs.stress_rounds || '0' }}' bash Scripts/ci-integration-tests.sh < /dev/null"
 
       - name: Stage 6 - Smoke test CLI executables
         # An inline `run:` inside the Linux container defaults to `sh`, which rejects

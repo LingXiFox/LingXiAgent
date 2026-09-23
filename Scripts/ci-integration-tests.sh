@@ -27,6 +27,13 @@ RETRY_TIMEOUT="${LINGXI_CI_RETRY_TIMEOUT:-90}"
 # Only bound the retry when the GNU behaviour is actually there, so a name clash costs a retry
 # and never a failed stage.
 if timeout --version >/dev/null 2>&1; then TIMEOUT_CMD=(timeout -k 5 "$RETRY_TIMEOUT"); else TIMEOUT_CMD=(); fi
+# Convergence proof for the stdio/pipe family: N consecutive clean passes over exactly those suites,
+# bounded per round so a hang names itself instead of eating the step timeout. Off by default; a
+# workflow_dispatch input turns it on, because one green Stage 5 never proved stability -- Linux
+# lost the same MCPCLITests case eight rounds running before poll() explained it.
+STRESS_ROUNDS="${LINGXI_CI_STRESS_ROUNDS:-0}"
+STRESS_ROUND_TIMEOUT="${LINGXI_CI_STRESS_ROUND_TIMEOUT:-300}"
+STRESS_SUITES="MCPCLITests MCPRuntimeTests IPCPeerRobustnessTests NonProviderLatencyRepairTests PlatformBuildGateTests ToolRuntimeTests BackgroundCommandTests VNextProductionIntegrationTests LingXiClientVNextTests Round6SystemAuditTests Round14SystemAuditTests"
 # When set, every chunk also writes an xunit report into this directory so the CI
 # artifact keeps working even though the suite no longer runs as one invocation.
 XUNIT_DIR="${LINGXI_CI_XUNIT_DIR:-}"
@@ -41,9 +48,9 @@ ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
 #
 # The rest need it for attribution and containment. Each of them has been named by the event
 # stream as the case in flight when a Windows chunk stopped reporting -- they spawn a child and
-# read its pipes, and the teardown of that pipe still has a defect open in this repo (see
-# AsyncLineReader's Windows branch). While one chunk dies it takes every other suite's results in
-# that process with it, which is how twelve unrelated suites went unreported at a time. Running
+# read its pipes, and that teardown is where the open defects have lived. While one chunk dies it
+# takes every other suite's results in that process with it, which is how twelve unrelated suites
+# went unreported at a time. Running
 # them alone cannot fix the defect, but it says which suite died and leaves the others to report.
 ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests LingXiClientVNextTests VNextProductionIntegrationTests ProtocolVNextFrozenContractTests Round6SystemAuditTests Round14SystemAuditTests AuthCLITests ResumeCLITests OAuthStrategyTests CodingToolScenarioTests AgentBehaviorTests ApplicationChangeSetTests ModelSelectionAndTurnExecutionFixTests}"
 
@@ -467,6 +474,50 @@ for chunk in "${chunks[@]}"; do
   rm -f "$chunk_log" "$chunk_events"
   echo "::endgroup::"
 done
+
+if [ "$STRESS_ROUNDS" -gt 0 ] 2>/dev/null; then
+  stress_filter="$(printf '%s/' $STRESS_SUITES | paste -sd'|' -)"
+  echo
+  echo "================ Stress: ${STRESS_ROUNDS} passes over ${STRESS_SUITES// /,} ================"
+  stress_round=0
+  stress_failed=0
+  stress_timed_out=0
+  while [ "$stress_round" -lt "$STRESS_ROUNDS" ]; do
+    stress_round=$((stress_round + 1))
+    stress_log="$(mktemp)"
+    "${SWIFT_TEST[@]}" --filter "$stress_filter" < /dev/null > "$stress_log" 2>&1 &
+    stress_pid=$!
+    stress_waited=0
+    while kill -0 "$stress_pid" 2>/dev/null; do
+      if [ "$stress_waited" -ge "$STRESS_ROUND_TIMEOUT" ]; then
+        echo "  round ${stress_round}: HUNG past ${STRESS_ROUND_TIMEOUT}s"
+        kill_tree "$stress_pid"
+        stress_failed=1
+        stress_timed_out=$((stress_timed_out + 1))
+        break
+      fi
+      sleep 5
+      stress_waited=$((stress_waited + 5))
+    done
+    wait "$stress_pid" 2>/dev/null
+    stress_status=$?
+    stress_ran="$(grep -oE 'Test run with [0-9]+ test' "$stress_log" | tail -1 | grep -oE '[0-9]+' || true)"
+    if [ "$stress_status" -ne 0 ]; then
+      stress_failed=1
+      printf '  round %s: exit %s after %ss\n' "$stress_round" "$stress_status" "$stress_waited"
+      grep -aE "recorded an issue|Expectation failed|Caught error|error:" "$stress_log" | head -8
+      echo "  --- tail ---"; tail -6 "$stress_log"
+    else
+      printf '  round %s: ok, %s tests in %ss\n' "$stress_round" "${stress_ran:-?}" "$stress_waited"
+    fi
+    rm -f "$stress_log"
+  done
+  echo "stress: ${stress_round} rounds, ${stress_timed_out} hung, verdict $([ "$stress_failed" -eq 0 ] && echo stable || echo UNSTABLE)"
+  if [ "$stress_failed" -ne 0 ]; then
+    echo "::error::the stress family did not pass ${STRESS_ROUNDS} consecutive rounds"
+    exit 1
+  fi
+fi
 
 echo
 # A chunk matching nothing is already a hard failure above; this aggregate is a cross-check
