@@ -485,7 +485,11 @@ if [ "$STRESS_ROUNDS" -gt 0 ] 2>/dev/null; then
   while [ "$stress_round" -lt "$STRESS_ROUNDS" ]; do
     stress_round=$((stress_round + 1))
     stress_log="$(mktemp)"
-    "${SWIFT_TEST[@]}" --filter "$stress_filter" < /dev/null > "$stress_log" 2>&1 &
+    stress_events="$(mktemp)"
+    # The event stream is what makes a hung round diagnosable rather than just red: it names the
+    # case that was in flight, which is the first question a stress failure raises.
+    "${SWIFT_TEST[@]}" --filter "$stress_filter" --event-stream-output-path "$stress_events" \
+      < /dev/null > "$stress_log" 2>&1 &
     stress_pid=$!
     stress_waited=0
     while kill -0 "$stress_pid" 2>/dev/null; do
@@ -506,11 +510,13 @@ if [ "$STRESS_ROUNDS" -gt 0 ] 2>/dev/null; then
       stress_failed=1
       printf '  round %s: exit %s after %ss\n' "$stress_round" "$stress_status" "$stress_waited"
       grep -aE "recorded an issue|Expectation failed|Caught error|error:" "$stress_log" | head -8
+      stress_victim="$(unreported_from_events "$stress_events")"
+      [ -n "$stress_victim" ] && echo "  started but never reported: ${stress_victim}"
       echo "  --- tail ---"; tail -6 "$stress_log"
     else
       printf '  round %s: ok, %s tests in %ss\n' "$stress_round" "${stress_ran:-?}" "$stress_waited"
     fi
-    rm -f "$stress_log"
+    rm -f "$stress_log" "$stress_events"
   done
   echo "stress: ${stress_round} rounds, ${stress_timed_out} hung, verdict $([ "$stress_failed" -eq 0 ] && echo stable || echo UNSTABLE)"
   if [ "$stress_failed" -ne 0 ]; then
