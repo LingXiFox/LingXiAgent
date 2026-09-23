@@ -22,7 +22,10 @@ public enum AsyncLineReader: Sendable {
     /// cancellation: a thread parked in a plain `read` cannot be interrupted by closing the
     /// descriptor, which is why this path does not block.
     private static func polledRead(fd: Int32, bufferSize: Int) -> Data? {
-        var waiting = pollfd(fd: fd, events: Int16(POLLIN.rawValue), revents: 0)
+        // glibc imports POLLIN as Int32 in one toolchain and as an enum in another, and both spellings
+        // break the other. The value is 0x0001 on every Linux ABI, so name it instead of importing it.
+        let pollIn: Int16 = 0x0001
+        var waiting = pollfd(fd: fd, events: pollIn, revents: 0)
         let ready = poll(&waiting, 1, 200)
         if ready == 0 { return Data() }
         if ready < 0 {
