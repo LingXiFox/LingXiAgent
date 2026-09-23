@@ -364,7 +364,7 @@ index=0
 # status without a debugger. It is a probe: its outcome is printed, never used as the verdict.
 direct_replay() {
   local index=$1 filter=$2
-  local probe_log probe_pid waited=0 status candidate found="" replay
+  local probe_log probe_pid waited=0 status candidate found="" replay dll_dir dll_path hit
   # Locate the binary by path rather than asking SwiftPM for it: `swift build --show-bin-path`
   # takes the package lock, and a killed chunk can still be holding it, which would park the whole
   # stage inside a diagnostic.
@@ -393,16 +393,32 @@ direct_replay() {
   printf 'replay library probe: toolchain=%s[%s] buildDir=%s[%s]\n' \
     "$swift_bin" "$(ls "$swift_bin/Testing.dll" 2>/dev/null || echo missing)" \
     "$bin_dir" "$(ls "$bin_dir/Testing.dll" 2>/dev/null || echo missing)"
-  # Two ways to get the child's status, and the choice is made by evidence rather than preference:
-  # running the binary directly is exact but needs the library path that `swift test` sets up, and
-  # this runner does not keep it next to the compiler. Falling back to the driver still answers the
-  # question, because a verbose driver reports the status of the process it launched.
-  if [ -f "$swift_bin/Testing.dll" ] || [ -f "$bin_dir/Testing.dll" ]; then
+  # Where is it, then? Search the toolchain only: the previous round's answer was that it is in
+  # neither obvious directory, and adding $PWD/.build to the search cost more than it told.
+  dll_dir=""
+  for candidate in "$swift_bin" "$bin_dir" "$swift_bin/../lib" "$swift_bin/../lib/swift/windows" \
+                   "$swift_bin/../usr/lib/swift/windows" "$swift_bin/../lib/swift/windows/"; do
+    if [ -f "$candidate/Testing.dll" ]; then
+      dll_dir="$(cd "$candidate" 2>/dev/null && pwd)"
+      break
+    fi
+  done
+  if [ -z "$dll_dir" ]; then
+    hit="$(find "$swift_bin/.." -name 'Testing.dll' 2>/dev/null | head -1)"
+    [ -n "$hit" ] && dll_dir="$(dirname "$hit")"
+  fi
+  printf 'replay: Testing.dll resolved to [%s]\n' "${dll_dir:-nowhere found}"
+  # Two ways to get the child's status, chosen by evidence: running the binary directly is exact but
+  # needs the library path `swift test` arranges; the driver is the fallback and its exit code is
+  # its own, which is why the previous round could only prove the failure reproduces in isolation.
+  if [ -n "$dll_dir" ]; then
     replay=("$found" --testing-library swift-testing --filter "$filter")
+    dll_path="$dll_dir"
   else
     replay=("${SWIFT_TEST[@]}" --filter "$filter")
+    dll_path="$swift_bin"
   fi
-  PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
+  PATH="$dll_path:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
     < /dev/null > "$probe_log" 2>&1 &
   probe_pid=$!
   while kill -0 "$probe_pid" 2>/dev/null; do
