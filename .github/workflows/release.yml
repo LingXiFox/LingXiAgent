@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'V*'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -29,10 +30,16 @@ jobs:
         run: |
           swift build -c release --product lingxiagent
           swift build -c release --product LingXiCoreHost
+          swift build -c release --product LingXiTUI
           BIN_PATH="$(swift build -c release --show-bin-path)"
           mkdir -p dist staging
           cp -f "$BIN_PATH/lingxiagent" staging/
           cp -f "$BIN_PATH/LingXiCoreHost" staging/
+          # The TUI is one of the three declared user entry points, and the Linux package has always
+          # shipped it; the macOS one did not, so the two platforms delivered different products.
+          if [ -f "$BIN_PATH/LingXiTUI" ]; then
+            cp -f "$BIN_PATH/LingXiTUI" staging/
+          fi
           if [ -d "$BIN_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_PATH/LingXiAgent_LingXiCore.bundle" staging/
           fi
