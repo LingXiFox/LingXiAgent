@@ -381,7 +381,7 @@ index=0
 # status without a debugger. It is a probe: its outcome is printed, never used as the verdict.
 direct_replay() {
   local index=$1 filter=$2
-  local probe_log probe_pid waited=0 status candidate found="" replay dll_dir dll_path hit
+  local probe_log probe_pid waited=0 status candidate found="" replay attempt probe_killed
   # Locate the binary by path rather than asking SwiftPM for it: `swift build --show-bin-path`
   # takes the package lock, and a killed chunk can still be holding it, which would park the whole
   # stage inside a diagnostic.
@@ -398,58 +398,58 @@ direct_replay() {
     return
   fi
   probe_log="$(mktemp)"
-  # The binary links against the testing library that sits beside the compiler, and `swift test`
-  # puts that directory on the child's PATH -- a direct exec does not, which is why the first two
-  # replays reported the loader's 127 instead of the test process's status. Resolve the directory
-  # the way Windows knows it and convert it: `dirname` does not treat backslashes as separators, so
-  # the previous attempt silently produced ".". Where Testing.dll actually lives is printed, so a
-  # second failure cannot be ambiguous about the reason.
+  # Resolve the toolchain the way Windows knows it and convert it: `dirname` does not treat
+  # backslashes as separators, so an earlier attempt silently produced ".".
   swift_win="$(powershell -NoProfile -Command 'Split-Path -Parent (Get-Command swift.exe).Source' 2>/dev/null | tr -d '\r' | head -1)"
   swift_bin="$(cygpath -u "$swift_win" 2>/dev/null || printf '%s' "$swift_win")"
   bin_dir="$(dirname "$found")"
-  printf 'replay library probe: toolchain=%s[%s] buildDir=%s[%s]\n' \
-    "$swift_bin" "$(ls "$swift_bin/Testing.dll" 2>/dev/null || echo missing)" \
-    "$bin_dir" "$(ls "$bin_dir/Testing.dll" 2>/dev/null || echo missing)"
-  # Where is it, then? Search the toolchain only: the previous round's answer was that it is in
-  # neither obvious directory, and adding $PWD/.build to the search cost more than it told.
-  dll_dir=""
-  for candidate in "$swift_bin" "$bin_dir" "$swift_bin/../lib" "$swift_bin/../lib/swift/windows" \
-                   "$swift_bin/../usr/lib/swift/windows" "$swift_bin/../lib/swift/windows/"; do
-    if [ -f "$candidate/Testing.dll" ]; then
-      dll_dir="$(cd "$candidate" 2>/dev/null && pwd)"
-      break
+  # Print what the loader actually has to work with, rather than asserting where one file is: the
+  # previous round reported "Testing.dll resolved to [nowhere found]" while the same binary ran fine
+  # under the driver, so either the DLL has another name or the exec never got that far. Both remain
+  # possible until the DLL inventory and the binary itself are shown.
+  printf 'replay probe: binary=[%s] toolchain=[%s]\n' "$(ls -l "$found" 2>&1 | tr -s ' ' | cut -d' ' -f5,9)" "$swift_bin"
+  printf 'dlls beside the binary: [%s]\n' "$(ls "$bin_dir"/*.dll 2>/dev/null | xargs -n1 basename 2>/dev/null | paste -sd' ' -)"
+  printf 'testing-shaped dlls in the toolchain: [%s]\n' "$(find "$swift_bin/.." \( -iname '*testing*.dll' -o -iname '*xctest*.dll' \) 2>/dev/null | head -5 | paste -sd' ' -)"
+  # Always try the binary itself first. `swift test` returns 1 whatever happened to the child it
+  # launched, so through the wrapper a fault and a voluntary exit(1) are indistinguishable -- and
+  # that ambiguity is exactly what left 11 Windows chunks unclassified. The driver is used only when
+  # the direct exec could not start, which is identifiable by its own status.
+  for attempt in direct driver; do
+    if [ "$attempt" = direct ]; then
+      replay=("$found" --testing-library swift-testing --filter "$filter")
+    else
+      echo "-- direct exec did not run the tests; replaying through the driver, whose status is its own"
+      replay=("${SWIFT_TEST[@]}" --filter "$filter")
     fi
-  done
-  if [ -z "$dll_dir" ]; then
-    hit="$(find "$swift_bin/.." -name 'Testing.dll' 2>/dev/null | head -1)"
-    [ -n "$hit" ] && dll_dir="$(dirname "$hit")"
-  fi
-  printf 'replay: Testing.dll resolved to [%s]\n' "${dll_dir:-nowhere found}"
-  # Two ways to get the child's status, chosen by evidence: running the binary directly is exact but
-  # needs the library path `swift test` arranges; the driver is the fallback and its exit code is
-  # its own, which is why the previous round could only prove the failure reproduces in isolation.
-  if [ -n "$dll_dir" ]; then
-    replay=("$found" --testing-library swift-testing --filter "$filter")
-    dll_path="$dll_dir"
-  else
-    replay=("${SWIFT_TEST[@]}" --filter "$filter")
-    dll_path="$swift_bin"
-  fi
-  PATH="$dll_path:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
-    < /dev/null > "$probe_log" 2>&1 &
-  probe_pid=$!
-  while kill -0 "$probe_pid" 2>/dev/null; do
-    if [ "$waited" -ge 120 ]; then
-      echo "-- direct replay still running after ${waited}s: the wedge reproduces through the binary too"
-      kill_tree "$probe_pid"
-      break
+    waited=0
+    probe_killed=0
+    PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
+      < /dev/null > "$probe_log" 2>&1 &
+    probe_pid=$!
+    while kill -0 "$probe_pid" 2>/dev/null; do
+      if [ "$waited" -ge 120 ]; then
+        echo "-- direct replay still running after ${waited}s: the wedge reproduces through the binary too"
+        kill_tree "$probe_pid"
+        probe_killed=1
+        break
+      fi
+      sleep 5
+      waited=$((waited + 5))
+    done
+    wait "$probe_pid" 2>/dev/null
+    status=$?
+    if [ "$probe_killed" = 1 ]; then
+      printf -- '-- %s replay of chunk %s: still wedged at the 120s probe budget, status %d is the kill, not the process\n' \
+        "$attempt" "$index" "$status"
+    else
+      printf -- '-- %s replay of chunk %s: real exit status=%d (0x%08x), %ss\n' "$attempt" "$index" "$status" "$status" "$waited"
     fi
-    sleep 5
-    waited=$((waited + 5))
+    case "$status" in
+      # STATUS_DLL_NOT_FOUND, STATUS_INVALID_IMAGE_FORMAT, and bash's own "cannot execute".
+      3221225779|3221225595|127) continue ;;
+    esac
+    break
   done
-  wait "$probe_pid" 2>/dev/null
-  status=$?
-  printf -- '-- direct replay of chunk %s: real exit status=%d (0x%08x), %ss\n' "$index" "$status" "$status" "$waited"
   if [ "$status" -ge 3221225472 ] 2>/dev/null; then
     echo "   ^ that is an NTSTATUS exception code, i.e. the process died from a fault, not from exit()"
   fi
