@@ -476,47 +476,63 @@ for chunk in "${chunks[@]}"; do
 done
 
 if [ "$STRESS_ROUNDS" -gt 0 ] 2>/dev/null; then
-  stress_filter="$(printf '%s/\n' $STRESS_SUITES | paste -sd'|' -)"
+  # Group the stress family exactly the way the chunk plan does: a suite in ISOLATE_SUITES gets an
+  # invocation of its own. Cramming them together -- which is what the first version of this dial
+  # did -- reproduces the interference that chunking exists to prevent, so a red round would have
+  # said nothing about stability.
+  stress_groups=()
+  stress_shared=""
+  for suite in $STRESS_SUITES; do
+    case " $ISOLATE_SUITES " in
+      *" $suite "*) stress_groups+=("$suite") ;;
+      *) stress_shared="$stress_shared $suite" ;;
+    esac
+  done
+  [ -n "${stress_shared# }" ] && stress_groups+=("${stress_shared# }")
+
   echo
-  echo "================ Stress: ${STRESS_ROUNDS} passes over ${STRESS_SUITES// /,} ================"
+  echo "================ Stress: ${STRESS_ROUNDS} passes over ${#stress_groups[@]} groups ================"
   stress_round=0
   stress_failed=0
   stress_timed_out=0
   while [ "$stress_round" -lt "$STRESS_ROUNDS" ]; do
     stress_round=$((stress_round + 1))
-    stress_log="$(mktemp)"
-    stress_events="$(mktemp)"
-    # The event stream is what makes a hung round diagnosable rather than just red: it names the
-    # case that was in flight, which is the first question a stress failure raises.
-    "${SWIFT_TEST[@]}" --filter "$stress_filter" --event-stream-output-path "$stress_events" \
-      < /dev/null > "$stress_log" 2>&1 &
-    stress_pid=$!
-    stress_waited=0
-    while kill -0 "$stress_pid" 2>/dev/null; do
-      if [ "$stress_waited" -ge "$STRESS_ROUND_TIMEOUT" ]; then
-        echo "  round ${stress_round}: HUNG past ${STRESS_ROUND_TIMEOUT}s"
-        kill_tree "$stress_pid"
+    for group in "${stress_groups[@]}"; do
+      stress_filter="$(printf '%s/\n' $group | paste -sd'|' -)"
+      stress_log="$(mktemp)"
+      stress_events="$(mktemp)"
+      # The event stream is what makes a hung group diagnosable rather than just red: it names the
+      # case that was in flight, which is the first question a stress failure raises.
+      "${SWIFT_TEST[@]}" --filter "$stress_filter" --event-stream-output-path "$stress_events" \
+        < /dev/null > "$stress_log" 2>&1 &
+      stress_pid=$!
+      stress_waited=0
+      while kill -0 "$stress_pid" 2>/dev/null; do
+        if [ "$stress_waited" -ge "$STRESS_ROUND_TIMEOUT" ]; then
+          printf '  round %s [%s]: HUNG past %ss\n' "$stress_round" "$group" "$STRESS_ROUND_TIMEOUT"
+          kill_tree "$stress_pid"
+          stress_failed=1
+          stress_timed_out=$((stress_timed_out + 1))
+          break
+        fi
+        sleep 5
+        stress_waited=$((stress_waited + 5))
+      done
+      wait "$stress_pid" 2>/dev/null
+      stress_status=$?
+      stress_ran="$(grep -oE 'Test run with [0-9]+ test' "$stress_log" | tail -1 | grep -oE '[0-9]+' || true)"
+      if [ "$stress_status" -ne 0 ]; then
         stress_failed=1
-        stress_timed_out=$((stress_timed_out + 1))
-        break
+        printf '  round %s [%s]: exit %s after %ss\n' "$stress_round" "$group" "$stress_status" "$stress_waited"
+        grep -aE "recorded an issue|Expectation failed|Caught error|error:" "$stress_log" | head -8
+        stress_victim="$(unreported_from_events "$stress_events")"
+        [ -n "$stress_victim" ] && echo "    started but never reported: ${stress_victim}"
+        tail -6 "$stress_log"
+      else
+        printf '  round %s [%s]: ok, %s tests in %ss\n' "$stress_round" "$group" "${stress_ran:-?}" "$stress_waited"
       fi
-      sleep 5
-      stress_waited=$((stress_waited + 5))
+      rm -f "$stress_log" "$stress_events"
     done
-    wait "$stress_pid" 2>/dev/null
-    stress_status=$?
-    stress_ran="$(grep -oE 'Test run with [0-9]+ test' "$stress_log" | tail -1 | grep -oE '[0-9]+' || true)"
-    if [ "$stress_status" -ne 0 ]; then
-      stress_failed=1
-      printf '  round %s: exit %s after %ss\n' "$stress_round" "$stress_status" "$stress_waited"
-      grep -aE "recorded an issue|Expectation failed|Caught error|error:" "$stress_log" | head -8
-      stress_victim="$(unreported_from_events "$stress_events")"
-      [ -n "$stress_victim" ] && echo "  started but never reported: ${stress_victim}"
-      echo "  --- tail ---"; tail -6 "$stress_log"
-    else
-      printf '  round %s: ok, %s tests in %ss\n' "$stress_round" "${stress_ran:-?}" "$stress_waited"
-    fi
-    rm -f "$stress_log" "$stress_events"
   done
   echo "stress: ${stress_round} rounds, ${stress_timed_out} hung, verdict $([ "$stress_failed" -eq 0 ] && echo stable || echo UNSTABLE)"
   if [ "$stress_failed" -ne 0 ]; then
