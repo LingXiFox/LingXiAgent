@@ -363,12 +363,23 @@ direct_replay() {
     return
   fi
   probe_log="$(mktemp)"
-  # The binary is found and launched, but it links against the testing library that lives next to
-  # the compiler: `swift test` puts that directory on PATH and a direct exec does not, so the replay
-  # died with "error while loading shared libraries: Testing.dll" and reported the loader's 127
-  # rather than the test process's own status.
-  swift_bin="$(dirname "$(command -v swift 2>/dev/null || echo ./swift)")"
-  PATH="$swift_bin:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$found" \
+  # The binary links against the testing library that sits beside the compiler, and `swift test`
+  # puts that directory on the child's PATH -- a direct exec does not, which is why the first two
+  # replays reported the loader's 127 instead of the test process's status. Resolve the directory
+  # the way Windows knows it and convert it: `dirname` does not treat backslashes as separators, so
+  # the previous attempt silently produced ".". Where Testing.dll actually lives is printed, so a
+  # second failure cannot be ambiguous about the reason.
+  swift_win="$(powershell -NoProfile -Command 'Split-Path -Parent (Get-Command swift.exe).Source' 2>/dev/null | tr -d '\r' | head -1)"
+  swift_bin="$(cygpath -u "$swift_win" 2>/dev/null || printf '%s' "$swift_win")"
+  bin_dir="$(dirname "$found")"
+  printf 'replay library probe: toolchain=%s[%s] buildDir=%s[%s]\n' \
+    "$swift_bin" "$(ls "$swift_bin/Testing.dll" 2>/dev/null || echo missing)" \
+    "$bin_dir" "$(ls "$bin_dir/Testing.dll" 2>/dev/null || echo missing)"
+  if [ ! -f "$swift_bin/Testing.dll" ] && [ ! -f "$bin_dir/Testing.dll" ]; then
+    printf 'replay: neither candidate holds Testing.dll, toolchain search says: %s\n' \
+      "$(find "$swift_bin/../.." -name 'Testing.dll' 2>/dev/null | head -3 | tr '\n' ' ')"
+  fi
+  PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$found" \
     --testing-library swift-testing --filter "$filter" < /dev/null > "$probe_log" 2>&1 &
   probe_pid=$!
   while kill -0 "$probe_pid" 2>/dev/null; do
