@@ -93,71 +93,13 @@ jobs:
           name: release-linux-x86_64
           path: dist/*
 
-  build-windows:
-    runs-on: windows-2022
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          vsversion: "2022"
-
-      - name: Set up Swift
-        uses: compnerd/gha-setup-swift@v0.4.0
-        with:
-          swift-version: swift-6.0.3-release
-          swift-build: 6.0.3-RELEASE
-          update-sdk-modules: true
-
-      - name: Provision SQLite Native Dependencies
-        shell: cmd
-        run: |
-          call "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" install sqlite3:x64-windows
-          call "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" integrate install
-          echo INCLUDE=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\include;%INCLUDE%>> %GITHUB_ENV%
-          echo LIB=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\lib;%LIB%>> %GITHUB_ENV%
-          echo PATH=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin;%VCPKG_INSTALLATION_ROOT%;%PATH%>> %GITHUB_ENV%
-
-      - name: Build Release Binaries
-        shell: bash
-        run: |
-          swift build -c release --product lingxiagent
-          swift build -c release --product LingXiCoreHost
-          swift build -c release --product LingXiTUI
-          BIN_PATH="$(swift build -c release --show-bin-path)"
-          mkdir -p dist staging
-          cp -f "$BIN_PATH/lingxiagent.exe" staging/
-          if [ -f "$BIN_PATH/LingXiCoreHost.exe" ]; then
-            cp -f "$BIN_PATH/LingXiCoreHost.exe" staging/
-          fi
-          if [ -f "$BIN_PATH/LingXiTUI.exe" ]; then
-            cp -f "$BIN_PATH/LingXiTUI.exe" staging/
-          fi
-          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiCore*.resources; do
-            if [ -d "$b" ]; then
-              cp -R "$b" staging/
-            fi
-          done
-          mkdir -p staging/Sidecars/browser-host
-          if [ -d "Sidecars/browser-host" ]; then
-            cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
-            cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
-          fi
-          cd staging && 7z a "../dist/lingxiagent-windows-x86_64.zip" * && cd ..
-          certutil -hashfile "dist/lingxiagent-windows-x86_64.zip" SHA256 > "dist/lingxiagent-windows-x86_64.zip.sha256"
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows-x86_64
-          path: dist/*
-
   publish-release:
-    needs: [build-macos, build-linux, build-windows]
-    if: needs.build-macos.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success'
+    # V1.0.0 ships macOS and Linux. The Windows build job that used to sit here -- vcpkg sqlite,
+    # release build, zip and sha256 -- is a V1.1.0 item along with formal Windows support, so no
+    # Windows asset is published and Windows cannot hold a release. The job text is recoverable from
+    # git history; the platform implementation itself is untouched.
+    needs: [build-macos, build-linux]
+    if: needs.build-macos.result == 'success' && needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -184,3 +126,15 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            ## 平台支持 / Platform support
+
+            | 平台 | 支持级别 |
+            | :--- | :--- |
+            | macOS (arm64, Apple Silicon / Intel) | Supported |
+            | Linux (x86_64, Ubuntu / Debian / Arch / RHEL) | Supported |
+            | Windows 10/11, Server 2022 (x86_64 / ARM64) | Experimental — 正式支持计划 V1.1.0 |
+
+            Windows 不在本版本的支持范围内：不发布 Windows 预编译包，发布门禁也不看 Windows。
+            源码与 `LingXiPlatform` 的 Windows 适配全部保留，可从源码构建试用，但不保证可用；
+            运行时、pipe 与进程生命周期的 Windows 专项收敛在 V1.1.0 完成。

@@ -38,11 +38,12 @@
 curl -fsSL https://agent.lingxifox.cn/install.sh | bash
 ```
 
-### Windows (PowerShell 一键安装 · 实验性)
-V1.0.0 不为 Windows 提供发布包与支持承诺；下列入口用于仍想在 Windows 上试用的用户，问题请先记录，不要按 supported 预期使用：
-在原生 Windows PowerShell 中直接运行：
+### Windows (实验性 · V1.0.0 无发布包)
+V1.0.0 不发布 Windows 预编译包，也不对 Windows 可用性做支持承诺；`install.ps1` 依赖的
+`lingxiagent-windows-*.zip` 资产要等 V1.1.0 恢复 Windows 正式支持后才会重新出现。想在 Windows 上试用的
+话，请从源码构建并把问题记录为实验性反馈，不要按 supported 预期使用：
 ```powershell
-irm https://agent.lingxifox.cn/install.ps1 | iex
+swift build -c release --product lingxiagent
 ```
 
 安装完成后，新开终端直接输入 `lingxiagent` 即可秒级开启会话。完整使用手册与高级配置，请参阅 **[LingXiAgent 官方技术文档中心](https://agent.lingxifox.cn/docs)**。

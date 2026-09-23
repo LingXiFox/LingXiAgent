@@ -4,6 +4,9 @@
 #  Repo: https://github.com/LingXiFox/LingXiAgent
 # ==============================================================================
 
+# Windows packages are not published for V1.0.0 (formal Windows support returns in V1.1.0), so the
+# release asset this script downloads does not exist yet. Kept intact for that release.
+
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
