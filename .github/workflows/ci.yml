@@ -336,6 +336,11 @@ jobs:
           if-no-files-found: ignore
 
       - name: Stage 6 - Smoke test CLI executables
+        # Windows Stage 5 has been red since it first ran the full suite, which meant Stage 6 had
+        # never executed at all -- so the platform had no smoke evidence either way. Run it after a
+        # failed Stage 5: it cannot weaken the gate, and a second independent verdict per round is
+        # worth more than the three minutes it costs.
+        if: always() && !cancelled()
         shell: bash
         timeout-minutes: 5
         run: |
