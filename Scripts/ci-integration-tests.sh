@@ -305,9 +305,10 @@ timed_out_chunks=()
 lingering_chunks=()
 # Set once the stage has replayed one silently-failing chunk through the test binary itself.
 direct_replays=0
-# Two samples: one from a chunk that exits early and one from a chunk that burns the budget. They
-# are different defects and the replay costs seconds, not the chunk's timeout.
-MAX_DIRECT_REPLAYS=2
+# One sample of the early-exit family is enough to classify it: the red set is the same 10 chunks
+# every round, and this job is evicted by the runner at ~61 minutes, so every extra replay is taken
+# from the round's margin rather than from spare time.
+MAX_DIRECT_REPLAYS=1
 
 maybe_direct_replay() {
   case "$(uname -s)" in
@@ -427,7 +428,7 @@ direct_replay() {
       < /dev/null > "$probe_log" 2>&1 &
     probe_pid=$!
     while kill -0 "$probe_pid" 2>/dev/null; do
-      if [ "$waited" -ge 120 ]; then
+      if [ "$waited" -ge 90 ]; then
         echo "-- direct replay still running after ${waited}s: the wedge reproduces through the binary too"
         kill_tree "$probe_pid"
         probe_killed=1
@@ -439,7 +440,7 @@ direct_replay() {
     wait "$probe_pid" 2>/dev/null
     status=$?
     if [ "$probe_killed" = 1 ]; then
-      printf -- '-- %s replay of chunk %s: still wedged at the 120s probe budget, status %d is the kill, not the process\n' \
+      printf -- '-- %s replay of chunk %s: still wedged after ${waited}s, status %d is the harness kill, not the process\n' \
         "$attempt" "$index" "$status"
     else
       printf -- '-- %s replay of chunk %s: real exit status=%d (0x%08x), %ss\n' "$attempt" "$index" "$status" "$status" "$waited"
