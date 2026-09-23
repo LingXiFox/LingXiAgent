@@ -41,6 +41,50 @@ public enum AsyncLineReader: Sendable {
         if err == EAGAIN || err == EWOULDBLOCK || err == EINTR { return Data() }
         return nil
     }
+
+    /// Runs `polledRead` on a thread of its own until end of stream or stop, and hands back the
+    /// stopper.
+    ///
+    /// Deliberately not a `Task`: a loop that spends its life inside `poll` holds whatever executor
+    /// runs it, and on a two-core CI runner four idle readers are enough to starve the cooperative
+    /// pool -- the work that would resume the caller never gets scheduled, which is a wedge with a
+    /// different cause than the one `poll` just fixed. The census of such a chunk shows
+    /// `wchan=poll_schedule_timeout` with the 200 ms timeout still in the register dump.
+    private static func startPollingReader(
+        fd: Int32,
+        bufferSize: Int,
+        onChunk: @escaping @Sendable (Data) -> Void,
+        onEnd: @escaping @Sendable () -> Void
+    ) -> @Sendable () -> Void {
+        let flag = StopFlag()
+        let thread = Thread {
+            while !flag.stopped {
+                guard let chunk = polledRead(fd: fd, bufferSize: bufferSize) else { break }
+                if !chunk.isEmpty { onChunk(chunk) }
+            }
+            onEnd()
+        }
+        thread.start()
+        return { flag.stop() }
+    }
+
+    /// `Task.isCancelled` means nothing to a Foundation thread, so stopping needs a flag of its own.
+    private final class StopFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _stopped = false
+
+        var stopped: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return _stopped
+        }
+
+        func stop() {
+            lock.lock()
+            _stopped = true
+            lock.unlock()
+        }
+    }
     #endif
 
     /// 从 FileHandle 异步流式读取 Data 数据块，支持 Darwin、Linux 与 Windows 全平台
@@ -59,15 +103,18 @@ public enum AsyncLineReader: Sendable {
             #endif
 
             if useDirectRead {
+                #if os(Linux)
+                let stop = startPollingReader(
+                    fd: handle.fileDescriptor,
+                    bufferSize: bufferSize,
+                    onChunk: { continuation.yield($0) },
+                    onEnd: { continuation.finish() }
+                )
+                continuation.onTermination = { _ in stop() }
+                #else
                 let task = Task.detached {
                     do {
                         while !Task.isCancelled {
-                            #if os(Linux)
-                            guard let chunk = polledRead(fd: handle.fileDescriptor, bufferSize: bufferSize) else {
-                                break // EOF
-                            }
-                            if !chunk.isEmpty { continuation.yield(chunk) }
-                            #else
                             if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
                                 if let chunk = try handle.read(upToCount: bufferSize), !chunk.isEmpty {
                                     continuation.yield(chunk)
@@ -79,7 +126,6 @@ public enum AsyncLineReader: Sendable {
                                 if chunk.isEmpty { break }
                                 continuation.yield(chunk)
                             }
-                            #endif
                         }
                         continuation.finish()
                     } catch {
@@ -92,26 +138,10 @@ public enum AsyncLineReader: Sendable {
                     try? handle.close()
                     #endif
                 }
+                #endif
             } else {
-                #if !os(Windows)
+                #if !os(Windows) && !os(Linux)
                 handle.readabilityHandler = { h in
-                    #if os(Linux)
-                    var buffer = [UInt8](repeating: 0, count: bufferSize)
-                    let bytesRead = Glibc.read(h.fileDescriptor, &buffer, bufferSize)
-                    if bytesRead > 0 {
-                        continuation.yield(Data(buffer[0..<bytesRead]))
-                    } else if bytesRead == 0 {
-                        h.readabilityHandler = nil
-                        continuation.finish()
-                    } else {
-                        let err = errno
-                        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
-                            return
-                        }
-                        h.readabilityHandler = nil
-                        continuation.finish()
-                    }
-                    #else
                     let data = h.availableData
                     if data.isEmpty {
                         h.readabilityHandler = nil
@@ -119,7 +149,6 @@ public enum AsyncLineReader: Sendable {
                     } else {
                         continuation.yield(data)
                     }
-                    #endif
                 }
                 continuation.onTermination = { @Sendable _ in
                     handle.readabilityHandler = nil
@@ -143,6 +172,46 @@ public enum AsyncLineReader: Sendable {
             #endif
 
             if useDirectRead {
+                #if os(Linux)
+                // Consume dataChunks, whose reader is already a thread of its own. This task only
+                // ever suspends, so an idle stream holds no cooperative-pool worker -- which is the
+                // point, because the poll loop must not be sitting on one.
+                let source = dataChunks(from: handle, bufferSize: bufferSize)
+                let task = Task.detached {
+                    var leftover = Data()
+                    let newline = UInt8(ascii: "\n")
+                    let cr = UInt8(ascii: "\r")
+                    do {
+                        for try await chunk in source {
+                            leftover.append(chunk)
+                            while let newlineIndex = leftover.firstIndex(of: newline) {
+                                var lineData = leftover.subdata(in: leftover.startIndex..<newlineIndex)
+                                if lineData.last == cr {
+                                    lineData.removeLast()
+                                }
+                                continuation.yield(String(decoding: lineData, as: UTF8.self))
+                                leftover.removeSubrange(leftover.startIndex...newlineIndex)
+                            }
+                        }
+                        if !leftover.isEmpty {
+                            var lineData = leftover
+                            if lineData.last == cr {
+                                lineData.removeLast()
+                            }
+                            let line = String(decoding: lineData, as: UTF8.self)
+                            if !line.isEmpty {
+                                continuation.yield(line)
+                            }
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { @Sendable _ in
+                    task.cancel()
+                }
+                #else
                 let task = Task.detached {
                     var leftover = Data()
                     let newline = UInt8(ascii: "\n")
@@ -151,12 +220,6 @@ public enum AsyncLineReader: Sendable {
                     do {
                         while !Task.isCancelled {
                             let chunk: Data
-                            #if os(Linux)
-                            guard let polled = polledRead(fd: handle.fileDescriptor, bufferSize: bufferSize) else {
-                                break // EOF
-                            }
-                            chunk = polled
-                            #else
                             if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
                                 if let data = try handle.read(upToCount: bufferSize), !data.isEmpty {
                                     chunk = data
@@ -168,8 +231,6 @@ public enum AsyncLineReader: Sendable {
                                 if data.isEmpty { break }
                                 chunk = data
                             }
-                            #endif
-                            if chunk.isEmpty { continue }
 
                             leftover.append(chunk)
 
@@ -206,8 +267,9 @@ public enum AsyncLineReader: Sendable {
                     try? handle.close()
                     #endif
                 }
+                #endif
             } else {
-                #if !os(Windows)
+                #if !os(Windows) && !os(Linux)
                 final class LineAccumulator: @unchecked Sendable {
                     var leftover = Data()
                 }
@@ -216,37 +278,6 @@ public enum AsyncLineReader: Sendable {
                 let cr = UInt8(ascii: "\r")
 
                 handle.readabilityHandler = { h in
-                    #if os(Linux)
-                    var buffer = [UInt8](repeating: 0, count: bufferSize)
-                    let bytesRead = Glibc.read(h.fileDescriptor, &buffer, bufferSize)
-                    let data: Data
-                    if bytesRead > 0 {
-                        data = Data(buffer[0..<bytesRead])
-                    } else if bytesRead == 0 {
-                        h.readabilityHandler = nil
-                        if !accumulator.leftover.isEmpty {
-                            var lineData = accumulator.leftover
-                            if lineData.last == cr {
-                                lineData.removeLast()
-                            }
-                            let line = String(decoding: lineData, as: UTF8.self)
-                            if !line.isEmpty {
-                                continuation.yield(line)
-                            }
-                            accumulator.leftover.removeAll()
-                        }
-                        continuation.finish()
-                        return
-                    } else {
-                        let err = errno
-                        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
-                            return
-                        }
-                        h.readabilityHandler = nil
-                        continuation.finish()
-                        return
-                    }
-                    #else
                     let data = h.availableData
                     if data.isEmpty {
                         h.readabilityHandler = nil
@@ -264,7 +295,6 @@ public enum AsyncLineReader: Sendable {
                         continuation.finish()
                         return
                     }
-                    #endif
 
                     accumulator.leftover.append(data)
                     while let newlineIndex = accumulator.leftover.firstIndex(of: newline) {
