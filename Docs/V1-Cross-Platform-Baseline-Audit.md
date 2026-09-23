@@ -40,6 +40,26 @@ EOF 不可达；`terminateProcessTree` 缺 self 守卫（守卫已补，非成�
 并补了跨平台回归：已退出子进程的 pipe 仍投递字节与 EOF、消费者取消可返回、spawn-drain 循环不漏 fd。
 Windows 走的是另一分支（detached task 内阻塞读），不受该修复影响。
 
+### macOS/Linux 侧的一条外观缺陷 (2026-09-23 实测)
+
+`LingXiTUI` 在没有控制终端时（`< /dev/null`、CI、管道）会以 top-level `Fatal error: ...
+NSPOSIXErrorDomain Code=5` 退出（exit 133），因为 `Sources/LingXiTUIApp/main.swift` 直接
+`try await root.launch(with:)`，原始模式设置失败就一路冒泡。给它一个 pty 时启动与渲染完全正常，
+所以这是无 TTY 场景的表述问题而非可用性缺陷；`lingxiagent` 自己已经有 headless 分支
+（"no controlling terminal: raw-mode legs skipped"）。V1.0.1 按同一模式收口：捕获后打印一行说明并
+以非 0 退出，而不是 trap。
+
+### V1.0.0 发布后的收尾清单 (2026-09-23 审计结论)
+
+| 项 | 级别 | 结论 |
+| :--- | :--- | :--- |
+| `LingXiTUI` 无控制终端时 trap（见上节） | 代码 | V1.0.1 按 `lingxiagent` 既有 headless 分支收口 |
+| `install.sh` 只拷 `lingxiagent` / `LingXiCoreHost`，不装随包的 `LingXiTUI` | 安装器 | 一行 `[ -f ]` 守卫式拷贝即可；不影响 CLI 主入口 |
+| `install.ps1` 在 Windows 资产缺失时静默 404 后回落源码构建 | 安装器 | 补一句「V1.0.0 未发布 Windows 包」的人话提示 |
+| macOS 预编译仅 `arm64`，而 `install.sh` 对 Intel 回落 `macos-x86_64`（v0.1.1 曾提供 x86_64/universal） | 发布策略 | 需主人决定：补 Intel 产物，或让安装器对 Intel 明确提示源码构建 |
+| `grep` / `glob` 依赖外部 `ripgrep`，发布包不含 `rg` | 发布策略 | 是否内置为未决项；发布正文与 README 已按“依赖外部 rg、缺失即失败关闭”声明 |
+| Linux 稳定性证据 | 已完成 | gate 全绿 + 一次派发轮对 stdio/pipe 家族按隔离策略连跑多轮 |
+
 ### V1.1.0 建议起点
 
 Windows 的读需要真正可中断：overlapped I/O + `CancelIoEx`，或保证对端先关闭再有人碰读句柄的 teardown。
