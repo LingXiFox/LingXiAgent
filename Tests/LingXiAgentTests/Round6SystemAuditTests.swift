@@ -95,9 +95,17 @@ struct Round6SystemAuditTests {
                         sessionID: sessionB,
                         runExecutionContext: contextB,
                         onPermissionAsked: { request in
-                            // Auto-reply to let it proceed once asked
+                            // Auto-reply to let it proceed once asked. The callback is synchronous, so
+                            // the reply has to come from a task -- but an unjoined task that swallows
+                            // its own error makes "the reply never landed" indistinguishable from a
+                            // hang: the ask has no deadline and no owner, so the case just parks with
+                            // nothing in the log, which is how this looked on a Linux runner.
                             Task {
-                                try? await permissionEngine.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
+                                do {
+                                    try await permissionEngine.reply(PermissionReply(permissionID: request.permissionID, decision: .allow))
+                                } catch {
+                                    Issue.record("Auto-reply for \(request.permissionID.rawValue) failed: \(error)")
+                                }
                             }
                         }
                     )
