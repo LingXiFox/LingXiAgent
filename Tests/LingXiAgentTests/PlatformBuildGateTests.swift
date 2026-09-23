@@ -1,8 +1,5 @@
 import Foundation
 import Testing
-#if canImport(Glibc)
-import Glibc
-#endif
 @testable import LingXiPlatform
 @testable import LingXiProtocol
 @testable import LingXiCore
@@ -144,6 +141,13 @@ struct PlatformBuildGateTests {
         }
     }
 
+
+    // What is deliberately NOT asserted here: that a drain cycle releases its descriptors. A census
+    // of the process's open descriptors cannot show it -- dropping the local `Pipe` closes both ends
+    // through ARC, so a reader that never closed its end still measured clean. That control was run
+    // and it did not fail, which is why this file pins delivery (bytes, EOF, cancellation) and leaves
+    // descriptor hygiene to the repeated whole-suite runs instead of keeping a test that cannot go
+    // red.
     @Test("A pipe whose writer already exited still delivers its bytes and its EOF")
     func readerDeliversTheOutputOfAChildThatAlreadyExited() async throws {
         // The ordering is the defect: `waitUntilExit()` before anything reads the pipe makes it a
@@ -190,39 +194,6 @@ struct PlatformBuildGateTests {
         #expect(returned, "a cancelled consumer left the pipe reader parked: nothing can interrupt it while the child keeps the write end open")
     }
 
-    #if !os(Windows)
-    @Test("Each spawn-and-drain cycle gives back the descriptors it took")
-    func repeatedPipeDrainsDoNotLeakDescriptors() async throws {
-        func descriptorsOpen() -> Int {
-            (0..<1024).reduce(0) { count, fd in
-                count + (fcntl(Int32(fd), F_GETFD) != -1 ? 1 : 0)
-            }
-        }
-        func cycle() async throws {
-            let pipe = Pipe()
-        Self.makeCloseOnExec(pipe)
-            let child = try Self.spawn(PortableFixture.python("print(\"one\"); print(\"two\")"), stdout: pipe)
-            try? pipe.fileHandleForWriting.close()
-            child.waitUntilExit()
-            let (returned, lines) = await Self.drain(pipe)
-            try? pipe.fileHandleForReading.close()
-            #expect(returned && lines == ["one", "two"])
-        }
-
-        // The first children open descriptors of their own lazily (a shared cache, not a per-cycle
-        // leak), so sampling before them would report a slope that no fix can remove.
-        for _ in 0..<2 { try await cycle() }
-        let before = descriptorsOpen()
-        for _ in 0..<10 { try await cycle() }
-        let after = descriptorsOpen()
-
-        // The bound is a leak signature, not bookkeeping: a cycle that kept its pipe would add two
-        // descriptors and reach 20 here. Sibling suites in the same process open and close
-        // descriptors of their own while this measures, so anything tighter than half a leak's worth
-        // measures the neighbours. Measured on CI at 6 over 10 cycles.
-        #expect(after - before <= 10, "10 spawn-and-drain cycles retained \(after - before) descriptors")
-    }
-    #endif
 
     @Test("PlatformLoopbackServer allocates ephemeral port and respects timeoutSeconds without hanging")
     func platformLoopbackServerTimeout() async throws {
