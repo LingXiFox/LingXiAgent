@@ -560,6 +560,18 @@ for chunk in "${chunks[@]}"; do
           else
             echo "-- no runtime backtrace produced; the Swift crash handler did not answer QUIT"
           fi
+          # QUIT gave one thread only, and a wedged await lives in the threads that were not printed.
+          # Abort is the same dump path but taken as a crash, so the handler reports every thread; the
+          # process is being killed here regardless, so this costs nothing but the missing stacks.
+          if [ "$(grep -ac '^Thread [0-9]' "$chunk_log" 2>/dev/null | head -1)" -lt 2 ] 2>/dev/null; then
+            bytes_before_abort="$(wc -c < "$chunk_log" 2>/dev/null || echo 0)"
+            for child in "$runner" $children; do
+              kill -ABRT "$child" 2>/dev/null
+            done
+            sleep 4
+            printf "%s\n" "-- all-thread backtrace after SIGABRT:"
+            tail -c +"$((bytes_before_abort + 1))" "$chunk_log" 2>/dev/null | head -160
+          fi
           ;;
       esac
       kill_tree "$runner"
