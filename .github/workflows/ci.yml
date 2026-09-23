@@ -331,7 +331,14 @@ jobs:
           # slower at starting the test bundle (one suite took 91s here against 5s elsewhere),
           # and a budget that is too small reports slow as hung.
           XUNIT_DIR="$(pwd -W 2>/dev/null || pwd)/test-results"
-          LINGXI_CI_XUNIT_DIR="$XUNIT_DIR" LINGXI_CI_CHUNK_TIMEOUT=240 bash Scripts/ci-integration-tests.sh
+          # Fewer, larger chunks on this platform only. This runner costs ~25s per `swift test`
+          # invocation before a single test runs, so 79 invocations put Stage 5 past the point
+          # where the job stops reporting at all: run 35810345131 died at 61 minutes with no
+          # artifact upload and no `if: always()` post-step executed, which is an eviction rather
+          # than a timeout. Halving the invocation count is the lever available here; the per-chunk
+          # budget stays wide so slow is still not reported as hung.
+          LINGXI_CI_XUNIT_DIR="$XUNIT_DIR" LINGXI_CI_CHUNK_TIMEOUT=240 LINGXI_CI_CHUNK_SIZE=20 \
+            bash Scripts/ci-integration-tests.sh
 
       - name: Upload test results
         if: always()

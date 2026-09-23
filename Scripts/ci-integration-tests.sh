@@ -393,8 +393,6 @@ direct_replay() {
   printf 'replay library probe: toolchain=%s[%s] buildDir=%s[%s]\n' \
     "$swift_bin" "$(ls "$swift_bin/Testing.dll" 2>/dev/null || echo missing)" \
     "$bin_dir" "$(ls "$bin_dir/Testing.dll" 2>/dev/null || echo missing)"
-  printf 'replay: where the testing library actually is: %s\n' \
-    "$(find "$swift_bin/.." "$PWD/.build" -maxdepth 6 -name 'Testing*.dll' 2>/dev/null | head -3 | tr '\n' ' ')"
   # Two ways to get the child's status, and the choice is made by evidence rather than preference:
   # running the binary directly is exact but needs the library path that `swift test` sets up, and
   # this runner does not keep it next to the compiler. Falling back to the driver still answers the
@@ -402,7 +400,7 @@ direct_replay() {
   if [ -f "$swift_bin/Testing.dll" ] || [ -f "$bin_dir/Testing.dll" ]; then
     replay=("$found" --testing-library swift-testing --filter "$filter")
   else
-    replay=("${SWIFT_TEST[@]}" --verbose --filter "$filter")
+    replay=("${SWIFT_TEST[@]}" --filter "$filter")
   fi
   PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
     < /dev/null > "$probe_log" 2>&1 &
