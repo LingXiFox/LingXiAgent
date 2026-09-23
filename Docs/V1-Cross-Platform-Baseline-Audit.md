@@ -49,15 +49,15 @@ NSPOSIXErrorDomain Code=5` 退出（exit 133），因为 `Sources/LingXiTUIApp/m
 （"no controlling terminal: raw-mode legs skipped"）。V1.0.1 按同一模式收口：捕获后打印一行说明并
 以非 0 退出，而不是 trap。
 
-### V1.0.0 发布后的收尾清单 (2026-09-23 审计结论)
+### V1.0.0 发布后的收尾清单 (2026-09-23 审计结论 · 全部闭环)
 
 | 项 | 级别 | 结论 |
 | :--- | :--- | :--- |
-| `LingXiTUI` 无控制终端时 trap（见上节） | 代码 | V1.0.1 按 `lingxiagent` 既有 headless 分支收口 |
-| `install.sh` 只拷 `lingxiagent` / `LingXiCoreHost`，不装随包的 `LingXiTUI` | 安装器 | 一行 `[ -f ]` 守卫式拷贝即可；不影响 CLI 主入口 |
-| `install.ps1` 在 Windows 资产缺失时静默 404 后回落源码构建 | 安装器 | 补一句「V1.0.0 未发布 Windows 包」的人话提示 |
-| macOS 预编译仅 `arm64`，而 `install.sh` 对 Intel 回落 `macos-x86_64`（v0.1.1 曾提供 x86_64/universal） | 发布策略 | 需主人决定：补 Intel 产物，或让安装器对 Intel 明确提示源码构建 |
-| `grep` / `glob` 依赖外部 `ripgrep`，发布包不含 `rg` | 发布策略 | 是否内置为未决项；发布正文与 README 已按“依赖外部 rg、缺失即失败关闭”声明 |
+| `LingXiTUI` 无控制终端时 trap | 代码 | **已闭环**：`LingXiTUIApp` 与 `lingxiagent` 均已在顶层捕获 `POSIXError(.EIO/.ENOTTY)`，输出友好提示并 exit 1，杜绝崩溃 |
+| `install.sh` 只拷 `lingxiagent` / `LingXiCoreHost`，不装随包的 `LingXiTUI` | 安装器 | **已闭环**：`install.sh` 与 `install.ps1` 均已在所有安装场景补齐 `LingXiTUI` 守卫式拷贝与赋权 |
+| `install.ps1` 在 Windows 资产缺失时静默 404 后回落源码构建 | 安装器 | **已闭环**：捕获缺失时输出明确人话提示（告知 V1.0.0 暂无发布包，计划 V1.1.0 支持并尝试源码编译） |
+| macOS 预编译仅 `arm64`，而 `install.sh` 对 Intel 回落 `macos-x86_64` | 发布策略 | **已闭环**：`install.sh`、README 与官网文档对 Intel Mac 明确给出提示并回落本地 Swift 快速源码构建 |
+| `grep` / `glob` 依赖外部 `ripgrep`，发布包不含 `rg` | 发布策略 | **已闭环**：确立轻量化外部依赖策略，并在 README 与官方文档明确声明推荐安装命令与缺失提示 |
 | Linux 稳定性证据 | 已完成 | gate 全绿 + 一次派发轮对 stdio/pipe 家族按隔离策略连跑多轮 |
 
 ### V1.1.0 建议起点

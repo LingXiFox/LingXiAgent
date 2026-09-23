@@ -120,6 +120,7 @@ if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null
     echo -e "${CYAN}[*] 检测到处于本地源码仓库，正在直接以 Release 模式编译...${RESET}"
     swift build -c release --product lingxiagent
     swift build -c release --product LingXiCoreHost
+    swift build -c release --product LingXiTUI || true
     BIN_DIR_PATH="$(swift build -c release --show-bin-path)"
     if [ -f "$BIN_DIR_PATH/lingxiagent" ]; then
         cp -f "$BIN_DIR_PATH/lingxiagent" "$TARGET_BIN"
@@ -127,6 +128,10 @@ if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null
         if [ -f "$BIN_DIR_PATH/LingXiCoreHost" ]; then
             cp -f "$BIN_DIR_PATH/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
             chmod +x "$BIN_DIR/LingXiCoreHost"
+        fi
+        if [ -f "$BIN_DIR_PATH/LingXiTUI" ]; then
+            cp -f "$BIN_DIR_PATH/LingXiTUI" "$BIN_DIR/LingXiTUI"
+            chmod +x "$BIN_DIR/LingXiTUI"
         fi
         if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
@@ -162,6 +167,10 @@ if [ "$INSTALLED" = false ]; then
                 cp -f "$TMP_DIR/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
                 chmod +x "$BIN_DIR/LingXiCoreHost"
             fi
+            if [ -f "$TMP_DIR/LingXiTUI" ]; then
+                cp -f "$TMP_DIR/LingXiTUI" "$BIN_DIR/LingXiTUI"
+                chmod +x "$BIN_DIR/LingXiTUI"
+            fi
             if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
             fi
@@ -176,6 +185,9 @@ fi
 # 场景 C: 若无预编译包，且系统存在 swift 环境，则自动浅克隆极速编译
 if [ "$INSTALLED" = false ]; then
     if command -v swift >/dev/null 2>&1; then
+        if [ "$PLATFORM" = "macos" ] && [ "$CPU_ARCH" = "x86_64" ]; then
+            echo -e "${CYAN}[i] 提示：当前 macOS 预编译包仅提供 Apple Silicon (arm64)，Intel Mac 将使用本地 Swift 自动编译安装。${RESET}"
+        fi
         echo -e "${AMBER}[!] 暂无对应平台的预编译二进制，正在从 GitHub 源码编译安装 (Swift 原生快速编译)...${RESET}"
         CLONE_DIR="$(mktemp -d /tmp/lingxiagent-src.XXXXXX)"
         git clone --depth 1 https://github.com/LingXiFox/LingXiAgent.git "$CLONE_DIR"
@@ -183,12 +195,17 @@ if [ "$INSTALLED" = false ]; then
             cd "$CLONE_DIR"
             swift build -c release --product lingxiagent
             swift build -c release --product LingXiCoreHost
+            swift build -c release --product LingXiTUI || true
             RELEASE_PATH="$(swift build -c release --show-bin-path)"
             cp -f "$RELEASE_PATH/lingxiagent" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
             if [ -f "$RELEASE_PATH/LingXiCoreHost" ]; then
                 cp -f "$RELEASE_PATH/LingXiCoreHost" "$BIN_DIR/LingXiCoreHost"
                 chmod +x "$BIN_DIR/LingXiCoreHost"
+            fi
+            if [ -f "$RELEASE_PATH/LingXiTUI" ]; then
+                cp -f "$RELEASE_PATH/LingXiTUI" "$BIN_DIR/LingXiTUI"
+                chmod +x "$BIN_DIR/LingXiTUI"
             fi
             if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"

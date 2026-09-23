@@ -80,13 +80,18 @@ if ((Test-Path "Package.swift") -and (Select-String -Path "Package.swift" -Patte
         Write-Host "[*] 检测到处于本地源码仓库，正在以 Release 模式编译..." -ForegroundColor Cyan
         swift build -c release --product lingxiagent
         swift build -c release --product LingXiCoreHost
+        swift build -c release --product LingXiTUI
         $BinPath = (swift build -c release --show-bin-path).Trim()
         $BuiltAgent = Join-Path $BinPath "lingxiagent.exe"
         $BuiltCore = Join-Path $BinPath "LingXiCoreHost.exe"
+        $BuiltTUI = Join-Path $BinPath "LingXiTUI.exe"
         if (Test-Path $BuiltAgent) {
             Copy-Item -Force $BuiltAgent $TargetBin
             if (Test-Path $BuiltCore) {
                 Copy-Item -Force $BuiltCore (Join-Path $BinDir "LingXiCoreHost.exe")
+            }
+            if (Test-Path $BuiltTUI) {
+                Copy-Item -Force $BuiltTUI (Join-Path $BinDir "LingXiTUI.exe")
             }
             Install-Sidecars-And-Bundles $BinPath $BinDir $InstallRoot
             if (Test-Path "Sidecars\browser-host") {
@@ -130,6 +135,10 @@ if (-not $Installed) {
                 if (Test-Path $CandidateCore) {
                     Copy-Item -Force $CandidateCore (Join-Path $BinDir "LingXiCoreHost.exe")
                 }
+                $CandidateTUI = Join-Path $TempExtract "LingXiTUI.exe"
+                if (Test-Path $CandidateTUI) {
+                    Copy-Item -Force $CandidateTUI (Join-Path $BinDir "LingXiTUI.exe")
+                }
                 Install-Sidecars-And-Bundles $TempExtract $BinDir $InstallRoot
                 $Installed = $true
                 Write-Host "[✓] 预编译二进制安装成功!" -ForegroundColor Green
@@ -138,6 +147,8 @@ if (-not $Installed) {
             Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $TempExtract
             Remove-Item -Force -ErrorAction SilentlyContinue $TempZip
         }
+    } else {
+        Write-Host "[i] 提示：当前 V1.0.0 暂未提供 Windows 预编译安装包（计划于 V1.1.0 支持），尝试源码编译..." -ForegroundColor Cyan
     }
 }
 
@@ -151,13 +162,18 @@ if (-not $Installed) {
         try {
             swift build -c release --product lingxiagent
             swift build -c release --product LingXiCoreHost
+            swift build -c release --product LingXiTUI
             $BinPath = (swift build -c release --show-bin-path).Trim()
             $BuiltAgent = Join-Path $BinPath "lingxiagent.exe"
             $BuiltCore = Join-Path $BinPath "LingXiCoreHost.exe"
+            $BuiltTUI = Join-Path $BinPath "LingXiTUI.exe"
             if (Test-Path $BuiltAgent) {
                 Copy-Item -Force $BuiltAgent $TargetBin
                 if (Test-Path $BuiltCore) {
                     Copy-Item -Force $BuiltCore (Join-Path $BinDir "LingXiCoreHost.exe")
+                }
+                if (Test-Path $BuiltTUI) {
+                    Copy-Item -Force $BuiltTUI (Join-Path $BinDir "LingXiTUI.exe")
                 }
                 Install-Sidecars-And-Bundles $BinPath $BinDir $InstallRoot
                 Install-Sidecars-And-Bundles "." $BinDir $InstallRoot

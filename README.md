@@ -38,12 +38,26 @@
 curl -fsSL https://agent.lingxifox.cn/install.sh | bash
 ```
 
+> [!NOTE]
+> - **预编译与架构**：macOS 预编译发布包针对 Apple Silicon (`arm64`)，Linux 预编译发布包针对 `x86_64`。Intel Mac (`x86_64`) 或 AArch64 Linux 运行安装脚本时，若系统已安装 Swift，将自动浅克隆极速源码编译安装。
+> - **安装产物**：安装器将自动部署三个可执行入口与配套资源：
+>   - `lingxiagent`：主程序入口（交互式 TUI、CLI 子命令、ACP 守护进程）；
+>   - `LingXiTUI`：独立终端 TUI 视图入口；
+>   - `LingXiCoreHost`：内核服务宿主（支持 Stdio IPC 通信）；
+>   - `LingXiAgent_LingXiCore.bundle` 与 `Sidecars`（Browser 自动化等扩展能力）。
+> - **推荐系统依赖**：`grep` 与 `glob` 工具在运行时依赖系统的 `ripgrep` (`rg`)。推荐提前安装：
+>   - macOS: `brew install ripgrep`
+>   - Linux (Ubuntu/Debian): `sudo apt install ripgrep`
+>   - Linux (Arch): `sudo pacman -S ripgrep`
+
 ### Windows (实验性 · V1.0.0 无发布包)
 V1.0.0 不发布 Windows 预编译包，也不对 Windows 可用性做支持承诺；`install.ps1` 依赖的
 `lingxiagent-windows-*.zip` 资产要等 V1.1.0 恢复 Windows 正式支持后才会重新出现。想在 Windows 上试用的
-话，请从源码构建并把问题记录为实验性反馈，不要按 supported 预期使用：
+话，可在已配置 Swift 环境的机器上克隆源码编译试用，并把问题记录为实验性反馈：
 ```powershell
 swift build -c release --product lingxiagent
+swift build -c release --product LingXiCoreHost
+swift build -c release --product LingXiTUI
 ```
 
 安装完成后，新开终端直接输入 `lingxiagent` 即可秒级开启会话。完整使用手册与高级配置，请参阅 **[LingXiAgent 官方技术文档中心](https://agent.lingxifox.cn/docs)**。

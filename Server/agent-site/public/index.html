@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LingXiAgent — 新一代终端原生 AI 编程智能体 (macOS / Linux / Windows)</title>
-  <meta name="description" content="LingXiAgent 是一款纯 Swift 原生打造的跨平台 AI 编程智能体，原生支持 macOS、Linux 与 Windows，具备毫秒级冷启动、三级上下文流控、动态反封锁指纹与全套 MCP 运行时生态。">
+  <title>LingXiAgent — 新一代终端原生 AI 编程智能体 (macOS / Linux · Windows 实验性)</title>
+  <meta name="description" content="LingXiAgent 是一款纯 Swift 原生打造的跨平台 AI 编程智能体，官方支持 macOS 与 Linux（Windows 实验性），具备毫秒级冷启动、三级上下文流控、动态反封锁指纹与全套 MCP 运行时生态。">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
 
   <!-- Tailwind CSS CDN -->
@@ -150,7 +150,7 @@
 
       <!-- Subtitle -->
       <p class="max-w-3xl mx-auto text-base sm:text-xl text-zinc-400 mb-10 leading-relaxed">
-        纯 Swift 原生 + OpenTUI C ABI 驱动，毫秒级冷启动。基于 <strong class="text-zinc-200 font-semibold">P-Core (推理总线)</strong> 与 <strong class="text-zinc-200 font-semibold">E-Core (执行存储)</strong> 异构双核架构，全面适配 macOS · Linux · Windows，直连官方订阅与 75+ 通用大模型。
+        纯 Swift 原生 + OpenTUI C ABI 驱动，毫秒级冷启动。基于 <strong class="text-zinc-200 font-semibold">P-Core (推理总线)</strong> 与 <strong class="text-zinc-200 font-semibold">E-Core (执行存储)</strong> 异构双核架构，原生适配 macOS · Linux（Windows 实验性），直连官方订阅与 75+ 通用大模型。
       </p>
 
       <!-- The 1-Line Installer Box -->
@@ -159,8 +159,8 @@
           <!-- Install Tabs -->
           <div class="flex items-center justify-between border-b border-zinc-800/80 px-3 pb-2 pt-1">
             <div class="flex space-x-1" id="install-tabs">
-              <button onclick="switchTab('curl')" class="tab-btn active px-3 py-1 rounded-md text-xs font-medium bg-zinc-800 text-zinc-100 transition-colors" data-tab="curl">macOS / Linux</button>
-              <button onclick="switchTab('powershell')" class="tab-btn px-3 py-1 rounded-md text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors" data-tab="powershell">Windows (PowerShell)</button>
+              <button onclick="switchTab('curl')" class="tab-btn active px-3 py-1 rounded-md text-xs font-medium bg-zinc-800 text-zinc-100 transition-colors" data-tab="curl">macOS / Linux (官方推荐)</button>
+              <button onclick="switchTab('powershell')" class="tab-btn px-3 py-1 rounded-md text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors" data-tab="powershell">Windows (PowerShell 实验性)</button>
             </div>
             <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="text-[11px] text-purple-400 hover:text-purple-300 font-mono flex items-center gap-1 transition-colors">
               <span>GitHub 源码仓库</span>
@@ -321,7 +321,7 @@
           <div class="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 mb-4 text-xl">
             ⚡
           </div>
-          <h3 class="text-lg font-bold text-white mb-2">macOS · Linux · Windows 原生跨平台引擎</h3>
+          <h3 class="text-lg font-bold text-white mb-2">macOS · Linux 原生跨平台引擎 (Windows 实验性)</h3>
           <p class="text-sm text-zinc-400 leading-relaxed">
             告别臃肿缓慢的 Node.js 与 Electron。纯 Swift 原生打造，由底层独立模块 <code class="text-purple-300 font-mono">LingXiPlatform</code> 提供 Darwin、Linux Bubblewrap 容器沙箱与 Win32 控制台 VT100 原生抽象，冷启动仅 10ms，内存低至 35MB。
           </p>
@@ -508,19 +508,19 @@
               <span>1. 快速上手 (Getting Started)</span>
             </h3>
             <p class="text-zinc-300 text-sm leading-relaxed mb-6">
-              LingXiAgent 现已全面原生支持 macOS、Linux 与 Windows 三大平台，深度适配 Darwin、Linux 容器命名空间（Bubblewrap）及 Win32 控制台虚拟终端处理。安装只需一条命令，即可全自动完成架构探测、可执行文件部署与系统环境变量配置。
+              LingXiAgent 现已官方正式支持 macOS 与 Linux 平台（Windows 处于实验性支持阶段，正式支持计划于 V1.1.0 恢复）。安装只需一条命令，即可全自动完成架构探测、可执行文件（<code>lingxiagent</code>、<code>LingXiTUI</code>、<code>LingXiCoreHost</code>）部署与系统环境变量配置。
             </p>
 
             <h4 class="text-base font-semibold text-zinc-200 mb-2">步骤一：一键自动安装</h4>
             <div class="space-y-3 mb-6">
               <div>
-                <span class="text-xs text-zinc-400 font-sans block mb-1">macOS / Linux (Bash/Zsh):</span>
+                <span class="text-xs text-zinc-400 font-sans block mb-1">macOS / Linux (Bash/Zsh · 官方推荐):</span>
                 <div class="bg-black/60 rounded-xl p-3 font-mono text-sm text-zinc-300 border border-zinc-800">
                   <span class="text-purple-400 select-none">$ </span>curl -fsSL https://agent.lingxifox.cn/install.sh | bash
                 </div>
               </div>
               <div>
-                <span class="text-xs text-zinc-400 font-sans block mb-1">Windows (PowerShell):</span>
+                <span class="text-xs text-zinc-400 font-sans block mb-1">Windows (PowerShell · 实验性/需 Swift 环境源码编译):</span>
                 <div class="bg-black/60 rounded-xl p-3 font-mono text-sm text-zinc-300 border border-zinc-800">
                   <span class="text-purple-400 select-none">&gt; </span>irm https://agent.lingxifox.cn/install.ps1 | iex
                 </div>

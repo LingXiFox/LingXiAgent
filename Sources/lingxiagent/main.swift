@@ -22,10 +22,21 @@ case let .tui(options):
     for skill in options.skillDisables {
         _ = try? await SkillsCLI.run(arguments: ["disable", skill])
     }
-    let root = AppCompositionRoot(configuration: options.applicationConfiguration)
-    let tui = ApplicationTUI(options: options)
-    try await root.launch(with: tui)
-    exit(0)
+    do {
+        let root = AppCompositionRoot(configuration: options.applicationConfiguration)
+        let tui = ApplicationTUI(options: options)
+        try await root.launch(with: tui)
+        exit(0)
+    } catch {
+        let message: String
+        if let posix = error as? POSIXError, posix.code == .EIO || posix.code == .ENOTTY {
+            message = "Interactive TUI requires a controlling terminal (TTY)."
+        } else {
+            message = error.userMessage
+        }
+        FileHandle.standardError.write(Data("Error: \(message)\n".utf8))
+        exit(1)
+    }
 
 case let .auth(authArgs):
     AuthCLI.installSignalHandlers()

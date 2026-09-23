@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LingXiAgent 官方技术文档中心 — 架构、配置、工具链与跨平台手册</title>
-  <meta name="description" content="LingXiAgent 完整官方技术文档，涵盖 P-Core/E-Core 双核架构、内置工具链规范、config.json 配置、MCP 生态、TUI 快捷键与 macOS/Linux/Windows 跨平台指南。">
+  <title>LingXiAgent 官方技术文档中心 — 架构、配置、工具链与跨平台手册 (macOS / Linux · Windows 实验性)</title>
+  <meta name="description" content="LingXiAgent 完整官方技术文档，涵盖 P-Core/E-Core 双核架构、内置工具链规范、config.json 配置、MCP 生态、TUI 快捷键与 macOS/Linux 官方支持（Windows 实验性）指南。">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -196,7 +196,7 @@
           <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Overview</span>
           <h1 class="text-3xl sm:text-4xl font-extrabold text-white mt-2">LingXiAgent 核心技术概览</h1>
           <p class="text-zinc-400 text-sm mt-3 leading-relaxed">
-            LingXiAgent 是一套基于纯 Swift 6 原生构建的新一代终端 AI 编程智能体。采用创新型异构双核（P-Core 推理总线与 E-Core 执行存储）架构，全面原生适配 macOS、Linux 与 Windows 三大操作系统，兼具毫秒级冷启动、极致内存优化与严密代码安全防护。
+            LingXiAgent 是一套基于纯 Swift 6 原生构建的新一代终端 AI 编程智能体。采用创新型异构双核（P-Core 推理总线与 E-Core 执行存储）架构，全面原生适配 macOS 与 Linux 生产环境（Windows 处于实验性支持，计划于 V1.1.0 恢复），兼具毫秒级冷启动、极致内存优化与严密代码安全防护。
           </p>
         </div>
 
@@ -227,13 +227,13 @@
           <h2 class="text-2xl font-bold text-white mt-1">全平台一键原生安装</h2>
         </div>
         <p class="text-sm text-zinc-300 mb-4 leading-relaxed">
-          官方安装脚本会自动探测系统类型（macOS / Linux / Windows）与 CPU 架构（ARM64 / x86_64），下载对应预编译发布包并配置环境变量。
+          官方安装脚本会自动探测系统类型与 CPU 架构，下载对应预编译发布包（macOS Apple Silicon <code>arm64</code>、Linux <code>x86_64</code>）并配置环境变量。Intel Mac 或 AArch64 Linux 系统在具备 Swift 环境时将自动极速编译安装。
         </p>
 
         <!-- macOS / Linux Block -->
         <div class="mb-6">
           <div class="flex items-center justify-between text-xs text-zinc-400 mb-1 px-1">
-            <span class="font-semibold text-zinc-200">macOS / Linux (Bash / Zsh)</span>
+            <span class="font-semibold text-zinc-200">macOS / Linux (Bash / Zsh · 官方推荐)</span>
             <span class="font-mono text-zinc-500">install.sh</span>
           </div>
           <div class="relative bg-zinc-900/90 rounded-xl p-3.5 border border-zinc-800 font-mono text-xs text-zinc-300 flex items-center justify-between">
@@ -247,7 +247,7 @@
         <!-- Windows Block -->
         <div class="mb-6">
           <div class="flex items-center justify-between text-xs text-zinc-400 mb-1 px-1">
-            <span class="font-semibold text-zinc-200">Windows (PowerShell)</span>
+            <span class="font-semibold text-zinc-200">Windows (PowerShell · 实验性/需 Swift 环境源码编译)</span>
             <span class="font-mono text-zinc-500">install.ps1</span>
           </div>
           <div class="relative bg-zinc-900/90 rounded-xl p-3.5 border border-zinc-800 font-mono text-xs text-zinc-300 flex items-center justify-between">
@@ -258,8 +258,20 @@
           </div>
         </div>
 
-        <div class="p-4 rounded-xl bg-purple-950/20 border border-purple-800/40 text-xs text-zinc-300 leading-relaxed">
-          <strong class="text-purple-300">安装后生效：</strong> 重新打开终端，或执行 <code class="text-purple-300">source ~/.zshrc</code>（Linux 下为 <code class="text-purple-300">source ~/.bashrc</code>），即可在任意目录直接输入 <code class="text-emerald-400 font-bold">lingxiagent</code> 运行。
+        <div class="space-y-3">
+          <div class="p-4 rounded-xl bg-purple-950/20 border border-purple-800/40 text-xs text-zinc-300 leading-relaxed">
+            <strong class="text-purple-300">安装产物与入口：</strong> 安装脚本会自动部署三个独立入口与扩展运行时：
+            <ul class="list-disc list-inside mt-1 space-y-0.5 text-zinc-400">
+              <li><code class="text-emerald-400 font-bold">lingxiagent</code>：主程序入口（交互式 TUI、CLI 子命令、ACP 守护进程）；</li>
+              <li><code class="text-purple-300 font-bold">LingXiTUI</code>：独立轻量终端 TUI 视图入口；</li>
+              <li><code class="text-zinc-300 font-bold">LingXiCoreHost</code>：内核服务宿主进程（Stdio IPC 交互）；</li>
+              <li><code class="text-zinc-400">LingXiAgent_LingXiCore.bundle</code> 与 <code class="text-zinc-400">Sidecars</code>（浏览器自动化支持）。</li>
+            </ul>
+          </div>
+          <div class="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 text-xs text-zinc-300 leading-relaxed">
+            <strong class="text-amber-300">推荐系统依赖：</strong> Agent 的 <code class="text-zinc-300">grep</code> 与 <code class="text-zinc-300">glob</code> 代码检索工具运行时依赖系统的 <code class="text-amber-300">ripgrep</code> (<code>rg</code>)。建议提前通过包管理器安装：
+            <span class="text-zinc-400">macOS (<code>brew install ripgrep</code>) · Linux (<code>apt install ripgrep</code> 或 <code>pacman -S ripgrep</code>)</span>。
+          </div>
         </div>
       </article>
 
@@ -906,8 +918,8 @@
             <p class="text-zinc-400">通过 <code class="text-zinc-300">/proc/self/exe</code> 解析自身路径，集成 Bubblewrap (<code class="text-zinc-300">bwrap</code>) 容器命名空间沙箱，自动对接 Wayland/X11 剪贴板工具与 XDG 目录标准。</p>
           </div>
           <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
-            <div class="text-amber-300 font-bold mb-1">🪟 Windows 原生</div>
-            <p class="text-zinc-400">调用 Win32 <code class="text-zinc-300">GetModuleFileNameW</code> 定位模块，通过 <code class="text-zinc-300">SetConsoleMode</code> 开启控制台 VT100 虚拟终端支持，<code class="text-zinc-300">taskkill /F /T</code> 级联深度杀灭进程树，原生解析 <code class="text-zinc-300">%PATHEXT%</code>。</p>
+            <div class="text-amber-300 font-bold mb-1">🪟 Windows (实验性 · 正式支持计划 V1.1.0)</div>
+            <p class="text-zinc-400">保留完整 Win32 平台抽象：调用 <code class="text-zinc-300">GetModuleFileNameW</code> 定位模块，通过 <code class="text-zinc-300">SetConsoleMode</code> 开启控制台 VT100 虚拟终端支持，<code class="text-zinc-300">taskkill /F /T</code> 级联深度杀灭进程树，原生解析 <code class="text-zinc-300">%PATHEXT%</code>。V1.0.0 仅开放源码编译体验，不发布预编译包。</p>
           </div>
         </div>
       </article>
