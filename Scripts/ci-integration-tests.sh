@@ -228,15 +228,24 @@ $p | ForEach-Object {
         # argument is the file descriptor, and resolving it through /proc/PID/fd says which pipe it
         # is -- the difference between "two threads sit in anon_pipe_read" and "this one owns inode
         # 44281", which is what identifies the unread end.
-        sc="$(cat "$t/syscall" 2>/dev/null || true)"
-        nr="${sc%% *}"
+        sc="$(tr -s '[:space:]' ' ' < "$t/syscall" 2>/dev/null || true)"
+        nr="$(printf '%s\n' "$sc" | awk '{print $1}')"
+        rawfd="$(printf '%s\n' "$sc" | awk '{print $2}')"
         fd=""
-        what=""
-        if [ "$nr" = "0" ]; then
-          fd="$(printf '%d\n' "$(printf '%s\n' "$sc" | awk '{print $2}')" 2>/dev/null || true)"
-          if [ -n "$fd" ]; then
-            what=" read-fd=${fd} ($(readlink "/proc/${pid}/fd/${fd}" 2>/dev/null || echo '?'))"
-          fi
+        case "$nr" in
+          0|17|19)
+            # Only a real hex token converts: `printf '%d' 1b` yields 0 with an error on stderr,
+            # which would have been read as "this thread is parked on stdin".
+            case "$rawfd" in
+              0x*) fd="$(printf '%d\n' "$rawfd" 2>/dev/null || true)" ;;
+            esac
+            ;;
+        esac
+        # The raw line is echoed as well: last round nothing matched any filter, and "no match" has
+        # to be readable as data rather than looking like a gap in the instrument.
+        what=" syscall[${sc:-unreadable}]"
+        if [ -n "$fd" ]; then
+          what="$what -> fd=$fd ($(readlink "/proc/${pid}/fd/${fd}" 2>/dev/null || echo '?'))"
         fi
         printf 'thread %s wchan=%s state=%s%s\n' \
           "$(basename "$t")" \
