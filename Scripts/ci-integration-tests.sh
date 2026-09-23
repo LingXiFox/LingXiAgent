@@ -232,7 +232,7 @@ $p | ForEach-Object {
 ' 2>&1 | tr -d '\r' | head -20
       ;;
     *)
-      local t sc nr rawfd fd what held link
+      local t sc nr rawfd fd what held link fdpath tgt owner tree_pid links
       held="$(mktemp)"
       for t in /proc/"$pid"/task/*; do
         [ -d "$t" ] || continue
@@ -269,19 +269,27 @@ $p | ForEach-Object {
       # a reader parked on a pipe whose writer is a descendant that outlived its parent is a
       # different defect from one parked on a pipe nobody will ever write to again. Only real
       # descendants are consulted -- a name pattern would match unrelated processes on the runner.
+      # Which process holds which descriptor of the blocked pipes, across the whole runner and not
+      # just the descendant tree: a child that outlived its parent is reparented away and invisible
+      # to a pgrep -P walk, and it is exactly the kind of holder that keeps a pipe from ever
+      # reporting EOF. The fd numbers are printed because a read end and a write end look identical
+      # as an inode -- the test process "holding" the pipe may only be the blocked reader itself.
       for inode in $(sort -u "$held" 2>/dev/null); do
-        for holder in $(descendants "$pid" 3); do
-          if ls -l "/proc/$holder/fd" 2>/dev/null | grep -qF "$inode"; then
-            printf '   %s also open in pid %s (%s)\n' "$inode" "$holder" \
-              "$(ps -o comm= -p "$holder" 2>/dev/null | tr -d '\n' || echo '?')"
+        printf 'holders of %s:\n' "$inode"
+        for fdpath in /proc/[0-9]*/fd/*; do
+          [ -e "$fdpath" ] || continue
+          tgt="$(readlink "$fdpath" 2>/dev/null || true)"
+          if [ "$tgt" = "$inode" ]; then
+            owner="${fdpath#/proc/}"; owner="${owner%%/*}"
+            printf '   pid %s (%s) fd %s\n' "$owner" \
+              "$(ps -o comm= -p "$owner" 2>/dev/null | tr -d '\n' || echo '?')" "${fdpath##*/}"
           fi
-        done
+        done 2>/dev/null | head -12
       done
       # /proc/PID/task/*/syscall needs ptrace, and yama restricts that to direct children, so from
       # the harness the test binary is off-limits (every line reads "unreadable"). /proc/PID/fd is
       # owner-readable without any ptrace grant, so list the pipes the whole tree still holds open:
       # "two readers parked" only becomes an explanation once it names the other end of the pipe.
-      local tree_pid links
       for tree_pid in "$pid" $(descendants "$pid" 3); do
         links="$(ls -l "/proc/$tree_pid/fd" 2>/dev/null | grep -oE 'pipe:\[[0-9]+\]' | sort -u | tr '\n' ' ')"
         [ -n "$links" ] && printf 'pid %s holds %s (%s)\n' "$tree_pid" "$links" \
