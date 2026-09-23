@@ -211,26 +211,6 @@ dump_stacks() {
         | sed -E 's/ \(in [^)]*\)//; s/ \+ [0-9]+$//; s/^[[:space:]]+//' \
         | head -200
       ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      # No portable userspace stack dumper exists on Git Bash, so record the process tree
-      # instead. Combined with the chunk name in the line above, that still identifies which
-      # child is wedged; the /proc walk below would silently produce nothing there. The test
-      # binary is named after the *package*, so match that too or a live child reads as absent.
-      echo "note: stack capture is unavailable on Windows runners; listing processes"
-      ps -W 2>/dev/null | grep -iE "LingXiAgent|PackageTests|xctest|swift|rg\.exe" | head -30
-      # Per-thread wait reasons are the closest Windows equivalent of the /proc wchan census used
-      # on Linux, and the census is what turned a "hang" into "two cases parked on a pipe read".
-      # A wedge whose threads all sit in UserRequest is an await that will never be resumed; one
-      # with a thread parked in Executive/LocalAlert is blocked in a kernel object.
-      powershell -NoProfile -Command '
-$p = @(Get-Process | Where-Object { $_.ProcessName -like "LingXiAgentPackageTests*" })
-"test binary census: $($p.Count) process(es)"
-$p | ForEach-Object {
-  $t = @($_.Threads)
-  "  pid=$($_.Id) threads=$($t.Count) handles=$($_.HandleCount) waitReasons=" + (($t | Group-Object { $_.WaitReason } | ForEach-Object { $_.Name + ":" + $_.Count }) -join ",")
-}
-' 2>&1 | tr -d '\r' | head -20
-      ;;
     *)
       local t sc nr rawfd fd what held link fdpath tgt owner tree_pid links
       held="$(mktemp)"
@@ -303,164 +283,8 @@ $p | ForEach-Object {
 failed_chunks=()
 timed_out_chunks=()
 lingering_chunks=()
-# Set once the stage has replayed one silently-failing chunk through the test binary itself.
-direct_replays=0
-# One sample of the early-exit family is enough to classify it: the red set is the same 10 chunks
-# every round, and this job is evicted by the runner at ~61 minutes, so every extra replay is taken
-# from the round's margin rather than from spare time.
-MAX_DIRECT_REPLAYS=1
-
-maybe_direct_replay() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*|Windows_NT) ;;
-    *) return 0 ;;
-  esac
-  if [ "$direct_replays" -ge "$MAX_DIRECT_REPLAYS" ]; then
-    return 0
-  fi
-  direct_replays=$((direct_replays + 1))
-  direct_replay "$1" "$2"
-}
-
-# A chunk can also die without ever printing a verdict. Because a redirected stdout on Windows is
-# block-buffered, the whole tail is lost with the process, so the log shows passing tests and then
-# nothing at all. The Application event log is written by the kernel outside that process, so the
-# faulting module and exception code survive there, and a process census says whether a previously
-# killed chunk left children holding the test binary.
-dump_crash_evidence() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      echo "live test processes now: $(ps -W 2>/dev/null | grep -icE 'swift-test|LingXiAgent' | head -1)"
-      # WER local dumps are enabled by the workflow; a dump here means the process faulted, and no
-      # dump after this many deaths means something in it called exit(). Nothing else in the log can
-      # make that distinction, because the runner writes no crash event either way.
-      dumps="$(ls -t /d/a/_temp/dumps 2>/dev/null | head -3)"
-      if [ -n "$dumps" ]; then
-        printf 'crash dumps present: %s\n' "$dumps"
-      else
-        echo "crash dumps: none written for this death"
-      fi
-      # Every count is printed by PowerShell, never inferred from a shell exit status: `grep -c`
-      # returns 1 when the count is zero, which made the old shell-level fallback announce "no crash
-      # event" for a reason that had nothing to do with the event log. A zero now has to mean zero,
-      # and an unreadable log has to say it is unreadable rather than look like an absence.
-      # Defender is queried because it terminates processes outside the OS crash path: no WER entry,
-      # no output, a nonzero exit code -- which is precisely the shape these deaths have.
-      powershell -NoProfile -Command '
-$since = (Get-Date).AddMinutes(-20)
-$crash = @(Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=$since} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Application Error|Windows Error Reporting|\.NET Runtime|Resource-Exhaustion-Detector" })
-"application crash events in the last 20min: $($crash.Count)"
-$crash | Select-Object -First 4 | ForEach-Object { "  " + $_.TimeCreated + " [" + $_.Provider.Name + "] " + ($_.Message -replace "\r?\n", " ") }
-# A commit-charge exhaustion is the one failure mode that explains the shape these deaths have:
-# several dying chunks spawn no child at all, the loss grows when chunks hold more suites, and
-# the process leaves no application-level error, no output and no faulting-module entry.
-$oom = @(Get-WinEvent -FilterHashtable @{LogName="System"; StartTime=$since} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Resource-Exhaustion|MemoryDiag" -or $_.Id -eq 2004 })
-"resource exhaustion events in the last 20min: $($oom.Count)"
-$oom | Select-Object -First 3 | ForEach-Object { "  " + $_.TimeCreated + " [" + $_.Provider.Name + "] " + ($_.Message -replace "\r?\n", " ") }
-$pw = @(Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
-if ($pw) { "commit limit now: {0:N0} MB used of {1:N0} MB" -f (($pw[0].TotalVirtualMemorySize - $pw[0].FreeVirtualMemory) / 1KB), ($pw[0].TotalVirtualMemorySize / 1KB) }
-$dl = Get-WinEvent -ListLog "Microsoft-Windows-Windows Defender/Operational" -ErrorAction SilentlyContinue
-if (-not $dl) {
-  "defender log: not readable on this runner"
-} else {
-  $def = @(Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Windows Defender/Operational"; StartTime=$since; ID=1116,1117} -ErrorAction SilentlyContinue)
-  "defender detections in the last 20min: $($def.Count)"
-  $def | Select-Object -First 4 | ForEach-Object { "  " + $_.TimeCreated + " " + ($_.Message -replace "\r?\n", " ") }
-}
-' 2>&1 | tr -d '\r' | head -40
-      ;;
-  esac
-}
-
 executed=0
 index=0
-
-# `swift test` returns 1 whatever happened to the binary it launched, so an exit whose status is an
-# exception code (0xC0000005) and a voluntary exit(1) look identical through the wrapper -- and on a
-# runner image where Windows Error Reporting does not write events, "no crash event" proves nothing
-# either. Replaying the same filter through the test binary itself is the only way to read the real
-# status without a debugger. It is a probe: its outcome is printed, never used as the verdict.
-direct_replay() {
-  local index=$1 filter=$2
-  local probe_log probe_pid waited=0 status candidate found="" replay attempt probe_killed
-  # Locate the binary by path rather than asking SwiftPM for it: `swift build --show-bin-path`
-  # takes the package lock, and a killed chunk can still be holding it, which would park the whole
-  # stage inside a diagnostic.
-  for candidate in "$PWD"/.build/*/debug/LingXiAgentPackageTests.xctest \
-                   "$PWD"/.build/*/debug/LingXiAgentPackageTests.xctest.exe \
-                   "$PWD"/.build/debug/LingXiAgentPackageTests.xctest; do
-    if [ -f "$candidate" ]; then
-      found="$candidate"
-      break
-    fi
-  done
-  if [ -z "$found" ]; then
-    echo "note: no test binary found under $PWD/.build, cannot replay directly"
-    return
-  fi
-  probe_log="$(mktemp)"
-  # Resolve the toolchain the way Windows knows it and convert it: `dirname` does not treat
-  # backslashes as separators, so an earlier attempt silently produced ".".
-  swift_win="$(powershell -NoProfile -Command 'Split-Path -Parent (Get-Command swift.exe).Source' 2>/dev/null | tr -d '\r' | head -1)"
-  swift_bin="$(cygpath -u "$swift_win" 2>/dev/null || printf '%s' "$swift_win")"
-  bin_dir="$(dirname "$found")"
-  # Print what the loader actually has to work with, rather than asserting where one file is: the
-  # previous round reported "Testing.dll resolved to [nowhere found]" while the same binary ran fine
-  # under the driver, so either the DLL has another name or the exec never got that far. Both remain
-  # possible until the DLL inventory and the binary itself are shown.
-  printf 'replay probe: binary=[%s] toolchain=[%s]\n' "$(ls -l "$found" 2>&1 | tr -s ' ' | cut -d' ' -f5,9)" "$swift_bin"
-  printf 'dlls beside the binary: [%s]\n' "$(ls "$bin_dir"/*.dll 2>/dev/null | xargs -n1 basename 2>/dev/null | paste -sd' ' -)"
-  printf 'testing-shaped dlls in the toolchain: [%s]\n' "$(find "$swift_bin/.." \( -iname '*testing*.dll' -o -iname '*xctest*.dll' \) 2>/dev/null | head -5 | paste -sd' ' -)"
-  # Always try the binary itself first. `swift test` returns 1 whatever happened to the child it
-  # launched, so through the wrapper a fault and a voluntary exit(1) are indistinguishable -- and
-  # that ambiguity is exactly what left 11 Windows chunks unclassified. The driver is used only when
-  # the direct exec could not start, which is identifiable by its own status.
-  for attempt in direct driver; do
-    if [ "$attempt" = direct ]; then
-      replay=("$found" --testing-library swift-testing --filter "$filter")
-    else
-      echo "-- direct exec did not run the tests; replaying through the driver, whose status is its own"
-      replay=("${SWIFT_TEST[@]}" --filter "$filter")
-    fi
-    waited=0
-    probe_killed=0
-    PATH="$swift_bin:$bin_dir:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "${replay[@]}" \
-      < /dev/null > "$probe_log" 2>&1 &
-    probe_pid=$!
-    while kill -0 "$probe_pid" 2>/dev/null; do
-      if [ "$waited" -ge 90 ]; then
-        echo "-- direct replay still running after ${waited}s: the wedge reproduces through the binary too"
-        kill_tree "$probe_pid"
-        probe_killed=1
-        break
-      fi
-      sleep 5
-      waited=$((waited + 5))
-    done
-    wait "$probe_pid" 2>/dev/null
-    status=$?
-    if [ "$probe_killed" = 1 ]; then
-      printf -- '-- %s replay of chunk %s: still wedged after ${waited}s, status %d is the harness kill, not the process\n' \
-        "$attempt" "$index" "$status"
-    else
-      printf -- '-- %s replay of chunk %s: real exit status=%d (0x%08x), %ss\n' "$attempt" "$index" "$status" "$status" "$waited"
-    fi
-    case "$status" in
-      # STATUS_DLL_NOT_FOUND, STATUS_INVALID_IMAGE_FORMAT, and bash's own "cannot execute".
-      3221225779|3221225595|127) continue ;;
-    esac
-    break
-  done
-  if [ "$status" -ge 3221225472 ] 2>/dev/null; then
-    echo "   ^ that is an NTSTATUS exception code, i.e. the process died from a fault, not from exit()"
-  fi
-  grep -aiE "Fatal error|Crash|Exception|EXC_|Test run with|Backtrace|exited with|signal code|Process encountered" "$probe_log" | tail -10
-  # The head as well: when the driver itself complains about the child it does so early, and a
-  # tail-only view loses it behind the per-test lines.
-  head -20 "$probe_log"
-  tail -12 "$probe_log"
-  rm -f "$probe_log"
-}
 
 for chunk in "${chunks[@]}"; do
   index=$((index + 1))
@@ -561,18 +385,6 @@ for chunk in "${chunks[@]}"; do
           else
             echo "-- no runtime backtrace produced; the Swift crash handler did not answer QUIT"
           fi
-          # QUIT gave one thread only, and a wedged await lives in the threads that were not printed.
-          # Abort is the same dump path but taken as a crash, so the handler reports every thread; the
-          # process is being killed here regardless, so this costs nothing but the missing stacks.
-          if [ "$(grep -ac '^Thread [0-9]' "$chunk_log" 2>/dev/null | head -1)" -lt 2 ] 2>/dev/null; then
-            bytes_before_abort="$(wc -c < "$chunk_log" 2>/dev/null || echo 0)"
-            for child in "$runner" $children; do
-              kill -ABRT "$child" 2>/dev/null
-            done
-            sleep 4
-            printf "%s\n" "-- all-thread backtrace after SIGABRT:"
-            tail -c +"$((bytes_before_abort + 1))" "$chunk_log" 2>/dev/null | head -160
-          fi
           ;;
       esac
       kill_tree "$runner"
@@ -609,10 +421,6 @@ for chunk in "${chunks[@]}"; do
     [ -z "$victim" ] && victim="$(unreported_tests "$chunk_log")"
     [ -n "$victim" ] && echo "-- started but never reported: ${victim}"
     tail -20 "$chunk_log"
-    [ "$ran" -eq 0 ] && dump_crash_evidence
-    # A wedge deserves the same treatment as an early exit: if the binary wedges when launched
-    # directly, the wrapper is not what is holding it.
-    maybe_direct_replay "$index" "$filter"
   elif [ "$lingering" = yes ]; then
     # A distinct defect from a hung test: the plan finished, so its verdict is trustworthy,
     # but the process never returned. Report both so neither signal is lost.
@@ -628,14 +436,6 @@ for chunk in "${chunks[@]}"; do
     silent_victim="$(unreported_from_events "$chunk_events")"
     [ -z "$silent_victim" ] && silent_victim="$(unreported_tests "$chunk_log")"
     [ -n "$silent_victim" ] && echo "!! chunk ${index} started but never reported: ${silent_victim}"
-    # No summary at all means the run never reached its own end, which is a different defect from
-    # a test that failed and was reported, so say which one this is and bring in the OS evidence.
-    [ "$ran" -eq 0 ] && dump_crash_evidence
-    # A chunk that exits early with no verdict is the same unknown as one that times out, and the
-    # wrapper's status cannot tell a fault from an exit(1); replay it through the binary itself.
-    if [ "$ran" -eq 0 ]; then
-      maybe_direct_replay "$index" "$filter"
-    fi
     grep -E "recorded an issue|Expectation failed|Caught error|error:|Test run with" "$chunk_log" \
       | head -30
     echo "--- chunk ${index} full log ---"

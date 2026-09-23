@@ -3,7 +3,7 @@
 <p align="center">
   <span style="font-size: 64px;">🦊</span><br/>
   <strong>Native Swift AI Coding Agent with Heterogeneous Dual-Core Architecture</strong><br/>
-  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS / Linux / Windows 官方支持 (CLI + TUI)</em>
+  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS / Linux 官方支持 (CLI + TUI) · Windows 实验性支持</em>
 </p>
 
 <p align="center">
@@ -17,15 +17,16 @@
 ---
 
 > [!IMPORTANT]
-> **全平台正式支持契约 (V1.0.0 Platform Support Matrix)**
+> **V1.0.0 平台支持口径 (Platform Support Matrix)**
 > 
-> | 操作系统 | 交付形态 | 预编译发布包 (Prebuilt) | 源码构建 (Source Build) | 平台专属能力边界说明 |
-> | :--- | :--- | :--- | :--- | :--- |
-> | **macOS** | CLI + TUI | `arm64` (Apple Silicon) | Apple Silicon / Intel | 全功能就绪：Seatbelt 原生沙箱、Browser Use、视觉桌面感知 (Computer Use) |
-> | **Linux** | CLI + TUI | `x86_64` (Ubuntu/Debian/Arch) | x86_64 / AArch64 | 核心就绪：Bubblewrap 沙箱、Browser Use；桌面视觉 Computer Use 暂不开放 |
-> | **Windows** | CLI + TUI | `x86_64` (Win 10/11) | x86_64 / ARM64 | 核心就绪：Win32 控制台、Browser Use；桌面视觉 Computer Use 随 V1.1.0+ 提供 |
+> | 操作系统 | 支持级别 | 交付形态 | 预编译发布包 (Prebuilt) | 源码构建 (Source Build) | 平台专属能力边界说明 |
+> | :--- | :--- | :--- | :--- | :--- | :--- |
+> | **macOS** | Supported (release blocker) | CLI + TUI | `arm64` (Apple Silicon) | Apple Silicon / Intel | 全功能就绪：Seatbelt 原生沙箱、Browser Use、视觉桌面感知 (Computer Use) |
+> | **Linux** | Supported (release blocker) | CLI + TUI | `x86_64` (Ubuntu/Debian/Arch) | x86_64 / AArch64 | 核心就绪：Bubblewrap 沙箱、Browser Use；桌面视觉 Computer Use 暂不开放 |
+> | **Windows** | Experimental — 正式支持计划 V1.1.0 | CLI + TUI | 无（V1.0.0 不发布 Windows 预编译包） | x86_64 / ARM64，不保证可用 | 代码与平台抽象完整保留；CI 仅做依赖装配、编译与 smoke 检查，不作为发布门禁 |
 > 
 > 表现层由纯受控客户端 `LingXiTUI` 驱动，系统底层由独立平台层 `LingXiPlatform` 与 `CSQLite` 提供跨平台强一致保障。
+> Windows 的遗留问题与复现路径记录在 `Docs/V1-Cross-Platform-Baseline-Audit.md` 的 V1.1.0 交接章节。
 
 ---
 
@@ -37,7 +38,8 @@
 curl -fsSL https://agent.lingxifox.cn/install.sh | bash
 ```
 
-### Windows (PowerShell 一键安装)
+### Windows (PowerShell 一键安装 · 实验性)
+V1.0.0 不为 Windows 提供发布包与支持承诺；下列入口用于仍想在 Windows 上试用的用户，问题请先记录，不要按 supported 预期使用：
 在原生 Windows PowerShell 中直接运行：
 ```powershell
 irm https://agent.lingxifox.cn/install.ps1 | iex

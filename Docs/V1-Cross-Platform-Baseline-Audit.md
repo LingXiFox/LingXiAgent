@@ -2,10 +2,52 @@
 **Cross-Platform Architecture Audit & Baseline Freeze Report**
 
 - **系统版本**: LingXiAgent V1.0.0 (Release Candidate 1)
-- **正式支持平台**: macOS (arm64/x86_64), Linux (Ubuntu/Debian/Arch/RHEL), Windows 10/11 / Server 2022 (x86_64)
+- **正式支持平台**: macOS (arm64/x86_64), Linux (Ubuntu/Debian/Arch/RHEL)
+- **实验性平台**: Windows 10/11 / Server 2022 (x86_64) — 不在 V1.0.0 支持范围，正式支持推迟至 V1.1.0
 - **正式用户入口**: CLI (`lingxiagent`), TUI (`LingXiTUI`), Core Service (`LingXiCoreHost`)
-- **审计日期**: 2026-09-20
+- **审计日期**: 2026-09-20，平台口径于 2026-09-23 调整
 - **基线状态**: **FROZEN (正式冻结)**
+
+---
+
+## 0. V1.0.0 平台门禁调整与 Windows 交接 (2026-09-23)
+
+V1.0.0 的发布门禁为 **macOS + Linux** 双平台全绿。Windows 降级为 informational job：只做依赖装配、
+`swift build`、compile-level 平台门禁与 CLI smoke，`continue-on-error: true` 且不进入 `gate` 的
+`needs`，因此不可能阻塞发布。平台实现与 `LingXiPlatform` 抽象**全部保留**，Core/IPC/Agent Loop 的
+跨平台抽象质量不因降级而降低；Windows 特有问题在此登记为 V1.1.0 专项（runtime / pipe / 进程生命周期）。
+
+### 已知未决（截至 c72bb81）
+
+| 现象 | 证据强度 | 下一步该看的判据 |
+| :--- | :--- | :--- |
+| Stage 5 约 10/56 chunk 在数秒内静默终止：事件流有 `testStarted` 无 `testEnded`，无 Swift 错误文本 | 稳定复现，红色集合逐轮 bit-identical | **子进程真实退出码**。`swift test` 对任何子进程死亡都返回 1，所以历史日志里的 “exit 1” 从未区分过 fault 与 `exit(1)`；必须先能直接 exec 测试二进制 |
+| 4 个 stdio chunk 耗满预算挂死：`LingXiClientVNextTests`、`VNextProductionIntegrationTests`、`Round6SystemAuditTests`、`Round14SystemAuditTests` | 稳定复现 | 两个已修因（`703e51c` continuation 注册前取消、`e7b6f85` 14 处丢回复）都未改变该集合，说明 Windows 侧另有原因 |
+| WER `LocalDumps` 未落盘、Application 日志 0 条 crash 事件 | 结论不可用 | runner 镜像上 WER 报告可能被禁用，因此「无 dump」既不能证明崩溃也不能证明干净退出 |
+| `NonProviderLatencyRepairTests.mcpStdioDrainsLargeDiagnosticsAndCompletesHandshake` 在 Windows 真实失败：`MCP stdio did not return a response for tools/list; server process is still running` | 该轮唯一一条真失败 | **本地可复现**：在 macOS 把 `AsyncLineReader` 两处 `#if os(Windows)` 改成 `#if os(Windows) || os(macOS)` 强制直读形态，即 `swift test --filter NonProviderLatencyRepairTests` |
+
+### 已用测量排除、不要重查
+
+孤儿测试进程累积；Defender 终止；commit-charge 资源耗尽；`taskkill` 自杀（target 从不等于 self）；
+suite 内并发；`.timeLimit`（对永不 resume 的 continuation 无效）；chunk 预算大小；父进程持有写端副本导致
+EOF 不可达；`terminateProcessTree` 缺 self 守卫（守卫已补，非成因）。
+
+### 相关已完成项
+
+`fac0796`：Linux 的 `FileHandle.readabilityHandler` 是 dispatch source，注册**之前**就已到达的可读/EOF
+事件在 Linux 上永不投递，导致瞬时输出即退出的子进程其数据与 EOF 同时丢失、`for try await` 永久等待
+（Linux Stage 5 连续 8 轮卡在同一 `MCPCLITests` 用例的根因）。Linux 路径改为 `poll()` 保护的读，
+并补了跨平台回归：已退出子进程的 pipe 仍投递字节与 EOF、消费者取消可返回、spawn-drain 循环不漏 fd。
+Windows 走的是另一分支（detached task 内阻塞读），不受该修复影响。
+
+### V1.1.0 建议起点
+
+Windows 的读需要真正可中断：overlapped I/O + `CancelIoEx`，或保证对端先关闭再有人碰读句柄的 teardown。
+现成的可疑点：`ToolExecutionSupport` 中 `dataChunks` 的 Windows `onTermination` 会 `close()` 句柄，
+而 `handleTermination` 随后对**同一个** `fileHandleForReading` 做 `nonblockingDrain`——读已关闭的句柄
+正是「无 Swift 错误的死亡」形状；当前只解绑了 `readabilityHandler`，而 Windows 那条路径没有 handler 可解绑。
+取证仪表（WER LocalDumps、Defender/资源耗尽事件普查、direct replay 探针、`waitReasons` 线程普查、
+SIGABRT 全线程回栈、`terminateProcessTree` stderr trace）已从 V1.0.0 CI 移除，做该专项时按需重建。
 
 ---
 

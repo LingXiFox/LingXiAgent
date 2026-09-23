@@ -237,10 +237,17 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   # Windows：正式发布平台，与 macOS / Linux 同等门禁
   # ─────────────────────────────────────────────────────────────
+  # Experimental only. Windows is not a supported platform for V1.0.0 and is not a release
+  # blocker; formal support is deferred to V1.1.0 together with a dedicated runtime, pipe and
+  # process-lifetime review. What stays here is the one thing worth knowing on every commit: that
+  # the package still compiles, links and boots on x86_64-windows. Nothing in this job can fail the
+  # gate -- the full integration suite, the crash forensics and the per-chunk watchdogs were
+  # Windows-specific cost with no V1.0.0 decision hanging on them.
   test-windows:
-    name: Windows Build & Test (x86_64)
+    name: Windows Compile Check (informational)
     runs-on: windows-2022
-    timeout-minutes: 130
+    continue-on-error: true
+    timeout-minutes: 35
     steps:
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -311,57 +318,9 @@ jobs:
           swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
           swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
-      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
-        shell: bash
-        timeout-minutes: 5
-        run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
-
-      - name: Stage 4 - IPC & Process Robustness Gate
-        shell: bash
-        timeout-minutes: 5
-        run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
-
-      - name: Stage 5 - Controlled Full Integration Test Suite
-        shell: bash
-        timeout-minutes: 75
-        run: |
-          # The last discriminator left between "the process faulted" and "the process called exit()"
-          # is a crash dump: no Windows Error Reporting event appears (0 across every round), and
-          # that is equally consistent with reporting being disabled and with a clean exit. Ask WER
-          # for user minidumps -- a few megabytes, at most a handful -- and let their existence answer
-          # the question. This is an ephemeral single-tenant runner, and the key is never read back
-          # for anything but the dump it produces. One line: a literal block scalar ends at the
-          # first line that is not indented, which is what broke the previous attempt.
-          powershell -NoProfile -Command '$k="HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"; New-Item -Path $k -Force | Out-Null; New-ItemProperty -Path $k -Name DumpFolder -Value "D:\a\_temp\dumps" -PropertyType ExpandString -Force | Out-Null; New-ItemProperty -Path $k -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null; New-ItemProperty -Path $k -Name DumpCount -Value 8 -PropertyType DWord -Force | Out-Null; "local dumps -> " + (Get-ItemProperty -Path $k).DumpFolder' 2>&1 | tail -2
-          mkdir -p /d/a/_temp/dumps 2>/dev/null || true
-          # `pwd -W` gives the drive-letter form; the xunit path is handed to a native
-          # swift-test process, which cannot resolve the MSYS-style path $PWD reports.
-          # The per-chunk budget is wider than macOS/Linux because this runner is measurably
-          # slower at starting the test bundle (one suite took 91s here against 5s elsewhere),
-          # and a budget that is too small reports slow as hung.
-          XUNIT_DIR="$(pwd -W 2>/dev/null || pwd)/test-results"
-          # Fewer, larger chunks on this platform only. This runner costs ~25s per `swift test`
-          # invocation before a single test runs, so 79 invocations put Stage 5 past the point
-          # where the job stops reporting at all: run 35810345131 died at 61 minutes with no
-          # artifact upload and no `if: always()` post-step executed, which is an eviction rather
-          # than a timeout. Halving the invocation count is the lever available here; the per-chunk
-          # budget stays wide so slow is still not reported as hung.
-          LINGXI_CI_XUNIT_DIR="$XUNIT_DIR" LINGXI_CI_CHUNK_TIMEOUT=240 LINGXI_CI_CHUNK_SIZE=20 \
-            bash Scripts/ci-integration-tests.sh
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-windows
-          path: test-results-artifact/
-          if-no-files-found: ignore
-
       - name: Stage 6 - Smoke test CLI executables
-        # Windows Stage 5 has been red since it first ran the full suite, which meant Stage 6 had
-        # never executed at all -- so the platform had no smoke evidence either way. Run it after a
-        # failed Stage 5: it cannot weaken the gate, and a second independent verdict per round is
-        # worth more than the three minutes it costs.
+        # Runs even when the compile gate above failed: the two verdicts are independent, and this
+        # one is the only evidence that the linked executables still start.
         if: always() && !cancelled()
         shell: bash
         timeout-minutes: 5
@@ -384,15 +343,16 @@ jobs:
   gate:
     name: CI Gate
     runs-on: ubuntu-latest
-    needs: [test-macos, test-linux, test-windows]
+    needs: [test-macos, test-linux]
     if: always()
     steps:
       - name: Check required jobs
         run: |
+          # V1.0.0 supports macOS and Linux. Windows is not in `needs` at all, so it cannot hold a
+          # release; its outcome is reported for the V1.1.0 record only.
           if [ "${{ needs.test-macos.result }}" != "success" ] || \
-             [ "${{ needs.test-linux.result }}" != "success" ] || \
-             [ "${{ needs.test-windows.result }}" != "success" ]; then
-            echo "::error::macOS, Linux or Windows gate failed"
+             [ "${{ needs.test-linux.result }}" != "success" ]; then
+            echo "::error::macOS or Linux gate failed"
             exit 1
           fi
-          echo "Gate passed."
+          echo "V1.0.0 gate passed (macOS, Linux)."

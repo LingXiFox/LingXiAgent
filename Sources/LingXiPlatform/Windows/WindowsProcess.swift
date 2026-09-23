@@ -33,15 +33,9 @@ public final class WindowsProcessAdapter: PlatformProcessProtocol, @unchecked Se
     public func terminateProcessTree(pid: Int32, force: Bool) {
         guard pid > 0 else { return }
         // taskkill /T kills the target *and its subtree*, so a target that resolves to this process
-        // destroys the caller -- and leaves the evidence a crash does not: TerminateProcess reports
-        // exit code 1, prints nothing, and logs no Windows Error Reporting event. The Darwin and
-        // Linux adapters already refuse to signal their own process; Windows had no such check.
-        let selfPid = Int32(bitPattern: GetCurrentProcessId())
-        if pid == selfPid {
-            reportTreeKill(target: pid, selfPid: selfPid, refused: true)
-            return
-        }
-        reportTreeKill(target: pid, selfPid: selfPid, refused: false)
+        // destroys the caller. The Darwin and Linux adapters already refuse to signal their own
+        // process; Windows had no such check.
+        if pid == Int32(bitPattern: GetCurrentProcessId()) { return }
         // Windows 上使用 taskkill /T /PID 能够级联杀灭整棵子进程树，force 为 true 时加入 /F 强制终止
         let taskkill = Process()
         taskkill.executableURL = URL(fileURLWithPath: "C:\\Windows\\System32\\taskkill.exe")
@@ -52,13 +46,6 @@ public final class WindowsProcessAdapter: PlatformProcessProtocol, @unchecked Se
         taskkill.arguments = arguments
         try? taskkill.run()
         taskkill.waitUntilExit()
-    }
-
-    /// Names the pid actually being killed and the pid asking for it, so a process that dies with no
-    /// crash event can be classified from the log alone instead of from a guess about the read path.
-    private func reportTreeKill(target: Int32, selfPid: Int32, refused: Bool) {
-        let line = "terminateProcessTree: target=\(target) self=\(selfPid) refused=\(refused)\n"
-        FileHandle.standardError.write(Data(line.utf8))
     }
 }
 #endif
