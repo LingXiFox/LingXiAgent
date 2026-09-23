@@ -338,9 +338,17 @@ dump_crash_evidence() {
       # no output, a nonzero exit code -- which is precisely the shape these deaths have.
       powershell -NoProfile -Command '
 $since = (Get-Date).AddMinutes(-20)
-$crash = @(Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=$since} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Application Error|Windows Error Reporting|\.NET Runtime" })
+$crash = @(Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=$since} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Application Error|Windows Error Reporting|\.NET Runtime|Resource-Exhaustion-Detector" })
 "application crash events in the last 20min: $($crash.Count)"
 $crash | Select-Object -First 4 | ForEach-Object { "  " + $_.TimeCreated + " [" + $_.Provider.Name + "] " + ($_.Message -replace "\r?\n", " ") }
+# A commit-charge exhaustion is the one failure mode that explains the shape these deaths have:
+# several dying chunks spawn no child at all, the loss grows when chunks hold more suites, and
+# the process leaves no application-level error, no output and no faulting-module entry.
+$oom = @(Get-WinEvent -FilterHashtable @{LogName="System"; StartTime=$since} -ErrorAction SilentlyContinue | Where-Object { $_.Provider.Name -match "Resource-Exhaustion|MemoryDiag" -or $_.Id -eq 2004 })
+"resource exhaustion events in the last 20min: $($oom.Count)"
+$oom | Select-Object -First 3 | ForEach-Object { "  " + $_.TimeCreated + " [" + $_.Provider.Name + "] " + ($_.Message -replace "\r?\n", " ") }
+$pw = @(Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
+if ($pw) { "commit limit now: {0:N0} MB used of {1:N0} MB" -f (($pw[0].TotalVirtualMemorySize - $pw[0].FreeVirtualMemory) / 1KB), ($pw[0].TotalVirtualMemorySize / 1KB) }
 $dl = Get-WinEvent -ListLog "Microsoft-Windows-Windows Defender/Operational" -ErrorAction SilentlyContinue
 if (-not $dl) {
   "defender log: not readable on this runner"
