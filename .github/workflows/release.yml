@@ -145,3 +145,20 @@ jobs:
             Windows 不在本版本的支持范围内：不发布 Windows 预编译包，发布门禁也不看 Windows。
             源码与 `LingXiPlatform` 的 Windows 适配全部保留，可从源码构建试用，但不保证可用；
             运行时、pipe 与进程生命周期的 Windows 专项收敛在 V1.1.0 完成。
+
+            ## 安装 / Install
+
+            ```bash
+            # macOS / Linux 一键安装（按平台与架构取对应的 tar.gz）
+            curl -fsSL https://agent.lingxifox.cn/install.sh | bash
+            ```
+
+            包内为三个可执行入口与资源：`lingxiagent`（CLI）、`LingXiTUI`（终端界面）、
+            `LingXiCoreHost`（core 服务），外加 `LingXiAgent_LingXiCore.bundle` 资源包与
+            `Sidecars/browser-host`。每个资产附带同名 `.sha256`。
+
+            ## 已知限制
+
+            - macOS 预编译包只提供 `arm64`；Intel Mac 与 AArch64 Linux 请从源码构建。
+            - Linux 不开放桌面视觉 Computer Use（无辅助功能/截屏后端）。
+            - `grep` / `glob` 工具依赖外部 `ripgrep`，未安装时相关检索按失败关闭处理。
