@@ -10,10 +10,44 @@ import Glibc
 /// 采用高效定长缓冲区与换行符扫描，按块异步读取并流式输出完整文本行。
 public enum AsyncLineReader: Sendable {
 
+    #if os(Linux)
+    /// One poll-guarded read from a descriptor: nil at end of stream, empty data when nothing
+    /// arrived within the wait, otherwise a chunk.
+    ///
+    /// `FileHandle.readabilityHandler` is a dispatch source, and a source created after the
+    /// descriptor already became readable is never delivered on Linux -- so for a child that writes
+    /// and exits before the reader attaches, both its last bytes and the EOF go unseen and every
+    /// consumer awaiting the stream waits forever. `poll` reports readiness at the moment of the
+    /// call, so nothing can be missed, and its timeout is what lets the reading task notice
+    /// cancellation: a thread parked in a plain `read` cannot be interrupted by closing the
+    /// descriptor, which is why this path does not block.
+    private static func polledRead(fd: Int32, bufferSize: Int) -> Data? {
+        var waiting = pollfd(fd: fd, events: Int16(POLLIN.rawValue), revents: 0)
+        let ready = poll(&waiting, 1, 200)
+        if ready == 0 { return Data() }
+        if ready < 0 {
+            if errno == EINTR { return Data() }
+            return nil // POLLNVAL: the descriptor is already gone.
+        }
+
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        let bytesRead = Glibc.read(fd, &buffer, bufferSize)
+        if bytesRead > 0 { return Data(buffer[0..<bytesRead]) }
+        if bytesRead == 0 { return nil }
+        let err = errno
+        if err == EAGAIN || err == EWOULDBLOCK || err == EINTR { return Data() }
+        return nil
+    }
+    #endif
+
     /// 从 FileHandle 异步流式读取 Data 数据块，支持 Darwin、Linux 与 Windows 全平台
     public static func dataChunks(from handle: FileHandle, bufferSize: Int = 4096) -> AsyncThrowingStream<Data, any Error> {
         AsyncThrowingStream { continuation in
             #if os(Windows)
+            let useDirectRead = true
+            #elseif os(Linux)
+            // Read from a task that can be cancelled rather than from a dispatch source, whose
+            // already-delivered events Linux drops.
             let useDirectRead = true
             #else
             var statBuf = stat()
@@ -25,7 +59,12 @@ public enum AsyncLineReader: Sendable {
                 let task = Task.detached {
                     do {
                         while !Task.isCancelled {
-
+                            #if os(Linux)
+                            guard let chunk = polledRead(fd: handle.fileDescriptor, bufferSize: bufferSize) else {
+                                break // EOF
+                            }
+                            if !chunk.isEmpty { continuation.yield(chunk) }
+                            #else
                             if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
                                 if let chunk = try handle.read(upToCount: bufferSize), !chunk.isEmpty {
                                     continuation.yield(chunk)
@@ -37,6 +76,7 @@ public enum AsyncLineReader: Sendable {
                                 if chunk.isEmpty { break }
                                 continuation.yield(chunk)
                             }
+                            #endif
                         }
                         continuation.finish()
                     } catch {
@@ -91,6 +131,8 @@ public enum AsyncLineReader: Sendable {
         AsyncThrowingStream { continuation in
             #if os(Windows)
             let useDirectRead = true
+            #elseif os(Linux)
+            let useDirectRead = true
             #else
             var statBuf = stat()
             let isRegularFile = (fstat(handle.fileDescriptor, &statBuf) == 0) && ((statBuf.st_mode & S_IFMT) == S_IFREG)
@@ -106,6 +148,12 @@ public enum AsyncLineReader: Sendable {
                     do {
                         while !Task.isCancelled {
                             let chunk: Data
+                            #if os(Linux)
+                            guard let polled = polledRead(fd: handle.fileDescriptor, bufferSize: bufferSize) else {
+                                break // EOF
+                            }
+                            chunk = polled
+                            #else
                             if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
                                 if let data = try handle.read(upToCount: bufferSize), !data.isEmpty {
                                     chunk = data
@@ -117,6 +165,8 @@ public enum AsyncLineReader: Sendable {
                                 if data.isEmpty { break }
                                 chunk = data
                             }
+                            #endif
+                            if chunk.isEmpty { continue }
 
                             leftover.append(chunk)
 
