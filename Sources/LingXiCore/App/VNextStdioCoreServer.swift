@@ -173,6 +173,10 @@ public struct VNextStdioCoreServer: Sendable {
         let task = Task {
             defer {
                 connectionTasks.unregister(id: request.id)
+                // Reached on every exit path, including the cancellation guards below. Without it a
+                // request abandoned mid-handling never answers, and the client is parked on a
+                // continuation that nothing can resume any more -- no error, no EOF, no timeout.
+                Task { await writer.ensureAnswered(id: request.id) }
             }
             guard !Task.isCancelled else { return }
             do {
@@ -336,7 +340,8 @@ public struct VNextStdioCoreServer: Sendable {
     }
 
     private func reply<T: Encodable>(_ request: VNextWireRequest, _ value: T, _ writer: VNextWireWriter) async throws {
-        guard !Task.isCancelled else { return }
+        // A value that is ready is still worth sending after cancellation: the caller cannot tell a
+        // dropped reply from a slow one, and the frame is what releases it.
         await writer.reply(id: request.id, payload: try JSONEncoder().encode(value), error: nil)
     }
 
@@ -378,11 +383,23 @@ public struct VNextStdioCoreServer: Sendable {
 
 private actor VNextWireWriter {
     let output: FileHandle
+    /// Every request id this connection has already answered. A response frame is the only thing
+    /// that can resume the caller's continuation, so an id that is answered twice would resume twice
+    /// and one that is never answered strands its caller for the lifetime of the process.
+    private var answered: Set<String> = []
 
     init(output: FileHandle) { self.output = output }
 
     func reply(id: String, payload: Data?, error: CoreError?) {
+        guard !answered.contains(id) else { return }
+        answered.insert(id)
         write(VNextWireResponse(id: id, payload: payload, error: error))
+    }
+
+    /// Called once per request after its handler finished, however it finished: a request that was
+    /// dropped by a cancellation check still owes its caller a frame.
+    func ensureAnswered(id: String) {
+        reply(id: id, payload: nil, error: CoreError(code: .commandCancelled, message: "请求未完成，服务端已结束该请求"))
     }
 
     func push<T: Encodable>(kind: String, subscriptionID: String, payload: T) async {
