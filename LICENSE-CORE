@@ -3,13 +3,11 @@
 Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
 
 Applicable to:
-- Sources/LingXiCore
-- Sources/LingXiRuntime
-- Sources/LingXiPlatform
-- Sources/LingXiProtocol
-- Sources/LingXiStorage
-- Sources/LingXiAppCommon
-- Associated core build, pipeline, and infrastructure scripts.
+Every target and path marked `LCSAL-1.0` in `LICENSE-MATRIX.md` at the
+repository root. This file defines the license terms; the matrix defines
+the scope. `LicenseMatrixDriftTests` guards against the two drifting apart.
+A target's inclusion in the matrix is the only evidence required to place
+it under these terms.
 
 ================================================================================
 中 文 条 款 详 细 规 范

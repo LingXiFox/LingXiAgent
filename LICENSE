@@ -19,7 +19,9 @@ Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved
 
 ## Part 1: LingXi Core Source-Available License 1.0 (LCSAL-1.0)
 
-**Applicable Scope**: `Sources/LingXiCore`, `Sources/LingXiRuntime`, `Sources/LingXiPlatform`, `Sources/LingXiProtocol`, `Sources/LingXiStorage`, `Sources/LingXiAppCommon`, and associated core infrastructure.
+**Applicable Scope**: every target and path marked `LCSAL-1.0` in
+[`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md). `LicenseMatrixDriftTests` keeps the
+matrix aligned with `Package.swift`.
 
 ### 中文法律条款声明
 
@@ -51,7 +53,10 @@ Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved
 
 ## Part 2: PolyForm Noncommercial License 1.0.0
 
-**Applicable Scope**: `Sources/LingXiTUI`, `Sources/LingXiCLI` (presentation entry), future `LingXiGUI`, `LingXiWebUI`, and frontend-exclusive presentation assets.
+**Applicable Scope**: every target and path marked `PolyForm Noncommercial 1.0.0`
+in [`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md). Third-party modifications may be
+redistributed in source form only; compiled binaries are limited to official
+release artifacts.
 
 ### Summary / 中文要要
 前端表现层组件遵循 **PolyForm Noncommercial License 1.0.0**：

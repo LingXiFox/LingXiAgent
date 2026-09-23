@@ -3,10 +3,10 @@
 Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
 
 Applicable to:
-- Sources/LingXiTUI
-- Sources/LingXiCLI (presentation layer wrappers)
-- Future Sources/LingXiGUI, Sources/LingXiWebUI
-- Terminal themes, visual layouts, and frontend interactive modules.
+Every target and path marked `PolyForm Noncommercial 1.0.0` in
+`LICENSE-MATRIX.md` at the repository root. This file defines the license
+terms; the matrix defines the scope. `LicenseMatrixDriftTests` guards
+against the two drifting apart.
 
 Official text: https://polyformproject.org/licenses/noncommercial/1.0.0
 
