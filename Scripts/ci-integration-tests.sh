@@ -476,7 +476,7 @@ for chunk in "${chunks[@]}"; do
 done
 
 if [ "$STRESS_ROUNDS" -gt 0 ] 2>/dev/null; then
-  stress_filter="$(printf '%s/' $STRESS_SUITES | paste -sd'|' -)"
+  stress_filter="$(printf '%s/\n' $STRESS_SUITES | paste -sd'|' -)"
   echo
   echo "================ Stress: ${STRESS_ROUNDS} passes over ${STRESS_SUITES// /,} ================"
   stress_round=0
