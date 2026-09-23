@@ -190,6 +190,17 @@ unreported_tests() {
     | paste -sd'|' - | sed 's/|/, /g'
 }
 
+# Direct and indirect children of a pid, bounded by depth. Used to attribute a blocked pipe inode
+# to the descendant that still holds its other end.
+descendants() {
+  local parent=$1 depth=$2 kid
+  [ "$depth" -gt 0 ] || return 0
+  for kid in $(pgrep -P "$parent" 2>/dev/null); do
+    printf '%s\n' "$kid"
+    descendants "$kid" $((depth - 1))
+  done
+}
+
 dump_stacks() {
   local pid=$1
   case "$(uname -s)" in
@@ -221,7 +232,8 @@ $p | ForEach-Object {
 ' 2>&1 | tr -d '\r' | head -20
       ;;
     *)
-      local t sc nr fd what
+      local t sc nr rawfd fd what held link
+      held="$(mktemp)"
       for t in /proc/"$pid"/task/*; do
         [ -d "$t" ] || continue
         # wchan only names the kernel wait point. For a thread parked in read(), `syscall`'s first
@@ -241,11 +253,11 @@ $p | ForEach-Object {
             esac
             ;;
         esac
-        # The raw line is echoed as well: last round nothing matched any filter, and "no match" has
-        # to be readable as data rather than looking like a gap in the instrument.
         what=" syscall[${sc:-unreadable}]"
         if [ -n "$fd" ]; then
-          what="$what -> fd=$fd ($(readlink "/proc/${pid}/fd/${fd}" 2>/dev/null || echo '?'))"
+          link="$(readlink "/proc/${pid}/fd/${fd}" 2>/dev/null || echo '?')"
+          what="$what -> fd=$fd ($link)"
+          case "$link" in pipe:*) printf '%s\n' "$link" >> "$held" ;; esac
         fi
         printf 'thread %s wchan=%s state=%s%s\n' \
           "$(basename "$t")" \
@@ -253,6 +265,19 @@ $p | ForEach-Object {
           "$(awk '{print $3}' "$t/stat" 2>/dev/null || echo '?')" \
           "$what"
       done | head -40
+      # Naming the inode only pays off if the next round says who still holds its other end open:
+      # a reader parked on a pipe whose writer is a descendant that outlived its parent is a
+      # different defect from one parked on a pipe nobody will ever write to again. Only real
+      # descendants are consulted -- a name pattern would match unrelated processes on the runner.
+      for inode in $(sort -u "$held" 2>/dev/null); do
+        for holder in $(descendants "$pid" 3); do
+          if ls -l "/proc/$holder/fd" 2>/dev/null | grep -qF "$inode"; then
+            printf '   %s also open in pid %s (%s)\n' "$inode" "$holder" \
+              "$(ps -o comm= -p "$holder" 2>/dev/null | tr -d '\n' || echo '?')"
+          fi
+        done
+      done
+      rm -f "$held"
       ;;
   esac
 }
