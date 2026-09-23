@@ -46,7 +46,9 @@ struct RuntimeDiagnosticsTests {
         let bundle = try await client.diagnostics()
 
         #expect(bundle.runtimeVersion == CoreHost.coreVersion)
-        #expect(bundle.protocolVersion == CoreHost.protocolVersion)
+        #expect(bundle.protocolVersion == ProtocolVersion.current.description)
+        #expect(bundle.protocolMajor == ProtocolVersion.current.major)
+        #expect(bundle.protocolMinor == ProtocolVersion.current.minor)
         #expect(bundle.provider.model == "diagnostics-model")
         #expect(bundle.trace.contains { $0.event == "core.start.begin" })
         #expect(bundle.trace.contains { $0.event == "provider.stream.begin" && $0.sessionID == sessionID })

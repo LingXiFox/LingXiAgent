@@ -1,48 +1,101 @@
-# LingXi Core Source-Available License 1.0 (LCSAL-1.0)
+# LingXi Core Source-Available License 1.1 (LCSAL-1.1)
 
 Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
 
 Applicable to:
-Every target and path marked `LCSAL-1.0` in `LICENSE-MATRIX.md` at the
+Every target and path marked `LCSAL-1.1` in `LICENSE-MATRIX.md` at the
 repository root. This file defines the license terms; the matrix defines
 the scope. `LicenseMatrixDriftTests` guards against the two drifting apart.
 A target's inclusion in the matrix is the only evidence required to place
 it under these terms.
 
 ================================================================================
+总 则 与 语 言 优 先 级 (General Principles & Language Priority)
+================================================================================
+
+本许可证的中英文本以【中文文本为准】。英文翻译仅供参考与便利阅读，不构成独立授权。
+若中英文本存在任何理解或解释冲突，始终以中文为准。
+The Chinese text of this license prevails over the English translation.
+In case of any conflict or ambiguity, the Chinese version shall control.
+
+================================================================================
 中 文 条 款 详 细 规 范
 ================================================================================
 
 1. 授权范围 (Grant of Rights)
-   版权所有者（LingXiFox）授予您非独占、不可转让、不可转授权的权利，仅限于在个人受控的本地计算环境中进行源代码的阅读、学习、研究、本地编译及个人单机非商业运行（“本地自用”）。
+   版权所有者（LingXiFox）授予您非独占、不可转让、不可转授权的权利，仅限于在个人受控的本地计算环境中进行源代码的阅读、学习、研究、本地编译及个人单机非商业运行（“本地自用”）。本条授权不排斥第 2 条所定义的“官方 release 产物非商用原样转发例外”。
 
-2. 严禁二次上架与再分发 (Strict Prohibition on Redistribution & Re-Hosting)
-   您不得以任何形式将本核心源码、修改衍生版本、编译产物（包括静态库、动态库、可执行文件）公开分发、镜像托管、重新上传或二次上架至包括但不限于 GitHub、GitLab、Gitee、Bitbucket、云盘、包管理镜像源（Swift Package Index、Homebrew、APT 等）或任何公共/私有分发网络。
+2. 官方 release 产物的非商用原样转发例外 (Official Release Forwarding Exception)
+   对本项目 GitHub Releases（https://github.com/LingXiFox/LingXiAgent/releases）页面上由版权所有者（LingXiFox）亲自发布的产物（lingxiagent-<version>-<platform>.tar.gz 或 .zip，以及配套的 sha256 校验文件），在满足下列全部条件时，允许非营利原样转发：
+   (1) 未修改：文件字节与官方产物完全一致；未重打包、未剥离签名、未嵌入其它内容；
+   (2) 附许可：转发页面/包描述必须显式指向本 LICENSE-CORE 与仓库根，且附带本许可证全文；
+   (3) 非商用：转发本身不构成任何收费服务、订阅、赞助换礼、或商业产品组件；
+   (4) 不误导：不得使用“LingXi”、“灵犀”或官方站点域名的近似拼写作为转发主体名称，以免与官方发布渠道混淆。
+   允许的形态包括：Homebrew Tap、AUR PKGBUILD 拉取官方 Release URL、镜像站缓存 GitHub Release 资产、包管理镜像源自动同步。
+   【自行编译产物再分发仍在禁止之列】（严禁分发自编译二进制或将本仓库源码编译进他人产品）。
 
-3. 严禁商业化使用 (Strict Prohibition on Commercial Use)
-   严禁将本核心用于任何直接或间接的营利性活动、商业运营、企业生产环境部署、付费技术支持、收费 API / Token 代理中继，亦不得作为 SaaS、PaaS、云服务或外包交付产品的底层组件。
+3. 严禁二次上架与非授权再分发 (Prohibition on Redistribution & Re-Hosting)
+   除第 2 条明确允许的官方二进制原样转发例外之外，您不得以任何形式将本核心源码、修改衍生版本、自编译产物（包括静态库、动态库、可执行文件）公开分发、镜像托管、重新上传或二次上架至包括但不限于 GitHub、GitLab、Gitee、Bitbucket、云盘、包管理镜像源或任何公共/私有分发网络。
 
-4. 贡献与合并规范 (Contributing)
-   若对 Core 有改进或修复意向，必须通过官方仓库（https://github.com/LingXiFox/LingXiAgent）以 Pull Request 形式提交，且必须经版权所有者（@LingXiFox）显式代码审查批准（Code Owner Approval）后方可合并。
+4. Fork 政策仅限 PR (Fork Policy: PR Only)
+   对本项目官方仓库（github.com/LingXiFox/LingXiAgent）及其镜像的 fork，仅用于向本项目提交 Pull Request。不得将 fork 作为分发渠道：
+   (1) 不得在 fork 仓库的 Releases / Packages / Downloads 页面发布自建产物；
+   (2) 不得在 fork 仓库的 README、Wiki、Issue 中引导他人从 fork 安装本软件；
+   (3) 不得在 fork 上运行任何“官方风格”的镜像站点、包源或 CDN 服务；
+   (4) 不得将 fork 名称与官方产品名混淆。
 
-5. 免责声明 (Disclaimer)
+5. 贡献者 Relicense 授权 (Contributor Relicense Grant)
+   任何向本项目提交 Pull Request 的贡献者，就其在 PR 中提交之所有代码、文档与其它创作，特此免费、永久、不可撤销地授予版权所有者（LingXiFox）以下权利：
+   (1) 许可类型变更权：在本项目后续版本中，将贡献以不同许可类型发布（包括升级 LCSAL、调整前端协议等）；
+   (2) 合并/拆分权：将贡献合并进更大的许可域或与其它贡献拆分；
+   (3) 贡献者本人仍保有对自己贡献的完整著作权，可在其它项目自由使用。
+   贡献者提交 PR 即视为接受本条，无需签署额外 CLA。
+
+6. 商业使用定义清单 (Commercial Use Definition)
+   对本许可中“商业使用 / 商用 / Commercial Use”的具体判定界限：
+   · 属于商用（严禁）：
+     (1) 对外提供收费的 API 代理、中继、Token 转售服务；
+     (2) 将本产品作为 SaaS、PaaS、云托管服务的运行时组件；
+     (3) 集成进任何收费发行版、商业产品、或外包交付物；
+     (4) 以本产品直接产生营业收入；
+     (5) 企业内部署：由有薪酬团队在企业生产或研发环境使用本产品，无论是否直接产生收入。
+   · 不属于商用（允许）：
+     (1) 同一自然人个人自用的多设备同步；
+     (2) 非营利组织内部使用；
+     (3) 开源项目内部使用（不含上述有薪酬团队企业生产部署）；
+     (4) 无薪酬社区团队使用；
+     (5) 学术科研使用（不含企业赞助的定向商用研究）；
+     (6) 个人本地编译后自用体验。
+   · 灰色带（默认禁止，须事前书面同意）：
+     (1) 将本仓库源码或派生数据用于 AI 训练数据集（明确禁止）；
+     (2) 付费培训与商业工作坊；
+     (3) 出版物附带本产品副本。
+     未获版权所有者书面授权的灰色带用途一律按“属于商用”处理。
+
+7. 免责声明 (Disclaimer)
    本软件按“原样（AS IS）”提供，不提供任何明示或暗示的保证。作者不对因使用本软件引起的任何责任或损失承担赔偿责任。
 
 ================================================================================
-ENGLISH TERMS & CONDITIONS
+ENGLISH TERMS & CONDITIONS (FOR REFERENCE ONLY)
 ================================================================================
 
 1. Grant of Rights:
-   The Copyright Holder (LingXiFox) grants to any individual obtaining a copy of the Core source code a non-exclusive, non-transferable, non-sublicensable right to inspect, study, locally compile, and execute the software solely within their private, personal computing environment for personal and non-commercial evaluation ("Personal Local Use").
+   The Copyright Holder (LingXiFox) grants you a non-exclusive, non-transferable, non-sublicensable right solely to inspect, study, locally compile, and execute the Core source code within your personal computing environment for personal and non-commercial evaluation ("Personal Local Use"). This does not prejudice Section 2 below.
 
-2. Prohibition on Redistribution and Re-Hosting:
-   You may NOT redistribute, republish, mirror, sublicense, package, or host the Core source code, any derived works, or compiled binaries on any public or private network or code hosting platform, including but not limited to GitHub, GitLab, Gitee, Bitbucket, package registries (Swift Package Index, Homebrew, APT), or CDN mirrors.
+2. Official Release Forwarding Exception:
+   Official release artifacts (tar.gz/zip + sha256) published on the official GitHub Releases page by LingXiFox may be forwarded unmodified and non-commercially, provided that copies are byte-identical, retain this license, do not involve commercial fees, and avoid trademark confusion. Self-compiled binaries remain prohibited from redistribution.
 
-3. Prohibition on Commercial Exploitation:
-   You may NOT use the Core software, in whole or in part, for any commercial purpose, monetary gain, enterprise production deployment, paid API proxying/relaying, or as part of any SaaS, PaaS, or cloud-hosted service offering.
+3. Prohibition on Redistribution:
+   Except for Section 2, you may NOT redistribute, republish, mirror, sublicense, package, or host the Core source code, derived works, or self-compiled binaries on any platform or network.
 
-4. Patches and Contributions:
-   Any proposed enhancements or fixes must be contributed upstream via Pull Request to the official repository at https://github.com/LingXiFox/LingXiAgent, subject to review and explicit approval by @LingXiFox.
+4. Forks are PR-Only:
+   Forks of the official repository exist solely to submit Pull Requests upstream and must not be used as independent release, package, or distribution channels.
 
-5. No Warranty:
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY.
+5. Contributor Relicense Grant:
+   Contributors grant the Copyright Holder a perpetual, irrevocable, royalty-free license to relicense contributions in future releases without requiring a separate CLA. Contributors retain copyright over their own original contributions.
+
+6. Commercial Use Definition:
+   Commercial use includes paid API proxying, SaaS/cloud hosting, commercial product bundling, revenue-generating activities, and compensated enterprise internal deployment. Non-commercial use includes personal single-user multi-device sync, non-profits, volunteer open-source projects, and academic research. AI dataset training without explicit permission is strictly prohibited.
+
+7. No Warranty:
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.

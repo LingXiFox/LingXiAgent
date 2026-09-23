@@ -21,15 +21,15 @@ license row is a build failure, not a review note.
 
 | Target | Path | License | Third-party redistribution | Notes |
 |---|---|---|---|---|
-| `LingXiProtocol` | `Sources/LingXiProtocol` | LCSAL-1.0 | Source: no; binary: no | Wire contracts shared by Core and every frontend. |
-| `LingXiPlatform` | `Sources/LingXiPlatform` | LCSAL-1.0 | Source: no; binary: no | OS abstractions (process, file, network, terminal, secure storage, desktop). |
-| `LingXiApplication` | `Sources/LingXiApplication` | LCSAL-1.0 | Source: no; binary: no | Application state, reducers, session catalog, streaming projection. |
-| `LingXiClient` | `Sources/LingXiClient` | LCSAL-1.0 | Source: no; binary: no | VNext and stdio clients every frontend uses to reach CoreHost. |
-| `LingXiCore` | `Sources/LingXiCore` | LCSAL-1.0 | Source: no; binary: no | Agent runtime authority: sessions, runs, tools, providers, MCP, plugins. |
-| `CSQLite` | `Sources/CSQLite` | LCSAL-1.0 (binding) | Source: no; binary: no | SQLite3 C shim; upstream sqlite3 is public domain. |
-| `LingXiPluginSDK` | `Sources/LingXiPluginSDK` | LCSAL-1.0 | Source: no; binary: no | Plugin authoring SDK. Plugin authors' own code is separately licensed. |
-| `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.0 | Source: no; official release binary only (forwarded as-is, non-commercial) | The only shipped process that reads `LINGXI_CREDENTIALS_PASSPHRASE`. |
-| `lingxiagent` | `Sources/lingxiagent` | Presentation under PolyForm Noncommercial 1.0.0; embedded Core under LCSAL-1.0 | Source: yes (PolyForm part only); official release binary only (forwarded as-is) | Unified CLI. Presentation layer is PolyForm; the linked Core remains LCSAL. |
+| `LingXiProtocol` | `Sources/LingXiProtocol` | LCSAL-1.1 | Source: no; binary: no | Wire contracts shared by Core and every frontend. |
+| `LingXiPlatform` | `Sources/LingXiPlatform` | LCSAL-1.1 | Source: no; binary: no | OS abstractions (process, file, network, terminal, secure storage, desktop). |
+| `LingXiApplication` | `Sources/LingXiApplication` | LCSAL-1.1 | Source: no; binary: no | Application state, reducers, session catalog, streaming projection. |
+| `LingXiClient` | `Sources/LingXiClient` | LCSAL-1.1 | Source: no; binary: no | VNext and stdio clients every frontend uses to reach CoreHost. |
+| `LingXiCore` | `Sources/LingXiCore` | LCSAL-1.1 | Source: no; binary: no | Agent runtime authority: sessions, runs, tools, providers, MCP, plugins. |
+| `CSQLite` | `Sources/CSQLite` | LCSAL-1.1 (binding) | Source: no; binary: no | SQLite3 C shim; upstream sqlite3 is public domain. |
+| `LingXiPluginSDK` | `Sources/LingXiPluginSDK` | LCSAL-1.1 | Source: no; binary: no | Plugin authoring SDK. Plugin authors' own code is separately licensed. |
+| `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The only shipped process that reads `LINGXI_CREDENTIALS_PASSPHRASE`. |
+| `lingxiagent` | `Sources/lingxiagent` | Presentation under PolyForm Noncommercial 1.0.0; embedded Core under LCSAL-1.1 | Source: yes (PolyForm part only); official release binary only (forwarded as-is) | Unified CLI. Presentation layer is PolyForm; the linked Core remains LCSAL. |
 | `OpenTUIShim` | `Sources/OpenTUIShim` | Upstream OpenTUI license | Follow upstream | C dylib shim around `Vendor/OpenTUI/`. |
 | `LingXiTUIComponents` | `Sources/LingXiTUIComponents` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Rendering primitives shared by TUI surfaces. |
 | `LingXiTUI` | `Sources/LingXiTUI` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Reference terminal frontend. |
@@ -37,6 +37,13 @@ license row is a build failure, not a review note.
 | `LingXiFrontendKit` | `Apps/LingXiApp/Shared` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | SwiftUI shared component library (Phase 0 gate). |
 | `FoxPlugin` | `Plugins/FoxPlugin` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Demo plugin; a template for external plugin authors. |
 | `LingXiAgentTests` | `Tests/LingXiAgentTests` | Not shipped | n/a | Test target only. |
+| `LingXiWireContractTests` | `ContractTests/LingXiWireContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiFrontendContractTests` | `ContractTests/LingXiFrontendContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiPlatformContractTests` | `ContractTests/LingXiPlatformContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiIPCRobustnessContractTests` | `ContractTests/LingXiIPCRobustnessContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiTaskLifecycleContractTests` | `ContractTests/LingXiTaskLifecycleContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiCapabilityContractTests` | `ContractTests/LingXiCapabilityContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiTraceContractTests` | `ContractTests/LingXiTraceContractTests` | Not shipped | n/a | Contract test target only. |
 
 ---
 
@@ -53,8 +60,8 @@ the table above.
 | `Apps/LingXiApp/iOS` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Xcode SwiftUI iOS app target. Not an officially supported release surface. |
 | `Sidecars/browser-host/` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Node.js browser host sidecar. |
 | `Server/agent-site/`, `Server/models-site/` | PolyForm Noncommercial 1.0.0 (public site content) | Source: yes; static hosting permitted with attribution | Official website static assets. |
-| `Server/lingxi-registry/`, `Server/registry/`, `Server/deploy/` | LCSAL-1.0 | No | Backend services (Go) and deployment configuration. |
-| `Scripts/`, `install.sh`, `install.ps1` | LCSAL-1.0 | No (build/install infrastructure) | Build, packaging, CI, and installer scripts. |
+| `Server/lingxi-registry/`, `Server/registry/`, `Server/deploy/` | LCSAL-1.1 | No | Backend services (Go) and deployment configuration. |
+| `Scripts/`, `install.sh`, `install.ps1` | LCSAL-1.1 | No (build/install infrastructure) | Build, packaging, CI, and installer scripts. |
 | `Docs/` | CC-BY-4.0 unless a file says otherwise | Attribution required | Documentation, research notes, and ADRs. |
 | `Benchmarks/`, `Evals/Tasks/`, `Evals/Baselines/` | CC0 / public domain where possible | Freely reusable | Evaluation fixtures, task manifests, and baseline result sets. |
 
@@ -65,7 +72,7 @@ the table above.
 When a new SPM target is introduced:
 
 1. Add its row to the SPM-targets table above.
-2. Choose either LCSAL-1.0 (core infrastructure / runtime authority) or
+2. Choose either LCSAL-1.1 (core infrastructure / runtime authority) or
    PolyForm Noncommercial 1.0.0 (frontend, presentation, or plugin).
 3. If neither fits, add a note explaining the exception and open a discussion
    with @LingXiFox before merging.

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import LingXiPlatform
+import LingXiPlatform
 
 @Suite("Platform Boundary Architecture Guard Tests (Phase 9)")
 struct PlatformBoundaryArchitectureTests {

@@ -43,7 +43,7 @@ public struct MCPServerConfiguration: Sendable, Equatable, Codable {
 }
 
 public enum MCPProtocolVersionNegotiator {
-    public static let modern = "2024-11-05"
+    public static let modern = MCPSpecRevision.modern
     public static let legacy = "2024-10-07"
     public static func select(preference: MCPProtocolPreference, supportsModern: Bool, supportsLegacy: Bool) throws -> MCPProtocolEra {
         switch preference {
@@ -231,7 +231,16 @@ public struct MCPStdioTransport: MCPToolInvoker {
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
         guard let command = configuration.command, LingXiPlatform.path.isAbsolute(command), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
         var environment = EnvironmentSanitizer.sanitized()
-        for (name, ref) in configuration.environment { if let value = try resolver.resolve(ref) { environment[name] = value } }
+        for (name, ref) in configuration.environment {
+            let upper = name.uppercased()
+            guard !upper.hasPrefix("LINGXI_"),
+                  !["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID"].contains(upper) else {
+                throw CoreError(code: .permissionDenied, message: "MCP server environment variable '\(name)' collides with protected host credential namespace")
+            }
+            if let value = try resolver.resolve(ref) {
+                environment[name] = value
+            }
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
@@ -267,7 +276,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
             "id": "init-1",
             "method": "initialize",
             "params": [
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": MCPSpecRevision.modern,
                 "capabilities": [String: Any](),
                 "clientInfo": ["name": "lingxiagent", "version": CoreHost.coreVersion]
             ]

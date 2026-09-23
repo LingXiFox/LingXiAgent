@@ -11,8 +11,8 @@ public struct ProtocolVersion: Codable, Sendable, Equatable, Comparable, CustomS
         self.minor = minor
     }
 
-    /// 冻结契约版本：v1.0
-    public static let current = ProtocolVersion(major: 1, minor: 0)
+    /// 当前契约版本：v1.1
+    public static let current = ProtocolVersion(major: 1, minor: 1)
 
     public var description: String {
         "\(major).\(minor)"
@@ -27,6 +27,29 @@ public struct ProtocolVersion: Codable, Sendable, Equatable, Comparable, CustomS
 
     public func isCompatible(with clientVersion: ProtocolVersion) -> Bool {
         return self.major == clientVersion.major
+    }
+}
+
+/// Protocol capability feature flags for negotiation between Core and Clients.
+public enum ProtocolFeature: String, Codable, Sendable, CaseIterable {
+    case taskPause = "task.pause"
+    case taskResume = "task.resume"
+    case taskFork = "task.fork"
+    case workspaceFork = "workspace.fork"
+    case capabilityGateway = "capability.gateway"
+    case traceStream = "trace.stream"
+    case traceQuery = "trace.query"
+    case unknown = "unknown"
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        self = ProtocolFeature(rawValue: raw) ?? .unknown
+    }
+
+    /// Known active protocol features excluding fallback unknown case.
+    public static var knownFeatures: [ProtocolFeature] {
+        allCases.filter { $0 != .unknown }
     }
 }
 

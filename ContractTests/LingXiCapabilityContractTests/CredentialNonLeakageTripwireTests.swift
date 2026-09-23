@@ -1,6 +1,7 @@
 import Foundation
 import Testing
-@testable import LingXiCore
+import LingXiProtocol
+import LingXiPlatform
 
 /// Tripwire for the two child-process spawn sites that used to leak the host's
 /// provider credentials — `PluginProcessHost.start` (which set no `proc.environment`

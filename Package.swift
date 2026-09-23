@@ -86,6 +86,42 @@ let package = Package(
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),
+        // ContractTests targets (Strictly black-box: no @testable, no import LingXiCore)
+        .testTarget(
+            name: "LingXiWireContractTests",
+            dependencies: ["LingXiProtocol"],
+            path: "ContractTests/LingXiWireContractTests"
+        ),
+        .testTarget(
+            name: "LingXiFrontendContractTests",
+            dependencies: ["LingXiProtocol", "LingXiClient"],
+            path: "ContractTests/LingXiFrontendContractTests"
+        ),
+        .testTarget(
+            name: "LingXiPlatformContractTests",
+            dependencies: ["LingXiProtocol", "LingXiPlatform"],
+            path: "ContractTests/LingXiPlatformContractTests"
+        ),
+        .testTarget(
+            name: "LingXiIPCRobustnessContractTests",
+            dependencies: ["LingXiProtocol", "LingXiPlatform"],
+            path: "ContractTests/LingXiIPCRobustnessContractTests"
+        ),
+        .testTarget(
+            name: "LingXiTaskLifecycleContractTests",
+            dependencies: ["LingXiProtocol"],
+            path: "ContractTests/LingXiTaskLifecycleContractTests"
+        ),
+        .testTarget(
+            name: "LingXiCapabilityContractTests",
+            dependencies: ["LingXiProtocol", "LingXiPlatform"],
+            path: "ContractTests/LingXiCapabilityContractTests"
+        ),
+        .testTarget(
+            name: "LingXiTraceContractTests",
+            dependencies: ["LingXiProtocol"],
+            path: "ContractTests/LingXiTraceContractTests"
+        ),
     ],
     swiftLanguageModes: [.v5]
 )

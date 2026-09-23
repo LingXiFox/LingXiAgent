@@ -132,7 +132,7 @@ public struct ACPInitializeParams: Codable, Sendable {
     public let clientInfo: ACPClientInfo?
     public let protocolVersion: String?
 
-    public init(clientInfo: ACPClientInfo? = nil, protocolVersion: String? = "2024-11-05") {
+    public init(clientInfo: ACPClientInfo? = nil, protocolVersion: String? = ACPSpecRevision.modern) {
         self.clientInfo = clientInfo
         self.protocolVersion = protocolVersion
     }
@@ -144,7 +144,7 @@ public struct ACPInitializeResult: Codable, Sendable, Equatable {
     public let capabilities: ACPAgentCapabilities
     public let protocolVersion: String
 
-    public init(agentInfo: ACPAgentInfo = ACPAgentInfo(), capabilities: ACPAgentCapabilities = ACPAgentCapabilities(), protocolVersion: String = "2024-11-05") {
+    public init(agentInfo: ACPAgentInfo = ACPAgentInfo(), capabilities: ACPAgentCapabilities = ACPAgentCapabilities(), protocolVersion: String = ACPSpecRevision.modern) {
         self.agentInfo = agentInfo
         self.capabilities = capabilities
         self.protocolVersion = protocolVersion

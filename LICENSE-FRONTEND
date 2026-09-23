@@ -39,3 +39,24 @@ If anyone makes a claim against the licensor for patent infringement based on th
 
 10. Disclaimer of Warranties
 As far as the law allows, the software comes as is, without any warranty or condition, and no contributor will be liable to anyone for any damages related to the software or these terms, under any kind of legal claim.
+
+================================================================================
+本 项 目 补 充 条 款 (LingXi Project Additional Terms)
+================================================================================
+
+11. 第三方改版仅限源码形式分发 (Third-Party Modifications Distributed in Source Form Only)
+
+【中文条款（以中文文本为准）】
+对 PolyForm Noncommercial 1.0.0 第 2 条“著作权许可 (Copyright License)”之补充：
+第三方对本前端及其衍生组件（包括但不限于 Sources/LingXiTUI、Sources/LingXiTUIComponents、
+Sources/LingXiTUIApp、Sources/lingxiagent 表现层、Apps/LingXiApp/*）进行修改后分发衍生作品时，
+【只能以源代码 + 可复现构建脚本形式分发】，不得公开发布或二次分发：
+(1) 编译后的二进制产物（包括但不限于 .app bundle、.dmg、.pkg、AppImage、.deb、.rpm、.exe、.msi）；
+(2) 各大应用商店上架包（Mac App Store、Microsoft Store、Google Play 等）；
+(3) 预构建容器镜像（Docker、Podman、OCI Image 等）。
+
+官方 Release 二进制不受本条限制（官方由版权所有者发布之产物已获得原样转发授权）。
+本条旨在防止未经审核的第三方改版二进制以“LingXi/灵犀”名义传播造成用户混淆、安全漏洞或体验损害。
+
+[English Summary for Reference]
+Third parties who modify the frontend may distribute their derivatives ONLY in source code form together with reproducible build scripts. Compiled binaries, installer packages, app-store distributions, and container images of third-party modifications may NOT be distributed. Official release binaries published by the Copyright Holder are not subject to this restriction.

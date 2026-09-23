@@ -50,7 +50,7 @@ public actor LingXiACPServer {
                 let res = ACPInitializeResult(
                     agentInfo: ACPAgentInfo(name: "LingXiAgent", version: "1.0.0"),
                     capabilities: ACPAgentCapabilities(modes: ["default", "architect", "code"], loadSession: true, streaming: true),
-                    protocolVersion: "2024-11-05"
+                    protocolVersion: ACPSpecRevision.modern
                 )
                 try sendResult(id: request.id, result: res, output: output)
 

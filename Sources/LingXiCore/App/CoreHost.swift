@@ -32,7 +32,6 @@ private actor InFlightMutationLock {
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public static let coreVersion = "1.0.0"
-    public static let protocolVersion = "1"
 
     public static func stdioInteractive(environment: [String: String]) -> Bool {
         environment["LINGXI_INTERACTIVE"] == "1"
@@ -281,7 +280,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         info = CoreInfo(
             name: "LingXiCore",
             version: Self.coreVersion,
-            protocolVersion: Self.protocolVersion
+            protocolVersion: ProtocolVersion.current.description
         )
         let baseWorkspace: WorkspaceRoot
         if let workspaceRoot {
@@ -1278,7 +1277,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let trace = await diagnosticsStore.snapshot()
         return RuntimeDiagnosticsBundle(
             runtimeVersion: Self.coreVersion,
-            protocolVersion: Self.protocolVersion,
+            protocolVersion: ProtocolVersion.current.description,
             configurationSummary: [
                 "interactive": String(interactive),
                 "diagnosticsEnabled": String(diagnosticsEnabled),

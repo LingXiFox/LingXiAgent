@@ -287,6 +287,44 @@ dump_stacks() {
   esac
 }
 
+# Crash forensics and telemetry across platforms (WER on Windows, DiagnosticReports on macOS, dmesg on Linux)
+dump_crash_evidence() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      echo "-- crash evidence (Windows) --"
+      echo "live test processes now: $(ps -W 2>/dev/null | grep -icE 'swift-test|LingXi' || echo 0)"
+      for dump_dir in /d/a/_temp/dumps "$LOCALAPPDATA/CrashDumps" "$TEMP/dumps"; do
+        if [ -d "$dump_dir" ]; then
+          dumps="$(ls -t "$dump_dir" 2>/dev/null | head -5)"
+          if [ -n "$dumps" ]; then
+            printf 'crash dumps present in %s: %s\n' "$dump_dir" "$dumps"
+          fi
+        fi
+      done
+      powershell -NoProfile -Command 'Get-WinEvent -FilterHashtable @{LogName="Application"; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match "Application Error|Windows Error Reporting|\.NET Runtime" } | Select-Object -First 5 TimeCreated, ProviderName, Message | Format-List' 2>/dev/null \
+        | tr -d '\r' | head -40 \
+        || echo "note: no crash event was logged"
+      ;;
+    Darwin)
+      echo "-- crash evidence (macOS) --"
+      reports="$(ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -iE 'swift|LingXi' | head -3)"
+      if [ -n "$reports" ]; then
+        echo "recent crash reports found:"
+        for rep in $reports; do
+          echo "=== ~/Library/Logs/DiagnosticReports/$rep ==="
+          head -n 25 ~/Library/Logs/DiagnosticReports/"$rep" 2>/dev/null || true
+        done
+      else
+        echo "no DiagnosticReports found for swift/LingXi"
+      fi
+      ;;
+    Linux)
+      echo "-- crash evidence (Linux) --"
+      dmesg -T 2>/dev/null | grep -iE 'segfault|trap|killed process' | tail -10 || true
+      ;;
+  esac
+}
+
 failed_chunks=()
 timed_out_chunks=()
 lingering_chunks=()
@@ -302,8 +340,23 @@ for chunk in "${chunks[@]}"; do
       [ -n "$suite" ] && escape_regex "${suite}/"
     done | paste -sd'|' -
   )"
-  names="$(printf '%s\n' "$chunk" | sed -E 's/^LingXiAgentTests\.//' | paste -sd' ' -)"
-  echo "::group::Chunk ${index}/${#chunks[@]} :: ${names}"
+  names="$(printf '%s\n' "$chunk" | sed -E 's/^[A-Za-z0-9_]+(Contract)?Tests\.//; s/^LingXiAgentTests\.//' | paste -sd' ' -)"
+  expected_for_chunk=0
+  while read -r suite_name; do
+    [ -z "$suite_name" ] && continue
+    suite_cnt="$(printf '%s\n' "$suite_counts" | awk -v s="$suite_name" '$2 == s { print $1 }')"
+    expected_for_chunk=$((expected_for_chunk + ${suite_cnt:-0}))
+  done <<< "$chunk"
+
+  STDIO_PER_TEST_TIMEOUT="${LINGXI_CI_STDIO_PER_TEST_TIMEOUT:-30}"
+  is_stdio_chunk=no
+  case "$names" in
+    *ClientVNext*|*VNextProduction*|*Round6*|*Round14*)
+      is_stdio_chunk=yes
+      ;;
+  esac
+
+  echo "::group::Chunk ${index}/${#chunks[@]} (expected ${expected_for_chunk} tests) :: ${names}"
 
   chunk_log="$(mktemp)"
   chunk_events="$(mktemp)"
@@ -331,7 +384,33 @@ for chunk in "${chunks[@]}"; do
   alive=yes
   lingering=no
   done_at=-1
+  last_activity=$waited
+  last_ended_count=0
   while kill -0 "$runner" 2>/dev/null; do
+    current_ended=0
+    if [ -s "$chunk_events" ]; then
+      current_ended="$(grep -ac '"kind":"testEnded"' "$chunk_events" 2>/dev/null || echo 0)"
+    fi
+    if [ "$current_ended" -ne "$last_ended_count" ]; then
+      last_activity=$waited
+      last_ended_count=$current_ended
+    fi
+
+    # For stdio chunks, enforce per-test timeout
+    if [ "$is_stdio_chunk" = yes ] && [ $((waited - last_activity)) -ge "$STDIO_PER_TEST_TIMEOUT" ]; then
+      alive=no
+      echo "!! Chunk ${index} (stdio suite: ${names}) per-test timeout exceeded (${STDIO_PER_TEST_TIMEOUT}s on a single test). Capturing stacks then killing."
+      timed_out_test="$(unreported_from_events "$chunk_events")"
+      [ -n "$timed_out_test" ] && echo "-- wedged test in flight: ${timed_out_test}"
+      dump_stacks "$runner"
+      children="$(pgrep -P "$runner" 2>/dev/null)"
+      for child in $children; do
+        dump_stacks "$child"
+      done
+      kill_tree "$runner"
+      break
+    fi
+
     if [ "$waited" -ge "$CHUNK_TIMEOUT" ]; then
       alive=no
       echo "!! Chunk ${index} exceeded ${CHUNK_TIMEOUT}s. Capturing stacks then killing."
@@ -416,11 +495,62 @@ for chunk in "${chunks[@]}"; do
   status=$?
   elapsed=$(( $(date +%s) - chunk_start ))
 
-  # swift-testing exits 0 when a filter matches nothing, so a chunk that silently runs
-  # zero tests would otherwise be reported as a pass. Count what actually ran.
-  ran="$(grep -oE 'Test run with [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || true)"
-  ran="${ran:-0}"
+  # Count what actually ran: swift-testing tests from events or log, plus any XCTest cases
+  st_ran=0
+  if [ -s "$chunk_events" ]; then
+    st_ran="$(grep -a '"kind":"testEnded"' "$chunk_events" 2>/dev/null | grep '"testID":' | grep '/' | wc -l | tr -d ' ' || echo 0)"
+  fi
+  if [ "${st_ran:-0}" -eq 0 ]; then
+    st_ran="$(grep -oE 'Test run with [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || echo 0)"
+  fi
+  xct_ran="$(grep -oE 'Executed [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || echo 0)"
+  ran=$(( ${st_ran:-0} + ${xct_ran:-0} ))
   executed=$((executed + ran))
+
+  # Compute issue/failure count
+  failed_in_chunk=0
+  if [ -s "$chunk_events" ]; then
+    failed_in_chunk="$(grep -ac '"kind":"issueRecorded"' "$chunk_events" 2>/dev/null || echo 0)"
+  fi
+  if [ "$failed_in_chunk" -eq 0 ] && grep -qE 'Test run with [0-9]+ tests failed' "$chunk_log" 2>/dev/null; then
+    failed_in_chunk=1
+  fi
+  if grep -qE 'Executed [0-9]+ tests?, with [1-9][0-9]* failure' "$chunk_log" 2>/dev/null; then
+    failed_in_chunk=$((failed_in_chunk + 1))
+  fi
+
+  chunk_verdict="passed"
+  if [ "$alive" = no ]; then
+    chunk_verdict="hang"
+  elif [ "$lingering" = yes ]; then
+    chunk_verdict="lingered"
+  elif [ "$status" -ne 0 ] || [ "$failed_in_chunk" -gt 0 ]; then
+    chunk_verdict="failed"
+  elif [ "$ran" -lt "$expected_for_chunk" ]; then
+    chunk_verdict="deficit"
+  fi
+
+  json_report_file="test-results-chunk-${index}.json"
+  if [ -n "$XUNIT_DIR" ]; then
+    json_report_file="$XUNIT_DIR/test-results-chunk-${index}.json"
+  fi
+  cat > "$json_report_file" <<EOF
+{
+  "chunk": ${index},
+  "total_chunks": ${#chunks[@]},
+  "suites": $(printf '%s\n' "$names" | awk '{printf "["; for(i=1;i<=NF;i++){printf "\"%s\"%s", $i, (i==NF?"":", ")}; printf "]\n"}'),
+  "filter": "${filter}",
+  "expected_tests": ${expected_for_chunk},
+  "executed_tests": ${ran},
+  "passed_tests": $((ran - failed_in_chunk > 0 ? ran - failed_in_chunk : 0)),
+  "failed_tests": ${failed_in_chunk},
+  "exit_code": ${status},
+  "elapsed_seconds": ${elapsed},
+  "status": "${chunk_verdict}",
+  "timed_out": $([ "$alive" = no ] && echo true || echo false),
+  "lingered": $([ "$lingering" = yes ] && echo true || echo false)
+}
+EOF
 
   if [ "$alive" = no ]; then
     timed_out_chunks+=("Chunk ${index}: ${names}")
@@ -428,17 +558,19 @@ for chunk in "${chunks[@]}"; do
     [ -z "$victim" ] && victim="$(unreported_tests "$chunk_log")"
     [ -n "$victim" ] && echo "-- started but never reported: ${victim}"
     tail -20 "$chunk_log"
+    dump_crash_evidence
   elif [ "$lingering" = yes ]; then
     # A distinct defect from a hung test: the plan finished, so its verdict is trustworthy,
     # but the process never returned. Report both so neither signal is lost.
     lingering_chunks+=("Chunk ${index}: ${names}")
     grep -E 'Test run with [0-9]+ tests' "$chunk_log" | tail -1
-    if grep -qE 'Test run with [0-9]+ tests failed' "$chunk_log"; then
+    if [ "$status" -ne 0 ] || grep -qE 'Test run with [0-9]+ tests failed' "$chunk_log"; then
       failed_chunks+=("Chunk ${index}: ${names}")
       grep -E "recorded an issue|Expectation failed|Caught error|error:" "$chunk_log" | head -30
     fi
+    dump_crash_evidence
   elif [ "$status" -ne 0 ]; then
-    failed_chunks+=("Chunk ${index}: ${names}")
+    failed_chunks+=("Chunk ${index} (exit ${status}): ${names}")
     echo "-- chunk ${index} exit ${status} after ${elapsed}s --"
     silent_victim="$(unreported_from_events "$chunk_events")"
     [ -z "$silent_victim" ] && silent_victim="$(unreported_tests "$chunk_log")"
@@ -447,12 +579,23 @@ for chunk in "${chunks[@]}"; do
       | head -30
     echo "--- chunk ${index} full log ---"
     cat "$chunk_log"
+    dump_crash_evidence
+  elif [ "$ran" -lt "$expected_for_chunk" ]; then
+    # Test count conservation violation (e.g. silent exit or partial test run)
+    failed_chunks+=("Chunk ${index} execution count deficit (${ran}/${expected_for_chunk} executed): ${names}")
+    echo "::error::Chunk ${index} failed conservation: expected ${expected_for_chunk} tests from list-tests, but only executed ${ran} tests"
+    silent_victim="$(unreported_from_events "$chunk_events")"
+    [ -z "$silent_victim" ] && silent_victim="$(unreported_tests "$chunk_log")"
+    [ -n "$silent_victim" ] && echo "!! tests started but never reported or missing: ${silent_victim}"
+    tail -30 "$chunk_log"
+    dump_crash_evidence
   elif [ "$ran" -eq 0 ]; then
     failed_chunks+=("Chunk ${index} matched no tests: ${names}")
     echo "!! Chunk ${index} ran 0 tests. Filter was: ${filter}"
     tail -20 "$chunk_log"
+    dump_crash_evidence
   else
-    printf 'ok  chunk %-3s %4ss  %s tests\n' "$index" "$elapsed" "$ran"
+    printf 'ok  chunk %-3s %4ss  %s/%s tests\n' "$index" "$elapsed" "$ran" "$expected_for_chunk"
   fi
   if [ -n "$XUNIT_DIR" ]; then
     # swift-testing appends its own suffix to --xunit-output, so the report is named after the
@@ -462,6 +605,11 @@ for chunk in "${chunks[@]}"; do
       mkdir -p "$ARTIFACT_DIR"
       cp "$report" "$ARTIFACT_DIR/" 2>/dev/null \
         || echo "note: could not stage chunk ${index}'s report"
+    done
+    for json_rep in "$XUNIT_DIR"/test-results-chunk-"$index"*.json; do
+      [ -f "$json_rep" ] || continue
+      mkdir -p "$ARTIFACT_DIR"
+      cp "$json_rep" "$ARTIFACT_DIR/" 2>/dev/null || true
     done
     # The xunit report only exists for a chunk that finished, so it cannot describe a hang or a
     # death. The event stream does: it records every case that started, which is what lets a chunk

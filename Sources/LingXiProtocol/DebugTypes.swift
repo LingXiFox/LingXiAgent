@@ -14,6 +14,13 @@ public enum RuntimeTraceKind: String, Sendable, Equatable, Codable {
     case recovery
     case cancellation
     case error
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        self = RuntimeTraceKind(rawValue: raw) ?? .unknown
+    }
 }
 
 public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
@@ -84,6 +91,8 @@ public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
     public let generatedAt: Date
     public let runtimeVersion: String
     public let protocolVersion: String
+    public let protocolMajor: Int
+    public let protocolMinor: Int
     public let configurationSummary: [String: String]
     public let trace: [RuntimeTraceEvent]
     public let recentErrors: [RuntimeTraceEvent]
@@ -95,10 +104,28 @@ public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
     public let orphanRunIDs: [AgentRunID]
     public let backgroundTasks: [BackgroundTaskSnapshot]?
 
-    public init(generatedAt: Date = .now, runtimeVersion: String, protocolVersion: String, configurationSummary: [String: String], trace: [RuntimeTraceEvent], recentErrors: [RuntimeTraceEvent], provider: RuntimeDiagnosticProviderStatus, mcp: RuntimeDiagnosticMCPStatus, runs: [AgentRunInfo], workflows: [WorkflowSnapshot], recoveryRequiredRunIDs: [AgentRunID], orphanRunIDs: [AgentRunID], backgroundTasks: [BackgroundTaskSnapshot]? = nil) {
+    public init(
+        generatedAt: Date = .now,
+        runtimeVersion: String,
+        protocolVersion: String = ProtocolVersion.current.description,
+        protocolMajor: Int = ProtocolVersion.current.major,
+        protocolMinor: Int = ProtocolVersion.current.minor,
+        configurationSummary: [String: String],
+        trace: [RuntimeTraceEvent],
+        recentErrors: [RuntimeTraceEvent],
+        provider: RuntimeDiagnosticProviderStatus,
+        mcp: RuntimeDiagnosticMCPStatus,
+        runs: [AgentRunInfo],
+        workflows: [WorkflowSnapshot],
+        recoveryRequiredRunIDs: [AgentRunID],
+        orphanRunIDs: [AgentRunID],
+        backgroundTasks: [BackgroundTaskSnapshot]? = nil
+    ) {
         self.generatedAt = generatedAt
         self.runtimeVersion = runtimeVersion
         self.protocolVersion = protocolVersion
+        self.protocolMajor = protocolMajor
+        self.protocolMinor = protocolMinor
         self.configurationSummary = configurationSummary
         self.trace = trace
         self.recentErrors = recentErrors
@@ -109,6 +136,39 @@ public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
         self.recoveryRequiredRunIDs = recoveryRequiredRunIDs
         self.orphanRunIDs = orphanRunIDs
         self.backgroundTasks = backgroundTasks
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, runtimeVersion, protocolVersion, protocolMajor, protocolMinor
+        case configurationSummary, trace, recentErrors, provider, mcp, runs, workflows
+        case recoveryRequiredRunIDs, orphanRunIDs, backgroundTasks
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        self.runtimeVersion = try container.decode(String.self, forKey: .runtimeVersion)
+        let protoVer = try container.decode(String.self, forKey: .protocolVersion)
+        self.protocolVersion = protoVer
+        if let major = try container.decodeIfPresent(Int.self, forKey: .protocolMajor),
+           let minor = try container.decodeIfPresent(Int.self, forKey: .protocolMinor) {
+            self.protocolMajor = major
+            self.protocolMinor = minor
+        } else {
+            let parts = protoVer.split(separator: ".").compactMap { Int($0) }
+            self.protocolMajor = parts.first ?? ProtocolVersion.current.major
+            self.protocolMinor = parts.count > 1 ? parts[1] : 0
+        }
+        self.configurationSummary = try container.decode([String: String].self, forKey: .configurationSummary)
+        self.trace = try container.decode([RuntimeTraceEvent].self, forKey: .trace)
+        self.recentErrors = try container.decode([RuntimeTraceEvent].self, forKey: .recentErrors)
+        self.provider = try container.decode(RuntimeDiagnosticProviderStatus.self, forKey: .provider)
+        self.mcp = try container.decode(RuntimeDiagnosticMCPStatus.self, forKey: .mcp)
+        self.runs = try container.decode([AgentRunInfo].self, forKey: .runs)
+        self.workflows = try container.decode([WorkflowSnapshot].self, forKey: .workflows)
+        self.recoveryRequiredRunIDs = try container.decode([AgentRunID].self, forKey: .recoveryRequiredRunIDs)
+        self.orphanRunIDs = try container.decode([AgentRunID].self, forKey: .orphanRunIDs)
+        self.backgroundTasks = try container.decodeIfPresent([BackgroundTaskSnapshot].self, forKey: .backgroundTasks)
     }
 }
 

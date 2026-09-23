@@ -69,7 +69,9 @@ jobs:
       - name: Stage 2 - Architecture Boundary & Platform Gate
         timeout-minutes: 5
         run: |
-          swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null
+          swift test --skip-build --filter LingXiPlatformContractTests < /dev/null
+          swift test --skip-build --filter LingXiWireContractTests < /dev/null
+          swift test --skip-build --filter LingXiCapabilityContractTests < /dev/null
           swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
           swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
@@ -79,7 +81,9 @@ jobs:
 
       - name: Stage 4 - IPC & Process Robustness Gate
         timeout-minutes: 5
-        run: swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+        run: |
+          swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+          swift test --skip-build --filter LingXiIPCRobustnessContractTests < /dev/null
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 35
@@ -193,7 +197,9 @@ jobs:
       - name: Stage 2 - Architecture Boundary & Platform Gate
         timeout-minutes: 5
         run: |
-          su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null"
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter LingXiPlatformContractTests < /dev/null"
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter LingXiWireContractTests < /dev/null"
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter LingXiCapabilityContractTests < /dev/null"
           su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null"
           su -s /bin/bash -m testuser -c "swift test --skip-build --filter PlatformBuildGateTests < /dev/null"
 
@@ -203,7 +209,9 @@ jobs:
 
       - name: Stage 4 - IPC & Process Robustness Gate
         timeout-minutes: 5
-        run: su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
+        run: |
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null"
+          su -s /bin/bash -m testuser -c "swift test --skip-build --filter LingXiIPCRobustnessContractTests < /dev/null"
 
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 60
@@ -313,6 +321,16 @@ jobs:
           key: spm-windows-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-windows-
 
+      - name: Configure WER Crash Dumps
+        shell: powershell
+        run: |
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -Value "D:\a\_temp\dumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpCount -Value 8 -PropertyType DWord -Force | Out-Null
+          mkdir -Force D:\a\_temp\dumps | Out-Null
+
       - name: Stage 1 - Build products + tests (single pass)
         shell: bash
         timeout-minutes: 25
@@ -322,7 +340,9 @@ jobs:
         shell: bash
         timeout-minutes: 5
         run: |
-          swift test --skip-build --filter PlatformBoundaryArchitectureTests < /dev/null
+          swift test --skip-build --filter LingXiPlatformContractTests < /dev/null
+          swift test --skip-build --filter LingXiWireContractTests < /dev/null
+          swift test --skip-build --filter LingXiCapabilityContractTests < /dev/null
           swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
           swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 

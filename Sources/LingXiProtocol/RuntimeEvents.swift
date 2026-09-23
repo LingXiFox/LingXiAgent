@@ -43,17 +43,37 @@ public struct RuntimeCapabilities: Codable, Sendable, Equatable {
     public let supportsContentUpload: Bool
     public let maxAttachmentBytes: Int
     public let supportedModes: [AgentMode]
+    public let supportedFeatures: [ProtocolFeature]
 
     public init(
         supportsStreamReplay: Bool = true,
         supportsContentUpload: Bool = true,
         maxAttachmentBytes: Int = 100 * 1024 * 1024,
-        supportedModes: [AgentMode] = [.build, .plan, .explore]
+        supportedModes: [AgentMode] = [.build, .plan, .explore],
+        supportedFeatures: [ProtocolFeature] = ProtocolFeature.knownFeatures
     ) {
         self.supportsStreamReplay = supportsStreamReplay
         self.supportsContentUpload = supportsContentUpload
         self.maxAttachmentBytes = maxAttachmentBytes
         self.supportedModes = supportedModes
+        self.supportedFeatures = supportedFeatures
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case supportsStreamReplay
+        case supportsContentUpload
+        case maxAttachmentBytes
+        case supportedModes
+        case supportedFeatures
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.supportsStreamReplay = try container.decode(Bool.self, forKey: .supportsStreamReplay)
+        self.supportsContentUpload = try container.decode(Bool.self, forKey: .supportsContentUpload)
+        self.maxAttachmentBytes = try container.decode(Int.self, forKey: .maxAttachmentBytes)
+        self.supportedModes = try container.decode([AgentMode].self, forKey: .supportedModes)
+        self.supportedFeatures = try container.decodeIfPresent([ProtocolFeature].self, forKey: .supportedFeatures) ?? []
     }
 }
 

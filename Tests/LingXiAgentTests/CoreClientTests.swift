@@ -17,7 +17,7 @@ struct CoreClientTests {
         let info = try await LingXiClient.inProcess(endpoint: host).coreInfo()
         #expect(info.name == "LingXiCore")
         #expect(info.version == CoreHost.coreVersion)
-        #expect(info.protocolVersion == CoreHost.protocolVersion)
+        #expect(info.protocolVersion == ProtocolVersion.current.description)
     }
 
     @Test func coreStateReadable() async throws {
