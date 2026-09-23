@@ -153,7 +153,17 @@ final class ManagedToolProcess: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = error
-        #if os(Windows)
+        #if !os(macOS)
+        // Linux and Windows share a reader path because Foundation's dispatch-source
+        // `readabilityHandler` is unreliable on both:
+        //   * Linux drops already-delivered events (see AsyncLineReader.swift:96-98)
+        //     so bytes sit in the kernel pipe buffer until termination closes the
+        //     fd, which loses the child's final writes;
+        //   * Windows uses overlapped I/O and the handler path leaves the read fd
+        //     in a state where `CancelIoEx` cannot unblock a wedged drain.
+        // `AsyncLineReader.dataChunks` starts a dedicated Thread+poll reader on
+        // Linux and a cancellable Task on Windows, both of which observe EOF
+        // honestly and hand it back via `markEOF`.
         let outHandle = output.fileHandleForReading
         let errHandle = error.fileHandleForReading
         Task { [weak self, stdout] in
@@ -302,15 +312,12 @@ final class ManagedToolProcess: @unchecked Sendable {
 
     private func handleTermination(status: Int32) {
         let pid = process.processIdentifier
-        
-        // Unbind on every platform, the way the EOF path in `read` already does. Leaving a
-        // handler installed while the process pipes are being torn down means Foundation can
-        // fire it against a handle that has since been closed, which is a death with no Swift
-        // error to read -- the shape Windows chunks were dying in.
+        #if os(macOS)
+        // macOS still runs the readabilityHandler path. Unbind before Foundation
+        // tears the fd down (a handler firing against a closed handle dies with no
+        // Swift error to read), then do a bounded final drain and force-mark EOF.
         output.fileHandleForReading.readabilityHandler = nil
         error.fileHandleForReading.readabilityHandler = nil
-
-        // Concurrent bounded drain: immediately drain any remaining output non-blockingly.
         nonblockingDrain(handle: output.fileHandleForReading, into: stdout)
         nonblockingDrain(handle: error.fileHandleForReading, into: stderr)
 
@@ -327,7 +334,47 @@ final class ManagedToolProcess: @unchecked Sendable {
         if needStderrEOF { lifecycleTrace?.record(.stderrEOF, processPID: pid, exitCode: status) }
 
         finish()
+        #else
+        // Linux/Windows run a dedicated reader task that reports EOF on its own.
+        // Force-marking it here would let finish() resume waiters while the reader
+        // is still mid-`read` on the same fd, which is the exact shape that lost
+        // the child's final bytes on Linux Foundation's dropped-event handler.
+        // Record the exit and let markEOF trigger finish; a bounded fallback grabs
+        // anything the reader misses (a wedged grandchild holding the write end).
+        lock.lock()
+        processDidExit = true
+        exitStatus = status
+        let alreadyAtEOF = stdoutDidReachEOF && stderrDidReachEOF
+        lock.unlock()
+        if alreadyAtEOF { finish() }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            self?.readerFallback()
+        }
+        #endif
     }
+
+    #if !os(macOS)
+    /// Safety net for the Linux/Windows reader path: if the reader has not reported
+    /// EOF within a short grace window after the child exits, drain once more and
+    /// force-mark so `waitForExit` cannot hang on a wedged stream.
+    private func readerFallback() {
+        let pid = process.processIdentifier
+        lock.lock()
+        if didFinish { lock.unlock(); return }
+        let needStdoutEOF = !stdoutDidReachEOF
+        stdoutDidReachEOF = true
+        let needStderrEOF = !stderrDidReachEOF
+        stderrDidReachEOF = true
+        let status = exitStatus ?? process.terminationStatus
+        lock.unlock()
+        nonblockingDrain(handle: output.fileHandleForReading, into: stdout)
+        nonblockingDrain(handle: error.fileHandleForReading, into: stderr)
+        if needStdoutEOF { lifecycleTrace?.record(.stdoutEOF, processPID: pid, exitCode: status) }
+        if needStderrEOF { lifecycleTrace?.record(.stderrEOF, processPID: pid, exitCode: status) }
+        finish()
+    }
+    #endif
 
     private func finish() {
         lock.lock()
