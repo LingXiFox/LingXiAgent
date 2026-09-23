@@ -290,6 +290,12 @@ final class ManagedToolProcess: @unchecked Sendable {
             buffer.append(data)
             return
         }
+        // An empty read means "nothing readable this instant" at least as often as it means end of
+        // stream, and a child that writes and exits can still have its last line in flight. Unbinding
+        // there loses that output, and the run then reports exit 0 with an empty payload -- the shape
+        // `echo hello-lingxi` took on a macOS runner. EOF is only accepted once the child is gone;
+        // until then the handler stays bound and reads whatever arrives next.
+        if process.isRunning { return }
         handle.readabilityHandler = nil
         markEOF(phase: phase)
     }
