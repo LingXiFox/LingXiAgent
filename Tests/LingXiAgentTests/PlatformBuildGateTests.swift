@@ -83,6 +83,18 @@ struct PlatformBuildGateTests {
 
     // MARK: - Pipe readers
 
+    /// Marks both ends close-on-exec before anything is spawned.
+    ///
+    /// Only the descriptor a child is *told* to use survives exec, so a pipe created here would
+    /// otherwise be inherited by a child some other suite spawns concurrently -- and while that
+    /// unrelated process holds the write end, the EOF these tests wait for is unobservable. It showed
+    /// up as a 20s timeout only when several suites ran at once, never in isolation.
+    private static func makeCloseOnExec(_ pipe: Pipe) {
+        for handle in [pipe.fileHandleForReading, pipe.fileHandleForWriting] {
+            _ = fcntl(handle.fileDescriptor, F_SETFD, FD_CLOEXEC)
+        }
+    }
+
     /// Launches a fixture child with its stdout on a pipe the caller keeps alive.
     private static func spawn(_ fixture: (command: String, arguments: [String]), stdout: Pipe) throws -> Process {
         let child = Process()
@@ -135,6 +147,7 @@ struct PlatformBuildGateTests {
         // bytes and the EOF both went unseen and the consumer awaited forever. An already-exited
         // stdio server is not exotic: `mcp status` against `/bin/echo` is that shape.
         let pipe = Pipe()
+        Self.makeCloseOnExec(pipe)
         let child = try Self.spawn(PortableFixture.python("print(\"alpha\"); print(\"beta\"); print(\"gamma\")"), stdout: pipe)
         try? pipe.fileHandleForWriting.close()
         child.waitUntilExit()
@@ -149,6 +162,7 @@ struct PlatformBuildGateTests {
     @Test("Cancelling the consumer of a silent live pipe returns instead of parking forever")
     func cancellingTheConsumerReleasesThePipeReader() async throws {
         let pipe = Pipe()
+        Self.makeCloseOnExec(pipe)
         let child = try Self.spawn(PortableFixture.sleep(30), stdout: pipe)
         try? pipe.fileHandleForWriting.close()
 
@@ -179,6 +193,7 @@ struct PlatformBuildGateTests {
         }
         func cycle() async throws {
             let pipe = Pipe()
+        Self.makeCloseOnExec(pipe)
             let child = try Self.spawn(PortableFixture.python("print(\"one\"); print(\"two\")"), stdout: pipe)
             try? pipe.fileHandleForWriting.close()
             child.waitUntilExit()
