@@ -363,7 +363,12 @@ direct_replay() {
     return
   fi
   probe_log="$(mktemp)"
-  SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$found" \
+  # The binary is found and launched, but it links against the testing library that lives next to
+  # the compiler: `swift test` puts that directory on PATH and a direct exec does not, so the replay
+  # died with "error while loading shared libraries: Testing.dll" and reported the loader's 127
+  # rather than the test process's own status.
+  swift_bin="$(dirname "$(command -v swift 2>/dev/null || echo ./swift)")"
+  PATH="$swift_bin:$PATH" SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all "$found" \
     --testing-library swift-testing --filter "$filter" < /dev/null > "$probe_log" 2>&1 &
   probe_pid=$!
   while kill -0 "$probe_pid" 2>/dev/null; do
