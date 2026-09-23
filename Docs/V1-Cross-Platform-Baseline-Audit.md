@@ -1,7 +1,7 @@
 # LingXiAgent V1.0.0 跨平台架构审计与基线冻结报告
 **Cross-Platform Architecture Audit & Baseline Freeze Report**
 
-- **系统版本**: LingXiAgent V1.0.0 (Release Candidate 1)
+- **系统版本**: LingXiAgent V1.0.0 (Release)
 - **正式支持平台**: macOS (arm64/x86_64), Linux (Ubuntu/Debian/Arch/RHEL)
 - **实验性平台**: Windows 10/11 / Server 2022 (x86_64) — 不在 V1.0.0 支持范围，正式支持推迟至 V1.1.0
 - **正式用户入口**: CLI (`lingxiagent`), TUI (`LingXiTUI`), Core Service (`LingXiCoreHost`)
