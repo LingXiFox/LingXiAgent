@@ -142,6 +142,12 @@ jobs:
           # loopback interface. This container is privileged, so the knob is writable here.
           # Without it the workspace profile cannot run any command on the Linux gate.
           sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          # yama confines ptrace to direct children, which makes /proc/<pid>/task/*/syscall
+          # unreadable from the harness -- the test binary is a grandchild through the SwiftPM
+          # driver, so the per-thread readiness census came back "unreadable" on every thread.
+          # This is an ephemeral runner container that already runs privileged, and without it the
+          # wedged-chunk diagnostics cannot name the descriptor a reader is parked on.
+          sysctl -w kernel.yama.ptrace_scope=0 2>/dev/null || true
 
       - name: Probe bubblewrap availability
         run: |

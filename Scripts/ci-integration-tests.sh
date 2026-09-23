@@ -277,6 +277,16 @@ $p | ForEach-Object {
           fi
         done
       done
+      # /proc/PID/task/*/syscall needs ptrace, and yama restricts that to direct children, so from
+      # the harness the test binary is off-limits (every line reads "unreadable"). /proc/PID/fd is
+      # owner-readable without any ptrace grant, so list the pipes the whole tree still holds open:
+      # "two readers parked" only becomes an explanation once it names the other end of the pipe.
+      local tree_pid links
+      for tree_pid in "$pid" $(descendants "$pid" 3); do
+        links="$(ls -l "/proc/$tree_pid/fd" 2>/dev/null | grep -oE 'pipe:\[[0-9]+\]' | sort -u | tr '\n' ' ')"
+        [ -n "$links" ] && printf 'pid %s holds %s (%s)\n' "$tree_pid" "$links" \
+          "$(ps -o comm= -p "$tree_pid" 2>/dev/null | tr -d '\n' || echo '?')"
+      done | head -30
       rm -f "$held"
       ;;
   esac
