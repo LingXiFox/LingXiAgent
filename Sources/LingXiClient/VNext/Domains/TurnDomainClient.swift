@@ -57,4 +57,19 @@ public struct TurnDomainClient: Sendable {
     ) async throws -> ResponseEnvelope<Page<TurnSnapshot>> {
         return try await transport.listTurns(envelope: envelope)
     }
+
+    // MARK: - Side Question (G8)
+
+    public func submitSideQuestion(
+        sessionID: SessionID,
+        question: String,
+        contextTurnID: TurnID? = nil
+    ) async throws -> SideQuestionResult {
+        let req = SubmitSideQuestionRequest(sessionID: sessionID, question: question, contextTurnID: contextTurnID)
+        let resp = try await transport.submitSideQuestion(envelope: CommandEnvelope(payload: req))
+        return resp.result ?? SideQuestionResult(answer: "", modelUsed: "unknown")
+    }
+
+
 }
+

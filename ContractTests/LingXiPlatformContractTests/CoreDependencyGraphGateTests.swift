@@ -27,14 +27,14 @@ struct CoreDependencyGraphGateTests {
 
     /// Explicit allow-list for architecture exceptions. Each exception requires a concrete rationale.
     private static let allowList: [ArchitectureException] = [
-        // lingxiagent unified binary links both presentation and core for CLI bootstrap/doctor subcommands.
-        // This is documented in Roadmap V1.1 and will be split in P28 (lingxiagent vs lingxiagent-ops).
+        // lingxiagent-ops links Core for backend administration and diagnostics commands (doctor, auth, mcp, smoke).
         ArchitectureException(
-            fromTarget: "lingxiagent",
+            fromTarget: "lingxiagent-ops",
             toTarget: "LingXiCore",
-            reason: "Bootstrap CLI runner currently bundles Core and Presentation in one binary prior to P28 CLI split"
+            reason: "Operations and diagnostics CLI links Core directly for offline admin commands"
         )
     ]
+
 
     /// Target and its declared dependency target names.
     private static func parseDependencyGraph() throws -> [String: Set<String>] {

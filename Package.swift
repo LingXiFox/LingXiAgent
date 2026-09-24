@@ -4,9 +4,10 @@ import PackageDescription
 
 let package = Package(
     name: "LingXiAgent",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .executable(name: "lingxiagent", targets: ["lingxiagent"]),
+        .executable(name: "lingxiagent-ops", targets: ["lingxiagent-ops"]),
         .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
         .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
         .library(name: "LingXiPluginSDK", targets: ["LingXiPluginSDK"]),
@@ -54,9 +55,14 @@ let package = Package(
             name: "LingXiCoreHost",
             dependencies: ["LingXiCore", "LingXiProtocol"]
         ),
-        // Unified CLI tool: lingxiagent
+        // Unified Interactive CLI tool: lingxiagent (Pure presentation, strictly no LingXiCore)
         .executableTarget(
             name: "lingxiagent",
+            dependencies: ["LingXiProtocol", "LingXiApplication", "LingXiTUI", "LingXiPlatform"]
+        ),
+        // Operations & Diagnostics CLI: lingxiagent-ops (Links LingXiCore for backend administration)
+        .executableTarget(
+            name: "lingxiagent-ops",
             dependencies: ["LingXiCore", "LingXiProtocol", "LingXiApplication", "LingXiTUI", "LingXiPlatform"]
         ),
         // TUI：Reference Client 库。禁止依赖 LingXiCore。
@@ -70,12 +76,13 @@ let package = Package(
             name: "LingXiTUIApp",
             dependencies: ["LingXiTUI"]
         ),
-        // FrontendKit: macOS/iOS GUI Phase 0 Shared Component Library
+        // FrontendKit: macOS/iOS GUI Shared Component Library (Strictly no LingXiCore)
         .target(
             name: "LingXiFrontendKit",
-            dependencies: [],
+            dependencies: ["LingXiApplication", "LingXiClient", "LingXiProtocol"],
             path: "Apps/LingXiApp/Shared"
         ),
+
         .testTarget(
             name: "LingXiAgentTests",
             dependencies: [

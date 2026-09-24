@@ -9,7 +9,9 @@ public struct ProjectID: RawRepresentable, Sendable, Equatable, Hashable, Codabl
 public struct AgentRunID: Sendable, Equatable, Hashable, Codable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
+    public static func generate() -> AgentRunID { AgentRunID(UUID().uuidString) }
 }
+
 
 public enum SessionKind: String, Sendable, Equatable, Codable {
     case primary

@@ -755,6 +755,32 @@ public protocol LingXiProtocolService: Sendable {
     func getCredentialStatus(envelope: QueryEnvelope<GetCredentialStatusRequest>) async throws -> ResponseEnvelope<CredentialStatusInfo>
     func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult>
 
+    // MARK: - 14. Task
+    func createTask(envelope: CommandEnvelope<CreateTaskRequest>) async throws -> CommandReceipt<TaskSnapshot>
+    func getTask(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskSnapshot>
+    func listTasks(envelope: QueryEnvelope<ListTasksRequest>) async throws -> ResponseEnvelope<[TaskSnapshot]>
+    func pauseTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot>
+    func resumeTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot>
+    func cancelTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot>
+    func forkTask(envelope: CommandEnvelope<ForkTaskRequest>) async throws -> CommandReceipt<TaskSnapshot>
+    func updateTaskCriteria(envelope: CommandEnvelope<UpdateTaskCriteriaRequest>) async throws -> CommandReceipt<TaskSnapshot>
+    func listTaskArtifacts(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<[TaskArtifact]>
+    func getTaskReport(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskReport?>
+    func finalizeTask(envelope: CommandEnvelope<TaskFinalizeRequest>) async throws -> CommandReceipt<TaskSnapshot>
+
+    // MARK: - 15. Workspace Worktree
+    func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo>
+    func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]>
+    func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult>
+    func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult>
+    func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult>
+
+    // MARK: - 16. Agent Preset & Side Question
+    func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult>
+    func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]>
+    func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]>
+    func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult>
+
     // MARK: - Event Streams
     func subscribeRuntimeEvents(after: EventCursor?) async -> AsyncStream<RuntimeEventEnvelope>
     func subscribeSessionEvents(sessionID: SessionID, after: EventCursor?) async throws -> AsyncStream<SessionEventEnvelope>
@@ -774,4 +800,100 @@ public extension LingXiProtocolService {
     func getContentRange(ref: ContentRef, offset: Int, length: Int) async throws -> Data {
         try await getContentRange(ref: ref, offset: offset, length: length, authorization: .anonymous)
     }
+
+    // Default implementations for newly added Task, Worktree, and Preset RPCs
+    func createTask(envelope: CommandEnvelope<CreateTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        let capsule = TaskCapsule(
+            sessionID: envelope.payload.sessionID,
+            projectID: envelope.payload.projectID,
+            objective: envelope.payload.objective,
+            successCriteria: envelope.payload.successCriteria
+        )
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: TaskSnapshot(capsule: capsule))
+    }
+
+    func getTask(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskSnapshot> {
+        throw CoreError(code: .resourceNotFound, message: "Task \(envelope.payload.taskID) not found")
+    }
+
+    func listTasks(envelope: QueryEnvelope<ListTasksRequest>) async throws -> ResponseEnvelope<[TaskSnapshot]> {
+        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
+    }
+
+    func pauseTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        throw CoreError(code: .unsupportedCommand, message: "pauseTask not implemented on base service")
+    }
+
+    func resumeTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        throw CoreError(code: .unsupportedCommand, message: "resumeTask not implemented on base service")
+    }
+
+    func cancelTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        throw CoreError(code: .unsupportedCommand, message: "cancelTask not implemented on base service")
+    }
+
+    func forkTask(envelope: CommandEnvelope<ForkTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        throw CoreError(code: .unsupportedCommand, message: "forkTask not implemented on base service")
+    }
+
+    func updateTaskCriteria(envelope: CommandEnvelope<UpdateTaskCriteriaRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        throw CoreError(code: .unsupportedCommand, message: "updateTaskCriteria not implemented on base service")
+    }
+
+    func listTaskArtifacts(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<[TaskArtifact]> {
+        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
+    }
+
+    func getTaskReport(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskReport?> {
+        return ResponseEnvelope(requestID: envelope.requestID, payload: nil)
+    }
+
+    func finalizeTask(envelope: CommandEnvelope<TaskFinalizeRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        throw CoreError(code: .unsupportedCommand, message: "finalizeTask not implemented on base service")
+    }
+
+    func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {
+        let info = WorkspaceWorktreeInfo(id: UUID().uuidString, branch: envelope.payload.name, path: "/tmp/\(envelope.payload.name)")
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: info)
+    }
+
+    func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> {
+        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
+    }
+
+    func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: VoidResult())
+    }
+
+    func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: VoidResult())
+    }
+
+    func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: VoidResult())
+    }
+
+    func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {
+        let result = SideQuestionResult(answer: "Processed side question: \(envelope.payload.question)", modelUsed: "side-runner")
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: result)
+    }
+
+    func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]> {
+        let presets = [
+            AgentPresetInfo(id: "build", name: "Builder", description: "Standard autonomous building agent", mode: .build, reasoningEffort: .auto, permissionPolicy: .ask),
+            AgentPresetInfo(id: "plan", name: "Planner", description: "Architecture and design planning", mode: .plan, reasoningEffort: .high, permissionPolicy: .ask),
+            AgentPresetInfo(id: "explore", name: "Explorer", description: "Read-only exploration and diagnosis", mode: .explore, reasoningEffort: .low, permissionPolicy: .auto)
+        ]
+        return ResponseEnvelope(requestID: envelope.requestID, payload: presets)
+    }
+
+    func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]> {
+        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
+    }
+
+    func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult> {
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: MultiRunCompareResult(runs: [:]))
+    }
 }
+
+

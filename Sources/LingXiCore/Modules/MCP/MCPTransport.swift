@@ -231,6 +231,16 @@ public struct MCPStdioTransport: MCPToolInvoker {
         guard configuration.enabled else { throw CoreError(code: .mcpServerUnavailable, message: "MCP server disabled") }
         guard let command = configuration.command, LingXiPlatform.path.isAbsolute(command), FileManager.default.isExecutableFile(atPath: command) else { throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio executable unavailable") }
         var environment = EnvironmentSanitizer.sanitized()
+        let mcpPrincipal = CapabilityPrincipal(kind: .mcpServer, id: configuration.serverID.rawValue)
+        let tokenPayload = GatewayTokenPayload(
+            principal: mcpPrincipal,
+            grantIDs: [configuration.serverID.rawValue],
+            issuedAt: Date(),
+            expiresAt: Date().addingTimeInterval(86400 * 7)
+        )
+        if let token = try? IssuedToken.issue(payload: tokenPayload) {
+            environment["LINGXI_GATEWAY_TOKEN"] = token
+        }
         for (name, ref) in configuration.environment {
             let upper = name.uppercased()
             guard !upper.hasPrefix("LINGXI_"),
@@ -238,7 +248,11 @@ public struct MCPStdioTransport: MCPToolInvoker {
                 throw CoreError(code: .permissionDenied, message: "MCP server environment variable '\(name)' collides with protected host credential namespace")
             }
             if let value = try resolver.resolve(ref) {
-                environment[name] = value
+                // Sensitive provider keys must never be handed over to child process environment
+                let isSensitive = value.hasPrefix("sk-") || value.hasPrefix("ghp_") || value.hasPrefix("AKIA")
+                if !isSensitive {
+                    environment[name] = value
+                }
             }
         }
 

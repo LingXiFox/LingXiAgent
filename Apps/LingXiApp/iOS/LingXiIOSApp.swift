@@ -3,26 +3,33 @@ import SwiftUI
 #if os(iOS)
 @main
 public struct LingXiIOSApp: App {
-    @State private var runtime = FakeFrontendRuntime()
+    @StateObject private var runtime = RuntimeFrontend()
 
     public init() {}
 
     public var body: some Scene {
         WindowGroup {
             NavigationStack {
-                ZStack(alignment: .bottom) {
-                    LingXiGlass.Palette.deepBackground
-                        .ignoresSafeArea()
-
-                    ConversationTimelineView(model: runtime.conversationModel)
-
-                    FloatingComposerView(model: runtime.composerModel) { text, mode, attachments in
-                        runtime.sendMessage(text: text, mode: mode, attachments: attachments)
+                MainStageView(
+                    conversationModel: runtime.conversationModel,
+                    composerModel: runtime.composerModel,
+                    onSendMessage: { text, mode, atts in
+                        runtime.sendMessage(text: text, mode: mode, attachments: atts)
+                    },
+                    onStopGenerating: {
+                        runtime.stopGenerating()
+                    },
+                    onResolveInteraction: { intID, approved in
+                        runtime.resolveInteraction(interactionID: intID, approved: approved)
+                    },
+                    onFinalizeTask: { action in
+                        runtime.finalizeTask(action: action)
                     }
-                }
-                .navigationTitle("LingXi")
+                )
+                .navigationTitle("LingXi Agent")
                 .navigationBarTitleDisplayMode(.inline)
             }
+            .accentColor(LingXiTheme.accentColor)
         }
     }
 }

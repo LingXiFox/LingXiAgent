@@ -96,6 +96,9 @@ public actor SubagentToolService {
                   let spawn else {
                 throw CoreError(code: .toolArgumentInvalid, message: "spawn 需要当前 AgentRun 与 task")
             }
+            if let scope = AgentExecutionContext.currentCapabilityScope {
+                try scope.validateChildScope(requestedTools: input.executionProfile?.toolProfile, requestedPermission: input.permissionProfile)
+            }
             let providerID = input.providerID?.trimmingCharacters(in: .whitespacesAndNewlines)
             let modelID = input.modelID?.trimmingCharacters(in: .whitespacesAndNewlines)
             let reasoning = input.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines)

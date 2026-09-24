@@ -144,5 +144,6 @@ public actor AgentRunScheduler {
 public enum AgentExecutionContext {
     @TaskLocal public static var current: (sessionID: SessionID, runID: AgentRunID, rootSessionID: SessionID, parentSessionID: SessionID?)?
     @TaskLocal public static var currentRunContext: RunExecutionContext?
+    @TaskLocal public static var currentCapabilityScope: SubagentCapabilityScope?
 }
 

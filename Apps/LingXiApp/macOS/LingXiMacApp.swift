@@ -1,45 +1,114 @@
-import SwiftUI
-
 #if os(macOS)
+import SwiftUI
+import AppKit
+
 @main
 public struct LingXiMacApp: App {
-    @State private var runtime = FakeFrontendRuntime()
+    @StateObject private var runtime = RuntimeFrontend()
+    @Environment(\.openWindow) private var openWindow
 
     public init() {}
 
     public var body: some Scene {
+        // 主工作台窗口
         WindowGroup {
-            MainGlassView(runtime: runtime)
-                .frame(minWidth: 900, minHeight: 600)
-                .background(LingXiGlass.Palette.deepBackground)
+            MainStageSplitView(
+                runtime: runtime,
+                onOpenTraceWindow: {
+                    openWindow(id: "trace-window")
+                }
+            )
+            .frame(minWidth: 960, minHeight: 640)
         }
-        .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unified(showsTitle: false))
+        .commands {
+            LingXiMenuCommands(runtime: runtime, onOpenTraceWindow: {
+                openWindow(id: "trace-window")
+            })
+        }
+
+        // macOS 标准偏好设置窗口 (⌘,)
+        Settings {
+            SettingsView(runtime: runtime)
+        }
+
+        // 独立非模态运行轨迹窗口
+        WindowGroup("运行轨迹", id: "trace-window") {
+            TraceWindowView(model: runtime.inspectorModel)
+        }
     }
 }
 
-/// 自动化活动 HUD 悬浮指示器（Phase 0 预留组件，规范第 118 节）
-public struct AutomationActivityHUD: View {
-    public let isAutomating: Bool
-    public let currentAction: String
+/// macOS 标准主菜单命令集 (遵循规范第四章)
+public struct LingXiMenuCommands: Commands {
+    @ObservedObject public var runtime: RuntimeFrontend
+    public var onOpenTraceWindow: () -> Void
 
-    public init(isAutomating: Bool = false, currentAction: String = "Idle") {
-        self.isAutomating = isAutomating
-        self.currentAction = currentAction
-    }
-
-    public var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(isAutomating ? LingXiGlass.Palette.foxOrange : LingXiGlass.Palette.matrixGreen)
-                .frame(width: 8, height: 8)
-            Text("AUTOMATION HUD: \(currentAction)")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(LingXiGlass.Palette.textPrimary)
+    public var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("新建会话") {
+                runtime.newSession()
+            }
+            .keyboardShortcut("n", modifiers: .command)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .lingXiGlass(tier: .floating, cornerRadius: 8)
+
+        CommandMenu("视图") {
+            Button("概览 (Overview)") {
+                runtime.inspectorModel.selectedTab = .overview
+                runtime.inspectorModel.isPresented = true
+            }
+            .keyboardShortcut("1", modifiers: [.option, .command])
+
+            Button("Agent 设定") {
+                runtime.inspectorModel.selectedTab = .agent
+                runtime.inspectorModel.isPresented = true
+            }
+            .keyboardShortcut("2", modifiers: [.option, .command])
+
+            Button("子任务与 Worktree") {
+                runtime.inspectorModel.selectedTab = .tasks
+                runtime.inspectorModel.isPresented = true
+            }
+            .keyboardShortcut("3", modifiers: [.option, .command])
+
+            Button("网关授权 (Capabilities)") {
+                runtime.inspectorModel.selectedTab = .capabilities
+                runtime.inspectorModel.isPresented = true
+            }
+            .keyboardShortcut("4", modifiers: [.option, .command])
+
+            Divider()
+
+            Toggle("显示检查器", isOn: $runtime.inspectorModel.isPresented)
+                .keyboardShortcut("i", modifiers: [.option, .command])
+
+            Button("运行轨迹…") {
+                onOpenTraceWindow()
+            }
+            .keyboardShortcut("l", modifiers: [.option, .command])
+
+            Button("快速侧问浮窗") {
+                QuickAskPanelController.shared.show(onSubmit: { question in
+                    await runtime.submitSideQuestion(question: question)
+                })
+            }
+            .keyboardShortcut(.space, modifiers: .option)
+        }
+
+        CommandMenu("任务") {
+            Button("接受本次变更 (Accept)") {
+                runtime.finalizeTask(action: .accept)
+            }
+
+            Button("标记完成 (Finish)") {
+                runtime.finalizeTask(action: .finish)
+            }
+
+            Divider()
+
+            Button("放弃并回滚 (Discard)", role: .destructive) {
+                runtime.finalizeTask(action: .discard)
+            }
+        }
     }
 }
 #endif

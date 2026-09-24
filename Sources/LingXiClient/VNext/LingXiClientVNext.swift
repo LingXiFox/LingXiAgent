@@ -12,7 +12,7 @@ public final class LingXiClientVNext: Sendable {
     public let streamBuffer: StreamFrameReorderBuffer
     public let replayCoordinator: EventReplayCoordinator
 
-    // MARK: - 13 个 Typed Domain Facades
+    // MARK: - Typed Domain Facades
     public let runtime: RuntimeDomainClient
     public let session: SessionDomainClient
     public let turn: TurnDomainClient
@@ -26,6 +26,9 @@ public final class LingXiClientVNext: Sendable {
     public let resource: ResourceDomainClient
     public let diagnostics: DiagnosticsDomainClient
     public let credential: CredentialDomainClient
+    public let task: TaskDomainClient
+    public let agentPreset: AgentPresetDomainClient
+    public let multiRun: MultiRunDomainClient
 
     public init(
         transport: any ClientTransport,
@@ -51,11 +54,15 @@ public final class LingXiClientVNext: Sendable {
         self.resource = ResourceDomainClient(transport: transport)
         self.diagnostics = DiagnosticsDomainClient(transport: transport)
         self.credential = CredentialDomainClient(transport: transport)
+        self.task = TaskDomainClient(transport: transport)
+        self.agentPreset = AgentPresetDomainClient(transport: transport)
+        self.multiRun = MultiRunDomainClient(transport: transport)
 
         if handshakeImmediately {
             try await transport.connect()
         }
     }
+
 
     // MARK: - Application-Facing Factories (安全边界：严禁普通应用调用方伪造 trusted principal / workspace / admin identity)
 

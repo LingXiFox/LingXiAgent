@@ -108,9 +108,6 @@ public enum CompletionCLI {
         }
 
         _lingxiagent_models() {
-            # Model IDs are discovered against the account, so the list is read
-            # live rather than baked into this script. A static roster here
-            # would go stale the moment a vendor ships a new model.
             local models
             models=(${(f)"$(lingxiagent models --ids 2>/dev/null)"})
             (( ${#models} )) && _describe 'models' models

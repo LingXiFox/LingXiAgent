@@ -1,8 +1,10 @@
 import Foundation
 import Testing
 @testable import LingXiCore
+@testable import LingXiApplication
 
 @Suite struct CompletionCLITests {
+
     @Test func completionZshGeneratesValidScript() {
         let script = CompletionCLI.run(arguments: ["completion", "zsh"])
         #expect(script.contains("#compdef lingxiagent"))

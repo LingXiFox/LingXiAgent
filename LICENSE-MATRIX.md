@@ -29,7 +29,9 @@ license row is a build failure, not a review note.
 | `CSQLite` | `Sources/CSQLite` | LCSAL-1.1 (binding) | Source: no; binary: no | SQLite3 C shim; upstream sqlite3 is public domain. |
 | `LingXiPluginSDK` | `Sources/LingXiPluginSDK` | LCSAL-1.1 | Source: no; binary: no | Plugin authoring SDK. Plugin authors' own code is separately licensed. |
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The only shipped process that reads `LINGXI_CREDENTIALS_PASSPHRASE`. |
-| `lingxiagent` | `Sources/lingxiagent` | Presentation under PolyForm Noncommercial 1.0.0; embedded Core under LCSAL-1.1 | Source: yes (PolyForm part only); official release binary only (forwarded as-is) | Unified CLI. Presentation layer is PolyForm; the linked Core remains LCSAL. |
+| `lingxiagent` | `Sources/lingxiagent` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Interactive terminal presentation frontend (strictly decoupled from Core). |
+
+| `lingxiagent-ops` | `Sources/lingxiagent-ops` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is) | Operations and diagnostics CLI (links Core for offline administration). |
 | `OpenTUIShim` | `Sources/OpenTUIShim` | Upstream OpenTUI license | Follow upstream | C dylib shim around `Vendor/OpenTUI/`. |
 | `LingXiTUIComponents` | `Sources/LingXiTUIComponents` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Rendering primitives shared by TUI surfaces. |
 | `LingXiTUI` | `Sources/LingXiTUI` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Reference terminal frontend. |

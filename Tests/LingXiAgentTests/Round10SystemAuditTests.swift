@@ -146,30 +146,29 @@ struct Round10SystemAuditTests {
     // MARK: - Phase F: macOS GUI Phase 0 Determinism & Auto-Flush
 
     #if canImport(SwiftUI)
-    @Test("Phase F: GUI Fixtures produce 100% deterministic telemetry regardless of predecessor")
+    @Test("Phase F: RuntimeFrontend produces 100% deterministic state on session and task switching")
     @MainActor
     func testGUIFixtureScenarioDeterminism() {
-        let runtime = FakeFrontendRuntime(scenario: .empty)
+        let runtime = RuntimeFrontend()
 
-        // 场景路径 1: empty -> contextPressure -> toolHeavy
-        runtime.switchScenario(.contextPressure)
-        #expect(runtime.inspectorModel.telemetry.ecoreHeat == 0.96)
+        // 初始状态断言
+        #expect(runtime.sidebarModel.selectedSessionID == "sess-1")
+        #expect(runtime.conversationModel.sessionID == "sess-1")
+        #expect(runtime.conversationModel.activeTask?.state == "running")
 
-        runtime.switchScenario(.toolHeavy)
-        let snapshotFromPressure = runtime.inspectorModel.telemetry
+        // 切换新会话
+        runtime.newSession()
+        let newSessionID = runtime.sidebarModel.selectedSessionID
+        #expect(newSessionID != "sess-1")
+        #expect(runtime.conversationModel.sessionID == newSessionID)
 
-        // 场景路径 2: empty -> normal conversation -> toolHeavy
-        runtime.switchScenario(.empty)
-        runtime.switchScenario(.conversation)
-        runtime.switchScenario(.toolHeavy)
-        let snapshotFromConversation = runtime.inspectorModel.telemetry
-
-        // 关键断言: toolHeavy 快照必须 100% 精确相同，绝不残留 0.96 的 ecoreHeat！
-        #expect(snapshotFromPressure.ecoreHeat == snapshotFromConversation.ecoreHeat)
-        #expect(snapshotFromPressure.ecoreHeat == 0.35)
-        #expect(snapshotFromPressure.activeBackgroundTasks == 1)
-        #expect(snapshotFromPressure.cacheHitRatio == snapshotFromConversation.cacheHitRatio)
+        // 切回初始会话
+        runtime.switchSession(id: "sess-1")
+        #expect(runtime.sidebarModel.selectedSessionID == "sess-1")
+        #expect(runtime.conversationModel.sessionID == "sess-1")
+        #expect(runtime.conversationModel.activeTask?.taskID == "task-init")
     }
+
 
     @Test("Phase F: ConversationPresentationModel auto-flushes buffered streaming chunks on pause")
     @MainActor
