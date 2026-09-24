@@ -14,6 +14,12 @@ public enum RuntimeTraceKind: String, Sendable, Equatable, Codable {
     case recovery
     case cancellation
     case error
+    case task
+    case workspace
+    case capability
+    case eval
+    case toolPlan
+    case actionFlow
     case unknown
 
     public init(from decoder: Decoder) throws {
@@ -22,6 +28,90 @@ public enum RuntimeTraceKind: String, Sendable, Equatable, Codable {
         self = RuntimeTraceKind(rawValue: raw) ?? .unknown
     }
 }
+
+public struct TraceTokenUsage: Sendable, Equatable, Codable {
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let cacheReadTokens: Int?
+    public let reasoningTokens: Int?
+
+    public init(
+        inputTokens: Int? = nil,
+        outputTokens: Int? = nil,
+        cacheReadTokens: Int? = nil,
+        reasoningTokens: Int? = nil
+    ) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.reasoningTokens = reasoningTokens
+    }
+}
+
+public enum TraceAttributeValue: Sendable, Equatable, Codable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case stringArray([String])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let s = try? container.decode(String.self) {
+            self = .string(s)
+        } else if let i = try? container.decode(Int.self) {
+            self = .int(i)
+        } else if let d = try? container.decode(Double.self) {
+            self = .double(d)
+        } else if let b = try? container.decode(Bool.self) {
+            self = .bool(b)
+        } else if let arr = try? container.decode([String].self) {
+            self = .stringArray(arr)
+        } else {
+            self = .string("")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try container.encode(s)
+        case .int(let i): try container.encode(i)
+        case .double(let d): try container.encode(d)
+        case .bool(let b): try container.encode(b)
+        case .stringArray(let arr): try container.encode(arr)
+        }
+    }
+}
+
+public struct TraceQueryRequest: Sendable, Equatable, Codable {
+    public let taskID: TaskID?
+    public let sessionID: SessionID?
+    public let kind: RuntimeTraceKind?
+    public let fromTimestamp: Date?
+    public let toTimestamp: Date?
+    public let limit: Int?
+    public let cursor: String?
+
+    public init(
+        taskID: TaskID? = nil,
+        sessionID: SessionID? = nil,
+        kind: RuntimeTraceKind? = nil,
+        fromTimestamp: Date? = nil,
+        toTimestamp: Date? = nil,
+        limit: Int? = 100,
+        cursor: String? = nil
+    ) {
+        self.taskID = taskID
+        self.sessionID = sessionID
+        self.kind = kind
+        self.fromTimestamp = fromTimestamp
+        self.toTimestamp = toTimestamp
+        self.limit = limit
+        self.cursor = cursor
+    }
+}
+
 
 public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
     public let traceID: String
@@ -35,6 +125,13 @@ public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
     public let workflowID: WorkflowID?
     public let workflowTaskID: WorkflowTaskID?
     public let taskID: TaskID?
+    public let parentGoalID: String?
+    public let traceSchemaVersion: Int
+    public let spanID: String?
+    public let parentSpanID: String?
+    public let durationMicroseconds: Int64?
+    public let tokens: TraceTokenUsage?
+    public let attributes: [String: TraceAttributeValue]?
     public let executionID: String?
     public let providerRequestID: String?
     public let toolCallID: ToolCallID?
@@ -53,6 +150,13 @@ public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
         workflowID: WorkflowID? = nil,
         workflowTaskID: WorkflowTaskID? = nil,
         taskID: TaskID? = nil,
+        parentGoalID: String? = nil,
+        traceSchemaVersion: Int = 1,
+        spanID: String? = nil,
+        parentSpanID: String? = nil,
+        durationMicroseconds: Int64? = nil,
+        tokens: TraceTokenUsage? = nil,
+        attributes: [String: TraceAttributeValue]? = nil,
         executionID: String? = nil,
         providerRequestID: String? = nil,
         toolCallID: ToolCallID? = nil,
@@ -70,11 +174,71 @@ public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
         self.workflowID = workflowID
         self.workflowTaskID = workflowTaskID
         self.taskID = taskID
+        self.parentGoalID = parentGoalID
+        self.traceSchemaVersion = traceSchemaVersion
+        self.spanID = spanID
+        self.parentSpanID = parentSpanID
+        self.durationMicroseconds = durationMicroseconds
+        self.tokens = tokens
+        self.attributes = attributes
         self.executionID = executionID
         self.providerRequestID = providerRequestID
         self.toolCallID = toolCallID
         self.metadata = metadata
         self.errorCode = errorCode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case traceID
+        case timestamp
+        case kind
+        case event
+        case sessionID
+        case runID
+        case rootRunID
+        case parentRunID
+        case workflowID
+        case workflowTaskID
+        case taskID
+        case parentGoalID
+        case traceSchemaVersion
+        case spanID
+        case parentSpanID
+        case durationMicroseconds
+        case tokens
+        case attributes
+        case executionID
+        case providerRequestID
+        case toolCallID
+        case metadata
+        case errorCode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        traceID = try c.decodeIfPresent(String.self, forKey: .traceID) ?? UUID().uuidString
+        timestamp = try c.decodeIfPresent(Date.self, forKey: .timestamp) ?? .now
+        kind = try c.decodeIfPresent(RuntimeTraceKind.self, forKey: .kind) ?? .unknown
+        event = try c.decodeIfPresent(String.self, forKey: .event) ?? ""
+        sessionID = try c.decodeIfPresent(SessionID.self, forKey: .sessionID)
+        runID = try c.decodeIfPresent(AgentRunID.self, forKey: .runID)
+        rootRunID = try c.decodeIfPresent(AgentRunID.self, forKey: .rootRunID)
+        parentRunID = try c.decodeIfPresent(AgentRunID.self, forKey: .parentRunID)
+        workflowID = try c.decodeIfPresent(WorkflowID.self, forKey: .workflowID)
+        workflowTaskID = try c.decodeIfPresent(WorkflowTaskID.self, forKey: .workflowTaskID)
+        taskID = try c.decodeIfPresent(TaskID.self, forKey: .taskID)
+        parentGoalID = try c.decodeIfPresent(String.self, forKey: .parentGoalID)
+        traceSchemaVersion = try c.decodeIfPresent(Int.self, forKey: .traceSchemaVersion) ?? 1
+        spanID = try c.decodeIfPresent(String.self, forKey: .spanID)
+        parentSpanID = try c.decodeIfPresent(String.self, forKey: .parentSpanID)
+        durationMicroseconds = try c.decodeIfPresent(Int64.self, forKey: .durationMicroseconds)
+        tokens = try c.decodeIfPresent(TraceTokenUsage.self, forKey: .tokens)
+        attributes = try c.decodeIfPresent([String: TraceAttributeValue].self, forKey: .attributes)
+        executionID = try c.decodeIfPresent(String.self, forKey: .executionID)
+        providerRequestID = try c.decodeIfPresent(String.self, forKey: .providerRequestID)
+        toolCallID = try c.decodeIfPresent(ToolCallID.self, forKey: .toolCallID)
+        metadata = try c.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+        errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode)
     }
 }
 

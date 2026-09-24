@@ -1,0 +1,10 @@
+{
+  "id": "exploration-001",
+  "category": "codebase exploration",
+  "description": "Report identifies requested symbols, callers, and verification path",
+  "prompt": "Trace all consumers of PlatformPipeHandle across Platform and Core layers and produce a symbol mapping report.",
+  "oracleKind": "reportVerification",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 15,
+  "timeoutSeconds": 300
+}

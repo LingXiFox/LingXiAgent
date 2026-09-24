@@ -1,0 +1,10 @@
+{
+  "id": "bug-fix-001",
+  "category": "bug fix",
+  "description": "Targeted regression test passes and unrelated tests pass",
+  "prompt": "Identify and resolve the regression causing unexpected null unwrapping in the configuration loader. Verify with unit tests.",
+  "oracleKind": "testAssertion",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 20,
+  "timeoutSeconds": 300
+}

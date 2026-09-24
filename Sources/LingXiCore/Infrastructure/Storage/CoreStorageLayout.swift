@@ -23,6 +23,8 @@ public struct CoreStorageLayout: Sendable, Equatable {
     public var cache: URL { root.appendingPathComponent("cache", isDirectory: true) }
     public var graphCache: URL { root.appendingPathComponent("cache/graph", isDirectory: true) }
     public var providerCache: URL { root.appendingPathComponent("cache/providers", isDirectory: true) }
+    public var traces: URL { root.appendingPathComponent("traces.sqlite", isDirectory: false) }
+    public var traceExport: URL { root.appendingPathComponent("traces", isDirectory: true) }
 
     public init(root: URL) {
         self.root = root
@@ -51,7 +53,7 @@ public struct CoreStorageLayout: Sendable, Equatable {
     /// 确保所有必要子目录在磁盘上创建
     public func ensureDirectoriesExist() throws {
         let fileManager = FileManager.default
-        let dirs = [persistence, sessions, todos, eventLog, content, cache, graphCache, providerCache]
+        let dirs = [persistence, sessions, todos, eventLog, content, cache, graphCache, providerCache, traceExport]
         for dir in dirs {
             if !fileManager.fileExists(atPath: dir.path) {
                 try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)

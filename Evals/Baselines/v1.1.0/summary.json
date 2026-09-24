@@ -1,0 +1,180 @@
+{
+  "failedTasks" : 0,
+  "gitCommit" : "704d7bc",
+  "metrics" : {
+    "costEstimatedUSD" : 0.09584999999999999,
+    "p50LlmTurnCount" : 2,
+    "p50ToolCallCount" : 2,
+    "p50WallTimeMilliseconds" : 2510,
+    "totalTokens" : {
+      "cacheReadTokens" : 36000,
+      "inputTokens" : 16200,
+      "outputTokens" : 3150,
+      "reasoningTokens" : 0
+    }
+  },
+  "model" : "claude-3-5-sonnet-20241022",
+  "platform" : "darwin-arm64",
+  "protocolVersion" : "1.1",
+  "releaseTag" : "v1.1.0",
+  "runDate" : "2026-09-24T03:30:08Z",
+  "successRate" : 1,
+  "successfulTasks" : 9,
+  "taskResults" : [
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "testAssertion",
+      "success" : true,
+      "taskID" : "bug-fix-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 3588
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "reportVerification",
+      "success" : true,
+      "taskID" : "exploration-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 2350
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "testAssertion",
+      "success" : true,
+      "taskID" : "feature-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 2547
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "reportVerification",
+      "success" : true,
+      "taskID" : "git-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 100
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "testAssertion",
+      "success" : true,
+      "taskID" : "migration-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 2510
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "gitDiff",
+      "success" : true,
+      "taskID" : "multi-file-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 1572
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "testAssertion",
+      "success" : true,
+      "taskID" : "recovery-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 2638
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "testAssertion",
+      "success" : true,
+      "taskID" : "refactor-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 2443
+    },
+    {
+      "costEstimatedUSD" : 0.01065,
+      "details" : "Oracle passed successfully",
+      "exitCode" : 0,
+      "llmTurnCount" : 2,
+      "oracleKind" : "testAssertion",
+      "success" : true,
+      "taskID" : "test-repair-001",
+      "toolCallCount" : 2,
+      "totalTokens" : {
+        "cacheReadTokens" : 4000,
+        "inputTokens" : 1800,
+        "outputTokens" : 350,
+        "reasoningTokens" : 0
+      },
+      "wallTimeMilliseconds" : 2571
+    }
+  ],
+  "totalTasks" : 9,
+  "version" : 1
+}

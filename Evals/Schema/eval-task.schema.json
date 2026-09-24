@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lingxi.ai/schemas/eval-task.schema.json",
+  "title": "LingXiEvalTask",
+  "description": "Schema definition for an evaluation benchmark task in LingXiAgent V1.1+",
+  "type": "object",
+  "required": [
+    "id",
+    "category",
+    "prompt",
+    "oracleKind",
+    "oracleScript"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique task identifier, e.g. bug-fix-001"
+    },
+    "category": {
+      "type": "string",
+      "description": "Category of the evaluation task, e.g. bug fix, refactor, exploration"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the task objective"
+    },
+    "prompt": {
+      "type": "string",
+      "description": "Prompt given to the agent runner"
+    },
+    "oracleKind": {
+      "type": "string",
+      "enum": [
+        "testAssertion",
+        "gitDiff",
+        "fileCheck",
+        "reportVerification"
+      ],
+      "description": "Machine-readable oracle verification kind"
+    },
+    "oracleScript": {
+      "type": "string",
+      "description": "Path to the executable oracle verification script relative to the task directory"
+    },
+    "maxSteps": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 30,
+      "description": "Maximum tool execution turns permitted"
+    },
+    "timeoutSeconds": {
+      "type": "integer",
+      "minimum": 5,
+      "default": 300,
+      "description": "Wall-clock timeout in seconds"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Optional environment variables for the task execution"
+    }
+  },
+  "additionalProperties": false
+}

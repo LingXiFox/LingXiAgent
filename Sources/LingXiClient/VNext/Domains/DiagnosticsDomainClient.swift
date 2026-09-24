@@ -34,4 +34,32 @@ public struct DiagnosticsDomainClient: Sendable {
         let bundle = try await getBundle()
         return bundle.backgroundTasks ?? []
     }
+
+    public func queryTrace(request: TraceQueryRequest) async throws -> Page<RuntimeTraceEvent> {
+        let bundle = try await getBundle()
+        var filtered = bundle.trace
+        if let taskID = request.taskID {
+            filtered = filtered.filter { $0.taskID == taskID }
+        }
+        if let sessionID = request.sessionID {
+            filtered = filtered.filter { $0.sessionID == sessionID }
+        }
+        if let kind = request.kind {
+            filtered = filtered.filter { $0.kind == kind }
+        }
+        if let from = request.fromTimestamp {
+            filtered = filtered.filter { $0.timestamp >= from }
+        }
+        if let to = request.toTimestamp {
+            filtered = filtered.filter { $0.timestamp <= to }
+        }
+        let limit = request.limit ?? 100
+        let items = Array(filtered.prefix(limit))
+        return Page(items: items, nextCursor: nil, hasMore: filtered.count > limit)
+    }
+
+    public func tailTrace(limit: Int = 100) async throws -> [RuntimeTraceEvent] {
+        let bundle = try await getBundle()
+        return Array(bundle.trace.suffix(limit))
+    }
 }

@@ -122,6 +122,12 @@ let package = Package(
             dependencies: ["LingXiProtocol"],
             path: "ContractTests/LingXiTraceContractTests"
         ),
+        // Evaluation Runner target: independent decoupled benchmark executor
+        .executableTarget(
+            name: "LingXiEvalRunner",
+            dependencies: ["LingXiClient", "LingXiProtocol"],
+            path: "Evals/Runner"
+        ),
     ],
     swiftLanguageModes: [.v5]
 )

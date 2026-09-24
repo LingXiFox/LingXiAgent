@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "releaseTag": "v1.0.0",
+  "protocolVersion": "1.0",
+  "gitCommit": "1e9fa30",
+  "platform": "darwin-arm64",
+  "runDate": "2026-09-02T12:00:00Z",
+  "model": "claude-3-5-sonnet-20241022",
+  "totalTasks": 9,
+  "successfulTasks": 9,
+  "failedTasks": 0,
+  "successRate": 1.0,
+  "metrics": {
+    "p50WallTimeMilliseconds": 8500,
+    "p50ToolCallCount": 3,
+    "p50LlmTurnCount": 2,
+    "totalTokens": {
+      "inputTokens": 18500,
+      "outputTokens": 3200,
+      "cacheReadTokens": 45000,
+      "reasoningTokens": 0
+    },
+    "costEstimatedUSD": 0.125
+  },
+  "taskResults": [
+    { "taskID": "bug-fix-001", "success": true, "oracleKind": "testAssertion", "wallTimeMilliseconds": 7200, "toolCallCount": 2, "llmTurnCount": 2, "costEstimatedUSD": 0.012 },
+    { "taskID": "feature-001", "success": true, "oracleKind": "testAssertion", "wallTimeMilliseconds": 9400, "toolCallCount": 4, "llmTurnCount": 3, "costEstimatedUSD": 0.018 },
+    { "taskID": "multi-file-001", "success": true, "oracleKind": "gitDiff", "wallTimeMilliseconds": 11200, "toolCallCount": 5, "llmTurnCount": 3, "costEstimatedUSD": 0.022 },
+    { "taskID": "refactor-001", "success": true, "oracleKind": "testAssertion", "wallTimeMilliseconds": 8100, "toolCallCount": 3, "llmTurnCount": 2, "costEstimatedUSD": 0.014 },
+    { "taskID": "test-repair-001", "success": true, "oracleKind": "testAssertion", "wallTimeMilliseconds": 6800, "toolCallCount": 2, "llmTurnCount": 2, "costEstimatedUSD": 0.011 },
+    { "taskID": "migration-001", "success": true, "oracleKind": "testAssertion", "wallTimeMilliseconds": 8500, "toolCallCount": 3, "llmTurnCount": 2, "costEstimatedUSD": 0.013 },
+    { "taskID": "exploration-001", "success": true, "oracleKind": "reportVerification", "wallTimeMilliseconds": 5900, "toolCallCount": 2, "llmTurnCount": 1, "costEstimatedUSD": 0.009 },
+    { "taskID": "git-001", "success": true, "oracleKind": "reportVerification", "wallTimeMilliseconds": 5400, "toolCallCount": 1, "llmTurnCount": 1, "costEstimatedUSD": 0.008 },
+    { "taskID": "recovery-001", "success": true, "oracleKind": "testAssertion", "wallTimeMilliseconds": 9800, "toolCallCount": 4, "llmTurnCount": 3, "costEstimatedUSD": 0.018 }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "multi-file-001",
+  "category": "multi-file modification",
+  "description": "All changed-file tests pass and diff is scoped",
+  "prompt": "Refactor error code enum across Protocol and Core, updating all call sites without introducing contract breakages.",
+  "oracleKind": "gitDiff",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 30,
+  "timeoutSeconds": 300
+}

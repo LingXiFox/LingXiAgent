@@ -1,0 +1,10 @@
+{
+  "id": "test-repair-001",
+  "category": "failing test repair",
+  "description": "Original failing test passes without weakening the oracle",
+  "prompt": "Diagnose failing concurrency test in ProviderRateScheduler and repair without disabling assertions.",
+  "oracleKind": "testAssertion",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 20,
+  "timeoutSeconds": 300
+}

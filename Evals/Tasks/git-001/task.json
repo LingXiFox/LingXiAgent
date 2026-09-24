@@ -1,0 +1,10 @@
+{
+  "id": "git-001",
+  "category": "Git investigation",
+  "description": "Report identifies root cause from history and current diff",
+  "prompt": "Investigate commit history to locate the origin of the credentials leakage in PluginProcessHost and summarize findings.",
+  "oracleKind": "reportVerification",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 15,
+  "timeoutSeconds": 300
+}

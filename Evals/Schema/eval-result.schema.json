@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lingxi.ai/schemas/eval-result.schema.json",
+  "title": "LingXiEvalResult",
+  "description": "Schema definition for an evaluation run result in LingXiAgent V1.1+",
+  "type": "object",
+  "required": [
+    "taskID",
+    "runDate",
+    "success",
+    "oracleKind",
+    "exitCode",
+    "wallTimeMilliseconds",
+    "toolCallCount",
+    "llmTurnCount"
+  ],
+  "properties": {
+    "taskID": {
+      "type": "string"
+    },
+    "runDate": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "oracleKind": {
+      "type": "string"
+    },
+    "exitCode": {
+      "type": "integer"
+    },
+    "totalTokens": {
+      "type": "object",
+      "properties": {
+        "inputTokens": { "type": "integer" },
+        "outputTokens": { "type": "integer" },
+        "cacheReadTokens": { "type": "integer" },
+        "reasoningTokens": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "wallTimeMilliseconds": {
+      "type": "integer"
+    },
+    "toolCallCount": {
+      "type": "integer"
+    },
+    "llmTurnCount": {
+      "type": "integer"
+    },
+    "retryCount": {
+      "type": "integer",
+      "default": 0
+    },
+    "rateLimitCount": {
+      "type": "integer",
+      "default": 0
+    },
+    "humanInterventionCount": {
+      "type": "integer",
+      "default": 0
+    },
+    "costEstimatedUSD": {
+      "type": "number",
+      "default": 0.0
+    },
+    "protocolVersion": {
+      "type": "string"
+    },
+    "gitCommit": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "details": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

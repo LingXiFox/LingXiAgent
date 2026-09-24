@@ -1,0 +1,10 @@
+{
+  "id": "recovery-001",
+  "category": "timeout / tool failure recovery",
+  "description": "Agent reaches terminal state, retries only when justified, and verifies result",
+  "prompt": "Execute a tool loop encountering simulated timeout, trigger retry budget, and gracefully terminate with diagnostic status.",
+  "oracleKind": "testAssertion",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 20,
+  "timeoutSeconds": 300
+}

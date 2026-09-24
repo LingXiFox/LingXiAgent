@@ -44,6 +44,7 @@ license row is a build failure, not a review note.
 | `LingXiTaskLifecycleContractTests` | `ContractTests/LingXiTaskLifecycleContractTests` | Not shipped | n/a | Contract test target only. |
 | `LingXiCapabilityContractTests` | `ContractTests/LingXiCapabilityContractTests` | Not shipped | n/a | Contract test target only. |
 | `LingXiTraceContractTests` | `ContractTests/LingXiTraceContractTests` | Not shipped | n/a | Contract test target only. |
+| `LingXiEvalRunner` | `Evals/Runner` | PolyForm Noncommercial 1.0.0 | Source: yes; official release binary only | Independent evaluation runner decoupled from Core. |
 
 ---
 

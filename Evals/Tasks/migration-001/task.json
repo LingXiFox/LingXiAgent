@@ -1,0 +1,10 @@
+{
+  "id": "migration-001",
+  "category": "config / API migration",
+  "description": "Migration fixture and compatibility tests pass",
+  "prompt": "Migrate legacy configuration file schema from v1 to v2 format, maintaining backward-compatible fallbacks.",
+  "oracleKind": "testAssertion",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 20,
+  "timeoutSeconds": 300
+}

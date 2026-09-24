@@ -1,0 +1,10 @@
+{
+  "id": "refactor-001",
+  "category": "refactor",
+  "description": "Behavioral tests pass and public contract is unchanged",
+  "prompt": "Refactor session state reducer pure function, retaining behavioral parity across all state transitions.",
+  "oracleKind": "testAssertion",
+  "oracleScript": "oracle.sh",
+  "maxSteps": 20,
+  "timeoutSeconds": 300
+}
