@@ -107,6 +107,10 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
         closeServer()
     }
 
+    public func close() {
+        closeServer()
+    }
+
     public func closeServer() {
         lock.lock()
         defer { lock.unlock() }
@@ -126,8 +130,10 @@ public final class PlatformLoopbackServer: @unchecked Sendable {
     }
 
     private static func closeSocket(_ sock: PlatformSocket) {
-        #if canImport(Darwin) || canImport(Glibc)
-        close(sock)
+        #if canImport(Darwin)
+        Darwin.close(sock)
+        #elseif canImport(Glibc)
+        Glibc.close(sock)
         #elseif os(Windows) || canImport(WinSDK)
         closesocket(sock)
         #endif

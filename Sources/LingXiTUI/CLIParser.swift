@@ -12,6 +12,7 @@ public enum CLIRoute: Equatable, Sendable {
     case resume([String])
     case completion([String])
     case acp([String])
+    case task([String])
     case help
     case version
     case smoke
@@ -70,6 +71,9 @@ public struct CLIParser: Sendable {
         }
         if first == "acp" || first == "--acp" {
             return .acp(arguments)
+        }
+        if first == "task" || first == "--task" {
+            return .task(Array(arguments.dropFirst()))
         }
 
         var isYoloMode = false

@@ -138,6 +138,9 @@ public struct CoreError: Sendable, Equatable, Error {
         case agentRunNotFound
         case contextProfileNotViable
         case interactionExpired
+        case taskNotFound
+        case workspaceNotFound
+        case invalidTaskTransition
     }
 
     public let code: Code

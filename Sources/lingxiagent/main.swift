@@ -170,6 +170,21 @@ case .acp:
         exit(1)
     }
 
+case let .task(taskArgs):
+    do {
+        let env = ProcessInfo.processInfo.environment
+        let dataRoot = LingXiDataRootResolver.resolve(
+            environment: env,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let output = try await TaskCLI.run(arguments: taskArgs, dataRoot: dataRoot)
+        print(output)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("Error: \(error.userMessage)\n".utf8))
+        exit(1)
+    }
+
 case .help:
     print(CLIParser.renderHelp())
     exit(0)

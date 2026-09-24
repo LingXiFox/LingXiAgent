@@ -53,8 +53,7 @@ public final class LinuxProcessAdapter: PlatformProcessProtocol, @unchecked Send
         #endif
     }
 
-    public func nonblockingDrain(handle: FileHandle, chunkSize: Int = 64 * 1024) -> Data {
-        handle.readabilityHandler = nil
+    public func nonblockingDrain(handle: PlatformPipeHandle, chunkSize: Int = 64 * 1024) -> Data {
         let fd = handle.fileDescriptor
         guard fd >= 0 else { return Data() }
         #if canImport(Glibc)
@@ -74,11 +73,11 @@ public final class LinuxProcessAdapter: PlatformProcessProtocol, @unchecked Send
         }
         return accumulated
         #else
-        return handle.availableData
+        return handle.fileHandle.availableData
         #endif
     }
 
-    public func readAvailable(handle: FileHandle) -> Data {
+    public func readAvailable(handle: PlatformPipeHandle) -> Data {
         let fd = handle.fileDescriptor
         guard fd >= 0 else { return Data() }
         #if canImport(Glibc)
@@ -89,7 +88,7 @@ public final class LinuxProcessAdapter: PlatformProcessProtocol, @unchecked Send
         }
         return Data()
         #else
-        return handle.availableData
+        return handle.fileHandle.availableData
         #endif
     }
 

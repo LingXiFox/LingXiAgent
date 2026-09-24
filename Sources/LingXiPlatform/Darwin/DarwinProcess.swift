@@ -37,8 +37,7 @@ public final class DarwinProcessAdapter: PlatformProcessProtocol, @unchecked Sen
         _ = Darwin.kill(pid, sig)
     }
 
-    public func nonblockingDrain(handle: FileHandle, chunkSize: Int = 64 * 1024) -> Data {
-        handle.readabilityHandler = nil
+    public func nonblockingDrain(handle: PlatformPipeHandle, chunkSize: Int = 64 * 1024) -> Data {
         let fd = handle.fileDescriptor
         guard fd >= 0 else { return Data() }
         let flags = fcntl(fd, F_GETFL, 0)
@@ -56,6 +55,17 @@ public final class DarwinProcessAdapter: PlatformProcessProtocol, @unchecked Sen
             }
         }
         return accumulated
+    }
+
+    public func readAvailable(handle: PlatformPipeHandle) -> Data {
+        let fd = handle.fileDescriptor
+        guard fd >= 0 else { return Data() }
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        let bytesRead = Darwin.read(fd, &chunk, chunk.count)
+        if bytesRead > 0 {
+            return Data(chunk[0..<bytesRead])
+        }
+        return Data()
     }
 }
 #endif

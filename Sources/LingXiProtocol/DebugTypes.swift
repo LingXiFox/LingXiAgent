@@ -33,14 +33,32 @@ public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
     public let rootRunID: AgentRunID?
     public let parentRunID: AgentRunID?
     public let workflowID: WorkflowID?
-    public let taskID: WorkflowTaskID?
+    public let workflowTaskID: WorkflowTaskID?
+    public let taskID: TaskID?
     public let executionID: String?
     public let providerRequestID: String?
     public let toolCallID: ToolCallID?
     public let metadata: [String: String]
     public let errorCode: String?
 
-    public init(traceID: String = UUID().uuidString, timestamp: Date = .now, kind: RuntimeTraceKind, event: String, sessionID: SessionID? = nil, runID: AgentRunID? = nil, rootRunID: AgentRunID? = nil, parentRunID: AgentRunID? = nil, workflowID: WorkflowID? = nil, taskID: WorkflowTaskID? = nil, executionID: String? = nil, providerRequestID: String? = nil, toolCallID: ToolCallID? = nil, metadata: [String: String] = [:], errorCode: String? = nil) {
+    public init(
+        traceID: String = UUID().uuidString,
+        timestamp: Date = .now,
+        kind: RuntimeTraceKind,
+        event: String,
+        sessionID: SessionID? = nil,
+        runID: AgentRunID? = nil,
+        rootRunID: AgentRunID? = nil,
+        parentRunID: AgentRunID? = nil,
+        workflowID: WorkflowID? = nil,
+        workflowTaskID: WorkflowTaskID? = nil,
+        taskID: TaskID? = nil,
+        executionID: String? = nil,
+        providerRequestID: String? = nil,
+        toolCallID: ToolCallID? = nil,
+        metadata: [String: String] = [:],
+        errorCode: String? = nil
+    ) {
         self.traceID = traceID
         self.timestamp = timestamp
         self.kind = kind
@@ -50,6 +68,7 @@ public struct RuntimeTraceEvent: Sendable, Equatable, Codable {
         self.rootRunID = rootRunID
         self.parentRunID = parentRunID
         self.workflowID = workflowID
+        self.workflowTaskID = workflowTaskID
         self.taskID = taskID
         self.executionID = executionID
         self.providerRequestID = providerRequestID

@@ -26,7 +26,7 @@ public struct StructuredPathAuditViolation: Sendable, Equatable {
 
 /// 单 actor 持有两个 SQLite handle；所有写入均经过此序列化事务边界。
 public actor SQLitePersistenceStore {
-    public static let databaseSchemaVersion = 6
+    public static let databaseSchemaVersion = 7
     public static let contextFormatVersion = 1
     public static let indexFormatVersion = 1
 
@@ -43,7 +43,7 @@ public actor SQLitePersistenceStore {
         let catalogDB = try Self.open(dataRoot.appendingPathComponent("catalog.sqlite"))
         catalog = catalogDB
         try Self.configure(catalogDB)
-        try Self.migrate(catalogDB, create: { try Self.createCatalogSchema(catalogDB) }, upgrade: { try Self.execute(catalogDB, "PRAGMA user_version = 2", []) }, upgradeV3: { try Self.execute(catalogDB, "PRAGMA user_version = 3", []) }, upgradeV4: { try Self.execute(catalogDB, "PRAGMA user_version = 4", []) }, upgradeV5: { try Self.execute(catalogDB, "PRAGMA user_version = 5", []) }, upgradeV6: { try Self.execute(catalogDB, "PRAGMA user_version = 6", []) })
+        try Self.migrate(catalogDB, create: { try Self.createCatalogSchema(catalogDB) }, upgrade: { try Self.execute(catalogDB, "PRAGMA user_version = 2", []) }, upgradeV3: { try Self.execute(catalogDB, "PRAGMA user_version = 3", []) }, upgradeV4: { try Self.execute(catalogDB, "PRAGMA user_version = 4", []) }, upgradeV5: { try Self.execute(catalogDB, "PRAGMA user_version = 5", []) }, upgradeV6: { try Self.execute(catalogDB, "PRAGMA user_version = 6", []) }, upgradeV7: { try Self.execute(catalogDB, "PRAGMA user_version = 7", []) })
         let canonicalRoot = mainRoot.standardizedFileURL.resolvingSymlinksInPath()
         if let projectID {
             self.projectID = projectID
@@ -57,7 +57,7 @@ public actor SQLitePersistenceStore {
         let stateDB = try Self.open(projectDirectory.appendingPathComponent("state.sqlite"))
         state = stateDB
         try Self.configure(stateDB)
-        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) })
+        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) }, upgradeV7: { try Self.upgradeStateSchemaV7(stateDB) })
         _ = try? Self.script(stateDB, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
         Self.ensureAllExistingProjectsHaveSessionRevision(dataRoot: dataRoot)
         try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS persistence_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
@@ -71,6 +71,9 @@ public actor SQLitePersistenceStore {
                 try Self.execute(catalogDB, "INSERT INTO root_bindings(binding_id, project_id, kind, absolute_root, parent_binding_id, binding_revision, lifecycle_state, time_created, time_updated, time_last_seen) VALUES(?, ?, 'main', ?, NULL, 1, 'active', ?, ?, ?)", ["RB-" + UUID().uuidString, self.projectID.rawValue, canonicalRoot.path, Self.now, Self.now, Self.now])
             }
         }
+        let mainWorkspaceID = WorkspaceID("ws-" + self.projectID.rawValue)
+        let mainRootID = try? Self.scalar(catalogDB, "SELECT binding_id FROM root_bindings WHERE project_id = ? AND kind = 'main' LIMIT 1", [self.projectID.rawValue])
+        _ = try? Self.execute(stateDB, "INSERT OR IGNORE INTO workspaces(workspace_id, project_id, kind, root_binding_id, base_revision, isolation_state, state, created_at, updated_at) VALUES(?, ?, 'main', ?, 0, 'shared', 'active', ?, ?)", [mainWorkspaceID.rawValue, self.projectID.rawValue, mainRootID ?? NSNull(), Self.now, Self.now])
     }
 
     deinit { sqlite3_close_v2(catalog); sqlite3_close_v2(state) }
@@ -790,9 +793,9 @@ public actor SQLitePersistenceStore {
         sqlite3_busy_timeout(db, 10_000)
         return db
     }
-    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void) throws {
+    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void, upgradeV7: () throws -> Void) throws {
         let version = Int(try scalar(db, "PRAGMA user_version", []) ?? "0") ?? 0
-        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6) }
+        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6, applyV6ToV7: upgradeV7) }
     }
     private static func transaction(_ db: OpaquePointer, _ body: () throws -> Void) throws { try execute(db, "BEGIN IMMEDIATE", []); do { try body(); try execute(db, "COMMIT", []) } catch { try? execute(db, "ROLLBACK", []); throw error } }
     private static func nextMessageOrdinal(_ db: OpaquePointer, _ sessionID: SessionID) throws -> Int { try scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0 }
@@ -839,6 +842,197 @@ public actor SQLitePersistenceStore {
     private static func upgradeStateSchemaV4(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE agent_runs ADD COLUMN profile_json TEXT; ALTER TABLE tool_exchange_batches ADD COLUMN continuation_request_id TEXT; PRAGMA user_version = 4") }
     private static func upgradeStateSchemaV5(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS workflows(workflow_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_session_id TEXT NOT NULL REFERENCES sessions(session_id), root_run_id TEXT NOT NULL REFERENCES agent_runs(run_id), status TEXT NOT NULL, checkpoint_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_tasks(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, status TEXT NOT NULL, definition_json TEXT NOT NULL, provenance_json TEXT, result_json TEXT, error_json TEXT, PRIMARY KEY(workflow_id, task_id)); CREATE TABLE IF NOT EXISTS workflow_dependencies(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, dependency_task_id TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id, dependency_task_id)); CREATE TABLE IF NOT EXISTS workflow_pending_inputs(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id)); CREATE INDEX IF NOT EXISTS workflow_status_idx ON workflows(project_id, status); PRAGMA user_version = 5") }
     private static func upgradeStateSchemaV6(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE tool_exchange_batches ADD COLUMN tool_call_states_json TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 6") }
+    private static func upgradeStateSchemaV7(_ db: OpaquePointer) throws {
+        try script(db, """
+        CREATE TABLE IF NOT EXISTS workspaces(
+            workspace_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'main',
+            origin_workspace_id TEXT REFERENCES workspaces(workspace_id),
+            root_binding_id TEXT,
+            base_revision INTEGER NOT NULL DEFAULT 0,
+            isolation_state TEXT NOT NULL DEFAULT 'shared',
+            state TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspaces_project_state ON workspaces(project_id, state);
+
+        CREATE TABLE IF NOT EXISTS tasks(
+            task_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            parent_task_id TEXT REFERENCES tasks(task_id),
+            forked_from_task_id TEXT REFERENCES tasks(task_id),
+            root_run_id TEXT REFERENCES agent_runs(run_id),
+            project_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            waiting_reason TEXT,
+            objective TEXT NOT NULL,
+            success_criteria_json TEXT NOT NULL DEFAULT '[]',
+            resume_point_json TEXT,
+            risk_state TEXT NOT NULL DEFAULT 'normal',
+            revision INTEGER NOT NULL DEFAULT 0,
+            model_selection_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            latest_activity_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_session_latest ON tasks(session_id, latest_activity_at);
+        CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state) WHERE state IN ('running', 'waiting', 'paused');
+        CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS one_active_root_task_per_session ON tasks(session_id) WHERE parent_task_id IS NULL AND state IN ('running', 'waiting');
+
+        CREATE TABLE IF NOT EXISTS task_artifacts(
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            ordinal INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            ref TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(task_id, ordinal)
+        );
+
+        CREATE TABLE IF NOT EXISTS task_tool_states(
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            tool_call_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(task_id, tool_call_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS task_events(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            event TEXT NOT NULL,
+            from_state TEXT,
+            to_state TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            correlation_id TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_events_task_seq ON task_events(task_id, seq);
+
+        CREATE TABLE IF NOT EXISTS capability_grants(
+            grant_id TEXT PRIMARY KEY,
+            principal_kind TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            capability_kind TEXT NOT NULL,
+            resource_pattern TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            issued_by TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT,
+            state TEXT NOT NULL,
+            revoked_at TEXT,
+            revoke_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_capability_grants_principal ON capability_grants(principal_kind, principal_id, state);
+
+        CREATE TABLE IF NOT EXISTS capability_audit(
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            grant_id TEXT REFERENCES capability_grants(grant_id),
+            principal_kind TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            task_id TEXT,
+            session_id TEXT,
+            run_id TEXT,
+            capability_kind TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            decision_reason TEXT,
+            credential_handed_over INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_capability_audit_task_time ON capability_audit(task_id, timestamp);
+        """)
+
+        let columns = (try? rows(db, "PRAGMA table_info(workflow_tasks)", [])) ?? []
+        if !columns.contains(where: { $0.count > 1 && $0[1] == "task_id" }) {
+            _ = try? script(db, "ALTER TABLE workflow_tasks ADD COLUMN task_id TEXT REFERENCES tasks(task_id)")
+        }
+
+        _ = try? script(db, """
+        INSERT OR IGNORE INTO workspaces(workspace_id, project_id, kind, root_binding_id, base_revision, isolation_state, state, created_at, updated_at)
+        SELECT 'ws-' || s.project_id, s.project_id, 'main', s.cwd_root_binding_id, 0, 'shared', 'active', MIN(s.created_at), MIN(s.updated_at)
+        FROM sessions s
+        GROUP BY s.project_id;
+        """)
+
+        _ = try? script(db, """
+        INSERT OR IGNORE INTO tasks(
+            task_id, session_id, workspace_id, parent_task_id, forked_from_task_id,
+            root_run_id, project_id, state, waiting_reason, objective,
+            success_criteria_json, resume_point_json, risk_state, revision,
+            model_selection_json, created_at, updated_at, latest_activity_at
+        )
+        SELECT
+            'task-' || a.run_id,
+            a.session_id,
+            'ws-' || a.project_id,
+            NULL,
+            NULL,
+            a.run_id,
+            a.project_id,
+            CASE a.status
+                WHEN 'queued' THEN 'queued'
+                WHEN 'paused' THEN 'paused'
+                WHEN 'running' THEN 'running'
+                ELSE 'running'
+            END,
+            NULL,
+            COALESCE(a.title, '[migrated V1.0 run]'),
+            '[]',
+            NULL,
+            'normal',
+            0,
+            NULL,
+            COALESCE(a.started_at, a.latest_activity_at),
+            a.latest_activity_at,
+            a.latest_activity_at
+        FROM agent_runs a
+        WHERE a.status IN ('queued', 'running', 'paused')
+        AND a.latest_activity_at = (
+            SELECT MAX(a2.latest_activity_at) FROM agent_runs a2 WHERE a2.session_id = a.session_id AND a2.status IN ('queued', 'running', 'paused')
+        );
+
+        INSERT OR IGNORE INTO task_events(task_id, event, from_state, to_state, payload_json, correlation_id, created_at)
+        SELECT
+            'task-' || a.run_id,
+            'migrated_from_v6',
+            NULL,
+            CASE a.status
+                WHEN 'queued' THEN 'queued'
+                WHEN 'paused' THEN 'paused'
+                WHEN 'running' THEN 'running'
+                ELSE 'running'
+            END,
+            '{"reason":"v6_to_v7_backfill"}',
+            a.run_id,
+            a.latest_activity_at
+        FROM agent_runs a
+        WHERE a.status IN ('queued', 'running', 'paused')
+        AND a.latest_activity_at = (
+            SELECT MAX(a2.latest_activity_at) FROM agent_runs a2 WHERE a2.session_id = a.session_id AND a2.status IN ('queued', 'running', 'paused')
+        );
+        """)
+
+        try script(db, "PRAGMA user_version = 7")
+    }
+
+    public static func downgradeStateSchemaV7ToV6(_ db: OpaquePointer) throws {
+        try script(db, """
+        DROP TABLE IF EXISTS capability_audit;
+        DROP TABLE IF EXISTS capability_grants;
+        DROP TABLE IF EXISTS task_events;
+        DROP TABLE IF EXISTS task_tool_states;
+        DROP TABLE IF EXISTS task_artifacts;
+        DROP TABLE IF EXISTS tasks;
+        DROP TABLE IF EXISTS workspaces;
+        PRAGMA user_version = 6;
+        """)
+    }
     private static func createStateSchema(_ db: OpaquePointer) throws {
         try script(db, "CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cwd_root_binding_id TEXT NOT NULL, cwd_relative_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), ordinal INTEGER NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, ordinal)); CREATE TABLE IF NOT EXISTS message_parts(message_id TEXT NOT NULL REFERENCES messages(message_id), ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(message_id, ordinal)); CREATE TABLE IF NOT EXISTS tool_exchange_batches(batch_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), assistant_message_id TEXT NOT NULL, result_message_id TEXT, provider_step INTEGER NOT NULL, state TEXT NOT NULL, estimated_tokens INTEGER NOT NULL, tool_calls_json TEXT NOT NULL, tool_results_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS derived_context(derived_page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(session_id), source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, inline_content TEXT, blob_ref TEXT, message_id TEXT, token_estimate INTEGER NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL, provenance_json TEXT NOT NULL, metadata_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS compaction_state(session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), generation INTEGER NOT NULL, residency_json TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS project_files(file_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_binding_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL, time_created TEXT NOT NULL, time_updated TEXT NOT NULL, time_last_seen TEXT, UNIQUE(root_binding_id, relative_path)); CREATE TABLE IF NOT EXISTS project_pages(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, content_hash TEXT NOT NULL, version TEXT NOT NULL, source_type TEXT NOT NULL, characters INTEGER NOT NULL, metadata TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_symbols(symbol_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, file_id TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL, page_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_references(reference_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, source_line INTEGER NOT NULL, target_name TEXT NOT NULL, kind TEXT NOT NULL, resolution TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cached_dependencies(project_id TEXT NOT NULL, source_file_id TEXT NOT NULL, target_file_id TEXT, kind TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(project_id, source_file_id, evidence_id)); CREATE TABLE IF NOT EXISTS project_l2(page_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, score REAL NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS session_l2(derived_page_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, use_count INTEGER NOT NULL, last_used INTEGER NOT NULL, version INTEGER NOT NULL); PRAGMA user_version = 1")
         _ = try? script(db, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
@@ -856,5 +1050,245 @@ public actor SQLitePersistenceStore {
                 sqlite3_close_v2(db)
             }
         }
+    }
+
+    public func saveWorkspace(workspaceID: WorkspaceID, projectID: String, kind: String = "main", originWorkspaceID: WorkspaceID? = nil, rootBindingID: String? = nil, baseRevision: Int = 0, isolationState: String = "shared", state: String = "active") throws {
+        try Self.execute(self.state, """
+        INSERT OR REPLACE INTO workspaces(workspace_id, project_id, kind, origin_workspace_id, root_binding_id, base_revision, isolation_state, state, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            workspaceID.rawValue,
+            projectID,
+            kind,
+            originWorkspaceID?.rawValue ?? NSNull(),
+            rootBindingID ?? NSNull(),
+            String(baseRevision),
+            isolationState,
+            state,
+            Self.now,
+            Self.now
+        ])
+    }
+
+    public func workspace(workspaceID: WorkspaceID) throws -> (workspaceID: WorkspaceID, projectID: String, kind: String, originWorkspaceID: WorkspaceID?, rootBindingID: String?, baseRevision: Int, isolationState: String, state: String)? {
+        let rows = try Self.rows(self.state, "SELECT workspace_id, project_id, kind, origin_workspace_id, root_binding_id, base_revision, isolation_state, state FROM workspaces WHERE workspace_id = ?", [workspaceID.rawValue])
+        guard let row = rows.first, row.count >= 8 else { return nil }
+        return (
+            workspaceID: WorkspaceID(row[0]),
+            projectID: row[1],
+            kind: row[2],
+            originWorkspaceID: row[3].isEmpty ? nil : WorkspaceID(row[3]),
+            rootBindingID: row[4].isEmpty ? nil : row[4],
+            baseRevision: Int(row[5]) ?? 0,
+            isolationState: row[6],
+            state: row[7]
+        )
+    }
+
+    public func workspaces(projectID: String? = nil) throws -> [(workspaceID: WorkspaceID, projectID: String, kind: String, originWorkspaceID: WorkspaceID?, rootBindingID: String?, baseRevision: Int, isolationState: String, state: String)] {
+        let sql: String
+        let params: [Any]
+        if let projectID = projectID {
+            sql = "SELECT workspace_id, project_id, kind, origin_workspace_id, root_binding_id, base_revision, isolation_state, state FROM workspaces WHERE project_id = ? ORDER BY created_at ASC"
+            params = [projectID]
+        } else {
+            sql = "SELECT workspace_id, project_id, kind, origin_workspace_id, root_binding_id, base_revision, isolation_state, state FROM workspaces ORDER BY created_at ASC"
+            params = []
+        }
+        return try Self.rows(self.state, sql, params).compactMap { row in
+            guard row.count >= 8 else { return nil }
+            return (
+                workspaceID: WorkspaceID(row[0]),
+                projectID: row[1],
+                kind: row[2],
+                originWorkspaceID: row[3].isEmpty ? nil : WorkspaceID(row[3]),
+                rootBindingID: row[4].isEmpty ? nil : row[4],
+                baseRevision: Int(row[5]) ?? 0,
+                isolationState: row[6],
+                state: row[7]
+            )
+        }
+    }
+}
+
+extension SQLitePersistenceStore: TaskPersistence {
+    public func saveCapsule(_ capsule: TaskCapsule) throws {
+        try Self.transaction(state) {
+            try Self.execute(state, "INSERT OR IGNORE INTO workspaces(workspace_id, project_id, kind, root_binding_id, base_revision, isolation_state, state, created_at, updated_at) VALUES(?, ?, 'main', NULL, 0, 'shared', 'active', ?, ?)", [capsule.workspaceID.rawValue, capsule.projectID, Self.date(capsule.createdAt), Self.date(capsule.updatedAt)])
+
+            try Self.execute(state, "INSERT OR IGNORE INTO sessions(session_id, project_id, cwd_root_binding_id, cwd_relative_path, created_at, updated_at, revision, metadata) VALUES(?, ?, 'main', '', ?, ?, 0, '{}')", [capsule.sessionID.rawValue, capsule.projectID, Self.date(capsule.createdAt), Self.date(capsule.updatedAt)])
+
+            let criteriaJSON = String(decoding: (try? JSONEncoder().encode(capsule.successCriteria)) ?? Data("[]".utf8), as: UTF8.self)
+            let resumeJSON: Any = capsule.resumePoint.flatMap { pt in
+                (try? JSONEncoder().encode(pt)).flatMap { String(decoding: $0, as: UTF8.self) }
+            } ?? NSNull()
+            let modelJSON: Any = (try? JSONEncoder().encode(capsule.modelSelection)).flatMap { String(decoding: $0, as: UTF8.self) } ?? NSNull()
+
+            try Self.execute(state, """
+            INSERT OR REPLACE INTO tasks(
+                task_id, session_id, workspace_id, parent_task_id, forked_from_task_id,
+                root_run_id, project_id, state, waiting_reason, objective,
+                success_criteria_json, resume_point_json, risk_state, revision,
+                model_selection_json, created_at, updated_at, latest_activity_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                capsule.taskID.rawValue,
+                capsule.sessionID.rawValue,
+                capsule.workspaceID.rawValue,
+                capsule.parentTaskID?.rawValue ?? NSNull(),
+                capsule.forkedFromTaskID?.rawValue ?? NSNull(),
+                capsule.rootRunID?.rawValue ?? NSNull(),
+                capsule.projectID,
+                capsule.state.rawValue,
+                capsule.waitingReason?.rawValue ?? NSNull(),
+                capsule.objective,
+                criteriaJSON,
+                resumeJSON,
+                capsule.riskState.level,
+                String(capsule.revision),
+                modelJSON,
+                Self.date(capsule.createdAt),
+                Self.date(capsule.updatedAt),
+                Self.date(capsule.updatedAt)
+            ])
+
+            try Self.execute(state, "DELETE FROM task_artifacts WHERE task_id = ?", [capsule.taskID.rawValue])
+            for artifact in capsule.artifacts {
+                let metaJSON = String(decoding: (try? JSONEncoder().encode(artifact.metadata)) ?? Data("{}".utf8), as: UTF8.self)
+                try Self.execute(state, "INSERT INTO task_artifacts(task_id, ordinal, kind, ref, metadata_json, created_at) VALUES(?, ?, ?, ?, ?, ?)", [capsule.taskID.rawValue, String(artifact.ordinal), artifact.kind, artifact.ref, metaJSON, Self.date(artifact.createdAt)])
+            }
+
+            try Self.execute(state, "DELETE FROM task_tool_states WHERE task_id = ?", [capsule.taskID.rawValue])
+            for toolState in capsule.toolStates {
+                let payloadJSON = String(decoding: (try? JSONEncoder().encode(toolState.payload)) ?? Data("{}".utf8), as: UTF8.self)
+                try Self.execute(state, "INSERT INTO task_tool_states(task_id, tool_call_id, state, payload_json, updated_at) VALUES(?, ?, ?, ?, ?)", [capsule.taskID.rawValue, toolState.toolCallID, toolState.state, payloadJSON, Self.date(toolState.updatedAt)])
+            }
+        }
+    }
+
+    public func loadCapsule(taskID: TaskID) throws -> TaskCapsule? {
+        let rows = try Self.rows(state, """
+        SELECT task_id, session_id, workspace_id, parent_task_id, forked_from_task_id,
+               root_run_id, project_id, state, waiting_reason, objective,
+               success_criteria_json, resume_point_json, risk_state, revision,
+               model_selection_json, created_at, updated_at, latest_activity_at
+        FROM tasks WHERE task_id = ?
+        """, [taskID.rawValue])
+        guard let row = rows.first, row.count >= 17 else { return nil }
+        return try decodeCapsule(row: row)
+    }
+
+    public func listCapsules(sessionID: SessionID? = nil) throws -> [TaskCapsule] {
+        let sql: String
+        let params: [Any]
+        if let sessionID = sessionID {
+            sql = """
+            SELECT task_id, session_id, workspace_id, parent_task_id, forked_from_task_id,
+                   root_run_id, project_id, state, waiting_reason, objective,
+                   success_criteria_json, resume_point_json, risk_state, revision,
+                   model_selection_json, created_at, updated_at, latest_activity_at
+            FROM tasks WHERE session_id = ? ORDER BY created_at ASC
+            """
+            params = [sessionID.rawValue]
+        } else {
+            sql = """
+            SELECT task_id, session_id, workspace_id, parent_task_id, forked_from_task_id,
+                   root_run_id, project_id, state, waiting_reason, objective,
+                   success_criteria_json, resume_point_json, risk_state, revision,
+                   model_selection_json, created_at, updated_at, latest_activity_at
+            FROM tasks ORDER BY created_at ASC
+            """
+            params = []
+        }
+        return try Self.rows(state, sql, params).compactMap { try? decodeCapsule(row: $0) }
+    }
+
+    public func recordEvent(taskID: TaskID, event: String, fromState: TaskState?, toState: TaskState, payload: [String: String]) throws {
+        let payloadJSON = String(decoding: (try? JSONEncoder().encode(payload)) ?? Data("{}".utf8), as: UTF8.self)
+        try Self.execute(state, """
+        INSERT INTO task_events(task_id, event, from_state, to_state, payload_json, correlation_id, created_at)
+        VALUES(?, ?, ?, ?, ?, NULL, ?)
+        """, [
+            taskID.rawValue,
+            event,
+            fromState?.rawValue ?? NSNull(),
+            toState.rawValue,
+            payloadJSON,
+            Self.now
+        ])
+    }
+
+    public func loadEvents(taskID: TaskID) throws -> [TaskEventPayload] {
+        let rows = try Self.rows(state, "SELECT seq, task_id, event, from_state, to_state, payload_json, correlation_id, created_at FROM task_events WHERE task_id = ? ORDER BY seq ASC", [taskID.rawValue])
+        return rows.compactMap { row in
+            guard row.count >= 8 else { return nil }
+            let seq = Int64(row[0])
+            let taskID = TaskID(row[1])
+            let event = row[2]
+            let fromState = row[3].isEmpty ? nil : TaskState(rawValue: row[3])
+            let toState = TaskState(rawValue: row[4]) ?? .unknown
+            let payload = (try? JSONDecoder().decode([String: String].self, from: Data(row[5].utf8))) ?? [:]
+            let correlationID = row[6].isEmpty ? nil : row[6]
+            let createdAt = Self.parseDate(row[7])
+            return TaskEventPayload(seq: seq, taskID: taskID, event: event, fromState: fromState, toState: toState, payload: payload, correlationID: correlationID, createdAt: createdAt)
+        }
+    }
+
+    private func decodeCapsule(row: [String]) throws -> TaskCapsule {
+        let taskID = TaskID(row[0])
+        let sessionID = SessionID(row[1])
+        let workspaceID = WorkspaceID(row[2])
+        let parentTaskID = row[3].isEmpty ? nil : TaskID(row[3])
+        let forkedFromTaskID = row[4].isEmpty ? nil : TaskID(row[4])
+        let rootRunID = row[5].isEmpty ? nil : AgentRunID(row[5])
+        let projectID = row[6]
+        let taskState = TaskState(rawValue: row[7]) ?? .unknown
+        let waitingReason = row[8].isEmpty ? nil : WaitingReason(rawValue: row[8])
+        let objective = row[9]
+        let criteria = (try? JSONDecoder().decode([SuccessCriterion].self, from: Data(row[10].utf8))) ?? []
+        let resumePoint = row[11].isEmpty ? nil : (try? JSONDecoder().decode(ResumePoint.self, from: Data(row[11].utf8)))
+        let riskState = RiskState(level: row[12].isEmpty ? "low" : row[12])
+        let revision = Int(row[13]) ?? 0
+        let modelSelection = row[14].isEmpty ? [:] : ((try? JSONDecoder().decode([String: String].self, from: Data(row[14].utf8))) ?? [:])
+        let createdAt = Self.parseDate(row[15])
+        let updatedAt = Self.parseDate(row[16])
+
+        let artRows = try Self.rows(self.state, "SELECT ordinal, kind, ref, metadata_json, created_at FROM task_artifacts WHERE task_id = ? ORDER BY ordinal ASC", [taskID.rawValue])
+        let artifacts = artRows.compactMap { aRow -> TaskArtifact? in
+            guard aRow.count >= 5 else { return nil }
+            let ordinal = Int(aRow[0]) ?? 0
+            let kind = aRow[1]
+            let meta = (try? JSONDecoder().decode([String: String].self, from: Data(aRow[3].utf8))) ?? [:]
+            return TaskArtifact(ordinal: ordinal, kind: kind, ref: aRow[2], metadata: meta, createdAt: Self.parseDate(aRow[4]))
+        }
+
+        let tsRows = try Self.rows(self.state, "SELECT tool_call_id, state, payload_json, updated_at FROM task_tool_states WHERE task_id = ?", [taskID.rawValue])
+        let toolStates = tsRows.compactMap { tRow -> ToolExecutionState? in
+            guard tRow.count >= 4 else { return nil }
+            let payload = (try? JSONDecoder().decode([String: String].self, from: Data(tRow[2].utf8))) ?? [:]
+            return ToolExecutionState(toolCallID: tRow[0], state: tRow[1], payload: payload, updatedAt: Self.parseDate(tRow[3]))
+        }
+
+        return TaskCapsule(
+            taskID: taskID,
+            parentTaskID: parentTaskID,
+            forkedFromTaskID: forkedFromTaskID,
+            workspaceID: workspaceID,
+            sessionID: sessionID,
+            rootRunID: rootRunID,
+            projectID: projectID,
+            objective: objective,
+            successCriteria: criteria,
+            state: taskState,
+            waitingReason: waitingReason,
+            resumePoint: resumePoint,
+            toolStates: toolStates,
+            artifacts: artifacts,
+            riskState: riskState,
+            revision: revision,
+            modelSelection: modelSelection,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
     }
 }

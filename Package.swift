@@ -109,7 +109,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LingXiTaskLifecycleContractTests",
-            dependencies: ["LingXiProtocol"],
+            dependencies: ["LingXiProtocol", "LingXiPlatform", "CSQLite"],
             path: "ContractTests/LingXiTaskLifecycleContractTests"
         ),
         .testTarget(

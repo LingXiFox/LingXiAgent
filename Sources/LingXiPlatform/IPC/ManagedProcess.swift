@@ -1,5 +1,4 @@
 import Foundation
-import LingXiPlatform
 
 /// 托管外部子进程的生命周期抽象。
 /// 负责进程的配置、启动、运行状态检测与进程树安全销毁。

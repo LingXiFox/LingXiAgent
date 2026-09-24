@@ -1,0 +1,54 @@
+{
+  "$schema": "./PLATFORM-DEBT.schema.json",
+  "version": "1.1.0",
+  "debts": [
+    {
+      "capability": "capture",
+      "platform": "windows",
+      "status": "unsupported",
+      "reason": "WindowsGraphicsCapture stub: native Win32/WGC capture not yet implemented",
+      "owner": "platform-team",
+      "targetVersion": "1.2.0"
+    },
+    {
+      "capability": "accessibility",
+      "platform": "windows",
+      "status": "unsupported",
+      "reason": "UIAutomation stub: native UIA backend not yet implemented",
+      "owner": "platform-team",
+      "targetVersion": "1.2.0"
+    },
+    {
+      "capability": "input",
+      "platform": "windows",
+      "status": "unsupported",
+      "reason": "SendInput stub: native Win32 input injection not yet implemented",
+      "owner": "platform-team",
+      "targetVersion": "1.1.0"
+    },
+    {
+      "capability": "windowManagement",
+      "platform": "windows",
+      "status": "unsupported",
+      "reason": "EnumWindows stub: native Win32 window management not yet implemented",
+      "owner": "platform-team",
+      "targetVersion": "1.1.0"
+    },
+    {
+      "capability": "applicationManagement",
+      "platform": "windows",
+      "status": "unsupported",
+      "reason": "Process stub: native Win32 application management not yet implemented",
+      "owner": "platform-team",
+      "targetVersion": "1.1.0"
+    },
+    {
+      "capability": "clipboard",
+      "platform": "windows",
+      "status": "unsupported",
+      "reason": "Win32 Clipboard stub: clipboard management not yet implemented",
+      "owner": "platform-team",
+      "targetVersion": "1.1.0"
+    }
+  ]
+}

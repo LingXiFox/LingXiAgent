@@ -81,6 +81,18 @@ public enum LingXiPlatform {
         #endif
     }()
 
+    /// 跨平台文件系统抽象门面
+    public static let file: any PlatformFileProtocol = PlatformFileAdapter()
+
+    /// 跨平台网络连接与端口抽象门面
+    public static let network: any PlatformNetworkProtocol = PlatformNetworkAdapter()
+
+    /// 跨平台进程间通讯 (IPC) 门面
+    public static let ipc: any PlatformIPCProtocol = PlatformIPCAdapter()
+
+    /// 跨平台异步 I/O 门面
+    public static let asyncIO: any PlatformAsyncIOProtocol = PlatformAsyncIOAdapter()
+
     /// 跨平台路径与环境变量工具
     public static let path = PathUtilities.self
 

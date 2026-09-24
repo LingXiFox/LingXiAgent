@@ -227,7 +227,7 @@ final class ManagedToolProcess: @unchecked Sendable {
     }
 
     private func nonblockingDrain(handle: FileHandle, into buffer: ByteRingBuffer) {
-        let drained = LingXiPlatform.process.nonblockingDrain(handle: handle, chunkSize: 64 * 1024)
+        let drained = LingXiPlatform.process.nonblockingDrain(handle: PlatformPipeHandle(fileHandle: handle), chunkSize: 64 * 1024)
         if !drained.isEmpty {
             buffer.append(drained)
         }
@@ -256,7 +256,7 @@ final class ManagedToolProcess: @unchecked Sendable {
     }
 
     private func read(_ handle: FileHandle, into buffer: ByteRingBuffer, phase: ToolLifecyclePhase) {
-        let data = LingXiPlatform.process.readAvailable(handle: handle)
+        let data = LingXiPlatform.process.readAvailable(handle: PlatformPipeHandle(fileHandle: handle))
         if !data.isEmpty {
             buffer.append(data)
             return

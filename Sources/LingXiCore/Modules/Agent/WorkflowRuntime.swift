@@ -75,7 +75,7 @@ public actor WorkflowRuntime {
         }
         workflow = replacing(workflow, task: replace(workflow.tasks[index], status: status, pendingInput: input), status: .waitingForUser, checkpoint: checkpoint(workflow, taskID, "input-pending"))
         workflows[workflowID] = workflow
-        await diagnostics?.record(kind: .hitl, event: "workflow.input.pending", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, taskID: taskID)
+        await diagnostics?.record(kind: .hitl, event: "workflow.input.pending", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, workflowTaskID: taskID)
         try await persist(workflow)
         if case .decision = input {
             await inputSink?(workflowID, taskID, input)
@@ -88,7 +88,7 @@ public actor WorkflowRuntime {
         guard let index = workflow.tasks.firstIndex(where: { $0.definition.id == taskID }), workflow.tasks[index].pendingInput != nil else { throw CoreError(code: .resourceNotFound, message: "Workflow Task 没有挂起输入") }
         workflow = replacing(workflow, task: replace(workflow.tasks[index], status: workflow.tasks[index].status), status: .waitingForUser, checkpoint: checkpoint(workflow, taskID, "input-reattached"))
         workflows[workflowID] = workflow
-        await diagnostics?.record(kind: .recovery, event: "workflow.recovery.acknowledged", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, taskID: taskID)
+        await diagnostics?.record(kind: .recovery, event: "workflow.recovery.acknowledged", sessionID: workflow.rootSessionID, runID: workflow.rootRunID, workflowID: workflowID, workflowTaskID: taskID)
         try await persist(workflow)
     }
 
