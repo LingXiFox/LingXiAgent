@@ -50,8 +50,6 @@ public struct InspectorView: View {
                 .padding(16)
             }
 
-            Spacer()
-
             Divider()
 
             // 底部运行轨迹按钮 (⌥⌘L)
@@ -67,7 +65,6 @@ public struct InspectorView: View {
             .padding(12)
             .background(LingXiTheme.surfaceBackground)
         }
-        .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
         .background(LingXiTheme.windowBackground)
     }
 }
@@ -97,7 +94,7 @@ public struct OverviewTabView: View {
                         Text("100%")
                             .font(.system(size: 9))
                     }
-                    .gaugeStyle(.accessoryLinearCapacity)
+                    .gaugeStyle(.linearCapacity)
                     .tint(LingXiTheme.accentColor)
 
                     HStack {

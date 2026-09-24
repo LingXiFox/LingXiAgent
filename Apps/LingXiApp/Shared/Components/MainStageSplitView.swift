@@ -53,7 +53,6 @@ public struct MainStageSplitView: View {
                     onOpenTraceWindow: onOpenTraceWindow
                 )
             }
-
         }
         .accentColor(LingXiTheme.accentColor)
     }

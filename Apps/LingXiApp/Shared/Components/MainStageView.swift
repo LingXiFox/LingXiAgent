@@ -522,26 +522,18 @@ public struct MainComposerBar: View {
 
     public var body: some View {
         VStack(spacing: 8) {
-            // 输入框
-            #if os(macOS)
-            MacNativeTextView(
-                text: $model.text,
-                isEditable: !isGenerating,
-                placeholder: "向灵犀 Agent 下达指令或提问… (⌘Enter 发送)",
-                onSubmit: {
-                    if !isGenerating {
+            TextField("向灵犀 Agent 下达指令或提问… (⌘Enter 发送)", text: $model.text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+                .disabled(isGenerating)
+                .padding(8)
+                .background(LingXiTheme.surfaceBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .onSubmit {
+                    if !isGenerating && !model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         onSend(model.text, model.selectedMode, model.attachments)
                     }
                 }
-            )
-            .frame(minHeight: 44, maxHeight: 120)
-            .padding(6)
-            .background(LingXiTheme.surfaceBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            #else
-            TextField("向灵犀 Agent 下达指令…", text: $model.text)
-                .textFieldStyle(.roundedBorder)
-            #endif
 
             // 控制条：模式选择与发送/停止按钮
             HStack {

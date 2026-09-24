@@ -59,26 +59,29 @@ public struct SidebarView: View {
             Divider()
 
             // Session & Task Tree
-            List {
-                ForEach(model.folders) { folder in
-                    DisclosureGroup(isExpanded: .constant(true)) {
-                        ForEach(folder.sessions) { session in
-                            SessionRow(
-                                session: session,
-                                isSelected: model.selectedSessionID == session.id,
-                                onSelect: { onSelectSession(session.id) },
-                                onSelectTask: onSelectTask
-                            )
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.folders) { folder in
+                        DisclosureGroup(isExpanded: .constant(true)) {
+                            ForEach(folder.sessions) { session in
+                                SessionRow(
+                                    session: session,
+                                    isSelected: model.selectedSessionID == session.id,
+                                    onSelect: { onSelectSession(session.id) },
+                                    onSelectTask: onSelectTask
+                                )
+                            }
+                        } label: {
+                            Label(folder.folderName, systemImage: "folder")
+                                .font(.subheadline)
+                                .foregroundColor(LingXiTheme.secondaryText)
                         }
-                    } label: {
-                        Label(folder.folderName, systemImage: "folder")
-                            .font(.subheadline)
-                            .foregroundColor(LingXiTheme.secondaryText)
                     }
                 }
+                .padding(12)
             }
-            .listStyle(.sidebar)
         }
+        .background(LingXiTheme.windowBackground)
     }
 }
 

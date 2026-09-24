@@ -1,6 +1,7 @@
 #if os(macOS)
 import SwiftUI
 import AppKit
+import LingXiFrontendKit
 
 @main
 public struct LingXiMacApp: App {
@@ -18,8 +19,8 @@ public struct LingXiMacApp: App {
                     openWindow(id: "trace-window")
                 }
             )
-            .frame(minWidth: 960, minHeight: 640)
         }
+        .defaultSize(width: 1080, height: 720)
         .commands {
             LingXiMenuCommands(runtime: runtime, onOpenTraceWindow: {
                 openWindow(id: "trace-window")
@@ -78,7 +79,10 @@ public struct LingXiMenuCommands: Commands {
 
             Divider()
 
-            Toggle("显示检查器", isOn: $runtime.inspectorModel.isPresented)
+            Toggle("显示检查器", isOn: Binding(
+                get: { runtime.inspectorModel.isPresented },
+                set: { runtime.inspectorModel.isPresented = $0 }
+            ))
                 .keyboardShortcut("i", modifiers: [.option, .command])
 
             Button("运行轨迹…") {
