@@ -60,11 +60,18 @@ struct AtmosphereBackdrop: View {
 }
 
 extension View {
-    /// 悬浮侧面板（Navigator、Inspector）：单层晶体磨砂玻璃，带 1px 钻石切面高光边缘
-    func lxFloatingPanel(_ material: PanelMaterialPreference) -> some View {
+    /// 让底层背景氛围（AtmosphereBackdrop）自然延伸穿透到系统 Sidebar 与 Inspector 后方 (macOS 26+ / iOS 26+)
+    @ViewBuilder
+    func lxBackgroundExtension() -> some View {
+        #if canImport(SwiftUI)
+        if #available(macOS 26.0, iOS 26.0, *) {
+            self.backgroundExtensionEffect()
+        } else {
+            self
+        }
+        #else
         self
-            .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.panel, style: .continuous),
-                     tint: material == .tinted ? LingXiTheme.panelTint : LingXiTheme.obsidianSurface)
-            .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.panel)
+        #endif
     }
 }
+

@@ -15,7 +15,6 @@ public struct MainStageSplitView: View {
     public var settings: SettingsStore?
     public var onOpenTraceWindow: () -> Void
 
-    @AppStorage(LXPreferenceKey.panelMaterial) private var panelMaterial = PanelMaterialPreference.clear
     @AppStorage(LXPreferenceKey.colorScheme) private var colorScheme = ColorSchemePreference.system
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -32,49 +31,22 @@ public struct MainStageSplitView: View {
         self.onOpenTraceWindow = onOpenTraceWindow
     }
 
+    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { sidebar.isNavigatorVisible ? .all : .detailOnly },
+            set: { visibility in
+                sidebar.isNavigatorVisible = (visibility != .detailOnly)
+            }
+        )
+    }
+
     public var body: some View {
-        GeometryReader { geo in
-            let reservesInspector = inspector.isPresented
-                && geo.size.width >= LingXiMetrics.Split.inspectorDockMinWidth
-
+        NavigationSplitView(columnVisibility: columnVisibility) {
+            SidebarView(runtime: runtime)
+                .navigationSplitViewColumnWidth(min: 220, ideal: LingXiMetrics.Split.navigatorWidth, max: 340)
+        } detail: {
             ZStack {
-                stage
-                    .padding(.leading, sidebar.isNavigatorVisible ? navigatorInset : 0)
-                    .padding(.trailing, reservesInspector ? inspectorInset : 0)
-
-                // 底部两侧的悬浮晶体药丸栏（复刻参考图美学）
-                VStack {
-                    Spacer()
-                    HStack(alignment: .bottom) {
-                        if !sidebar.isNavigatorVisible {
-                            FloatingStatusPill(isGenerating: conversation.isGenerating,
-                                               link: runtime.link)
-                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                        }
-                        Spacer()
-                        if !inspector.isPresented {
-                            FloatingUtilityPill(onOpenTrace: onOpenTraceWindow,
-                                                onOpenPalette: { runtime.isCommandPalettePresented.toggle() })
-                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                        }
-                    }
-                    .padding(.horizontal, LingXiMetrics.Space.lg)
-                    .padding(.bottom, LingXiMetrics.Space.lg)
-                }
-                .allowsHitTesting(true)
-
-                HStack(alignment: .top, spacing: 0) {
-                    if sidebar.isNavigatorVisible {
-                        navigator
-                            .transition(.move(edge: .leading).combined(with: .opacity))
-                    }
-                    Spacer(minLength: 0)
-                    if inspector.isPresented {
-                        inspectorPanel
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
-                .padding(LingXiMetrics.Split.panelMargin)
+                MainStageView(runtime: runtime)
 
                 if runtime.isCommandPalettePresented {
                     Color.clear
@@ -95,47 +67,31 @@ public struct MainStageSplitView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.99)))
                 }
             }
+            .background {
+                AtmosphereBackdrop()
+                    .lxBackgroundExtension()
+            }
+            .inspector(isPresented: $inspector.isPresented) {
+                InspectorView(
+                    model: inspector,
+                    onOpenTraceWindow: onOpenTraceWindow,
+                    onRefresh: runtime.refreshRuntimeDetails,
+                    onCompact: runtime.compactContext,
+                    onTerminateTask: runtime.terminateBackgroundTask
+                )
+                .inspectorColumnWidth(min: 260, ideal: LingXiMetrics.Split.inspectorWidth, max: 380)
+            }
         }
-        .background { AtmosphereBackdrop() }
+        .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $runtime.isShowingAboutSheet) {
             CyberAboutSheet(runtime: runtime)
         }
-        .animation(LXMotion.animation(reduceMotion: reduceMotion), value: sidebar.isNavigatorVisible)
-        .animation(LXMotion.animation(reduceMotion: reduceMotion), value: inspector.isPresented)
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: runtime.isShowingSettings)
         .animation(LXMotion.animation(LXMotion.disclosure, reduceMotion: reduceMotion), value: runtime.isCommandPalettePresented)
         .toolbar { windowToolbar }
         .navigationTitle(sidebar.workspace.name)
         .frame(minWidth: LingXiMetrics.Split.windowMinWidth, minHeight: LingXiMetrics.Split.windowMinHeight)
         .preferredColorScheme(colorScheme.colorScheme)
-    }
-
-    private var navigatorInset: CGFloat {
-        LingXiMetrics.Split.navigatorWidth + LingXiMetrics.Split.panelMargin
-    }
-
-    private var inspectorInset: CGFloat {
-        LingXiMetrics.Split.inspectorWidth + LingXiMetrics.Split.panelMargin
-    }
-
-    private var stage: some View {
-        MainStageView(runtime: runtime)
-    }
-
-    private var navigator: some View {
-        SidebarView(runtime: runtime)
-            .frame(width: LingXiMetrics.Split.navigatorWidth)
-            .lxFloatingPanel(panelMaterial)
-    }
-
-    private var inspectorPanel: some View {
-        InspectorView(model: inspector,
-                      onOpenTraceWindow: onOpenTraceWindow,
-                      onRefresh: runtime.refreshRuntimeDetails,
-                      onCompact: runtime.compactContext,
-                      onTerminateTask: runtime.terminateBackgroundTask)
-            .frame(width: LingXiMetrics.Split.inspectorWidth)
-            .lxFloatingPanel(panelMaterial)
     }
 
     /// App-level actions offered in the command palette next to Core commands.
@@ -186,92 +142,6 @@ public struct MainStageSplitView: View {
                 Label("检查器", systemImage: "sidebar.right")
             }
             .help("显示或隐藏检查器 (⌥⌘I)")
-        }
-    }
-}
-
-private struct FloatingStatusPill: View {
-    let isGenerating: Bool
-    let link: RuntimeFrontend.Link
-
-    var body: some View {
-        HStack(spacing: LingXiMetrics.Space.sm) {
-            Circle()
-                .fill(isGenerating ? LingXiTheme.neonTeal : (link == .connected ? LingXiTheme.electricCyan : Color.secondary))
-                .frame(width: 8, height: 8)
-                .overlay(
-                    Circle()
-                        .stroke(isGenerating ? LingXiTheme.neonTeal.opacity(0.4) : Color.clear, lineWidth: 2)
-                        .scaleEffect(isGenerating ? 1.5 : 1.0)
-                )
-                .lxNeonGlow(color: isGenerating ? LingXiTheme.neonTeal : LingXiTheme.electricCyan, radius: 4)
-
-            Text(isGenerating ? "Running" : (link == .connected ? "Online" : "Offline"))
-                .font(.lxCallout.weight(.medium))
-                .foregroundStyle(.primary)
-        }
-        .padding(.horizontal, LingXiMetrics.Space.md)
-        .padding(.vertical, LingXiMetrics.Space.xs + 2)
-        .background {
-            Capsule()
-                .fill(LingXiTheme.obsidianSurface)
-        }
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.25), Color.white.opacity(0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-        }
-        .lxNeonGlow(color: isGenerating ? LingXiTheme.neonTeal : Color.clear, radius: 6, opacity: 0.3)
-    }
-}
-
-private struct FloatingUtilityPill: View {
-    var onOpenTrace: () -> Void
-    var onOpenPalette: () -> Void
-
-    var body: some View {
-        HStack(spacing: LingXiMetrics.Space.xs) {
-            Button(action: onOpenTrace) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.lxCallout)
-                    .foregroundStyle(LingXiTheme.electricCyan)
-            }
-            .buttonStyle(.plain)
-            .help("运行轨迹 (⌥⌘L)")
-
-            Divider()
-                .frame(height: 12)
-
-            Button(action: onOpenPalette) {
-                Image(systemName: "command")
-                    .font(.lxCallout)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("命令面板 (⌘K)")
-        }
-        .padding(.horizontal, LingXiMetrics.Space.md)
-        .padding(.vertical, LingXiMetrics.Space.xs + 2)
-        .background {
-            Capsule()
-                .fill(LingXiTheme.obsidianSurface)
-        }
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.25), Color.white.opacity(0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
         }
     }
 }
