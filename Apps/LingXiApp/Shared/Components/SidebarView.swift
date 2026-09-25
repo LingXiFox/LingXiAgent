@@ -78,8 +78,6 @@ public struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        // The panel's glass is the only background; the list must not add a second one.
-        .scrollContentBackground(.hidden)
         .overlay {
             if visibleFolders.isEmpty {
                 PlaceholderLine(emptyText)

@@ -140,40 +140,25 @@ struct PermissionSurface: View {
                     .foregroundStyle(.tertiary)
             }
 
-            if !card.resource.isEmpty {
-                Label(card.resource, systemImage: "scope")
-                    .font(.lxMeta.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                if !card.parametersSummary.isEmpty {
+                    Text(card.parametersSummary)
+                        .font(.lxMono)
+                        .textSelection(.enabled)
+                        .padding(LingXiMetrics.Space.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lxInsetBlock()
+                }
             }
 
-            // Actual command / arguments verbatim, never summarised.
-            Text(card.parametersSummary.isEmpty ? card.toolName : card.parametersSummary)
-                .font(.lxMono)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(LingXiMetrics.Space.sm)
-                .lxInsetBlock()
-
             HStack(spacing: LingXiMetrics.Space.sm) {
-                if !card.capabilities.isEmpty {
-                    Text(card.capabilities.joined(separator: " · "))
-                        .font(.lxMeta)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-                Text("当前策略 \(policy)")
+                Text("当前策略: \(policy)")
                     .font(.lxMeta)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                // "Always allow" needs a scoped PermissionDecision; Core only has
-                // allow / ask / deny, so no button that would behave like "allow once".
                 Button("拒绝") { onResolve(false) }
                     .keyboardShortcut(.cancelAction)
-                Button("允许一次") { onResolve(true) }
+                Button("允许") { onResolve(true) }
                     .lxPrimaryButtonStyle()
                     .keyboardShortcut(.defaultAction)
             }
@@ -306,10 +291,12 @@ private struct CommandSuggestionList: View {
     }
 }
 
-// MARK: - Composer surface
+// MARK: - Composer surface (Three-tier Architecture)
 
-/// One glass container: goal, input, and a single control row
-/// (attach · mode · model · reasoning · permission · goal · send).
+/// Three-tier professional execution container:
+/// Tier 1: Execution Context Strip (Where & with what to execute: Local, Workspace, Git Branch, Worktree, Model Picker)
+/// Tier 2: Prompt Editor (What to do: attachments, goal chip, text view)
+/// Tier 3: Action Bar (How to execute: attachments, @ ref, Goal, Permission, Reasoning, Mode, Send/Stop)
 struct ComposerSurface: View {
     @ObservedObject var runtime: RuntimeFrontend
     @ObservedObject var model: ComposerModel
@@ -326,6 +313,14 @@ struct ComposerSurface: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+            // Tier 1: Execution Context Strip
+            executionContextStrip
+
+            Divider()
+                .padding(.horizontal, LingXiMetrics.Space.xs)
+                .opacity(0.35)
+
+            // Tier 2: Prompt Editor & Attachments
             if let goal = model.goal {
                 GoalChip(goal: goal, onEdit: beginGoalEdit, onClear: { runtime.setGoal(nil) })
             }
@@ -333,13 +328,17 @@ struct ComposerSurface: View {
                 AttachmentStrip(attachments: model.attachments)
             }
             input
-            controlRow
+
+            // Tier 3: Action Bar
+            actionBar
         }
         .padding(LingXiMetrics.Space.md)
         .lxGlass(in: surfaceShape, tint: LingXiTheme.obsidianSurface)
-        .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.surface,
-                         glowColor: isGenerating ? LingXiTheme.foxfireAmber : nil,
-                         glowRadius: 10)
+        .lxCrystalBorder(
+            cornerRadius: LingXiMetrics.Radius.surface,
+            glowColor: isGenerating ? LingXiTheme.neonTeal : nil,
+            glowRadius: isGenerating ? 6 : 0
+        )
         .overlay {
             if isDropTargeted {
                 surfaceShape.strokeBorder(LingXiTheme.foxfireAmber, lineWidth: 2)
@@ -350,6 +349,118 @@ struct ComposerSurface: View {
             return !urls.isEmpty
         } isTargeted: { isDropTargeted = $0 }
     }
+
+    // MARK: - Tier 1: Execution Context Strip
+
+    private var executionContextStrip: some View {
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            // 1. Run Location
+            HStack(spacing: 4) {
+                Image(systemName: "macmini")
+                    .font(.system(size: 9))
+                Text("Local")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.white.opacity(0.04), in: Capsule())
+
+            // 2. Workspace Directory (Short name by default, full path in help)
+            HStack(spacing: 4) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10))
+                Text(workspaceDirectoryName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.primary)
+            .help(workspaceFullPath)
+
+            // 3. Git Branch (if available)
+            if let branch = currentGitBranch, !branch.isEmpty {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 9))
+                    Text(branch)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .help("当前 Git 分支: \(branch)")
+            }
+
+            // 4. Worktree (if present)
+            if let worktree = currentWorktree, !worktree.isEmpty {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.swap")
+                        .font(.system(size: 9))
+                    Text(worktree)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.tertiary)
+                .help("Worktree: \(worktree)")
+            }
+
+            Spacer(minLength: LingXiMetrics.Space.sm)
+
+            // 5. Model Picker (The Single Canonical Entrance!)
+            Menu {
+                Picker("模型", selection: Binding(get: { model.selectedModelID ?? "" },
+                                                 set: { model.selectedModelID = $0.isEmpty ? nil : $0 })) {
+                    ForEach(configuredModels, id: \.id) { m in
+                        Text(m.displayName).tag(m.id)
+                    }
+                }
+                .pickerStyle(.inline)
+                if configuredModels.isEmpty {
+                    Text("Core 未返回可用模型")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 10))
+                        .foregroundStyle(LingXiTheme.electricCyan)
+                    Text(modelLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+            .help("选择推理模型 (唯一入口)")
+        }
+        .padding(.horizontal, 2)
+    }
+
+    private var workspaceDirectoryName: String {
+        if let url = runtime.workspaceURL {
+            return url.lastPathComponent
+        }
+        let name = runtime.sidebarModel.workspace.name
+        return name.isEmpty ? "LingXiAgent" : name
+    }
+
+    private var workspaceFullPath: String {
+        runtime.workspaceURL?.path ?? runtime.sidebarModel.workspace.name
+    }
+
+    private var currentGitBranch: String? {
+        runtime.sidebarModel.workspace.gitBranch ?? runtime.inspectorModel.live?.branch
+    }
+
+    private var currentWorktree: String? {
+        runtime.sidebarModel.workspace.worktreeBranch
+    }
+
+    // MARK: - Tier 2: Prompt Editor
 
     @ViewBuilder
     private var input: some View {
@@ -375,7 +486,6 @@ struct ComposerSurface: View {
     }
 
     #if os(macOS)
-    /// Grows one line per explicit line break up to the cap, then scrolls internally.
     private var inputHeight: CGFloat {
         let lines = model.text.split(separator: "\n", omittingEmptySubsequences: false).count
         let used = max(2, min(lines, LingXiMetrics.composerMaxLines))
@@ -383,9 +493,11 @@ struct ComposerSurface: View {
     }
     #endif
 
-    private var controlRow: some View {
+    // MARK: - Tier 3: Action Bar
+
+    private var actionBar: some View {
         HStack(spacing: LingXiMetrics.Space.sm) {
-            // MARK: - Left utility buttons
+            // Left execution controls
             #if os(macOS)
             Button(action: pickFiles) {
                 Image(systemName: "plus.circle")
@@ -406,6 +518,9 @@ struct ComposerSurface: View {
                 }
             }
 
+            Spacer(minLength: LingXiMetrics.Space.sm)
+
+            // Right execution settings: Permission, Reasoning, Mode, Send/Stop
             Menu {
                 Picker("权限", selection: $model.permissionPreset) {
                     ForEach(PermissionPreset.allCases) { Text($0.label).tag($0) }
@@ -419,9 +534,6 @@ struct ComposerSurface: View {
             }
             .composerMenu(help: "权限模式：\(model.permissionPreset.label)")
 
-            Spacer(minLength: LingXiMetrics.Space.sm)
-
-            // MARK: - Right status and execution settings
             Menu {
                 Picker("思考等级", selection: $model.reasoningEffort) {
                     ForEach(model.availableReasoningLevels, id: \.self) { Text($0.rawValue).tag($0) }
@@ -431,22 +543,6 @@ struct ComposerSurface: View {
                 Label(model.reasoningEffort.rawValue, systemImage: "sparkles").font(.lxMeta)
             }
             .composerMenu(help: "思考等级（按当前模型支持能力）")
-
-            Menu {
-                Picker("模型", selection: Binding(get: { model.selectedModelID ?? "" },
-                                                 set: { model.selectedModelID = $0.isEmpty ? nil : $0 })) {
-                    ForEach(configuredModels, id: \.id) { m in
-                        Text(m.displayName).tag(m.id)
-                    }
-                }
-                .pickerStyle(.inline)
-                if configuredModels.isEmpty {
-                    Text("Core 未返回可用模型")
-                }
-            } label: {
-                Label(modelLabel, systemImage: "cpu").font(.lxMeta)
-            }
-            .composerMenu(help: "选择模型（更多 Provider 请前往设置）")
 
             Menu {
                 Picker("模式", selection: $model.selectedMode) {
@@ -470,7 +566,7 @@ struct ComposerSurface: View {
     }
 
     private var modelLabel: String {
-        guard let id = model.selectedModelID else { return "模型" }
+        guard let id = model.selectedModelID else { return "选择模型" }
         return model.models.first { $0.id == id || $0.modelID == id }?.displayName ?? id
     }
 
@@ -478,36 +574,39 @@ struct ComposerSurface: View {
         switch model.selectedMode {
         case .build: return "hammer"
         case .plan: return "list.bullet.rectangle"
-        case .explore: return "binoculars"
+        case .explore: return "magnifyingglass"
         }
     }
+
+    // MARK: - Submitting
 
     @ViewBuilder
     private var sendOrStop: some View {
         if isGenerating {
             Button(action: runtime.stopGenerating) {
-                Label("停止", systemImage: "stop.fill").labelStyle(.iconOnly)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.white)
+                    .frame(width: 28, height: 28)
+                    .background(LingXiTheme.neonCoral, in: Circle())
             }
-            .lxGlassButtonStyle()
-            .buttonBorderShape(.circle)
-            .lxNeonGlow(color: LingXiTheme.foxfireAmber, radius: 8, opacity: 0.65)
+            .help("停止当前执行 (⌘.)")
             .keyboardShortcut(".", modifiers: .command)
-            .help("停止 (⌘.)")
         } else {
             Button(action: submit) {
-                Label("发送", systemImage: "paperplane.fill").labelStyle(.iconOnly).fontWeight(.semibold)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(isEmpty ? Color.secondary : Color.white)
+                    .frame(width: 28, height: 28)
+                    .background(isEmpty ? Color.white.opacity(0.08) : LingXiTheme.foxfireAmber, in: Circle())
             }
-            .lxPrimaryButtonStyle()
-            .buttonBorderShape(.circle)
-            .lxNeonGlow(color: isEmpty ? .clear : LingXiTheme.foxfireAmber, radius: 6, opacity: 0.45)
-            .keyboardShortcut(.return, modifiers: .command)
+            .help(sendKey == .commandReturn ? "发送 (⌘↵)" : "发送 (↵)")
             .disabled(isEmpty)
-            .help(sendKey == .returnKey ? "发送 (⏎)" : "发送 (⌘⏎)")
         }
     }
 
     private var isEmpty: Bool {
-        model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachments.isEmpty
     }
 
     private func submit() {
@@ -518,15 +617,6 @@ struct ComposerSurface: View {
     private func beginGoalEdit() {
         goalDraft = model.goal ?? ""
         isEditingGoal = true
-    }
-
-    /// Files are referenced as `@path`: the turn protocol's attachment slot needs
-    /// uploaded ContentRefs, which the frontend does not own yet.
-    private func insertFileReferences(_ urls: [URL]) {
-        let refs = urls.filter(\.isFileURL).map { "@" + $0.path }
-        guard !refs.isEmpty else { return }
-        let separator = model.text.isEmpty || model.text.hasSuffix(" ") || model.text.hasSuffix("\n") ? "" : " "
-        model.text += separator + refs.joined(separator: " ") + " "
     }
 
     #if os(macOS)
@@ -540,25 +630,16 @@ struct ComposerSurface: View {
         }
     }
     #endif
-}
 
-private extension View {
-    func composerMenu(help: String) -> some View {
-        self.menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .padding(.horizontal, LingXiMetrics.Space.xs + 2)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(Color.primary.opacity(0.04))
-                    .overlay(
-                        Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-                    )
-            )
-            .help(help)
+    private func insertFileReferences(_ urls: [URL]) {
+        let refs = urls.filter(\.isFileURL).map { "@" + $0.path }
+        guard !refs.isEmpty else { return }
+        let separator = model.text.isEmpty || model.text.hasSuffix(" ") || model.text.hasSuffix("\n") ? "" : " "
+        model.text += separator + refs.joined(separator: " ") + " "
     }
 }
+
+// MARK: - Goal chip & editor
 
 private struct GoalChip: View {
     let goal: String
@@ -605,6 +686,24 @@ private struct GoalEditor: View {
             }
         }
         .padding(LingXiMetrics.Space.lg)
+    }
+}
+
+private extension View {
+    func composerMenu(help: String) -> some View {
+        self.menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.horizontal, LingXiMetrics.Space.xs + 2)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(Color.primary.opacity(0.04))
+                    .overlay(
+                        Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+            )
+            .help(help)
     }
 }
 

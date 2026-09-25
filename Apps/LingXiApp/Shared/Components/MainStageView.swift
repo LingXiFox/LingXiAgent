@@ -21,18 +21,17 @@ public struct MainStageView: View {
         Group {
             switch runtime.link {
             case .connected:
-                VStack(spacing: 0) {
-                    StageTopBar(runtime: runtime)
-                    ActionFlowTimelineView(items: conversation.items,
-                                           isGenerating: conversation.isGenerating,
-                                           hasAnyItem: !conversation.items.isEmpty,
-                                           tailNotice: runtime.providerNotice,
-                                           onPromptSelect: { text in
-                                               runtime.composerModel.text = text
-                                           })
-                        .lxFloatingBar(edge: .bottom) {
-                            ComposerDock(runtime: runtime)
-                        }
+                ActionFlowTimelineView(
+                    items: conversation.items,
+                    isGenerating: conversation.isGenerating,
+                    hasAnyItem: !conversation.items.isEmpty,
+                    tailNotice: runtime.providerNotice,
+                    onPromptSelect: { text in
+                        runtime.composerModel.text = text
+                    }
+                )
+                .lxFloatingBar(edge: .bottom) {
+                    ComposerDock(runtime: runtime)
                 }
             case .disconnected, .failed, .connecting:
                 WorkspaceGate(runtime: runtime)
@@ -42,88 +41,6 @@ public struct MainStageView: View {
         .sheet(item: $runtime.commandOutput) { output in
             CommandOutputSheet(output: output)
         }
-    }
-}
-
-// MARK: - Stage Top Bar
-
-private struct StageTopBar: View {
-    @ObservedObject var runtime: RuntimeFrontend
-
-    var body: some View {
-        HStack(spacing: LingXiMetrics.Space.md) {
-            // Workspace & Status Pulse
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .fill(LingXiTheme.auroraMint)
-                        .frame(width: 7, height: 7)
-                    Circle()
-                        .stroke(LingXiTheme.auroraMint.opacity(0.5), lineWidth: 1.5)
-                        .frame(width: 13, height: 13)
-                }
-                .lxNeonGlow(color: LingXiTheme.auroraMint, radius: 4, opacity: 0.8)
-
-                Text(workspaceTitle)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-            }
-
-            Spacer(minLength: 0)
-
-            // Current Model & Mode Pill
-            HStack(spacing: 6) {
-                let model = runtime.inspectorModel.live?.modelID ?? ""
-                if !model.isEmpty && model != "—" {
-                    HStack(spacing: 4) {
-                        Image(systemName: "cpu")
-                            .font(.system(size: 10))
-                            .foregroundStyle(LingXiTheme.electricCyan)
-                        Text(model)
-                            .font(.system(size: 11, design: .monospaced))
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.05), in: Capsule())
-                    .foregroundStyle(.secondary)
-                }
-
-                // Quick Clear Session
-                Button {
-                    runtime.newSession()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .background(Color.white.opacity(0.05), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .help("重置当前会话")
-            }
-        }
-        .padding(.horizontal, LingXiMetrics.Space.lg)
-        .frame(height: 38)
-        .background(
-            Color.black.opacity(0.28)
-                .overlay(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.08), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 1)
-                }
-        )
-    }
-
-    private var workspaceTitle: String {
-        if let url = runtime.workspaceURL {
-            return url.lastPathComponent
-        }
-        return runtime.sidebarModel.workspace.name
     }
 }
 
@@ -299,36 +216,45 @@ public struct ActionFlowTimelineView: View {
                 .background(
                     GeometryReader { content in
                         Color.clear.preference(
-                            key: BottomOffsetKey.self,
-                            value: content.frame(in: .named("stageScroll")).maxY - viewport.size.height
+                            key: StageScrollOffsetKey.self,
+                            value: content.frame(in: .named("stageScroll")).minY
                         )
                     }
                 )
-                .onPreferenceChange(BottomOffsetKey.self) { overshoot in
-                    showJumpToBottom = overshoot > 120
-                }
-                .onChange(of: rows.last?.id) {
-                    guard !showJumpToBottom, let lastID = rows.last?.id else { return }
-                    withAnimation(LXMotion.animation(reduceMotion: reduceMotion)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
+                .onPreferenceChange(StageScrollOffsetKey.self) { offset in
+                    let scrolledUp = offset < -120
+                    if showJumpToBottom != scrolledUp {
+                        withAnimation(LXMotion.animation(reduceMotion: reduceMotion)) {
+                            showJumpToBottom = scrolledUp
+                        }
                     }
                 }
-                .overlay(alignment: .bottom) {
-                    if showJumpToBottom {
+                .overlay(alignment: .bottomTrailing) {
+                    if showJumpToBottom, let last = rows.last {
                         Button {
-                            guard let lastID = rows.last?.id else { return }
                             withAnimation(LXMotion.animation(reduceMotion: reduceMotion)) {
-                                proxy.scrollTo(lastID, anchor: .bottom)
+                                proxy.scrollTo(last.id, anchor: .bottom)
                             }
-                            showJumpToBottom = false
                         } label: {
-                            Label("回到底部", systemImage: "arrow.down").labelStyle(.iconOnly)
+                            Label("回到底部", systemImage: "arrow.down")
+                                .font(.lxMeta)
                         }
                         .lxGlassButtonStyle()
-                        .buttonBorderShape(.circle)
-                        .help("回到底部")
-                        .padding(.bottom, LingXiMetrics.Space.md)
-                        .transition(.opacity)
+                        .padding(.trailing, LingXiMetrics.Space.xl)
+                        .padding(.bottom, LingXiMetrics.Space.xxl * 3)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+                }
+                .onChange(of: items.count) { _, _ in
+                    guard !showJumpToBottom, let last = rows.last else { return }
+                    withAnimation(LXMotion.animation(reduceMotion: reduceMotion)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+                .onChange(of: isGenerating) { _, generating in
+                    guard generating, !showJumpToBottom, let last = rows.last else { return }
+                    withAnimation(LXMotion.animation(reduceMotion: reduceMotion)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
             }
@@ -336,101 +262,56 @@ public struct ActionFlowTimelineView: View {
     }
 }
 
-/// Distance from the last row to the viewport bottom, used to detect "pinned to bottom".
-private struct BottomOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+private struct StageScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
 }
 
-/// Rich Cyber Hero Welcome View that anchors the visual center of the main stage
-struct CyberHeroWelcomeView: View {
+// MARK: - Welcome View (IDE Workspace Style)
+
+private struct CyberHeroWelcomeView: View {
     var onPromptSelect: ((String) -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: LingXiMetrics.Space.xl) {
-            // Foxfire Cyber Emblem
-            ZStack {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [
-                                LingXiTheme.foxfireAmber.opacity(0.32),
-                                LingXiTheme.astralViolet.opacity(0.12),
-                                Color.clear
-                            ],
-                            center: .center,
-                            startRadius: 8,
-                            endRadius: 75
-                        )
-                    )
-                    .frame(width: 150, height: 150)
-
-                Circle()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [LingXiTheme.foxfireAmber.opacity(0.85), LingXiTheme.electricCyan.opacity(0.4)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1.5
-                    )
-                    .frame(width: 84, height: 84)
-
+        VStack(spacing: LingXiMetrics.Space.lg) {
+            // Refined, professional brand mark
+            HStack(spacing: LingXiMetrics.Space.sm) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [LingXiTheme.foxfireAmber, LingXiTheme.electricCyan],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            }
-            .padding(.top, LingXiMetrics.Space.xl)
-
-            VStack(spacing: LingXiMetrics.Space.xs) {
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(LingXiTheme.foxfireAmber)
                 Text("LingXiAgent")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.white, LingXiTheme.electricCyan.opacity(0.95)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                Text("次世代赛博智能体研发环境。写清任务与验收标准，输入 / 调用命令，@ 引用上下文。")
-                    .font(.lxCallout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
             }
 
-            // Quick starter prompts grid
-            HStack(spacing: LingXiMetrics.Space.md) {
-                StarterPromptCard(
+            Text("次世代赛博智能体研发环境。写清任务与验收标准，输入 / 调用命令，@ 引用上下文。")
+                .font(.lxCallout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 480)
+
+            // Lightweight, restrained starter prompt options
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                StarterPromptButton(
                     icon: "magnifyingglass",
                     title: "代码巡检",
-                    subtitle: "审查项目架构与潜在风险",
                     prompt: "请对当前工作区的核心代码结构与依赖进行巡检，列出可以改进优化的点"
                 ) { onPromptSelect?($0) }
 
-                StarterPromptCard(
+                StarterPromptButton(
                     icon: "hammer",
                     title: "特性开发",
-                    subtitle: "规划并落地新功能需求",
                     prompt: "我需要为你增加一个新功能，请先向我梳理实现方案"
                 ) { onPromptSelect?($0) }
 
-                StarterPromptCard(
+                StarterPromptButton(
                     icon: "bolt.horizontal",
                     title: "性能调优",
-                    subtitle: "分析执行链路与降低开销",
                     prompt: "分析当前系统的响应瓶颈与高频路径，给出优化建议"
                 ) { onPromptSelect?($0) }
             }
-            .frame(maxWidth: 680)
             .padding(.top, LingXiMetrics.Space.xs)
         }
         .frame(maxWidth: .infinity)
@@ -438,10 +319,9 @@ struct CyberHeroWelcomeView: View {
     }
 }
 
-struct StarterPromptCard: View {
+private struct StarterPromptButton: View {
     let icon: String
     let title: String
-    let subtitle: String
     let prompt: String
     let onSelect: (String) -> Void
     @State private var isHovered = false
@@ -450,29 +330,23 @@ struct StarterPromptCard: View {
         Button {
             onSelect(prompt)
         } label: {
-            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+            HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: 12))
                     .foregroundStyle(LingXiTheme.electricCyan)
-                    .padding(.bottom, 2)
                 Text(title)
                     .font(.lxCallout.weight(.medium))
                     .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.lxMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(LingXiMetrics.Space.md)
-            .lxGlass(
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous),
-                tint: isHovered ? LingXiTheme.obsidianSurface.opacity(0.85) : LingXiTheme.obsidianSurface.opacity(0.4)
+            .padding(.horizontal, LingXiMetrics.Space.md)
+            .padding(.vertical, LingXiMetrics.Space.sm)
+            .background(
+                Color.white.opacity(isHovered ? 0.08 : 0.04),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
-            .lxCrystalBorder(
-                cornerRadius: 12,
-                glowColor: isHovered ? LingXiTheme.electricCyan : nil,
-                glowRadius: isHovered ? 8 : 0
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.white.opacity(isHovered ? 0.15 : 0.06), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

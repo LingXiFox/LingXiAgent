@@ -1,15 +1,37 @@
 import SwiftUI
 
-/// 赛博深空极光背景：深邃黑曜石底场 ✕ 多重梦幻极光弥散光斑
+/// 运行模式：工作区正常华丽模式 vs 设置克制模式
+public enum AtmosphereMode: Sendable, Equatable {
+    case workspace
+    case settings
+}
+
+/// 赛博深空极光背景：连续环境光场 ✕ 蓝紫青橙温度平衡
 ///
-/// 性能零负担模型（Zero GPU Burden）：
-/// 纯 CoreAnimation 硬件加速静态径向渐变（RadialGradient），无每帧着色器计算，
-/// 仅在窗口尺寸或外观变更时更新，空闲时为零 GPU/CPU 循环占用。
-struct AtmosphereBackdrop: View {
+/// 视觉设计标准：
+/// - 主光源 A：Indigo / Cold Blue，中左偏上，超大弥散范围（覆盖大部分窗口）
+/// - 主光源 B：Teal / Cyan，右下方，大弥散范围
+/// - 辅助光：Fox Orange / Amber，极低透明度，偏左下方，仅负责冷暖温度平衡
+/// - 无独立 Violet 灯（由 Indigo 与周围色彩重叠自然生成过渡紫韵）
+/// - 无硬切水平/垂直直线，呈一体化深空极光漫射
+/// - 纯矢量静态渲染，空闲时零持续刷新与零 GPU 循环占用
+public struct AtmosphereBackdrop: View {
+    public var mode: AtmosphereMode = .workspace
     @AppStorage(LXPreferenceKey.atmosphere) private var preference = AtmospherePreference.subtle
     @Environment(\.colorScheme) private var colorScheme
 
-    var body: some View {
+    public init(mode: AtmosphereMode = .workspace) {
+        self.mode = mode
+    }
+
+    private var modeStrength: Double {
+        switch mode {
+        case .workspace: return 1.0
+        case .settings: return 0.40
+        }
+    }
+
+    public var body: some View {
         ZStack {
             // 深邃暗夜黑曜石底色
             LingXiTheme.deepNightBackground
@@ -21,22 +43,31 @@ struct AtmosphereBackdrop: View {
                     let span = max(w, h)
 
                     ZStack {
-                        // 1. 左上深空星云靛蓝
-                        glow(LingXiTheme.atmosphereIndigo, 0.42, center: UnitPoint(x: 0.12, y: 0.08), radius: span * 0.70)
-                        // 2. 右侧幻视星轨紫
-                        glow(LingXiTheme.atmosphereViolet, 0.32, center: UnitPoint(x: 0.75, y: 0.25), radius: span * 0.55)
-                        // 3. 右下角电光青绿极光（生命与网络脉冲感）
-                        glow(LingXiTheme.atmosphereTeal, 0.35, center: UnitPoint(x: 0.90, y: 0.88), radius: span * 0.60)
-                        // 4. 左下角灵犀狐焰金光（温暖而轻盈的品牌灵魂光晕）
-                        glow(LingXiTheme.atmosphereAmber, 0.20, center: UnitPoint(x: 0.05, y: 0.92), radius: span * 0.45)
-                        // 5. 顶栏水平光束漫射（强化窗口上边缘的高级质感）
-                        LinearGradient(
-                            colors: [
-                                LingXiTheme.electricCyan.opacity(colorScheme == .dark ? 0.08 * preference.strength : 0.03),
-                                Color.clear
-                            ],
-                            startPoint: .top,
-                            endPoint: .init(x: 0.5, y: 0.20)
+                        // 1. 主光源 A：深空星云冷靛蓝（覆盖全场偏左上）
+                        glow(
+                            LingXiTheme.atmosphereIndigo,
+                            0.45,
+                            center: UnitPoint(x: 0.15, y: 0.22),
+                            radius: span * 0.90,
+                            size: geo.size
+                        )
+
+                        // 2. 主光源 B：电光青绿脉冲（右下方大面积漫射）
+                        glow(
+                            LingXiTheme.atmosphereTeal,
+                            0.35,
+                            center: UnitPoint(x: 0.88, y: 0.82),
+                            radius: span * 0.85,
+                            size: geo.size
+                        )
+
+                        // 3. 辅助光：灵犀狐焰温润金辉（极低透明度，仅作冷暖温度平衡）
+                        glow(
+                            LingXiTheme.atmosphereAmber,
+                            0.12,
+                            center: UnitPoint(x: 0.08, y: 0.85),
+                            radius: span * 0.50,
+                            size: geo.size
                         )
                     }
                 }
@@ -47,19 +78,24 @@ struct AtmosphereBackdrop: View {
         .accessibilityHidden(true)
     }
 
-    /// 浅色模式保持相同色相但降低浓度，深色模式展现璀璨极光
-    private func glow(_ color: Color, _ opacity: Double, center: UnitPoint, radius: CGFloat) -> some View {
-        let scale = colorScheme == .dark ? 1.0 : 0.38
-        return RadialGradient(
-            colors: [color.opacity(opacity * scale * preference.strength), .clear],
-            center: center,
-            startRadius: 0,
-            endRadius: radius
-        )
+    /// 根据深浅模式、用户偏好强度与场景模式动态计算渐变，使用确定尺寸的矩形填充避免视图裁剪
+    private func glow(_ color: Color, _ opacity: Double, center: UnitPoint, radius: CGFloat, size: CGSize) -> some View {
+        let themeScale = colorScheme == .dark ? 1.0 : 0.35
+        let effectiveOpacity = opacity * themeScale * preference.strength * modeStrength
+        return Rectangle()
+            .fill(
+                RadialGradient(
+                    colors: [color.opacity(effectiveOpacity), .clear],
+                    center: center,
+                    startRadius: 0,
+                    endRadius: radius
+                )
+            )
+            .frame(width: size.width, height: size.height)
     }
 }
 
-extension View {
+public extension View {
     /// 让底层背景氛围（AtmosphereBackdrop）自然延伸穿透到系统 Sidebar 与 Inspector 后方 (macOS 26+ / iOS 26+)
     @ViewBuilder
     func lxBackgroundExtension() -> some View {
@@ -74,4 +110,3 @@ extension View {
         #endif
     }
 }
-

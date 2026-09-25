@@ -47,6 +47,7 @@ public struct WorkspaceSummaryPresentation: Sendable, Equatable {
     public let rootBadge: String
     public let isRemote: Bool
     public let gitBranch: String?
+    public let worktreeBranch: String?
     public let indexingState: String
 
     public init(
@@ -54,12 +55,14 @@ public struct WorkspaceSummaryPresentation: Sendable, Equatable {
         rootBadge: String = "local",
         isRemote: Bool = false,
         gitBranch: String? = nil,
+        worktreeBranch: String? = nil,
         indexingState: String = "ready"
     ) {
         self.name = name
         self.rootBadge = rootBadge
         self.isRemote = isRemote
         self.gitBranch = gitBranch
+        self.worktreeBranch = worktreeBranch
         self.indexingState = indexingState
     }
 }

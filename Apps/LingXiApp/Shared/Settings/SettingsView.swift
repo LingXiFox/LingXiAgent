@@ -1,65 +1,44 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// Settings window: one sidebar (grouped pages, or search results while a
-/// query is typed) and one continuous content pane. No tab strip, no nested split.
-public struct SettingsView: View {
-    @ObservedObject public var store: SettingsStore
-    @AppStorage(LXPreferenceKey.colorScheme) private var scheme = ColorSchemePreference.system
-
-    @State private var page: SettingsPage? = .general
+/// Settings sidebar: grouped pages or live search results, conforming to native macOS sidebar behavior.
+struct SettingsSidebar: View {
+    @ObservedObject var store: SettingsStore
+    @Binding var selectedPage: SettingsPage
     @State private var query = ""
     @State private var highlight: String?
 
-    public init(store: SettingsStore) {
+    init(store: SettingsStore, selectedPage: Binding<SettingsPage>) {
         self.store = store
+        self._selectedPage = selectedPage
     }
 
     public var body: some View {
-        NavigationSplitView {
-            List(selection: $page) {
-                if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                    ForEach(SettingsPage.Group.allCases) { group in
-                        Section(group.rawValue) {
-                            ForEach(group.pages) { page in
-                                Label(page.title, systemImage: page.symbol)
-                                    .tag(page)
-                            }
+        List(selection: $selectedPage) {
+            if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                ForEach(SettingsPage.Group.allCases) { group in
+                    Section(group.rawValue) {
+                        ForEach(group.pages) { page in
+                            Label(page.title, systemImage: page.symbol)
+                                .tag(page)
                         }
                     }
-                } else {
-                    searchResults
                 }
+            } else {
+                searchResults
             }
-            .scrollContentBackground(.hidden)
-            .listStyle(.sidebar)
-            .searchable(text: $query, placement: .sidebar, prompt: "搜索设置")
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
-            .toolbar(removing: .sidebarToggle)
-        } detail: {
-            SettingsPageView(page: page ?? .general, store: store)
-                .environment(\.settingsHighlight, highlight)
-                .id(page)
         }
-        .scrollContentBackground(.hidden)
-        .background { AtmosphereBackdrop() }
-        .navigationTitle(page?.title ?? "设置")
-        .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 640)
-        .preferredColorScheme(scheme.colorScheme)
-        .task {
-            if store.client != nil { await store.refresh() }
-        }
+        .listStyle(.sidebar)
+        .searchable(text: $query, placement: .sidebar, prompt: "搜索设置")
     }
 
-    // MARK: Search
+    // MARK: - Search
 
     private var results: [SettingsSearchItem] {
         let q = query.trimmingCharacters(in: .whitespaces)
         return (SettingsSearchIndex.staticItems + dynamicItems).filter { $0.matches(q) }
     }
 
-    /// Live entities are indexed from the store so a provider, model or MCP
-    /// server can be found by its own name.
     private var dynamicItems: [SettingsSearchItem] {
         store.providers.map { SettingsSearchItem(anchor: "provider.\($0.id)", page: .providers,
                                                  title: $0.displayName, keywords: [$0.productID, $0.id]) }
@@ -90,7 +69,7 @@ public struct SettingsView: View {
                 Section(resultPage.title) {
                     ForEach(hits.filter { $0.page == resultPage }) { item in
                         Button {
-                            open(item)
+                            selectedPage = item.page
                         } label: {
                             Label(item.title, systemImage: resultPage.symbol)
                         }
@@ -100,20 +79,20 @@ public struct SettingsView: View {
             }
         }
     }
-
-    private func open(_ item: SettingsSearchItem) {
-        page = item.page
-        highlight = item.anchor
-    }
 }
 
-/// Routes to one page and scrolls to the highlighted anchor after navigation.
-private struct SettingsPageView: View {
+/// Settings detail pane: routes to one page and scrolls to highlighted anchor.
+struct SettingsDetailView: View {
     let page: SettingsPage
     @ObservedObject var store: SettingsStore
     @Environment(\.settingsHighlight) private var highlight
 
-    var body: some View {
+    init(store: SettingsStore, page: SettingsPage) {
+        self.store = store
+        self.page = page
+    }
+
+    public var body: some View {
         ScrollViewReader { proxy in
             Form {
                 SettingsNotice(store: store)
@@ -122,11 +101,11 @@ private struct SettingsPageView: View {
                 }
                 content
             }
-            .scrollContentBackground(.hidden)
             .formStyle(.grouped)
             .onAppear { scroll(proxy) }
             .onChange(of: highlight) { scroll(proxy) }
         }
+        .id(page)
     }
 
     @ViewBuilder
@@ -162,60 +141,30 @@ private struct SettingsPageView: View {
     }
 }
 
-/// In-window full-stage settings presentation ensuring visual consistency with MainStage
-public struct FullstageSettingsView: View {
+/// Standalone Settings window representation for preview or isolated testing.
+public struct SettingsView: View {
     @ObservedObject public var store: SettingsStore
-    public var onBack: () -> Void
+    @AppStorage(LXPreferenceKey.colorScheme) private var scheme = ColorSchemePreference.system
+    @State private var page: SettingsPage = .general
 
-    public init(store: SettingsStore, onBack: @escaping () -> Void) {
+    public init(store: SettingsStore) {
         self.store = store
-        self.onBack = onBack
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // High-cut Cyber Glass Header Bar
-            HStack(spacing: LingXiMetrics.Space.md) {
-                Button(action: onBack) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left")
-                        Text("返回工作区")
-                    }
-                    .font(.lxCallout.weight(.medium))
-                }
-                .lxGlassButtonStyle()
-                .buttonBorderShape(.capsule)
-                .keyboardShortcut(.cancelAction)
-                .help("返回工作区 (Esc)")
-
-                Spacer()
-
-                HStack(spacing: 8) {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(LingXiTheme.foxfireAmber)
-                    Text("偏好设置 · Settings")
-                        .font(.lxTitle.weight(.semibold))
-                }
-
-                Spacer()
-
-                // Balance placeholder
-                Color.clear.frame(width: 90, height: 1)
-            }
-            .padding(.horizontal, LingXiMetrics.Space.xl)
-            .padding(.top, LingXiMetrics.Space.md)
-            .padding(.bottom, LingXiMetrics.Space.sm)
-
-            Divider()
-                .padding(.horizontal, LingXiMetrics.Space.lg)
-
-            // Settings split content
-            SettingsView(store: store)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NavigationSplitView {
+            SettingsSidebar(store: store, selectedPage: $page)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
+                .toolbar(removing: .sidebarToggle)
+        } detail: {
+            SettingsDetailView(store: store, page: page)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background { AtmosphereBackdrop() }
+        .navigationTitle(page.title)
+        .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 640)
+        .preferredColorScheme(scheme.colorScheme)
+        .task {
+            if store.client != nil { await store.refresh() }
+        }
     }
 }
 #endif

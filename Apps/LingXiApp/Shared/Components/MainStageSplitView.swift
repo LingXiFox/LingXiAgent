@@ -1,12 +1,18 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// Main window, Apple Maps style: the conversation stage fills the window over
-/// a static ambient backdrop; the navigator (left) and inspector (right) are
-/// independent floating glass panels with their own margin and corner radius.
+/// Main window presentation mode: workspace conversation vs native in-window settings.
+public enum MainPresentationMode: Equatable {
+    case workspace
+    case settings
+}
+
+/// Main window: Apple Maps / Xcode style unified NavigationSplitView.
 ///
-/// Wide windows reserve room for both panels so the reading column never runs
-/// beneath them; narrow windows let the inspector float over the stage instead.
+/// Architecture Principles:
+/// - macOS controls the NavigationSplitView, Sidebar, Inspector, and window toolbar.
+/// - LingXiAgent controls the unified Atmosphere ambient backdrop and detail stage.
+/// - In-window Settings swaps the Sidebar and Detail in-place without overlay nesting.
 public struct MainStageSplitView: View {
     @ObservedObject public var runtime: RuntimeFrontend
     @ObservedObject private var sidebar: SidebarPresentationModel
@@ -15,6 +21,7 @@ public struct MainStageSplitView: View {
     public var settings: SettingsStore?
     public var onOpenTraceWindow: () -> Void
 
+    @State private var selectedSettingsPage: SettingsPage = .general
     @AppStorage(LXPreferenceKey.colorScheme) private var colorScheme = ColorSchemePreference.system
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -31,6 +38,10 @@ public struct MainStageSplitView: View {
         self.onOpenTraceWindow = onOpenTraceWindow
     }
 
+    private var presentationMode: MainPresentationMode {
+        runtime.isShowingSettings ? .settings : .workspace
+    }
+
     private var columnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
             get: { sidebar.isNavigatorVisible ? .all : .detailOnly },
@@ -40,13 +51,39 @@ public struct MainStageSplitView: View {
         )
     }
 
+    private var inspectorBinding: Binding<Bool> {
+        Binding(
+            get: { presentationMode == .workspace && inspector.isPresented },
+            set: { isPresented in
+                if presentationMode == .workspace {
+                    inspector.isPresented = isPresented
+                }
+            }
+        )
+    }
+
     public var body: some View {
         NavigationSplitView(columnVisibility: columnVisibility) {
-            SidebarView(runtime: runtime)
-                .navigationSplitViewColumnWidth(min: 220, ideal: LingXiMetrics.Split.navigatorWidth, max: 340)
+            switch presentationMode {
+            case .workspace:
+                SidebarView(runtime: runtime)
+                    .navigationSplitViewColumnWidth(min: 220, ideal: LingXiMetrics.Split.navigatorWidth, max: 340)
+            case .settings:
+                if let settings {
+                    SettingsSidebar(store: settings, selectedPage: $selectedSettingsPage)
+                        .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
+                }
+            }
         } detail: {
             ZStack {
-                MainStageView(runtime: runtime)
+                switch presentationMode {
+                case .workspace:
+                    MainStageView(runtime: runtime)
+                case .settings:
+                    if let settings {
+                        SettingsDetailView(store: settings, page: selectedSettingsPage)
+                    }
+                }
 
                 if runtime.isCommandPalettePresented {
                     Color.clear
@@ -59,54 +96,63 @@ public struct MainStageSplitView: View {
                     .padding(.top, LingXiMetrics.Space.xxl * 2)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                 }
-
-                if runtime.isShowingSettings, let settings {
-                    FullstageSettingsView(store: settings, onBack: {
-                        runtime.isShowingSettings = false
-                    })
-                    .transition(.opacity.combined(with: .scale(scale: 0.99)))
+            }
+            .inspector(isPresented: inspectorBinding) {
+                if presentationMode == .workspace {
+                    InspectorView(
+                        model: inspector,
+                        onOpenTraceWindow: onOpenTraceWindow,
+                        onRefresh: runtime.refreshRuntimeDetails,
+                        onCompact: runtime.compactContext,
+                        onTerminateTask: runtime.terminateBackgroundTask
+                    )
+                    .inspectorColumnWidth(min: 260, ideal: LingXiMetrics.Split.inspectorWidth, max: 380)
                 }
             }
-            .background {
-                AtmosphereBackdrop()
-                    .lxBackgroundExtension()
-            }
-            .inspector(isPresented: $inspector.isPresented) {
-                InspectorView(
-                    model: inspector,
-                    onOpenTraceWindow: onOpenTraceWindow,
-                    onRefresh: runtime.refreshRuntimeDetails,
-                    onCompact: runtime.compactContext,
-                    onTerminateTask: runtime.terminateBackgroundTask
-                )
-                .inspectorColumnWidth(min: 260, ideal: LingXiMetrics.Split.inspectorWidth, max: 380)
-            }
+        }
+        .background {
+            // The ONLY ambient atmosphere backdrop instance in the entire window, covering NavigationSplitView
+            AtmosphereBackdrop(mode: presentationMode == .settings ? .settings : .workspace)
         }
         .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $runtime.isShowingAboutSheet) {
             CyberAboutSheet(runtime: runtime)
         }
-        .animation(LXMotion.animation(reduceMotion: reduceMotion), value: runtime.isShowingSettings)
+        .animation(LXMotion.animation(reduceMotion: reduceMotion), value: presentationMode)
         .animation(LXMotion.animation(LXMotion.disclosure, reduceMotion: reduceMotion), value: runtime.isCommandPalettePresented)
         .toolbar { windowToolbar }
-        .navigationTitle(sidebar.workspace.name)
+        .navigationTitle(navigationTitle)
         .frame(minWidth: LingXiMetrics.Split.windowMinWidth, minHeight: LingXiMetrics.Split.windowMinHeight)
         .preferredColorScheme(colorScheme.colorScheme)
+    }
+
+    private var navigationTitle: String {
+        switch presentationMode {
+        case .workspace:
+            return sidebar.workspace.name.isEmpty ? "LingXiAgent" : sidebar.workspace.name
+        case .settings:
+            return "设置 · \(selectedSettingsPage.title)"
+        }
     }
 
     /// App-level actions offered in the command palette next to Core commands.
     private var paletteActions: [PaletteAction] {
         var actions = [
-            PaletteAction(id: "app.new", title: "新建会话", symbol: "square.and.pencil", shortcut: "⌘N") { runtime.newSession() },
+            PaletteAction(id: "app.new", title: "新建会话", symbol: "square.and.pencil", shortcut: "⌘N") {
+                if runtime.isShowingSettings { runtime.isShowingSettings = false }
+                runtime.newSession()
+            },
             PaletteAction(id: "app.navigator", title: "显示或隐藏导航面板", symbol: "sidebar.left", shortcut: "⌃⌘S") {
                 sidebar.isNavigatorVisible.toggle()
             },
             PaletteAction(id: "app.inspector", title: "显示或隐藏检查器", symbol: "sidebar.right", shortcut: "⌥⌘I") {
-                inspector.isPresented.toggle()
+                if presentationMode == .workspace {
+                    inspector.isPresented.toggle()
+                }
             },
             PaletteAction(id: "app.trace", title: "运行轨迹", symbol: "waveform.path.ecg", shortcut: "⌥⌘L", perform: onOpenTraceWindow),
         ]
-        if runtime.link == .connected {
+        if runtime.link == .connected && presentationMode == .workspace {
             actions += [
                 PaletteAction(id: "app.compact", title: "压缩上下文", symbol: "rectangle.compress.vertical") { runtime.compactContext() },
                 PaletteAction(id: "app.changes", title: "查看工作区变更", symbol: "plus.forwardslash.minus") {
@@ -127,23 +173,38 @@ public struct MainStageSplitView: View {
 
     @ToolbarContentBuilder
     private var windowToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button {
-                sidebar.isNavigatorVisible.toggle()
-            } label: {
-                Label("导航面板", systemImage: "sidebar.left")
+        switch presentationMode {
+        case .workspace:
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    sidebar.isNavigatorVisible.toggle()
+                } label: {
+                    Label("导航面板", systemImage: "sidebar.left")
+                }
+                .help("显示或隐藏导航面板 (⌃⌘S)")
             }
-            .help("显示或隐藏导航面板 (⌃⌘S)")
-        }
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                inspector.isPresented.toggle()
-            } label: {
-                Label("检查器", systemImage: "sidebar.right")
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    inspector.isPresented.toggle()
+                } label: {
+                    Label("检查器", systemImage: "sidebar.right")
+                }
+                .help("显示或隐藏检查器 (⌥⌘I)")
             }
-            .help("显示或隐藏检查器 (⌥⌘I)")
+        case .settings:
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    runtime.isShowingSettings = false
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("返回工作区")
+                    }
+                }
+                .help("返回工作区 (Esc)")
+                .keyboardShortcut(.cancelAction)
+            }
         }
     }
 }
-
 #endif
