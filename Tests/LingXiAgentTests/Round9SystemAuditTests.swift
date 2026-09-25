@@ -261,27 +261,6 @@ struct Round9SystemAuditTests {
     // MARK: - Phase E: macOS GUI Phase 0 Semantics & Synchronization
 
     #if canImport(SwiftUI)
-    @Test("Phase E: RuntimeInspector telemetry correctly separates P-Core working set from Codebase Graph")
-    @MainActor
-    func testGUIPhase0InspectorSemantics() throws {
-        let telemetry = RuntimeInspectorPresentation(
-            residentTokens: 64000,
-            workingSetCapacity: 128000,
-            contextWindowUsage: 0.50,
-            codebaseNodes: 1800,
-            codebaseEdges: 4200
-        )
-
-        // P-Core Working Set verification
-        #expect(telemetry.residentTokens == 64000)
-        #expect(telemetry.workingSetCapacity == 128000)
-        #expect(telemetry.contextWindowUsage == 0.50)
-
-        // Codebase Graph verification (Independent semantic structure)
-        #expect(telemetry.codebaseNodes == 1800)
-        #expect(telemetry.codebaseEdges == 4200)
-    }
-
     @Test("Phase E: ConversationPresentationModel coalesces high-speed streaming chunks smoothly")
     @MainActor
     func testStreamingChunkCoalescing() throws {

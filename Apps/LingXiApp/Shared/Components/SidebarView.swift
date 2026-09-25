@@ -1,148 +1,322 @@
 #if canImport(SwiftUI)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
-/// macOS 原生侧边栏组件 (NavigationSplitView 侧栏)
-/// 遵循 macOS HIG：工作区 Header、项目目录折叠树、会话与任务列表，无底部冗余设置项
+/// Navigator panel — "where am I": workspace, session search and history,
+/// settings. No execution controls; those belong to the composer.
 public struct SidebarView: View {
-    @ObservedObject public var model: SidebarPresentationModel
-    public var onNewSession: () -> Void
-    public var onSelectSession: (String) -> Void
-    public var onSelectTask: (String) -> Void
+    @ObservedObject public var runtime: RuntimeFrontend
+    @ObservedObject private var model: SidebarPresentationModel
 
-    public init(
-        model: SidebarPresentationModel,
-        onNewSession: @escaping () -> Void,
-        onSelectSession: @escaping (String) -> Void,
-        onSelectTask: @escaping (String) -> Void = { _ in }
-    ) {
-        self.model = model
-        self.onNewSession = onNewSession
-        self.onSelectSession = onSelectSession
-        self.onSelectTask = onSelectTask
+    @State private var collapsedFolders: Set<String> = []
+    @State private var renaming: SessionItemPresentation?
+    @State private var renameDraft = ""
+    @State private var pendingDeletion: SessionItemPresentation?
+
+    public init(runtime: RuntimeFrontend) {
+        self.runtime = runtime
+        self.model = runtime.sidebarModel
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Workspace Header
-            HStack(spacing: 8) {
-                Image(systemName: "folder.fill")
-                    .foregroundColor(LingXiTheme.accentColor)
-                    .imageScale(.medium)
+            WorkspaceHeader(runtime: runtime, workspace: model.workspace)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.workspace.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    if let branch = model.workspace.gitBranch {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.triangle.branch")
-                                .font(.system(size: 10))
-                            Text(branch)
-                                .font(.caption2)
-                        }
-                        .foregroundColor(LingXiTheme.secondaryText)
-                    }
-                }
+            #if os(macOS)
+            NativeSearchField(text: $model.searchText, prompt: "搜索会话")
+                .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
+                .padding(.bottom, LingXiMetrics.Space.sm)
+                .disabled(runtime.link != .connected)
+            #endif
 
-                Spacer()
-
-                Button(action: onNewSession) {
-                    Image(systemName: "square.and.pencil")
-                        .help("新建会话 (⌘N)")
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut("n", modifiers: .command)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            sessionList
 
             Divider()
-
-            // Session & Task Tree
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(model.folders) { folder in
-                        DisclosureGroup(isExpanded: .constant(true)) {
-                            ForEach(folder.sessions) { session in
-                                SessionRow(
-                                    session: session,
-                                    isSelected: model.selectedSessionID == session.id,
-                                    onSelect: { onSelectSession(session.id) },
-                                    onSelectTask: onSelectTask
-                                )
-                            }
-                        } label: {
-                            Label(folder.folderName, systemImage: "folder")
-                                .font(.subheadline)
-                                .foregroundColor(LingXiTheme.secondaryText)
-                        }
-                    }
-                }
-                .padding(12)
+                .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
+            NavigatorFooter(link: runtime.link)
+        }
+        .sheet(item: $renaming) { session in
+            RenameSessionSheet(title: $renameDraft) {
+                runtime.renameSession(id: session.id, title: renameDraft)
+                renaming = nil
+            } onCancel: {
+                renaming = nil
             }
         }
-        .background(LingXiTheme.windowBackground)
+        .confirmationDialog("删除会话？", isPresented: Binding(
+            get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }
+        ), presenting: pendingDeletion) { session in
+            Button("删除「\(session.title)」", role: .destructive) {
+                runtime.deleteSession(id: session.id)
+            }
+        } message: { _ in
+            Text("会话记录将从 Core 中删除，无法恢复。")
+        }
+    }
+
+    private var sessionList: some View {
+        List(selection: selection) {
+            ForEach(visibleFolders) { folder in
+                Section(isExpanded: expansion(for: folder.id)) {
+                    ForEach(folder.sessions) { session in
+                        SessionRow(session: session)
+                            .tag(session.id)
+                            .contextMenu {
+                                Button("重命名…") {
+                                    renameDraft = session.title
+                                    renaming = session
+                                }
+                                Divider()
+                                Button("删除…", role: .destructive) { pendingDeletion = session }
+                            }
+                    }
+                } header: {
+                    Text(folder.folderName)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        // The panel's glass is the only background; the list must not add a second one.
+        .scrollContentBackground(.hidden)
+        .overlay {
+            if visibleFolders.isEmpty {
+                PlaceholderLine(emptyText)
+                    .multilineTextAlignment(.center)
+                    .padding(LingXiMetrics.Space.lg)
+            }
+        }
+    }
+
+    private var emptyText: String {
+        if runtime.link != .connected { return "打开工作区后，这里列出它的会话。" }
+        return model.searchText.isEmpty ? "还没有会话。⌘N 新建一个。" : "没有匹配「\(model.searchText)」的会话。"
+    }
+
+    private var selection: Binding<String?> {
+        Binding(
+            get: { model.selectedSessionID },
+            set: { id in
+                guard let id, id != model.selectedSessionID else { return }
+                runtime.switchSession(id: id)
+            }
+        )
+    }
+
+    private func expansion(for folderID: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedFolders.contains(folderID) },
+            set: { expanded in
+                if expanded { collapsedFolders.remove(folderID) } else { collapsedFolders.insert(folderID) }
+            }
+        )
+    }
+
+    /// Search matches titles; message-body search waits for session.list to return snippets.
+    private var visibleFolders: [SessionFolderPresentation] {
+        let query = model.searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return model.folders }
+        return model.folders.compactMap { folder in
+            let hits = folder.sessions.filter { $0.title.localizedCaseInsensitiveContains(query) }
+            return hits.isEmpty ? nil : SessionFolderPresentation(folderName: folder.folderName, sessions: hits)
+        }
+    }
+}
+
+/// Current workspace (switchable), its branch and index state, and New Session.
+private struct WorkspaceHeader: View {
+    @ObservedObject var runtime: RuntimeFrontend
+    let workspace: WorkspaceSummaryPresentation
+
+    var body: some View {
+        HStack(alignment: .center, spacing: LingXiMetrics.Space.sm) {
+            Menu {
+                ForEach(RecentWorkspaces.all.filter { FileManager.default.fileExists(atPath: $0.path) }, id: \.path) { url in
+                    Button {
+                        Task { await runtime.openWorkspace(url) }
+                    } label: {
+                        Label(url.lastPathComponent, systemImage: url == runtime.workspaceURL ? "checkmark" : "folder")
+                    }
+                }
+                Divider()
+                #if os(macOS)
+                Button("打开工作区…", action: chooseWorkspace)
+                #endif
+                if runtime.link == .connected {
+                    Button("关闭工作区") { Task { await runtime.closeWorkspace() } }
+                }
+            } label: {
+                identity
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .fixedSize(horizontal: false, vertical: true)
+            .help("切换工作区")
+
+            Spacer(minLength: 0)
+
+            Button(action: runtime.newSession) {
+                Label("新建会话", systemImage: "square.and.pencil").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .disabled(runtime.link != .connected)
+            .help("新建会话 (⌘N)")
+        }
+        .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
+        .padding(.top, LingXiMetrics.Space.md)
+        .padding(.bottom, LingXiMetrics.Space.sm)
+    }
+
+    private var identity: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(workspace.name)
+                .font(.lxCallout.weight(.semibold))
+                .lineLimit(1)
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                if let branch = workspace.gitBranch {
+                    Label(branch, systemImage: "arrow.triangle.branch").lineLimit(1)
+                }
+                if runtime.link == .connected, workspace.indexingState != "ready" {
+                    Text("索引 \(workspace.indexingState)")
+                }
+            }
+            .font(.lxMeta)
+            .foregroundStyle(.tertiary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    #if os(macOS)
+    private func chooseWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "打开"
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await runtime.openWorkspace(url) }
+        }
+    }
+    #endif
+}
+
+/// Connection state and Settings — the two global entry points that are navigation.
+private struct NavigatorFooter: View {
+    let link: RuntimeFrontend.Link
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            SettingsLink {
+                Label("设置", systemImage: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("设置 (⌘,)")
+            Spacer(minLength: 0)
+            Label(linkLabel, systemImage: linkSymbol)
+                .font(.lxMeta)
+                .foregroundStyle(linkTint)
+                .lineLimit(1)
+        }
+        .font(.lxCallout)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
+        .padding(.vertical, LingXiMetrics.Space.md)
+    }
+
+    private var linkLabel: String {
+        switch link {
+        case .connected: return "Core 已连接"
+        case .connecting: return "连接中"
+        case .failed: return "连接失败"
+        case .disconnected: return "未连接"
+        }
+    }
+
+    private var linkSymbol: String {
+        switch link {
+        case .connected: return "circle.fill"
+        case .connecting: return "circle.dotted"
+        case .failed: return "exclamationmark.circle.fill"
+        case .disconnected: return "circle"
+        }
+    }
+
+    private var linkTint: AnyShapeStyle {
+        switch link {
+        case .connected: return AnyShapeStyle(.green)
+        case .failed: return AnyShapeStyle(.red)
+        default: return AnyShapeStyle(.tertiary)
+        }
     }
 }
 
 private struct SessionRow: View {
     let session: SessionItemPresentation
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onSelectTask: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(action: onSelect) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(session.isActive ? LingXiTheme.accentColor : Color.secondary.opacity(0.4))
-                        .frame(width: 7, height: 7)
-
-                    Text(session.title)
-                        .font(.body)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Text(session.lastUpdated, style: .time)
-                        .font(.caption2)
-                        .foregroundColor(LingXiTheme.secondaryText)
-                }
-                .contentShape(Rectangle())
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            Label {
+                Text(session.title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } icon: {
+                Image(systemName: "bubble.left")
             }
-            .buttonStyle(.plain)
-
-            // 附带展示该 Session 下的 Tasks
-            if !session.tasks.isEmpty && isSelected {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(session.tasks) { task in
-                        Button(action: { onSelectTask(task.taskID) }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "checklist")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(LingXiTheme.accentColor)
-
-                                Text(task.objective)
-                                    .font(.caption)
-                                    .lineLimit(1)
-
-                                Spacer()
-
-                                TaskStatusBadge(state: task.state)
-                            }
-                            .padding(.leading, 14)
-                            .padding(.vertical, 2)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+            Spacer(minLength: LingXiMetrics.Space.xs)
+            if session.isActive {
+                ActivityDot()
+            } else {
+                Text(session.mode)
+                    .font(.lxMicro)
+                    .foregroundStyle(.tertiary)
+                Text(session.lastUpdated, format: .relative(presentation: .named, unitsStyle: .narrow))
+                    .font(.lxMeta)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
         }
-        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(session.title)，\(session.messageCount) 条消息，模式 \(session.mode)\(session.isActive ? "，执行中" : "")")
     }
 }
 
+private struct RenameSessionSheet: View {
+    @Binding var title: String
+    var onCommit: () -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
+            Text("重命名会话").font(.lxTitle)
+            TextField("会话标题", text: $title)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 320)
+                .onSubmit(onCommit)
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel).keyboardShortcut(.cancelAction)
+                Button("重命名", action: onCommit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(LingXiMetrics.Space.xl)
+    }
+}
+
+/// Small brand-tinted dot: the one place the navigator uses the accent.
+struct ActivityDot: View {
+    var body: some View {
+        Circle()
+            .fill(LingXiTheme.accentColor)
+            .frame(width: LingXiMetrics.Space.sm - 2, height: LingXiMetrics.Space.sm - 2)
+            .accessibilityLabel("执行中")
+    }
+}
+
+/// Task state as glyph + text in secondary colour; only running and failure
+/// carry colour, and state is never conveyed by colour alone.
 public struct TaskStatusBadge: View {
     public let state: String
 
@@ -151,35 +325,53 @@ public struct TaskStatusBadge: View {
     }
 
     public var body: some View {
-        let (color, icon) = badgeAppearance(for: state)
-        HStack(spacing: 3) {
-            Image(systemName: icon)
-                .font(.system(size: 8))
-            Text(state.capitalized)
-                .font(.system(size: 9, weight: .medium))
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            if state.lowercased() == "running" {
+                ActivityDot()
+            } else {
+                Image(systemName: symbol)
+            }
+            Text(TaskStateLabel.chinese(for: state))
         }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 1.5)
-        .background(color.opacity(0.15))
-        .foregroundColor(color)
-        .clipShape(Capsule())
+        .font(.lxMeta)
+        .foregroundStyle(tint)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("任务状态 \(TaskStateLabel.chinese(for: state))")
     }
 
-    private func badgeAppearance(for state: String) -> (Color, String) {
+    private var symbol: String {
         switch state.lowercased() {
-        case "running":
-            return (LingXiTheme.accentColor, "play.circle.fill")
-        case "completed":
-            return (.green, "checkmark.circle.fill")
-        case "paused":
-            return (.orange, "pause.circle.fill")
-        case "waiting":
-            return (.yellow, "clock.fill")
-        case "failed", "cancelled":
-            return (.red, "xmark.circle.fill")
-        default:
-            return (.secondary, "circle")
+        case "completed": return "checkmark.circle"
+        case "paused": return "pause.circle"
+        case "waiting": return "clock"
+        case "failed", "cancelled": return "xmark.circle"
+        default: return "circle.dotted"
+        }
+    }
+
+    private var tint: AnyShapeStyle {
+        switch state.lowercased() {
+        case "failed": return AnyShapeStyle(.red)
+        case "waiting": return AnyShapeStyle(.orange)
+        default: return AnyShapeStyle(.secondary)
         }
     }
 }
+
+/// Protocol states are English identifiers; the UI shows Chinese per spec ch.5.
+enum TaskStateLabel {
+    static func chinese(for state: String) -> String {
+        switch state.lowercased() {
+        case "queued": return "排队中"
+        case "running": return "执行中"
+        case "paused": return "已暂停"
+        case "waiting": return "待回答"
+        case "completed": return "已完成"
+        case "failed": return "已失败"
+        case "cancelled": return "已取消"
+        default: return state
+        }
+    }
+}
+
 #endif

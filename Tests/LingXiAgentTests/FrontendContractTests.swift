@@ -9,7 +9,13 @@ import LingXiClient
 final class MockFrontendRuntime: FrontendRuntime, @unchecked Sendable {
     private var _state: ApplicationState
     private let (stream, continuation): (AsyncStream<ApplicationUpdate>, AsyncStream<ApplicationUpdate>.Continuation)
-    public var dispatchedActions: [ApplicationAction] = []
+    private let lock = NSLock()
+    private var _dispatchedActions: [ApplicationAction] = []
+    public var dispatchedActions: [ApplicationAction] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _dispatchedActions
+    }
     public var availableCommands: [ApplicationCommand] = []
     public var referenceCandidates: [String] = ["main.swift", "App.swift"]
     public var tasks: [BackgroundTaskSnapshot] = []
@@ -34,7 +40,9 @@ final class MockFrontendRuntime: FrontendRuntime, @unchecked Sendable {
     }
 
     func dispatch(_ action: ApplicationAction) async {
-        dispatchedActions.append(action)
+        lock.withLock {
+            _dispatchedActions.append(action)
+        }
     }
 
     func workspaceReferenceCandidates() async -> [String] {

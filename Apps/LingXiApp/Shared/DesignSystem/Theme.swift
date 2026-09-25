@@ -48,6 +48,43 @@ public enum LingXiTheme {
         return Color(UIColor.secondaryLabel)
         #endif
     }
+
+    /// 三级说明：工具行副标题、占位文案
+    public static var tertiaryText: Color {
+        #if os(macOS)
+        return Color(nsColor: .tertiaryLabelColor)
+        #else
+        return Color(UIColor.tertiaryLabel)
+        #endif
+    }
+
+    // MARK: 氛围色（低饱和冷色，仅用于背景光与面板着色）
+
+    static let atmosphereIndigo = Color(.sRGB, red: 0.30, green: 0.36, blue: 0.86)
+    static let atmosphereTeal = Color(.sRGB, red: 0.16, green: 0.62, blue: 0.66)
+    static let atmosphereViolet = Color(.sRGB, red: 0.52, green: 0.36, blue: 0.82)
+
+    /// 「沉稳」面板材质的玻璃着色
+    static var panelTint: Color {
+        #if os(macOS)
+        return Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.10, green: 0.12, blue: 0.24, alpha: 0.45)
+                : NSColor(srgbRed: 0.93, green: 0.94, blue: 0.98, alpha: 0.55)
+        }))
+        #else
+        return Color(.sRGB, red: 0.10, green: 0.12, blue: 0.24, opacity: 0.45)
+        #endif
+    }
+
+    /// 四级弱显：计数、单位、被抑制项
+    public static var quaternaryText: Color {
+        #if os(macOS)
+        return Color(nsColor: .quaternaryLabelColor)
+        #else
+        return Color(UIColor.quaternaryLabel)
+        #endif
+    }
 }
 
 public extension Color {

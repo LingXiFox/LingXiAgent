@@ -11,6 +11,8 @@ let package = Package(
         .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
         .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
         .library(name: "LingXiPluginSDK", targets: ["LingXiPluginSDK"]),
+        .library(name: "LingXiFrontendKit", targets: ["LingXiFrontendKit"]),
+        .executable(name: "LingXiMacApp", targets: ["LingXiMacApp"]),
         .executable(name: "FoxPlugin", targets: ["FoxPlugin"]),
     ],
     targets: [
@@ -81,6 +83,13 @@ let package = Package(
             name: "LingXiFrontendKit",
             dependencies: ["LingXiApplication", "LingXiClient", "LingXiProtocol"],
             path: "Apps/LingXiApp/Shared"
+        ),
+
+        // macOS GUI executable entry. Wrapped into LingXi.app by Scripts/bundle-mac-app.sh.
+        .executableTarget(
+            name: "LingXiMacApp",
+            dependencies: ["LingXiFrontendKit", "LingXiClient", "LingXiProtocol"],
+            path: "Apps/LingXiApp/macOS"
         ),
 
         .testTarget(

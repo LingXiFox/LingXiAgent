@@ -9,6 +9,8 @@ public struct MacNativeTextView: NSViewRepresentable {
     public var isEditable: Bool
     public var isMonospace: Bool
     public var placeholder: String?
+    /// When true, plain Return inserts a newline and only ⌘Return submits.
+    public var submitRequiresCommand: Bool
     public var onSubmit: (() -> Void)?
 
     public init(
@@ -16,14 +18,23 @@ public struct MacNativeTextView: NSViewRepresentable {
         isEditable: Bool = true,
         isMonospace: Bool = false,
         placeholder: String? = nil,
+        submitRequiresCommand: Bool = false,
         onSubmit: (() -> Void)? = nil
     ) {
         self._text = text
         self.isEditable = isEditable
         self.isMonospace = isMonospace
         self.placeholder = placeholder
+        self.submitRequiresCommand = submitRequiresCommand
         self.onSubmit = onSubmit
     }
+
+    /// Line height of the body font, used by callers to size the view per line.
+    public static var bodyLineHeight: CGFloat {
+        NSLayoutManager().defaultLineHeight(for: bodyFont)
+    }
+
+    static var bodyFont: NSFont { NSFont.systemFont(ofSize: NSFont.systemFontSize) }
 
     public func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -56,10 +67,13 @@ public struct MacNativeTextView: NSViewRepresentable {
         if isMonospace {
             textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         } else {
-            textView.font = NSFont.systemFont(ofSize: 13)
+            textView.font = Self.bodyFont
         }
+        textView.textContainerInset = .zero
 
+        textView.placeholderString = placeholder
         textView.onSubmit = onSubmit
+        textView.submitRequiresCommand = submitRequiresCommand
         context.coordinator.textView = textView
         scrollView.documentView = textView
 
@@ -73,6 +87,9 @@ public struct MacNativeTextView: NSViewRepresentable {
         }
         textView.isEditable = isEditable
         textView.onSubmit = onSubmit
+        textView.submitRequiresCommand = submitRequiresCommand
+        textView.placeholderString = placeholder
+        textView.needsDisplay = true
     }
 
     public final class Coordinator: NSObject, NSTextViewDelegate {
@@ -86,22 +103,61 @@ public struct MacNativeTextView: NSViewRepresentable {
         public func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             self.parent.text = textView.string
+            textView.needsDisplay = true
         }
     }
 }
 
 public final class KeyInterceptingTextView: NSTextView {
     public var onSubmit: (() -> Void)?
+    public var submitRequiresCommand = false
+    public var placeholderString: String? {
+        didSet { if placeholderString != oldValue { needsDisplay = true } }
+    }
 
+    /// Default: Return sends, ⇧Return inserts a newline, ⌘Return sends.
+    /// With `submitRequiresCommand`: only ⌘Return sends, Return inserts a newline.
+    /// Without an onSubmit handler every key falls through to the default behaviour.
     public override func keyDown(with event: NSEvent) {
-        // ⌘ + Return 发送
-        if event.modifierFlags.contains(.command) && event.keyCode == 36 {
-            if let onSubmit = onSubmit {
-                onSubmit()
+        if onSubmit != nil, isEditable, event.keyCode == 36 {
+            let command = event.modifierFlags.contains(.command)
+            let shift = event.modifierFlags.contains(.shift)
+            if command || (!submitRequiresCommand && !shift) {
+                onSubmit?()
                 return
             }
         }
         super.keyDown(with: event)
+    }
+
+    /// The placeholder is drawn manually, so redraw it when light/dark flips.
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let placeholder = placeholderString, string.isEmpty else { return }
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? MacNativeTextView.bodyFont,
+            .foregroundColor: NSColor.placeholderTextColor,
+            .paragraphStyle: style
+        ]
+        placeholder.draw(in: placeholderBounds, withAttributes: attributes)
+    }
+
+    private var placeholderBounds: NSRect {
+        let inset = textContainer?.lineFragmentPadding ?? 0
+        let origin = textContainerOrigin
+        let resolvedFont = font ?? MacNativeTextView.bodyFont
+        let height = layoutManager?.defaultLineHeight(for: resolvedFont) ?? resolvedFont.pointSize
+        return NSRect(x: origin.x + inset,
+                      y: origin.y,
+                      width: max(0, visibleRect.width - inset * 2),
+                      height: max(0, height))
     }
 }
 #endif

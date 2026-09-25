@@ -14,7 +14,7 @@ struct LingXiAppPhase0Tests {
         let testMarker = homeDir.appendingPathComponent(".lingxiagent_phase0_probe_\(UUID().uuidString)")
         #expect(!FileManager.default.fileExists(atPath: testMarker.path))
 
-        let runtime = RuntimeFrontend()
+        let runtime = RuntimeFrontend.preview()
 
         // 发送消息
         runtime.sendMessage(
@@ -29,7 +29,7 @@ struct LingXiAppPhase0Tests {
 
     @Test("RuntimeFrontend Architecture: Composer typing is isolated from high-speed streaming without interference")
     func testComposerTypingIsolatedFromStreaming() async throws {
-        let runtime = RuntimeFrontend()
+        let runtime = RuntimeFrontend.preview()
         let composer = runtime.composerModel
         let conversation = runtime.conversationModel
 
@@ -80,7 +80,7 @@ struct LingXiAppPhase0Tests {
 
     @Test("RuntimeFrontend Architecture: Session and task switching synchronizes stage state")
     func testSessionSwitchingSynchronization() async throws {
-        let runtime = RuntimeFrontend()
+        let runtime = RuntimeFrontend.preview()
         #expect(runtime.sidebarModel.selectedSessionID == "sess-1")
         #expect(runtime.conversationModel.sessionID == "sess-1")
 
@@ -91,7 +91,7 @@ struct LingXiAppPhase0Tests {
 
     @Test("RuntimeFrontend Architecture: HITL interaction resolves locally and in state")
     func testHITLInteractionResolution() async throws {
-        let runtime = RuntimeFrontend()
+        let runtime = RuntimeFrontend.preview()
         let card = InteractionCardPresentation(
             interactionID: "int-101",
             agentRunID: "subagent-coder",
@@ -114,7 +114,7 @@ struct LingXiAppPhase0Tests {
 
     @Test("RuntimeFrontend Architecture: Task finalization transitions task state machine")
     func testTaskFinalizationTransitions() async throws {
-        let runtime = RuntimeFrontend()
+        let runtime = RuntimeFrontend.preview()
         #expect(runtime.conversationModel.activeTask?.state == "running")
 
         runtime.finalizeTask(action: .accept)

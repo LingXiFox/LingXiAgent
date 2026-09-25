@@ -3,6 +3,7 @@ import Foundation
 import SwiftUI
 import Combine
 import LingXiProtocol
+import LingXiApplication
 
 // MARK: - Attachment Presentation
 
@@ -71,26 +72,114 @@ public enum InteractionStatus: String, Sendable, Equatable {
     case rejected = "rejected"
 }
 
+/// What the agent is asking the user for.
+public enum InteractionCardKind: String, Sendable, Equatable {
+    case permission, question, decision
+}
+
+/// One pending or resolved human-in-the-loop request (permission, question or decision).
 public struct InteractionCardPresentation: Sendable, Equatable, Identifiable {
     public var id: String { interactionID }
     public let interactionID: String
     public let agentRunID: String
+    public var kind: InteractionCardKind
+    /// Tool for a permission request; empty for questions.
     public let toolName: String
+    /// Verbatim command / arguments for permissions; question text for questions.
     public let parametersSummary: String
+    /// Target resource (path, host, process) of a permission request.
+    public var resource: String
+    /// Capability kinds the permission would grant (e.g. `processExecution`).
+    public var capabilities: [String]
+    public var options: [String]
+    public var allowsMultiple: Bool
+    public var allowsFreeText: Bool
     public var status: InteractionStatus
 
     public init(
         interactionID: String,
         agentRunID: String = "main",
+        kind: InteractionCardKind = .permission,
         toolName: String,
         parametersSummary: String,
+        resource: String = "",
+        capabilities: [String] = [],
+        options: [String] = [],
+        allowsMultiple: Bool = false,
+        allowsFreeText: Bool = false,
         status: InteractionStatus = .pending
     ) {
         self.interactionID = interactionID
         self.agentRunID = agentRunID
+        self.kind = kind
         self.toolName = toolName
         self.parametersSummary = parametersSummary
+        self.resource = resource
+        self.capabilities = capabilities
+        self.options = options
+        self.allowsMultiple = allowsMultiple
+        self.allowsFreeText = allowsFreeText
         self.status = status
+    }
+}
+
+/// One tool call and its result, aggregated under a single call ID.
+public struct ToolCallPresentation: Sendable, Equatable {
+    public let callID: String
+    public let toolName: String
+    /// Main argument in one line: path, command, pattern or URL.
+    public var summary: String
+    /// waiting / running / completed / failed / cancelled
+    public var status: String
+    /// Result summary or stdout tail, capped for display.
+    public var output: String?
+    public var stderr: String?
+    public var durationMs: Double?
+    public var exitCode: Int?
+    public var workingDirectory: String?
+
+    public init(callID: String, toolName: String, summary: String, status: String,
+                output: String? = nil, stderr: String? = nil, durationMs: Double? = nil,
+                exitCode: Int? = nil, workingDirectory: String? = nil) {
+        self.callID = callID
+        self.toolName = toolName
+        self.summary = summary
+        self.status = status
+        self.output = output
+        self.stderr = stderr
+        self.durationMs = durationMs
+        self.exitCode = exitCode
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// Subagent lifecycle marker in the main timeline (the full tree lives in the inspector).
+public struct SubagentEventPresentation: Sendable, Equatable {
+    public let runID: String
+    public let parentRunID: String
+    public var status: String
+    public var terminalReason: String?
+
+    public init(runID: String, parentRunID: String, status: String, terminalReason: String? = nil) {
+        self.runID = runID
+        self.parentRunID = parentRunID
+        self.status = status
+        self.terminalReason = terminalReason
+    }
+}
+
+/// Runtime condition that affects the task: provider failure, retry, rate limit,
+/// compaction, recovery. Routine metrics never become notices.
+public struct NoticePresentation: Sendable, Equatable {
+    public enum Level: String, Sendable, Equatable { case info, warning, error }
+    public let level: Level
+    public let title: String
+    public let message: String
+
+    public init(level: Level, title: String, message: String) {
+        self.level = level
+        self.title = title
+        self.message = message
     }
 }
 
@@ -98,9 +187,11 @@ public enum TimelineItemKind: Sendable, Equatable {
     case user(content: String, attachments: [AttachmentPresentation])
     case thinking(content: String, isExpanded: Bool, durationSeconds: Double, tokenCount: Int)
     case assistant(content: String, isStreaming: Bool)
-    case tool(callID: String, toolName: String, summary: String, status: String, output: String?)
+    case tool(ToolCallPresentation)
     case interaction(card: InteractionCardPresentation)
     case diff(filePath: String, diffContent: String)
+    case subagent(SubagentEventPresentation)
+    case notice(NoticePresentation)
     case terminal(title: String, isSuccess: Bool, message: String)
 }
 
@@ -122,6 +213,15 @@ public enum TaskStageViewTab: String, Sendable, CaseIterable {
     case plan = "Plan"
     case actionFlow = "Action Flow"
     case report = "Final Report"
+
+    /// 界面标签按规范第五章术语表取中文，rawValue 保持协议侧英文标识。
+    public var displayName: String {
+        switch self {
+        case .plan: return "计划"
+        case .actionFlow: return "执行"
+        case .report: return "报告"
+        }
+    }
 }
 
 public struct TaskPresentation: Identifiable, Sendable, Equatable {
@@ -199,76 +299,26 @@ public struct SessionFolderPresentation: Identifiable, Sendable, Equatable {
     }
 }
 
-// MARK: - Legacy / Telemetry Diagnostic Presentation (Internal Testing & Compatibility)
 
-public struct RuntimeInspectorPresentation: Sendable, Equatable {
-    public var residentTokens: Int
-    public var workingSetCapacity: Int
-    public var contextWindowUsage: Double
-    public var codebaseNodes: Int
-    public var codebaseEdges: Int
-    public var ecoreHeat: Double
-    public var cacheHitRatio: Double
-    public var tokensPerSecond: Double
-    public var retrievalWarmup: String
-    public var activeMCPCount: Int
-    public var activeBackgroundTasks: Int
-
-    public init(
-        residentTokens: Int = 48200,
-        workingSetCapacity: Int = 128000,
-        contextWindowUsage: Double = 0.38,
-        codebaseNodes: Int = 1250,
-        codebaseEdges: Int = 3480,
-        ecoreHeat: Double = 0.42,
-        cacheHitRatio: Double = 0.78,
-        tokensPerSecond: Double = 54.2,
-        retrievalWarmup: String = "ready",
-        activeMCPCount: Int = 4,
-        activeBackgroundTasks: Int = 0
-    ) {
-        self.residentTokens = residentTokens
-        self.workingSetCapacity = workingSetCapacity
-        self.contextWindowUsage = contextWindowUsage
-        self.codebaseNodes = codebaseNodes
-        self.codebaseEdges = codebaseEdges
-        self.ecoreHeat = ecoreHeat
-        self.cacheHitRatio = cacheHitRatio
-        self.tokensPerSecond = tokensPerSecond
-        self.retrievalWarmup = retrievalWarmup
-        self.activeMCPCount = activeMCPCount
-        self.activeBackgroundTasks = activeBackgroundTasks
-    }
-}
-
-// MARK: - High-Level Inspector Presentation (Aesthetic First: Context Health Gauge, Success Criteria, Artifacts)
-
-
-public struct ContextHealthPresentation: Sendable, Equatable {
-    public var usedTokens: Int
-    public var maxTokens: Int
-    public var healthPercentage: Double // 0.0 ~ 1.0
-
-    public init(usedTokens: Int = 48_200, maxTokens: Int = 128_000) {
-        self.usedTokens = usedTokens
-        self.maxTokens = maxTokens
-        self.healthPercentage = maxTokens > 0 ? Double(usedTokens) / Double(maxTokens) : 0.0
-    }
-
-    public var formattedTokens: String {
-        let usedK = Double(usedTokens) / 1000.0
-        let maxK = Double(maxTokens) / 1000.0
-        return String(format: "%.1fk / %.0fk", usedK, maxK)
-    }
-}
 
 public enum InspectorTab: String, CaseIterable, Identifiable {
     case overview = "Overview"
-    case agent = "Agent"
+    case core = "Core"
     case tasks = "Tasks"
-    case capabilities = "Capabilities"
+    case agents = "Agents"
+    case changes = "Changes"
 
     public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .overview: return "概览"
+        case .core: return "Core"
+        case .tasks: return "任务"
+        case .agents: return "Agent"
+        case .changes: return "变更"
+        }
+    }
 }
 
 public struct TraceEventItemPresentation: Identifiable, Sendable, Equatable {
@@ -303,7 +353,10 @@ public final class SidebarPresentationModel: ObservableObject {
     @Published public var folders: [SessionFolderPresentation] = []
     @Published public var selectedSessionID: String?
     @Published public var selectedTaskID: String?
+    @Published public var searchText: String = ""
     @Published public var workspace: WorkspaceSummaryPresentation
+    /// Floating navigator panel visibility (⌃⌘S).
+    @Published public var isNavigatorVisible: Bool = true
 
     public init(
         folders: [SessionFolderPresentation] = [],
@@ -393,23 +446,90 @@ public final class ConversationPresentationModel: ObservableObject {
 @MainActor
 public final class RuntimeInspectorPresentationModel: ObservableObject {
     @Published public var selectedTab: InspectorTab = .overview
-    @Published public var contextHealth: ContextHealthPresentation = ContextHealthPresentation()
-    @Published public var criteria: [SuccessCriterion] = []
-    @Published public var artifacts: [TaskArtifact] = []
-    @Published public var currentPreset: AgentPresetInfo = AgentPresetInfo(id: "build", name: "Builder", description: "Default Builder", mode: .build)
-    @Published public var activeGrants: [CapabilityGrant] = []
+    /// Live runtime state; nil while no Core is connected (the inspector says so).
+    @Published public var live: InspectorSnapshot?
     @Published public var traceEvents: [TraceEventItemPresentation] = []
     @Published public var isPresented: Bool = true
 
     public init() {}
 }
 
+/// Everything the inspector shows, taken from `ApplicationState` in one pass.
+public struct InspectorSnapshot: Equatable, Sendable {
+    // Overview
+    public var status: ProductRuntimeStatus
+    public var runStartedAt: Date?
+    public var modelID: String?
+    public var reasoning: String
+    public var permission: String
+    public var providerState: ProviderRequestState?
+    public var providerDetail: String?
+    public var lastMetrics: MessageMetrics?
+    public var activeTools: [String]
+    public var pendingInteraction: String?
+    public var health: RuntimeHealth?
+    // Core
+    public var context: ContextStateSnapshot?
+    public var contextPolicy: ContextPolicySnapshot?
+    public var compaction: ContextCompactedSnapshot?
+    // Tasks
+    public var todos: [TodoItemData]
+    public var workflows: [WorkflowSnapshot]
+    public var backgroundTasks: [BackgroundTaskSnapshot]
+    // Agents
+    public var rootRun: RunSnapshot?
+    public var subagents: [SubagentRowPresentation]
+    // Changes
+    public var changes: [FileChangePresentation]
+    public var diffLoaded: Bool
+    public var branch: String?
+    public var workspaceRoot: String?
+
+    public init(status: ProductRuntimeStatus = .disconnected, runStartedAt: Date? = nil, modelID: String? = nil,
+                reasoning: String = "auto", permission: String = "", providerState: ProviderRequestState? = nil,
+                providerDetail: String? = nil, lastMetrics: MessageMetrics? = nil, activeTools: [String] = [],
+                pendingInteraction: String? = nil, health: RuntimeHealth? = nil,
+                context: ContextStateSnapshot? = nil, contextPolicy: ContextPolicySnapshot? = nil,
+                compaction: ContextCompactedSnapshot? = nil, todos: [TodoItemData] = [],
+                workflows: [WorkflowSnapshot] = [], backgroundTasks: [BackgroundTaskSnapshot] = [],
+                rootRun: RunSnapshot? = nil, subagents: [SubagentRowPresentation] = [],
+                changes: [FileChangePresentation] = [], diffLoaded: Bool = false,
+                branch: String? = nil, workspaceRoot: String? = nil) {
+        self.status = status; self.runStartedAt = runStartedAt; self.modelID = modelID
+        self.reasoning = reasoning; self.permission = permission; self.providerState = providerState
+        self.providerDetail = providerDetail; self.lastMetrics = lastMetrics; self.activeTools = activeTools
+        self.pendingInteraction = pendingInteraction; self.health = health
+        self.context = context; self.contextPolicy = contextPolicy; self.compaction = compaction
+        self.todos = todos; self.workflows = workflows; self.backgroundTasks = backgroundTasks
+        self.rootRun = rootRun; self.subagents = subagents
+        self.changes = changes; self.diffLoaded = diffLoaded; self.branch = branch; self.workspaceRoot = workspaceRoot
+    }
+}
+
+public struct SubagentRowPresentation: Identifiable, Equatable, Sendable {
+    public var id: String { runID }
+    public let runID: String
+    public let parentRunID: String
+    public var status: String
+    public var model: String?
+    public var startedAt: Date?
+    public var completedAt: Date?
+    public var terminalReason: String?
+}
+
 @MainActor
 public final class ComposerModel: ObservableObject {
     @Published public var text: String = ""
     @Published public var selectedMode: AgentRunMode = .build
+    @Published public var reasoningEffort: ReasoningEffortLevel = .auto
+    @Published public var permissionPreset: PermissionPreset = .askWorkspace
     @Published public var attachments: [AttachmentPresentation] = []
     @Published public var isSubmitting: Bool = false
+    /// Models Core discovered; the picker lists configured ones only.
+    @Published public var models: [ProviderModelInfo] = []
+    @Published public var selectedModelID: String?
+    /// Active goal set through `/goal`; nil when none.
+    @Published public var goal: String?
 
     public init(text: String = "", selectedMode: AgentRunMode = .build) {
         self.text = text
@@ -420,6 +540,26 @@ public final class ComposerModel: ObservableObject {
         text = ""
         attachments.removeAll()
         isSubmitting = false
+    }
+
+    /// Reasoning levels the selected model can honour (all of them when unknown).
+    public var availableReasoningLevels: [ReasoningEffortLevel] {
+        guard let id = selectedModelID, let model = models.first(where: { $0.modelID == id }) else {
+            return ReasoningEffortLevel.allCases
+        }
+        return model.reasoning ? ReasoningEffortLevel.allCases : [.auto, .off]
+    }
+
+    private var hasAppliedDefaults = false
+
+    /// Seeds per-task controls from the global defaults once; later changes in
+    /// the composer are the user's per-task choice and are not overwritten.
+    public func applyDefaults(mode: AgentRunMode, reasoning: ReasoningEffortLevel, permission: PermissionPreset) {
+        guard !hasAppliedDefaults else { return }
+        hasAppliedDefaults = true
+        selectedMode = mode
+        reasoningEffort = reasoning
+        permissionPreset = permission
     }
 }
 #endif

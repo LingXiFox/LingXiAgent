@@ -149,7 +149,7 @@ struct Round10SystemAuditTests {
     @Test("Phase F: RuntimeFrontend produces 100% deterministic state on session and task switching")
     @MainActor
     func testGUIFixtureScenarioDeterminism() {
-        let runtime = RuntimeFrontend()
+        let runtime = RuntimeFrontend.preview()
 
         // 初始状态断言
         #expect(runtime.sidebarModel.selectedSessionID == "sess-1")
