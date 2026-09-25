@@ -46,14 +46,14 @@ public enum LingXiMetrics {
     // MARK: - 列宽
 
     public enum Column {
-        /// 阅读列上限
-        public static let measure: CGFloat = 720
+        /// 阅读列上限（拓宽至 1080，告别窄条空洞）
+        public static let measure: CGFloat = 1080
         /// 阅读列两侧最小留白
-        public static let gutter: CGFloat = 24
+        public static let gutter: CGFloat = 28
         /// 用户气泡上限
-        public static let userBubble: CGFloat = 480
+        public static let userBubble: CGFloat = 720
         /// 事件图标列宽，保证标题在同一竖线上对齐
-        public static let eventGlyph: CGFloat = 16
+        public static let eventGlyph: CGFloat = 18
     }
 
     // MARK: - 浮动面板布局
@@ -74,26 +74,26 @@ public enum LingXiMetrics {
     // MARK: - 输出块
 
     /// 工具输出、diff 预览的封顶高度，超出转为内部滚动
-    public static let outputMaxHeight: CGFloat = 240
+    public static let outputMaxHeight: CGFloat = 260
     /// Composer 输入区最多展开行数，超出内部滚动
     public static let composerMaxLines = 8
 }
 
-// MARK: - 字阶（5 档 + 等宽）
+// MARK: - 字阶（高清晰度、增强暗黑环境对比度）
 
 public extension Font {
-    /// 助手正文与用户消息
-    static let lxBody: Font = .system(.body)
+    /// 助手正文与用户消息（提升至 15pt，字重优化）
+    static let lxBody: Font = .system(size: 15, weight: .regular)
     /// 区块标题
-    static let lxTitle: Font = .system(.title3).weight(.semibold)
-    /// 时间线事件、检查器正文
-    static let lxCallout: Font = .system(.callout)
+    static let lxTitle: Font = .system(size: 18, weight: .semibold)
+    /// 时间线事件、检查器正文（提升至 13.5pt）
+    static let lxCallout: Font = .system(size: 13.5, weight: .medium)
     /// 元数据：耗时、计数、副标题
-    static let lxMeta: Font = .system(.footnote)
+    static let lxMeta: Font = .system(size: 12, weight: .regular)
     /// 徽章与计数
-    static let lxMicro: Font = .system(.caption)
+    static let lxMicro: Font = .system(size: 11, weight: .semibold)
     /// 等宽，仅用于代码、命令、路径、ID
-    static let lxMono: Font = .system(.callout, design: .monospaced)
+    static let lxMono: Font = .system(size: 13, weight: .regular, design: .monospaced)
 }
 
 public extension ShapeStyle where Self == Color {

@@ -21,16 +21,19 @@ public struct MainStageView: View {
         Group {
             switch runtime.link {
             case .connected:
-                ActionFlowTimelineView(items: conversation.items,
-                                       isGenerating: conversation.isGenerating,
-                                       hasAnyItem: !conversation.items.isEmpty,
-                                       tailNotice: runtime.providerNotice,
-                                       onPromptSelect: { text in
-                                           runtime.composerModel.text = text
-                                       })
-                    .lxFloatingBar(edge: .bottom) {
-                        ComposerDock(runtime: runtime)
-                    }
+                VStack(spacing: 0) {
+                    StageTopBar(runtime: runtime)
+                    ActionFlowTimelineView(items: conversation.items,
+                                           isGenerating: conversation.isGenerating,
+                                           hasAnyItem: !conversation.items.isEmpty,
+                                           tailNotice: runtime.providerNotice,
+                                           onPromptSelect: { text in
+                                               runtime.composerModel.text = text
+                                           })
+                        .lxFloatingBar(edge: .bottom) {
+                            ComposerDock(runtime: runtime)
+                        }
+                }
             case .disconnected, .failed, .connecting:
                 WorkspaceGate(runtime: runtime)
             }
@@ -39,6 +42,88 @@ public struct MainStageView: View {
         .sheet(item: $runtime.commandOutput) { output in
             CommandOutputSheet(output: output)
         }
+    }
+}
+
+// MARK: - Stage Top Bar
+
+private struct StageTopBar: View {
+    @ObservedObject var runtime: RuntimeFrontend
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.md) {
+            // Workspace & Status Pulse
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(LingXiTheme.auroraMint)
+                        .frame(width: 7, height: 7)
+                    Circle()
+                        .stroke(LingXiTheme.auroraMint.opacity(0.5), lineWidth: 1.5)
+                        .frame(width: 13, height: 13)
+                }
+                .lxNeonGlow(color: LingXiTheme.auroraMint, radius: 4, opacity: 0.8)
+
+                Text(workspaceTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+            }
+
+            Spacer(minLength: 0)
+
+            // Current Model & Mode Pill
+            HStack(spacing: 6) {
+                let model = runtime.inspectorModel.live?.modelID ?? ""
+                if !model.isEmpty && model != "—" {
+                    HStack(spacing: 4) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10))
+                            .foregroundStyle(LingXiTheme.electricCyan)
+                        Text(model)
+                            .font(.system(size: 11, design: .monospaced))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.05), in: Capsule())
+                    .foregroundStyle(.secondary)
+                }
+
+                // Quick Clear Session
+                Button {
+                    runtime.newSession()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .background(Color.white.opacity(0.05), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("重置当前会话")
+            }
+        }
+        .padding(.horizontal, LingXiMetrics.Space.lg)
+        .frame(height: 38)
+        .background(
+            Color.black.opacity(0.28)
+                .overlay(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.08), Color.clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 1)
+                }
+        )
+    }
+
+    private var workspaceTitle: String {
+        if let url = runtime.workspaceURL {
+            return url.lastPathComponent
+        }
+        return runtime.sidebarModel.workspace.name
     }
 }
 
@@ -306,11 +391,17 @@ struct CyberHeroWelcomeView: View {
             .padding(.top, LingXiMetrics.Space.xl)
 
             VStack(spacing: LingXiMetrics.Space.xs) {
-                Text("灵犀智能伴写 · LingXi Agent")
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
+                Text("LingXiAgent")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [.white, LingXiTheme.electricCyan.opacity(0.95)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
 
-                Text("本狐随时待命。写清任务与验收标准，输入 / 命令，@ 引用文件。")
+                Text("次世代赛博智能体研发环境。写清任务与验收标准，输入 / 调用命令，@ 引用上下文。")
                     .font(.lxCallout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

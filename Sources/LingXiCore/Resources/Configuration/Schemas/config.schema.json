@@ -132,6 +132,25 @@
       "type": "object",
       "properties": {
         "addressableBudget": { "type": "integer", "minimum": 1 },
+        "pCore": {
+          "type": "object",
+          "properties": {
+            "target": { "type": "integer", "minimum": 1 },
+            "softLimit": { "type": "integer", "minimum": 1 },
+            "hardLimit": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "eCore": {
+          "type": "object",
+          "properties": {
+            "storageBudget": { "type": "integer", "minimum": 0 },
+            "recallBudget": { "type": "integer", "minimum": 0 },
+            "pressureThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+            "useRemainingBudget": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
         "l1": {
           "type": "object",
           "properties": {

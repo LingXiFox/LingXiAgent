@@ -62,27 +62,77 @@ private struct ExtensionRow: View {
     let ext: ExtensionInfo
     var onToggle: (Bool) -> Void
 
+    var isReady: Bool {
+        let s = ext.lifecycleState.lowercased()
+        return s.contains("ready") || s.contains("active") || s.contains("running") || (ext.enabled && !s.contains("fail") && !s.contains("err"))
+    }
+
+    var isError: Bool {
+        let s = ext.lifecycleState.lowercased()
+        return s.contains("fail") || s.contains("err") || s.contains("deg")
+    }
+
+    var statusColor: Color {
+        if !ext.enabled { return Color.secondary.opacity(0.4) }
+        if isError { return LingXiTheme.neonPink }
+        if isReady { return LingXiTheme.auroraMint }
+        return LingXiTheme.electricCyan
+    }
+
     var body: some View {
-        Toggle(isOn: Binding(get: { ext.enabled }, set: onToggle)) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: LingXiMetrics.Space.md) {
+            // Cyber Status Pulse Indicator
+            ZStack {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                if ext.enabled && !isError {
+                    Circle()
+                        .stroke(statusColor.opacity(0.6), lineWidth: 1.5)
+                        .frame(width: 14, height: 14)
+                        .scaleEffect(1.1)
+                }
+            }
+            .lxNeonGlow(color: statusColor, radius: ext.enabled ? 6 : 0, opacity: 0.8)
+            .frame(width: 16, height: 16)
+
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: LingXiMetrics.Space.xs) {
-                    Text(ext.id).font(.body.monospaced())
-                    Text("v\(ext.version)").font(.caption).foregroundStyle(.tertiary)
+                    Text(ext.id)
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.primary)
+                    Text("v\(ext.version)")
+                        .font(.caption2.monospaced())
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(.tertiary)
                 }
                 HStack(spacing: LingXiMetrics.Space.xs) {
                     Text(ext.lifecycleState)
-                        .foregroundStyle(ext.lifecycleState.lowercased().contains("fail") ? Color.red : Color.secondary)
+                        .foregroundStyle(statusColor)
+                        .font(.caption.weight(.medium))
                     Text("·").foregroundStyle(.tertiary)
-                    Text(ext.scope).foregroundStyle(.secondary)
+                    Text(ext.scope)
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
                     if let summary = ext.summary, !summary.isEmpty {
                         Text("·").foregroundStyle(.tertiary)
-                        Text(summary).foregroundStyle(.secondary).lineLimit(1)
+                        Text(summary)
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                            .lineLimit(1)
                     }
                 }
-                .font(.caption)
             }
+
+            Spacer(minLength: 0)
+
+            Toggle("", isOn: Binding(get: { ext.enabled }, set: onToggle))
+                .toggleStyle(.switch)
+                .labelsHidden()
         }
-        .toggleStyle(.switch)
+        .padding(.vertical, 4)
     }
 }
 
@@ -348,7 +398,7 @@ struct AboutSettingsPage: View {
                 VStack(spacing: 2) {
                     Text("LingXi Agent")
                         .font(.lxTitle.weight(.bold))
-                    Text("灵犀 · 主人的赛博智能体伴写小狐狸")
+                    Text("LingXiAgent · 次世代智能体研发工作台")
                         .font(.lxCallout)
                         .foregroundStyle(LingXiTheme.foxfireAmber)
                 }
@@ -366,7 +416,7 @@ struct AboutSettingsPage: View {
 
         Section("赛博契约") {
             LabeledContent("准则", value: "以认真查询为荣，以遵循规范为荣。")
-            LabeledContent("专属标识", value: "Crafted with passion in Cyber Space for 主人.")
+            LabeledContent("专属标识", value: "Crafted for high-performance agentic engineering.")
         }
     }
 }

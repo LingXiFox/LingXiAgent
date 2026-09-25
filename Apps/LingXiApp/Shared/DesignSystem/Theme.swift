@@ -79,6 +79,11 @@ public enum LingXiTheme {
     public static let solarGold = Color(.sRGB, red: 0.96, green: 0.64, blue: 0.12)
     /// 警示珊瑚 · 霓虹朱红：错误、破坏性操作
     public static let neonCoral = Color(.sRGB, red: 0.98, green: 0.28, blue: 0.34)
+    public static let neonPink = neonCoral
+    public static let auroraMint = neonTeal
+    public static let electricPurple = astralViolet
+    public static let quantumBlue = electricCyan
+    public static let neonCyan = electricCyan
 
     /// 赛博深夜深邃底色（比纯黑更具冷光深度的黑曜石暗夜）
     public static var deepNightBackground: Color {

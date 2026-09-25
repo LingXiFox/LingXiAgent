@@ -483,13 +483,53 @@ public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
     public let modelWindow: Int
     public let economicThreshold: Int?
     public let reserve: Int
-    public let l1Target: Int
-    public let l1SoftLimit: Int
-    public let l1HardLimit: Int
-    public let l2Max: Int
-    public let l3Capacity: Int
-    public let l3Enabled: Bool
 
+    // P-Core 双核预算体系
+    public let pCoreTarget: Int
+    public let pCoreSoftLimit: Int
+    public let pCoreHardLimit: Int
+
+    // E-Core 对象存储与召回策略
+    public let eCoreStorageBudget: Int
+    public let eCoreRecallBudget: Int
+    public let eCorePressureThreshold: Double
+    public let eCoreEnabled: Bool
+
+    // 向后兼容访问器（废弃 L1/L2/L3 体系）
+    public var l1Target: Int { pCoreTarget }
+    public var l1SoftLimit: Int { pCoreSoftLimit }
+    public var l1HardLimit: Int { pCoreHardLimit }
+    public var l2Max: Int { eCoreRecallBudget }
+    public var l3Capacity: Int { eCoreStorageBudget }
+    public var l3Enabled: Bool { eCoreEnabled }
+
+    public init(
+        addressableBudget: Int = 1_048_576,
+        modelWindow: Int = 1_048_576,
+        economicThreshold: Int? = 272_000,
+        reserve: Int = 22_000,
+        pCoreTarget: Int = 220_000,
+        pCoreSoftLimit: Int = 235_000,
+        pCoreHardLimit: Int = 250_000,
+        eCoreStorageBudget: Int = 456_576,
+        eCoreRecallBudget: Int = 350_000,
+        eCorePressureThreshold: Double = 0.85,
+        eCoreEnabled: Bool = true
+    ) {
+        self.addressableBudget = addressableBudget
+        self.modelWindow = modelWindow
+        self.economicThreshold = economicThreshold
+        self.reserve = reserve
+        self.pCoreTarget = pCoreTarget
+        self.pCoreSoftLimit = pCoreSoftLimit
+        self.pCoreHardLimit = pCoreHardLimit
+        self.eCoreStorageBudget = eCoreStorageBudget
+        self.eCoreRecallBudget = eCoreRecallBudget
+        self.eCorePressureThreshold = eCorePressureThreshold
+        self.eCoreEnabled = eCoreEnabled
+    }
+
+    /// Legacy initializer for smooth bridge
     public init(
         addressableBudget: Int = 1_048_576,
         modelWindow: Int = 1_048_576,
@@ -502,16 +542,79 @@ public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
         l3Capacity: Int = 456_576,
         l3Enabled: Bool = true
     ) {
-        self.addressableBudget = addressableBudget
-        self.modelWindow = modelWindow
-        self.economicThreshold = economicThreshold
-        self.reserve = reserve
-        self.l1Target = l1Target
-        self.l1SoftLimit = l1SoftLimit
-        self.l1HardLimit = l1HardLimit
-        self.l2Max = l2Max
-        self.l3Capacity = l3Capacity
-        self.l3Enabled = l3Enabled
+        self.init(
+            addressableBudget: addressableBudget,
+            modelWindow: modelWindow,
+            economicThreshold: economicThreshold,
+            reserve: reserve,
+            pCoreTarget: l1Target,
+            pCoreSoftLimit: l1SoftLimit,
+            pCoreHardLimit: l1HardLimit,
+            eCoreStorageBudget: l3Capacity,
+            eCoreRecallBudget: l2Max,
+            eCorePressureThreshold: 0.85,
+            eCoreEnabled: l3Enabled
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case addressableBudget, modelWindow, economicThreshold, reserve
+        case pCoreTarget, pCoreSoftLimit, pCoreHardLimit
+        case eCoreStorageBudget, eCoreRecallBudget, eCorePressureThreshold, eCoreEnabled
+        case l1Target, l1SoftLimit, l1HardLimit, l2Max, l3Capacity, l3Enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        addressableBudget = try c.decodeIfPresent(Int.self, forKey: .addressableBudget) ?? 1_048_576
+        modelWindow = try c.decodeIfPresent(Int.self, forKey: .modelWindow) ?? 1_048_576
+        economicThreshold = try c.decodeIfPresent(Int.self, forKey: .economicThreshold)
+        reserve = try c.decodeIfPresent(Int.self, forKey: .reserve) ?? 22_000
+
+        let pt = try c.decodeIfPresent(Int.self, forKey: .pCoreTarget)
+            ?? c.decodeIfPresent(Int.self, forKey: .l1Target) ?? 220_000
+        let ps = try c.decodeIfPresent(Int.self, forKey: .pCoreSoftLimit)
+            ?? c.decodeIfPresent(Int.self, forKey: .l1SoftLimit) ?? 235_000
+        let ph = try c.decodeIfPresent(Int.self, forKey: .pCoreHardLimit)
+            ?? c.decodeIfPresent(Int.self, forKey: .l1HardLimit) ?? 250_000
+
+        let es = try c.decodeIfPresent(Int.self, forKey: .eCoreStorageBudget)
+            ?? c.decodeIfPresent(Int.self, forKey: .l3Capacity) ?? 456_576
+        let er = try c.decodeIfPresent(Int.self, forKey: .eCoreRecallBudget)
+            ?? c.decodeIfPresent(Int.self, forKey: .l2Max) ?? 350_000
+        let ep = try c.decodeIfPresent(Double.self, forKey: .eCorePressureThreshold) ?? 0.85
+        let ee = try c.decodeIfPresent(Bool.self, forKey: .eCoreEnabled)
+            ?? c.decodeIfPresent(Bool.self, forKey: .l3Enabled) ?? true
+
+        self.pCoreTarget = pt
+        self.pCoreSoftLimit = ps
+        self.pCoreHardLimit = ph
+        self.eCoreStorageBudget = es
+        self.eCoreRecallBudget = er
+        self.eCorePressureThreshold = ep
+        self.eCoreEnabled = ee
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(addressableBudget, forKey: .addressableBudget)
+        try c.encode(modelWindow, forKey: .modelWindow)
+        try c.encodeIfPresent(economicThreshold, forKey: .economicThreshold)
+        try c.encode(reserve, forKey: .reserve)
+        try c.encode(pCoreTarget, forKey: .pCoreTarget)
+        try c.encode(pCoreSoftLimit, forKey: .pCoreSoftLimit)
+        try c.encode(pCoreHardLimit, forKey: .pCoreHardLimit)
+        try c.encode(eCoreStorageBudget, forKey: .eCoreStorageBudget)
+        try c.encode(eCoreRecallBudget, forKey: .eCoreRecallBudget)
+        try c.encode(eCorePressureThreshold, forKey: .eCorePressureThreshold)
+        try c.encode(eCoreEnabled, forKey: .eCoreEnabled)
+        // Compatibility writes
+        try c.encode(pCoreTarget, forKey: .l1Target)
+        try c.encode(pCoreSoftLimit, forKey: .l1SoftLimit)
+        try c.encode(pCoreHardLimit, forKey: .l1HardLimit)
+        try c.encode(eCoreRecallBudget, forKey: .l2Max)
+        try c.encode(eCoreStorageBudget, forKey: .l3Capacity)
+        try c.encode(eCoreEnabled, forKey: .l3Enabled)
     }
 }
 
@@ -520,32 +623,63 @@ public struct ContextCachePolicySnapshot: Sendable, Equatable, Codable {
     public let modelWindow: Int
     public let economicThreshold: Int?
     public let reserve: Int
-    public let l1Target: Int
-    public let l1SoftLimit: Int
-    public let l1HardLimit: Int
-    public let l2Max: Int
-    public let l3Capacity: Int
+    public let pCoreTarget: Int
+    public let pCoreSoftLimit: Int
+    public let pCoreHardLimit: Int
+    public let eCoreStorageBudget: Int
+    public let eCoreRecallBudget: Int
+    public let eCorePressureThreshold: Double
+
+    public var l1Target: Int { pCoreTarget }
+    public var l2Max: Int { eCoreRecallBudget }
+    public var l3Capacity: Int { eCoreStorageBudget }
 
     public init(
         addressableBudget: Int = 1_048_576,
         modelWindow: Int = 1_048_576,
         economicThreshold: Int? = 272_000,
         reserve: Int = 22_000,
-        l1Target: Int = 220_000,
-        l1SoftLimit: Int = 235_000,
-        l1HardLimit: Int = 250_000,
-        l2Max: Int = 350_000,
-        l3Capacity: Int = 456_576
+        pCoreTarget: Int = 220_000,
+        pCoreSoftLimit: Int = 235_000,
+        pCoreHardLimit: Int = 250_000,
+        eCoreStorageBudget: Int = 456_576,
+        eCoreRecallBudget: Int = 350_000,
+        eCorePressureThreshold: Double = 0.85
     ) {
         self.addressableBudget = addressableBudget
         self.modelWindow = modelWindow
         self.economicThreshold = economicThreshold
         self.reserve = reserve
-        self.l1Target = l1Target
-        self.l1SoftLimit = l1SoftLimit
-        self.l1HardLimit = l1HardLimit
-        self.l2Max = l2Max
-        self.l3Capacity = l3Capacity
+        self.pCoreTarget = pCoreTarget
+        self.pCoreSoftLimit = pCoreSoftLimit
+        self.pCoreHardLimit = pCoreHardLimit
+        self.eCoreStorageBudget = eCoreStorageBudget
+        self.eCoreRecallBudget = eCoreRecallBudget
+        self.eCorePressureThreshold = eCorePressureThreshold
+    }
+
+    public init(
+        addressableBudget: Int,
+        modelWindow: Int,
+        economicThreshold: Int?,
+        reserve: Int,
+        l1Target: Int,
+        l1SoftLimit: Int,
+        l1HardLimit: Int,
+        l2Max: Int,
+        l3Capacity: Int
+    ) {
+        self.init(
+            addressableBudget: addressableBudget,
+            modelWindow: modelWindow,
+            economicThreshold: economicThreshold,
+            reserve: reserve,
+            pCoreTarget: l1Target,
+            pCoreSoftLimit: l1SoftLimit,
+            pCoreHardLimit: l1HardLimit,
+            eCoreStorageBudget: l3Capacity,
+            eCoreRecallBudget: l2Max
+        )
     }
 
     public init(policy: EffectiveContextPolicy) {
@@ -554,11 +688,11 @@ public struct ContextCachePolicySnapshot: Sendable, Equatable, Codable {
             modelWindow: policy.modelWindow,
             economicThreshold: policy.economicThreshold,
             reserve: policy.reserve,
-            l1Target: policy.l1Target,
-            l1SoftLimit: policy.l1SoftLimit,
-            l1HardLimit: policy.l1HardLimit,
-            l2Max: policy.l2Max,
-            l3Capacity: policy.l3Capacity
+            pCoreTarget: policy.pCoreTarget,
+            pCoreSoftLimit: policy.pCoreSoftLimit,
+            pCoreHardLimit: policy.pCoreHardLimit,
+            eCoreStorageBudget: policy.eCoreStorageBudget,
+            eCoreRecallBudget: policy.eCoreRecallBudget
         )
     }
 }

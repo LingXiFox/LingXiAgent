@@ -144,8 +144,11 @@ private struct OverviewTab: View {
             VStack(spacing: 0) {
                 MetricRow(label: "状态", value: statusLabel(live.status), tint: statusTint)
                 if let start = live.runStartedAt {
-                    // Ticks only while a run is active; idle inspectors schedule nothing.
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    if live.status.isActiveRun {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            MetricRow(label: "已运行", value: DurationText.format(milliseconds: Date().timeIntervalSince(start) * 1000))
+                        }
+                    } else {
                         MetricRow(label: "已运行", value: DurationText.format(milliseconds: Date().timeIntervalSince(start) * 1000))
                     }
                 }
@@ -254,9 +257,7 @@ private struct CoreTab: View {
                 let p = live.context?.pCore
                 MetricRow(label: "工作集", value: p.map { "\(tokens($0.usedTokens) ?? "—") / \(tokens($0.targetTokens) ?? "—")" })
                 MetricRow(label: "软限 / 硬限", value: p.map { "\(tokens($0.softLimitTokens) ?? "—") / \(tokens($0.hardLimitTokens) ?? "—")" })
-                MetricRow(label: "L1 / L2 / L3", value: live.context.map {
-                    [$0.l1Tokens, $0.l2Tokens, $0.l3Tokens].map { tokens($0) ?? "0" }.joined(separator: " / ")
-                })
+                MetricRow(label: "前缀保护", value: live.context?.structuralPrefixStability.map { String(format: "%.0f%%", $0 * 100) } ?? "已就绪")
                 MetricRow(label: "可寻址预算", value: tokens(live.contextPolicy?.addressableBudget))
                 MetricRow(label: "压缩代数", value: live.context.map { "\($0.compactionGeneration)" })
                 if let c = live.compaction {
@@ -270,12 +271,13 @@ private struct CoreTab: View {
         LXSection("E-Core") {
             VStack(spacing: 0) {
                 let e = live.context?.eCore
-                MetricRow(label: "对象", value: e.map { "\($0.objectCount)" })
-                MetricRow(label: "体积", value: e.map { ByteCountFormatter.string(fromByteCount: Int64($0.totalBytes), countStyle: .memory) })
+                MetricRow(label: "对象数", value: e.map { "\($0.objectCount)" })
+                MetricRow(label: "存储体积", value: e.map { ByteCountFormatter.string(fromByteCount: Int64($0.totalBytes), countStyle: .memory) })
                 MetricRow(label: "热 / 冷", value: e.flatMap { e in
                     guard let hot = e.hotObjectCount, let cold = e.coldObjectCount else { return nil }
                     return "\(hot) / \(cold)"
                 })
+                MetricRow(label: "存储预算", value: tokens(live.contextPolicy?.eCoreStorageBudget))
             }
         }
 

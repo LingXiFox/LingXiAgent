@@ -24,7 +24,7 @@ public struct QuickAskView: View {
     public var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Label("灵犀快捷侧问", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+                Label("快捷侧问", systemImage: "bubble.left.and.exclamationmark.bubble.right")
                     .font(.headline)
                     .foregroundColor(LingXiTheme.accentColor)
 
@@ -105,7 +105,7 @@ public final class QuickAskPanelController: NSWindowController {
         )
         panel.level = .floating
         panel.isFloatingPanel = true
-        panel.title = "灵犀侧问"
+        panel.title = "快捷侧问"
         panel.center()
         super.init(window: panel)
     }

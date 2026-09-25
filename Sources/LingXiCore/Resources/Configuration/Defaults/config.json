@@ -34,15 +34,15 @@
   },
   "context": {
     "addressableBudget": 1048576,
-    "l1": {
+    "pCore": {
       "target": 220000,
       "softLimit": 235000,
       "hardLimit": 250000
     },
-    "l2": {
-      "max": 350000
-    },
-    "l3": {
+    "eCore": {
+      "storageBudget": 456576,
+      "recallBudget": 350000,
+      "pressureThreshold": 0.85,
       "useRemainingBudget": true
     },
     "reserve": 22000,

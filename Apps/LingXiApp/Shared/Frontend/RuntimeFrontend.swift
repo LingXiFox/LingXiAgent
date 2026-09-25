@@ -510,11 +510,11 @@ public final class RuntimeFrontend: ObservableObject {
         conversationModel.items = [
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-300),
-                kind: .user(content: "主人已下令：按照文档 /Users/lingxifox/Downloads/GUI-DESIGN-SPECIFICATION.md 开工！", attachments: [])
+                kind: .user(content: "开始执行：按照系统工程规范推进开发！", attachments: [])
             ),
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-290),
-                kind: .thinking(content: "本狐已解析 GUI 规范 v1.2.0。先读设计文档与现有三栏实现，确认字阶、列宽与检查器分区，再逐项落到 DesignTokens。", isExpanded: false, durationSeconds: 2.4, tokenCount: 420)
+                kind: .thinking(content: "已解析项目规范与架构设计。先读核心依赖与现有实现，确认字阶、列宽与检查器分区，再逐项落实。", isExpanded: false, durationSeconds: 2.4, tokenCount: 420)
             ),
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-260),
@@ -552,7 +552,7 @@ public final class RuntimeFrontend: ObservableObject {
             ),
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-10),
-                kind: .assistant(content: "主人，本狐已就位！macOS 原生双栏结构、任务控制条、Context Health 优雅仪表已全部接入。", isStreaming: false)
+                kind: .assistant(content: "LingXiAgent 环境已就绪。系统双栏结构、任务控制条、Context Health 仪表与赛博时间线已全部接入。", isStreaming: false)
             ),
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-5),

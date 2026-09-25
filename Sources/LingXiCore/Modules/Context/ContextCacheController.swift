@@ -191,11 +191,12 @@ public actor ContextCacheController {
             modelWindow: 1_048_576,
             economicThreshold: 272_000,
             reserve: 22_000,
-            l1Target: max(1, maxL1ResidentCharacters / 3),
-            l1SoftLimit: max(2, Int(Double(maxL1ResidentCharacters / 3) * 1.07)),
-            l1HardLimit: max(3, Int(Double(maxL1ResidentCharacters / 3) * 1.14)),
-            l2Max: 350_000,
-            l3Capacity: 456_576
+            pCoreTarget: max(1, maxL1ResidentCharacters / 3),
+            pCoreSoftLimit: max(2, Int(Double(maxL1ResidentCharacters / 3) * 1.07)),
+            pCoreHardLimit: max(3, Int(Double(maxL1ResidentCharacters / 3) * 1.14)),
+            eCoreStorageBudget: 456_576,
+            eCoreRecallBudget: 350_000,
+            eCorePressureThreshold: 0.85
         )
         self.weights = weights
         self.ecoreStore = ecoreStore ?? ECoreObjectStore()

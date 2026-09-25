@@ -229,14 +229,69 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
     }
 }
 
+public struct ContextCachePCoreConfiguration: Codable, Sendable, Equatable {
+    public var target: Int
+    public var softLimit: Int
+    public var hardLimit: Int
+
+    public init(target: Int = 220_000, softLimit: Int = 235_000, hardLimit: Int = 250_000) {
+        self.target = target
+        self.softLimit = softLimit
+        self.hardLimit = hardLimit
+    }
+}
+
+public struct ContextCacheECoreConfiguration: Codable, Sendable, Equatable {
+    public var storageBudget: Int
+    public var recallBudget: Int
+    public var pressureThreshold: Double
+    public var useRemainingBudget: Bool
+
+    public init(storageBudget: Int = 456_576, recallBudget: Int = 350_000, pressureThreshold: Double = 0.85, useRemainingBudget: Bool = true) {
+        self.storageBudget = storageBudget
+        self.recallBudget = recallBudget
+        self.pressureThreshold = pressureThreshold
+        self.useRemainingBudget = useRemainingBudget
+    }
+}
+
 public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
     public var addressableBudget: Int
-    public var l1: ContextCacheL1Configuration
-    public var l2: ContextCacheL2Configuration
-    public var l3: ContextCacheL3Configuration
     public var reserve: Int
     public var economicThreshold: Int?
+    public var pCore: ContextCachePCoreConfiguration
+    public var eCore: ContextCacheECoreConfiguration
     public var fabric: ContextObjectFabricConfiguration
+
+    // 向后兼容访问器
+    public var l1: ContextCacheL1Configuration {
+        get { ContextCacheL1Configuration(target: pCore.target, softLimit: pCore.softLimit, hardLimit: pCore.hardLimit) }
+        set { pCore = ContextCachePCoreConfiguration(target: newValue.target, softLimit: newValue.softLimit, hardLimit: newValue.hardLimit) }
+    }
+    public var l2: ContextCacheL2Configuration {
+        get { ContextCacheL2Configuration(max: eCore.recallBudget) }
+        set { eCore.recallBudget = newValue.max }
+    }
+    public var l3: ContextCacheL3Configuration {
+        get { ContextCacheL3Configuration(max: eCore.storageBudget, useRemainingBudget: eCore.useRemainingBudget) }
+        set { eCore.storageBudget = newValue.max ?? eCore.storageBudget; eCore.useRemainingBudget = newValue.useRemainingBudget }
+    }
+
+    public init(
+        addressableBudget: Int = 1_048_576,
+        reserve: Int = 22_000,
+        economicThreshold: Int? = 272_000,
+        pCore: ContextCachePCoreConfiguration = ContextCachePCoreConfiguration(),
+        eCore: ContextCacheECoreConfiguration = ContextCacheECoreConfiguration(),
+        fabric: ContextObjectFabricConfiguration = ContextObjectFabricConfiguration()
+    ) {
+        self.addressableBudget = addressableBudget
+        self.reserve = reserve
+        self.economicThreshold = economicThreshold
+        self.pCore = pCore
+        self.eCore = eCore
+        self.fabric = fabric
+    }
 
     public init(
         addressableBudget: Int = 1_048_576,
@@ -247,26 +302,53 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
         economicThreshold: Int? = 272_000,
         fabric: ContextObjectFabricConfiguration = ContextObjectFabricConfiguration()
     ) {
-        self.addressableBudget = addressableBudget
-        self.l1 = l1
-        self.l2 = l2
-        self.l3 = l3
-        self.reserve = reserve
-        self.economicThreshold = economicThreshold
-        self.fabric = fabric
+        self.init(
+            addressableBudget: addressableBudget,
+            reserve: reserve,
+            economicThreshold: economicThreshold,
+            pCore: ContextCachePCoreConfiguration(target: l1.target, softLimit: l1.softLimit, hardLimit: l1.hardLimit),
+            eCore: ContextCacheECoreConfiguration(storageBudget: l3.max ?? 456_576, recallBudget: l2.max, pressureThreshold: 0.85, useRemainingBudget: l3.useRemainingBudget),
+            fabric: fabric
+        )
     }
 
-    private enum CodingKeys: String, CodingKey { case addressableBudget, l1, l2, l3, reserve, economicThreshold, fabric }
+    private enum CodingKeys: String, CodingKey {
+        case addressableBudget, reserve, economicThreshold, pCore, eCore, fabric
+        case l1, l2, l3
+    }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         addressableBudget = try values.decodeIfPresent(Int.self, forKey: .addressableBudget) ?? 1_048_576
-        l1 = try values.decodeIfPresent(ContextCacheL1Configuration.self, forKey: .l1) ?? ContextCacheL1Configuration()
-        l2 = try values.decodeIfPresent(ContextCacheL2Configuration.self, forKey: .l2) ?? ContextCacheL2Configuration()
-        l3 = try values.decodeIfPresent(ContextCacheL3Configuration.self, forKey: .l3) ?? ContextCacheL3Configuration()
         reserve = try values.decodeIfPresent(Int.self, forKey: .reserve) ?? 22_000
         economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold) ?? 272_000
         fabric = try values.decodeIfPresent(ContextObjectFabricConfiguration.self, forKey: .fabric) ?? ContextObjectFabricConfiguration()
+
+        if let explicitPCore = try values.decodeIfPresent(ContextCachePCoreConfiguration.self, forKey: .pCore) {
+            pCore = explicitPCore
+        } else if let legacyL1 = try values.decodeIfPresent(ContextCacheL1Configuration.self, forKey: .l1) {
+            pCore = ContextCachePCoreConfiguration(target: legacyL1.target, softLimit: legacyL1.softLimit, hardLimit: legacyL1.hardLimit)
+        } else {
+            pCore = ContextCachePCoreConfiguration()
+        }
+
+        if let explicitECore = try values.decodeIfPresent(ContextCacheECoreConfiguration.self, forKey: .eCore) {
+            eCore = explicitECore
+        } else {
+            let legacyL2 = try values.decodeIfPresent(ContextCacheL2Configuration.self, forKey: .l2) ?? ContextCacheL2Configuration()
+            let legacyL3 = try values.decodeIfPresent(ContextCacheL3Configuration.self, forKey: .l3) ?? ContextCacheL3Configuration()
+            eCore = ContextCacheECoreConfiguration(storageBudget: legacyL3.max ?? 456_576, recallBudget: legacyL2.max, pressureThreshold: 0.85, useRemainingBudget: legacyL3.useRemainingBudget)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(addressableBudget, forKey: .addressableBudget)
+        try values.encode(reserve, forKey: .reserve)
+        try values.encodeIfPresent(economicThreshold, forKey: .economicThreshold)
+        try values.encode(pCore, forKey: .pCore)
+        try values.encode(eCore, forKey: .eCore)
+        try values.encode(fabric, forKey: .fabric)
     }
 }
 
@@ -283,47 +365,45 @@ public enum ContextPolicyResolver {
         let effectiveReserve = min(rawReserve, max(128, modelWindow / 10))
         let effectiveEconomicThreshold = modelEconomicThreshold ?? modelOverride?.economicThreshold ?? providerOverride?.economicThreshold ?? global.economicThreshold
 
-        let rawL1Target = modelOverride?.l1.target ?? providerOverride?.l1.target ?? global.l1.target
-        let rawL1Soft = modelOverride?.l1.softLimit ?? providerOverride?.l1.softLimit ?? global.l1.softLimit
-        let rawL1Hard = modelOverride?.l1.hardLimit ?? providerOverride?.l1.hardLimit ?? global.l1.hardLimit
-        let rawL2Max = modelOverride?.l2.max ?? providerOverride?.l2.max ?? global.l2.max
+        let rawPCoreTarget = modelOverride?.pCore.target ?? providerOverride?.pCore.target ?? global.pCore.target
+        let rawPCoreSoft = modelOverride?.pCore.softLimit ?? providerOverride?.pCore.softLimit ?? global.pCore.softLimit
+        let rawPCoreHard = modelOverride?.pCore.hardLimit ?? providerOverride?.pCore.hardLimit ?? global.pCore.hardLimit
+        let rawECoreRecall = modelOverride?.eCore.recallBudget ?? providerOverride?.eCore.recallBudget ?? global.eCore.recallBudget
 
-        guard rawL1Target <= rawL1Soft else {
-            throw ConfigurationValidationError(path: "$.context.l1", reason: "L1 target (\(rawL1Target)) must be <= softLimit (\(rawL1Soft))")
+        guard rawPCoreTarget <= rawPCoreSoft else {
+            throw ConfigurationValidationError(path: "$.context.pCore", reason: "P-Core target (\(rawPCoreTarget)) must be <= softLimit (\(rawPCoreSoft))")
         }
-        guard rawL1Soft <= rawL1Hard else {
-            throw ConfigurationValidationError(path: "$.context.l1", reason: "L1 softLimit (\(rawL1Soft)) must be <= hardLimit (\(rawL1Hard))")
+        guard rawPCoreSoft <= rawPCoreHard else {
+            throw ConfigurationValidationError(path: "$.context.pCore", reason: "P-Core softLimit (\(rawPCoreSoft)) must be <= hardLimit (\(rawPCoreHard))")
         }
-        guard rawL2Max >= 0 else {
-            throw ConfigurationValidationError(path: "$.context.l2.max", reason: "L2 max (\(rawL2Max)) must be >= 0")
+        guard rawECoreRecall >= 0 else {
+            throw ConfigurationValidationError(path: "$.context.eCore.recallBudget", reason: "E-Core recall budget (\(rawECoreRecall)) must be >= 0")
         }
-        guard effectiveBudget >= rawL1Target + rawL2Max else {
-            throw ConfigurationValidationError(path: "$.context.addressableBudget", reason: "Addressable budget (\(effectiveBudget)) is insufficient for L1 target (\(rawL1Target)) and L2 max (\(rawL2Max))")
-        }
-
-        if modelOverride != nil && rawL1Hard + effectiveReserve > modelWindow {
-            throw ConfigurationValidationError(path: "$.context.l1.hardLimit", reason: "L1 hardLimit + reserve (\(rawL1Hard + effectiveReserve)) exceeds model physical window (\(modelWindow))")
+        guard effectiveBudget >= rawPCoreTarget + rawECoreRecall else {
+            throw ConfigurationValidationError(path: "$.context.addressableBudget", reason: "Addressable budget (\(effectiveBudget)) is insufficient for P-Core target (\(rawPCoreTarget)) and E-Core recall (\(rawECoreRecall))")
         }
 
-        let adaptedHard = min(rawL1Hard, max(512, modelWindow - effectiveReserve))
-        let adaptedSoft = min(rawL1Soft, max(256, Int(Double(adaptedHard) * 0.94)))
-        let adaptedTarget = min(rawL1Target, max(128, Int(Double(adaptedHard) * 0.88)))
+        if modelOverride != nil && rawPCoreHard + effectiveReserve > modelWindow {
+            throw ConfigurationValidationError(path: "$.context.pCore.hardLimit", reason: "P-Core hardLimit + reserve (\(rawPCoreHard + effectiveReserve)) exceeds model physical window (\(modelWindow))")
+        }
+
+        let adaptedHard = min(rawPCoreHard, max(512, modelWindow - effectiveReserve))
+        let adaptedSoft = min(rawPCoreSoft, max(256, Int(Double(adaptedHard) * 0.94)))
+        let adaptedTarget = min(rawPCoreTarget, max(128, Int(Double(adaptedHard) * 0.88)))
         let adaptedBudget = effectiveBudget
 
-        let useRemaining = modelOverride?.l3.useRemainingBudget ?? providerOverride?.l3.useRemainingBudget ?? global.l3.useRemainingBudget
-        let explicitL3Max = modelOverride?.l3.max ?? providerOverride?.l3.max ?? global.l3.max
+        let useRemaining = modelOverride?.eCore.useRemainingBudget ?? providerOverride?.eCore.useRemainingBudget ?? global.eCore.useRemainingBudget
+        let explicitECoreStorage = modelOverride?.eCore.storageBudget ?? providerOverride?.eCore.storageBudget ?? global.eCore.storageBudget
 
-        let l3Capacity: Int
-        if let explicitL3Max {
-            l3Capacity = max(0, explicitL3Max)
-        } else if useRemaining {
-            l3Capacity = max(0, adaptedBudget - adaptedTarget - rawL2Max)
+        let eCoreCapacity: Int
+        if !useRemaining {
+            eCoreCapacity = max(0, explicitECoreStorage)
         } else {
-            l3Capacity = 0
+            eCoreCapacity = max(0, adaptedBudget - adaptedTarget - rawECoreRecall)
         }
 
-        guard adaptedBudget >= adaptedTarget + rawL2Max else {
-            throw ConfigurationValidationError(path: "$.context.addressableBudget", reason: "Addressable budget (\(adaptedBudget)) is insufficient for L1 target (\(adaptedTarget)) and L2 max (\(rawL2Max))")
+        guard adaptedBudget >= adaptedTarget + rawECoreRecall else {
+            throw ConfigurationValidationError(path: "$.context.addressableBudget", reason: "Addressable budget (\(adaptedBudget)) is insufficient for P-Core target (\(adaptedTarget)) and E-Core recall (\(rawECoreRecall))")
         }
 
         return EffectiveContextPolicy(
@@ -331,12 +411,13 @@ public enum ContextPolicyResolver {
             modelWindow: modelWindow,
             economicThreshold: effectiveEconomicThreshold,
             reserve: effectiveReserve,
-            l1Target: adaptedTarget,
-            l1SoftLimit: adaptedSoft,
-            l1HardLimit: adaptedHard,
-            l2Max: rawL2Max,
-            l3Capacity: l3Capacity,
-            l3Enabled: l3Capacity > 0
+            pCoreTarget: adaptedTarget,
+            pCoreSoftLimit: adaptedSoft,
+            pCoreHardLimit: adaptedHard,
+            eCoreStorageBudget: eCoreCapacity,
+            eCoreRecallBudget: rawECoreRecall,
+            eCorePressureThreshold: 0.85,
+            eCoreEnabled: eCoreCapacity > 0
         )
     }
 }

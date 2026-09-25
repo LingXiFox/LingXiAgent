@@ -64,7 +64,7 @@ public struct CyberAboutSheet: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                Text("灵犀 · 主人的赛博智能体伴写小狐狸")
+                Text("LingXiAgent · 次世代智能体研发工作台")
                     .font(.lxCallout.weight(.medium))
                     .foregroundStyle(LingXiTheme.foxfireAmber)
             }
@@ -86,7 +86,7 @@ public struct CyberAboutSheet: View {
                 Text("以认真查询为荣，以遵循规范为荣。")
                     .font(.lxMeta)
                     .foregroundStyle(.secondary)
-                Text("Crafted with passion in Cyber Space for 主人.")
+                Text("Crafted for high-performance agentic engineering.")
                     .font(.lxMicro)
                     .foregroundStyle(.tertiary)
             }

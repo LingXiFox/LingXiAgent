@@ -31,6 +31,7 @@ public struct SettingsView: View {
                     searchResults
                 }
             }
+            .scrollContentBackground(.hidden)
             .listStyle(.sidebar)
             .searchable(text: $query, placement: .sidebar, prompt: "搜索设置")
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
@@ -40,6 +41,8 @@ public struct SettingsView: View {
                 .environment(\.settingsHighlight, highlight)
                 .id(page)
         }
+        .scrollContentBackground(.hidden)
+        .background { AtmosphereBackdrop() }
         .navigationTitle(page?.title ?? "设置")
         .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 640)
         .preferredColorScheme(scheme.colorScheme)
@@ -63,8 +66,16 @@ public struct SettingsView: View {
         + store.models.map { SettingsSearchItem(anchor: "model.\($0.id)", page: .models,
                                                 title: $0.displayName, keywords: [$0.modelID, $0.providerID]) }
         + store.extensions.map { ext in
-            SettingsSearchItem(anchor: "extension.\(ext.id)", page: ext.kind == .mcp ? .mcp : .extensions,
-                               title: ext.id, keywords: [ext.kind.rawValue, ext.summary ?? ""])
+            let targetPage: SettingsPage
+            switch ext.kind {
+            case .mcp: targetPage = .mcp
+            case .skill: targetPage = .skills
+            case .plugin: targetPage = .plugins
+            case .hook: targetPage = .hooks
+            case .command: targetPage = .plugins
+            }
+            return SettingsSearchItem(anchor: "extension.\(ext.id)", page: targetPage,
+                                      title: ext.id, keywords: [ext.kind.rawValue, ext.summary ?? ""])
         }
     }
 
@@ -111,6 +122,7 @@ private struct SettingsPageView: View {
                 }
                 content
             }
+            .scrollContentBackground(.hidden)
             .formStyle(.grouped)
             .onAppear { scroll(proxy) }
             .onChange(of: highlight) { scroll(proxy) }
@@ -133,7 +145,9 @@ private struct SettingsPageView: View {
         case .codeIntelligence: CodeIntelligenceSettingsPage(store: store)
         case .computerUse: ComputerUseSettingsPage()
         case .mcp: ExtensionsSettingsPage(store: store, kinds: [.mcp])
-        case .extensions: ExtensionsSettingsPage(store: store, kinds: [.skill, .plugin, .command, .hook])
+        case .skills: ExtensionsSettingsPage(store: store, kinds: [.skill])
+        case .plugins: ExtensionsSettingsPage(store: store, kinds: [.plugin, .command])
+        case .hooks: ExtensionsSettingsPage(store: store, kinds: [.hook])
         case .workspace: WorkspaceSettingsPage(store: store)
         case .diagnostics: DiagnosticsSettingsPage(store: store)
         case .about: AboutSettingsPage(store: store)

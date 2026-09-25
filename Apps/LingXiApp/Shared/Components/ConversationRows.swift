@@ -26,19 +26,12 @@ struct TimelineRowView: View {
         case .thinking(let item):
             if case .thinking(let content, let expanded, let duration, let tokens) = item.kind {
                 ReadingColumn {
-                    EventRow(symbol: "brain",
-                             title: Text(duration > 0 || tokens > 0 ? "思考" : "思考中…"),
-                             metadata: duration > 0 || tokens > 0
-                                ? "\(String(format: "%.1f", duration))s · \(tokens) tok" : nil,
-                             status: duration > 0 || tokens > 0 ? .none : .running,
-                             initiallyOpen: TimelineDisclosure.thinking(isExpanded: expanded || defaults.expandThinking,
-                                                                        tokenCount: tokens)) {
-                        Text(content)
-                            .font(.lxCallout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    CyberThinkingRow(
+                        content: content,
+                        duration: duration,
+                        tokens: tokens,
+                        isExpanded: expanded || defaults.expandThinking
+                    )
                 }
             }
         case .tool(let item):
@@ -111,7 +104,7 @@ private struct UserMessageRow: View {
         }
         .padding(.bottom, LingXiMetrics.Space.sm)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("主人：\(content)")
+        .accessibilityLabel("用户：\(content)")
     }
 }
 
@@ -327,51 +320,268 @@ struct CyberSparkline: View {
     }
 }
 
-private struct ToolEventRow: View {
+// MARK: - Cyber Thinking Row
+
+struct CyberThinkingRow: View {
+    let content: String
+    let duration: Double
+    let tokens: Int
+    let isExpanded: Bool
+    @State private var isOpen: Bool
+
+    init(content: String, duration: Double, tokens: Int, isExpanded: Bool) {
+        self.content = content
+        self.duration = duration
+        self.tokens = tokens
+        self.isExpanded = isExpanded
+        self._isOpen = State(initialValue: isExpanded)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+            Button {
+                withAnimation(LXMotion.disclosure) {
+                    isOpen.toggle()
+                }
+            } label: {
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    // Purple-gold thinking emblem
+                    ZStack {
+                        Circle()
+                            .fill(LingXiTheme.electricPurple.opacity(0.2))
+                            .frame(width: 22, height: 22)
+                        Image(systemName: "brain.head.profile")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(LingXiTheme.electricPurple)
+                    }
+
+                    HStack(spacing: 6) {
+                        Text("思考链")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(LingXiTheme.electricPurple.opacity(0.18), in: Capsule())
+                            .overlay(Capsule().strokeBorder(LingXiTheme.electricPurple.opacity(0.4), lineWidth: 0.5))
+                            .foregroundStyle(LingXiTheme.electricPurple)
+
+                        if duration > 0 || tokens > 0 {
+                            Text("\(String(format: "%.1f", duration))s · \(tokens) tok")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("思考中…")
+                                .font(.caption)
+                                .foregroundStyle(LingXiTheme.electricCyan)
+                        }
+                    }
+
+                    Spacer(minLength: LingXiMetrics.Space.sm)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
+                }
+                .padding(.horizontal, LingXiMetrics.Space.md)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.black.opacity(0.35))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(LingXiTheme.electricPurple.opacity(0.3), lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+
+            if isOpen {
+                VStack(alignment: .leading, spacing: 4) {
+                    CyberSparkline(color: LingXiTheme.electricPurple)
+                    Text(content)
+                        .font(.lxCallout)
+                        .foregroundStyle(Color.primary.opacity(0.85))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, LingXiMetrics.Space.md)
+                        .padding(.vertical, LingXiMetrics.Space.xs)
+                }
+                .padding(.leading, 8)
+                .transition(.opacity)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Tool Event Row & Categorization
+
+private enum CyberToolCategory {
+    case mcp(server: String)
+    case skill(name: String)
+    case branchPrediction
+    case standardTool
+
+    var badgeText: String {
+        switch self {
+        case .mcp(let s): return "MCP · \(s)"
+        case .skill(let s): return "SKILL · \(s)"
+        case .branchPrediction: return "BRANCH PREDICT"
+        case .standardTool: return "TOOL CALL"
+        }
+    }
+
+    var themeColor: Color {
+        switch self {
+        case .mcp: return LingXiTheme.electricCyan
+        case .skill: return LingXiTheme.foxfireAmber
+        case .branchPrediction: return LingXiTheme.auroraMint
+        case .standardTool: return LingXiTheme.solarGold
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .mcp: return "point.3.connected.trianglepath.dotted"
+        case .skill: return "bolt.shield"
+        case .branchPrediction: return "arrow.triangle.branch"
+        case .standardTool: return "terminal"
+        }
+    }
+
+    static func detect(name: String) -> CyberToolCategory {
+        let l = name.lowercased()
+        if l.contains("branch") || l.contains("predict") || l.contains("speculative") {
+            return .branchPrediction
+        }
+        if l.hasPrefix("mcp_") || l.contains("call_mcp") || l.contains("supermemory") || l.contains("trivy") || l.contains("openapi") || l.contains("context7") || l.contains("codebase-memory") {
+            let server: String
+            if l.hasPrefix("mcp_") {
+                let parts = name.split(separator: "_")
+                server = parts.count > 1 ? String(parts[1]) : "Core"
+            } else if l.contains("supermemory") {
+                server = "Supermemory"
+            } else if l.contains("openapi") {
+                server = "OpenAPI"
+            } else if l.contains("trivy") {
+                server = "Trivy"
+            } else {
+                server = "Remote"
+            }
+            return .mcp(server: server)
+        }
+        if l.contains("skill") || l.contains("load_skill") || l.contains("hatch-pet") || l.contains("ponytail") || l.contains("cloudflare") {
+            return .skill(name: name.replacingOccurrences(of: "skill_", with: ""))
+        }
+        return .standardTool
+    }
+}
+
+struct ToolEventRow: View {
     let call: ToolCallPresentation
     let expandByDefault: Bool
+    @State private var isOpen: Bool
+
+    init(call: ToolCallPresentation, expandByDefault: Bool) {
+        self.call = call
+        self.expandByDefault = expandByDefault
+        let autoOpen = expandByDefault || TimelineDisclosure.tool(name: call.toolName, status: call.status, hasOutput: call.output != nil)
+        self._isOpen = State(initialValue: autoOpen)
+    }
 
     var body: some View {
         let state = EventStatus(call.status)
-        EventRow(symbol: ToolGlyph.symbol(for: call.toolName),
-                 symbolStyle: state == .failed ? LingXiTheme.neonCoral : (state == .running ? LingXiTheme.electricCyan : nil),
-                 title: ToolGlyph.isCommand(call.toolName) ? Text(call.summary).font(.lxMono) : Text(call.summary),
-                 metadata: metadata,
-                 status: state,
-                 hasDetail: hasDetail,
-                 initiallyOpen: expandByDefault
-                    || TimelineDisclosure.tool(name: call.toolName, status: call.status, hasOutput: call.output != nil)) {
-            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                // 实时心电波形监控
-                CyberSparkline(color: state == .failed ? LingXiTheme.neonCoral : (state == .running ? LingXiTheme.electricCyan : LingXiTheme.neonTeal))
-                    .padding(.vertical, 2)
+        let category = CyberToolCategory.detect(name: call.toolName)
 
-                if let cwd = call.workingDirectory {
-                    Label(cwd, systemImage: "folder")
-                        .font(.lxMeta)
-                        .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+            Button {
+                if hasDetail {
+                    withAnimation(LXMotion.disclosure) {
+                        isOpen.toggle()
+                    }
+                }
+            } label: {
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    // Category icon
+                    Image(systemName: category.icon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(category.themeColor)
+                        .frame(width: 20)
+
+                    // Category Pill
+                    Text(category.badgeText)
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(category.themeColor.opacity(0.18), in: Capsule())
+                        .overlay(Capsule().strokeBorder(category.themeColor.opacity(0.4), lineWidth: 0.5))
+                        .foregroundStyle(category.themeColor)
+
+                    // Command summary / tool name
+                    Text(call.summary)
+                        .font(ToolGlyph.isCommand(call.toolName) ? .system(size: 13, design: .monospaced) : .system(size: 13.5, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.9))
                         .lineLimit(1)
-                        .truncationMode(.head)
+                        .truncationMode(.middle)
+                        .layoutPriority(1)
+
+                    if let ms = call.durationMs {
+                        Text(DurationText.format(milliseconds: ms))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer(minLength: LingXiMetrics.Space.sm)
+
+                    // State Glyph
+                    EventStatusGlyph(status: state)
+
+                    if hasDetail {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isOpen ? 90 : 0))
+                    }
                 }
-                if let output = call.output, !output.isEmpty { OutputBlock(text: output) }
-                if let stderr = call.stderr, !stderr.isEmpty {
-                    Text("stderr").font(.lxMeta).foregroundStyle(LingXiTheme.neonCoral)
-                    OutputBlock(text: stderr)
+                .padding(.horizontal, LingXiMetrics.Space.md)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.65))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(category.themeColor.opacity(0.3), lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+
+            if isOpen && hasDetail {
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                    CyberSparkline(color: state == .failed ? LingXiTheme.neonCoral : category.themeColor)
+                        .padding(.vertical, 2)
+
+                    if let cwd = call.workingDirectory {
+                        Label(cwd, systemImage: "folder")
+                            .font(.lxMeta)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    if let output = call.output, !output.isEmpty { OutputBlock(text: output) }
+                    if let stderr = call.stderr, !stderr.isEmpty {
+                        Text("stderr").font(.lxMeta).foregroundStyle(LingXiTheme.neonCoral)
+                        OutputBlock(text: stderr)
+                    }
                 }
+                .padding(.leading, LingXiMetrics.Space.md)
+                .transition(.opacity)
             }
         }
+        .padding(.vertical, 2)
     }
 
     private var hasDetail: Bool {
         !(call.output ?? "").isEmpty || !(call.stderr ?? "").isEmpty || call.workingDirectory != nil
-    }
-
-    /// Tool name, exit code and duration — the facts a reader scans for.
-    private var metadata: String {
-        var parts = [call.toolName]
-        if let code = call.exitCode { parts.append("exit \(code)") }
-        if let ms = call.durationMs { parts.append(DurationText.format(milliseconds: ms)) }
-        return parts.joined(separator: " · ")
     }
 }
 

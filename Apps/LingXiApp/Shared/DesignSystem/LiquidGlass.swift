@@ -9,13 +9,31 @@ import SwiftUI
 // Contrast) are still honoured by the OS rather than by hand-rolled blur.
 
 public extension View {
-    /// Native glass surface clipped to `shape`.
+    /// Native glass surface clipped to `shape`, hardened against macOS inactive window graying.
     @ViewBuilder
     func lxGlass<S: Shape>(in shape: S, tint: Color? = nil, interactive: Bool = false) -> some View {
         if #available(macOS 26.0, iOS 26.0, *) {
             self.glassEffect(Self.glass(tint: tint, interactive: interactive), in: shape)
         } else {
-            self.background(.regularMaterial, in: shape)
+            self.background {
+                shape
+                    .fill(Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.62))
+                    .background(.ultraThinMaterial.opacity(0.65), in: shape)
+                    .overlay {
+                        shape.stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.22),
+                                    Color.white.opacity(0.06),
+                                    LingXiTheme.electricCyan.opacity(0.18)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                    }
+            }
         }
     }
 

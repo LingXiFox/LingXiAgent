@@ -13,4 +13,13 @@ public enum ProductRuntimeStatus: String, Sendable, Equatable, CaseIterable {
     case reconnecting = "Reconnecting"
     case disconnected = "Disconnected"
     case error = "Error"
+
+    public var isActiveRun: Bool {
+        switch self {
+        case .thinking, .waitingForProvider, .rateLimited, .runningTool, .runningSubagents, .paging:
+            return true
+        case .ready, .actionRequired, .reconnecting, .disconnected, .error:
+            return false
+        }
+    }
 }

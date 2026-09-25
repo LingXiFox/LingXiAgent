@@ -5,7 +5,7 @@ import Foundation
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case general, appearance, conversation, shortcuts
     case providers, models, agentDefaults, permissions, context, execution, codeIntelligence
-    case mcp, extensions, computerUse
+    case mcp, skills, plugins, hooks, computerUse
     case workspace
     case diagnostics
     case about
@@ -26,7 +26,9 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .execution: return "执行与超时"
         case .codeIntelligence: return "代码智能"
         case .mcp: return "MCP"
-        case .extensions: return "Skills 与插件"
+        case .skills: return "Skills 技能"
+        case .plugins: return "Plugins 插件"
+        case .hooks: return "Hooks 钩子"
         case .computerUse: return "Computer Use 与浏览器"
         case .workspace: return "工作区与 Worktree"
         case .diagnostics: return "诊断"
@@ -48,7 +50,9 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .execution: return "timer"
         case .codeIntelligence: return "curlybraces"
         case .mcp: return "point.3.connected.trianglepath.dotted"
-        case .extensions: return "puzzlepiece.extension"
+        case .skills: return "bolt.shield"
+        case .plugins: return "puzzlepiece.extension"
+        case .hooks: return "arrow.triangle.pull"
         case .computerUse: return "cursorarrow.rays"
         case .workspace: return "folder"
         case .diagnostics: return "stethoscope"
@@ -59,7 +63,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     /// Pages whose content only exists while a Core is connected.
     var needsCore: Bool {
         switch self {
-        case .providers, .models, .mcp, .extensions, .workspace: return true
+        case .providers, .models, .mcp, .skills, .plugins, .hooks, .workspace: return true
         default: return false
         }
     }
@@ -72,7 +76,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             switch self {
             case .app: return [.general, .appearance, .conversation, .shortcuts]
             case .agent: return [.providers, .models, .agentDefaults, .permissions, .context, .execution, .codeIntelligence]
-            case .extensions: return [.mcp, .extensions, .computerUse]
+            case .extensions: return [.mcp, .skills, .plugins, .hooks, .computerUse]
             case .workspace: return [.workspace]
             case .system: return [.diagnostics, .about]
             }
@@ -136,7 +140,8 @@ enum SettingsSearchIndex {
         .init(anchor: "permissions.matrix", page: .permissions, title: "审批矩阵", keywords: ["safe read", "mutation", "process", "external", "sensitive"]),
 
         .init(anchor: "context.budget", page: .context, title: "上下文预算", keywords: ["budget", "reserve", "token"]),
-        .init(anchor: "context.layers", page: .context, title: "L1 / L2 / L3 分层", keywords: ["l1", "l2", "l3", "cache"]),
+        .init(anchor: "context.pcore", page: .context, title: "P-Core 实时工作集", keywords: ["p-core", "target", "soft limit", "hard limit"]),
+        .init(anchor: "context.ecore", page: .context, title: "E-Core 存储与召回", keywords: ["e-core", "storage", "recall", "pressure"]),
         .init(anchor: ConfigKeys.economicThreshold.id, page: .context, title: "经济阈值", keywords: ["economic", "threshold", "272k"]),
         .init(anchor: "context.fabric", page: .context, title: "Context Fabric", keywords: ["e-core", "heat", "objectization"]),
         .init(anchor: "context.live", page: .context, title: "当前生效策略", keywords: ["policy", "snapshot"]),
@@ -146,7 +151,9 @@ enum SettingsSearchIndex {
 
         .init(anchor: "mcp.list", page: .mcp, title: "MCP 服务器", keywords: ["mcp", "server", "tools"]),
         .init(anchor: "mcp.reload", page: .mcp, title: "重新加载扩展", keywords: ["reload"]),
-        .init(anchor: "extensions.list", page: .extensions, title: "Skills、插件、命令与 Hooks", keywords: ["skill", "plugin", "hook", "command"]),
+        .init(anchor: "skills.list", page: .skills, title: "Skills 技能库", keywords: ["skill", "技能", "agent"]),
+        .init(anchor: "plugins.list", page: .plugins, title: "Plugins 插件", keywords: ["plugin", "插件", "extension"]),
+        .init(anchor: "hooks.list", page: .hooks, title: "Hooks 钩子", keywords: ["hook", "事件", "lifecycle"]),
         .init(anchor: "computer.permissions", page: .computerUse, title: "屏幕录制与辅助功能权限", keywords: ["screen recording", "accessibility", "computer use", "browser"]),
 
         .init(anchor: "workspace.summary", page: .workspace, title: "当前工作区", keywords: ["git", "index", "索引"]),

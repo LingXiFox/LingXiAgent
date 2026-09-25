@@ -48,6 +48,9 @@ enum ConfigKeys {
     static let maxAgentLoopSteps = ConfigKey("agent.maxAgentLoopSteps", 32)
     static let l1ProjectMaxCharacters = ConfigKey("agent.l1ProjectMaxCharacters", 32_768)
     static let l2MaxCharacters = ConfigKey("agent.l2MaxCharacters", 262_144)
+    // Dual-core conceptual aliases
+    static let projectInstructionBudget = l1ProjectMaxCharacters
+    static let eCoreWorkingSetMaxCharacters = l2MaxCharacters
 
     static let quickFilesystemSeconds = ConfigKey("runtime.execution.quickFilesystemSeconds", 10.0)
     static let searchSeconds = ConfigKey("runtime.execution.searchSeconds", 30.0)
@@ -63,11 +66,24 @@ enum ConfigKeys {
     static let addressableBudget = ConfigKey("context.addressableBudget", 1_048_576)
     static let reserve = ConfigKey("context.reserve", 22_000)
     static let economicThreshold = ConfigKey("context.economicThreshold", 272_000)
-    static let l1Target = ConfigKey("context.l1.target", 220_000)
-    static let l1SoftLimit = ConfigKey("context.l1.softLimit", 235_000)
-    static let l1HardLimit = ConfigKey("context.l1.hardLimit", 250_000)
-    static let l2Max = ConfigKey("context.l2.max", 350_000)
-    static let l3UseRemaining = ConfigKey("context.l3.useRemainingBudget", true)
+
+    // P-Core 双核预算体系
+    static let pCoreTarget = ConfigKey("context.pCore.target", 220_000)
+    static let pCoreSoftLimit = ConfigKey("context.pCore.softLimit", 235_000)
+    static let pCoreHardLimit = ConfigKey("context.pCore.hardLimit", 250_000)
+
+    // E-Core 对象存储与召回策略
+    static let eCoreStorageBudget = ConfigKey("context.eCore.storageBudget", 456_576)
+    static let eCoreRecallBudget = ConfigKey("context.eCore.recallBudget", 350_000)
+    static let eCorePressureThreshold = ConfigKey("context.eCore.pressureThreshold", 0.85)
+
+    // Legacy aliases
+    static let l1Target = pCoreTarget
+    static let l1SoftLimit = pCoreSoftLimit
+    static let l1HardLimit = pCoreHardLimit
+    static let l2Max = eCoreRecallBudget
+    static let l3UseRemaining = ConfigKey("context.eCore.useRemainingBudget", true)
+
     static let ecoreStorage = ConfigKey("context.fabric.ecoreStorageEnabled", true)
     static let observationProjection = ConfigKey("context.fabric.observationProjectionEnabled", true)
     static let heatTracking = ConfigKey("context.fabric.heatTrackingEnabled", true)
@@ -99,11 +115,12 @@ enum ConfigKeys {
             (addressableBudget.id, addressableBudget.fallback),
             (reserve.id, reserve.fallback),
             (economicThreshold.id, economicThreshold.fallback),
-            (l1Target.id, l1Target.fallback),
-            (l1SoftLimit.id, l1SoftLimit.fallback),
-            (l1HardLimit.id, l1HardLimit.fallback),
-            (l2Max.id, l2Max.fallback),
-            (l3UseRemaining.id, l3UseRemaining.fallback),
+            (pCoreTarget.id, pCoreTarget.fallback),
+            (pCoreSoftLimit.id, pCoreSoftLimit.fallback),
+            (pCoreHardLimit.id, pCoreHardLimit.fallback),
+            (eCoreStorageBudget.id, eCoreStorageBudget.fallback),
+            (eCoreRecallBudget.id, eCoreRecallBudget.fallback),
+            (eCorePressureThreshold.id, eCorePressureThreshold.fallback),
             (ecoreStorage.id, ecoreStorage.fallback),
             (observationProjection.id, observationProjection.fallback),
             (heatTracking.id, heatTracking.fallback),
