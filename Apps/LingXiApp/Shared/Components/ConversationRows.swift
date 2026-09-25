@@ -4,10 +4,66 @@ import SwiftUI
 import AppKit
 #endif
 
+struct RuntimeActionEnvironmentKey: EnvironmentKey {
+    static let defaultValue: RuntimeFrontend? = nil
+}
+
+extension EnvironmentValues {
+    var runtimeFrontend: RuntimeFrontend? {
+        get { self[RuntimeActionEnvironmentKey.self] }
+        set { self[RuntimeActionEnvironmentKey.self] = newValue }
+    }
+}
+
+/// 通用赛博复制按钮（常驻或 hover 显示，点击后显示 1.5s “已复制 ✓” 反馈）
+public struct CyberCopyButton: View {
+    public let text: String
+    public var label: String? = nil
+    @State private var copied = false
+
+    public init(text: String, label: String? = nil) {
+        self.text = text
+        self.label = label
+    }
+
+    public var body: some View {
+        Button {
+            #if os(macOS)
+            let board = NSPasteboard.general
+            board.clearContents()
+            board.setString(text, forType: .string)
+            #endif
+            withAnimation(.easeInOut(duration: 0.15)) {
+                copied = true
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    copied = false
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 11, weight: .medium))
+                if let label {
+                    Text(copied ? "已复制 ✓" : label)
+                        .font(.system(size: 11.5, weight: .medium))
+                } else if copied {
+                    Text("已复制 ✓")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+            }
+            .foregroundStyle(copied ? LingXiTheme.auroraMint : Color.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Row dispatch
-//
-// Hierarchy is carried by typography, not containers:
-// user bubble > assistant body > runtime events (callout, secondary) > metadata (tertiary).
 
 struct TimelineRowView: View {
     let row: TimelineRow
@@ -16,8 +72,8 @@ struct TimelineRowView: View {
     var body: some View {
         switch row {
         case .user(let item):
-            if case .user(let content, let attachments) = item.kind {
-                UserMessageRow(content: content, attachments: attachments)
+            if case .user(let content, let attachments, let messageID, let turnID, let sessionID) = item.kind {
+                UserMessageRow(content: content, attachments: attachments, messageID: messageID, turnID: turnID, sessionID: sessionID)
             }
         case .assistant(let item):
             if case .assistant(let content, _) = item.kind {
@@ -55,7 +111,6 @@ struct TimelineRowView: View {
                 }
             }
         case .interaction(let item):
-            // Pending requests surface above the composer; the timeline keeps the resolved record.
             if case .interaction(let card) = item.kind, card.status != .pending {
                 ReadingColumn { InteractionRecordRow(card: card) }
             }
@@ -82,12 +137,19 @@ struct TimelineRowView: View {
 private struct UserMessageRow: View {
     let content: String
     let attachments: [AttachmentPresentation]
+    var messageID: String? = nil
+    var turnID: String? = nil
+    var sessionID: String? = nil
+
+    @State private var isHovered = false
+    @Environment(\.runtimeFrontend) private var runtime
 
     var body: some View {
         ReadingColumn {
             VStack(alignment: .trailing, spacing: LingXiMetrics.Space.xs) {
                 Text(content)
                     .font(.lxBody)
+                    .lineSpacing(4.5)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, LingXiMetrics.Space.md)
@@ -96,11 +158,55 @@ private struct UserMessageRow: View {
                                 in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.bubble, style: .continuous))
                     .frame(maxWidth: LingXiMetrics.Column.userBubble, alignment: .trailing)
                     .contextMenu { MessageContextMenu(copyText: content) }
+
                 if !attachments.isEmpty {
                     AttachmentStrip(attachments: attachments)
                 }
+
+                // Hover Action Bar: 复制、编辑、撤回上一轮
+                HStack(spacing: 6) {
+                    CyberCopyButton(text: content, label: "复制")
+
+                    if let runtime {
+                        Button {
+                            runtime.editMessage(content: content)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 11, weight: .medium))
+                                Text("编辑")
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundStyle(Color.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            runtime.undoLastTurn()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 11, weight: .medium))
+                                Text("撤回上一轮")
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundStyle(LingXiTheme.foxfireAmber)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .opacity(isHovered ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
         }
         .padding(.bottom, LingXiMetrics.Space.sm)
         .accessibilityElement(children: .combine)
@@ -110,16 +216,30 @@ private struct UserMessageRow: View {
 
 private struct AssistantMessageRow: View {
     let content: String
+    @State private var isHovered = false
 
     var body: some View {
         ReadingColumn {
-            Text(content)
-                .font(.lxBody)
-                .lineSpacing(LingXiMetrics.Space.xs / 2)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.vertical, LingXiMetrics.Space.sm)
-                .contextMenu { MessageContextMenu(copyText: content, asMarkdown: true) }
+            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                Text(content)
+                    .font(.lxBody)
+                    .lineSpacing(4.5)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, LingXiMetrics.Space.sm)
+                    .contextMenu { MessageContextMenu(copyText: content, asMarkdown: true) }
+
+                // Hover Action Bar: 复制、复制为 Markdown
+                HStack(spacing: 6) {
+                    CyberCopyButton(text: content, label: "复制")
+                    CyberCopyButton(text: content, label: "复制为 Markdown")
+                }
+                .opacity(isHovered ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
         }
     }
 }
@@ -284,42 +404,6 @@ struct EventStatusGlyph: View {
     }
 }
 
-/// 赛博心电波动图（零 GPU 压力，纯矢量 Path 硬件加速绘制）
-struct CyberSparkline: View {
-    let color: Color
-
-    var body: some View {
-        Canvas { context, size in
-            let w = size.width
-            let h = size.height
-            guard w > 10, h > 4 else { return }
-
-            let points: [CGFloat] = [0.4, 0.45, 0.65, 0.25, 0.85, 0.30, 0.70, 0.15, 0.90, 0.40, 0.50, 0.48]
-            var path = Path()
-            let step = w / CGFloat(points.count - 1)
-            let startY = h * (1.0 - points[0])
-            path.move(to: CGPoint(x: 0, y: startY))
-
-            for i in 1..<points.count {
-                let x = CGFloat(i) * step
-                let y = h * (1.0 - points[i])
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-
-            var fillPath = path
-            fillPath.addLine(to: CGPoint(x: w, y: h))
-            fillPath.addLine(to: CGPoint(x: 0, y: h))
-            fillPath.closeSubpath()
-
-            let fillGrad = Gradient(colors: [color.opacity(0.22), color.opacity(0.0)])
-            context.fill(fillPath, with: .linearGradient(fillGrad, startPoint: .zero, endPoint: CGPoint(x: 0, y: h)))
-            context.stroke(path, with: .color(color), lineWidth: 1.5)
-        }
-        .frame(height: 18)
-        .allowsHitTesting(false)
-    }
-}
-
 // MARK: - Cyber Thinking Row
 
 struct CyberThinkingRow: View {
@@ -344,35 +428,23 @@ struct CyberThinkingRow: View {
                     isOpen.toggle()
                 }
             } label: {
-                HStack(spacing: LingXiMetrics.Space.sm) {
-                    // Purple-gold thinking emblem
-                    ZStack {
-                        Circle()
-                            .fill(LingXiTheme.electricPurple.opacity(0.2))
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "brain.head.profile")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(LingXiTheme.electricPurple)
-                    }
+                HStack(spacing: 8) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(LingXiTheme.electricPurple)
 
-                    HStack(spacing: 6) {
-                        Text("思考链")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(LingXiTheme.electricPurple.opacity(0.18), in: Capsule())
-                            .overlay(Capsule().strokeBorder(LingXiTheme.electricPurple.opacity(0.4), lineWidth: 0.5))
-                            .foregroundStyle(LingXiTheme.electricPurple)
+                    Text("思考链")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(LingXiTheme.electricPurple)
 
-                        if duration > 0 || tokens > 0 {
-                            Text("\(String(format: "%.1f", duration))s · \(tokens) tok")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("思考中…")
-                                .font(.caption)
-                                .foregroundStyle(LingXiTheme.electricCyan)
-                        }
+                    if duration > 0 || tokens > 0 {
+                        Text("· \(String(format: "%.1f", duration))s (\(tokens) tok)")
+                            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("· 思考中…")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(LingXiTheme.electricCyan)
                     }
 
                     Spacer(minLength: LingXiMetrics.Space.sm)
@@ -382,28 +454,30 @@ struct CyberThinkingRow: View {
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
                 }
-                .padding(.horizontal, LingXiMetrics.Space.md)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(height: 28)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    Capsule()
                         .fill(Color.black.opacity(0.35))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(LingXiTheme.electricPurple.opacity(0.3), lineWidth: 1)
-                        )
+                        .overlay(Capsule().strokeBorder(LingXiTheme.electricPurple.opacity(0.3), lineWidth: 0.8))
                 )
             }
             .buttonStyle(.plain)
 
             if isOpen {
-                VStack(alignment: .leading, spacing: 4) {
-                    CyberSparkline(color: LingXiTheme.electricPurple)
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                    HStack {
+                        Spacer()
+                        CyberCopyButton(text: content, label: "复制思考")
+                    }
                     Text(content)
                         .font(.lxCallout)
                         .foregroundStyle(Color.primary.opacity(0.85))
                         .textSelection(.enabled)
-                        .padding(.horizontal, LingXiMetrics.Space.md)
-                        .padding(.vertical, LingXiMetrics.Space.xs)
+                        .padding(LingXiMetrics.Space.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lxInsetBlock()
                 }
                 .padding(.leading, 8)
                 .transition(.opacity)
@@ -557,9 +631,6 @@ struct ToolEventRow: View {
 
             if isOpen && hasDetail {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                    CyberSparkline(color: state == .failed ? LingXiTheme.neonCoral : category.themeColor)
-                        .padding(.vertical, 2)
-
                     if let cwd = call.workingDirectory {
                         Label(cwd, systemImage: "folder")
                             .font(.lxMeta)
@@ -774,17 +845,23 @@ struct OutputBlock: View {
     var isDiff = false
 
     var body: some View {
-        ScrollView {
-            rendered
-                .font(.lxMono)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(LingXiMetrics.Space.sm)
+        ZStack(alignment: .topTrailing) {
+            ScrollView {
+                rendered
+                    .font(.lxMono)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(LingXiMetrics.Space.sm)
+                    .padding(.top, 14)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: LingXiMetrics.outputMaxHeight)
+            .fixedSize(horizontal: false, vertical: true)
+            .lxInsetBlock()
+
+            CyberCopyButton(text: text)
+                .padding(6)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxHeight: LingXiMetrics.outputMaxHeight)
-        .fixedSize(horizontal: false, vertical: true)
-        .lxInsetBlock()
     }
 
     private var rendered: Text {

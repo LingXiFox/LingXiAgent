@@ -35,10 +35,10 @@ struct NativeGUIVisualArchitectureTests {
         #expect(mode == .workspace && inspector.isPresented)
     }
 
-    @Test("SettingsCatalog covers all 19 native pages without nested split views")
+    @Test("SettingsCatalog covers all 18 native pages without nested split views")
     func settingsCatalogCoversAllRequiredSections() {
         let pages = SettingsPage.allCases
-        #expect(pages.count >= 19)
+        #expect(pages.count >= 18)
 
         // Verify key pages exist
         let ids = Set(pages.map(\.id))
@@ -47,7 +47,6 @@ struct NativeGUIVisualArchitectureTests {
         #expect(ids.contains("conversation"))
         #expect(ids.contains("shortcuts"))
         #expect(ids.contains("providers"))
-        #expect(ids.contains("models"))
         #expect(ids.contains("agentDefaults"))
         #expect(ids.contains("permissions"))
         #expect(ids.contains("context"))

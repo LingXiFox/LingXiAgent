@@ -142,24 +142,32 @@ struct PermissionSurface: View {
 
             VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
                 if !card.parametersSummary.isEmpty {
+                    HStack {
+                        Text("待执行命令 / 参数")
+                            .font(.lxMeta.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        CyberCopyButton(text: card.parametersSummary, label: "复制命令")
+                    }
                     Text(card.parametersSummary)
-                        .font(.lxMono)
+                        .font(.system(size: 14, weight: .regular, design: .monospaced))
                         .textSelection(.enabled)
-                        .padding(LingXiMetrics.Space.sm)
+                        .padding(LingXiMetrics.Space.md)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lxInsetBlock()
                 }
             }
 
-            HStack(spacing: LingXiMetrics.Space.sm) {
+            HStack(spacing: LingXiMetrics.Space.md) {
                 Text("当前策略: \(policy)")
                     .font(.lxMeta)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 Button("拒绝") { onResolve(false) }
-                    .keyboardShortcut(.cancelAction)
+                    .controlSize(.regular)
                 Button("允许") { onResolve(true) }
                     .lxPrimaryButtonStyle()
+                    .controlSize(.regular)
                     .keyboardShortcut(.defaultAction)
             }
         }

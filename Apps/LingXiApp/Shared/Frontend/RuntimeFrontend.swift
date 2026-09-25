@@ -418,6 +418,16 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
+    /// Reverts the last conversation turn, removing assistant responses/tool calls and restoring prompt to composer.
+    public func undoLastTurn() {
+        runCommand("/undo")
+    }
+
+    /// Loads a historical user message back into composer for editing and re-submitting.
+    public func editMessage(content: String) {
+        composerModel.text = content
+    }
+
     public func finalizeTask(action: TaskFinalizeAction) {
         guard var task = conversationModel.activeTask else { return }
         task.state = action == .discard ? "cancelled" : "completed"

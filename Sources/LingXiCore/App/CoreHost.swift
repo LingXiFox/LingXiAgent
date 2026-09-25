@@ -1452,19 +1452,38 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
 
         if let assembly = currentAssembly, !results.contains(where: { $0.modelID == assembly.modelID.rawValue || $0.id == assembly.modelID.rawValue }) {
+            let modelID = assembly.modelID.rawValue
+            let cachedCatalog = await LingXiModelsCatalogClient.shared.loadCached()
+            var matchedEntry: LingXiModelsCatalogClient.ModelEntry? = nil
+            if let providers = cachedCatalog?.providers {
+                for (_, p) in providers {
+                    if let entry = p.models?[modelID] {
+                        matchedEntry = entry
+                        break
+                    }
+                }
+            }
+
+            let ctx = matchedEntry?.limit?.context ?? 0
+            let maxOut = matchedEntry?.limit?.output ?? 0
+            let reasoning = matchedEntry?.reasoning ?? false
+            let incomplete = (matchedEntry == nil)
+
             results.append(ProviderModelInfo(
-                id: assembly.modelID.rawValue,
+                id: modelID,
                 providerID: assembly.endpoint.providerID,
-                modelID: assembly.modelID.rawValue,
-                displayName: assembly.modelID.rawValue,
-                contextWindow: 128_000,
-                maxOutputTokens: 8192,
-                reasoning: false,
+                modelID: modelID,
+                displayName: matchedEntry?.name ?? modelID,
+                contextWindow: ctx,
+                maxOutputTokens: maxOut,
+                reasoning: reasoning,
                 configured: true,
-                metadataIncomplete: false,
-                canonicalModelID: assembly.modelID.rawValue,
+                metadataIncomplete: incomplete,
+                canonicalModelID: modelID,
                 backendVariant: nil,
-                backendVariants: nil
+                backendVariants: nil,
+                vision: matchedEntry?.attachment ?? false,
+                toolCalling: matchedEntry?.tool_call ?? true
             ))
         }
 

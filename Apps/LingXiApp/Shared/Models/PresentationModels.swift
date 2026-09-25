@@ -187,7 +187,7 @@ public struct NoticePresentation: Sendable, Equatable {
 }
 
 public enum TimelineItemKind: Sendable, Equatable {
-    case user(content: String, attachments: [AttachmentPresentation])
+    case user(content: String, attachments: [AttachmentPresentation], messageID: String? = nil, turnID: String? = nil, sessionID: String? = nil)
     case thinking(content: String, isExpanded: Bool, durationSeconds: Double, tokenCount: Int)
     case assistant(content: String, isStreaming: Bool)
     case tool(ToolCallPresentation)

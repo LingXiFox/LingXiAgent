@@ -37,10 +37,10 @@ public enum LingXiMetrics {
     // MARK: - 行高
 
     public enum Row {
-        /// 时间线事件单行
-        public static let event: CGFloat = 28
-        /// 列表行（Kit 侧栏 Medium 行高）
-        public static let list: CGFloat = 32
+        /// 时间线事件单行（桌面舒适尺度 36pt）
+        public static let event: CGFloat = 36
+        /// 列表行（Kit 侧栏 Medium 行高 34pt）
+        public static let list: CGFloat = 34
     }
 
     // MARK: - 列宽
@@ -50,20 +50,20 @@ public enum LingXiMetrics {
         public static let measure: CGFloat = 1080
         /// 阅读列两侧最小留白
         public static let gutter: CGFloat = 28
-        /// 用户气泡上限
+        /// 用户气泡上限（舒适宽度 720）
         public static let userBubble: CGFloat = 720
         /// 事件图标列宽，保证标题在同一竖线上对齐
         public static let eventGlyph: CGFloat = 18
     }
 
-    // MARK: - 浮动面板布局
+    // MARK: - 浮动面板与分栏布局
 
     public enum Split {
-        public static let navigatorWidth: CGFloat = 272
-        public static let inspectorWidth: CGFloat = 304
+        public static let navigatorWidth: CGFloat = 280
+        public static let inspectorWidth: CGFloat = 340
         /// 面板与窗口边缘、面板与舞台之间的间隙
         public static let panelMargin: CGFloat = Space.sm
-        /// 面板内容水平内缩（Kit 侧栏 256 宽、内容 228 宽）
+        /// 面板内容水平内缩
         public static let panelContentInset: CGFloat = 14
         /// 窗口宽于此值时检查器为舞台让位，否则浮在内容之上
         public static let inspectorDockMinWidth: CGFloat = 1120
@@ -79,24 +79,44 @@ public enum LingXiMetrics {
     public static let composerMaxLines = 8
 }
 
-// MARK: - 字阶（高清晰度、增强暗黑环境对比度）
+// MARK: - 字阶（桌面级舒适清晰度，严禁 9~10pt 超微字体）
 
 public extension Font {
-    /// 助手正文与用户消息（提升至 15pt，字重优化）
-    static let lxBody: Font = .system(size: 15, weight: .regular)
-    /// 区块标题
-    static let lxTitle: Font = .system(size: 18, weight: .semibold)
-    /// 时间线事件、检查器正文（提升至 13.5pt）
-    static let lxCallout: Font = .system(size: 13.5, weight: .medium)
-    /// 元数据：耗时、计数、副标题
-    static let lxMeta: Font = .system(size: 12, weight: .regular)
-    /// 徽章与计数
-    static let lxMicro: Font = .system(size: 11, weight: .semibold)
-    /// 等宽，仅用于代码、命令、路径、ID
-    static let lxMono: Font = .system(size: 13, weight: .regular, design: .monospaced)
+    /// 助手正文与用户消息（提升至 16pt，行距更舒适）
+    static let lxBody: Font = .system(size: 16, weight: .regular)
+    /// 区块标题（提升至 20pt Semibold）
+    static let lxTitle: Font = .system(size: 20, weight: .semibold)
+    /// 时间线事件、检查器正文（提升至 14pt Medium）
+    static let lxCallout: Font = .system(size: 14, weight: .medium)
+    /// 元数据：耗时、计数、副标题（提升至 12.5pt）
+    static let lxMeta: Font = .system(size: 12.5, weight: .regular)
+    /// 徽章与计数（提升至 11.5pt Semibold）
+    static let lxMicro: Font = .system(size: 11.5, weight: .semibold)
+    /// 等宽，仅用于代码、命令、路径、ID（提升至 13.5pt Mono）
+    static let lxMono: Font = .system(size: 13.5, weight: .regular, design: .monospaced)
 }
 
 public extension ShapeStyle where Self == Color {
     /// 用户气泡：文字色 6% 洗白，跟随明暗自动反相，不用彩色底
     static var lxUserBubble: Color { Color.primary.opacity(0.06) }
 }
+
+/// 设置页面内容统一容器（左对齐，宽度约束 760~880pt，默认 820pt，避免两边畸形留白或无序拉伸）
+public struct SettingsContentColumn<Content: View>: View {
+    public let maxWidth: CGFloat
+    public let content: Content
+
+    public init(maxWidth: CGFloat = 820, @ViewBuilder content: () -> Content) {
+        self.maxWidth = maxWidth
+        self.content = content()
+    }
+
+    public var body: some View {
+        HStack {
+            content
+                .frame(maxWidth: maxWidth, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+    }
+}
+

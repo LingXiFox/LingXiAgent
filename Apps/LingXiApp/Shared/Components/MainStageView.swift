@@ -37,6 +37,7 @@ public struct MainStageView: View {
                 WorkspaceGate(runtime: runtime)
             }
         }
+        .environment(\.runtimeFrontend, runtime)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(item: $runtime.commandOutput) { output in
             CommandOutputSheet(output: output)
@@ -180,8 +181,12 @@ public struct ActionFlowTimelineView: View {
                 let rows = items.foldedIntoRows()
                 ScrollView {
                     if !hasAnyItem {
-                        CyberHeroWelcomeView(onPromptSelect: onPromptSelect)
-                            .frame(maxWidth: .infinity, minHeight: max(viewport.size.height - 180, 360), alignment: .center)
+                        VStack {
+                            Spacer()
+                            CyberHeroWelcomeView(onPromptSelect: onPromptSelect)
+                                .padding(.bottom, 72)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: max(viewport.size.height - 130, 260), alignment: .bottom)
                     } else {
                         LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
                             ForEach(rows) { row in

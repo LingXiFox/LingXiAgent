@@ -27,7 +27,7 @@ public struct InspectorView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Unified Inspector Header
+            // Inspector Header
             HStack(spacing: LingXiMetrics.Space.sm) {
                 Label("实时监控", systemImage: "waveform.path.ecg")
                     .font(.lxCallout.weight(.semibold))
@@ -47,27 +47,35 @@ public struct InspectorView: View {
             }
             .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
             .padding(.top, LingXiMetrics.Space.md)
+            .padding(.bottom, LingXiMetrics.Space.xs)
+
+            // Segmented Tab Picker
+            Picker("监控分栏", selection: $model.selectedTab) {
+                ForEach(InspectorTab.allCases) { tab in
+                    Text(tab.displayName).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
             .padding(.bottom, LingXiMetrics.Space.sm)
 
+            Divider()
+
+            // Tab Content: Strict Single-Tab Rendering
             if let live = model.live {
                 ScrollView {
                     VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
-                        // 1. 运行状态与模型 (Overview)
-                        OverviewTab(live: live)
-
-                        Divider()
-
-                        // 2. 核心双核架构与缓存 (Core Context: P-Core, E-Core, Cache)
-                        CoreTab(live: live, onCompact: onCompact)
-
-                        Divider()
-
-                        // 3. 任务与待办 (Tasks)
-                        TasksTab(live: live, onTerminate: onTerminateTask)
-
-                        if !live.subagents.isEmpty {
-                            Divider()
+                        switch model.selectedTab {
+                        case .overview:
+                            OverviewTab(live: live)
+                        case .core:
+                            CoreTab(live: live, onCompact: onCompact)
+                        case .tasks:
+                            TasksTab(live: live, onTerminate: onTerminateTask)
+                        case .agents:
                             AgentsTab(live: live)
+                        case .changes:
+                            ChangesTab(live: live)
                         }
                     }
                     .padding(LingXiMetrics.Split.panelContentInset)
@@ -78,13 +86,18 @@ public struct InspectorView: View {
                     .frame(maxHeight: .infinity)
             }
 
+            Divider()
+
+            // Inspector Bottom Bar
             HStack(spacing: LingXiMetrics.Space.md) {
                 Button(action: onOpenTraceWindow) {
                     Label("运行轨迹", systemImage: "waveform.path.ecg")
                 }
                 .keyboardShortcut("l", modifiers: [.option, .command])
                 .help("打开独立运行轨迹窗口 (⌥⌘L)")
+
                 Spacer(minLength: 0)
+
                 if model.live != nil {
                     Button(action: onRefresh) {
                         Label("刷新", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
@@ -96,14 +109,148 @@ public struct InspectorView: View {
             .font(.lxCallout)
             .foregroundStyle(.secondary)
             .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
-            .padding(.vertical, LingXiMetrics.Space.md)
+            .padding(.vertical, LingXiMetrics.Space.sm)
+        }
+    }
+}
+
+// MARK: - Metric Tile
+
+private struct MetricTile: View {
+    let title: String
+    let value: String
+    var unit: String? = nil
+    var subtitle: String? = nil
+    var systemImage: String? = nil
+    var tint: Color = LingXiTheme.neonTeal
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                Text(title)
+                    .font(.lxMeta.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(alignment: .lastTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .monospacedDigit()
+                if let unit {
+                    Text(unit)
+                        .font(.lxMeta)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(LingXiMetrics.Space.sm)
+        .lxInsetBlock()
+    }
+}
+
+// MARK: - Token Stacked Bar
+
+private struct TokenStackedBarView: View {
+    let prompt: Int
+    let completion: Int
+    let cache: Int
+
+    private var total: Int { prompt + completion + cache }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+            HStack {
+                Text("Token 分布")
+                    .font(.lxCallout)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text("共 \(tokens(total) ?? "0")")
+                    .font(.lxMono.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            if total > 0 {
+                GeometryReader { geo in
+                    HStack(spacing: 2) {
+                        if cache > 0 {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(LingXiTheme.foxfireAmber)
+                                .frame(width: max(4, geo.size.width * CGFloat(cache) / CGFloat(total)))
+                                .help("缓存读取: \(tokens(cache) ?? "")")
+                        }
+                        if prompt > 0 {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(LingXiTheme.electricCyan)
+                                .frame(width: max(4, geo.size.width * CGFloat(prompt) / CGFloat(total)))
+                                .help("输入: \(tokens(prompt) ?? "")")
+                        }
+                        if completion > 0 {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(LingXiTheme.neonTeal)
+                                .frame(width: max(4, geo.size.width * CGFloat(completion) / CGFloat(total)))
+                                .help("生成输出: \(tokens(completion) ?? "")")
+                        }
+                    }
+                }
+                .frame(height: 8)
+                .background(.quinary, in: RoundedRectangle(cornerRadius: 4))
+
+                // Compact Legend
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    if cache > 0 {
+                        LegendDot(label: "缓存", value: tokens(cache), color: LingXiTheme.foxfireAmber)
+                    }
+                    if prompt > 0 {
+                        LegendDot(label: "输入", value: tokens(prompt), color: LingXiTheme.electricCyan)
+                    }
+                    if completion > 0 {
+                        LegendDot(label: "输出", value: tokens(completion), color: LingXiTheme.neonTeal)
+                    }
+                }
+            } else {
+                Text("暂无 Token 消耗")
+                    .font(.lxMeta)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(LingXiMetrics.Space.sm)
+        .lxInsetBlock()
+    }
+}
+
+private struct LegendDot: View {
+    let label: String
+    let value: String?
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text("\(label) \(value ?? "0")")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
     }
 }
 
 // MARK: - Shared rows
 
-/// Label / value row; a missing value shows an explicit dash, never a guess.
 private struct MetricRow: View {
     let label: String
     let value: String?
@@ -134,13 +281,79 @@ private func tokens(_ n: Int?) -> String? {
     return "\(n)"
 }
 
-// MARK: - Overview
+// MARK: - Overview Tab
 
 private struct OverviewTab: View {
     let live: InspectorSnapshot
 
     var body: some View {
-        LXSection("当前运行") {
+        // 1. Performance Metric Tiles
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            MetricTile(
+                title: "首字延迟 (TTFT)",
+                value: live.lastMetrics?.firstTokenMs.map { DurationText.format(milliseconds: $0) } ?? "—",
+                subtitle: live.lastMetrics?.firstTokenMs != nil ? "响应耗时" : "等待生成",
+                systemImage: "bolt.horizontal.fill",
+                tint: LingXiTheme.neonTeal
+            )
+            MetricTile(
+                title: "生成速率",
+                value: live.lastMetrics?.tokenRate.map { String(format: "%.1f", $0) } ?? "—",
+                unit: live.lastMetrics?.tokenRate != nil ? "tok/s" : nil,
+                subtitle: live.lastMetrics?.tokenRate != nil ? "实时流式" : "空闲",
+                systemImage: "gauge.with.dots.needle.bottom.50percent",
+                tint: LingXiTheme.electricCyan
+            )
+        }
+
+        // 2. Context Linear Progress Gauge
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("上下文窗口", systemImage: "chart.bar.xaxis")
+                    .font(.lxCallout)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(contextUsage ?? "—")
+                    .font(.lxMono.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let fraction = contextFraction {
+                Gauge(value: fraction) {
+                    EmptyView()
+                }
+                .gaugeStyle(.linearCapacity)
+                .tint(fraction > 0.85 ? LingXiTheme.neonCoral : fraction > 0.65 ? LingXiTheme.foxfireAmber : LingXiTheme.neonTeal)
+                .labelsHidden()
+                .accessibilityLabel("上下文占用 \(Int(fraction * 100))%")
+
+                HStack {
+                    Text("已占用 \(Int(fraction * 100))%")
+                        .font(.lxMeta)
+                        .foregroundStyle(fraction > 0.85 ? LingXiTheme.neonCoral : .secondary)
+                    Spacer()
+                    if let budget = live.contextPolicy?.addressableBudget {
+                        Text("预算上限 \(tokens(budget) ?? "")")
+                            .font(.lxMeta)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .padding(LingXiMetrics.Space.sm)
+        .lxInsetBlock()
+
+        // 3. Token Compact Stacked Bar
+        TokenStackedBarView(
+            prompt: live.context?.providerCache?.promptTokens ?? 0,
+            completion: max(0, (live.lastMetrics?.totalTokens ?? 0) - (live.context?.providerCache?.promptTokens ?? 0)),
+            cache: live.context?.providerCache?.cacheReadTokens ?? 0
+        )
+
+        Divider()
+
+        // 4. Runtime & Model Details
+        LXSection("运行状态") {
             VStack(spacing: 0) {
                 MetricRow(label: "状态", value: statusLabel(live.status), tint: statusTint)
                 if let start = live.runStartedAt {
@@ -153,39 +366,20 @@ private struct OverviewTab: View {
                     }
                 }
                 MetricRow(label: "模型", value: live.modelID, monospaced: true)
-                MetricRow(label: "思考", value: live.reasoning)
-                MetricRow(label: "权限", value: live.permission.isEmpty ? nil : live.permission)
-                MetricRow(label: "Provider", value: live.providerState.map(providerLabel),
+                MetricRow(label: "思考模式", value: live.reasoning)
+                MetricRow(label: "权限预设", value: live.permission.isEmpty ? nil : live.permission)
+                MetricRow(label: "Provider 状态", value: live.providerState.map(providerLabel),
                           tint: live.providerState == .rateLimited || live.providerState == .failed ? .orange : nil)
                 if let tool = live.activeTools.first {
                     MetricRow(label: "当前工具", value: live.activeTools.count > 1 ? "\(tool) +\(live.activeTools.count - 1)" : tool,
                               monospaced: true)
                 }
                 if let pending = live.pendingInteraction {
-                    MetricRow(label: "等待", value: pending == "permission" ? "权限审批" : "用户回答", tint: .orange)
+                    MetricRow(label: "等待交互", value: pending == "permission" ? "权限审批" : "用户回答", tint: .orange)
                 }
                 if let task = live.backgroundTasks.first(where: { $0.status == .running }) {
                     MetricRow(label: "后台任务", value: task.description ?? task.command, monospaced: true)
                 }
-            }
-        }
-
-        Divider()
-
-        LXSection("用量") {
-            VStack(spacing: 0) {
-                MetricRow(label: "上下文", value: contextUsage)
-                MetricRow(label: "本轮 Token", value: tokens(live.lastMetrics?.totalTokens))
-                MetricRow(label: "缓存读取", value: tokens(live.context?.cacheReadTokens))
-                MetricRow(label: "首 Token", value: live.lastMetrics?.firstTokenMs.map { DurationText.format(milliseconds: $0) })
-                MetricRow(label: "生成速率", value: live.lastMetrics?.tokenRate.map { String(format: "%.1f tok/s", $0) })
-            }
-            if let fraction = contextFraction {
-                Gauge(value: fraction) { EmptyView() }
-                    .gaugeStyle(.linearCapacity)
-                    .tint(fraction > 0.85 ? .red : fraction > 0.65 ? .orange : LingXiTheme.tertiaryText)
-                    .labelsHidden()
-                    .accessibilityLabel("上下文占用 \(Int(fraction * 100))%")
             }
         }
     }
@@ -209,131 +403,217 @@ private struct OverviewTab: View {
     }
 }
 
-func statusLabel(_ status: ProductRuntimeStatus) -> String {
-    switch status {
-    case .ready: return "空闲"
-    case .thinking: return "思考中"
-    case .waitingForProvider: return "等待模型"
-    case .rateLimited: return "限流中"
-    case .runningTool: return "执行工具"
-    case .runningSubagents: return "子 Agent 运行中"
-    case .paging: return "上下文换页"
-    case .actionRequired: return "等待你的操作"
-    case .reconnecting: return "重连中"
-    case .disconnected: return "未连接"
-    case .error: return "错误"
-    }
-}
-
-private func providerLabel(_ state: ProviderRequestState) -> String {
-    switch state {
-    case .scheduled: return "已排队"
-    case .waitingForRateBudget: return "等待速率预算"
-    case .requesting: return "请求中"
-    case .streaming: return "流式输出"
-    case .rateLimited: return "限流"
-    case .retryScheduled: return "等待重试"
-    case .completed: return "完成"
-    case .failed: return "失败"
-    case .cancelled: return "已取消"
-    case .unknown: return "未知"
-    }
-}
-
-// MARK: - Core
+// MARK: - Core Tab
 
 private struct CoreTab: View {
     let live: InspectorSnapshot
     var onCompact: () -> Void
 
     var body: some View {
-        LXSection("P-Core", accessory: {
-            Button("压缩", action: onCompact)
+        // 1. P-Core Meter
+        LXSection("P-Core (主上下文)", accessory: {
+            Button("立即压缩", action: onCompact)
                 .buttonStyle(.borderless)
                 .font(.lxMeta)
-                .help("立即压缩当前会话上下文")
+                .help("触发上下文压缩")
         }) {
-            VStack(spacing: 0) {
+            VStack(spacing: LingXiMetrics.Space.xs) {
                 let p = live.context?.pCore
-                MetricRow(label: "工作集", value: p.map { "\(tokens($0.usedTokens) ?? "—") / \(tokens($0.targetTokens) ?? "—")" })
-                MetricRow(label: "软限 / 硬限", value: p.map { "\(tokens($0.softLimitTokens) ?? "—") / \(tokens($0.hardLimitTokens) ?? "—")" })
-                MetricRow(label: "前缀保护", value: live.context?.structuralPrefixStability.map { String(format: "%.0f%%", $0 * 100) } ?? "已就绪")
-                MetricRow(label: "可寻址预算", value: tokens(live.contextPolicy?.addressableBudget))
-                MetricRow(label: "压缩代数", value: live.context.map { "\($0.compactionGeneration)" })
-                if let c = live.compaction {
-                    MetricRow(label: "上次压缩", value: "\(tokens(c.beforeTokens) ?? "") → \(tokens(c.afterTokens) ?? "") · \(c.triggerSource)")
+                let used = p?.usedTokens ?? live.context?.estimatedTokens ?? 0
+                let target = p?.targetTokens ?? live.contextPolicy?.addressableBudget ?? 1
+                let fraction = target > 0 ? min(1.0, Double(used) / Double(target)) : 0.0
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("工作集占用")
+                            .font(.lxCallout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(tokens(used) ?? "0") / \(tokens(target) ?? "0")")
+                            .font(.lxMono.weight(.medium))
+                    }
+                    Gauge(value: fraction) { EmptyView() }
+                        .gaugeStyle(.linearCapacity)
+                        .tint(fraction > 0.85 ? LingXiTheme.neonCoral : LingXiTheme.neonTeal)
+                        .labelsHidden()
+                }
+                .padding(LingXiMetrics.Space.sm)
+                .lxInsetBlock()
+
+                VStack(spacing: 0) {
+                    MetricRow(label: "软限 / 硬限", value: p.map { "\(tokens($0.softLimitTokens) ?? "—") / \(tokens($0.hardLimitTokens) ?? "—")" })
+                    MetricRow(label: "前缀保护稳定度", value: live.context?.structuralPrefixStability.map { String(format: "%.0f%%", $0 * 100) } ?? "已就绪")
+                    MetricRow(label: "可寻址预算", value: tokens(live.contextPolicy?.addressableBudget))
+                    MetricRow(label: "压缩代数", value: live.context.map { "\($0.compactionGeneration)" })
                 }
             }
         }
 
         Divider()
 
-        LXSection("E-Core") {
-            VStack(spacing: 0) {
+        // 2. E-Core Meter
+        LXSection("E-Core (分级记忆与索引)") {
+            VStack(spacing: LingXiMetrics.Space.xs) {
                 let e = live.context?.eCore
-                MetricRow(label: "对象数", value: e.map { "\($0.objectCount)" })
-                MetricRow(label: "存储体积", value: e.map { ByteCountFormatter.string(fromByteCount: Int64($0.totalBytes), countStyle: .memory) })
-                MetricRow(label: "热 / 冷", value: e.flatMap { e in
-                    guard let hot = e.hotObjectCount, let cold = e.coldObjectCount else { return nil }
-                    return "\(hot) / \(cold)"
-                })
-                MetricRow(label: "存储预算", value: tokens(live.contextPolicy?.eCoreStorageBudget))
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    MetricTile(
+                        title: "对象数量",
+                        value: e.map { "\($0.objectCount)" } ?? "0",
+                        subtitle: "结构化记忆",
+                        systemImage: "cylinder.split.1x2",
+                        tint: LingXiTheme.neonTeal
+                    )
+                    MetricTile(
+                        title: "存储体积",
+                        value: e.map { ByteCountFormatter.string(fromByteCount: Int64($0.totalBytes), countStyle: .memory) } ?? "0 B",
+                        subtitle: "内存占用",
+                        systemImage: "internaldrive",
+                        tint: LingXiTheme.electricCyan
+                    )
+                }
+
+                VStack(spacing: 0) {
+                    MetricRow(label: "热对象 / 冷对象", value: e.flatMap { e in
+                        guard let hot = e.hotObjectCount, let cold = e.coldObjectCount else { return nil }
+                        return "\(hot) / \(cold)"
+                    })
+                    MetricRow(label: "存储预算", value: tokens(live.contextPolicy?.eCoreStorageBudget))
+                }
             }
         }
 
         Divider()
 
-        LXSection("Provider 缓存") {
+        // 3. Provider Cache Efficiency Meter
+        LXSection("Provider 缓存效率") {
+            VStack(spacing: LingXiMetrics.Space.xs) {
+                let cache = live.context?.providerCache
+                let read = cache?.cacheReadTokens ?? 0
+                let prompt = cache?.promptTokens ?? 0
+                let hitRatio: Double? = (read + prompt > 0) ? Double(read) / Double(read + prompt) : nil
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("缓存命中率")
+                            .font(.lxCallout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(hitRatio.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                            .font(.lxMono.weight(.bold))
+                            .foregroundStyle(hitRatio != nil && hitRatio! > 0.5 ? LingXiTheme.neonTeal : .primary)
+                    }
+                    if let ratio = hitRatio {
+                        Gauge(value: ratio) { EmptyView() }
+                            .gaugeStyle(.linearCapacity)
+                            .tint(LingXiTheme.neonTeal)
+                            .labelsHidden()
+                    }
+                }
+                .padding(LingXiMetrics.Space.sm)
+                .lxInsetBlock()
+
+                VStack(spacing: 0) {
+                    MetricRow(label: "缓存状态", value: cache?.cacheStatus)
+                    MetricRow(label: "读取 Token", value: tokens(read))
+                    MetricRow(label: "Prompt Token", value: tokens(prompt))
+                    MetricRow(label: "Cache Debt", value: cache?.cacheDebt.map { "\($0)" })
+                }
+            }
+        }
+
+        Divider()
+
+        // 4. Advanced Strategies Disclosure Group
+        DisclosureGroup("高级缓存与架构策略") {
             VStack(spacing: 0) {
                 let cache = live.context?.providerCache
-                MetricRow(label: "状态", value: cache?.cacheStatus)
-                MetricRow(label: "读取 Token", value: tokens(cache?.cacheReadTokens))
-                MetricRow(label: "Prompt Token", value: tokens(cache?.promptTokens))
-                MetricRow(label: "Cache Debt", value: cache?.cacheDebt.map { "\($0)" })
-                MetricRow(label: "Epoch", value: cache?.cacheEpoch.map { e in [String(e), cache?.epochReason].compactMap { $0 }.joined(separator: " · ") })
-                MetricRow(label: "前缀稳定度", value: live.context?.structuralPrefixStability.map { String(format: "%.0f%%", $0 * 100) })
+                MetricRow(label: "Cache Epoch", value: cache?.cacheEpoch.map { e in [String(e), cache?.epochReason].compactMap { $0 }.joined(separator: " · ") })
+                MetricRow(label: "稳定前缀 Hash", value: cache?.stablePrefixHash, monospaced: true)
+                MetricRow(label: "客户端健康状态", value: cache?.clientHealthStatus)
+                MetricRow(label: "前缀破坏率", value: live.context?.clientCausedBustRate.map { String(format: "%.1f%%", $0 * 100) })
+                MetricRow(label: "挥发性尾部字节", value: live.context?.volatileTailBytes.map { "\($0) B" })
+                if let c = live.compaction {
+                    MetricRow(label: "上次压缩记录", value: "\(tokens(c.beforeTokens) ?? "") → \(tokens(c.afterTokens) ?? "") · \(c.triggerSource)")
+                }
                 if let miss = cache?.missDiagnostics, !miss.isEmpty {
-                    Text(miss).font(.lxMeta).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(miss)
+                        .font(.lxMeta)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
                 }
             }
+            .padding(.top, LingXiMetrics.Space.xs)
         }
-
-        Divider()
-
-        LXSection("检索与分支预测") {
-            PlaceholderLine("Core 尚未提供检索遥测与 Branch Prediction 快照的前端数据契约，暂不展示。")
-        }
+        .font(.lxCallout)
+        .foregroundStyle(.secondary)
     }
 }
 
-// MARK: - Tasks
+// MARK: - Tasks Tab
 
 private struct TasksTab: View {
     let live: InspectorSnapshot
     var onTerminate: (String) -> Void
 
+    private var completedTodosCount: Int {
+        live.todos.filter { $0.status == "completed" }.count
+    }
+
+    private var todoProgress: Double {
+        guard !live.todos.isEmpty else { return 0 }
+        return Double(completedTodosCount) / Double(live.todos.count)
+    }
+
     var body: some View {
-        LXSection("Todo", accessory: {
-            if !live.todos.isEmpty {
-                Text("\(live.todos.filter { $0.status == "completed" }.count)/\(live.todos.count)")
-                    .font(.lxMeta).foregroundStyle(.tertiary).monospacedDigit()
+        // 1. Overall Task Progress Gauge
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("任务清单进度", systemImage: "checklist")
+                    .font(.lxCallout)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text("\(completedTodosCount) / \(live.todos.count)")
+                    .font(.lxMono.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
-        }) {
+
+            if !live.todos.isEmpty {
+                Gauge(value: todoProgress) { EmptyView() }
+                    .gaugeStyle(.linearCapacity)
+                    .tint(LingXiTheme.neonTeal)
+                    .labelsHidden()
+
+                HStack {
+                    Text("已完成 \(Int(todoProgress * 100))%")
+                        .font(.lxMeta)
+                        .foregroundStyle(completedTodosCount == live.todos.count ? LingXiTheme.neonTeal : .secondary)
+                    Spacer()
+                }
+            }
+        }
+        .padding(LingXiMetrics.Space.sm)
+        .lxInsetBlock()
+
+        // 2. Todo Items List
+        LXSection("待办事项") {
             if live.todos.isEmpty {
-                PlaceholderLine("Agent 还没有创建 Todo。")
+                PlaceholderLine("Agent 还没有创建待办任务。")
             } else {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
                     ForEach(live.todos, id: \.id) { todo in
-                        Label {
+                        HStack(alignment: .firstTextBaseline, spacing: LingXiMetrics.Space.sm) {
+                            Image(systemName: todoSymbol(todo.status))
+                                .foregroundStyle(todoTint(todo.status))
+                                .font(.system(size: 13))
                             Text(todo.title)
                                 .font(.lxCallout)
                                 .strikethrough(todo.status == "completed")
                                 .foregroundStyle(todo.status == "completed" ? .tertiary : .primary)
                                 .fixedSize(horizontal: false, vertical: true)
-                        } icon: {
-                            Image(systemName: todoSymbol(todo.status))
-                                .foregroundStyle(todoTint(todo.status))
+                            Spacer(minLength: 0)
                         }
+                        .padding(.vertical, 2)
                     }
                 }
             }
@@ -341,7 +621,8 @@ private struct TasksTab: View {
 
         Divider()
 
-        LXSection("Workflow") {
+        // 3. Workflows
+        LXSection("工作流 (Workflow)") {
             if live.workflows.isEmpty {
                 PlaceholderLine("没有进行中的 Workflow。")
             } else {
@@ -364,6 +645,7 @@ private struct TasksTab: View {
 
         Divider()
 
+        // 4. Background Tasks
         LXSection("后台任务") {
             if live.backgroundTasks.isEmpty {
                 PlaceholderLine("没有后台任务。")
@@ -412,7 +694,7 @@ private struct TasksTab: View {
     }
 }
 
-// MARK: - Agents
+// MARK: - Agents Tab
 
 private struct AgentsTab: View {
     let live: InspectorSnapshot
@@ -466,7 +748,7 @@ private struct AgentsTab: View {
     }
 }
 
-// MARK: - Changes
+// MARK: - Changes Tab
 
 private struct ChangesTab: View {
     let live: InspectorSnapshot
@@ -547,6 +829,37 @@ private struct FileChangeRow: View {
         case .renamed: return .blue
         case .modified: return .orange
         }
+    }
+}
+
+func statusLabel(_ status: ProductRuntimeStatus) -> String {
+    switch status {
+    case .ready: return "空闲"
+    case .thinking: return "思考中"
+    case .waitingForProvider: return "等待模型"
+    case .rateLimited: return "限流中"
+    case .runningTool: return "执行工具"
+    case .runningSubagents: return "子 Agent 运行中"
+    case .paging: return "上下文换页"
+    case .actionRequired: return "等待操作"
+    case .reconnecting: return "重连中"
+    case .disconnected: return "未连接"
+    case .error: return "错误"
+    }
+}
+
+private func providerLabel(_ state: ProviderRequestState) -> String {
+    switch state {
+    case .scheduled: return "已排队"
+    case .waitingForRateBudget: return "等待预算"
+    case .requesting: return "请求中"
+    case .streaming: return "流式输出"
+    case .rateLimited: return "限流"
+    case .retryScheduled: return "等待重试"
+    case .completed: return "完成"
+    case .failed: return "失败"
+    case .cancelled: return "已取消"
+    case .unknown: return "未知"
     }
 }
 

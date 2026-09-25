@@ -191,6 +191,26 @@ public struct MainStageSplitView: View {
                 }
                 .help("显示或隐藏检查器 (⌥⌘I)")
             }
+            if conversation.isGenerating {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        runtime.stopGenerating()
+                    } label: {
+                        Label("停止生成", systemImage: "stop.circle.fill")
+                    }
+                    .help("停止当前生成 (Esc 或 ⌘.)")
+                    .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .status) {
+                    Button {
+                        runtime.stopGenerating()
+                    } label: {
+                        EmptyView()
+                    }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .accessibilityHidden(true)
+                }
+            }
         case .settings:
             ToolbarItem(placement: .navigation) {
                 Button {

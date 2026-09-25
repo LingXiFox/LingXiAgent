@@ -28,111 +28,6 @@ private func modalityColor(for mod: String) -> Color {
     }
 }
 
-// MARK: - Builtin Provider Spec
-
-private struct BuiltinProviderCatalogItem: Identifiable {
-    let id: String
-    let name: String
-    let endpoint: String
-    let icon: String
-    let models: [CatalogModelItem]
-
-    struct CatalogModelItem: Identifiable {
-        let id: String
-        let name: String
-        let contextTokens: Int
-        let maxOutput: Int
-        let modalities: [String] // "Text", "Vision", "Reasoning", "Tools"
-    }
-
-    static let all: [BuiltinProviderCatalogItem] = [
-        BuiltinProviderCatalogItem(
-            id: "deepseek",
-            name: "DeepSeek",
-            endpoint: "https://api.deepseek.com",
-            icon: "sparkles",
-            models: [
-                .init(id: "deepseek-chat", name: "DeepSeek-V3", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Tools"]),
-                .init(id: "deepseek-reasoner", name: "DeepSeek-R1", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Reasoning", "Tools"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "anthropic",
-            name: "Anthropic",
-            endpoint: "https://api.anthropic.com",
-            icon: "cpu",
-            models: [
-                .init(id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet", contextTokens: 200_000, maxOutput: 64_000, modalities: ["Text", "Vision", "Reasoning", "Tools"]),
-                .init(id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet", contextTokens: 200_000, maxOutput: 8_192, modalities: ["Text", "Vision", "Tools"]),
-                .init(id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku", contextTokens: 200_000, maxOutput: 8_192, modalities: ["Text", "Tools"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "openai",
-            name: "OpenAI",
-            endpoint: "https://api.openai.com/v1",
-            icon: "bolt.fill",
-            models: [
-                .init(id: "gpt-4o", name: "GPT-4o", contextTokens: 128_000, maxOutput: 16_384, modalities: ["Text", "Vision", "Tools"]),
-                .init(id: "gpt-4o-mini", name: "GPT-4o mini", contextTokens: 128_000, maxOutput: 16_384, modalities: ["Text", "Vision", "Tools"]),
-                .init(id: "o3-mini", name: "o3-mini", contextTokens: 200_000, maxOutput: 100_000, modalities: ["Text", "Reasoning", "Tools"]),
-                .init(id: "o1", name: "o1", contextTokens: 200_000, maxOutput: 100_000, modalities: ["Text", "Vision", "Reasoning"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "google",
-            name: "Google Gemini",
-            endpoint: "https://generativelanguage.googleapis.com",
-            icon: "globe",
-            models: [
-                .init(id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", contextTokens: 1_048_576, maxOutput: 65_536, modalities: ["Text", "Vision", "Reasoning", "Tools"]),
-                .init(id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", contextTokens: 1_048_576, maxOutput: 8_192, modalities: ["Text", "Vision", "Tools"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "qwen",
-            name: "阿里通义千问 (Qwen)",
-            endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            icon: "leaf.fill",
-            models: [
-                .init(id: "qwen-max-latest", name: "Qwen Max", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Tools"]),
-                .init(id: "qwen-plus-latest", name: "Qwen Plus", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Tools"]),
-                .init(id: "qwen2.5-coder-32b-instruct", name: "Qwen 2.5 Coder 32B", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Tools"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "moonshot",
-            name: "Moonshot (Kimi)",
-            endpoint: "https://api.moonshot.cn/v1",
-            icon: "moon.fill",
-            models: [
-                .init(id: "moonshot-v1-128k", name: "Moonshot v1 128k", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Tools"]),
-                .init(id: "kimi-k1.5", name: "Kimi k1.5 Reasoning", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Reasoning", "Tools"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "siliconflow",
-            name: "硅基流动 (SiliconFlow)",
-            endpoint: "https://api.siliconflow.cn/v1",
-            icon: "network",
-            models: [
-                .init(id: "deepseek-ai/DeepSeek-V3", name: "DeepSeek-V3 (Silicon)", contextTokens: 64_000, maxOutput: 4_096, modalities: ["Text", "Tools"]),
-                .init(id: "deepseek-ai/DeepSeek-R1", name: "DeepSeek-R1 (Silicon)", contextTokens: 64_000, maxOutput: 4_096, modalities: ["Text", "Reasoning", "Tools"])
-            ]
-        ),
-        BuiltinProviderCatalogItem(
-            id: "ollama",
-            name: "Ollama (本地离线)",
-            endpoint: "http://localhost:11434/v1",
-            icon: "desktopcomputer",
-            models: [
-                .init(id: "llama3.3:latest", name: "Llama 3.3 70B", contextTokens: 128_000, maxOutput: 8_192, modalities: ["Text", "Tools"]),
-                .init(id: "qwen2.5-coder:14b", name: "Qwen 2.5 Coder 14B", contextTokens: 32_768, maxOutput: 4_096, modalities: ["Text", "Tools"])
-            ]
-        )
-    ]
-}
-
 // MARK: - Providers
 
 struct ProvidersSettingsPage: View {
@@ -154,164 +49,70 @@ struct ProvidersSettingsPage: View {
             }
         }
 
-        // 1. 自定义提供商（Custom Providers）
-        Section {
-            if store.client != nil && store.providers.isEmpty {
-                PlaceholderLine("Core 尚未配置自定义 Provider 账户。可在下方内置列表中选择或在 providers.json 中添加。")
-            }
-            ForEach(store.providers, id: \.id) { account in
-                VStack(spacing: 0) {
-                    ProviderRow(
-                        account: account,
-                        test: store.providerTests[account.id],
-                        isExpanded: expandedProviders.contains(account.id),
-                        onToggleExpand: {
+                Section {
+                    if store.client != nil && store.providers.isEmpty {
+                        PlaceholderLine("Core 尚未配置 Provider 账户。可在 providers.json 中配置或通过登录关联。")
+                    }
+                    ForEach(store.providers, id: \.id) { account in
+                        VStack(spacing: 0) {
+                            ProviderRow(
+                                account: account,
+                                test: store.providerTests[account.id],
+                                isExpanded: expandedProviders.contains(account.id),
+                                onToggleExpand: {
+                                    if expandedProviders.contains(account.id) {
+                                        expandedProviders.remove(account.id)
+                                    } else {
+                                        expandedProviders.insert(account.id)
+                                    }
+                                },
+                                onTest: { Task { await store.testProvider(account.id) } },
+                                onRemove: { pendingRemoval = account }
+                            )
+
+                            // 展开的真实 Core 模型列表 (Provider Account Discovery ∩ models.json metadata)
                             if expandedProviders.contains(account.id) {
-                                expandedProviders.remove(account.id)
-                            } else {
-                                expandedProviders.insert(account.id)
-                            }
-                        },
-                        onTest: { Task { await store.testProvider(account.id) } },
-                        onRemove: { pendingRemoval = account }
-                    )
-
-                    // 展开的模型列表
-                    if expandedProviders.contains(account.id) {
-                        let providerModels = store.models.filter { $0.providerID == account.id || $0.providerID == account.productID }
-                        VStack(spacing: 6) {
-                            Divider().padding(.vertical, 4)
-                            if providerModels.isEmpty {
-                                HStack {
-                                    Text("该提供商已连接，可通过 /v1/models 或模型目录发现模型。")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                    Spacer()
-                                }
-                                .padding(.leading, 24)
-                            } else {
-                                ForEach(providerModels, id: \.id) { model in
-                                    ExpandableModelSubRow(
-                                        name: model.displayName,
-                                        modelID: model.modelID,
-                                        contextTokens: model.contextWindow,
-                                        maxOutput: model.maxOutputTokens,
-                                        hasReasoning: model.reasoning,
-                                        isSelected: model.modelID == (store.modelSelection?.modelID ?? store.preferences.lastModelID),
-                                        onSelect: {
-                                            Task { await store.selectDefaultModel(model.modelID) }
-                                        }
-                                    )
-                                    .padding(.leading, 20)
-                                }
-                            }
-                        }
-                        .padding(.bottom, 6)
-                    }
-                }
-                .settingsAnchor("provider.\(account.id)")
-            }
-        } header: {
-            HStack {
-                Text("自定义提供商 (Custom Providers)")
-                Spacer()
-                Button("重新发现") { Task { await store.reloadProviders() } }
-                    .disabled(store.client == nil)
-                    .settingsAnchor("providers.reload")
-            }
-        } footer: {
-            Text("自定义凭据由 Core 安全加密保存，支持任意兼容 OpenAI / Anthropic 协议端点。")
-        }
-        .settingsAnchor("providers.list")
-
-        // 2. 内置提供商与模型目录（Built-in Providers & Catalog）
-        Section {
-            ForEach(BuiltinProviderCatalogItem.all) { builtin in
-                VStack(spacing: 0) {
-                    HStack(spacing: LingXiMetrics.Space.md) {
-                        Image(systemName: builtin.icon)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(LingXiTheme.electricCyan)
-                            .frame(width: 24, height: 24)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(builtin.name)
-                                .font(.body.weight(.medium))
-                            Text(builtin.endpoint)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 0)
-
-                        Button {
-                            if expandedProviders.contains(builtin.id) {
-                                expandedProviders.remove(builtin.id)
-                            } else {
-                                expandedProviders.insert(builtin.id)
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("\(builtin.models.count) 个模型")
-                                    .font(.caption2.weight(.medium))
-                                Image(systemName: expandedProviders.contains(builtin.id) ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 10))
-                            }
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.white.opacity(0.06), in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.vertical, 4)
-
-                    // 内置模型展开列表
-                    if expandedProviders.contains(builtin.id) {
-                        VStack(spacing: 6) {
-                            Divider().padding(.vertical, 4)
-                            ForEach(builtin.models) { item in
-                                HStack(spacing: LingXiMetrics.Space.sm) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(item.name)
-                                                .font(.caption.weight(.semibold))
-                                            Text(item.id)
-                                                .font(.caption2.monospaced())
+                                let providerModels = store.models.filter { $0.providerID == account.id || $0.providerID == account.productID }
+                                VStack(spacing: 6) {
+                                    Divider().padding(.vertical, 4)
+                                    if providerModels.isEmpty {
+                                        HStack {
+                                            Text("该提供商已连接，可通过 /v1/models 或模型目录发现模型。")
+                                                .font(.caption)
                                                 .foregroundStyle(.tertiary)
+                                            Spacer()
                                         }
-                                        HStack(spacing: 4) {
-                                            ForEach(item.modalities, id: \.self) { mod in
-                                                ModalityBadge(title: mod, color: modalityColor(for: mod))
-                                            }
+                                        .padding(.leading, 24)
+                                    } else {
+                                        ForEach(providerModels, id: \.id) { model in
+                                            ExpandableModelSubRow(
+                                                model: model,
+                                                isSelected: model.modelID == (store.modelSelection?.modelID ?? store.preferences.lastModelID),
+                                                onSelect: {
+                                                    Task { await store.selectDefaultModel(model.modelID) }
+                                                }
+                                            )
+                                            .padding(.leading, 20)
                                         }
-                                    }
-
-                                    Spacer(minLength: 0)
-
-                                    VStack(alignment: .trailing, spacing: 1) {
-                                        Text(Self.formatTokens(item.contextTokens))
-                                            .font(.caption2.monospacedDigit().weight(.medium))
-                                            .foregroundStyle(Color.primary)
-                                        Text("Max Out \(Self.formatTokens(item.maxOutput))")
-                                            .font(.system(size: 9).monospacedDigit())
-                                            .foregroundStyle(.tertiary)
                                     }
                                 }
-                                .padding(.vertical, 3)
-                                .padding(.leading, 24)
+                                .padding(.bottom, 6)
                             }
                         }
-                        .padding(.bottom, 6)
+                        .settingsAnchor("provider.\(account.id)")
                     }
+                } header: {
+                    HStack {
+                        Text("已连接提供商账户 (Connected Providers)")
+                        Spacer()
+                        Button("重新发现") { Task { await store.reloadProviders() } }
+                            .disabled(store.client == nil)
+                            .settingsAnchor("providers.reload")
+                    }
+                } footer: {
+                    Text("模型元数据权威来自 models.lingxifox.cn 官方实时索引，账户可访问性由 Provider Discovery 动态确认。")
                 }
-            }
-        } header: {
-            Text("内置提供商与模型目录 (Built-in Providers & Catalog)")
-        } footer: {
-            Text("基于 models.lingxifox.cn 官方实时模型索引，展示模态能力与上下文限制。")
-        }
+                .settingsAnchor("providers.list")
         .confirmationDialog("移除 Provider 账户？", isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }
         ), presenting: pendingRemoval) { account in
@@ -324,16 +125,13 @@ struct ProvidersSettingsPage: View {
     }
 
     static func formatTokens(_ n: Int) -> String {
-        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000) : "\(n / 1000)k"
+        guard n > 0 else { return "待同步" }
+        return n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000) : "\(n / 1000)k"
     }
 }
 
 private struct ExpandableModelSubRow: View {
-    let name: String
-    let modelID: String
-    let contextTokens: Int
-    let maxOutput: Int
-    let hasReasoning: Bool
+    let model: ProviderModelInfo
     let isSelected: Bool
     let onSelect: () -> Void
 
@@ -341,7 +139,7 @@ private struct ExpandableModelSubRow: View {
         HStack(spacing: LingXiMetrics.Space.sm) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(name)
+                    Text(model.displayName)
                         .font(.caption.weight(.semibold))
                     if isSelected {
                         Label("当前默认", systemImage: "checkmark.circle.fill")
@@ -350,22 +148,40 @@ private struct ExpandableModelSubRow: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(modelID)
+                    Text(model.modelID)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.tertiary)
                     ModalityBadge(title: "Text", color: LingXiTheme.neonCyan)
-                    if hasReasoning {
+                    if model.reasoning {
                         ModalityBadge(title: "Reasoning", color: LingXiTheme.foxfireAmber)
                     }
-                    ModalityBadge(title: "Tools", color: LingXiTheme.auroraMint)
+                    if model.vision {
+                        ModalityBadge(title: "Vision", color: LingXiTheme.astralViolet)
+                    }
+                    if model.toolCalling {
+                        ModalityBadge(title: "Tools", color: LingXiTheme.auroraMint)
+                    }
                 }
             }
 
             Spacer(minLength: 0)
 
-            Text(ProvidersSettingsPage.formatTokens(contextTokens))
-                .font(.caption2.monospacedDigit().weight(.medium))
-                .foregroundStyle(.secondary)
+            if model.metadataIncomplete || model.contextWindow == 0 {
+                Text("元数据待同步")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(ProvidersSettingsPage.formatTokens(model.contextWindow))
+                        .font(.caption2.monospacedDigit().weight(.medium))
+                        .foregroundStyle(Color.primary)
+                    if model.maxOutputTokens > 0 {
+                        Text("Max \(ProvidersSettingsPage.formatTokens(model.maxOutputTokens))")
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
 
             if !isSelected {
                 Button("设为默认", action: onSelect)
@@ -374,7 +190,7 @@ private struct ExpandableModelSubRow: View {
                     .controlSize(.mini)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 }
 
@@ -469,9 +285,9 @@ private struct ProviderRow: View {
     }
 }
 
-// MARK: - Models
+// MARK: - Agent defaults
 
-struct ModelsSettingsPage: View {
+struct AgentDefaultsSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
@@ -487,73 +303,12 @@ struct ModelsSettingsPage: View {
             }
             .disabled(store.models.isEmpty)
             .settingsAnchor("models.default")
+        } header: {
+            Text("新会话默认模型")
         } footer: {
-            Text("模型目录由 Core 从各 Provider 动态发现，已与「Provider」页面全面联动。")
+            Text("新会话启动时默认启用的模型。元数据来自 models.lingxifox.cn 官方实时索引，可用性由 Provider 发现决定。")
         }
 
-        Section("模型全景 (带模态与窗口限制)") {
-            if store.client != nil && store.models.isEmpty {
-                PlaceholderLine("Core 尚未返回模型目录。可在 Provider 页面刷新。")
-            }
-            ForEach(store.models, id: \.id) { model in
-                ModelRow(model: model, isSelected: model.modelID == store.modelSelection?.modelID)
-                    .settingsAnchor("model.\(model.id)")
-            }
-        }
-        .settingsAnchor("models.catalog")
-    }
-}
-
-private struct ModelRow: View {
-    let model: ProviderModelInfo
-    let isSelected: Bool
-
-    var body: some View {
-        HStack(spacing: LingXiMetrics.Space.md) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: LingXiMetrics.Space.xs) {
-                    Text(model.displayName)
-                        .font(.body.weight(.medium))
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(LingXiTheme.auroraMint)
-                            .accessibilityLabel("当前默认")
-                    }
-                }
-                HStack(spacing: 6) {
-                    Text("\(model.providerID) · \(model.modelID)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.tertiary)
-                    ModalityBadge(title: "Text", color: LingXiTheme.neonCyan)
-                    if model.reasoning {
-                        ModalityBadge(title: "Reasoning", color: LingXiTheme.foxfireAmber)
-                    }
-                    ModalityBadge(title: "Tools", color: LingXiTheme.auroraMint)
-                }
-            }
-            Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(Self.tokens(model.contextWindow))
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("Max \(Self.tokens(model.maxOutputTokens))")
-                    .font(.system(size: 9).monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    static func tokens(_ n: Int) -> String {
-        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000) : "\(n / 1000)k"
-    }
-}
-
-// MARK: - Agent defaults
-
-struct AgentDefaultsSettingsPage: View {
-    @ObservedObject var store: SettingsStore
-
-    var body: some View {
         Section("新任务默认") {
             ConfigPicker(title: "行为模式", info: "新会话 Composer 的初始模式。Plan 只规划不改动，Explore 只读探索。",
                          key: ConfigKeys.behaviorProfile, options: [

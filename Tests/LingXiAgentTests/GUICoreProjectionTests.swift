@@ -35,8 +35,10 @@ struct GUICoreProjectionTests {
         let items = CoreProjection.timeline(sessionState())
         #expect(items.count == 4)
 
-        guard case .user(let text, _) = items[0].kind else { Issue.record("expected user"); return }
+        guard case let .user(text, _, messageID, _, sessionID) = items[0].kind else { Issue.record("expected user"); return }
         #expect(text == "跑一下构建")
+        #expect(messageID == "m1")
+        #expect(sessionID == "s1")
 
         guard case .tool(let call) = items[1].kind else { Issue.record("expected tool"); return }
         #expect(call.summary == "swift build")

@@ -42,8 +42,6 @@ struct SettingsSidebar: View {
     private var dynamicItems: [SettingsSearchItem] {
         store.providers.map { SettingsSearchItem(anchor: "provider.\($0.id)", page: .providers,
                                                  title: $0.displayName, keywords: [$0.productID, $0.id]) }
-        + store.models.map { SettingsSearchItem(anchor: "model.\($0.id)", page: .models,
-                                                title: $0.displayName, keywords: [$0.modelID, $0.providerID]) }
         + store.extensions.map { ext in
             let targetPage: SettingsPage
             switch ext.kind {
@@ -94,14 +92,16 @@ struct SettingsDetailView: View {
 
     public var body: some View {
         ScrollViewReader { proxy in
-            Form {
-                SettingsNotice(store: store)
-                if page.needsCore {
-                    CoreRequiredSection(store: store)
+            SettingsContentColumn(maxWidth: 840) {
+                Form {
+                    SettingsNotice(store: store)
+                    if page.needsCore {
+                        CoreRequiredSection(store: store)
+                    }
+                    content
                 }
-                content
+                .formStyle(.grouped)
             }
-            .formStyle(.grouped)
             .onAppear { scroll(proxy) }
             .onChange(of: highlight) { scroll(proxy) }
         }
@@ -116,7 +116,6 @@ struct SettingsDetailView: View {
         case .conversation: ConversationSettingsPage(store: store)
         case .shortcuts: ShortcutsSettingsPage()
         case .providers: ProvidersSettingsPage(store: store)
-        case .models: ModelsSettingsPage(store: store)
         case .agentDefaults: AgentDefaultsSettingsPage(store: store)
         case .permissions: PermissionsSettingsPage(store: store)
         case .context: ContextSettingsPage(store: store)

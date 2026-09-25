@@ -4,7 +4,7 @@ import Foundation
 /// leaf, never another sidebar.
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case general, appearance, conversation, shortcuts
-    case providers, models, agentDefaults, permissions, context, execution, codeIntelligence
+    case providers, agentDefaults, permissions, context, execution, codeIntelligence
     case mcp, skills, plugins, hooks, computerUse
     case workspace
     case diagnostics
@@ -19,7 +19,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .conversation: return "对话"
         case .shortcuts: return "快捷键"
         case .providers: return "Provider"
-        case .models: return "模型"
         case .agentDefaults: return "Agent 默认"
         case .permissions: return "权限与沙箱"
         case .context: return "上下文"
@@ -43,7 +42,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .conversation: return "text.bubble"
         case .shortcuts: return "keyboard"
         case .providers: return "server.rack"
-        case .models: return "cpu"
         case .agentDefaults: return "person.crop.rectangle.stack"
         case .permissions: return "lock.shield"
         case .context: return "square.stack.3d.up"
@@ -63,7 +61,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     /// Pages whose content only exists while a Core is connected.
     var needsCore: Bool {
         switch self {
-        case .providers, .models, .mcp, .skills, .plugins, .hooks, .workspace: return true
+        case .providers, .mcp, .skills, .plugins, .hooks, .workspace: return true
         default: return false
         }
     }
@@ -75,7 +73,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         var pages: [SettingsPage] {
             switch self {
             case .app: return [.general, .appearance, .conversation, .shortcuts]
-            case .agent: return [.providers, .models, .agentDefaults, .permissions, .context, .execution, .codeIntelligence]
+            case .agent: return [.providers, .agentDefaults, .permissions, .context, .execution, .codeIntelligence]
             case .extensions: return [.mcp, .skills, .plugins, .hooks, .computerUse]
             case .workspace: return [.workspace]
             case .system: return [.diagnostics, .about]
@@ -123,8 +121,7 @@ enum SettingsSearchIndex {
 
         .init(anchor: "providers.list", page: .providers, title: "Provider 账户", keywords: ["api key", "账户", "endpoint"]),
         .init(anchor: "providers.reload", page: .providers, title: "重新发现 Provider", keywords: ["discovery", "catalog", "刷新"]),
-        .init(anchor: "models.default", page: .models, title: "默认模型", keywords: ["model", "selection"]),
-        .init(anchor: "models.catalog", page: .models, title: "模型目录", keywords: ["context window", "上下文窗口", "reasoning"]),
+        .init(anchor: "models.default", page: .agentDefaults, title: "默认模型", keywords: ["model", "selection", "模型"]),
 
         .init(anchor: ConfigKeys.behaviorProfile.id, page: .agentDefaults, title: "默认行为模式", keywords: ["build", "plan", "explore", "mode"]),
         .init(anchor: "agent.reasoning", page: .agentDefaults, title: "默认思考强度", keywords: ["reasoning", "effort", "think"]),

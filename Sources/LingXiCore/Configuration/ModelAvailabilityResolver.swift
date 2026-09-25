@@ -188,7 +188,9 @@ public enum ModelAvailabilityResolver {
                 metadataIncomplete: candidate.metadataIncomplete,
                 canonicalModelID: candidate.canonicalModelID,
                 backendVariant: candidate.backendVariant,
-                backendVariants: candidate.backendVariants
+                backendVariants: candidate.backendVariants,
+                vision: candidate.vision,
+                toolCalling: candidate.toolCalling
             )
         }
 
@@ -234,6 +236,8 @@ public enum ModelAvailabilityResolver {
         let canonicalModelID: String?
         let backendVariant: String?
         let backendVariants: [String]?
+        let vision: Bool
+        let toolCalling: Bool
 
         /// From an account discovery result, optionally enriched by a registry
         /// record for the same model.
@@ -241,23 +245,26 @@ public enum ModelAvailabilityResolver {
             modelID = discovered.id
             displayName = record?.displayName ?? discovered.displayName
             status = record?.modelStatus ?? .unknown
-            // A registry record is preferred for limits, but a discovered value
-            // is better than a fallback, and the fallback is better than zero.
-            contextWindow = record?.capabilities.contextWindow
-                ?? discovered.contextWindow
-                ?? Fallback.contextWindow
-            maxOutputTokens = record?.capabilities.maxOutputTokens
-                ?? discovered.maxOutputTokens
-                ?? Fallback.maxOutputTokens
+            let isIncomplete = record?.metadataIncomplete ?? (discovered.metadataIncomplete || record == nil)
+            metadataIncomplete = isIncomplete
+
+            // If metadata is incomplete, never guess 128k/4k limits; return 0 for UI to show "元数据待同步".
+            if isIncomplete && record?.capabilities.contextWindow == nil && discovered.contextWindow == nil {
+                contextWindow = 0
+                maxOutputTokens = 0
+            } else {
+                contextWindow = record?.capabilities.contextWindow ?? discovered.contextWindow ?? Fallback.contextWindow
+                maxOutputTokens = record?.capabilities.maxOutputTokens ?? discovered.maxOutputTokens ?? Fallback.maxOutputTokens
+            }
+
             reasoning = record?.capabilities.reasoning
                 ?? discovered.capabilities?.reasoning
                 ?? !discovered.supportedReasoningEfforts.isEmpty
-            // The registry not describing a model is exactly what
-            // metadataIncomplete means.
-            metadataIncomplete = record?.metadataIncomplete ?? true
             canonicalModelID = discovered.canonicalModelID
             backendVariant = discovered.backendVariant
             backendVariants = allVariants ?? (discovered.canonicalModelID != nil ? [discovered.id] : nil)
+            vision = discovered.vision || (record?.capabilities.vision ?? false)
+            toolCalling = discovered.toolCalling || (record?.capabilities.toolCalling ?? true)
         }
 
         /// From a registry record alone, with no account view.
@@ -265,13 +272,20 @@ public enum ModelAvailabilityResolver {
             modelID = record.id
             displayName = record.displayName
             status = record.modelStatus
-            contextWindow = record.capabilities.contextWindow ?? Fallback.contextWindow
-            maxOutputTokens = record.capabilities.maxOutputTokens ?? Fallback.maxOutputTokens
-            reasoning = record.capabilities.reasoning ?? false
             metadataIncomplete = record.metadataIncomplete
+            if record.metadataIncomplete && record.capabilities.contextWindow == nil {
+                contextWindow = 0
+                maxOutputTokens = 0
+            } else {
+                contextWindow = record.capabilities.contextWindow ?? Fallback.contextWindow
+                maxOutputTokens = record.capabilities.maxOutputTokens ?? Fallback.maxOutputTokens
+            }
+            reasoning = record.capabilities.reasoning ?? false
             canonicalModelID = nil
             backendVariant = nil
             backendVariants = nil
+            vision = record.capabilities.vision ?? false
+            toolCalling = record.capabilities.toolCalling ?? true
         }
     }
 }

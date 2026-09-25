@@ -68,7 +68,9 @@ enum CoreProjection {
         switch node.kind {
         case .message(let message):
             switch message.role {
-            case .user: return .user(content: message.content, attachments: [])
+            case .user:
+                let matchedTurnID = session.turns.first(where: { $0.value.userMessage.messageID == message.messageID })?.key.rawValue
+                return .user(content: message.content, attachments: [], messageID: message.messageID.rawValue, turnID: matchedTurnID, sessionID: session.sessionID.rawValue)
             case .assistant:
                 guard !message.content.isEmpty || message.isStreaming else { return nil }
                 return .assistant(content: message.content, isStreaming: message.isStreaming)

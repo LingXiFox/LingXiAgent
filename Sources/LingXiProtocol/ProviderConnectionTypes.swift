@@ -73,6 +73,8 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
     public let canonicalModelID: String?
     public let backendVariant: String?
     public let backendVariants: [String]?
+    public let vision: Bool
+    public let toolCalling: Bool
 
     public init(
         id: String,
@@ -86,7 +88,9 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         metadataIncomplete: Bool = false,
         canonicalModelID: String? = nil,
         backendVariant: String? = nil,
-        backendVariants: [String]? = nil
+        backendVariants: [String]? = nil,
+        vision: Bool = false,
+        toolCalling: Bool = true
     ) {
         self.id = id
         self.providerID = providerID
@@ -100,6 +104,26 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         self.canonicalModelID = canonicalModelID
         self.backendVariant = backendVariant
         self.backendVariants = backendVariants
+        self.vision = vision
+        self.toolCalling = toolCalling
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.providerID = try container.decode(String.self, forKey: .providerID)
+        self.modelID = try container.decode(String.self, forKey: .modelID)
+        self.displayName = try container.decode(String.self, forKey: .displayName)
+        self.contextWindow = try container.decode(Int.self, forKey: .contextWindow)
+        self.maxOutputTokens = try container.decode(Int.self, forKey: .maxOutputTokens)
+        self.reasoning = try container.decode(Bool.self, forKey: .reasoning)
+        self.configured = try container.decode(Bool.self, forKey: .configured)
+        self.metadataIncomplete = try container.decodeIfPresent(Bool.self, forKey: .metadataIncomplete) ?? false
+        self.canonicalModelID = try container.decodeIfPresent(String.self, forKey: .canonicalModelID)
+        self.backendVariant = try container.decodeIfPresent(String.self, forKey: .backendVariant)
+        self.backendVariants = try container.decodeIfPresent([String].self, forKey: .backendVariants)
+        self.vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
+        self.toolCalling = try container.decodeIfPresent(Bool.self, forKey: .toolCalling) ?? true
     }
 }
 
