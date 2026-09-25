@@ -166,11 +166,47 @@ public struct ClassifiedProviderError: Error, Sendable {
         if let code = statusCode {
             parts.append("[\(code)]")
         }
-        parts.append(category.userDescription)
+
+        let isOAuthRelated = errorType?.contains("oauth") == true
+            || errorType == "invalid_grant"
+            || errorType == "token_expired"
+            || errorType == "invalid_token"
+            || (serverMessage?.lowercased().contains("invalid_grant") == true)
+            || (serverMessage?.lowercased().contains("token_expired") == true)
+            || (serverMessage?.lowercased().contains("oauth") == true)
+            || (underlying is OAuthRefreshError)
+
+        if category == .authFailure && isOAuthRelated {
+            let isRevoked = errorType == "invalid_grant"
+                || (serverMessage?.lowercased().contains("invalid_grant") == true)
+                || (serverMessage?.lowercased().contains("revoked") == true)
+                || ((underlying as? OAuthRefreshError)?.isRevokedOrInvalidGrant == true)
+
+            if isRevoked {
+                parts.append("OAuth 授权凭据已失效或被撤销 (401)")
+            } else {
+                parts.append("OAuth 令牌验证失败 (401)")
+            }
+        } else {
+            parts.append(category.userDescription)
+        }
+
         if let msg = serverMessage, !msg.isEmpty {
             parts.append("· \(msg)")
         }
-        if let action = category.suggestedAction {
+
+        if category == .authFailure && isOAuthRelated {
+            let isRevoked = errorType == "invalid_grant"
+                || (serverMessage?.lowercased().contains("invalid_grant") == true)
+                || (serverMessage?.lowercased().contains("revoked") == true)
+                || ((underlying as? OAuthRefreshError)?.isRevokedOrInvalidGrant == true)
+
+            if isRevoked {
+                parts.append("(OAuth 凭据已失效，请重新运行: lingxiagent auth login 重新授权登录)")
+            } else {
+                parts.append("(OAuth 令牌自动刷新失败，请检查网络连接或稍后重试)")
+            }
+        } else if let action = category.suggestedAction {
             parts.append("(\(action))")
         }
         return parts.joined(separator: " ")

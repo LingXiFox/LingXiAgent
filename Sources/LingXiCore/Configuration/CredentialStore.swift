@@ -8,6 +8,27 @@ public protocol CredentialStore: Sendable {
     func removeSecret(for reference: CredentialRef) async throws
 }
 
+/// In-memory credential store for testing and fallback scenarios where persistence is not configured.
+public actor EphemeralCredentialStore: CredentialStore {
+    private var store: [String: String] = [:]
+
+    public init(initialSecrets: [String: String] = [:]) {
+        self.store = initialSecrets
+    }
+
+    public func secret(for reference: CredentialRef) async throws -> String? {
+        store[reference.rawValue]
+    }
+
+    public func setSecret(_ secret: String, for reference: CredentialRef) async throws {
+        store[reference.rawValue] = secret
+    }
+
+    public func removeSecret(for reference: CredentialRef) async throws {
+        store.removeValue(forKey: reference.rawValue)
+    }
+}
+
 /// Application-level encrypted vault. The caller supplies the passphrase; no platform secret service is required.
 public actor FileCredentialStore: CredentialStore {
     public let vaultURL: URL

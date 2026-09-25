@@ -25,10 +25,30 @@ public struct OpenAIResponsesProvider: ModelProvider {
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         let prior = try await provenance.resolveContinuation(for: request.continuationOf, wire: .responses)
         let previousResponseID = config.remoteStateEnabled ? prior?.responseID : nil
-        let urlRequest = try makeURLRequest(request, continuation: prior, previousResponseID: previousResponseID)
+        var urlRequest = try makeURLRequest(request, continuation: prior, previousResponseID: previousResponseID)
+        if let (headerName, headerValue) = try await config.resolveAuthHeader() {
+            urlRequest.setValue(headerValue, forHTTPHeaderField: headerName)
+        }
         let startedAt = Date()
         Self.logRequest(urlRequest, step: request.debugStep, localContinuation: prior != nil, enabled: config.diagnosticsEnabled)
-        let response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .responses, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+        var response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .responses, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+
+        // 401 token_expired / invalid_token 强制 refresh + 单次透明重试
+        if response.statusCode == 401, case .oauth(let refresher) = config.authentication {
+            Self.log("http 401 received with oauth; attempting forced refresh and transparent retry", enabled: config.diagnosticsEnabled)
+            do {
+                if let (headerName, headerValue) = try await config.resolveAuthHeader(forceRefresh: true) {
+                    urlRequest.setValue(headerValue, forHTTPHeaderField: headerName)
+                }
+                response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .responses, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+            } catch {
+                if let refreshErr = error as? OAuthRefreshError, refreshErr.isRevokedOrInvalidGrant {
+                    await refresher.markReauthenticationRequired(reason: refreshErr.errorDescription ?? "invalid_grant")
+                }
+                throw error
+            }
+        }
+
         let requestID = response.header("x-request-id")
             ?? response.header("openai-request-id")
             ?? response.header("cf-ray")
@@ -90,6 +110,11 @@ public struct OpenAIResponsesProvider: ModelProvider {
         case .none: break
         case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): urlRequest.setValue(value, forHTTPHeaderField: name)
+        case let .oauth(refresher):
+            let token = refresher.cachedAccessToken
+            if !token.isEmpty {
+                urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
         }
         for (name, value) in config.requiredHeaders {
             urlRequest.setValue(value, forHTTPHeaderField: name)
@@ -210,6 +235,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
         switch authentication {
         case .none: []
         case let .bearer(value), let .header(_, value): [value]
+        case let .oauth(refresher): [refresher.cachedAccessToken].filter { !$0.isEmpty }
         }
     }
     private static func log(_ message: String, enabled: Bool) {

@@ -89,6 +89,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private var runtimeProviderAccounts: [String: ProviderAccountInfo] = [:]
     private var runtimeExtensions: [String: ExtensionInfo] = [:]
     private var cachedAssemblies: [String: ModelRuntimeAssembly] = [:]
+    private var oauthRefreshers: [String: OAuthTokenRefresher] = [:]
     private var currentAssembly: ModelRuntimeAssembly?
     private let dataRootURL: URL?
     private var selectedModelOverride: String?
@@ -1314,17 +1315,41 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             return runtimeProviderAccounts.values.sorted { $0.id < $1.id }
         }
         let snapshot = try await configurationStore.load()
-        var accounts = snapshot.providers.accounts.map(accountInfo)
+        var accounts: [ProviderAccountInfo] = []
+        for acc in snapshot.providers.accounts {
+            accounts.append(await accountInfo(acc))
+        }
         for (providerID, pConfig) in snapshot.providers.providers {
             if !accounts.contains(where: { $0.id == providerID || $0.productID == providerID }) {
+                let isOAuth = pConfig.options.apiKey?.hasPrefix("{oauth:") == true || BuiltinProviderCatalog.profile(for: providerID)?.authMethods.contains("oauth") == true
+                var availability = "configured"
+                if isOAuth {
+                    if let refresher = oauthRefreshers[providerID] {
+                        switch await refresher.authState {
+                        case .valid:
+                            availability = "active"
+                        case .refreshing:
+                            availability = "refreshing"
+                        case .refreshFailedTransient:
+                            availability = "refresh_failed"
+                        case .reauthenticationRequired:
+                            availability = "reauthenticationRequired"
+                        }
+                    } else if let credStore = credentialStore {
+                        let oauthRef = CredentialRef("provider-\(providerID)-oauth")
+                        if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
+                            availability = "active"
+                        }
+                    }
+                }
                 accounts.append(ProviderAccountInfo(
                     id: providerID,
                     productID: providerID,
                     displayName: pConfig.name.isEmpty ? providerID : pConfig.name,
-                    accountType: .apiKey,
+                    accountType: isOAuth ? .oauthUser : .apiKey,
                     credentialRef: nil,
                     endpoint: pConfig.options.baseURL,
-                    availability: "configured"
+                    availability: availability
                 ))
             }
         }
@@ -1763,7 +1788,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let account = ProviderAccountConfiguration(id: request.id, providerID: request.productID, displayName: request.displayName, authentication: authentication.kind, headerName: authentication.headerName, credential: request.credentialRef, endpointOverride: request.endpoint, configOverrides: request.fields, accountType: request.accountType, createdAt: .now, updatedAt: .now)
         snapshot.providers.accounts.append(account)
         try await store.saveProviders(snapshot.providers)
-        let info = accountInfo(account)
+        let info = await accountInfo(account)
         runtimeProviderAccounts[request.id] = info
         return info
     }
@@ -1797,8 +1822,38 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         try await requireCredentialStore().removeSecret(for: reference)
     }
 
-    private func accountInfo(_ account: ProviderAccountConfiguration) -> ProviderAccountInfo {
-        ProviderAccountInfo(id: account.id, productID: account.providerID, displayName: account.displayName, accountType: account.accountType, credentialRef: account.credential, endpoint: account.endpointOverride, availability: account.enabled ? "configured" : "unavailable")
+    private func accountInfo(_ account: ProviderAccountConfiguration) async -> ProviderAccountInfo {
+        let isOAuth = account.accountType == .oauthUser || BuiltinProviderCatalog.profile(for: account.providerID)?.authMethods.contains("oauth") == true
+        let resolvedAccountType = isOAuth ? ProviderAccountType.oauthUser : account.accountType
+        var availability = account.enabled ? "configured" : "unavailable"
+        if isOAuth {
+            if let refresher = oauthRefreshers[account.providerID] ?? oauthRefreshers[account.id] {
+                switch await refresher.authState {
+                case .valid:
+                    availability = "active"
+                case .refreshing:
+                    availability = "refreshing"
+                case .refreshFailedTransient:
+                    availability = "refresh_failed"
+                case .reauthenticationRequired:
+                    availability = "reauthenticationRequired"
+                }
+            } else if let credStore = credentialStore {
+                let oauthRef = CredentialRef("provider-\(account.providerID)-oauth")
+                if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
+                    availability = "active"
+                }
+            }
+        }
+        return ProviderAccountInfo(
+            id: account.id,
+            productID: account.providerID,
+            displayName: account.displayName,
+            accountType: resolvedAccountType,
+            credentialRef: account.credential,
+            endpoint: account.endpointOverride,
+            availability: availability
+        )
     }
 
     private func storedAuthentication(_ raw: ProviderStoredAuthentication, headerName: String?) throws -> (kind: StoredProviderAuthenticationKind, headerName: String?) {
@@ -3775,29 +3830,51 @@ extension CoreHost {
         // 3. Credentials
         let isNoAuth = product.spec.credentialKind == "none" || (profile?.authMethods.contains("none") ?? false)
         var authToken: String? = nil
+        var oauthRefresher: OAuthTokenRefresher? = nil
         if let credStore = credentialStore {
             let oauthRef = CredentialRef("provider-\(productID)-oauth")
             if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
-                authToken = extractBearerToken(from: secret)
+                if let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8)), !tokens.accessToken.isEmpty {
+                    let oauthConfig = BuiltinProviderCatalog.metadata(for: productID).oauth
+                    let metadata = OAuthCredentialMetadata(
+                        providerID: productID,
+                        clientID: oauthConfig?.clientID ?? productID,
+                        scopes: oauthConfig?.scopes ?? [],
+                        tokenEndpoint: oauthConfig?.tokenURL ?? "https://oauth2.googleapis.com/token"
+                    )
+                    let refresher = getOrCreateOAuthRefresher(
+                        productID: productID,
+                        tokens: tokens,
+                        metadata: metadata,
+                        tokenRef: oauthRef
+                    )
+                    await refresher.updateTokensIfChanged(tokens)
+                    oauthRefresher = refresher
+                    authToken = refresher.cachedAccessToken
+                } else {
+                    authToken = extractBearerToken(from: secret)
+                }
             }
-            if authToken == nil {
+            if authToken == nil && oauthRefresher == nil {
                 let keyRef = CredentialRef("provider-\(productID)-key")
                 if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
                     authToken = secret
                 }
             }
         }
-        if authToken == nil, let envKey = resolveEnvironmentKey(for: productID) {
+        if authToken == nil && oauthRefresher == nil, let envKey = resolveEnvironmentKey(for: productID) {
             authToken = ProcessInfo.processInfo.environment[envKey]
         }
 
-        if !isNoAuth && authToken == nil {
+        if !isNoAuth && authToken == nil && oauthRefresher == nil {
             throw CoreError(code: .provider, message: "Provider '\(productID)' 未认证或凭据缺失\n请运行: lingxiagent auth login \(productID)")
         }
 
         // 4. ProviderAuthentication
         let auth: ProviderAuthentication
-        if let token = authToken {
+        if let refresher = oauthRefresher {
+            auth = .oauth(refresher)
+        } else if let token = authToken {
             if productID == "anthropic-api" {
                 auth = .header(name: "x-api-key", value: token)
             } else {
@@ -3878,6 +3955,7 @@ extension CoreHost {
         }
 
         var authToken: String? = nil
+        var oauthRefresher: OAuthTokenRefresher? = nil
         if let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
             if apiKey.hasPrefix("{vault:") && apiKey.hasSuffix("}") {
                 let refStr = String(apiKey.dropFirst(7).dropLast(1))
@@ -3886,8 +3964,28 @@ extension CoreHost {
                 }
             } else if apiKey.hasPrefix("{oauth:") && apiKey.hasSuffix("}") {
                 let refStr = String(apiKey.dropFirst(7).dropLast(1))
-                if let credStore = credentialStore, let secret = try? await credStore.secret(for: CredentialRef(refStr)) {
-                    authToken = extractBearerToken(from: secret)
+                let oauthRef = CredentialRef(refStr)
+                if let credStore = credentialStore, let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
+                    if let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8)), !tokens.accessToken.isEmpty {
+                        let oauthConfig = BuiltinProviderCatalog.metadata(for: providerID).oauth
+                        let metadata = OAuthCredentialMetadata(
+                            providerID: providerID,
+                            clientID: oauthConfig?.clientID ?? providerID,
+                            scopes: oauthConfig?.scopes ?? [],
+                            tokenEndpoint: oauthConfig?.tokenURL ?? "https://oauth2.googleapis.com/token"
+                        )
+                        let refresher = getOrCreateOAuthRefresher(
+                            productID: providerID,
+                            tokens: tokens,
+                            metadata: metadata,
+                            tokenRef: oauthRef
+                        )
+                        await refresher.updateTokensIfChanged(tokens)
+                        oauthRefresher = refresher
+                        authToken = refresher.cachedAccessToken
+                    } else {
+                        authToken = extractBearerToken(from: secret)
+                    }
                 }
             } else if apiKey.hasPrefix("{env:") && apiKey.hasSuffix("}") {
                 let envName = String(apiKey.dropFirst(5).dropLast(1))
@@ -3896,18 +3994,43 @@ extension CoreHost {
                 authToken = apiKey
             }
         }
-        if authToken == nil, let credStore = credentialStore {
-            let keyRef = CredentialRef("provider-\(providerID)-key")
-            if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
-                authToken = secret
+        if authToken == nil && oauthRefresher == nil, let credStore = credentialStore {
+            let oauthRef = CredentialRef("provider-\(providerID)-oauth")
+            if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
+                if let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8)), !tokens.accessToken.isEmpty {
+                    let oauthConfig = BuiltinProviderCatalog.metadata(for: providerID).oauth
+                    let metadata = OAuthCredentialMetadata(
+                        providerID: providerID,
+                        clientID: oauthConfig?.clientID ?? providerID,
+                        scopes: oauthConfig?.scopes ?? [],
+                        tokenEndpoint: oauthConfig?.tokenURL ?? "https://oauth2.googleapis.com/token"
+                    )
+                    let refresher = getOrCreateOAuthRefresher(
+                        productID: providerID,
+                        tokens: tokens,
+                        metadata: metadata,
+                        tokenRef: oauthRef
+                    )
+                    await refresher.updateTokensIfChanged(tokens)
+                    oauthRefresher = refresher
+                    authToken = refresher.cachedAccessToken
+                }
+            }
+            if authToken == nil && oauthRefresher == nil {
+                let keyRef = CredentialRef("provider-\(providerID)-key")
+                if let secret = try? await credStore.secret(for: keyRef), !secret.isEmpty {
+                    authToken = secret
+                }
             }
         }
-        if authToken == nil, let envKey = resolveEnvironmentKey(for: providerID) {
+        if authToken == nil && oauthRefresher == nil, let envKey = resolveEnvironmentKey(for: providerID) {
             authToken = ProcessInfo.processInfo.environment[envKey]
         }
 
         let auth: ProviderAuthentication
-        if let token = authToken {
+        if let refresher = oauthRefresher {
+            auth = .oauth(refresher)
+        } else if let token = authToken {
             if let headerName = providerConfig.options.apiKeyHeader {
                 auth = .header(name: headerName, value: token)
             } else {
@@ -3961,6 +4084,25 @@ extension CoreHost {
                 capabilities: ModelCapabilities(toolCalling: true, parallelToolCalling: true, reasoning: true, vision: true, structuredOutput: true)
             )
         )
+    }
+
+    private func getOrCreateOAuthRefresher(
+        productID: String,
+        tokens: OAuthTokens,
+        metadata: OAuthCredentialMetadata,
+        tokenRef: CredentialRef
+    ) -> OAuthTokenRefresher {
+        if let existing = oauthRefreshers[productID] {
+            return existing
+        }
+        let refresher = OAuthTokenRefresher(
+            metadata: metadata,
+            tokens: tokens,
+            credentialStore: credentialStore ?? EphemeralCredentialStore(),
+            tokenRef: tokenRef
+        )
+        oauthRefreshers[productID] = refresher
+        return refresher
     }
 
     private func extractBearerToken(from secret: String) -> String? {
@@ -4253,7 +4395,26 @@ extension CoreHost {
             return cached
         }
         let watermark = await runtimeEventLog.currentWatermark()
-        let result = TestProviderResult(providerID: envelope.payload.providerID, reachable: true, latencyMs: 12.5, message: "OK")
+        let providerID = envelope.payload.providerID
+        var reachable = true
+        var latencyMs: Double? = 12.5
+        var message: String? = "OK"
+
+        if let refresher = oauthRefreshers[providerID] {
+            do {
+                _ = try await refresher.validAccessToken()
+            } catch let error as OAuthRefreshError {
+                reachable = false
+                latencyMs = nil
+                message = error.errorDescription ?? error.localizedDescription
+            } catch {
+                reachable = false
+                latencyMs = nil
+                message = error.localizedDescription
+            }
+        }
+
+        let result = TestProviderResult(providerID: providerID, reachable: reachable, latencyMs: latencyMs, message: message)
         let receipt = CommandReceipt<TestProviderResult>(
             commandID: envelope.commandID,
             applied: true,

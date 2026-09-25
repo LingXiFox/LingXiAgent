@@ -110,6 +110,40 @@ public enum ProviderAuthentication: Sendable, Equatable {
     case none
     case bearer(String)
     case header(name: String, value: String)
+    case oauth(OAuthTokenRefresher)
+
+    public static func == (lhs: ProviderAuthentication, rhs: ProviderAuthentication) -> Bool {
+        switch (lhs, rhs) {
+        case (.none, .none):
+            return true
+        case let (.bearer(a), .bearer(b)):
+            return a == b
+        case let (.header(n1, v1), .header(n2, v2)):
+            return n1 == n2 && v1 == v2
+        case let (.oauth(r1), .oauth(r2)):
+            return r1 === r2
+        default:
+            return false
+        }
+    }
+}
+
+extension ProviderConfig {
+    /// 动态解析请求时的认证 Header。对于 OAuth 模式，每次调用 validAccessToken()，
+    /// 距离过期不足 30 秒自动以 RT 刷新并持久化；forceRefresh 为 true 时强制刷新。
+    public func resolveAuthHeader(forceRefresh: Bool = false) async throws -> (name: String, value: String)? {
+        switch authentication {
+        case .none:
+            return nil
+        case let .bearer(token):
+            return ("Authorization", "Bearer \(token)")
+        case let .header(name, value):
+            return (name, value)
+        case let .oauth(refresher):
+            let token = try await refresher.validAccessToken(forceRefresh: forceRefresh)
+            return ("Authorization", "Bearer \(token)")
+        }
+    }
 }
 
 /// Wire protocol is selected by the resolved endpoint, not by a Provider brand.

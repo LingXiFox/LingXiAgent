@@ -24,8 +24,27 @@ public struct AnthropicMessagesProvider: ModelProvider {
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         let prior = try await provenance.resolveContinuation(for: request.continuationOf, wire: .anthropicMessages)
-        let urlRequest = try makeURLRequest(request, continuation: prior)
-        let response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .anthropicMessages, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+        var urlRequest = try makeURLRequest(request, continuation: prior)
+        if let (headerName, headerValue) = try await config.resolveAuthHeader() {
+            urlRequest.setValue(headerValue, forHTTPHeaderField: headerName)
+        }
+        var response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .anthropicMessages, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+
+        // 401 token_expired / invalid_token 强制 refresh + 单次透明重试
+        if response.statusCode == 401, case .oauth(let refresher) = config.authentication {
+            do {
+                if let (headerName, headerValue) = try await config.resolveAuthHeader(forceRefresh: true) {
+                    urlRequest.setValue(headerValue, forHTTPHeaderField: headerName)
+                }
+                response = try await transport.send(urlRequest, context: ProviderHTTPRequestContext(wireProtocol: .anthropicMessages, model: request.model.rawValue, requestID: request.requestID, executionID: request.executionID, step: request.debugStep ?? 0))
+            } catch {
+                if let refreshErr = error as? OAuthRefreshError, refreshErr.isRevokedOrInvalidGrant {
+                    await refresher.markReauthenticationRequired(reason: refreshErr.errorDescription ?? "invalid_grant")
+                }
+                throw error
+            }
+        }
+
         let requestID = response.header("request-id")
         guard (200..<300).contains(response.statusCode) else {
             let body = (try? await OpenAICompatibleProvider.collectText(response.body)) ?? ""
@@ -83,6 +102,11 @@ public struct AnthropicMessagesProvider: ModelProvider {
         case .none: break
         case let .bearer(secret): result.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
         case let .header(name, value): result.setValue(value, forHTTPHeaderField: name)
+        case let .oauth(refresher):
+            let token = refresher.cachedAccessToken
+            if !token.isEmpty {
+                result.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
         }
         for (name, value) in config.requiredHeaders {
             result.setValue(value, forHTTPHeaderField: name)

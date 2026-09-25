@@ -423,7 +423,7 @@ private struct ProviderRow: View {
                     .font(.caption)
                     .foregroundStyle(test.reachable ? Color.secondary : Color.red)
             } else {
-                Text(account.availability).font(.caption).foregroundStyle(.secondary)
+                providerStatusBadge(account: account)
             }
 
             Menu {
@@ -437,6 +437,34 @@ private struct ProviderRow: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("\(account.displayName) 操作")
+        }
+    }
+
+    @ViewBuilder
+    private func providerStatusBadge(account: ProviderAccountInfo) -> some View {
+        let isOAuth = account.accountType == .oauthUser || account.availability == "reauthenticationRequired" || account.availability == "refresh_failed" || account.availability == "refreshing" || account.availability == "active"
+        if isOAuth {
+            if account.availability == "reauthenticationRequired" || account.availability.contains("撤销") || account.availability.contains("失效") {
+                Label("凭据已失效 (需重新登录)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.red)
+            } else if account.availability == "refresh_failed" || account.availability.contains("刷新失败") {
+                Label("RT 刷新失败 (可重试)", systemImage: "arrow.clockwise.circle")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.orange)
+            } else if account.availability == "refreshing" || account.availability.contains("刷新中") {
+                Label("AT 自动刷新中…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(LingXiTheme.electricCyan)
+            } else {
+                Label("OAuth 活跃 (自动刷新)", systemImage: "checkmark.shield.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(LingXiTheme.auroraMint)
+            }
+        } else {
+            Text(account.availability)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
