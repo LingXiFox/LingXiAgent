@@ -312,4 +312,62 @@ private struct PermissionStatusRow: View {
         }
     }
 }
+
+struct AboutSettingsPage: View {
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        Section {
+            VStack(spacing: LingXiMetrics.Space.md) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    LingXiTheme.foxfireAmber.opacity(0.35),
+                                    LingXiTheme.astralViolet.opacity(0.15),
+                                    Color.clear
+                                ],
+                                center: .center,
+                                startRadius: 8,
+                                endRadius: 60
+                            )
+                        )
+                        .frame(width: 100, height: 100)
+
+                    Circle()
+                        .strokeBorder(LingXiTheme.foxfireAmber.opacity(0.8), lineWidth: 1.5)
+                        .frame(width: 64, height: 64)
+
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(LingXiTheme.foxfireAmber)
+                        .lxNeonGlow(color: LingXiTheme.foxfireAmber, radius: 8, opacity: 0.8)
+                }
+
+                VStack(spacing: 2) {
+                    Text("LingXi Agent")
+                        .font(.lxTitle.weight(.bold))
+                    Text("灵犀 · 主人的赛博智能体伴写小狐狸")
+                        .font(.lxCallout)
+                        .foregroundStyle(LingXiTheme.foxfireAmber)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, LingXiMetrics.Space.md)
+        }
+
+        Section("系统规格") {
+            LabeledContent("应用版本", value: "v1.0.0 (Release 1)")
+            LabeledContent("协议版本", value: "vNext Wire 1.1")
+            LabeledContent("本地架构", value: "Apple Silicon Native (arm64)")
+            LabeledContent("核心状态", value: store.client != nil ? "Core 已连接" : "Core 未连接")
+        }
+
+        Section("赛博契约") {
+            LabeledContent("准则", value: "以认真查询为荣，以遵循规范为荣。")
+            LabeledContent("专属标识", value: "Crafted with passion in Cyber Space for 主人.")
+        }
+    }
+}
 #endif

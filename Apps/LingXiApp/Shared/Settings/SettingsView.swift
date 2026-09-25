@@ -136,6 +136,7 @@ private struct SettingsPageView: View {
         case .extensions: ExtensionsSettingsPage(store: store, kinds: [.skill, .plugin, .command, .hook])
         case .workspace: WorkspaceSettingsPage(store: store)
         case .diagnostics: DiagnosticsSettingsPage(store: store)
+        case .about: AboutSettingsPage(store: store)
         }
     }
 
@@ -147,4 +148,60 @@ private struct SettingsPageView: View {
     }
 }
 
+/// In-window full-stage settings presentation ensuring visual consistency with MainStage
+public struct FullstageSettingsView: View {
+    @ObservedObject public var store: SettingsStore
+    public var onBack: () -> Void
+
+    public init(store: SettingsStore, onBack: @escaping () -> Void) {
+        self.store = store
+        self.onBack = onBack
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            // High-cut Cyber Glass Header Bar
+            HStack(spacing: LingXiMetrics.Space.md) {
+                Button(action: onBack) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                        Text("返回工作区")
+                    }
+                    .font(.lxCallout.weight(.medium))
+                }
+                .lxGlassButtonStyle()
+                .buttonBorderShape(.capsule)
+                .keyboardShortcut(.cancelAction)
+                .help("返回工作区 (Esc)")
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(LingXiTheme.foxfireAmber)
+                    Text("偏好设置 · Settings")
+                        .font(.lxTitle.weight(.semibold))
+                }
+
+                Spacer()
+
+                // Balance placeholder
+                Color.clear.frame(width: 90, height: 1)
+            }
+            .padding(.horizontal, LingXiMetrics.Space.xl)
+            .padding(.top, LingXiMetrics.Space.md)
+            .padding(.bottom, LingXiMetrics.Space.sm)
+
+            Divider()
+                .padding(.horizontal, LingXiMetrics.Space.lg)
+
+            // Settings split content
+            SettingsView(store: store)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { AtmosphereBackdrop() }
+    }
+}
 #endif

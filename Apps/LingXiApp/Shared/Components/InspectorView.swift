@@ -27,32 +27,54 @@ public struct InspectorView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // ⌥⌘1 … ⌥⌘5 live in the View menu
-            Picker("检查器", selection: $model.selectedTab) {
-                ForEach(InspectorTab.allCases) { Text($0.displayName).tag($0) }
+            // Unified Inspector Header
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Label("实时监控", systemImage: "waveform.path.ecg")
+                    .font(.lxCallout.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                if let live = model.live {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(live.status == .ready ? LingXiTheme.neonTeal : LingXiTheme.foxfireAmber)
+                            .frame(width: 7, height: 7)
+                            .lxNeonGlow(color: live.status == .ready ? LingXiTheme.neonTeal : LingXiTheme.foxfireAmber, radius: 4)
+                        Text(statusLabel(live.status))
+                            .font(.lxMeta)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
             .padding(.top, LingXiMetrics.Space.md)
             .padding(.bottom, LingXiMetrics.Space.sm)
 
             if let live = model.live {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: LingXiMetrics.Space.lg) {
-                        switch model.selectedTab {
-                        case .overview: OverviewTab(live: live)
-                        case .core: CoreTab(live: live, onCompact: onCompact)
-                        case .tasks: TasksTab(live: live, onTerminate: onTerminateTask)
-                        case .agents: AgentsTab(live: live)
-                        case .changes: ChangesTab(live: live)
+                    VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
+                        // 1. 运行状态与模型 (Overview)
+                        OverviewTab(live: live)
+
+                        Divider()
+
+                        // 2. 核心双核架构与缓存 (Core Context: P-Core, E-Core, Cache)
+                        CoreTab(live: live, onCompact: onCompact)
+
+                        Divider()
+
+                        // 3. 任务与待办 (Tasks)
+                        TasksTab(live: live, onTerminate: onTerminateTask)
+
+                        if !live.subagents.isEmpty {
+                            Divider()
+                            AgentsTab(live: live)
                         }
                     }
                     .padding(LingXiMetrics.Split.panelContentInset)
                 }
             } else {
                 ContentUnavailableView("未连接 Core", systemImage: "bolt.horizontal.circle",
-                                       description: Text("打开工作区后，这里显示运行状态、上下文、任务、Agent 与变更。"))
+                                       description: Text("打开工作区后，这里显示运行状态、上下文与任务。"))
                     .frame(maxHeight: .infinity)
             }
 

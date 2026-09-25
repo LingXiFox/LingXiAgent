@@ -8,6 +8,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case mcp, extensions, computerUse
     case workspace
     case diagnostics
+    case about
 
     var id: String { rawValue }
 
@@ -29,6 +30,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .computerUse: return "Computer Use 与浏览器"
         case .workspace: return "工作区与 Worktree"
         case .diagnostics: return "诊断"
+        case .about: return "关于"
         }
     }
 
@@ -50,6 +52,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .computerUse: return "cursorarrow.rays"
         case .workspace: return "folder"
         case .diagnostics: return "stethoscope"
+        case .about: return "sparkles"
         }
     }
 
@@ -71,7 +74,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             case .agent: return [.providers, .models, .agentDefaults, .permissions, .context, .execution, .codeIntelligence]
             case .extensions: return [.mcp, .extensions, .computerUse]
             case .workspace: return [.workspace]
-            case .system: return [.diagnostics]
+            case .system: return [.diagnostics, .about]
             }
         }
     }

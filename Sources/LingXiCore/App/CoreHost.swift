@@ -1386,27 +1386,39 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
 
             // 2. Built-in products from catalog (co-exist with custom providers; user-defined models take precedence on collision)
-            for product in availableProducts {
-                guard product.runtime.isRunnable else { continue }
+            let runnableProducts = availableProducts.filter { $0.runtime.isRunnable }
+            let discoveredProductModels: [[ProviderModelInfo]] = await withTaskGroup(of: [ProviderModelInfo].self) { group in
+                for product in runnableProducts {
+                    group.addTask {
+                        let isConfigured = await self.isProductConfigured(product: product)
+                        let accountModels: [DiscoveredRemoteModel]
+                        if isConfigured {
+                            accountModels = await self.accountDiscoveredModels(
+                                product: product,
+                                providerID: product.id
+                            )
+                        } else {
+                            accountModels = []
+                        }
 
-                let isConfigured = await isProductConfigured(product: product)
-                let accountModels: [DiscoveredRemoteModel]
-                if isConfigured {
-                    accountModels = await accountDiscoveredModels(
-                        product: product,
-                        providerID: product.id
-                    )
-                } else {
-                    accountModels = []
+                        let outcome = ModelAvailabilityResolver.resolve(
+                            product: product,
+                            registryModels: catalog?.models(productID: product.id) ?? [],
+                            accountModels: accountModels,
+                            isConfigured: isConfigured
+                        )
+                        return outcome.models
+                    }
                 }
+                var collected: [[ProviderModelInfo]] = []
+                for await models in group {
+                    collected.append(models)
+                }
+                return collected
+            }
 
-                let outcome = ModelAvailabilityResolver.resolve(
-                    product: product,
-                    registryModels: catalog?.models(productID: product.id) ?? [],
-                    accountModels: accountModels,
-                    isConfigured: isConfigured
-                )
-                for model in outcome.models {
+            for models in discoveredProductModels {
+                for model in models {
                     if !customModelIDs.contains(model.id) {
                         results.append(model)
                     }
@@ -1580,7 +1592,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
 
         // Cold cache: discovery is the only way to know what this account can
-        // reach. Bound it with a 1.5s timeout so startup and model listings never freeze.
+        // reach. Bound it with a 400ms timeout so startup and model listings never freeze.
         let result: [DiscoveredRemoteModel]? = await withTaskGroup(of: [DiscoveredRemoteModel]?.self) { group in
             group.addTask {
                 let outcome = await AccountModelDiscovery.refresh(
@@ -1594,7 +1606,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 return nil
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: 400_000_000)
                 return nil
             }
             for await item in group {
@@ -1641,9 +1653,26 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         if let current = currentAssembly, current.modelID.rawValue == value || "\(current.endpoint.providerID)/\(current.modelID.rawValue)" == value {
             return ModelSelection(providerID: current.endpoint.providerID, modelID: current.modelID.rawValue)
         }
-        guard let separator = value.firstIndex(of: "/") else { throw CoreError(code: .toolArgumentInvalid, message: "模型格式必须是 provider/model") }
-        let providerID = String(value[..<separator])
-        let modelID = String(value[value.index(after: separator)...])
+        var resolvedValue = value
+        if !resolvedValue.contains("/") {
+            if let configStore = configurationStore,
+               let snapshot = try? await configStore.load() {
+                for (pID, pConfig) in snapshot.providers.providers {
+                    if pConfig.models[resolvedValue] != nil {
+                        resolvedValue = "\(pID)/\(resolvedValue)"
+                        break
+                    }
+                }
+            }
+            if !resolvedValue.contains("/"), let current = currentAssembly {
+                resolvedValue = "\(current.endpoint.providerID)/\(resolvedValue)"
+            }
+        }
+        guard let separator = resolvedValue.firstIndex(of: "/") else {
+            throw CoreError(code: .toolArgumentInvalid, message: "模型格式必须是 provider/model")
+        }
+        let providerID = String(resolvedValue[..<separator])
+        let modelID = String(resolvedValue[resolvedValue.index(after: separator)...])
 
         // 1. Custom providers: configured explicitly by user in ~/.lingxiagent/providers.json
         if let configStore = configurationStore,

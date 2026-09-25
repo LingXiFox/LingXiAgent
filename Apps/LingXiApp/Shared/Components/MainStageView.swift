@@ -24,7 +24,10 @@ public struct MainStageView: View {
                 ActionFlowTimelineView(items: conversation.items,
                                        isGenerating: conversation.isGenerating,
                                        hasAnyItem: !conversation.items.isEmpty,
-                                       tailNotice: runtime.providerNotice)
+                                       tailNotice: runtime.providerNotice,
+                                       onPromptSelect: { text in
+                                           runtime.composerModel.text = text
+                                       })
                     .lxFloatingBar(edge: .bottom) {
                         ComposerDock(runtime: runtime)
                     }
@@ -125,7 +128,9 @@ struct WorkspaceGate: View {
 
     private var detail: String {
         switch runtime.link {
-        case .connecting(let path): return path
+        case .connecting(let path):
+            let folder = URL(fileURLWithPath: path).lastPathComponent
+            return "工作区: \(folder)"
         case .failed(let message): return message
         default: return "LingXi 会在所选目录启动 Core，会话、工具调用与变更都来自真实运行。"
         }
@@ -156,12 +161,15 @@ public struct ActionFlowTimelineView: View {
     @State private var showJumpToBottom = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    public var onPromptSelect: ((String) -> Void)? = nil
+
     public init(items: [TimelineItemPresentation], isGenerating: Bool, hasAnyItem: Bool = true,
-                tailNotice: NoticePresentation? = nil) {
+                tailNotice: NoticePresentation? = nil, onPromptSelect: ((String) -> Void)? = nil) {
         self.items = items
         self.isGenerating = isGenerating
         self.hasAnyItem = hasAnyItem
         self.tailNotice = tailNotice
+        self.onPromptSelect = onPromptSelect
     }
 
     public var body: some View {
@@ -169,47 +177,48 @@ public struct ActionFlowTimelineView: View {
             ScrollViewReader { proxy in
                 let rows = items.foldedIntoRows()
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                        if !hasAnyItem {
-                            StageEmptyState()
-                        }
+                    if !hasAnyItem {
+                        CyberHeroWelcomeView(onPromptSelect: onPromptSelect)
+                            .frame(maxWidth: .infinity, minHeight: max(viewport.size.height - 180, 360), alignment: .center)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                            ForEach(rows) { row in
+                                TimelineRowView(row: row)
+                                    .id(row.id)
+                                    .padding(.top, row.isTurnBoundary ? LingXiMetrics.Space.xl : 0)
+                            }
 
-                        ForEach(rows) { row in
-                            TimelineRowView(row: row)
-                                .id(row.id)
-                                .padding(.top, row.isTurnBoundary ? LingXiMetrics.Space.xl : 0)
-                        }
+                            if let tailNotice {
+                                TimelineRowView(row: .notice(TimelineItemPresentation(id: "tail-notice",
+                                                                                       kind: .notice(tailNotice))))
+                            }
 
-                        if let tailNotice {
-                            TimelineRowView(row: .notice(TimelineItemPresentation(id: "tail-notice",
-                                                                                   kind: .notice(tailNotice))))
-                        }
-
-                        if isGenerating {
-                            ReadingColumn {
-                                HStack(spacing: LingXiMetrics.Space.sm) {
-                                    ProgressView().controlSize(.small)
-                                    Text("执行中…")
-                                        .font(.lxMeta)
-                                        .foregroundStyle(.tertiary)
+                            if isGenerating {
+                                ReadingColumn {
+                                    HStack(spacing: LingXiMetrics.Space.sm) {
+                                        ProgressView().controlSize(.small)
+                                        Text("执行中…")
+                                            .font(.lxMeta)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .frame(height: LingXiMetrics.Row.event)
                                 }
-                                .frame(height: LingXiMetrics.Row.event)
                             }
                         }
+                        .padding(.vertical, LingXiMetrics.Space.lg)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: viewport.size.height, alignment: .top)
                     }
-                    .padding(.vertical, LingXiMetrics.Space.lg)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: viewport.size.height, alignment: .bottom)
-                    .background(
-                        GeometryReader { content in
-                            Color.clear.preference(
-                                key: BottomOffsetKey.self,
-                                value: content.frame(in: .named("stageScroll")).maxY - viewport.size.height
-                            )
-                        }
-                    )
                 }
                 .coordinateSpace(name: "stageScroll")
+                .background(
+                    GeometryReader { content in
+                        Color.clear.preference(
+                            key: BottomOffsetKey.self,
+                            value: content.frame(in: .named("stageScroll")).maxY - viewport.size.height
+                        )
+                    }
+                )
                 .onPreferenceChange(BottomOffsetKey.self) { overshoot in
                     showJumpToBottom = overshoot > 120
                 }
@@ -250,20 +259,133 @@ private struct BottomOffsetKey: PreferenceKey {
     }
 }
 
-/// Empty session: one statement and a hint.
-struct StageEmptyState: View {
+/// Rich Cyber Hero Welcome View that anchors the visual center of the main stage
+struct CyberHeroWelcomeView: View {
+    var onPromptSelect: ((String) -> Void)? = nil
+
     var body: some View {
-        ReadingColumn {
-            VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
-                Text("下达一个任务，本狐接着干活")
-                    .font(.lxTitle)
-                Text("写清目标与验收标准。输入 / 查看命令，@ 引用文件，⌘K 打开命令面板。")
+        VStack(spacing: LingXiMetrics.Space.xl) {
+            // Foxfire Cyber Emblem
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                LingXiTheme.foxfireAmber.opacity(0.32),
+                                LingXiTheme.astralViolet.opacity(0.12),
+                                Color.clear
+                            ],
+                            center: .center,
+                            startRadius: 8,
+                            endRadius: 75
+                        )
+                    )
+                    .frame(width: 150, height: 150)
+
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [LingXiTheme.foxfireAmber.opacity(0.85), LingXiTheme.electricCyan.opacity(0.4)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.5
+                    )
+                    .frame(width: 84, height: 84)
+
+                Image(systemName: "sparkles")
+                    .font(.system(size: 36, weight: .light))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [LingXiTheme.foxfireAmber, LingXiTheme.electricCyan],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .padding(.top, LingXiMetrics.Space.xl)
+
+            VStack(spacing: LingXiMetrics.Space.xs) {
+                Text("灵犀智能伴写 · LingXi Agent")
+                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+
+                Text("本狐随时待命。写清任务与验收标准，输入 / 命令，@ 引用文件。")
                     .font(.lxCallout)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.center)
             }
-            .padding(.vertical, LingXiMetrics.Space.lg)
+
+            // Quick starter prompts grid
+            HStack(spacing: LingXiMetrics.Space.md) {
+                StarterPromptCard(
+                    icon: "magnifyingglass",
+                    title: "代码巡检",
+                    subtitle: "审查项目架构与潜在风险",
+                    prompt: "请对当前工作区的核心代码结构与依赖进行巡检，列出可以改进优化的点"
+                ) { onPromptSelect?($0) }
+
+                StarterPromptCard(
+                    icon: "hammer",
+                    title: "特性开发",
+                    subtitle: "规划并落地新功能需求",
+                    prompt: "我需要为你增加一个新功能，请先向我梳理实现方案"
+                ) { onPromptSelect?($0) }
+
+                StarterPromptCard(
+                    icon: "bolt.horizontal",
+                    title: "性能调优",
+                    subtitle: "分析执行链路与降低开销",
+                    prompt: "分析当前系统的响应瓶颈与高频路径，给出优化建议"
+                ) { onPromptSelect?($0) }
+            }
+            .frame(maxWidth: 680)
+            .padding(.top, LingXiMetrics.Space.xs)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, LingXiMetrics.Space.xl)
+    }
+}
+
+struct StarterPromptCard: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let prompt: String
+    let onSelect: (String) -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            onSelect(prompt)
+        } label: {
+            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(LingXiTheme.electricCyan)
+                    .padding(.bottom, 2)
+                Text(title)
+                    .font(.lxCallout.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.lxMeta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(LingXiMetrics.Space.md)
+            .lxGlass(
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous),
+                tint: isHovered ? LingXiTheme.obsidianSurface.opacity(0.85) : LingXiTheme.obsidianSurface.opacity(0.4)
+            )
+            .lxCrystalBorder(
+                cornerRadius: 12,
+                glowColor: isHovered ? LingXiTheme.electricCyan : nil,
+                glowRadius: isHovered ? 8 : 0
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 

@@ -253,22 +253,77 @@ struct EventStatusGlyph: View {
         case .none:
             EmptyView()
         case .running:
-            ProgressView()
-                .controlSize(.mini)
-                .accessibilityLabel("执行中")
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(LingXiTheme.neonTeal)
+                    .frame(width: 6, height: 6)
+                    .overlay(Circle().stroke(LingXiTheme.neonTeal.opacity(0.4), lineWidth: 2))
+                    .lxNeonGlow(color: LingXiTheme.neonTeal, radius: 4)
+                Text("运行中")
+                    .font(.lxMicro.weight(.semibold))
+                    .foregroundStyle(LingXiTheme.neonTeal)
+            }
         case .waiting:
-            Label("等待", systemImage: "clock")
-                .font(.lxMeta)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(LingXiTheme.solarGold)
+                    .frame(width: 6, height: 6)
+                    .lxNeonGlow(color: LingXiTheme.solarGold, radius: 4)
+                Text("等待")
+                    .font(.lxMicro.weight(.semibold))
+                    .foregroundStyle(LingXiTheme.solarGold)
+            }
         case .failed:
-            Label("失败", systemImage: "exclamationmark.triangle.fill")
-                .font(.lxMeta.weight(.medium))
-                .foregroundStyle(.red)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(LingXiTheme.neonCoral)
+                    .frame(width: 6, height: 6)
+                    .lxNeonGlow(color: LingXiTheme.neonCoral, radius: 4)
+                Text("失败")
+                    .font(.lxMicro.weight(.semibold))
+                    .foregroundStyle(LingXiTheme.neonCoral)
+            }
         case .cancelled:
             Label("已取消", systemImage: "slash.circle")
                 .font(.lxMeta)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// 赛博心电波动图（零 GPU 压力，纯矢量 Path 硬件加速绘制）
+struct CyberSparkline: View {
+    let color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            guard w > 10, h > 4 else { return }
+
+            let points: [CGFloat] = [0.4, 0.45, 0.65, 0.25, 0.85, 0.30, 0.70, 0.15, 0.90, 0.40, 0.50, 0.48]
+            var path = Path()
+            let step = w / CGFloat(points.count - 1)
+            let startY = h * (1.0 - points[0])
+            path.move(to: CGPoint(x: 0, y: startY))
+
+            for i in 1..<points.count {
+                let x = CGFloat(i) * step
+                let y = h * (1.0 - points[i])
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+
+            var fillPath = path
+            fillPath.addLine(to: CGPoint(x: w, y: h))
+            fillPath.addLine(to: CGPoint(x: 0, y: h))
+            fillPath.closeSubpath()
+
+            let fillGrad = Gradient(colors: [color.opacity(0.22), color.opacity(0.0)])
+            context.fill(fillPath, with: .linearGradient(fillGrad, startPoint: .zero, endPoint: CGPoint(x: 0, y: h)))
+            context.stroke(path, with: .color(color), lineWidth: 1.5)
+        }
+        .frame(height: 18)
+        .allowsHitTesting(false)
     }
 }
 
@@ -279,7 +334,7 @@ private struct ToolEventRow: View {
     var body: some View {
         let state = EventStatus(call.status)
         EventRow(symbol: ToolGlyph.symbol(for: call.toolName),
-                 symbolStyle: state == .failed ? .red : nil,
+                 symbolStyle: state == .failed ? LingXiTheme.neonCoral : (state == .running ? LingXiTheme.electricCyan : nil),
                  title: ToolGlyph.isCommand(call.toolName) ? Text(call.summary).font(.lxMono) : Text(call.summary),
                  metadata: metadata,
                  status: state,
@@ -287,6 +342,10 @@ private struct ToolEventRow: View {
                  initiallyOpen: expandByDefault
                     || TimelineDisclosure.tool(name: call.toolName, status: call.status, hasOutput: call.output != nil)) {
             VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                // 实时心电波形监控
+                CyberSparkline(color: state == .failed ? LingXiTheme.neonCoral : (state == .running ? LingXiTheme.electricCyan : LingXiTheme.neonTeal))
+                    .padding(.vertical, 2)
+
                 if let cwd = call.workingDirectory {
                     Label(cwd, systemImage: "folder")
                         .font(.lxMeta)
@@ -296,7 +355,7 @@ private struct ToolEventRow: View {
                 }
                 if let output = call.output, !output.isEmpty { OutputBlock(text: output) }
                 if let stderr = call.stderr, !stderr.isEmpty {
-                    Text("stderr").font(.lxMeta).foregroundStyle(.secondary)
+                    Text("stderr").font(.lxMeta).foregroundStyle(LingXiTheme.neonCoral)
                     OutputBlock(text: stderr)
                 }
             }

@@ -27,6 +27,7 @@ public struct LingXiMacApp: App {
         WindowGroup {
             MainStageSplitView(
                 runtime: runtime,
+                settings: settings,
                 onOpenTraceWindow: {
                     openWindow(id: "trace-window")
                 }
@@ -49,12 +50,6 @@ public struct LingXiMacApp: App {
                 openWindow(id: "trace-window")
             })
         }
-
-        // macOS 标准偏好设置窗口 (⌘,)
-        Settings {
-            SettingsView(store: settings)
-        }
-        .windowToolbarStyle(.unified(showsTitle: true))
 
         // 独立非模态运行轨迹窗口
         WindowGroup("运行轨迹", id: "trace-window") {
@@ -81,6 +76,19 @@ public struct LingXiMenuCommands: Commands {
     public var onOpenTraceWindow: () -> Void
 
     public var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("关于 LingXi…") {
+                runtime.isShowingAboutSheet = true
+            }
+        }
+
+        CommandGroup(replacing: .appSettings) {
+            Button("设置…") {
+                runtime.isShowingSettings = true
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("新建会话") {
                 runtime.newSession()

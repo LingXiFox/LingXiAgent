@@ -156,3 +156,91 @@ struct PlaceholderLine: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 }
+
+// MARK: - Crystal & Neon Specular Enhancements (Zero GPU Burden)
+
+public extension View {
+    /// 钻石切面 1px 线性渐变高光边框（参考 macOS 现代玻璃美学）
+    /// 纯矢量计算，零 GPU/离屏重绘负担
+    func lxCrystalBorder(cornerRadius: CGFloat = LingXiMetrics.Radius.surface,
+                         glowColor: Color? = nil,
+                         glowRadius: CGFloat = 8) -> some View {
+        self.modifier(LXCrystalBorderModifier(cornerRadius: cornerRadius,
+                                              glowColor: glowColor,
+                                              glowRadius: glowRadius))
+    }
+
+    /// 晶体黑曜石卡片底板：微光磨砂玻璃 ✕ 1px 钻石切面 ✕ 可选微发光
+    func lxCrystalCard(cornerRadius: CGFloat = LingXiMetrics.Radius.surface,
+                       tint: Color? = nil,
+                       glowColor: Color? = nil,
+                       interactive: Bool = false) -> some View {
+        self
+            .lxGlass(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
+                     tint: tint ?? LingXiTheme.obsidianSurface,
+                     interactive: interactive)
+            .lxCrystalBorder(cornerRadius: cornerRadius, glowColor: glowColor)
+    }
+
+    /// 霓虹微发光光晕（CoreAnimation 硬件加速，低能耗阴影模拟）
+    func lxNeonGlow(color: Color, radius: CGFloat = 8, opacity: Double = 0.45) -> some View {
+        self.shadow(color: color.opacity(opacity), radius: radius, x: 0, y: 0)
+    }
+
+    /// 晶莹胶囊徽章样式（用于状态、模式与标签）
+    func lxNeonBadge(color: Color) -> some View {
+        self
+            .padding(.horizontal, LingXiMetrics.Space.sm)
+            .padding(.vertical, LingXiMetrics.Space.xs)
+            .background {
+                Capsule()
+                    .fill(color.opacity(0.12))
+            }
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [color.opacity(0.65), color.opacity(0.20)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            }
+            .lxNeonGlow(color: color, radius: 4, opacity: 0.25)
+    }
+}
+
+/// 矢量高光描边修改器
+struct LXCrystalBorderModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let glowColor: Color?
+    let glowRadius: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(colorScheme == .dark ? 0.24 : 0.45),
+                                Color.white.opacity(colorScheme == .dark ? 0.08 : 0.18),
+                                Color.white.opacity(colorScheme == .dark ? 0.02 : 0.05)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                    .allowsHitTesting(false)
+            }
+            .shadow(
+                color: glowColor?.opacity(colorScheme == .dark ? 0.35 : 0.18) ?? Color.black.opacity(colorScheme == .dark ? 0.25 : 0.06),
+                radius: glowColor != nil ? glowRadius : 10,
+                x: 0,
+                y: glowColor != nil ? 0 : 4
+            )
+    }
+}

@@ -1,25 +1,43 @@
 import SwiftUI
 
-/// Static ambient backdrop behind the stage: the window background plus three
-/// soft, low-saturation glows that give floating glass something to refract.
+/// 赛博深空极光背景：深邃黑曜石底场 ✕ 多重梦幻极光弥散光斑
 ///
-/// Cost model: plain gradients with no animation, redrawn only when the window
-/// size or appearance changes; idle frames composite a cached layer. Glow
-/// strength follows the user's preference and drops to zero when off.
+/// 性能零负担模型（Zero GPU Burden）：
+/// 纯 CoreAnimation 硬件加速静态径向渐变（RadialGradient），无每帧着色器计算，
+/// 仅在窗口尺寸或外观变更时更新，空闲时为零 GPU/CPU 循环占用。
 struct AtmosphereBackdrop: View {
     @AppStorage(LXPreferenceKey.atmosphere) private var preference = AtmospherePreference.subtle
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
-            LingXiTheme.windowBackground
+            // 深邃暗夜黑曜石底色
+            LingXiTheme.deepNightBackground
+
             if preference != .off {
                 GeometryReader { geo in
-                    let span = max(geo.size.width, geo.size.height)
+                    let w = geo.size.width
+                    let h = geo.size.height
+                    let span = max(w, h)
+
                     ZStack {
-                        glow(LingXiTheme.atmosphereIndigo, 0.34, center: UnitPoint(x: 0.08, y: 0.05), radius: span * 0.65)
-                        glow(LingXiTheme.atmosphereTeal, 0.22, center: UnitPoint(x: 0.95, y: 0.92), radius: span * 0.55)
-                        glow(LingXiTheme.atmosphereViolet, 0.18, center: UnitPoint(x: 0.62, y: 0.30), radius: span * 0.45)
+                        // 1. 左上深空星云靛蓝
+                        glow(LingXiTheme.atmosphereIndigo, 0.42, center: UnitPoint(x: 0.12, y: 0.08), radius: span * 0.70)
+                        // 2. 右侧幻视星轨紫
+                        glow(LingXiTheme.atmosphereViolet, 0.32, center: UnitPoint(x: 0.75, y: 0.25), radius: span * 0.55)
+                        // 3. 右下角电光青绿极光（生命与网络脉冲感）
+                        glow(LingXiTheme.atmosphereTeal, 0.35, center: UnitPoint(x: 0.90, y: 0.88), radius: span * 0.60)
+                        // 4. 左下角灵犀狐焰金光（温暖而轻盈的品牌灵魂光晕）
+                        glow(LingXiTheme.atmosphereAmber, 0.20, center: UnitPoint(x: 0.05, y: 0.92), radius: span * 0.45)
+                        // 5. 顶栏水平光束漫射（强化窗口上边缘的高级质感）
+                        LinearGradient(
+                            colors: [
+                                LingXiTheme.electricCyan.opacity(colorScheme == .dark ? 0.08 * preference.strength : 0.03),
+                                Color.clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .init(x: 0.5, y: 0.20)
+                        )
                     }
                 }
             }
@@ -29,9 +47,9 @@ struct AtmosphereBackdrop: View {
         .accessibilityHidden(true)
     }
 
-    /// Light mode keeps the same hues at a third of the strength so glass stays clean.
+    /// 浅色模式保持相同色相但降低浓度，深色模式展现璀璨极光
     private func glow(_ color: Color, _ opacity: Double, center: UnitPoint, radius: CGFloat) -> some View {
-        let scale = colorScheme == .dark ? 1.0 : 0.35
+        let scale = colorScheme == .dark ? 1.0 : 0.38
         return RadialGradient(
             colors: [color.opacity(opacity * scale * preference.strength), .clear],
             center: center,
@@ -42,10 +60,11 @@ struct AtmosphereBackdrop: View {
 }
 
 extension View {
-    /// Floating side surface (navigator, inspector): one glass shape per panel,
-    /// never nested, never per-row.
+    /// 悬浮侧面板（Navigator、Inspector）：单层晶体磨砂玻璃，带 1px 钻石切面高光边缘
     func lxFloatingPanel(_ material: PanelMaterialPreference) -> some View {
-        lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.panel, style: .continuous),
-                tint: material == .tinted ? LingXiTheme.panelTint : nil)
+        self
+            .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.panel, style: .continuous),
+                     tint: material == .tinted ? LingXiTheme.panelTint : LingXiTheme.obsidianSurface)
+            .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.panel)
     }
 }

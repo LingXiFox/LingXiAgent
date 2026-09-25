@@ -179,7 +179,10 @@ struct PermissionSurface: View {
             }
         }
         .padding(LingXiMetrics.Space.lg)
-        .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous))
+        .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous),
+                 tint: LingXiTheme.obsidianSurface)
+        .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.surface,
+                         glowColor: isElevated ? LingXiTheme.neonCoral : LingXiTheme.solarGold)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("权限审批请求：\(card.toolName)")
     }
@@ -201,8 +204,8 @@ struct QuestionSurface: View {
     var body: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
             HStack(spacing: LingXiMetrics.Space.sm) {
-                Image(systemName: card.kind == .decision ? "arrow.triangle.branch" : "questionmark.bubble")
-                    .foregroundStyle(.tint)
+                Image(systemName: card.kind == .decision ? "arrow.triangle.branch" : "questionmark.bubble.fill")
+                    .foregroundStyle(card.kind == .decision ? LingXiTheme.electricCyan : LingXiTheme.astralViolet)
                     .accessibilityHidden(true)
                 Text(card.kind == .decision ? "需要你决定" : "Agent 提问")
                     .font(.lxCallout.weight(.semibold))
@@ -255,7 +258,10 @@ struct QuestionSurface: View {
             }
         }
         .padding(LingXiMetrics.Space.lg)
-        .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous))
+        .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous),
+                 tint: LingXiTheme.obsidianSurface)
+        .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.surface,
+                         glowColor: card.kind == .decision ? LingXiTheme.electricCyan : LingXiTheme.astralViolet)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent 提问：\(card.parametersSummary)")
     }
@@ -275,6 +281,7 @@ private struct CommandSuggestionList: View {
                 } label: {
                     HStack(spacing: LingXiMetrics.Space.sm) {
                         Text("/\(command.name)").font(.lxMono)
+                            .foregroundStyle(LingXiTheme.electricCyan)
                         if !command.argument.isEmpty {
                             Text(command.argument).font(.lxMeta).foregroundStyle(.tertiary)
                         }
@@ -292,7 +299,9 @@ private struct CommandSuggestionList: View {
         }
         .padding(.horizontal, LingXiMetrics.Space.lg)
         .padding(.vertical, LingXiMetrics.Space.sm)
-        .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous))
+        .lxGlass(in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous),
+                 tint: LingXiTheme.obsidianSurface)
+        .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.surface)
         .accessibilityLabel("命令建议")
     }
 }
@@ -327,10 +336,13 @@ struct ComposerSurface: View {
             controlRow
         }
         .padding(LingXiMetrics.Space.md)
-        .lxGlass(in: surfaceShape)
+        .lxGlass(in: surfaceShape, tint: LingXiTheme.obsidianSurface)
+        .lxCrystalBorder(cornerRadius: LingXiMetrics.Radius.surface,
+                         glowColor: isGenerating ? LingXiTheme.foxfireAmber : nil,
+                         glowRadius: 10)
         .overlay {
             if isDropTargeted {
-                surfaceShape.strokeBorder(.tint, lineWidth: 2)
+                surfaceShape.strokeBorder(LingXiTheme.foxfireAmber, lineWidth: 2)
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -359,65 +371,40 @@ struct ComposerSurface: View {
     }
 
     private var placeholder: String {
-        let send = sendKey == .returnKey ? "⏎ 发送，⇧⏎ 换行" : "⌘⏎ 发送，⏎ 换行"
-        return runtime.isLive || runtime.link == .connected
-            ? "给 Agent 发消息… \(send)，/ 命令，@ 引用文件"
-            : "打开工作区后即可开始任务"
+        "@ 引用文件/Agent; / 命令与技能; ! 终端命令; # 代码片段"
     }
 
     #if os(macOS)
     /// Grows one line per explicit line break up to the cap, then scrolls internally.
     private var inputHeight: CGFloat {
         let lines = model.text.split(separator: "\n", omittingEmptySubsequences: false).count
-        let used = max(1, min(lines, LingXiMetrics.composerMaxLines))
+        let used = max(2, min(lines, LingXiMetrics.composerMaxLines))
         return CGFloat(used) * MacNativeTextView.bodyLineHeight + LingXiMetrics.Space.xs
     }
     #endif
 
     private var controlRow: some View {
-        HStack(spacing: LingXiMetrics.Space.md) {
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            // MARK: - Left utility buttons
             #if os(macOS)
             Button(action: pickFiles) {
-                Label("引用文件", systemImage: "paperclip").labelStyle(.iconOnly)
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 15))
             }
-            .help("引用文件或文件夹（也可拖入）")
+            .help("添加上下文、文件或目录 (@)")
             #endif
 
-            Menu {
-                Picker("模式", selection: $model.selectedMode) {
-                    ForEach(AgentRunMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label(model.selectedMode.rawValue, systemImage: modeSymbol).font(.lxMeta)
+            Button(action: beginGoalEdit) {
+                Image(systemName: model.goal == nil ? "target" : "target.fill")
+                    .font(.system(size: 14))
             }
-            .composerMenu(help: "模式：Build 执行改动，Plan 只规划，Explore 只读探索")
-
-            Menu {
-                Picker("模型", selection: Binding(get: { model.selectedModelID ?? "" },
-                                                 set: { model.selectedModelID = $0.isEmpty ? nil : $0 })) {
-                    ForEach(configuredModels, id: \.modelID) { m in
-                        Text(m.displayName).tag(m.modelID)
-                    }
+            .help(model.goal == nil ? "设定执行目标 (/goal)" : "已设定目标: \(model.goal ?? "")")
+            .popover(isPresented: $isEditingGoal, arrowEdge: .top) {
+                GoalEditor(draft: $goalDraft) { value in
+                    runtime.setGoal(value)
+                    isEditingGoal = false
                 }
-                .pickerStyle(.inline)
-                if configuredModels.isEmpty {
-                    Text("Core 未返回可用模型")
-                }
-            } label: {
-                Label(modelLabel, systemImage: "cpu").font(.lxMeta)
             }
-            .composerMenu(help: "模型（完整 Provider 管理在设置中）")
-
-            Menu {
-                Picker("思考", selection: $model.reasoningEffort) {
-                    ForEach(model.availableReasoningLevels, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label(model.reasoningEffort.rawValue, systemImage: "brain").font(.lxMeta)
-            }
-            .composerMenu(help: "思考强度（按当前模型能力显示可用档位）")
 
             Menu {
                 Picker("权限", selection: $model.permissionPreset) {
@@ -430,20 +417,46 @@ struct ComposerSurface: View {
                     .font(.lxMeta)
                     .foregroundStyle(model.permissionPreset.isElevated ? Color.orange : Color.secondary)
             }
-            .composerMenu(help: "权限：\(model.permissionPreset.label)")
+            .composerMenu(help: "权限模式：\(model.permissionPreset.label)")
 
             Spacer(minLength: LingXiMetrics.Space.sm)
 
-            Button(action: beginGoalEdit) {
-                Label("目标", systemImage: model.goal == nil ? "scope" : "target").labelStyle(.iconOnly)
-            }
-            .help(model.goal == nil ? "设定目标（/goal）" : "修改目标")
-            .popover(isPresented: $isEditingGoal, arrowEdge: .top) {
-                GoalEditor(draft: $goalDraft) { value in
-                    runtime.setGoal(value)
-                    isEditingGoal = false
+            // MARK: - Right status and execution settings
+            Menu {
+                Picker("思考等级", selection: $model.reasoningEffort) {
+                    ForEach(model.availableReasoningLevels, id: \.self) { Text($0.rawValue).tag($0) }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Label(model.reasoningEffort.rawValue, systemImage: "sparkles").font(.lxMeta)
             }
+            .composerMenu(help: "思考等级（按当前模型支持能力）")
+
+            Menu {
+                Picker("模型", selection: Binding(get: { model.selectedModelID ?? "" },
+                                                 set: { model.selectedModelID = $0.isEmpty ? nil : $0 })) {
+                    ForEach(configuredModels, id: \.id) { m in
+                        Text(m.displayName).tag(m.id)
+                    }
+                }
+                .pickerStyle(.inline)
+                if configuredModels.isEmpty {
+                    Text("Core 未返回可用模型")
+                }
+            } label: {
+                Label(modelLabel, systemImage: "cpu").font(.lxMeta)
+            }
+            .composerMenu(help: "选择模型（更多 Provider 请前往设置）")
+
+            Menu {
+                Picker("模式", selection: $model.selectedMode) {
+                    ForEach(AgentRunMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Label(model.selectedMode.rawValue, systemImage: modeSymbol).font(.lxMeta)
+            }
+            .composerMenu(help: "模式：Build 执行改动，Plan 只规划，Explore 只读探索")
 
             sendOrStop
         }
@@ -458,7 +471,7 @@ struct ComposerSurface: View {
 
     private var modelLabel: String {
         guard let id = model.selectedModelID else { return "模型" }
-        return model.models.first { $0.modelID == id }?.displayName ?? id
+        return model.models.first { $0.id == id || $0.modelID == id }?.displayName ?? id
     }
 
     private var modeSymbol: String {
@@ -477,14 +490,16 @@ struct ComposerSurface: View {
             }
             .lxGlassButtonStyle()
             .buttonBorderShape(.circle)
+            .lxNeonGlow(color: LingXiTheme.foxfireAmber, radius: 8, opacity: 0.65)
             .keyboardShortcut(".", modifiers: .command)
             .help("停止 (⌘.)")
         } else {
             Button(action: submit) {
-                Label("发送", systemImage: "arrow.up").labelStyle(.iconOnly).fontWeight(.semibold)
+                Label("发送", systemImage: "paperplane.fill").labelStyle(.iconOnly).fontWeight(.semibold)
             }
             .lxPrimaryButtonStyle()
             .buttonBorderShape(.circle)
+            .lxNeonGlow(color: isEmpty ? .clear : LingXiTheme.foxfireAmber, radius: 6, opacity: 0.45)
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(isEmpty)
             .help(sendKey == .returnKey ? "发送 (⏎)" : "发送 (⌘⏎)")
@@ -532,6 +547,15 @@ private extension View {
         self.menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .padding(.horizontal, LingXiMetrics.Space.xs + 2)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(Color.primary.opacity(0.04))
+                    .overlay(
+                        Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+            )
             .help(help)
     }
 }

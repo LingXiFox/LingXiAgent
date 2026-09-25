@@ -12,20 +12,20 @@ public struct MainStageSplitView: View {
     @ObservedObject private var sidebar: SidebarPresentationModel
     @ObservedObject private var inspector: RuntimeInspectorPresentationModel
     @ObservedObject private var conversation: ConversationPresentationModel
+    public var settings: SettingsStore?
     public var onOpenTraceWindow: () -> Void
 
     @AppStorage(LXPreferenceKey.panelMaterial) private var panelMaterial = PanelMaterialPreference.clear
     @AppStorage(LXPreferenceKey.colorScheme) private var colorScheme = ColorSchemePreference.system
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    #if os(macOS)
-    @Environment(\.openSettings) private var openSettings
-    #endif
 
     public init(
         runtime: RuntimeFrontend,
+        settings: SettingsStore? = nil,
         onOpenTraceWindow: @escaping () -> Void = {}
     ) {
         self.runtime = runtime
+        self.settings = settings
         self.sidebar = runtime.sidebarModel
         self.inspector = runtime.inspectorModel
         self.conversation = runtime.conversationModel
@@ -41,6 +41,27 @@ public struct MainStageSplitView: View {
                 stage
                     .padding(.leading, sidebar.isNavigatorVisible ? navigatorInset : 0)
                     .padding(.trailing, reservesInspector ? inspectorInset : 0)
+
+                // 底部两侧的悬浮晶体药丸栏（复刻参考图美学）
+                VStack {
+                    Spacer()
+                    HStack(alignment: .bottom) {
+                        if !sidebar.isNavigatorVisible {
+                            FloatingStatusPill(isGenerating: conversation.isGenerating,
+                                               link: runtime.link)
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
+                        Spacer()
+                        if !inspector.isPresented {
+                            FloatingUtilityPill(onOpenTrace: onOpenTraceWindow,
+                                                onOpenPalette: { runtime.isCommandPalettePresented.toggle() })
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
+                    }
+                    .padding(.horizontal, LingXiMetrics.Space.lg)
+                    .padding(.bottom, LingXiMetrics.Space.lg)
+                }
+                .allowsHitTesting(true)
 
                 HStack(alignment: .top, spacing: 0) {
                     if sidebar.isNavigatorVisible {
@@ -66,11 +87,22 @@ public struct MainStageSplitView: View {
                     .padding(.top, LingXiMetrics.Space.xxl * 2)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                 }
+
+                if runtime.isShowingSettings, let settings {
+                    FullstageSettingsView(store: settings, onBack: {
+                        runtime.isShowingSettings = false
+                    })
+                    .transition(.opacity.combined(with: .scale(scale: 0.99)))
+                }
             }
         }
         .background { AtmosphereBackdrop() }
+        .sheet(isPresented: $runtime.isShowingAboutSheet) {
+            CyberAboutSheet(runtime: runtime)
+        }
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: sidebar.isNavigatorVisible)
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: inspector.isPresented)
+        .animation(LXMotion.animation(reduceMotion: reduceMotion), value: runtime.isShowingSettings)
         .animation(LXMotion.animation(LXMotion.disclosure, reduceMotion: reduceMotion), value: runtime.isCommandPalettePresented)
         .toolbar { windowToolbar }
         .navigationTitle(sidebar.workspace.name)
@@ -130,7 +162,9 @@ public struct MainStageSplitView: View {
             ]
         }
         #if os(macOS)
-        actions.append(PaletteAction(id: "app.settings", title: "设置", symbol: "gearshape", shortcut: "⌘,") { openSettings() })
+        actions.append(PaletteAction(id: "app.settings", title: "设置", symbol: "gearshape", shortcut: "⌘,") {
+            runtime.isShowingSettings = true
+        })
         #endif
         return actions
     }
@@ -152,6 +186,92 @@ public struct MainStageSplitView: View {
                 Label("检查器", systemImage: "sidebar.right")
             }
             .help("显示或隐藏检查器 (⌥⌘I)")
+        }
+    }
+}
+
+private struct FloatingStatusPill: View {
+    let isGenerating: Bool
+    let link: RuntimeFrontend.Link
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            Circle()
+                .fill(isGenerating ? LingXiTheme.neonTeal : (link == .connected ? LingXiTheme.electricCyan : Color.secondary))
+                .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(isGenerating ? LingXiTheme.neonTeal.opacity(0.4) : Color.clear, lineWidth: 2)
+                        .scaleEffect(isGenerating ? 1.5 : 1.0)
+                )
+                .lxNeonGlow(color: isGenerating ? LingXiTheme.neonTeal : LingXiTheme.electricCyan, radius: 4)
+
+            Text(isGenerating ? "Running" : (link == .connected ? "Online" : "Offline"))
+                .font(.lxCallout.weight(.medium))
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, LingXiMetrics.Space.md)
+        .padding(.vertical, LingXiMetrics.Space.xs + 2)
+        .background {
+            Capsule()
+                .fill(LingXiTheme.obsidianSurface)
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.25), Color.white.opacity(0.05)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+        }
+        .lxNeonGlow(color: isGenerating ? LingXiTheme.neonTeal : Color.clear, radius: 6, opacity: 0.3)
+    }
+}
+
+private struct FloatingUtilityPill: View {
+    var onOpenTrace: () -> Void
+    var onOpenPalette: () -> Void
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            Button(action: onOpenTrace) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.lxCallout)
+                    .foregroundStyle(LingXiTheme.electricCyan)
+            }
+            .buttonStyle(.plain)
+            .help("运行轨迹 (⌥⌘L)")
+
+            Divider()
+                .frame(height: 12)
+
+            Button(action: onOpenPalette) {
+                Image(systemName: "command")
+                    .font(.lxCallout)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("命令面板 (⌘K)")
+        }
+        .padding(.horizontal, LingXiMetrics.Space.md)
+        .padding(.vertical, LingXiMetrics.Space.xs + 2)
+        .background {
+            Capsule()
+                .fill(LingXiTheme.obsidianSurface)
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.25), Color.white.opacity(0.05)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
         }
     }
 }

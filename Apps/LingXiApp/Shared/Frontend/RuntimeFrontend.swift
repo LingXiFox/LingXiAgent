@@ -32,6 +32,8 @@ public final class RuntimeFrontend: ObservableObject {
     @Published public private(set) var link: Link = .disconnected
     @Published public private(set) var workspaceURL: URL?
     @Published public var isCommandPalettePresented = false
+    @Published public var isShowingSettings = false
+    @Published public var isShowingAboutSheet = false
     /// Output of the last slash command, presented as a sheet.
     @Published public var commandOutput: CommandOutput?
     @Published public private(set) var availableCommands: [CommandDescriptor] = []

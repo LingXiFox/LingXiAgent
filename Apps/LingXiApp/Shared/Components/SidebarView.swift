@@ -35,7 +35,7 @@ public struct SidebarView: View {
 
             Divider()
                 .padding(.horizontal, LingXiMetrics.Split.panelContentInset)
-            NavigatorFooter(link: runtime.link)
+            NavigatorFooter(link: runtime.link, onOpenSettings: { runtime.isShowingSettings = true })
         }
         .sheet(item: $renaming) { session in
             RenameSessionSheet(title: $renameDraft) {
@@ -204,19 +204,29 @@ private struct WorkspaceHeader: View {
 /// Connection state and Settings — the two global entry points that are navigation.
 private struct NavigatorFooter: View {
     let link: RuntimeFrontend.Link
+    var onOpenSettings: () -> Void = {}
 
     var body: some View {
         HStack(spacing: LingXiMetrics.Space.sm) {
-            SettingsLink {
+            Button(action: onOpenSettings) {
                 Label("设置", systemImage: "gearshape")
             }
             .buttonStyle(.borderless)
             .help("设置 (⌘,)")
             Spacer(minLength: 0)
-            Label(linkLabel, systemImage: linkSymbol)
-                .font(.lxMeta)
-                .foregroundStyle(linkTint)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                    .lxNeonGlow(color: link == .connected ? LingXiTheme.neonTeal : Color.clear, radius: 4)
+                Text(linkLabel)
+                    .font(.lxMicro.weight(.medium))
+                    .foregroundStyle(statusColor)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.primary.opacity(0.04)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
         }
         .font(.lxCallout)
         .foregroundStyle(.secondary)
@@ -224,9 +234,17 @@ private struct NavigatorFooter: View {
         .padding(.vertical, LingXiMetrics.Space.md)
     }
 
+    private var statusColor: Color {
+        switch link {
+        case .connected: return LingXiTheme.neonTeal
+        case .failed: return LingXiTheme.neonCoral
+        default: return Color.secondary
+        }
+    }
+
     private var linkLabel: String {
         switch link {
-        case .connected: return "Core 已连接"
+        case .connected: return "已连接"
         case .connecting: return "连接中"
         case .failed: return "连接失败"
         case .disconnected: return "未连接"
@@ -244,8 +262,8 @@ private struct NavigatorFooter: View {
 
     private var linkTint: AnyShapeStyle {
         switch link {
-        case .connected: return AnyShapeStyle(.green)
-        case .failed: return AnyShapeStyle(.red)
+        case .connected: return AnyShapeStyle(LingXiTheme.neonTeal)
+        case .failed: return AnyShapeStyle(LingXiTheme.neonCoral)
         default: return AnyShapeStyle(.tertiary)
         }
     }
@@ -260,8 +278,10 @@ private struct SessionRow: View {
                 Text(session.title)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .foregroundStyle(session.isActive ? .primary : .secondary)
             } icon: {
-                Image(systemName: "bubble.left")
+                Image(systemName: session.isActive ? "bubble.left.fill" : "bubble.left")
+                    .foregroundStyle(session.isActive ? LingXiTheme.electricCyan : .secondary)
             }
             Spacer(minLength: LingXiMetrics.Space.xs)
             if session.isActive {
