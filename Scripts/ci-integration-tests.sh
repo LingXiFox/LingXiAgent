@@ -524,6 +524,32 @@ for chunk in "${chunks[@]}"; do
   ran=$(( ${st_ran:-0} + ${xct_ran:-0} ))
   executed=$((executed + ran))
 
+  # A skipped suite is a reported outcome, not a lost chunk. `swift test list` counts the cases a
+  # suite would have run, while the event stream records one `testSkipped` for the whole suite and
+  # no `testEnded` for any case -- so a benchmark suite that opts out on a shared runner used to
+  # read as "8 of 12 executed", i.e. indistinguishable from a chunk that died mid-run.
+  skipped_cases=0
+  skipped_suites=""
+  if [ -s "$chunk_events" ]; then
+    while read -r skip_id; do
+      [ -n "$skip_id" ] || continue
+      case "$skip_id" in
+        */*)
+          skipped_cases=$((skipped_cases + 1))
+          ;;
+        *)
+          skip_cnt="$(printf '%s\n' "$suite_counts" | awk -v s="$skip_id" '$2 == s { print $1 }')"
+          skipped_cases=$((skipped_cases + ${skip_cnt:-0}))
+          skipped_suites="${skipped_suites} ${skip_id##*.}"
+          ;;
+      esac
+    done < <(grep -a '"kind":"testSkipped"' "$chunk_events" 2>/dev/null \
+               | sed -nE 's/.*"testID":"([^"]*)".*/\1/p' | sort -u)
+  fi
+  [ "$skipped_cases" -gt 0 ] && echo "skipped in this chunk: ${skipped_cases} case(s)${skipped_suites:+ from:${skipped_suites}}"
+  expected_accounted=$((expected_for_chunk - skipped_cases))
+  [ "$expected_accounted" -lt 0 ] && expected_accounted=0
+
   # Compute issue/failure count
   failed_in_chunk=0
   if [ -s "$chunk_events" ]; then
@@ -543,7 +569,7 @@ for chunk in "${chunks[@]}"; do
     chunk_verdict="lingered"
   elif [ "$status" -ne 0 ] || [ "$failed_in_chunk" -gt 0 ]; then
     chunk_verdict="failed"
-  elif [ "$ran" -lt "$expected_for_chunk" ]; then
+  elif [ "$ran" -lt "$expected_accounted" ]; then
     chunk_verdict="deficit"
   fi
 
@@ -597,7 +623,7 @@ EOF
     echo "--- chunk ${index} full log ---"
     cat "$chunk_log"
     dump_crash_evidence
-  elif [ "$ran" -lt "$expected_for_chunk" ]; then
+  elif [ "$ran" -lt "$expected_accounted" ]; then
     # Test count conservation violation (e.g. silent exit or partial test run)
     failed_chunks+=("Chunk ${index} execution count deficit (${ran}/${expected_for_chunk} executed): ${names}")
     echo "::error::Chunk ${index} failed conservation: expected ${expected_for_chunk} tests from list-tests, but only executed ${ran} tests"
