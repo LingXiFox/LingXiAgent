@@ -278,8 +278,16 @@ private func makeConfiguration() -> PlatformHTTPServer.Configuration {
 }
 
 // MARK: - Tests
+//
+// `.serialized` is load-bearing, not decoration. These cases drive sockets with blocking calls
+// inside *synchronous* test functions, and swift-testing runs each test as a task on the global
+// cooperative pool: a blocked test never yields its worker. The pool has as many workers as cores,
+// so on a 3-4 core runner the eight cases together leave nothing for the server's own request
+// handler task to run on -- every request then dies at `handlerTimeoutSeconds` and the client
+// reads zero bytes. That is the whole "passes locally, fails only in CI" report: runners had 4
+// cores, dev machines had 10+. One test at a time keeps a worker free.
 
-@Suite("PlatformHTTPServer: routing, static assets, guards, SSE, lifecycle")
+@Suite("PlatformHTTPServer: routing, static assets, guards, SSE, lifecycle", .serialized)
 struct PlatformHTTPServerTests {
 
     @Test("Ephemeral bind, JSON routing, longest prefix, 404, POST body and 413")

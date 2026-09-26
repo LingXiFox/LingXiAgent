@@ -53,12 +53,12 @@ ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
 # went unreported at a time. Running
 # them alone cannot fix the defect, but it says which suite died and leaves the others to report.
 #
-# PlatformHTTPServerTests joins the list for attribution, not as a verdict: on both the macOS
-# and the Linux runner its clients connect and then receive *zero bytes*, while the same suites
-# pass solo, pass paired, and pass locally under CI's env, a fake HOME and 16 CPU hogs. A server
-# that accepts but never answers is a scheduling question, so it gets a chunk of its own until the
-# census below says what the box was doing at the time.
-ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests LingXiClientVNextTests VNextProductionIntegrationTests ProtocolVNextFrozenContractTests Round6SystemAuditTests Round14SystemAuditTests AuthCLITests ResumeCLITests OAuthStrategyTests CodingToolScenarioTests AgentBehaviorTests ApplicationChangeSetTests ModelSelectionAndTurnExecutionFixTests PlatformHTTPServerTests}"
+# PlatformHTTPServerTests was listed here while its clients were receiving zero bytes on the
+# runners. Isolation changed nothing, which ruled the neighbours out: the cause was inside the
+# suite. Blocking socket calls in synchronous tests hold a cooperative-pool worker each, and a
+# four-core runner has none left for the server's own handler task, so every request died at
+# `handlerTimeoutSeconds`. The suite is serialized now and shares a chunk again.
+ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests LingXiClientVNextTests VNextProductionIntegrationTests ProtocolVNextFrozenContractTests Round6SystemAuditTests Round14SystemAuditTests AuthCLITests ResumeCLITests OAuthStrategyTests CodingToolScenarioTests AgentBehaviorTests ApplicationChangeSetTests ModelSelectionAndTurnExecutionFixTests}"
 
 
 SWIFT_TEST=(swift test --skip-build)
