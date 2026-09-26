@@ -136,6 +136,9 @@ if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null
         if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
         fi
+        if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiWebUI.bundle" ]; then
+            cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiWebUI.bundle" "$BIN_DIR/"
+        fi
         install_sidecars "."
         INSTALLED=true
         echo -e "${GREEN}[✓] 本地编译并成功安装至 ${TARGET_BIN}${RESET}"
@@ -174,6 +177,9 @@ if [ "$INSTALLED" = false ]; then
             if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
             fi
+            if [ -d "$TMP_DIR/LingXiAgent_LingXiWebUI.bundle" ]; then
+                cp -R "$TMP_DIR/LingXiAgent_LingXiWebUI.bundle" "$BIN_DIR/"
+            fi
             install_sidecars "$TMP_DIR"
             INSTALLED=true
             echo -e "${GREEN}[✓] 预编译二进制安装成功!${RESET}"
@@ -209,6 +215,9 @@ if [ "$INSTALLED" = false ]; then
             fi
             if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
+            if [ -d "$RELEASE_PATH/LingXiAgent_LingXiWebUI.bundle" ]; then
+                cp -R "$RELEASE_PATH/LingXiAgent_LingXiWebUI.bundle" "$BIN_DIR/"
             fi
             install_sidecars "$CLONE_DIR"
         )

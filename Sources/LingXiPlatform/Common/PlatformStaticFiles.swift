@@ -128,8 +128,10 @@ enum PlatformStaticFileResolver {
     /// so only regular files pass.
     private static func regularFileSize(_ path: String) -> Int? {
         let values = try? FileManager.default.attributesOfItem(atPath: path)
-        guard (values?[.type] as? FileAttributeType) == .typeRegular,
-              let size = values?[.size] as? Int else { return nil }
-        return size
+        guard (values?[.type] as? FileAttributeType) == .typeRegular else { return nil }
+        // `.size` is an NSNumber on the ObjC runtimes and a plain Int where Foundation
+        // boxes it natively; reading only one of the two 404s every asset on that platform.
+        if let number = values?[.size] as? NSNumber { return number.intValue }
+        return values?[.size] as? Int
     }
 }

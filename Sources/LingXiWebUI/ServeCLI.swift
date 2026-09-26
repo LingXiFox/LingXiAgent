@@ -2,6 +2,15 @@ import Foundation
 import LingXiProtocol
 import LingXiApplication
 import LingXiPlatform
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif os(Windows)
+import WinSDK
+#endif
 
 /// `lingxiagent serve`: boots the real Core through the shared composition root and
 /// hands its FrontendRuntime to an HTTP + SSE bridge, then blocks until stopped so the
@@ -62,7 +71,12 @@ public enum ServeCLI {
         process.executableURL = URL(fileURLWithPath: "cmd.exe")
         process.arguments = ["/c", "start", "", url]
         #else
-        guard let opener = ExecutableFinder().find("xdg-open") else { return }
+        // `xdg-open` has to be resolved the way every other executable is, through the
+        // platform adapter: the finder is a static API, and PATH plus the known system
+        // locations differ per platform.
+        guard let opener = LingXiPlatform.process.resolveExecutable(named: "xdg-open", customSearchPaths: nil) else {
+            return
+        }
         process.executableURL = URL(fileURLWithPath: opener)
         process.arguments = [url]
         #endif

@@ -226,7 +226,7 @@ enum PlatformHTTPSocket {
         let result = poll(&descriptor, 1, timeoutMs)
         if result == 0 { return .timedOut }
         if result < 0 {
-            if lastError() == EINTR { return .timedOut }
+            if wasInterrupted(lastError()) { return .timedOut }
             return .failed
         }
         if descriptor.revents & pollNval != 0 { return .failed }
@@ -254,7 +254,7 @@ enum PlatformHTTPSocket {
         let result = poll(&descriptor, 1, timeoutMs)
         if result == 0 { return .timedOut }
         if result < 0 {
-            if lastError() == EINTR { return .timedOut }
+            if wasInterrupted(lastError()) { return .timedOut }
             return .failed
         }
         return descriptor.revents & pollNval == 0 ? .ready : .failed
@@ -275,7 +275,7 @@ enum PlatformHTTPSocket {
         if received > 0 { return Data(storage[0..<received]) }
         if received == 0 { return nil }
         let failure = lastError()
-        if failure == EAGAIN || failure == EWOULDBLOCK || failure == EINTR { return Data() }
+        if wouldBlock(failure) || wasInterrupted(failure) { return Data() }
         return nil
     }
 
@@ -308,7 +308,7 @@ enum PlatformHTTPSocket {
         if peeked > 0 { return false }
         if peeked == 0 { return true }
         let failure = lastError()
-        if failure == EAGAIN || failure == EWOULDBLOCK || failure == EINTR { return false }
+        if wouldBlock(failure) || wasInterrupted(failure) { return false }
         return true
     }
 
@@ -334,8 +334,8 @@ enum PlatformHTTPSocket {
                     continue
                 }
                 let failure = lastError()
-                if failure == EINTR { continue }
-                if failure == EAGAIN || failure == EWOULDBLOCK {
+                if wasInterrupted(failure) { continue }
+                if wouldBlock(failure) {
                     if waitWritable(sock, timeoutMs: 5_000) == .ready { continue }
                     return false
                 }
@@ -350,6 +350,26 @@ enum PlatformHTTPSocket {
     /// thread is about to `poll` can hand it a recycled descriptor.
     static func shutdownForClose(_ sock: HTTPSocket) {
         _ = shutdown(sock, kHTTPShutdownBoth)
+    }
+
+    /// "Interrupted by a signal, call again". Windows socket errors live in the WSA space,
+    /// where the UCRT `EINTR` value means something else entirely, so the comparison itself
+    /// has to be a platform concern.
+    static func wasInterrupted(_ code: Int32) -> Bool {
+        #if os(Windows) || canImport(WinSDK)
+        return code == WSAEINTR
+        #else
+        return code == EINTR
+        #endif
+    }
+
+    /// "Nothing readable/writable right now", as opposed to "the peer is gone".
+    static func wouldBlock(_ code: Int32) -> Bool {
+        #if os(Windows) || canImport(WinSDK)
+        return code == WSAEWOULDBLOCK
+        #else
+        return code == EAGAIN || code == EWOULDBLOCK
+        #endif
     }
 
     static func closeSocket(_ sock: HTTPSocket) {
