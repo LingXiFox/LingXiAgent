@@ -45,10 +45,12 @@ jobs:
           if [ -f "$BIN_PATH/LingXiTUI" ]; then
             cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
-          # Every SwiftPM resource bundle the shipped executables resolve at runtime: Core's
+          # The resource bundles the shipped executables resolve at runtime: Core's
           # configuration/products/protocols and the WebUI's static assets. Missing the WebUI one
           # is `serve` failing with "assets were not found next to the executable" for users.
-          for b in "$BIN_PATH"/*.bundle; do
+          # Deliberately not `*.bundle`: the test target's own bundle also lands in the build
+          # directory, and it is not something a release package should carry.
+          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiWebUI*.bundle; do
             if [ -d "$b" ]; then cp -R "$b" staging/; fi
           done
           mkdir -p staging/Sidecars/browser-host
@@ -89,9 +91,10 @@ jobs:
           if [ -f "$BIN_PATH/LingXiTUI" ]; then
             cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
-          # All resource bundles, not just Core's: the WebUI assets have to be next to the
-          # executable or `serve` cannot find its own page.
-          for b in "$BIN_PATH"/*.bundle "$BIN_PATH"/*.resources; do
+          # All resource bundles the runtime resolves, not just Core's: the WebUI assets have to be
+          # next to the executable or `serve` cannot find its own page. The test bundle is excluded
+          # on purpose.
+          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiWebUI*.bundle "$BIN_PATH"/*.resources; do
             if [ -d "$b" ]; then
               cp -R "$b" staging/
             fi
@@ -153,7 +156,7 @@ jobs:
           cp -f "$BIN_PATH/lingxiagent.exe" staging/
           cp -f "$BIN_PATH/LingXiCoreHost.exe" staging/
           if [ -f "$BIN_PATH/LingXiTUI.exe" ]; then cp -f "$BIN_PATH/LingXiTUI.exe" staging/; fi
-          for b in "$BIN_PATH"/*.bundle; do
+          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiWebUI*.bundle; do
             if [ -d "$b" ]; then cp -R "$b" staging/; fi
           done
           # sqlite3 is a runtime DLL dependency here, not a link-time one: without it beside the

@@ -109,7 +109,8 @@ struct CoreDependencyGraphGateTests {
             "LingXiFrontendKit",
             "LingXiTUI",
             "LingXiTUIApp",
-            "LingXiTUIComponents"
+            "LingXiTUIComponents",
+            "LingXiWebUI"
         ]
 
         let coreRoots = ["LingXiProtocol", "LingXiPlatform", "LingXiCore", "LingXiClient", "LingXiApplication"]
@@ -123,6 +124,20 @@ struct CoreDependencyGraphGateTests {
             let violated = closure.intersection(forbiddenTargets)
             #expect(violated.isEmpty, "Architecture violation: \(root) transitively reaches UI target(s): \(violated.sorted())")
         }
+    }
+
+    @Test("LingXiWebUI reaches the runtime only through the shared frontend contract")
+    func webUINeverReachesCore() throws {
+        let graph = try Self.parseDependencyGraph()
+        guard graph["LingXiWebUI"] != nil else {
+            Issue.record("Target LingXiWebUI not found in dependency graph: the web front end would be outside this gate")
+            return
+        }
+        let closure = Self.computeClosure(from: "LingXiWebUI", graph: graph)
+        #expect(!closure.contains("LingXiCore"),
+                "Architecture violation: LingXiWebUI transitively reaches LingXiCore instead of the Application contract")
+        #expect(!closure.contains("LingXiTUI") && !closure.contains("LingXiFrontendKit"),
+                "Architecture violation: a front end must not depend on another front end: \(closure.sorted())")
     }
 
     @Test("LingXiTUI never transitively depends on LingXiCore")
