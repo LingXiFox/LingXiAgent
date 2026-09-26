@@ -105,8 +105,12 @@ struct CredentialNonLeakageTripwireTests {
         proc.standardOutput = out
         proc.standardError = Pipe()
         try proc.run()
+        // Drain to EOF *before* waiting: a child that fills the pipe buffer while the parent sits
+        // in `waitUntilExit()` deadlocks, and both `env` and `cmd /c set` print the whole
+        // environment.
+        let reader = out.fileHandleForReading
+        let data = reader.readDataToEndOfFile()
         proc.waitUntilExit()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
         let dumped = String(decoding: data, as: UTF8.self)
 
         #expect(!dumped.contains(Self.sentinelPassphrase), "child env contained the vault passphrase")
@@ -132,8 +136,12 @@ struct CredentialNonLeakageTripwireTests {
         proc.standardOutput = out
         proc.standardError = Pipe()
         try proc.run()
+        // Drain to EOF *before* waiting: a child that fills the pipe buffer while the parent sits
+        // in `waitUntilExit()` deadlocks, and both `env` and `cmd /c set` print the whole
+        // environment.
+        let reader = out.fileHandleForReading
+        let data = reader.readDataToEndOfFile()
         proc.waitUntilExit()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
         let dumped = String(decoding: data, as: UTF8.self)
         let upperDumped = dumped.uppercased()
 

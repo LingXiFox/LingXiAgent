@@ -365,18 +365,33 @@ jobs:
         timeout-minutes: 25
         run: swift build --build-tests
 
-      - name: Stage 2 - Architecture Boundary & Platform Gate
-        # Measured: every case in these five suites passes on Windows; five `swift test` launches
-        # of a 1300-case bundle simply cost more than the macOS/Linux budget (one suite alone took
-        # 25s, and the step died at the 5-minute mark). Budget, not expectation.
+      # Split into one step per suite on purpose: the last runs stopped producing output after the
+      # wire-contract suite finished and the whole step was killed at its budget, which cannot name
+      # the hanging filter. A per-suite timeout says which one instead of guessing.
+      - name: Stage 2.1 - Platform contract gate
         shell: bash
-        timeout-minutes: 15
-        run: |
-          swift test --skip-build --filter LingXiPlatformContractTests < /dev/null
-          swift test --skip-build --filter LingXiWireContractTests < /dev/null
-          swift test --skip-build --filter LingXiCapabilityContractTests < /dev/null
-          swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
-          swift test --skip-build --filter PlatformBuildGateTests < /dev/null
+        timeout-minutes: 8
+        run: swift test --skip-build --filter LingXiPlatformContractTests < /dev/null
+
+      - name: Stage 2.2 - Wire contract gate
+        shell: bash
+        timeout-minutes: 8
+        run: swift test --skip-build --filter LingXiWireContractTests < /dev/null
+
+      - name: Stage 2.3 - Capability contract gate
+        shell: bash
+        timeout-minutes: 8
+        run: swift test --skip-build --filter LingXiCapabilityContractTests < /dev/null
+
+      - name: Stage 2.4 - Platform abstraction decoupling gate
+        shell: bash
+        timeout-minutes: 8
+        run: swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
+
+      - name: Stage 2.5 - Platform build gate
+        shell: bash
+        timeout-minutes: 8
+        run: swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
       - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
         shell: bash
