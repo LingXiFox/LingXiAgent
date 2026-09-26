@@ -399,10 +399,16 @@ const fmtDuration = (seconds) => {
   return `${minutes}m${String(Math.round(value % 60)).padStart(2, '0')}s`;
 };
 
-/** Swift's default Codable date representation is a seconds-since-1970 number. */
+/* Swift's default Codable form for Date is one number of seconds since the *2001* Apple
+   reference date, not since 1970, so reading it as a Unix timestamp lands every session
+   stamp in January 1970. Add the offset between the two epochs. */
+const SWIFT_DATE_EPOCH_OFFSET_SECONDS = 978307200;
 const toDate = (value) => {
   if (value === undefined || value === null) return null;
-  if (typeof value === 'number') return new Date(value < 1e12 ? value * 1000 : value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return new Date((value + SWIFT_DATE_EPOCH_OFFSET_SECONDS) * 1000);
+  }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
 };
@@ -1601,14 +1607,19 @@ function renderStrip() {
   const context = contextState();
   const session = activeSession();
 
-  /* `goal` is a plain String on ContextStateSnapshot (absent when no goal is anchored). */
-  const goal = pick(context, 'goal');
+  /* Goal truth is the shared projection `SessionViewState.goal` ({text, since, steps}).
+     ContextStateSnapshot.goal is the older string form and stays only as a fallback. */
+  const anchored = pick(session, 'goal');
+  const steps = Number(pick(anchored, 'steps'));
+  const goal = anchored
+    ? String(pick(anchored, 'text') || '')
+    : String(pick(context, 'goal') || '');
   if (goal) {
     const item = el('span', 'strip-item');
     item.dataset.tone = 'goal';
     item.append(el('span', 'k', 'goal'));
-    const text = typeof goal === 'string' ? goal : String(pick(goal, 'objective', 'text', 'title') || '');
-    item.append(el('strong', null, truncate(text, 88) || 'active'));
+    const label = truncate(goal, 88) || 'active';
+    item.append(el('strong', null, Number.isFinite(steps) && steps > 0 ? `${label} · ${steps} steps` : label));
     strip.append(item);
   }
 

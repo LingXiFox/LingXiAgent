@@ -73,9 +73,10 @@ public enum FrontendWire {
 
     /// Canonical encoder for these frames. Both ends must use it.
     ///
-    /// Dates stay on Swift's default strategy, i.e. JSON numbers of seconds since 1970
-    /// (`1758873600.123`). That matches every other Codable wire type in this repo and,
-    /// unlike `.iso8601`, it round-trips sub-second precision exactly.
+    /// Dates stay on Swift's default strategy, i.e. `Date`'s own Codable form: one JSON
+    /// number of seconds since the 2001 Apple reference date (`721692800.123`), not since
+    /// the Unix epoch. Unlike `.iso8601` it round-trips sub-second precision exactly, and a
+    /// browser reader must add 978307200 before treating it as a Unix timestamp.
     public static func makeEncoder(prettyPrint: Bool = false) -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = prettyPrint ? [.sortedKeys, .prettyPrinted] : [.sortedKeys]
