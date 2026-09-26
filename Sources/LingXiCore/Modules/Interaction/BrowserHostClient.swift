@@ -140,6 +140,18 @@ public final class BrowserHostClient: @unchecked Sendable {
                 )
             }
             throw rpcError
+        } catch {
+            // A sidecar that dies before answering is how "this platform has no real browser
+            // host" actually presents: node exits when Playwright cannot be required. Reporting
+            // the raw transport error leaves a caller unable to tell "missing dependency" from
+            // "broken session", so real mode names the capability and keeps the diagnosis.
+            guard expectedMode == .real else { throw error }
+            throw InteractionError.capability(
+                .featureUnsupported(
+                    feature: "BrowserHost",
+                    reason: "Sidecar exited before the initialize handshake (real mode needs node + playwright): \(error)"
+                )
+            )
         }
 
         let handshake = try JSONDecoder().decode(BrowserHostHandshakeResult.self, from: resData)

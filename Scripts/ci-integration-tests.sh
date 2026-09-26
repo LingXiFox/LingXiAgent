@@ -52,7 +52,14 @@ ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
 # takes every other suite's results in that process with it, which is how twelve unrelated suites
 # went unreported at a time. Running
 # them alone cannot fix the defect, but it says which suite died and leaves the others to report.
-ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests LingXiClientVNextTests VNextProductionIntegrationTests ProtocolVNextFrozenContractTests Round6SystemAuditTests Round14SystemAuditTests AuthCLITests ResumeCLITests OAuthStrategyTests CodingToolScenarioTests AgentBehaviorTests ApplicationChangeSetTests ModelSelectionAndTurnExecutionFixTests}"
+#
+# PlatformHTTPServerTests joins the list for attribution, not as a verdict: on both the macOS
+# and the Linux runner its clients connect and then receive *zero bytes*, while the same suites
+# pass solo, pass paired, and pass locally under CI's env, a fake HOME and 16 CPU hogs. A server
+# that accepts but never answers is a scheduling question, so it gets a chunk of its own until the
+# census below says what the box was doing at the time.
+ISOLATE_SUITES="${LINGXI_CI_ISOLATE_SUITES:-ProviderRateSchedulerTests LingXiClientVNextTests VNextProductionIntegrationTests ProtocolVNextFrozenContractTests Round6SystemAuditTests Round14SystemAuditTests AuthCLITests ResumeCLITests OAuthStrategyTests CodingToolScenarioTests AgentBehaviorTests ApplicationChangeSetTests ModelSelectionAndTurnExecutionFixTests PlatformHTTPServerTests}"
+
 
 SWIFT_TEST=(swift test --skip-build)
 # A chunk killed by the watchdog loses its entire block-buffered stdout, which is why a hang
@@ -494,6 +501,16 @@ for chunk in "${chunks[@]}"; do
   wait "$runner" 2>/dev/null
   status=$?
   elapsed=$(( $(date +%s) - chunk_start ))
+
+  # What the machine looked like when this chunk ended. Kept for every chunk, because the one
+  # failure mode the runner shows and a dev box never reproduces is a server that accepts a
+  # connection and then answers nothing: without load and leftover-process counts in the log,
+  # "the neighbours starved it" and "the suite is wrong" look identical.
+  lingering=""
+  if command -v pgrep >/dev/null 2>&1; then
+    lingering="$(pgrep -cf 'LingXiCoreHost' 2>/dev/null || true)"
+  fi
+  echo "census chunk ${index}: ${elapsed}s | $(uptime 2>/dev/null | sed 's/^ *//') | lingering CoreHost: ${lingering:-n/a}"
 
   # Count what actually ran: swift-testing tests from events or log, plus any XCTest cases
   st_ran=0
