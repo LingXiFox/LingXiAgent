@@ -7,6 +7,7 @@ import LingXiFrontendKit
 public struct LingXiMacApp: App {
     @StateObject private var runtime = RuntimeFrontend()
     @StateObject private var settings = SettingsStore()
+    @StateObject private var dock = DockModel()
     @Environment(\.openWindow) private var openWindow
 
     public init() {}
@@ -25,15 +26,16 @@ public struct LingXiMacApp: App {
     public var body: some Scene {
         // Main workspace window: full-bleed stage, floating panels, titleless toolbar.
         WindowGroup {
-            MainStageSplitView(
+            WorkbenchShell(
                 runtime: runtime,
+                dock: dock,
                 settings: settings,
                 onOpenTraceWindow: {
                     openWindow(id: "trace-window")
                 }
             )
             .environment(\.timelineDisclosureDefaults, settings.timelineDisclosureDefaults)
-            .transparentWindowToolbar()
+            .tint(LXColor.accent)
             .task {
                 settings.runtime = runtime
                 let defaults = settings.composerDefaults
@@ -43,10 +45,10 @@ public struct LingXiMacApp: App {
                 await reopenLastWorkspaceIfWanted()
             }
         }
-        .windowToolbarStyle(.unified(showsTitle: false))
+        .windowToolbarStyle(.unified(showsTitle: true))
         .defaultSize(width: 1280, height: 800)
         .commands {
-            LingXiMenuCommands(runtime: runtime, onOpenTraceWindow: {
+            LingXiMenuCommands(runtime: runtime, dock: dock, onOpenTraceWindow: {
                 openWindow(id: "trace-window")
             })
         }
@@ -54,18 +56,7 @@ public struct LingXiMacApp: App {
         // 独立非模态运行轨迹窗口
         WindowGroup("运行轨迹", id: "trace-window") {
             TraceWindowView(model: runtime.inspectorModel)
-        }
-    }
-}
-
-private extension View {
-    /// Lets the backdrop show through the toolbar so items float as glass over it.
-    @ViewBuilder
-    func transparentWindowToolbar() -> some View {
-        if #available(macOS 15.0, *) {
-            self.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        } else {
-            self
+                .tint(LXColor.accent)
         }
     }
 }
@@ -73,6 +64,7 @@ private extension View {
 /// macOS 标准主菜单命令集 (遵循规范第四章)
 public struct LingXiMenuCommands: Commands {
     @ObservedObject public var runtime: RuntimeFrontend
+    @ObservedObject public var dock: DockModel
     public var onOpenTraceWindow: () -> Void
 
     public var body: some Commands {
@@ -116,20 +108,20 @@ public struct LingXiMenuCommands: Commands {
             ))
             .keyboardShortcut("s", modifiers: [.control, .command])
 
-            Toggle("显示检查器", isOn: Binding(
-                get: { runtime.inspectorModel.isPresented },
-                set: { runtime.inspectorModel.isPresented = $0 }
+            Toggle("显示工具面板", isOn: Binding(
+                get: { dock.isPresented },
+                set: { dock.isPresented = $0 }
             ))
             .keyboardShortcut("i", modifiers: [.option, .command])
 
             Divider()
 
-            ForEach(Array(InspectorTab.allCases.enumerated()), id: \.element) { index, tab in
-                Button("检查器 · \(tab.displayName)") {
-                    runtime.inspectorModel.selectedTab = tab
-                    runtime.inspectorModel.isPresented = true
+            ForEach(DockPanel.allCases) { panel in
+                Button("工具面板 · \(panel.title)") {
+                    dock.select(panel)
                 }
-                .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.option, .command])
+                .keyboardShortcut(KeyEquivalent(Character(String(DockPanel.allCases.firstIndex(of: panel)! + 1))),
+                                  modifiers: [.option, .command])
             }
 
             Divider()

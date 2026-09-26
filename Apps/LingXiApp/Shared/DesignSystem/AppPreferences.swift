@@ -9,6 +9,8 @@ public enum LXPreferenceKey {
     public static let sendKey = "lx.conversation.sendKey"
     public static let preventSleepWhileRunning = "lx.general.preventSleepWhileRunning"
     public static let reopenLastWorkspace = "lx.general.reopenLastWorkspace"
+    public static let dockPanels = "lx.workbench.dock.panels"
+    public static let dockVisible = "lx.workbench.dock.visible"
 }
 
 public enum ColorSchemePreference: String, CaseIterable, Identifiable {
@@ -44,12 +46,13 @@ public enum AtmospherePreference: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Multiplier on the backdrop glow opacities.
+    /// Multiplier on the backdrop glow opacities. `subtle` carries the design
+    /// system token alphas verbatim, so `rich` may not exceed 1.5× it.
     var strength: Double {
         switch self {
         case .off: return 0
-        case .subtle: return 0.6
-        case .rich: return 1
+        case .subtle: return 1
+        case .rich: return 1.5
         }
     }
 }

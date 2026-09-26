@@ -1,112 +1,99 @@
 import SwiftUI
 
-/// 运行模式：工作区正常华丽模式 vs 设置克制模式
+/// 氛围场景。设计系统只允许三档强度：
+/// workspace 为标准档，empty 为全产品最强档，settings 明显弱于 workspace。
 public enum AtmosphereMode: Sendable, Equatable {
     case workspace
+    case empty
     case settings
 }
 
-/// 赛博深空极光背景：连续环境光场 ✕ 蓝紫青橙温度平衡
+/// 环境光背景：房间里的间接照明，不是壁纸。
 ///
-/// 视觉设计标准：
-/// - 主光源 A：Indigo / Cold Blue，中左偏上，超大弥散范围（覆盖大部分窗口）
-/// - 主光源 B：Teal / Cyan，右下方，大弥散范围
-/// - 辅助光：Fox Orange / Amber，极低透明度，偏左下方，仅负责冷暖温度平衡
-/// - 无独立 Violet 灯（由 Indigo 与周围色彩重叠自然生成过渡紫韵）
-/// - 无硬切水平/垂直直线，呈一体化深空极光漫射
-/// - 纯矢量静态渲染，空闲时零持续刷新与零 GPU 循环占用
+/// 设计系统契约（`Docs/design/LingXiAgent-design-system.html` §AmbientBackdrop）：
+/// - 中性底占绝对主体，感知比例目标：中性 90–95%、靛 4–7%、青 3–5%、狐橙 0–2%
+/// - 三个光源的圆心一律落在视图边界之外，终止半径约为长边的 1.1–1.4 倍，
+///   因此看不见光心、看不见圆斑、看不见渐变边界、不会四角四色
+/// - 不使用 blur / backdrop-filter，纯静态：空闲时零刷新、零 GPU 循环
+/// - 减弱透明度 → 关闭光层；增强对比度 → 强度减半
+/// - 仅用于工作区舞台与设置窗口。侧栏、检查器、浮层、卡片、菜单、Sheet 一律不使用
 public struct AtmosphereBackdrop: View {
-    public var mode: AtmosphereMode = .workspace
+    public var mode: AtmosphereMode
     @AppStorage(LXPreferenceKey.atmosphere) private var preference = AtmospherePreference.subtle
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     public init(mode: AtmosphereMode = .workspace) {
         self.mode = mode
     }
 
+    /// 设置页为 is-quiet = 0.4；其余为 1.0
     private var modeStrength: Double {
         switch mode {
-        case .workspace: return 1.0
-        case .settings: return 0.40
+        case .workspace, .empty: return 1.0
+        case .settings: return 0.4
         }
     }
 
+    private var enhancedContrast: Bool { contrast == .increased }
+
     public var body: some View {
         ZStack {
-            // 深邃暗夜黑曜石底色
-            LingXiTheme.deepNightBackground
-
-            if preference != .off {
+            base
+            if preference != .off && !reduceTransparency {
                 GeometryReader { geo in
-                    let w = geo.size.width
-                    let h = geo.size.height
-                    let span = max(w, h)
-
-                    ZStack {
-                        // 1. 主光源 A：深空星云冷靛蓝（覆盖全场偏左上）
-                        glow(
-                            LingXiTheme.atmosphereIndigo,
-                            0.45,
-                            center: UnitPoint(x: 0.15, y: 0.22),
-                            radius: span * 0.90,
-                            size: geo.size
-                        )
-
-                        // 2. 主光源 B：电光青绿脉冲（右下方大面积漫射）
-                        glow(
-                            LingXiTheme.atmosphereTeal,
-                            0.35,
-                            center: UnitPoint(x: 0.88, y: 0.82),
-                            radius: span * 0.85,
-                            size: geo.size
-                        )
-
-                        // 3. 辅助光：灵犀狐焰温润金辉（极低透明度，仅作冷暖温度平衡）
-                        glow(
-                            LingXiTheme.atmosphereAmber,
-                            0.12,
-                            center: UnitPoint(x: 0.08, y: 0.85),
-                            radius: span * 0.50,
-                            size: geo.size
-                        )
-                    }
+                    lights(in: geo.size)
                 }
             }
         }
-        .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
-    /// 根据深浅模式、用户偏好强度与场景模式动态计算渐变，使用确定尺寸的矩形填充避免视图裁剪
-    private func glow(_ color: Color, _ opacity: Double, center: UnitPoint, radius: CGFloat, size: CGSize) -> some View {
-        let themeScale = colorScheme == .dark ? 1.0 : 0.35
-        let effectiveOpacity = opacity * themeScale * preference.strength * modeStrength
-        return Rectangle()
-            .fill(
-                RadialGradient(
-                    colors: [color.opacity(effectiveOpacity), .clear],
-                    center: center,
-                    startRadius: 0,
-                    endRadius: radius
-                )
-            )
-            .frame(width: size.width, height: size.height)
+    /// 底色。工作区舞台用内容底；设置窗口用窗口底。
+    private var base: Color {
+        mode == .settings ? LXColor.window : LXColor.content
     }
-}
 
-public extension View {
-    /// 让底层背景氛围（AtmosphereBackdrop）自然延伸穿透到系统 Sidebar 与 Inspector 后方 (macOS 26+ / iOS 26+)
     @ViewBuilder
-    func lxBackgroundExtension() -> some View {
-        #if canImport(SwiftUI)
-        if #available(macOS 26.0, iOS 26.0, *) {
-            self.backgroundExtensionEffect()
-        } else {
-            self
+    private func lights(in size: CGSize) -> some View {
+        let span = max(size.width, size.height)
+        let halve = enhancedContrast ? 0.5 : 1.0
+        let strength = preference.strength * modeStrength * halve
+
+        ZStack {
+            if mode == .empty {
+                // 光源略近，终止 72%
+                light(LXColor.ambientIndigo, center: UnitPoint(x: -0.15, y: -0.25),
+                      radius: span * 0.91, size: size)
+                light(LXColor.ambientTeal, center: UnitPoint(x: 1.15, y: 1.25),
+                      radius: span * 0.84, size: size)
+                light(LXColor.ambientFox, center: UnitPoint(x: -0.10, y: 1.20),
+                      radius: span * 0.49, size: size)
+            } else {
+                // 靛：左上框外主光
+                light(LXColor.ambientIndigo, center: UnitPoint(x: -0.25, y: -0.35),
+                      radius: span * 0.98, size: size)
+                // 青：右下框外次光
+                light(LXColor.ambientTeal, center: UnitPoint(x: 1.25, y: 1.35),
+                      radius: span * 0.77, size: size)
+                // 狐橙：左下框外冷暖配平，几乎不可察觉
+                light(LXColor.ambientFox, center: UnitPoint(x: -0.15, y: 1.25),
+                      radius: span * 0.42, size: size)
+            }
         }
-        #else
-        self
-        #endif
+        .opacity(strength)
+    }
+
+    private func light(_ color: Color, center: UnitPoint, radius: CGFloat, size: CGSize) -> some View {
+        Rectangle()
+            .fill(RadialGradient(
+                colors: [color, .clear],
+                center: center,
+                startRadius: 0,
+                endRadius: radius
+            ))
+            .frame(width: size.width, height: size.height)
     }
 }

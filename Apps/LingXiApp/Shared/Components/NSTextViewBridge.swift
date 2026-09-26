@@ -31,10 +31,19 @@ public struct MacNativeTextView: NSViewRepresentable {
 
     /// Line height of the body font, used by callers to size the view per line.
     public static var bodyLineHeight: CGFloat {
-        NSLayoutManager().defaultLineHeight(for: bodyFont)
+        NSLayoutManager().defaultLineHeight(for: bodyFont) + LXType.Leading.editor
     }
 
-    static var bodyFont: NSFont { NSFont.systemFont(ofSize: NSFont.systemFontSize) }
+    /// Kept in step with `LXType.editor` (prompt body 15/regular); AppKit cannot
+    /// read SwiftUI's `Font`.
+    static var bodyFont: NSFont { NSFont.systemFont(ofSize: 15, weight: .regular) }
+    static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 14, weight: .regular) }
+
+    static var bodyParagraphStyle: NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = LXType.Leading.editor
+        return style
+    }
 
     public func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -65,10 +74,19 @@ public struct MacNativeTextView: NSViewRepresentable {
         textView.isSelectable = true
 
         if isMonospace {
-            textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            textView.font = Self.monoFont
         } else {
             textView.font = Self.bodyFont
         }
+        textView.defaultParagraphStyle = Self.bodyParagraphStyle
+        textView.typingAttributes = [
+            .font: textView.font ?? Self.bodyFont,
+            .paragraphStyle: Self.bodyParagraphStyle,
+            .foregroundColor: NSColor.textColor
+        ]
+        // The composer layer owns the inset: no extra AppKit side padding, so the
+        // first line lines up with the goal chip and the action bar below it.
+        textView.textContainer?.lineFragmentPadding = 0
         textView.textContainerInset = .zero
 
         textView.placeholderString = placeholder
@@ -119,7 +137,8 @@ public final class KeyInterceptingTextView: NSTextView {
     /// With `submitRequiresCommand`: only ⌘Return sends, Return inserts a newline.
     /// Without an onSubmit handler every key falls through to the default behaviour.
     public override func keyDown(with event: NSEvent) {
-        if onSubmit != nil, isEditable, event.keyCode == 36 {
+        // Return while an IME is composing commits the candidate, never submits.
+        if onSubmit != nil, isEditable, event.keyCode == 36, !hasMarkedText() {
             let command = event.modifierFlags.contains(.command)
             let shift = event.modifierFlags.contains(.shift)
             if command || (!submitRequiresCommand && !shift) {
@@ -143,7 +162,9 @@ public final class KeyInterceptingTextView: NSTextView {
         style.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font ?? MacNativeTextView.bodyFont,
-            .foregroundColor: NSColor.placeholderTextColor,
+            // Placeholder copy is readable text, so it sits on text-secondary
+            // (`placeholderTextColor` reads below contrast on the glass layer).
+            .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: style
         ]
         placeholder.draw(in: placeholderBounds, withAttributes: attributes)

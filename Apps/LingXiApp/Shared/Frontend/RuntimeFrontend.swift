@@ -292,6 +292,7 @@ public final class RuntimeFrontend: ObservableObject {
                                                            decision: approved ? .allow : .deny)) }
             return
         }
+        guard isPreview else { return }
         updatePreviewCard(interactionID, status: approved ? .approved : .rejected)
     }
 
@@ -321,6 +322,7 @@ public final class RuntimeFrontend: ObservableObject {
             Task { await backend.dispatch(.switchSession(SessionID(id))) }
             return
         }
+        guard isPreview else { return }
         sidebarModel.selectedSessionID = id
         conversationModel.sessionID = id
         for folder in sidebarModel.folders {
@@ -437,17 +439,11 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
+    /// Core has no `submitSideQuestion` implementation — only the protocol
+    /// extension default, which echoes the question back as an answer. Showing
+    /// that would be a mock, so the surface stays closed until Core ships one.
     public func submitSideQuestion(question: String) async -> String {
-        guard let client, !conversationModel.sessionID.isEmpty else {
-            return "未连接 Core，无法侧问。"
-        }
-        do {
-            let result = try await client.turn.submitSideQuestion(sessionID: SessionID(conversationModel.sessionID),
-                                                                  question: question)
-            return result.answer
-        } catch {
-            return "侧问失败: \(error.localizedDescription)"
-        }
+        "侧问还没有由 Core 实现，暂时无法回答。"
     }
 
     // MARK: - Preview fixture (previews & tests only)

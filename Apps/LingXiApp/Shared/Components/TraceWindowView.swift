@@ -3,6 +3,10 @@ import SwiftUI
 
 /// 独立运行轨迹窗口 (TraceWindow)
 /// 原生 Table 展示执行轨迹事件，支持排序与 JSONL 导出
+///
+/// 视觉契约（§2 / §4）：诊断视图保持结构化可读 —— 原始负载用 mono-sm 12.5、
+/// 标签恒为 text-primary，状态色只着色 6pt 圆点；控制条是 fill-quinary +
+/// radius-inset 内嵌块。这一层不是浮层：无玻璃、无阴影、无氛围光。
 public struct TraceWindowView: View {
     @ObservedObject public var model: RuntimeInspectorPresentationModel
     @State private var sortOrder = [KeyPathComparator(\TraceEventItemPresentation.timestamp, order: .reverse)]
@@ -13,7 +17,7 @@ public struct TraceWindowView: View {
     }
 
     public var filteredEvents: [TraceEventItemPresentation] {
-        let events = model.traceEvents.isEmpty ? sampleTraceEvents : model.traceEvents
+        let events = model.traceEvents
         if filterKeyword.isEmpty {
             return events.sorted(using: sortOrder)
         } else {
@@ -25,63 +29,79 @@ public struct TraceWindowView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // 工具栏：搜索与导出
-            HStack(spacing: 12) {
+        VStack(spacing: LingXiMetrics.Space.sm) {
+            // 工具栏：搜索与导出。控制条是内嵌块（fill-quinary + radius-inset），
+            // 不是卡片：无描边、无阴影、无玻璃。
+            HStack(spacing: LingXiMetrics.Space.md) {
                 TextField("按事件类型或模块筛选…", text: $filterKeyword)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 240)
+                    .controlSize(.large)
+                    .font(LXType.body)
+                    .frame(maxWidth: 280)
 
-                Spacer()
+                Spacer(minLength: LingXiMetrics.Space.md)
 
                 Button(action: exportTraceJSONL) {
                     Label("导出 JSONL…", systemImage: "square.and.arrow.up")
                 }
+                .controlSize(.large)
             }
-            .padding(12)
-            .background(LingXiTheme.surfaceBackground)
-
-            Divider()
+            .lxInsetBlock()
+            .padding(LingXiMetrics.Space.md)
 
             // 原生 Table
             Table(filteredEvents, sortOrder: $sortOrder) {
                 TableColumn("时间", value: \.timestamp) { event in
                     Text(event.timestamp, style: .time)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(LXType.monoSmall)
+                        .foregroundStyle(.primary)
                 }
-                .width(min: 80, ideal: 90)
+                .width(min: 90, ideal: 110)
 
                 TableColumn("事件类型", value: \.eventType) { event in
                     Text(event.eventType)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .font(LXType.monoSmall)
+                        .foregroundStyle(.primary)
                 }
-                .width(min: 140, ideal: 180)
+                .width(min: 160, ideal: 200)
 
                 TableColumn("所属模块", value: \.module) { event in
                     Text(event.module)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(LingXiTheme.secondaryText)
+                        .font(LXType.meta)
+                        .foregroundStyle(.secondary)
                 }
-                .width(min: 120, ideal: 140)
+                .width(min: 120, ideal: 150)
 
                 TableColumn("耗时 (ms)", value: \.durationMs) { event in
                     Text("\(event.durationMs) ms")
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(LXType.meta)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
                 }
-                .width(min: 70, ideal: 80)
+                .width(min: 80, ideal: 96)
 
+                // 状态：颜色只落在 6pt 圆点上，文字恒为 text-primary。
                 TableColumn("状态", value: \.status) { event in
-                    HStack(spacing: 4) {
+                    HStack(spacing: LingXiMetrics.Space.xs) {
                         Circle()
-                            .fill(event.status == "ok" ? Color.green : Color.red)
-                            .frame(width: 6, height: 6)
+                            .fill(event.status == "ok" ? LXStatus.success : LXStatus.error)
+                            .frame(width: LXControl.dot, height: LXControl.dot)
                         Text(event.status)
-                            .font(.system(size: 11))
+                            .font(LXType.meta)
+                            .foregroundStyle(.primary)
                     }
                 }
-                .width(min: 60, ideal: 70)
+                .width(min: 70, ideal: 84)
             }
         }
+        .overlay {
+            if model.traceEvents.isEmpty {
+                ContentUnavailableView("运行轨迹暂不可用", systemImage: "list.bullet.rectangle",
+                                       description: Text("Core 还没有实现 getRunTrace 的 spans，"
+                                                       + "本会话的执行事件不会写入这里。"))
+            }
+        }
+        .background(LXColor.content)
         .frame(minWidth: 640, minHeight: 400)
     }
 
@@ -97,16 +117,6 @@ public struct TraceWindowView: View {
             try? lines.write(to: url, atomically: true, encoding: .utf8)
         }
         #endif
-    }
-
-    private var sampleTraceEvents: [TraceEventItemPresentation] {
-        [
-            TraceEventItemPresentation(timestamp: Date().addingTimeInterval(-10), eventType: "turn.submit", module: "LingXiClient", durationMs: 4, status: "ok"),
-            TraceEventItemPresentation(timestamp: Date().addingTimeInterval(-8), eventType: "policy.evaluate", module: "GrantPolicy", durationMs: 1, status: "ok"),
-            TraceEventItemPresentation(timestamp: Date().addingTimeInterval(-6), eventType: "token.issue", module: "IssuedToken", durationMs: 2, status: "ok"),
-            TraceEventItemPresentation(timestamp: Date().addingTimeInterval(-4), eventType: "tool.dispatch", module: "MCPTransport", durationMs: 120, status: "ok"),
-            TraceEventItemPresentation(timestamp: Date().addingTimeInterval(-2), eventType: "stream.delta", module: "LiveDeltaBuffer", durationMs: 38, status: "ok")
-        ]
     }
 }
 #endif

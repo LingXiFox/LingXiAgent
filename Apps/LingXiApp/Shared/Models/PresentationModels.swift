@@ -306,20 +306,16 @@ public struct SessionFolderPresentation: Identifiable, Sendable, Equatable {
 
 public enum InspectorTab: String, CaseIterable, Identifiable {
     case overview = "Overview"
-    case core = "Core"
-    case tasks = "Tasks"
-    case agents = "Agents"
     case changes = "Changes"
+    case context = "Context"
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
         case .overview: return "概览"
-        case .core: return "Core"
-        case .tasks: return "任务"
-        case .agents: return "Agent"
         case .changes: return "变更"
+        case .context: return "上下文"
         }
     }
 }
