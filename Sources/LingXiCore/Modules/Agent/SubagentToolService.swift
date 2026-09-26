@@ -104,7 +104,7 @@ public actor SubagentToolService {
             let reasoning = input.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines)
             let requestedSelection: ModelSelection?
             switch (providerID?.isEmpty == false ? providerID : nil, modelID?.isEmpty == false ? modelID : nil) {
-            case (nil, nil) where reasoning?.isEmpty != false:
+            case (nil, nil):
                 requestedSelection = nil
             case let (providerID?, modelID?):
                 requestedSelection = ModelSelection(providerID: providerID, modelID: modelID, reasoning: reasoning?.isEmpty == false ? reasoning : nil)
@@ -118,8 +118,16 @@ public actor SubagentToolService {
             guard let id = input.runID, let requester = AgentExecutionContext.current?.runID, let status else { throw CoreError(code: .toolArgumentInvalid, message: "status 需要 run_id 与当前 AgentRun") }
             return try encode(try await status(AgentRunID(id), requester))
         case "result":
-            guard let id = input.runID, let requester = AgentExecutionContext.current?.runID, let result else { throw CoreError(code: .toolArgumentInvalid, message: "result 需要 run_id 与当前 AgentRun") }
-            return try encode(try await result(AgentRunID(id), requester))
+            guard let id = input.runID, let requester = AgentExecutionContext.current?.runID, let result, let status else { throw CoreError(code: .toolArgumentInvalid, message: "result 需要 run_id 与当前 AgentRun") }
+            let target = AgentRunID(id)
+            // An in-flight child has no settled result. Reporting that as a pollable state
+            // rather than an error matters: on an error the parent abandons this run_id and
+            // spawns a duplicate child for the same task, which then conflicts.
+            let info = try await status(target, requester)
+            if !info.status.isTerminal {
+                return try encode(SubagentPendingResponse(runID: id, runStatus: info.status.rawValue))
+            }
+            return try encode(try await result(target, requester))
         case "cancel":
             guard let id = input.runID, let requester = AgentExecutionContext.current?.runID, let cancel else { throw CoreError(code: .toolArgumentInvalid, message: "cancel 需要 run_id 与当前 AgentRun") }
             try await cancel(AgentRunID(id), requester); return #"{"status":"cancelled"}"#
@@ -134,6 +142,27 @@ public actor SubagentToolService {
 private struct SubagentSpawnResponse: Codable {
     let childSessionID: SessionID
     let run: AgentRunInfo
+}
+
+private struct SubagentPendingResponse: Codable {
+    let status: String
+    let runID: String
+    let runStatus: String
+    let nextAction: String
+
+    init(runID: String, runStatus: String) {
+        self.status = "running"
+        self.runID = runID
+        self.runStatus = runStatus
+        self.nextAction = "Poll action=status with this run_id until it reaches a terminal state, then call action=result once. Do not spawn a second child for the same task."
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case runID = "run_id"
+        case runStatus = "run_status"
+        case nextAction = "next_action"
+    }
 }
 
 private struct AnyEncodable: Encodable {

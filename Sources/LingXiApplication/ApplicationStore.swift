@@ -178,6 +178,27 @@ public actor ApplicationStore {
         }
     }
 
+    /// Resolve against the session that owns the interaction. A subagent's ask is mirrored into the
+    /// parent's log so a human can see and answer it, but replying under the parent's id would leave
+    /// the child's own pending entry - and the run waiting on it - unresolved.
+    private func resolveOnOwningSession(interactionID: InteractionID, resolution: InteractionResolution) async {
+        guard let active = state.activeSessionID else { return }
+        let owner = state.activeSessionState?.pendingInteractions
+            .first(where: { $0.interactionID == interactionID })?.causal.sessionID ?? active
+        _ = try? await client.interaction.resolve(sessionID: owner, interactionID: interactionID, resolution: resolution)
+    }
+
+    /// Todos are Core state that only travels inside a full session snapshot, and loading that
+    /// snapshot rebuilds the whole session view. After a todo mutation, copy just the list so the
+    /// sidebar stops showing a stale count while the transcript stays intact.
+    private func refreshTodos() async {
+        guard let sessionID = state.activeSessionID,
+              let snapshot = try? await client.session.snapshot(sessionID: sessionID) else { return }
+        guard state.activeSessionID == sessionID else { return }
+        state.activeSessionState?.todos = snapshot.todos
+        notifyStateChanged()
+    }
+
     private func notifyStateChanged() {
         notifyUpdate(changes: .fullSnapshot)
     }
@@ -241,8 +262,16 @@ public actor ApplicationStore {
                     }
                 }
                 for pending in state.activeSessionState?.pendingInteractions ?? [] {
-                    _ = try? await client.interaction.resolve(sessionID: sID, interactionID: pending.interactionID, resolution: .permission(.deny))
+                    await resolveOnOwningSession(
+                        interactionID: pending.interactionID,
+                        resolution: .permission(.deny)
+                    )
                 }
+                // The run is gone, so no ask raised by it can ever be answered again. Leaving the
+                // local mirror in place keeps the approval card on screen and it swallows every
+                // keystroke, which makes a stopped session look alive but behave dead.
+                state.activeSessionState?.pendingInteractions.removeAll()
+                state.activeSessionState?.activeInteraction = nil
                 state.activeSessionState?.activeRootRunID = nil
                 state.activeSessionState?.activeTurnID = nil
                 state.activeSessionState?.queuedTurns.removeAll()
@@ -272,24 +301,16 @@ public actor ApplicationStore {
 
         // MARK: 4. HITL 交互响应
         case let .respondInteraction(interactionID, resolution):
-            if let sID = state.activeSessionID {
-                _ = try? await client.interaction.resolve(sessionID: sID, interactionID: interactionID, resolution: resolution)
-            }
+            await resolveOnOwningSession(interactionID: interactionID, resolution: resolution)
 
         case let .grantPermission(interactionID, decision):
-            if let sID = state.activeSessionID {
-                _ = try? await client.interaction.resolve(sessionID: sID, interactionID: interactionID, resolution: .permission(decision))
-            }
+            await resolveOnOwningSession(interactionID: interactionID, resolution: .permission(decision))
 
         case let .replyQuestion(interactionID, reply):
-            if let sID = state.activeSessionID {
-                _ = try? await client.interaction.resolve(sessionID: sID, interactionID: interactionID, resolution: .question(reply))
-            }
+            await resolveOnOwningSession(interactionID: interactionID, resolution: .question(reply))
 
         case let .submitDecision(interactionID, decision):
-            if let sID = state.activeSessionID {
-                _ = try? await client.interaction.resolve(sessionID: sID, interactionID: interactionID, resolution: .decision(decision))
-            }
+            await resolveOnOwningSession(interactionID: interactionID, resolution: .decision(decision))
 
         // MARK: 5. Provider & Model
         case let .selectModel(modelID):
@@ -386,6 +407,9 @@ public actor ApplicationStore {
         case let ._sessionEventReceived(event):
             let changes = RootReducer.reduce(state: &state, action: ._sessionEventReceived(event))
             handleSubscribingStreamsIfNeeded(for: event)
+            if case let .toolCompleted(_, result, _, _) = event.payload, result.toolName == "todo" {
+                await refreshTodos()
+            }
             notifyUpdate(changes: changes)
 
         case let ._streamFrameReceived(frame):

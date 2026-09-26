@@ -704,6 +704,38 @@ public enum BuiltinCommands {
                 argumentSchema: "[task_goal]"
             ) { ctx in
                 try await handleGoal(ctx: ctx)
+            },
+
+            // 26. /trace
+            ApplicationCommand(
+                name: "trace",
+                aliases: ["lifecycle"],
+                description: "查看 Core 侧运行时轨迹，含每次 Tool 调用的生命周期阶段时间线",
+                category: "Runtime",
+                argumentSchema: "[tool]"
+            ) { ctx in
+                let events = try await ctx.client.diagnostics.tailTrace(limit: 400)
+                let toolOnly = ctx.arguments.first?.lowercased() == "tool"
+                let selected = toolOnly ? events.filter { $0.kind == .tool } : events
+                let lifecycle = events.filter { $0.event == "tool.lifecycle" }
+                var fields: [(String, String)] = [
+                    ("轨迹事件总数", "\(events.count)"),
+                    ("Tool 生命周期", "\(lifecycle.count) 次调用已记录")
+                ]
+                for event in selected.suffix(4) {
+                    let call = event.toolCallID.map { String($0.rawValue.prefix(8)) } ?? "-"
+                    fields.append(("· \(event.kind.rawValue)/\(event.event) \(call)", String((event.metadata["phases"] ?? event.metadata["terminalReason"] ?? "").prefix(58))))
+                }
+                let footer = lifecycle.isEmpty
+                    ? "Core 尚无 Tool 轨迹：先执行一次工具调用再来看。"
+                    : "阶段序：requested → claimed/permission → processSpawned → stdoutEOF/stderrEOF → processExited → nextModelStepStarted"
+                let output = CLIFormatter.renderCard(
+                    title: "运行时轨迹 (/trace)",
+                    fields: fields,
+                    footer: footer,
+                    borderStyle: .rounded
+                )
+                return ApplicationCommandResult(output: output, presentation: .modal, modalTitle: "运行时轨迹 (/trace)")
             }
         ]
     }
@@ -961,21 +993,35 @@ public enum BuiltinCommands {
 
     private static func handleGoal(ctx: ApplicationCommandContext) async throws -> ApplicationCommandResult {
         let goalDescription = ctx.arguments.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSpecified = !goalDescription.isEmpty
+        let normalized = goalDescription.lowercased()
 
-        var fields: [(String, String)] = [
-            ("收敛状态", "已激活 (Goal-Directed Mode: Active)"),
-            ("反发散断路器", "强制开启 (连续探索上限: 2 次)"),
-            ("推进策略", "单向收敛 · 最短直达路径 · 交付即停止"),
-        ]
-
-        if isSpecified {
-            fields.append(("当前锚定目标", goalDescription))
-        } else {
-            fields.append(("当前目标", "就地执行最短路径交付物，禁止探索性发散"))
+        guard !goalDescription.isEmpty else {
+            let card = CLIFormatter.renderCard(
+                title: "🎯 目标收敛模式 (/goal)",
+                fields: [("用法", "/goal <具体交付目标> · /goal clear")],
+                footer: "Goal 由 Core 侧按会话维护，仅在本会话生命周期内生效，重启即清除。",
+                borderStyle: .rounded
+            )
+            return ApplicationCommandResult(
+                output: card,
+                presentation: .modal,
+                modalTitle: "🎯 目标收敛模式 (/goal)"
+            )
         }
 
-        let sections: [(String, [String])] = [
+        guard let sessionID = ctx.sessionID else {
+            throw ApplicationCommandError.executionFailed("没有活动会话，无法锚定 Goal。")
+        }
+        let clearing = normalized == "clear" || normalized == "off" || normalized == "none"
+        let receipt = try await ctx.client.session.setGoal(sessionID: sessionID, goal: clearing ? nil : goalDescription)
+        let active = receipt.result?.goal
+
+        let fields: [(String, String)] = [
+            ("锚定状态", active == nil ? "已清除 (Goal cleared)" : "已激活 (Goal-Directed Mode: Active)"),
+            ("生效范围", "本会话每个模型步骤 (由 Core 注入，不随上下文压缩丢失)"),
+            ("当前锚定目标", active ?? "无"),
+        ]
+        let sections: [(String, [String])] = active == nil ? [] : [
             ("🎯 收敛法则 (Goal Convergence Rules)", [
                 "  1. 目标唯一锚定: 每步工具调用必须直接为目标产生有效产物",
                 "  2. 严禁源码流浪: 修改配置时不读编译器源码，改 Bug 时先跑最小单测",
@@ -988,7 +1034,7 @@ public enum BuiltinCommands {
             title: "🎯 目标收敛模式 (/goal)",
             fields: fields,
             sections: sections,
-            footer: isSpecified ? "已锁定目标: \(goalDescription)" : "用法: /goal <具体交付目标>",
+            footer: active.map { "Core 已锚定: \($0)" } ?? "用法: /goal <具体交付目标>",
             borderStyle: .rounded
         )
 

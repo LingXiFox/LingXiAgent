@@ -117,6 +117,8 @@ public struct ExtensionStatus: Codable, Sendable, Equatable {
 public struct SessionSummary: Codable, Sendable, Equatable {
     public let sessionID: SessionID
     public let title: String?
+    /// Session-lifetime goal anchor surfaced for TUI display; volatile, never persisted.
+    public let goal: String?
     public let createdAt: Date
     public let updatedAt: Date
     public let turnCount: Int
@@ -128,6 +130,7 @@ public struct SessionSummary: Codable, Sendable, Equatable {
     public init(
         sessionID: SessionID,
         title: String? = nil,
+        goal: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         turnCount: Int = 0,
@@ -138,6 +141,7 @@ public struct SessionSummary: Codable, Sendable, Equatable {
     ) {
         self.sessionID = sessionID
         self.title = title
+        self.goal = goal
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.turnCount = turnCount
@@ -148,13 +152,14 @@ public struct SessionSummary: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionID, title, createdAt, updatedAt, turnCount, mode, reasoningEffort, workingDirectory, messageCount
+        case sessionID, title, goal, createdAt, updatedAt, turnCount, mode, reasoningEffort, workingDirectory, messageCount
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try container.decode(SessionID.self, forKey: .sessionID)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        goal = try container.decodeIfPresent(String.self, forKey: .goal)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         turnCount = try container.decodeIfPresent(Int.self, forKey: .turnCount) ?? 0

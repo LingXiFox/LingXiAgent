@@ -7,16 +7,19 @@ public struct SubagentNode: Sendable, Equatable {
     public let parentRunID: RunID
     public var status: String
     public var terminalReason: TerminalReason?
+    public var resultPreview: String?
 
     public init(
         runID: RunID,
         parentRunID: RunID,
         status: String = "created",
-        terminalReason: TerminalReason? = nil
+        terminalReason: TerminalReason? = nil,
+        resultPreview: String? = nil
     ) {
         self.runID = runID
         self.parentRunID = parentRunID
         self.status = status
         self.terminalReason = terminalReason
+        self.resultPreview = resultPreview
     }
 }

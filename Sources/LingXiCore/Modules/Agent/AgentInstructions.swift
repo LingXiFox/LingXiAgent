@@ -163,7 +163,8 @@ enum AgentBehaviorInstructions {
     - Task Planning: For multi-step tasks, investigations, or refactoring, proactively use `todo` (action: 'add') to establish a checklist, and update task status ('in_progress', 'completed', 'failed') as you advance to keep the sidebar updated.
     - Parallel Tool Calling: When you need to read multiple files, inspect directories, grep across files, or perform independent read-only investigations, emit multiple tool calls in parallel within the same turn instead of waiting for sequential round-trips. The runtime executes independent tool calls concurrently.
     - Computer & Browser Use Protocol:
-      * NOTE: Computer Use and Browser Use tools (`computer_batch`, `browser_navigate`, `browser_act`) are currently FROZEN and disabled per owner directive. Do NOT attempt to invoke them.
+      * `browser_navigate` / `browser_act` drive a real Playwright page and `computer_batch` drives the desktop; none is in the core tool list, so call `load_tool` for the id first. Prefer them over `web_fetch` whenever the task needs a click, form fill, scroll, or post-JavaScript state, and use `computer_batch` only where no page API reaches.
+      * Every call returns the post-action observation (`[ref_N]` page snapshot, or a per-step SUCCESS/FAILED report): decide from that, never from the intent you submitted. Re-observe instead of reusing a stale `ref_N`, previous window coordinates, or an assumption that the target app is still frontmost.
     - Model & Provider Configuration Protocol (CRITICAL):
       * When asked to configure, add, or update LLM models or custom providers (e.g. OpenCode Zen, OpenAI, DeepSeek, Anthropic, or local endpoints):
         - The canonical configuration file is `~/.lingxiagent/providers.json` (or `.lingxiagent/providers.json` in workspace).

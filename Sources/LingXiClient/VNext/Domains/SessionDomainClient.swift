@@ -30,6 +30,11 @@ public struct SessionDomainClient: Sendable {
         return try await transport.renameSession(envelope: CommandEnvelope(payload: req))
     }
 
+    public func setGoal(sessionID: SessionID, goal: String?) async throws -> CommandReceipt<SessionSummary> {
+        let req = SetSessionGoalRequest(sessionID: sessionID, goal: goal)
+        return try await transport.setSessionGoal(envelope: CommandEnvelope(payload: req))
+    }
+
     public func setReasoningEffort(sessionID: SessionID, effort: ReasoningEffort) async throws -> CommandReceipt<SessionSummary> {
         let req = SetSessionReasoningEffortRequest(sessionID: sessionID, effort: effort)
         return try await transport.setSessionReasoningEffort(envelope: CommandEnvelope(payload: req))

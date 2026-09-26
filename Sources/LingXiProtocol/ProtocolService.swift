@@ -99,6 +99,17 @@ public struct RenameSessionRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// Session-lifetime goal anchor. Volatile by design: never persisted, cleared with the session.
+public struct SetSessionGoalRequest: Codable, Sendable, Equatable {
+    public let sessionID: SessionID
+    public let goal: String?
+
+    public init(sessionID: SessionID, goal: String?) {
+        self.sessionID = sessionID
+        self.goal = goal
+    }
+}
+
 public struct SetSessionReasoningEffortRequest: Codable, Sendable, Equatable {
     public let sessionID: SessionID
     public let effort: ReasoningEffort
@@ -665,6 +676,7 @@ public protocol LingXiProtocolService: Sendable {
     // MARK: - 2. Session
     func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary>
     func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary>
+    func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary>
     func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary>
     func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult>
     func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult>
@@ -791,6 +803,11 @@ public protocol LingXiProtocolService: Sendable {
 }
 
 public extension LingXiProtocolService {
+    /// Conformers that do not implement Goal Mode keep compiling and fail explicitly.
+    func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
+        throw CoreError(code: .unsupportedCommand, message: "setSessionGoal 未实现")
+    }
+
     func getContentMetadata(ref: ContentRef) async throws -> ContentMetadata {
         try await getContentMetadata(ref: ref, authorization: .anonymous)
     }

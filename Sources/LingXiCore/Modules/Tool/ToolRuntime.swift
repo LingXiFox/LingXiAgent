@@ -206,6 +206,11 @@ public struct ToolRuntime: Sendable {
     ]
     public static let coreToolIDs: Set<ToolID> = Set(coreToolOrder)
 
+    /// The pre-truncation output behind an archived ToolResult, when one was stored.
+    public func archivedOutput(_ reference: String) async -> String? {
+        try? await outputArchive?.load(reference)
+    }
+
     public let workspacePath: String?
     public let workspaceRevision: UInt64?
     package let registry: ToolRegistry

@@ -924,12 +924,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 permissionID: request.permissionID,
                 causal: causal
             )
-            await coordinator.recordInteractionRequested(snapshot: InteractionSnapshot(
+            let interaction = InteractionSnapshot(
                 interactionID: InteractionID(request.permissionID.rawValue),
                 kind: .permission,
                 causal: causal,
                 permissionRequest: request
-            ))
+            )
+            await coordinator.recordInteractionRequested(snapshot: interaction)
+            await mirrorInteractionToParent(interaction, from: request.sessionID)
         case let .questionAsked(request), let .questionEscalated(request):
             guard let sessionID = request.originSessionID ?? request.rootSessionID ?? request.parentSessionID,
                   let coordinator = try? await coordinator(for: sessionID) else { return }
@@ -938,12 +940,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 runID: request.originRunID.map(RunID.init),
                 toolCallID: nil
             )
-            await coordinator.recordInteractionRequested(snapshot: InteractionSnapshot(
+            let interaction = InteractionSnapshot(
                 interactionID: InteractionID(request.questionID.rawValue),
                 kind: .question,
                 causal: causal,
                 questionRequest: request
-            ))
+            )
+            await coordinator.recordInteractionRequested(snapshot: interaction)
+            await mirrorInteractionToParent(interaction, from: sessionID)
         case let .toolResult(result):
             guard let sessionID = result.sessionID, let coordinator = try? await coordinator(for: sessionID) else { return }
             let causal = CausalContext(sessionID: sessionID, runID: result.agentRunID.map(RunID.init), modelStepID: result.modelStepID, toolCallID: result.callID)
@@ -988,9 +992,63 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 stderrFinalIndex: nil,
                 causal: causal
             )
+        case let .subagentSpawned(run), let .agentRunStarted(run), let .agentRunQueued(run),
+             let .agentRunStatusChanged(run), let .agentRunCompleted(run),
+             let .agentRunFailed(run), let .agentRunCancelled(run):
+            await projectAgentRunLifecycle(run)
+        case let .subagentResultAvailable(result):
+            await projectSubagentOutcome(result)
         default:
             break
         }
+    }
+
+    /// A child run's lifecycle belongs to the session that spawned it, not only to the child
+    /// session nobody is watching. This is a one-way projection into the owning session's
+    /// event log; AgentRun read isolation between run trees is unchanged.
+    private func projectAgentRunLifecycle(_ run: AgentRunInfo) async {
+        guard run.agentKind == .subagent, run.parentRunID != nil else { return }
+        guard let origin = await originatingSessionID(of: run.sessionID),
+              let coordinator = try? await self.coordinator(for: origin) else { return }
+        let causal = CausalContext(sessionID: origin)
+        if run.status == .starting, let parentRunID = run.parentRunID {
+            await coordinator.recordSubagentCreated(
+                runID: RunID(run.runID.rawValue),
+                parentRunID: RunID(parentRunID.rawValue),
+                causal: causal
+            )
+        } else {
+            await coordinator.recordSubagentStateChanged(
+                runID: RunID(run.runID.rawValue),
+                status: run.status.rawValue,
+                causal: causal
+            )
+        }
+    }
+
+    private func projectSubagentOutcome(_ result: SubagentResult) async {
+        guard let child = try? await sessionStore.session(result.childSessionID),
+              child.kind == .subagent,
+              let origin = child.parentSessionID,
+              let coordinator = try? await self.coordinator(for: origin) else { return }
+        let body: String
+        if let error = result.error {
+            body = "error: \(error.message)"
+        } else {
+            body = (result.finalText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let preview = String(body.prefix(600))
+        await coordinator.recordSubagentTerminal(
+            runID: RunID(result.runID.rawValue),
+            terminalReason: result.terminalReason ?? (result.status == .completed ? .completed : result.status == .cancelled ? .userCancelled : .runtimeFailure),
+            resultPreview: preview.isEmpty ? nil : preview,
+            causal: CausalContext(sessionID: origin)
+        )
+    }
+
+    private func originatingSessionID(of sessionID: SessionID) async -> SessionID? {
+        guard let session = try? await sessionStore.session(sessionID) else { return nil }
+        return session.parentSessionID ?? session.rootSessionID
     }
 
     private var contextRefreshSequences: [SessionID: UInt64] = [:]
@@ -1912,6 +1970,30 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
 extension CoreHost {
 
+    /// A subagent session has no front end of its own, so its HITL request is mirrored onto the
+    /// session the human is actually watching. `causal.sessionID` keeps naming the owning child,
+    /// which is what the reply is routed by; only `rootSessionID` is repointed at the parent so the
+    /// client's per-session event filter admits the copy.
+    private func mirrorInteractionToParent(_ interaction: InteractionSnapshot, from sessionID: SessionID) async {
+        guard let parentSessionID = try? await sessionStore.session(sessionID).parentSessionID,
+              parentSessionID != sessionID,
+              let parentCoordinator = try? await coordinator(for: parentSessionID) else { return }
+        await parentCoordinator.recordInteractionRequested(snapshot: InteractionSnapshot(
+            interactionID: interaction.interactionID,
+            kind: interaction.kind,
+            causal: CausalContext(
+                sessionID: sessionID,
+                runID: interaction.causal.runID,
+                rootSessionID: parentSessionID,
+                toolCallID: interaction.causal.toolCallID
+            ),
+            createdAt: interaction.createdAt,
+            permissionRequest: interaction.permissionRequest,
+            questionRequest: interaction.questionRequest,
+            decisionRequest: interaction.decisionRequest
+        ))
+    }
+
     public func coordinator(for sessionID: SessionID) async throws -> SessionTurnCoordinator {
         if let existing = sessionCoordinators[sessionID] {
             return existing
@@ -1963,6 +2045,9 @@ extension CoreHost {
         let ecoreCount = ecoreMetrics.count
         let ecoreBytes = ecoreMetrics.totalBytes
         let debtState = await cacheController.scheduler.debtState(for: sessionID)
+        let goalProgress = await SessionGoalRegistry.shared.progress(sessionID)
+        let goalText = goalProgress.map { "#\($0.steps) \($0.text)" }
+        let prediction = await BranchPredictionRuntime.shared.snapshot(sessionID)
         let lastInput = await cacheController.lastProviderInputTokens(for: sessionID) ?? 0
         var pCoreTokens = cacheRecord?.promptTokens ?? max(effectiveL1Usage, lastInput)
         if pCoreTokens == 0, let histSession = try? await sessionStore.session(sessionID) {
@@ -2018,7 +2103,9 @@ extension CoreHost {
             observedGranularity: nil,
             clientCausedBusts: clientHealth?.clientCausedBusts,
             comparableRequests: clientHealth?.comparableRequests,
-            appendOnlyViolations: clientHealth?.appendOnlyViolations
+            appendOnlyViolations: clientHealth?.appendOnlyViolations,
+            goal: goalText,
+            prediction: prediction
         )
     }
 
@@ -2695,6 +2782,43 @@ extension CoreHost {
             result: summary
         )
         try await recordIdempotency(envelope: envelope, commandName: "renameSession", receipt: receipt)
+        return receipt
+    }
+
+    /// Goal Mode: sets or clears the session's volatile goal anchor and republishes the summary.
+    public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "setSessionGoal", as: SessionSummary.self) {
+            return cached
+        }
+        let sessionID = envelope.payload.sessionID
+        let goal = await SessionGoalRegistry.shared.set(sessionID, goal: envelope.payload.goal)
+        let session = try await sessionStore.session(sessionID)
+        let coord = try await coordinator(for: session.id)
+        let summary = SessionSummary(
+            sessionID: session.id,
+            title: session.title,
+            goal: goal,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: 0,
+            mode: .build,
+            reasoningEffort: session.reasoningEffort
+        )
+        _ = try? await runtimeEventLog.append(payload: .sessionUpdated(summary))
+        let receipt = CommandReceipt<SessionSummary>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [
+                await runtimeEventLog.currentWatermark(),
+                await coord.eventLog.currentWatermark()
+            ],
+            result: summary
+        )
+        try await recordIdempotency(envelope: envelope, commandName: "setSessionGoal", receipt: receipt)
         return receipt
     }
 
@@ -3408,6 +3532,13 @@ extension CoreHost {
         } else {
             // Target is running: perform targeted cancellation of this active run
             let cancelledTask = cancelActiveTurnTask(runID: envelope.payload.runID)
+            // A run parked inside permissions.resolve or a question ask cannot observe task
+            // cancellation: those waits are only released by a reply or cancelPending. Without
+            // releasing them here the `await cancelledTask?.result` below never returns, the stop
+            // request hangs, and the session looks Ready while the next turn queues behind the
+            // ask nobody will ever answer.
+            await permissionEngine.cancelPending(sessionID: envelope.payload.sessionID, reason: .runCancelled)
+            await questions.cancelPending(sessionID: envelope.payload.sessionID, reason: .runCancelled)
             await backgroundManager.terminateTasks(runID: envelope.payload.runID)
             try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))
             _ = await cancelledTask?.result
@@ -3518,6 +3649,17 @@ extension CoreHost {
             break
         }
         try await coord.resolveInteraction(interactionID: envelope.payload.interactionID, resolution: envelope.payload.resolution)
+        // A child session's ask is mirrored into its parent's log; drop that copy too, or the parent
+        // keeps showing a card that has already been answered.
+        if let parentSessionID = try? await sessionStore.session(envelope.payload.sessionID).parentSessionID,
+           parentSessionID != envelope.payload.sessionID,
+           let parentCoordinator = try? await coordinator(for: parentSessionID),
+           await parentCoordinator.listPendingInteractions().contains(where: { $0.interactionID == envelope.payload.interactionID }) {
+            try? await parentCoordinator.resolveInteraction(
+                interactionID: envelope.payload.interactionID,
+                resolution: envelope.payload.resolution
+            )
+        }
         let watermark = await coord.eventLog.currentWatermark()
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,

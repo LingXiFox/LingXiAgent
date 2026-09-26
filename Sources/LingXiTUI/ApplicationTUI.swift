@@ -252,7 +252,6 @@ public final class ApplicationTUI: Frontend {
                 if let event = terminal.nextInput() {
                     pump.postInput(event)
                     if case .quit = event { break }
-                    if case .interrupt = event { break }
                 }
             }
         }
@@ -336,11 +335,11 @@ public final class ApplicationTUI: Frontend {
     }
 
     private func handle(_ event: TUIInputEvent, store: any FrontendRuntime) async {
-        if event == .quit || event == .interrupt {
+        if event == .quit {
             shouldQuit = true
             return
         }
-        if event == .escape {
+        if event == .escape || event == .interrupt {
             let hasRunningBg = latestState.backgroundTasks.contains(where: { $0.status == .running })
             let running = isActive(latestState)
                 || waitingStartedAt != nil
@@ -355,6 +354,10 @@ public final class ApplicationTUI: Frontend {
                 overlay = nil
                 view.transcript.clearSelection()
                 view.setFocus(.composer)
+                return
+            }
+            if event == .interrupt {
+                shouldQuit = true
                 return
             }
         }
@@ -2305,7 +2308,7 @@ public final class ApplicationTUI: Frontend {
         let cacheDebt = ctx?.providerCache?.cacheDebt ?? ctx?.cacheDebt ?? 0
         let cacheDetail = "Read \(TokenFormatter.format(cacheRead)) · Debt \(cacheDebt)"
 
-        let cacheLayers = [
+        var cacheLayers = [
             TUISidebarModel.CacheLayer(
                 name: "P-Core",
                 usedTokens: pCoreUsed,
@@ -2325,6 +2328,27 @@ public final class ApplicationTUI: Frontend {
                 detailText: cacheDetail
             )
         ]
+        // 4. Goal 锚定与分支预测：Core 权威易失状态，仅观测不参与循环决策
+        if let goal = ctx?.goal, !goal.isEmpty {
+            cacheLayers.append(TUISidebarModel.CacheLayer(
+                name: "Goal",
+                usedTokens: 0,
+                detailText: String(goal.prefix(22))
+            ))
+        }
+        if let pred = ctx?.prediction {
+            let head = pred.abstained ? "abstain" : pred.hint
+            cacheLayers.append(TUISidebarModel.CacheLayer(
+                name: "Predict",
+                usedTokens: 0,
+                detailText: "\(head) \(String(format: "%.0f%%", pred.confidence * 100))"
+            ))
+            cacheLayers.append(TUISidebarModel.CacheLayer(
+                name: "Pred stats",
+                usedTokens: 0,
+                detailText: "o\(pred.matchedOrder) sup\(pred.support) \(pred.hits)H/\(pred.misses)M"
+            ))
+        }
 
         // 3. 激活的 MCP 具体的名字以及激活状态（直接由 Core 权威状态驱动）
         let mcpExtensions = state.extensions.filter { $0.kind == .mcp && $0.enabled }
@@ -3344,11 +3368,12 @@ public final class ApplicationTUI: Frontend {
         switch interaction.kind {
         case .permission:
             let request = interaction.permissionRequest
+            let fromChild = request?.sessionID != nil && request?.sessionID != state.activeSessionID
             let pendingCount = state.activeSessionState?.pendingInteractions.filter { $0.kind == .permission }.count ?? 1
             let countLabel = pendingCount > 1 ? " (\(pendingCount) 待确认)" : ""
             let actionLabel = pendingCount > 1 ? "[y/Enter] 全部允许  [n] 全部拒绝" : "[y/Enter] 允许  [n] 拒绝"
             return [
-                TUIStyledLine("Permission required\(countLabel)", style: .warning),
+                TUIStyledLine(fromChild ? "Permission required · Child Agent\(countLabel)" : "Permission required\(countLabel)", style: .warning),
                 TUIStyledLine(request?.description ?? "Operation requires approval"),
                 TUIStyledLine(request?.resource ?? "", style: .dim),
                 TUIStyledLine(actionLabel, style: .accent)
@@ -3643,7 +3668,11 @@ public final class ApplicationTUI: Frontend {
             let detail = interaction.permissionRequest?.description ?? interaction.questionRequest?.question ?? interaction.decisionRequest?.question ?? "Action required"
             return TUITranscriptEntry(id: id, kind: .question, text: "\(interaction.kind.rawValue.capitalized): \(detail)", timestamp: node.timestamp)
         case let .subagent(subagent):
-            return TUITranscriptEntry(id: id, kind: .subagent, text: "Subagent · \(subagent.status)", timestamp: node.timestamp)
+            var text = "Subagent · \(subagent.status)"
+            if let preview = subagent.resultPreview, !preview.isEmpty {
+                text += " · " + preview.replacingOccurrences(of: "\n", with: " ")
+            }
+            return TUITranscriptEntry(id: id, kind: .subagent, text: text, timestamp: node.timestamp)
         case .runTerminal:
             return nil
         case let .error(error):

@@ -189,6 +189,7 @@ public struct VNextStdioCoreServer: Sendable {
                 case "runtime.setting.update": try await reply(request, try await service.updateTypedSetting(envelope: commandEnvelope(request, as: UpdateTypedSettingRequest.self)), writer)
                 case "session.create": try await reply(request, try await service.createSession(envelope: commandEnvelope(request, as: CreateSessionRequest.self)), writer)
                 case "session.rename": try await reply(request, try await service.renameSession(envelope: commandEnvelope(request, as: RenameSessionRequest.self)), writer)
+                case "session.setGoal": try await reply(request, try await service.setSessionGoal(envelope: commandEnvelope(request, as: SetSessionGoalRequest.self)), writer)
                 case "session.set_reasoning_effort": try await reply(request, try await service.setSessionReasoningEffort(envelope: commandEnvelope(request, as: SetSessionReasoningEffortRequest.self)), writer)
                 case "session.delete": try await reply(request, try await service.deleteSession(envelope: commandEnvelope(request, as: DeleteSessionRequest.self)), writer)
                 case "session.revert_last_turn": try await reply(request, try await service.revertLastTurn(envelope: commandEnvelope(request, as: RevertLastTurnRequest.self)), writer)

@@ -1035,6 +1035,23 @@ public actor SessionTurnCoordinator {
         _ = try? await eventLog.append(causal: causal, payload: .contextStateChanged(snapshot))
     }
 
+    // MARK: - Subagent lifecycle (projected onto the originating session)
+
+    public func recordSubagentCreated(runID: RunID, parentRunID: RunID, causal: CausalContext) async {
+        _ = try? await eventLog.append(causal: causal, payload: .subagentCreated(runID: runID, parentRunID: parentRunID))
+    }
+
+    public func recordSubagentStateChanged(runID: RunID, status: String, causal: CausalContext) async {
+        _ = try? await eventLog.append(causal: causal, payload: .subagentStateChanged(runID: runID, status: status))
+    }
+
+    public func recordSubagentTerminal(runID: RunID, terminalReason: TerminalReason, resultPreview: String?, causal: CausalContext) async {
+        _ = try? await eventLog.append(
+            causal: causal,
+            payload: .subagentTerminal(runID: runID, terminalReason: terminalReason, resultPreview: resultPreview)
+        )
+    }
+
     // MARK: - Interactions
 
     public func recordInteractionRequested(snapshot: InteractionSnapshot) async {

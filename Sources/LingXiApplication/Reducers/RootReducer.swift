@@ -24,7 +24,10 @@ public enum RootReducer {
             changes.merge(with: c)
 
         case let ._sessionEventReceived(event):
-            if state.activeSessionID == event.causal.sessionID, state.activeSessionState != nil {
+            // `rootSessionID` defaults to the event's own session, so this only additionally admits
+            // the deliberate mirror of a subagent's ask onto the session a human is watching.
+            let owner = state.activeSessionID == event.causal.sessionID || state.activeSessionID == event.causal.rootSessionID
+            if owner, state.activeSessionState != nil {
                 let c = SessionReducer.reduce(
                     state: &state.activeSessionState!,
                     event: event,

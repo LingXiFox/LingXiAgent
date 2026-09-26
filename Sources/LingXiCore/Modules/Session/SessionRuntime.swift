@@ -425,7 +425,24 @@ public actor SessionRuntime {
                 if step > 0 {
                     await runObserver?(.running, nil, nil, nil, nil)
                 }
-                for lifecycle in pendingLifecycleTraces { lifecycle.record(.nextModelStepStarted) }
+                for lifecycle in pendingLifecycleTraces {
+                    lifecycle.record(.nextModelStepStarted)
+                    // The lifecycle was complete at this point and the trace used to die here:
+                    // publish one event per tool call so the phase timeline reaches the
+                    // diagnostics bundle the front ends already read.
+                    let phases = lifecycle.snapshot().map { event in
+                        let pid = event.processPID.map { ":\($0)" } ?? ""
+                        let exit = event.exitCode.map { "!\($0)" } ?? ""
+                        return "\(event.phase.rawValue)\(pid)\(exit)+\(Int(event.deltaMilliseconds))ms"
+                    }.joined(separator: " ")
+                    await diagnostics?.record(
+                        kind: .tool,
+                        event: "tool.lifecycle",
+                        sessionID: sessionID,
+                        toolCallID: lifecycle.toolCallID,
+                        metadata: ["phases": phases]
+                    )
+                }
                 pendingLifecycleTraces.removeAll(keepingCapacity: true)
                 finalUsage = nil
                 finalReason = nil
@@ -458,6 +475,30 @@ public actor SessionRuntime {
                         part: .text(bgNotice)
                     )
                     allEntries.append(noticeEntry)
+                }
+
+                // Goal anchor: restated on every step so it survives context growth and compaction,
+                // while the model still sees only truncated tool output.
+                if let goal = await SessionGoalRegistry.shared.goal(sessionID) {
+                    await SessionGoalRegistry.shared.noteStep(sessionID)
+                    allEntries.append(ContextEntry(
+                        messageID: nil,
+                        role: .system,
+                        source: .system,
+                        part: .text("ACTIVE GOAL (keep driving until achieved): \(goal)\nDo not stop on a partial result; if genuinely blocked, state the blocker and what is already done.")
+                    ))
+                }
+
+                // Late subagent outcomes are handed to this session by Core once their
+                // originating turn stopped waiting; the model sees them exactly once.
+                let lateOutcomes = await SubagentOutcomeInbox.shared.drain(sessionID)
+                if !lateOutcomes.isEmpty {
+                    allEntries.append(ContextEntry(
+                        messageID: nil,
+                        role: .system,
+                        source: .system,
+                        part: .text("ASYNC SUBAGENT RESULTS (arrived after their originating turn ended; already delivered to the user, no need to re-spawn):\n" + lateOutcomes.joined(separator: "\n"))
+                    ))
                 }
 
                 // P-Core Context Projection (Phase 1B):
@@ -949,6 +990,7 @@ public actor SessionRuntime {
                     }
 
                     await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
+                    _ = await BranchPredictionRuntime.shared.record(sessionID: sessionID, action: .directAnswer)
                     await completeTurn(
                         handle: handle,
                         sink: sink,
@@ -1142,17 +1184,38 @@ public actor SessionRuntime {
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
                 // Phase 1A E-Core Sidecar Storage (Fail-Open):
+                // P-Core and the model keep the bounded excerpt; E-Core objectizes the archived
+                // pre-truncation output, so a large ToolResult stays recallable without paying
+                // context tokens. The excerpt is capped below the objectization threshold, so
+                // measuring only the excerpt would leave this branch unreachable.
                 for outcome in settled {
                     let res = outcome.result
-                    if res.content.utf8.count >= cacheController.ecoreStore.configuration.objectizationThreshold {
+                    var payload = res.content
+                    if let ref = res.output.outputBlobRef,
+                       let archived = await toolRuntime.archivedOutput(ref),
+                       !archived.isEmpty {
+                        payload = archived
+                    }
+                    if payload.utf8.count >= cacheController.ecoreStore.configuration.objectizationThreshold {
                         await cacheController.ecoreStore.store(
                             sessionID: sessionID,
                             toolCallID: res.callID,
                             toolName: res.toolName ?? "unknown",
-                            content: res.content
+                            content: payload
                         )
                     }
                 }
+                // Branch Prediction Fabric (observation only): feed the actions the agent really
+                // took, score the outstanding forecast, and predict next. Nothing here is read
+                // back into model selection or tool choice, so it cannot steer the loop.
+                for outcome in settled {
+                    let name = outcome.result.toolName ?? "unknown"
+                    _ = await BranchPredictionRuntime.shared.record(
+                        sessionID: sessionID,
+                        action: name == "subagent" ? .subagent(task: "") : .tool(name: name)
+                    )
+                }
+
                 let resultMessage: Message
                 if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: settled.map { .toolResult($0.result) }, createdAt: .now) }
                 else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }, expectedRevision: runLease.revision) }
@@ -1250,6 +1313,7 @@ public actor SessionRuntime {
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: error, profiler: profiler, executionID: executionID)
         } catch is CancellationError {
+            _ = await BranchPredictionRuntime.shared.record(sessionID: sessionID, action: .userInterrupt)
             await backgroundManager.terminateTasks(sessionID: sessionID)
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
             await failTurn(handle: handle, sink: sink, error: CoreError(code: .toolCancelled, message: "AgentRun 已取消"), profiler: profiler, executionID: executionID)

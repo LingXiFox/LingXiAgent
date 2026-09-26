@@ -671,6 +671,12 @@ public actor SQLitePersistenceStore {
         try blobs.put(Data(output.utf8))
     }
 
+    /// Reads back the pre-truncation tool output stored by `storeToolOutput`.
+    public func loadToolOutput(forReference reference: String) throws -> String? {
+        guard let data = try blobs.get(reference) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// Rebuildable project cache. Bodies remain in the filesystem (or blob store), never here.
     public func replaceProjectCache(pages: [ContextPage], symbols: [Symbol], references: [ProjectReference], dependencies: [DependencyEdge]) throws {
         try Self.transaction(state) {

@@ -525,6 +525,39 @@ public struct ContextStatePatch: Codable, Sendable, Equatable {
     }
 }
 
+/// Live branch-prediction state for one session. Surfaced for observability only:
+/// nothing in the agent loop reads it, so a forecast cannot steer the run.
+public struct PredictionRuntimeSnapshot: Codable, Sendable, Equatable {
+    public var hint: String
+    public var confidence: Double
+    public var support: Int
+    public var matchedOrder: Int
+    public var abstained: Bool
+    public var steps: Int
+    public var hits: Int
+    public var misses: Int
+
+    public init(
+        hint: String = "—",
+        confidence: Double = 0,
+        support: Int = 0,
+        matchedOrder: Int = 0,
+        abstained: Bool = true,
+        steps: Int = 0,
+        hits: Int = 0,
+        misses: Int = 0
+    ) {
+        self.hint = hint
+        self.confidence = confidence
+        self.support = support
+        self.matchedOrder = matchedOrder
+        self.abstained = abstained
+        self.steps = steps
+        self.hits = hits
+        self.misses = misses
+    }
+}
+
 /// Context 状态更新指令
 public enum ContextStateUpdate: Codable, Sendable, Equatable {
     case full(ContextStateSnapshot)
@@ -552,6 +585,10 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     public let clientCausedBusts: Int?
     public let comparableRequests: Int?
     public let appendOnlyViolations: Int?
+
+    // 会话生命周期内的易失运行态（Goal 锚定与分支预测），不入库
+    public let goal: String?
+    public let prediction: PredictionRuntimeSnapshot?
 
     // MARK: - Legacy Compatibility Computed Properties (Non-stored runtime properties)
 
@@ -656,7 +693,9 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         pCoreTokens: Int? = nil,
         eCoreObjectCount: Int? = nil,
         eCoreTotalBytes: Int? = nil,
-        cacheDebt: Int? = nil
+        cacheDebt: Int? = nil,
+        goal: String? = nil,
+        prediction: PredictionRuntimeSnapshot? = nil
     ) {
         self.sessionID = sessionID
         self.revision = revision
@@ -713,6 +752,8 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         self.clientCausedBusts = clientCausedBusts
         self.comparableRequests = comparableRequests
         self.appendOnlyViolations = appendOnlyViolations
+        self.goal = goal
+        self.prediction = prediction
     }
 
     // MARK: - Codable & Legacy Decode Adapter
@@ -733,6 +774,8 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         case clientCausedBusts
         case comparableRequests
         case appendOnlyViolations
+        case goal
+        case prediction
 
         // Legacy decoding keys
         case l1Tokens
@@ -774,6 +817,8 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         self.clientCausedBusts = try container.decodeIfPresent(Int.self, forKey: .clientCausedBusts)
         self.comparableRequests = try container.decodeIfPresent(Int.self, forKey: .comparableRequests)
         self.appendOnlyViolations = try container.decodeIfPresent(Int.self, forKey: .appendOnlyViolations)
+        self.goal = try container.decodeIfPresent(String.self, forKey: .goal)
+        self.prediction = try container.decodeIfPresent(PredictionRuntimeSnapshot.self, forKey: .prediction)
 
         // 1. Decode or adapt PCore
         if let decodedPCore = try container.decodeIfPresent(PCoreStateSnapshot.self, forKey: .pCore) {
@@ -855,6 +900,8 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         try container.encodeIfPresent(clientCausedBusts, forKey: .clientCausedBusts)
         try container.encodeIfPresent(comparableRequests, forKey: .comparableRequests)
         try container.encodeIfPresent(appendOnlyViolations, forKey: .appendOnlyViolations)
+        try container.encodeIfPresent(goal, forKey: .goal)
+        try container.encodeIfPresent(prediction, forKey: .prediction)
     }
 
     /// Prefix Reuse Efficiency = 实际复用旧前缀 token (cacheRead) / 上一轮可复用前缀 token (previousPromptTokens)

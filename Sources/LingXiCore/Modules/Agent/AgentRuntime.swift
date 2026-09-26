@@ -41,6 +41,7 @@ public actor AgentRuntime {
     private var activeSessions: Set<SessionID> = []
     private var runDeadlines: [AgentRunID: ExecutionDeadline] = [:]
     private var resultWaiters: [AgentRunID: [CheckedContinuation<SubagentResult, Error>]] = [:]
+    private var runOriginSessions: [AgentRunID: SessionID] = [:]
     private var shuttingDown = false
     private var cacheController: ContextCacheController
     private let maxAgentLoopSteps: Int
@@ -530,6 +531,7 @@ public actor AgentRuntime {
         do {
             let runID = run.runID
             activeSessions.insert(child.id)
+            runOriginSessions[run.runID] = parentSessionID
             let status = await scheduler.submit(runID: runID) { [weak self] in await self?.runChild(runID: runID, task: task) }
             if status == .queued {
                 run = updated(run, status: .queued)
@@ -782,12 +784,32 @@ public actor AgentRuntime {
         }
     }
 
+    /// Permission posture a child run executes under. An explicit profile wins; otherwise the
+    /// parent's own posture is inherited, because a child turn has no interactive surface of its
+    /// own — its session is not the one the front end renders, so an ask it raises can never be
+    /// answered and the child parks in `waitingForUser` while the parent polls a run that cannot
+    /// move. Inheriting is what keeps `normalized(profile:parent:)` honest.
+    static func childPermissionConfiguration(
+        profile: SubagentExecutionProfile?,
+        parent: PermissionConfiguration?
+    ) -> PermissionConfiguration {
+        switch profile?.permissionProfile?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "fullAccess": return .yoloFullAccess
+        case "workspace": return .askWorkspace
+        default: return parent ?? .strict
+        }
+    }
+
     private func consumeChildTurn(run: AgentRunInfo, task: String) async throws {
         let exec = executionProfiles[run.runID]
+        let childPermission = Self.childPermissionConfiguration(
+            profile: exec,
+            parent: AgentExecutionContext.currentRunContext?.permissionConfiguration
+        )
         let childRunContext = RunExecutionContext(
             runID: run.runID.rawValue,
             sessionID: run.sessionID,
-            permissionConfiguration: exec?.permissionProfile == "fullAccess" ? .yoloFullAccess : (exec?.permissionProfile == "workspace" ? .askWorkspace : .strict),
+            permissionConfiguration: childPermission,
             workspacePath: projectScanner.root.path,
             modelSelection: run.modelSelection.modelID,
             timeoutSeconds: exec?.timeoutSeconds.map(Double.init),
@@ -868,11 +890,14 @@ public actor AgentRuntime {
         if status.isTerminal { activeSessions.remove(run.sessionID) }
         if status.isTerminal { runDeadlines.removeValue(forKey: runID) }
         if let result {
+            let unclaimed = resultWaiters[runID]?.isEmpty ?? true
             results[runID] = result
             resumeWaiters(for: runID, result: result)
             await scheduler.complete(runID)
             await eventSink(status == .completed ? .agentRunCompleted(run) : status == .cancelled ? .agentRunCancelled(run) : .agentRunFailed(run))
             await eventSink(.subagentResultAvailable(result))
+            if unclaimed { await deliverUnclaimedOutcome(result, run: run) }
+            runOriginSessions.removeValue(forKey: runID)
         } else {
             await eventSink(.agentRunStatusChanged(run))
         }
@@ -896,8 +921,35 @@ public actor AgentRuntime {
         }
     }
 
-    private func resumeWaiters(for runID: AgentRunID, result: SubagentResult) {
-        for waiter in resultWaiters.removeValue(forKey: runID) ?? [] { waiter.resume(returning: result) }
+    /// A child that terminates after its originating turn stopped waiting must not go silent.
+    /// Its outcome is handed to the session that spawned it, which renders it and feeds it
+    /// into that session's next turn. No run-to-run read access is involved.
+    private func deliverUnclaimedOutcome(_ result: SubagentResult, run: AgentRunInfo) async {
+        guard run.agentKind == .subagent else { return }
+        // The spawn site already knows the origin session; keep it in memory so a terminal
+        // child never adds a storage round-trip to the lease-handoff path.
+        let origin: SessionID?
+        if let known = runOriginSessions[run.runID] {
+            origin = known
+        } else {
+            origin = (try? await store.session(run.sessionID))?.parentSessionID
+        }
+        guard let origin else { return }
+        let body: String
+        if let error = result.error {
+            body = "error: \(error.message)"
+        } else {
+            body = (result.finalText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let label = run.title.map { "\($0) · " } ?? ""
+        await SubagentOutcomeInbox.shared.record(
+            sessionID: origin,
+            text: "- run \(run.runID.rawValue.prefix(8)) \(label)status=\(result.status.rawValue): \(String(body.prefix(1200)))"
+        )
+        logDiagnostic("unclaimed subagent outcome routed to session \(origin.rawValue): run=\(run.runID.rawValue)")
+    }
+
+    private func resumeWaiters(for runID: AgentRunID, result: SubagentResult) {        for waiter in resultWaiters.removeValue(forKey: runID) ?? [] { waiter.resume(returning: result) }
     }
 
     private func updated(_ run: AgentRunInfo, status: AgentRunStatus) -> AgentRunInfo {

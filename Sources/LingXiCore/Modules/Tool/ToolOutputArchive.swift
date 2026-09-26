@@ -19,4 +19,10 @@ public actor ToolOutputArchive {
             outputBlobRef: try await persistence.storeToolOutput(content)
         )
     }
+
+    /// Reads back the pre-truncation output stored by `archive`, or nil when nothing was archived.
+    public func load(_ reference: String) async throws -> String? {
+        guard let persistence else { return nil }
+        return try await persistence.loadToolOutput(forReference: reference)
+    }
 }

@@ -297,6 +297,43 @@ struct SubagentRuntimeTests {
         await host.shutdown()
     }
 
+    /// Core must project the child's lifecycle into the *originating* session's event log -
+    /// otherwise a child nobody waited on is invisible forever, and the client has no row to
+    /// render. This pins the projection itself, not just the reducer that consumes it.
+    @Test func childLifecycleProjectedIntoOriginatingSessionLog() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: ParentChildProvider(), modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: false)
+        await host.start()
+        let client = try await LingXiClientVNext(transport: InProcessTransport(service: host))
+        let created = try await client.session.create()
+        let primary = try #require(created.result?.sessionID)
+        _ = try await client.turn.submitTurn(sessionID: primary, input: UserInput(text: "go"))
+
+        var sawCreated = false
+        var terminalPreview: String?
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline, terminalPreview == nil {
+            let events = try await client.session.listEvents(request: ListSessionEventsRequest(sessionID: primary, limit: 300))
+            for envelope in events {
+                #expect(envelope.causal.sessionID == primary, "child lifecycle must be attributed to the origin session")
+                switch envelope.payload {
+                case .subagentCreated: sawCreated = true
+                case let .subagentTerminal(_, reason, preview):
+                    #expect(reason == .completed)
+                    terminalPreview = preview
+                default: break
+                }
+            }
+            if terminalPreview == nil { try await Task.sleep(for: .milliseconds(50)) }
+        }
+
+        #expect(sawCreated)
+        #expect(terminalPreview == "child result")
+        await host.shutdown()
+    }
+
     @Test func childQuestionAndAnswerExcludedFromNextRootModelRequest() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -331,7 +368,9 @@ struct SubagentRuntimeTests {
         let rootRequests = recorder.requests.filter { req in req.messages.contains { $0.content.contains("next prompt in root") } }
         let turn2Request = try #require(rootRequests.first)
         #expect(!turn2Request.messages.contains(where: { $0.content.contains("Continue child?") }))
-        #expect(!turn2Request.messages.contains(where: { $0.content.contains("child answered") }))
+        // A child that finished after the root turn stopped waiting is deliberately routed back
+        // into the owning session's next turn; the child's internal question prompt stays excluded.
+        #expect(turn2Request.messages.filter { $0.content.contains("child answered") }.count == 1)
         await host.shutdown()
     }
 

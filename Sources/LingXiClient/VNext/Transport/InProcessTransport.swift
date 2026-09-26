@@ -115,6 +115,10 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.renameSession(envelope: envelope)
     }
 
+    public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
+        try await service.setSessionGoal(envelope: envelope)
+    }
+
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> {
         try await service.setSessionReasoningEffort(envelope: envelope)
     }

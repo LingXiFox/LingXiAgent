@@ -232,6 +232,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
     public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.create", envelope) }
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.rename", envelope) }
+    public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.setGoal", envelope) }
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.set_reasoning_effort", envelope) }
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("session.delete", envelope) }
     public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> { try await command("session.revert_last_turn", envelope) }

@@ -595,32 +595,13 @@ public enum SessionReducer {
             changes.statusChanged = true
 
         case let .subagentStateChanged(runID, status):
-            if var subNode = state.subagents[runID] {
-                subNode.status = status
-                state.subagents[runID] = subNode
-                let nodeID = TimelineNodeID.subagent(runID)
-                state.updateNode(id: nodeID) { node in
-                    node.kind = .subagent(subNode)
-                }
-                changes.transcriptNodesChanged.insert(nodeID)
-                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
-            }
-            changes.statusChanged = true
+            syncSubagent(state: &state, changes: &changes, event: event, runID: runID,
+                         status: status, terminalReason: nil, resultPreview: nil)
 
-        case let .subagentTerminal(runID, terminalReason):
+        case let .subagentTerminal(runID, terminalReason, resultPreview):
             state.activeSubagentRunIDs.remove(runID)
-            if var subNode = state.subagents[runID] {
-                subNode.status = terminalReason.rawValue
-                subNode.terminalReason = terminalReason
-                state.subagents[runID] = subNode
-                let nodeID = TimelineNodeID.subagent(runID)
-                state.updateNode(id: nodeID) { node in
-                    node.kind = .subagent(subNode)
-                }
-                changes.transcriptNodesChanged.insert(nodeID)
-                changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
-            }
-            changes.statusChanged = true
+            syncSubagent(state: &state, changes: &changes, event: event, runID: runID,
+                         status: terminalReason.rawValue, terminalReason: terminalReason, resultPreview: resultPreview)
 
         // MARK: 7. Context
         case let .contextStateChanged(snapshot):
@@ -1152,6 +1133,39 @@ public enum SessionReducer {
     }
 
     /// 上下文状态快照合并（权威 full snapshot 语义，彻底废弃数值启发式掩盖）
+    /// Keeps the subagent transcript row authoritative even when the client attached after
+    /// the run was created (a terminal outcome must never be silently dropped).
+    static func syncSubagent(
+        state: inout SessionViewState,
+        changes: inout ApplicationChangeSet,
+        event: SessionEventEnvelope,
+        runID: RunID,
+        status: String,
+        terminalReason: TerminalReason?,
+        resultPreview: String?
+    ) {
+        let nodeID = TimelineNodeID.subagent(runID)
+        let hasRow = state.timelineNodes.contains { $0.id == nodeID }
+        if var node = state.subagents[runID], hasRow {
+            node.status = status
+            if let terminalReason { node.terminalReason = terminalReason }
+            if let resultPreview { node.resultPreview = resultPreview }
+            state.subagents[runID] = node
+            state.updateNode(id: nodeID) { $0.kind = .subagent(node) }
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
+        } else {
+            let node = SubagentNode(runID: runID, parentRunID: runID, status: status,
+                                    terminalReason: terminalReason, resultPreview: resultPreview)
+            state.subagents[runID] = node
+            state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .subagent(node)))
+            changes.transcriptStructureChanged = true
+            changes.transcriptNodesChanged.insert(nodeID)
+            changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .append))
+        }
+        changes.statusChanged = true
+    }
+
     public static func mergeContextState(
         existing: ContextStateSnapshot?,
         incoming: ContextStateSnapshot,

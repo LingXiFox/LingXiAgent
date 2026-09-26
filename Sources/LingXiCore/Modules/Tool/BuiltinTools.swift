@@ -545,6 +545,24 @@ public struct ContextRecallTool: ToolExecutor {
         [.projectRead]
     }
 
+    /// A wrong or stale object ID must not be a dead end: only the store knows what is recallable,
+    /// so append that list to the original error line (whose wording is pinned by tests and by the
+    /// prompts of existing callers) instead of returning an error the caller cannot act on.
+    private func unavailable(store: ECoreObjectStore, sessionID: SessionID, headline: String) async -> String {
+        let objects = await store.listObjects(sessionID: sessionID)
+        guard !objects.isEmpty else {
+            return "\(headline) This session has no archived objects (no ToolResult exceeded the objectization threshold yet)."
+        }
+        let listing = objects.suffix(12).map { meta in
+            "- \(meta.objectID.rawValue) · \(meta.toolName) · \(meta.totalBytes)B · \(meta.totalLines) lines"
+        }.joined(separator: "\n")
+        return """
+        \(headline) Archived objects available now:
+        \(listing)
+        Call context_recall again with one of these ids; use offset and limit_bytes to page a slice.
+        """
+    }
+
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         struct Input: Decodable {
             let id: String
@@ -554,18 +572,27 @@ public struct ContextRecallTool: ToolExecutor {
             let sessionId: String?
         }
         let input: Input = try decodeArguments(arguments)
+        guard let store = ecoreStore else {
+            return "Error: E-Core object store is not configured."
+        }
+        // A model may send `"session_id": ""`, which would otherwise outrank the real session and
+        // make every archived object invisible: only a non-blank value may select the bucket.
+        let candidates = [input.sessionId, self.sessionID?.rawValue, ToolExecutionContext.sessionID?.rawValue]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let sID = candidates.first.map(SessionID.init) ?? SessionID("default")
+
         let objectID: ContextObjectID
         do {
             objectID = try ContextObjectID(input.id)
         } catch {
-            return "Error: Invalid ContextObjectID format '\(input.id)'"
+            return await unavailable(
+                store: store,
+                sessionID: sID,
+                headline: "Error: Invalid ContextObjectID format '\(input.id)'"
+            )
         }
 
-        guard let store = ecoreStore else {
-            return "Error: E-Core object store is not configured."
-        }
-
-        let sID = input.sessionId.map(SessionID.init) ?? self.sessionID ?? ToolExecutionContext.sessionID ?? SessionID("default")
         let chunk = try await store.recall(
             sessionID: sID,
             objectID: objectID,
@@ -575,7 +602,11 @@ public struct ContextRecallTool: ToolExecutor {
         )
 
         guard let chunk else {
-            return "Context object '\(objectID.rawValue)' not found in session '\(sID.rawValue)'."
+            return await unavailable(
+                store: store,
+                sessionID: sID,
+                headline: "Context object '\(objectID.rawValue)' not found in session '\(sID.rawValue)'."
+            )
         }
 
         return """
@@ -2033,12 +2064,10 @@ public extension BuiltInToolProvider {
             GitTool(workspace: workspace),
             SkillTool(workspace: workspace),
             QuestionTool(questions: questions),
-            TodoTool(todoStore: todoStore)
-            // NOTE: Computer Use and Browser Use implementations are frozen and disabled from the default toolcall list per owner directive.
-            // Underlying implementation code (BrowserNavigateTool, BrowserActTool, ComputerBatchTool) is fully preserved.
-            // BrowserNavigateTool(browserManager: browserManager),
-            // BrowserActTool(browserManager: browserManager),
-            // ComputerBatchTool()
+            TodoTool(todoStore: todoStore),
+            BrowserNavigateTool(browserManager: browserManager),
+            BrowserActTool(browserManager: browserManager),
+            ComputerBatchTool()
         ] + indexTools + intelligenceTools)
     }
 }
