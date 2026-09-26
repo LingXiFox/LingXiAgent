@@ -34,7 +34,7 @@ public enum CommandPresentationStyle: String, Sendable, Equatable, Codable {
     case modal
 }
 
-public struct ApplicationCommandResult: Sendable, Equatable {
+public struct ApplicationCommandResult: Sendable, Equatable, Codable {
     public let output: String
     public let presentation: CommandPresentationStyle
     public let modalTitle: String?
@@ -92,4 +92,28 @@ public struct ApplicationCommand: Sendable {
         self.argumentSchema = argumentSchema
         self.handler = handler
     }
+}
+
+/// Codable projection of `ApplicationCommand` for remote frontends.
+/// The command itself owns an `async` handler closure plus a live client reference in its
+/// context, so it can never be encoded directly; the browser only needs the descriptor.
+public struct ApplicationCommandDTO: Sendable, Equatable, Codable {
+    public let name: String
+    public let aliases: [String]
+    public let description: String
+    public let category: String
+    public let argumentSchema: String
+
+    public init(from command: ApplicationCommand) {
+        self.name = command.name
+        self.aliases = command.aliases
+        self.description = command.description
+        self.category = command.category
+        self.argumentSchema = command.argumentSchema
+    }
+}
+
+public extension Sequence where Element == ApplicationCommand {
+    /// Project a command catalog into its wire representation.
+    var asDTOs: [ApplicationCommandDTO] { map(ApplicationCommandDTO.init(from:)) }
 }

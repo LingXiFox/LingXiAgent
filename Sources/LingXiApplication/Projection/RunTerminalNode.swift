@@ -2,7 +2,7 @@ import Foundation
 import LingXiProtocol
 
 /// Run 终态节点。
-public struct RunTerminalNode: Sendable, Equatable {
+public struct RunTerminalNode: Sendable, Equatable, Codable {
     public let runID: RunID
     public let terminalReason: TerminalReason
 

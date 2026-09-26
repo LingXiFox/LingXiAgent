@@ -1,8 +1,10 @@
 import Foundation
+import LingXiApplication
 import LingXiProtocol
 
 public enum CLIRoute: Equatable, Sendable {
     case tui(TUILaunchOptions)
+    case serve(WebUIServeOptions)
     case auth([String])
     case mcp([String])
     case skills([String])
@@ -74,6 +76,9 @@ public struct CLIParser: Sendable {
         }
         if first == "task" || first == "--task" {
             return .task(Array(arguments.dropFirst()))
+        }
+        if first == "serve" || first == "--serve" || first == "web" {
+            return .serve(parseServeOptions(Array(arguments.dropFirst())))
         }
 
         var isYoloMode = false
@@ -243,6 +248,7 @@ public struct CLIParser: Sendable {
           mcp <command>               MCP 服务器配置与连接管理 (list, status, enable, disable, auth, add, remove)
           skills <command>            扩展 Skills 发现与激活管理 (list, info, enable, disable)
           exec <prompt>               非交互方式无头运行 Agent 任务 (支持管道输入)
+          serve [options]             启动 WebUI 工作台 (默认仅监听 127.0.0.1)
           review [options]            针对当前 Git 未提交变更执行严谨的代码审查
           doctor                      诊断系统环境、配置、凭据与扩展生态健康状况
           resume [sessionID]          恢复历史交互式会话 (或使用 --last 恢复最新会话)
@@ -255,6 +261,8 @@ public struct CLIParser: Sendable {
           lingxiagent "帮我分析当前项目结构"              启动 TUI 并自动发起首轮对话
           lingxiagent --yolo "运行测试并修复所有报错"       以 YOLO 自动放行模式启动并执行任务
           lingxiagent exec "查找所有未使用的公共方法"       在终端中直接运行无头任务
+          lingxiagent serve --port 8080                在本机 8080 端口打开 WebUI
+          lingxiagent serve --no-browser               只启动服务，不自动开浏览器
           git diff | lingxiagent exec "审查这批改动"       通过管道将上下文传给 Agent 执行
           lingxiagent review                          审查当前 Git 工作区改动
           lingxiagent doctor                          检查本地开发与凭据环境

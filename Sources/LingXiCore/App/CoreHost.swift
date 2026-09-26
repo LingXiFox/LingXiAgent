@@ -1042,6 +1042,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             runID: RunID(result.runID.rawValue),
             terminalReason: result.terminalReason ?? (result.status == .completed ? .completed : result.status == .cancelled ? .userCancelled : .runtimeFailure),
             resultPreview: preview.isEmpty ? nil : preview,
+            late: result.unclaimed == true,
             causal: CausalContext(sessionID: origin)
         )
     }

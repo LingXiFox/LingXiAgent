@@ -855,6 +855,9 @@ public actor AgentRuntime {
             terminalReason: status.isTerminal ? trace.terminalReason : nil,
             terminalTrace: status.isTerminal ? trace : nil
         )
+        // Read before any waiter is resumed: "unclaimed" means nobody was still blocking on
+        // this run when it terminated, which is exactly what makes the outcome a late arrival.
+        let unclaimed = resultWaiters[runID]?.isEmpty ?? true
         let result = status.isTerminal ? SubagentResult(
             childSessionID: run.sessionID,
             runID: runID,
@@ -863,7 +866,8 @@ public actor AgentRuntime {
             usage: usage,
             error: error,
             terminalReason: trace.terminalReason,
-            terminalTrace: trace
+            terminalTrace: trace,
+            unclaimed: unclaimed
         ) : nil
         do {
             if let result {
@@ -890,7 +894,6 @@ public actor AgentRuntime {
         if status.isTerminal { activeSessions.remove(run.sessionID) }
         if status.isTerminal { runDeadlines.removeValue(forKey: runID) }
         if let result {
-            let unclaimed = resultWaiters[runID]?.isEmpty ?? true
             results[runID] = result
             resumeWaiters(for: runID, result: result)
             await scheduler.complete(runID)

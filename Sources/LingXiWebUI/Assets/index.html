@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>LingXiAgent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 6l7 4h10l7-4-2 11-10 9-10-9z' fill='%23C24A14'/%3E%3Cpath d='M11 12h10l-5 8z' fill='%23F28A55'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="boot" class="boot">
+  <svg class="boot-mark" viewBox="0 0 32 32" aria-hidden="true">
+    <path d="M4 6l7 4h10l7-4-2 11-10 9-10-9z"/>
+  </svg>
+  <p class="boot-text">正在连接 LingXiAgent Core…</p>
+</div>
+
+<div class="workbench" id="workbench" hidden>
+
+  <!-- Project Rail -->
+  <nav class="rail" aria-label="Project rail">
+    <div class="rail-brand" title="LingXiAgent">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 6l7 4h10l7-4-2 11-10 9-10-9z"/><path d="M11 12h10l-5 8z" class="rail-brand-inner"/></svg>
+    </div>
+    <div class="rail-group" id="rail-projects" role="listbox" aria-label="Workspaces"></div>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn" id="rail-connection" type="button" title="Runtime connection" data-state="connecting">
+      <span class="rail-dot"></span>
+    </button>
+    <button class="rail-btn" id="rail-theme" type="button" title="切换明暗主题" aria-label="Toggle theme">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/><circle cx="8" cy="8" r="3"/></svg>
+    </button>
+  </nav>
+
+  <!-- Session Sidebar -->
+  <aside class="sidebar" id="sidebar" aria-label="Sessions">
+    <header class="sidebar-head">
+      <div class="sidebar-cwd" id="sidebar-cwd" title="Working directory">
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5A1.5 1.5 0 013 3h3l1.5 1.5H13A1.5 1.5 0 0114.5 6v6A1.5 1.5 0 0113 13.5H3A1.5 1.5 0 011.5 12z"/></svg>
+        <span class="cwd-name">…</span>
+      </div>
+      <div class="sidebar-actions">
+        <button class="icon-btn" id="btn-new-session" type="button" title="新建 Session (⌘N)">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-collapse-sidebar" type="button" title="收起侧栏">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3L4.5 8l5 5"/></svg>
+        </button>
+      </div>
+    </header>
+    <label class="sidebar-search">
+      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2L14 14"/></svg>
+      <input id="session-filter" type="search" placeholder="筛选 Session" autocomplete="off" spellcheck="false">
+      <kbd>⌘K</kbd>
+    </label>
+    <div class="session-list" id="session-list" role="listbox" aria-label="Session history"></div>
+    <footer class="sidebar-foot">
+      <button class="ghost-btn" id="btn-workflows" type="button">Workflows</button>
+      <button class="ghost-btn" id="btn-tasks" type="button">Tasks</button>
+    </footer>
+  </aside>
+
+  <!-- Main Conversation Workspace -->
+  <main class="stage">
+    <header class="stage-head">
+      <button class="icon-btn" id="btn-expand-sidebar" type="button" title="展开侧栏" hidden>
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3l5 5-5 5"/></svg>
+      </button>
+      <div class="stage-title">
+        <h1 id="session-title">No session</h1>
+        <div class="stage-meta" id="stage-meta"></div>
+      </div>
+      <div class="stage-run" id="stage-run"></div>
+    </header>
+
+    <div class="attention-dock" id="attention-dock" hidden></div>
+
+    <section class="timeline-wrap">
+      <ol class="timeline" id="timeline"></ol>
+      <div class="timeline-empty" id="timeline-empty">
+        <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M4 6l7 4h10l7-4-2 11-10 9-10-9z"/></svg>
+        <p class="empty-title">给本狐派点活</p>
+        <p class="empty-hint">输入 <code>/goal</code> 建立目标，或直接描述要做什么。真实 Runtime 已连接。</p>
+      </div>
+      <button class="jump-latest" id="jump-latest" type="button" hidden>跳到最新 ↓</button>
+    </section>
+
+    <!-- Composer -->
+    <section class="composer" id="composer" aria-label="Composer">
+      <div class="composer-strip" id="composer-strip"></div>
+      <div class="composer-attachments" id="composer-attachments" hidden></div>
+      <div class="composer-box">
+        <textarea id="prompt" rows="1" placeholder="向 LingXiAgent 描述任务… （Enter 发送 · Shift+Enter 换行 · / 命令）"
+                  spellcheck="false" aria-label="Prompt"></textarea>
+        <div class="composer-toolbar">
+          <button class="chip" id="chip-mode" type="button" data-menu="mode"><span class="chip-label">Build</span></button>
+          <button class="chip" id="chip-model" type="button" data-menu="model"><span class="chip-label">Model</span></button>
+          <button class="chip" id="chip-effort" type="button" data-menu="effort"><span class="chip-label">Effort</span></button>
+          <button class="chip" id="chip-permission" type="button" data-menu="permission"><span class="chip-label">Ask</span></button>
+          <div class="toolbar-spacer"></div>
+          <button class="icon-btn" id="btn-attach" type="button" title="添加文件引用">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 4.5L5 9a2.1 2.1 0 003 3l4.5-4.5a3.6 3.6 0 00-5-5L3 7a5 5 0 007 7"/></svg>
+          </button>
+          <button class="send-btn" id="btn-send" type="button" title="发送">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg>
+          </button>
+          <button class="stop-btn" id="btn-stop" type="button" title="停止当前 Run" hidden>
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="composer-status" id="composer-status"></div>
+    </section>
+
+    <!-- Bottom panel: appears on demand, not a permanent inspector -->
+    <section class="panel" id="panel" hidden>
+      <header class="panel-head">
+        <div class="panel-tabs" role="tablist">
+          <button class="panel-tab" role="tab" data-panel="context" type="button">Context</button>
+          <button class="panel-tab" role="tab" data-panel="tasks" type="button">Tasks</button>
+          <button class="panel-tab" role="tab" data-panel="subagents" type="button">Subagents</button>
+          <button class="panel-tab" role="tab" data-panel="diagnostics" type="button">Diagnostics</button>
+        </div>
+        <button class="icon-btn" id="panel-close" type="button" title="关闭面板">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </header>
+      <div class="panel-body" id="panel-body"></div>
+    </section>
+  </main>
+</div>
+
+<div class="menu-popover" id="menu-popover" hidden role="menu"></div>
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+<input type="file" id="file-input" multiple hidden>
+
+<script src="/js/state.js"></script>
+</body>
+</html>

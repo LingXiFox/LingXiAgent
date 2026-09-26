@@ -59,6 +59,7 @@ public enum CompletionCLI {
                     'mcp:MCP 服务器配置与连接管理'
                     'skills:扩展 Skills 发现与激活管理'
                     'exec:以非交互方式无头运行 Agent 任务'
+                    'serve:启动 WebUI 工作台 (本机 HTTP 服务)'
                     'review:审查当前 git 工作区改动并给出审查报告'
                     'doctor:系统运行环境与健康度诊断'
                     'resume:恢复历史会话'
@@ -125,7 +126,7 @@ public enum CompletionCLI {
             cur="${COMP_WORDS[COMP_CWORD]}"
             prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-            opts="auth mcp skills exec review doctor resume completion help version --yolo --model --cd --effort --no-alt-screen --enable-mcp --disable-mcp --enable-skill --disable-skill --help --version"
+            opts="auth mcp skills exec serve review doctor resume completion help version --yolo --model --cd --effort --no-alt-screen --enable-mcp --disable-mcp --enable-skill --disable-skill --help --version"
 
             case "$prev" in
                 auth)
@@ -159,6 +160,7 @@ public enum CompletionCLI {
         complete -c lingxiagent -n "__fish_use_subcommand" -a "mcp" -d "MCP 服务器管理"
         complete -c lingxiagent -n "__fish_use_subcommand" -a "skills" -d "Skills 技能管理"
         complete -c lingxiagent -n "__fish_use_subcommand" -a "exec" -d "非交互无头执行"
+        complete -c lingxiagent -n "__fish_use_subcommand" -a "serve" -d "启动 WebUI 工作台"
         complete -c lingxiagent -n "__fish_use_subcommand" -a "review" -d "代码审查"
         complete -c lingxiagent -n "__fish_use_subcommand" -a "doctor" -d "环境诊断"
         complete -c lingxiagent -n "__fish_use_subcommand" -a "resume" -d "恢复会话"

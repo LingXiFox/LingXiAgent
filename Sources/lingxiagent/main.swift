@@ -2,6 +2,7 @@ import Foundation
 import LingXiProtocol
 import LingXiApplication
 import LingXiTUI
+import LingXiWebUI
 import LingXiPlatform
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -23,6 +24,15 @@ case let .tui(options):
         }
 
         FileHandle.standardError.write(Data("Error: \(message)\n".utf8))
+        exit(1)
+    }
+
+case let .serve(options):
+    do {
+        try await ServeCLI.run(options: options)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
         exit(1)
     }
 

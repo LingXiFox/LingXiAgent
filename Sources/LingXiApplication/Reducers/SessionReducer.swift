@@ -598,10 +598,10 @@ public enum SessionReducer {
             syncSubagent(state: &state, changes: &changes, event: event, runID: runID,
                          status: status, terminalReason: nil, resultPreview: nil)
 
-        case let .subagentTerminal(runID, terminalReason, resultPreview):
+        case let .subagentTerminal(runID, terminalReason, resultPreview, late):
             state.activeSubagentRunIDs.remove(runID)
             syncSubagent(state: &state, changes: &changes, event: event, runID: runID,
-                         status: terminalReason.rawValue, terminalReason: terminalReason, resultPreview: resultPreview)
+                         status: terminalReason.rawValue, terminalReason: terminalReason, resultPreview: resultPreview, late: late)
 
         // MARK: 7. Context
         case let .contextStateChanged(snapshot):
@@ -1142,7 +1142,8 @@ public enum SessionReducer {
         runID: RunID,
         status: String,
         terminalReason: TerminalReason?,
-        resultPreview: String?
+        resultPreview: String?,
+        late: Bool = false
     ) {
         let nodeID = TimelineNodeID.subagent(runID)
         let hasRow = state.timelineNodes.contains { $0.id == nodeID }
@@ -1150,13 +1151,14 @@ public enum SessionReducer {
             node.status = status
             if let terminalReason { node.terminalReason = terminalReason }
             if let resultPreview { node.resultPreview = resultPreview }
+            if late { node.late = true }
             state.subagents[runID] = node
             state.updateNode(id: nodeID) { $0.kind = .subagent(node) }
             changes.transcriptNodesChanged.insert(nodeID)
             changes.nodeChanges.append(TimelineNodeChange(nodeID: nodeID, kind: .update))
         } else {
             let node = SubagentNode(runID: runID, parentRunID: runID, status: status,
-                                    terminalReason: terminalReason, resultPreview: resultPreview)
+                                    terminalReason: terminalReason, resultPreview: resultPreview, late: late)
             state.subagents[runID] = node
             state.appendNode(TimelineNode(id: nodeID, timestamp: event.timestamp, kind: .subagent(node)))
             changes.transcriptStructureChanged = true

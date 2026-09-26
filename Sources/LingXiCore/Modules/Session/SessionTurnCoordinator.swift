@@ -1045,10 +1045,10 @@ public actor SessionTurnCoordinator {
         _ = try? await eventLog.append(causal: causal, payload: .subagentStateChanged(runID: runID, status: status))
     }
 
-    public func recordSubagentTerminal(runID: RunID, terminalReason: TerminalReason, resultPreview: String?, causal: CausalContext) async {
+    public func recordSubagentTerminal(runID: RunID, terminalReason: TerminalReason, resultPreview: String?, late: Bool = false, causal: CausalContext) async {
         _ = try? await eventLog.append(
             causal: causal,
-            payload: .subagentTerminal(runID: runID, terminalReason: terminalReason, resultPreview: resultPreview)
+            payload: .subagentTerminal(runID: runID, terminalReason: terminalReason, resultPreview: resultPreview, late: late)
         )
     }
 

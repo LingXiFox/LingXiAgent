@@ -10,7 +10,8 @@ public enum ConnectionStatus: String, Sendable, Equatable, Codable {
     case failed
 }
 
-public struct ConnectionState: Sendable, Equatable {
+/// Codable so remote frontends (Web) can carry the same connection view the GUI reads in-process.
+public struct ConnectionState: Sendable, Equatable, Codable {
     public let status: ConnectionStatus
     public let detail: String?
     public let protocolVersion: ProtocolVersion?

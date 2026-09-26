@@ -36,6 +36,7 @@ license row is a build failure, not a review note.
 | `LingXiTUIComponents` | `Sources/LingXiTUIComponents` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Rendering primitives shared by TUI surfaces. |
 | `LingXiTUI` | `Sources/LingXiTUI` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Reference terminal frontend. |
 | `LingXiTUIApp` | `Sources/LingXiTUIApp` | PolyForm Noncommercial 1.0.0 | Source: yes; official release binary only | Executable wrapper for the TUI. |
+| `LingXiWebUI` | `Sources/LingXiWebUI` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Browser frontend and the `serve` HTTP/SSE host that drives the shared frontend contract. |
 | `LingXiFrontendKit` | `Apps/LingXiApp/Shared` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | SwiftUI shared component library (Phase 0 gate). |
 | `LingXiMacApp` | `Apps/LingXiApp/macOS` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | macOS native executable entry point. |
 | `FoxPlugin` | `Plugins/FoxPlugin` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Demo plugin; a template for external plugin authors. |

@@ -4,7 +4,7 @@ import LingXiClient
 
 /// 整个应用程序的全局产品级状态（唯一对外消费接口）。
 /// Frontend 只需消费 ApplicationState，严禁自行拼接底层细节。
-public struct ApplicationState: Sendable, Equatable {
+public struct ApplicationState: Sendable, Equatable, Codable {
     // MARK: - 1. Connection & Runtime
     public var connectionState: ConnectionState
     public var runtimeHealth: RuntimeHealth?

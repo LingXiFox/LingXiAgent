@@ -2,7 +2,7 @@ import Foundation
 import LingXiProtocol
 
 /// 运行时异常/错误节点。
-public struct ErrorNode: Sendable, Equatable {
+public struct ErrorNode: Sendable, Equatable, Codable {
     public let errorID: RuntimeErrorID
     public let code: String
     public let message: String

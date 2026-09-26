@@ -3,7 +3,7 @@ import LingXiProtocol
 
 /// 人机协同（HITL）交互节点。
 /// 统一统合 Permission / Question / Decision。
-public struct InteractionNode: Sendable, Equatable {
+public struct InteractionNode: Sendable, Equatable, Codable {
     public let interactionID: InteractionID
     public let kind: InteractionKind
     public let causal: CausalContext

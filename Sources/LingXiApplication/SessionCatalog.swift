@@ -75,3 +75,12 @@ public enum SessionCatalog {
         return result
     }
 }
+
+public extension SessionSummary {
+    /// The remote-frontend intent that opens this catalog entry.
+    /// `FrontendCommand` is the serializable mirror of `ApplicationAction`, so a web client
+    /// can drive the catalog with the same contract the GUI/TUI use in-process.
+    func toWireCommand() -> FrontendCommand {
+        .switchSession(sessionID: sessionID)
+    }
+}

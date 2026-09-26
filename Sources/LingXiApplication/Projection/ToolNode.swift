@@ -2,7 +2,7 @@ import Foundation
 import LingXiProtocol
 
 /// 工具执行阶段。
-public enum ToolExecutionPhase: String, Sendable, Equatable {
+public enum ToolExecutionPhase: String, Sendable, Equatable, Codable {
     case requested
     case waitingPermission
     case scheduled
@@ -15,7 +15,7 @@ public enum ToolExecutionPhase: String, Sendable, Equatable {
 /// 工具执行节点。
 /// 契约：同一个 ToolCallID 聚合成一个单一 ToolNode。
 /// ToolCall 与 ToolResult 绝不拆分为两个独立产品节点。
-public struct ToolNode: Sendable, Equatable {
+public struct ToolNode: Sendable, Equatable, Codable {
     public let callID: ToolCallID
     public var toolName: String
     public var argumentsJSON: String
@@ -32,6 +32,63 @@ public struct ToolNode: Sendable, Equatable {
     public var executorFinishedAt: Date?
     public var resultCommittedAt: Date?
     public var projectionReceivedAt: Date?
+
+    /// Shared front-end classification (see `ToolFamily` in LingXiProtocol).
+    /// Derived from `toolName`, so it can never go stale; `toolFamily` is additionally
+    /// written into the encoded representation for remote frontends.
+    public var toolFamily: ToolFamily {
+        // ToolNode carries no capability declaration; classification is name-driven.
+        ToolFamily.classify(toolName: toolName, capabilityKind: nil)
+    }
+
+    /// `executionDuration` / `toolFamily` are derived; `toolFamily` is still put on the
+    /// wire (explicit `encode(to:)` below) while `executionDuration` is not.
+    private enum CodingKeys: String, CodingKey {
+        case callID, toolName, argumentsJSON, phase, permissionID, stdout, stderr
+        case result, error, modelStepID, requestedAt, admittedAt, executorStartedAt
+        case executorFinishedAt, resultCommittedAt, projectionReceivedAt, toolFamily
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.callID = try container.decode(ToolCallID.self, forKey: .callID)
+        self.toolName = try container.decode(String.self, forKey: .toolName)
+        self.argumentsJSON = try container.decode(String.self, forKey: .argumentsJSON)
+        self.phase = try container.decode(ToolExecutionPhase.self, forKey: .phase)
+        self.permissionID = try container.decodeIfPresent(PermissionID.self, forKey: .permissionID)
+        self.stdout = try container.decode(String.self, forKey: .stdout)
+        self.stderr = try container.decode(String.self, forKey: .stderr)
+        self.result = try container.decodeIfPresent(ToolResultSnapshot.self, forKey: .result)
+        self.error = try container.decodeIfPresent(RuntimeError.self, forKey: .error)
+        self.modelStepID = try container.decodeIfPresent(ModelStepID.self, forKey: .modelStepID)
+        self.requestedAt = try container.decodeIfPresent(Date.self, forKey: .requestedAt)
+        self.admittedAt = try container.decodeIfPresent(Date.self, forKey: .admittedAt)
+        self.executorStartedAt = try container.decodeIfPresent(Date.self, forKey: .executorStartedAt)
+        self.executorFinishedAt = try container.decodeIfPresent(Date.self, forKey: .executorFinishedAt)
+        self.resultCommittedAt = try container.decodeIfPresent(Date.self, forKey: .resultCommittedAt)
+        self.projectionReceivedAt = try container.decodeIfPresent(Date.self, forKey: .projectionReceivedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(callID, forKey: .callID)
+        try container.encode(toolName, forKey: .toolName)
+        try container.encode(argumentsJSON, forKey: .argumentsJSON)
+        try container.encode(phase, forKey: .phase)
+        try container.encodeIfPresent(permissionID, forKey: .permissionID)
+        try container.encode(stdout, forKey: .stdout)
+        try container.encode(stderr, forKey: .stderr)
+        try container.encodeIfPresent(result, forKey: .result)
+        try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(modelStepID, forKey: .modelStepID)
+        try container.encodeIfPresent(requestedAt, forKey: .requestedAt)
+        try container.encodeIfPresent(admittedAt, forKey: .admittedAt)
+        try container.encodeIfPresent(executorStartedAt, forKey: .executorStartedAt)
+        try container.encodeIfPresent(executorFinishedAt, forKey: .executorFinishedAt)
+        try container.encodeIfPresent(resultCommittedAt, forKey: .resultCommittedAt)
+        try container.encodeIfPresent(projectionReceivedAt, forKey: .projectionReceivedAt)
+        try container.encode(toolFamily, forKey: .toolFamily)
+    }
 
     public var executionDuration: Duration? {
         if let execMs = result?.timing.executionMilliseconds, execMs >= 0 {

@@ -90,6 +90,9 @@ fi
 if [ -d "$BIN_DIR/LingXiAgent_LingXiCore.bundle" ]; then
     cp -R "$BIN_DIR/LingXiAgent_LingXiCore.bundle" "$ALPHA_BIN_DIR/"
 fi
+if [ -d "$BIN_DIR/LingXiAgent_LingXiWebUI.bundle" ]; then
+    cp -R "$BIN_DIR/LingXiAgent_LingXiWebUI.bundle" "$ALPHA_BIN_DIR/"
+fi
 
 # Create convenient symlink at repo root
 ln -sf "dist/alpha-1/bin/lingxiagent" "$SYMLINK_PATH"

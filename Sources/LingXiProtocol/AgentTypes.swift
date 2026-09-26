@@ -215,8 +215,11 @@ public struct SubagentResult: Sendable, Equatable, Codable {
     public let terminalReason: TerminalReason?
     public let terminalTrace: AgentTerminalTrace?
     public let timestamp: Date
+    /// Set when no turn was waiting on this run when it terminated, i.e. the child finished
+    /// after its originating turn had already stopped blocking on it.
+    public let unclaimed: Bool?
 
-    public init(childSessionID: SessionID, runID: AgentRunID, status: AgentRunStatus, finalText: String? = nil, touchedResources: [ToolTouchedResource] = [], artifactReferences: [String] = [], usage: AgentRunUsage = AgentRunUsage(), error: CoreError? = nil, terminalReason: TerminalReason? = nil, terminalTrace: AgentTerminalTrace? = nil, timestamp: Date = .now) {
+    public init(childSessionID: SessionID, runID: AgentRunID, status: AgentRunStatus, finalText: String? = nil, touchedResources: [ToolTouchedResource] = [], artifactReferences: [String] = [], usage: AgentRunUsage = AgentRunUsage(), error: CoreError? = nil, terminalReason: TerminalReason? = nil, terminalTrace: AgentTerminalTrace? = nil, timestamp: Date = .now, unclaimed: Bool? = nil) {
         self.childSessionID = childSessionID
         self.runID = runID
         self.status = status
@@ -228,6 +231,7 @@ public struct SubagentResult: Sendable, Equatable, Codable {
         self.terminalReason = terminalReason
         self.terminalTrace = terminalTrace
         self.timestamp = timestamp
+        self.unclaimed = unclaimed
     }
 }
 

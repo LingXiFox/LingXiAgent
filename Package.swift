@@ -2,6 +2,36 @@
 
 import PackageDescription
 
+// The macOS GUI is SwiftUI-only source and is not part of the CLI / TUI / WebUI delivery scope;
+// compiling it on Linux or Windows dies on `import SwiftUI`. The manifest is the one place that
+// decides which targets exist per host, so the GUI is admitted here rather than scattered as
+// `#if os(...)` through the sources.
+#if os(macOS)
+let guiProducts: [Product] = [
+    .library(name: "LingXiFrontendKit", targets: ["LingXiFrontendKit"]),
+    .executable(name: "LingXiMacApp", targets: ["LingXiMacApp"]),
+]
+let guiTargets: [Target] = [
+    // FrontendKit: macOS/iOS GUI Shared Component Library (Strictly no LingXiCore)
+    .target(
+        name: "LingXiFrontendKit",
+        dependencies: ["LingXiApplication", "LingXiClient", "LingXiProtocol"],
+        path: "Apps/LingXiApp/Shared"
+    ),
+    // macOS GUI executable entry. Wrapped into LingXi.app by Scripts/bundle-mac-app.sh.
+    .executableTarget(
+        name: "LingXiMacApp",
+        dependencies: ["LingXiFrontendKit", "LingXiClient", "LingXiProtocol"],
+        path: "Apps/LingXiApp/macOS"
+    ),
+]
+let guiTestDependency: [Target.Dependency] = [.target(name: "LingXiFrontendKit", condition: .when(platforms: [.macOS]))]
+#else
+let guiProducts: [Product] = []
+let guiTargets: [Target] = []
+let guiTestDependency: [Target.Dependency] = []
+#endif
+
 let package = Package(
     name: "LingXiAgent",
     platforms: [.macOS(.v14)],
@@ -11,10 +41,8 @@ let package = Package(
         .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
         .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
         .library(name: "LingXiPluginSDK", targets: ["LingXiPluginSDK"]),
-        .library(name: "LingXiFrontendKit", targets: ["LingXiFrontendKit"]),
-        .executable(name: "LingXiMacApp", targets: ["LingXiMacApp"]),
         .executable(name: "FoxPlugin", targets: ["FoxPlugin"]),
-    ],
+    ] + guiProducts,
     targets: [
         // 演示与参考插件：FoxPlugin
         .executableTarget(
@@ -60,7 +88,15 @@ let package = Package(
         // Unified Interactive CLI tool: lingxiagent (Pure presentation, strictly no LingXiCore)
         .executableTarget(
             name: "lingxiagent",
-            dependencies: ["LingXiProtocol", "LingXiApplication", "LingXiTUI", "LingXiPlatform"]
+            dependencies: ["LingXiProtocol", "LingXiApplication", "LingXiTUI", "LingXiWebUI", "LingXiPlatform"]
+        ),
+        // WebUI：与 CLI/TUI 并列的正式浏览器前端，仅通过 Frontend 契约访问 Runtime（strictly no LingXiCore）。
+        .target(
+            name: "LingXiWebUI",
+            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiApplication", "LingXiClient"],
+            resources: [
+                .copy("Assets")
+            ]
         ),
         // Operations & Diagnostics CLI: lingxiagent-ops (Links LingXiCore for backend administration)
         .executableTarget(
@@ -78,27 +114,14 @@ let package = Package(
             name: "LingXiTUIApp",
             dependencies: ["LingXiTUI"]
         ),
-        // FrontendKit: macOS/iOS GUI Shared Component Library (Strictly no LingXiCore)
-        .target(
-            name: "LingXiFrontendKit",
-            dependencies: ["LingXiApplication", "LingXiClient", "LingXiProtocol"],
-            path: "Apps/LingXiApp/Shared"
-        ),
-
-        // macOS GUI executable entry. Wrapped into LingXi.app by Scripts/bundle-mac-app.sh.
-        .executableTarget(
-            name: "LingXiMacApp",
-            dependencies: ["LingXiFrontendKit", "LingXiClient", "LingXiProtocol"],
-            path: "Apps/LingXiApp/macOS"
-        ),
+        // FrontendKit / LingXiMacApp are declared in `guiTargets` above.
 
         .testTarget(
             name: "LingXiAgentTests",
             dependencies: [
                 "LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication",
-                "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK",
-                .target(name: "LingXiFrontendKit", condition: .when(platforms: [.macOS]))
-            ],
+                "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK"
+            ] + guiTestDependency,
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
         ),
@@ -144,6 +167,6 @@ let package = Package(
             dependencies: ["LingXiClient", "LingXiProtocol"],
             path: "Evals/Runner"
         ),
-    ],
+    ] + guiTargets,
     swiftLanguageModes: [.v5]
 )

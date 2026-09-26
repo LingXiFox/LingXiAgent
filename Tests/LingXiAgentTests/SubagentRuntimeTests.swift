@@ -320,7 +320,7 @@ struct SubagentRuntimeTests {
                 #expect(envelope.causal.sessionID == primary, "child lifecycle must be attributed to the origin session")
                 switch envelope.payload {
                 case .subagentCreated: sawCreated = true
-                case let .subagentTerminal(_, reason, preview):
+                case let .subagentTerminal(_, reason, preview, _):
                     #expect(reason == .completed)
                     terminalPreview = preview
                 default: break

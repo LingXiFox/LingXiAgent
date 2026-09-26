@@ -3,11 +3,22 @@ import LingXiProtocol
 
 /// 时间线节点稳定唯一标识符。
 /// 严格由权威 Domain ID 派生，杜绝随机 UUID 或前端本地序号。
-public struct TimelineNodeID: Hashable, Sendable, CustomStringConvertible {
+public struct TimelineNodeID: Hashable, Sendable, Codable, CustomStringConvertible {
     public let rawValue: String
 
     public init(_ rawValue: String) {
         self.rawValue = rawValue
+    }
+
+    /// Wire representation is a bare JSON string (not `{"rawValue": ...}`),
+    /// so remote frontends index timeline nodes with plain strings.
+    public init(from decoder: Decoder) throws {
+        self.rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 
     public static func message(_ id: MessageID, modelStepID: ModelStepID? = nil) -> TimelineNodeID {
@@ -42,7 +53,7 @@ public struct TimelineNodeID: Hashable, Sendable, CustomStringConvertible {
 }
 
 /// 时间线节点：面向 Frontend 的稳定产品级视图单元。
-public struct TimelineNode: Sendable, Equatable, Identifiable {
+public struct TimelineNode: Sendable, Equatable, Identifiable, Codable {
     public let id: TimelineNodeID
     public var timestamp: Date
     public var kind: NodeKind
@@ -55,7 +66,9 @@ public struct TimelineNode: Sendable, Equatable, Identifiable {
         self.modelStepID = modelStepID
     }
 
-    public enum NodeKind: Sendable, Equatable {
+    /// Codable shape: `{"message": {"_0": {...}}}`, `{"thinking": {"_0": {...}}}`, ...
+    /// One key per case, named after the case, holding that case's unlabeled payload.
+    public enum NodeKind: Sendable, Equatable, Codable {
         case message(MessageNode)
         case thinking(ThinkingNode)
         case tool(ToolNode)

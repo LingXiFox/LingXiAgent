@@ -24,6 +24,9 @@ cp "${BIN_DIR}/LingXiCoreHost" "${APP_BUNDLE}/Contents/MacOS/LingXiCoreHost"
 # Inside the .app, Bundle.main is the app itself, so the Core's SwiftPM resource
 # bundle (default configs, provider catalogs) must live in Contents/Resources.
 cp -R "${BIN_DIR}/LingXiAgent_LingXiCore.bundle" "${APP_BUNDLE}/Contents/Resources/"
+if [ -d "${BIN_DIR}/LingXiAgent_LingXiWebUI.bundle" ]; then
+    cp -R "${BIN_DIR}/LingXiAgent_LingXiWebUI.bundle" "${APP_BUNDLE}/Contents/Resources/"
+fi
 
 cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -62,6 +62,42 @@ struct SubagentCrossTurnProjectionTests {
         #expect(state.activeSubagentRunIDs.isEmpty)
     }
 
+    @Test("a child that outlives its turn is marked late, one answered in time is not")
+    func lateResultIsProjected() throws {
+        var lateState = SessionViewState(sessionID: sessionID)
+        SessionReducer.reduce(state: &lateState, event: event(1, .subagentCreated(runID: runID, parentRunID: runID)), connectionState: connection)
+        SessionReducer.reduce(
+            state: &lateState,
+            event: event(2, .subagentTerminal(runID: runID, terminalReason: .completed, resultPreview: "arrived after the turn", late: true)),
+            connectionState: connection
+        )
+        #expect(lateState.subagents[runID]?.late == true)
+
+        var onTime = SessionViewState(sessionID: sessionID)
+        SessionReducer.reduce(state: &onTime, event: event(3, .subagentCreated(runID: runID, parentRunID: runID)), connectionState: connection)
+        SessionReducer.reduce(
+            state: &onTime,
+            event: event(4, .subagentTerminal(runID: runID, terminalReason: .completed, resultPreview: "in time")),
+            connectionState: connection
+        )
+        #expect(onTime.subagents[runID]?.late == false)
+
+        // `late` is only carried when set, so the common payload keeps its pre-extension shape.
+        let quietData = try JSONEncoder().encode(SessionEventPayload.subagentTerminal(
+            runID: runID, terminalReason: .completed, resultPreview: nil
+        ))
+        let quiet = try #require(try JSONSerialization.jsonObject(with: quietData) as? [String: Any])
+        #expect(quiet["late"] == nil)
+        #expect(try JSONDecoder().decode(SessionEventPayload.self, from: quietData)
+                == .subagentTerminal(runID: runID, terminalReason: .completed, resultPreview: nil))
+
+        let flagged = try JSONEncoder().encode(SessionEventPayload.subagentTerminal(
+            runID: runID, terminalReason: .completed, resultPreview: nil, late: true
+        ))
+        #expect(try JSONDecoder().decode(SessionEventPayload.self, from: flagged)
+                == .subagentTerminal(runID: runID, terminalReason: .completed, resultPreview: nil, late: true))
+    }
+
     @Test("resultPreview survives the wire codec, and pre-extension bytes still decode")
     func payloadCodec() throws {
         let withPreview = SessionEventPayload.subagentTerminal(

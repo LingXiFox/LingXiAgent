@@ -73,6 +73,9 @@ else
     if [ -d "$BIN_DIR/LingXiAgent_LingXiCore.bundle" ]; then
         cp -R "$BIN_DIR/LingXiAgent_LingXiCore.bundle" "$STAGING_DIR/"
     fi
+    if [ -d "$BIN_DIR/LingXiAgent_LingXiWebUI.bundle" ]; then
+        cp -R "$BIN_DIR/LingXiAgent_LingXiWebUI.bundle" "$STAGING_DIR/"
+    fi
     mkdir -p "$STAGING_DIR/Sidecars/browser-host"
     if [ -d "$ROOT_DIR/Sidecars/browser-host" ]; then
         cp -f "$ROOT_DIR/Sidecars/browser-host/index.mjs" "$STAGING_DIR/Sidecars/browser-host/"

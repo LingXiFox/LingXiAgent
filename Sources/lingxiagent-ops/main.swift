@@ -8,6 +8,12 @@ let args = Array(CommandLine.arguments.dropFirst())
 let route = CLIParser.parse(arguments: args)
 
 switch route {
+case .serve:
+    // The WebUI is served by the pure-presentation CLI, which reaches Core over the
+    // same stdio contract as every other frontend; ops has nothing to add here.
+    FileHandle.standardError.write(Data("serve belongs to the `lingxiagent` executable: run `lingxiagent serve`.\n".utf8))
+    exit(2)
+
 case let .auth(authArgs):
     AuthCLI.installSignalHandlers()
     do {

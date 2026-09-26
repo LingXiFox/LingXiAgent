@@ -152,7 +152,7 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
     // MARK: - Subagent
     case subagentCreated(runID: RunID, parentRunID: RunID)
     case subagentStateChanged(runID: RunID, status: String)
-    case subagentTerminal(runID: RunID, terminalReason: TerminalReason, resultPreview: String?)
+    case subagentTerminal(runID: RunID, terminalReason: TerminalReason, resultPreview: String?, late: Bool = false)
 
     // MARK: - Provider
     case providerRequestStateChanged(requestID: ProviderRequestID, state: ProviderRequestState, detail: String? = nil, statusCode: Int? = nil)
@@ -172,7 +172,7 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
         case stepID, reasoningStreamID, assistantStreamID, reasoningFinalIndex, metadata
         case toolInvocation, callID, permissionID, stdoutStreamID, stderrStreamID, toolResult, stdoutFinalIndex, stderrFinalIndex
         case interaction, interactionID, resolution
-        case parentRunID, status, resultPreview
+        case parentRunID, status, resultPreview, late
         case requestID, providerState, detail, statusCode
         case contextState, contextPolicy, contextCompacted
         case rawValue
@@ -307,7 +307,8 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
             self = .subagentTerminal(
                 runID: runID,
                 terminalReason: reason,
-                resultPreview: try container.decodeIfPresent(String.self, forKey: .resultPreview)
+                resultPreview: try container.decodeIfPresent(String.self, forKey: .resultPreview),
+                late: try container.decodeIfPresent(Bool.self, forKey: .late) ?? false
             )
 
         // Provider
@@ -465,11 +466,13 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
             try container.encode("subagentStateChanged", forKey: .kind)
             try container.encode(runID, forKey: .runID)
             try container.encode(status, forKey: .status)
-        case let .subagentTerminal(runID, reason, resultPreview):
+        case let .subagentTerminal(runID, reason, resultPreview, late):
             try container.encode("subagentTerminal", forKey: .kind)
             try container.encode(runID, forKey: .runID)
             try container.encode(reason, forKey: .terminalReason)
             try container.encodeIfPresent(resultPreview, forKey: .resultPreview)
+            // Omitted unless set so the payload keeps the shape every other frontend already reads.
+            if late { try container.encode(true, forKey: .late) }
 
         // Provider
         case let .providerRequestStateChanged(requestID, state, detail, statusCode):

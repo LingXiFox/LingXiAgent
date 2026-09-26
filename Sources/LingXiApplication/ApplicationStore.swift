@@ -185,7 +185,23 @@ public actor ApplicationStore {
         guard let active = state.activeSessionID else { return }
         let owner = state.activeSessionState?.pendingInteractions
             .first(where: { $0.interactionID == interactionID })?.causal.sessionID ?? active
-        _ = try? await client.interaction.resolve(sessionID: owner, interactionID: interactionID, resolution: resolution)
+        do {
+            _ = try await client.interaction.resolve(sessionID: owner, interactionID: interactionID, resolution: resolution)
+        } catch {
+            return
+        }
+        // A child Agent's ask is mirrored into the root session so the operator can answer it
+        // without switching away. Once the owning session has resolved it the mirror is stale,
+        // and a stale mirror keeps the "action required" band (and its blocking card) alive.
+        guard owner != active,
+              state.activeSessionState?.pendingInteractions.contains(where: { $0.interactionID == interactionID }) == true
+        else { return }
+        state.activeSessionState?.pendingInteractions.removeAll { $0.interactionID == interactionID }
+        if state.activeSessionState?.activeInteraction?.interactionID == interactionID {
+            state.activeSessionState?.activeInteraction = nil
+        }
+        state.recalculateStatus()
+        notifyStateChanged()
     }
 
     /// Todos are Core state that only travels inside a full session snapshot, and loading that
