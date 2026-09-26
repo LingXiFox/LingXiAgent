@@ -60,12 +60,15 @@ private func installSignalSources() {
 #endif
 
 #if os(Windows)
-/// Win32 has no POSIX signal delivery: a console Ctrl-C, a window close and a logoff all come
-/// through one handler, and returning `true` means "cleanup started, stay alive for it".
-private func consoleCtrlHandler(_ controlType: DWORD) -> Bool {
+/// Win32 has no POSIX signal delivery: Ctrl-C, Ctrl-Break, closing the console, logging off and
+/// shutting down all arrive through one callback. Returning true says "teardown started, do not
+/// run the default ExitProcess underneath it"; a second event force-exits from inside
+/// `requestTermination`. Typed as the SDK's own alias so the C calling convention is inferred
+/// rather than spelled -- a plain Swift function is not a C function pointer.
+private let consoleCtrlHandler: PHANDLER_ROUTINE? = { controlType in
+    // 0 CTRL_C, 1 CTRL_BREAK, 2 CTRL_CLOSE, 5 CTRL_LOGOFF, 6 CTRL_SHUTDOWN.
     switch controlType {
-    case DWORD(CTRL_C_EVENT), DWORD(CTRL_BREAK_EVENT),
-         DWORD(CTRL_CLOSE_EVENT), DWORD(CTRL_LOGOFF_EVENT), DWORD(CTRL_SHUTDOWN_EVENT):
+    case 0, 1, 2, 5, 6:
         PlatformTermination.requestTermination()
         return true
     default:
