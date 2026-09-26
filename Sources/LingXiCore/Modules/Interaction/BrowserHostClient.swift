@@ -139,6 +139,24 @@ public final class BrowserHostClient: @unchecked Sendable {
                     )
                 )
             }
+            // A sidecar that dies before answering -- which is exactly how a machine without
+            // Playwright presents in real mode, because node exits when the require fails --
+            // reaches here as a closed connection or an unanswered request. Reporting the raw
+            // transport error leaves a caller unable to tell "missing dependency" from "broken
+            // session", so real mode names the capability and keeps the cause in the reason.
+            let transportGone: Bool
+            switch rpcError {
+            case .connectionClosed, .requestTimeout: transportGone = true
+            default: transportGone = false
+            }
+            if expectedMode == .real, transportGone {
+                throw InteractionError.capability(
+                    .featureUnsupported(
+                        feature: "BrowserHost",
+                        reason: "Sidecar produced no handshake in real mode (node + playwright required): \(rpcError)"
+                    )
+                )
+            }
             throw rpcError
         } catch {
             // A sidecar that dies before answering is how "this platform has no real browser
