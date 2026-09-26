@@ -35,32 +35,13 @@ public enum ServeCLI {
     }
 
     /// Ctrl-C must tear the web server down rather than kill the process mid-flight,
-    /// otherwise the CoreHost child would be left behind.
+    /// otherwise the CoreHost child would be left behind. The mechanism differs per platform
+    /// (POSIX signals, Win32 console control), so it belongs to the platform layer.
     private static func installSignalHandlers(terminal: WebUITerminal) {
-        let signals: [Int32] = [SIGINT, SIGTERM]
-        var hits = 0
-        let counter = NSLock()
-        for signalNumber in signals {
-            signal(signalNumber, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
-            source.setEventHandler {
-                counter.lock()
-                hits += 1
-                let count = hits
-                counter.unlock()
-                if count == 1 {
-                    terminal.stop(reason: "signal \(signalNumber)")
-                } else {
-                    FileHandle.standardError.write(Data("\nForcing exit.\n".utf8))
-                    _exit(130)
-                }
-            }
-            source.resume()
-            retainedSources.append(source)
+        PlatformTermination.installHandler {
+            terminal.stop(reason: "operator requested termination")
         }
     }
-
-    private static var retainedSources: [DispatchSourceSignal] = []
 
     static func openDefaultBrowser(url: String) {
         let process = Process()
