@@ -4359,20 +4359,75 @@ extension CoreHost {
     }
 
     // MARK: - 10. Workspace
+    /// One `git` invocation's stdout, or nil when git is missing, failed or ran out of time.
+    /// Git truth belongs to Core: a frontend may render it, it may never shell out for it.
+    private func gitOutput(_ arguments: [String]) async -> String? {
+        guard let gitExe = LingXiPlatform.process.resolveExecutable(
+            named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) else { return nil }
+        guard let result = try? await runToolProcess(
+            invocation: ToolProcessInvocation(executable: gitExe, arguments: arguments),
+            cwd: extensionPlatform.projectRoot,
+            environment: EnvironmentSanitizer.sanitized(),
+            timeoutMilliseconds: 3_000
+        ), result.exitCode == 0 else { return nil }
+        return result.stdout
+    }
+
     public func getWorkspaceSummary() async -> WorkspaceSummary {
         let rootPath = self.workspaceURL.path
-        let isGit = FileManager.default.fileExists(atPath: self.workspaceURL.appendingPathComponent(".git").path)
+        let gitMarker = self.workspaceURL.appendingPathComponent(".git").path
+        let isGit = FileManager.default.fileExists(atPath: gitMarker)
         let isIndexing = await codebaseGraphEngine.isIndexingInProgress
         let isIndexed = await codebaseGraphEngine.isIndexed
         let indexingState: String = isIndexing ? "indexing" : (isIndexed ? "ready" : "pending")
         let nodes = isIndexed ? await codebaseGraphEngine.nodeCount : nil
         let edges = isIndexed ? await codebaseGraphEngine.edgeCount : nil
+
+        var gitBranch: String?
+        var worktreeRoot: String?
+        var isLinkedWorktree = false
+        var changedFileCount: Int?
+        var isDirty: Bool?
+
+        if isGit {
+            // porcelain v2 carries the branch and every changed/untracked entry in one call.
+            // `--ignored` stays off so a dirty count means work, not build output noise.
+            if let status = await gitOutput(["status", "--porcelain=v2", "--branch"]) {
+                var entries = 0
+                for line in status.split(separator: "\n") {
+                    if line.hasPrefix("# branch.head ") {
+                        let name = line.dropFirst("# branch.head ".count).trimmingCharacters(in: .whitespaces)
+                        gitBranch = name == "(detached)" ? nil : name
+                    } else if !line.hasPrefix("#") && !line.isEmpty {
+                        entries += 1
+                    }
+                }
+                changedFileCount = entries
+                isDirty = entries > 0
+            }
+            // A linked worktree resolves its common dir outside its own top level.
+            if let resolved = await gitOutput(["rev-parse", "--git-common-dir", "--show-toplevel"]) {
+                let lines = resolved.split(separator: "\n").map(String.init)
+                if lines.count >= 2 {
+                    worktreeRoot = lines[1]
+                    let common = URL(fileURLWithPath: lines[0]).standardizedFileURL.path
+                    isLinkedWorktree = common != URL(fileURLWithPath: lines[1])
+                        .appendingPathComponent(".git").standardizedFileURL.path
+                }
+            }
+        }
+
         return WorkspaceSummary(
             rootPath: rootPath,
             isGitRepository: isGit,
             codebaseNodes: nodes,
             codebaseEdges: edges,
-            indexingState: indexingState
+            indexingState: indexingState,
+            gitBranch: gitBranch,
+            worktreeRoot: worktreeRoot,
+            isLinkedWorktree: isLinkedWorktree,
+            changedFileCount: changedFileCount,
+            isDirty: isDirty
         )
     }
 
@@ -4388,11 +4443,32 @@ extension CoreHost {
 
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
         let diff = (try? await workspaceDiff()) ?? ""
+        // Same revision range as the displayed diff, so the numbers describe what is on screen.
+        var counts: (add: Int, del: Int, files: Int)?
+        if let numstat = await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-textconv", "--"]) {
+            var add = 0
+            var del = 0
+            var files = 0
+            for line in numstat.split(separator: "\n") {
+                let columns = line.split(separator: "\t", omittingEmptySubsequences: false)
+                guard columns.count >= 3 else { continue }
+                // A binary entry reports "-" for both counts: a changed file, no line delta.
+                if columns[0] != "-", let value = Int(columns[0]) { add += value }
+                if columns[1] != "-", let value = Int(columns[1]) { del += value }
+                files += 1
+            }
+            counts = (add, del, files)
+        }
         return ResponseEnvelope(
             requestID: envelope.requestID,
             revision: currentRevision,
             eventCursor: await runtimeEventLog.currentCursor(),
-            payload: WorkspaceDiffSummary(diff: diff)
+            payload: WorkspaceDiffSummary(
+                diff: diff,
+                addedLines: counts?.add,
+                deletedLines: counts?.del,
+                changedFiles: counts?.files
+            )
         )
     }
 

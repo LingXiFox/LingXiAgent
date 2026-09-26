@@ -958,6 +958,15 @@ function diffStat(text) {
   return add || del ? { add, del } : null;
 }
 
+/* The workspace delta is counted by Core (`git diff --numstat`, same range as the shown
+   diff), so counting `+`/`-` here stays only the fallback for an older Core. */
+function workspaceDiffStat(diff) {
+  const add = Number(pick(diff, 'addedLines', 'added_lines'));
+  const del = Number(pick(diff, 'deletedLines', 'deleted_lines'));
+  if (Number.isFinite(add) && Number.isFinite(del)) return { add, del };
+  return diffStat(String(diff.diff || ''));
+}
+
 function phaseLabelFor(phase) {
   return ({
     requested: 'queued', waitingPermission: 'waiting', scheduled: 'scheduled',
@@ -1238,13 +1247,16 @@ function gitInfo() {
   const workspace = store.state.currentWorkspace || {};
   const branch = pick(workspace, 'gitBranch', 'git_branch', 'branch');
   const dirty = pick(workspace, 'changedFileCount', 'changed_file_count', 'dirtyCount', 'dirty_count');
+  const worktree = pick(workspace, 'worktreeRoot', 'worktree_root');
   return {
     rootPath: typeof pick(workspace, 'rootPath') === 'string' ? pick(workspace, 'rootPath') : null,
     isRepository: Boolean(pick(workspace, 'isGitRepository', 'is_git_repository')),
-    /* Neither a branch nor a dirty count exists in the projection; the slots stay and
-       simply render nothing rather than showing a guessed value. */
+    /* Core computes all of this: `gitBranch` is nil when detached or unknown, and a nil
+       dirty count is "not measured yet", which is not the same claim as a dirty count of 0. */
     branch: typeof branch === 'string' ? branch : null,
     dirty: typeof dirty === 'number' ? dirty : null,
+    linked: Boolean(pick(workspace, 'isLinkedWorktree', 'is_linked_worktree')),
+    worktreeRoot: typeof worktree === 'string' ? worktree : null,
   };
 }
 
@@ -1768,7 +1780,7 @@ function renderStrip() {
 
   const diff = store.state.workspaceDiff;
   if (diff && pick(diff, 'diff')) {
-    const stat = diffStat(String(diff.diff));
+    const stat = workspaceDiffStat(diff);
     if (stat) {
       const item = el('span', 'strip-item');
       item.append(el('span', 'k', 'diff'));

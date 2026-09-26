@@ -530,21 +530,55 @@ public struct WorkspaceSummary: Codable, Sendable, Equatable {
     public var codebaseNodes: Int?
     public var codebaseEdges: Int?
     public var indexingState: String?
+    /// Git 真值由 Core 计算并投影，前端不允许自己 shell 一次。
+    /// nil 一律表示「未知」，不表示「没有」；只有 isGitRepository 为 true 时才可能非 nil。
+    public var gitBranch: String?
+    /// 工作树顶层（`git rev-parse --show-toplevel`），可能与 workspace root 不同。
+    public var worktreeRoot: String?
+    /// `.git` 是文件而非目录：当前 checkout 是一个 linked worktree。
+    public var isLinkedWorktree: Bool
+    /// `git status` 报告的已改动与未跟踪文件数；nil = 还没测出来，0 = 干净。
+    public var changedFileCount: Int?
+    public var isDirty: Bool?
 
-    public init(rootPath: String, isGitRepository: Bool, codebaseNodes: Int? = nil, codebaseEdges: Int? = nil, indexingState: String? = nil) {
+    public init(
+        rootPath: String,
+        isGitRepository: Bool,
+        codebaseNodes: Int? = nil,
+        codebaseEdges: Int? = nil,
+        indexingState: String? = nil,
+        gitBranch: String? = nil,
+        worktreeRoot: String? = nil,
+        isLinkedWorktree: Bool = false,
+        changedFileCount: Int? = nil,
+        isDirty: Bool? = nil
+    ) {
         self.rootPath = rootPath
         self.isGitRepository = isGitRepository
         self.codebaseNodes = codebaseNodes
         self.codebaseEdges = codebaseEdges
         self.indexingState = indexingState
+        self.gitBranch = gitBranch
+        self.worktreeRoot = worktreeRoot
+        self.isLinkedWorktree = isLinkedWorktree
+        self.changedFileCount = changedFileCount
+        self.isDirty = isDirty
     }
 }
 
 public struct WorkspaceDiffSummary: Codable, Sendable, Equatable {
     public let diff: String
+    /// 与 `diff` 同一口径（`git diff`，未暂存）的行数统计，由 Core 用 `--numstat` 算出。
+    /// 前端不得再从 diff 文本里自己数 `+`/`-`。
+    public var addedLines: Int?
+    public var deletedLines: Int?
+    public var changedFiles: Int?
 
-    public init(diff: String) {
+    public init(diff: String, addedLines: Int? = nil, deletedLines: Int? = nil, changedFiles: Int? = nil) {
         self.diff = diff
+        self.addedLines = addedLines
+        self.deletedLines = deletedLines
+        self.changedFiles = changedFiles
     }
 }
 
@@ -870,8 +904,7 @@ public extension LingXiProtocolService {
     }
 
     func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {
-        let info = WorkspaceWorktreeInfo(id: UUID().uuidString, branch: envelope.payload.name, path: "/tmp/\(envelope.payload.name)")
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: info)
+        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
     }
 
     func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> {
@@ -879,15 +912,15 @@ public extension LingXiProtocolService {
     }
 
     func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: VoidResult())
+        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
     }
 
     func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: VoidResult())
+        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
     }
 
     func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: VoidResult())
+        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
     }
 
     func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {

@@ -1,5 +1,9 @@
 import Foundation
 
+/// Worktree 隔离至今没有任何 Runtime 实现。契约必须明确报「不可用」，
+/// 不能返回伪造的 branch 与 `/tmp/<name>` 路径让前端显示成功。
+public let lingxiWorktreeUnsupportedMessage = "Worktree 管理尚未由 Runtime 实现，不能假装创建成功。"
+
 /// 工作区 Worktree 元数据
 public struct WorkspaceWorktreeInfo: Sendable, Codable, Equatable, Identifiable {
     public var id: String
