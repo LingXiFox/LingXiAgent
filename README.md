@@ -3,7 +3,7 @@
 <p align="center">
   <span style="font-size: 64px;">🦊</span><br/>
   <strong>Native Swift AI Coding Agent with Heterogeneous Dual-Core Architecture</strong><br/>
-  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS / Linux 官方支持 (CLI + TUI) · Windows 实验性支持</em>
+  <em>新一代纯 Swift 原生打造的终端 AI 编程智能体 · macOS / Linux 官方支持 (CLI + TUI + WebUI) · Windows 实验性支持</em>
 </p>
 
 <p align="center">
@@ -72,7 +72,7 @@ swift build -c release --product LingXiTUI
   * **E-Core (Execution Storage 执行存储)**：承载大规模工具执行产物。当测试日志、代码块或分析结果大于 10KB 时，**自动旁路沉淀**入专用对象池，仅向推理层提交紧凑语义引用，彻底根治 Token 爆炸与遗忘。
 * **🖥️ 表现层与核心彻底解耦 (Frontend 契约)**：
   * TUI 全面降维为纯受控客户端，遵循 `@MainActor Frontend` 协议，不私自启动或管理核心；
-  * 核心生命周期、Stdio IPC 与 Store 装配统一由 `AppCompositionRoot` 统一接管，为未来接入 WebUI、GUI 与远端 RPC 奠定架构基础。
+  * 核心生命周期、Stdio IPC 与 Store 装配统一由 `AppCompositionRoot` 统一接管，CLI / TUI / WebUI 三个正式前端共用同一套契约，GUI 与远端 RPC 沿用同一入口。
 * **🛡️ 动态宿主感知与反封锁伪装**：
   * 动态识别底层网络协议栈与平台指纹，让 TLS JA4/TCP 握手特征与应用层 User-Agent 保持 100% 原生一致；
   * 完整注入官方 Companion Headers，杜绝上游风控封锁与人机验证。
@@ -129,7 +129,7 @@ flowchart TD
     subgraph UI_Layer["🖥️ 表现层与客户端 (Frontend Layer - Fully Decoupled)"]
         TUI["LingXiTUI (60FPS OpenTUI / ANSI Fallback)"]
         CLI["lingxiagent CLI (统一运维与无头执行)"]
-        WebClient["Future WebUI / Remote Frontend"]
+        WebClient["LingXiWebUI (lingxiagent serve · 快照 + 增量 SSE)"]
     end
 
     subgraph Bootstrap_Layer["🚀 装配与生命周期层 (Bootstrap)"]
@@ -259,6 +259,25 @@ flowchart LR
 
 ---
 
+## 🌐 浏览器工作台 (`lingxiagent serve`)
+
+WebUI 是与 CLI / TUI 并列的第三个正式前端，跑的是同一个真实 Core：它不自己维护 Goal、Todo、
+Subagent 生命周期或分支预测，只消费共享的 Frontend Contract（快照 + 增量帧），因此不存在
+Mock Runtime，也不需要用户在运行期安装 Node.js / npm —— 页面资源随发布包一起交付。
+
+```bash
+lingxiagent serve                    # 启动真实 CoreHost + WebUI，默认只监听 127.0.0.1，随机端口，自动开浏览器
+lingxiagent serve --port 8080        # 指定端口
+lingxiagent serve --no-browser       # 只起服务（无 GUI 环境或 SSH 转发场景）
+lingxiagent serve --host 127.0.0.1   # 显式回环地址；`localhost` / `::1` 等等价拼写都会归一到实际监听地址
+lingxiagent serve --allow-remote     # 显式放开非回环绑定，此时必须提供访问 token
+```
+
+- 退出：`Ctrl-C`（Windows 走控制台控制事件）会先关停 HTTP/SSE 服务，再回收 CoreHost 与 sidecar，
+  不留孤儿进程；`lingxiagent --help` 与 `--version` 与 CLI、TUI 保持同一份路由定义。
+- 安全边界：默认只监听回环；`Host` 校验与 Origin/自定义头校验拒绝跨站调用；静态资源路径防穿透；
+  非回环绑定必须显式 opt-in 且带 token。
+
 ## 🛠️ 统一命令行运维手册 (`lingxiagent`)
 
 ```bash
@@ -347,8 +366,8 @@ LingXiAgent 采用清晰严密的 **多轨分层许可体系（Multi-Tiered Lice
 
 | 组件层级 (Layer) | 覆盖目录 (Directories) | 授权协议 (License) | 本地构建/体验 | 二次分发/镜像/上架 | 商业化/SaaS/代售 |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **底座核心 (Core)** | `Sources/LingXiCore`<br/>`Sources/LingXiRuntime`<br/>`Sources/LingXiPlatform`<br/>`Sources/LingXiProtocol`<br/>`Sources/LingXiStorage`<br/>`Sources/LingXiAppCommon` | **[LCSAL-1.0](LICENSE-CORE)**<br/>*(源码可用 / 个人自用)* | ✅ **允许** | ❌ **严禁二次上架或镜像** | ❌ **严禁商业化** |
-| **表现层客户端 (Frontend)** | `Sources/LingXiTUI`<br/>`Sources/LingXiCLI` (表现层入口)<br/>未来的 `LingXiGUI` / `LingXiWebUI` | **[PolyForm Noncommercial 1.0.0](LICENSE-FRONTEND)**<br/>*(源码开放 / 自由分发)* | ✅ **允许** | ✅ **允许自由分发二次上架**<br/>*(须保留署名与非商业声明)* | ❌ **严禁商业化** |
+| **底座核心 (Core)** | 以 [`LICENSE-MATRIX.md`](LICENSE-MATRIX.md) 的逐 target 清单为准：`LingXiCore`、`LingXiPlatform`、`LingXiProtocol`、`LingXiClient`、`CSQLite` | **[LCSAL-1.0](LICENSE-CORE)**<br/>*(源码可用 / 个人自用)* | ✅ **允许** | ❌ **严禁二次上架或镜像** | ❌ **严禁商业化** |
+| **表现层客户端 (Frontend)** | `LingXiTUI`、`LingXiWebUI`、`LingXiApplication`、`lingxiagent` 入口；`LingXiFrontendKit` / `LingXiMacApp` (GUI，超出当前发布范围) | **[PolyForm Noncommercial 1.0.0](LICENSE-FRONTEND)**<br/>*(源码开放 / 自由分发)* | ✅ **允许** | ✅ **允许自由分发二次上架**<br/>*(须保留署名与非商业声明)* | ❌ **严禁商业化** |
 | **第三方库 (Vendor)** | `Vendor/OpenTUI/` | 各自上游原始开源许可 (GPLv3 等) | 遵循原协议 | 遵循原协议 | 遵循原协议 |
 
 * **个人开发者自用**：欢迎任何人克隆至本地，研究、学习、构建并作为个人开发助手单机体验；

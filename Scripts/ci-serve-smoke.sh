@@ -14,6 +14,25 @@ PORT=$(( (RANDOM % 20000) + 20000 ))
 LOG="serve-smoke-$PORT.log"
 
 attempt=0
+# The Linux gate runs inside a slim container where curl is not guaranteed. Probing with a
+# missing client looks exactly like a server that never binds, so say which tool answered the
+# call -- or that nothing could -- before blaming the server.
+probe() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -H 'X-LingXi-Client: ci' "$url" -o /dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$url" <<'PY'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"X-LingXi-Client": "ci"})
+sys.exit(0 if urllib.request.urlopen(req, timeout=3).status == 200 else 1)
+PY
+  else
+    echo "::error::no HTTP client (curl or python3) is available to probe serve" >&2
+    return 2
+  fi
+}
+
 for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 20000 )); do
   attempt=$((attempt + 1))
   PORT="$candidate"
@@ -24,7 +43,7 @@ for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 
   ready=0
   for _ in $(seq 1 30); do
     if ! kill -0 "$pid" 2>/dev/null; then break; fi          # it died on the way up
-    if curl -fsS -H 'X-LingXi-Client: ci' "http://127.0.0.1:$PORT/api/state" -o /dev/null; then
+    if probe "http://127.0.0.1:$PORT/api/state"; then
       ready=1
       break
     fi
@@ -34,7 +53,9 @@ for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 
 
   # A Windows runner reserves whole dynamic-port ranges for Hyper-V, so one refused bind proves
   # nothing: retry elsewhere before concluding the server is broken.
-  echo "-- attempt $attempt on port $PORT did not answer; process alive: $(kill -0 "$pid" 2>/dev/null && echo yes || echo no)"
+  alive=yes
+  kill -0 "$pid" 2>/dev/null || alive=no
+  echo "-- attempt $attempt on port $PORT did not answer; process alive: $alive; $(command -v curl >/dev/null 2>&1 && echo 'probe: curl' || (command -v python3 >/dev/null 2>&1 && echo 'probe: python3' || echo 'probe: NONE'))"
   kill -TERM "$pid" 2>/dev/null || true
   # Stop first, then print: a live process has not flushed its redirected output, which is why an
   # earlier failure looked like an empty log rather than a bind refusal.
@@ -54,8 +75,8 @@ fi
 
 # The asset path is what makes the WebUI usable without a dev server: index plus the
 # state endpoint, both from the packaged binary.
-curl -fsS "http://127.0.0.1:$PORT/" -o /dev/null
-curl -fsS -H 'X-LingXi-Client: ci' "http://127.0.0.1:$PORT/js/state.js" -o /dev/null
+probe "http://127.0.0.1:$PORT/"
+probe "http://127.0.0.1:$PORT/js/state.js"
 echo "serve answered on port $PORT and served its assets"
 
 kill -TERM "$pid" 2>/dev/null || true
