@@ -62,13 +62,17 @@ public struct WebUIServeOptions: Sendable, Equatable {
     }
 
     public var displayHost: String {
-        host.contains(":") ? "[\(host)]" : host
+        // What the user is pointed at has to be where the socket actually is. Reporting the
+        // spelling they typed advertised an `http://[::1]:port` URL that nothing answered on.
+        bindHost.contains(":") ? "[\(bindHost)]" : bindHost
     }
 
-    /// The bind address used for the actual socket, keeping IPv6 spellings workable.
+    /// The bind address used for the actual socket. The listener speaks IPv4, so the loopback
+    /// spellings that mean "this machine" all resolve to it, and anything else must already be
+    /// a literal v4 address.
     public var bindHost: String {
         switch host.lowercased() {
-        case "::1", "[::1]": return "127.0.0.1"
+        case "::1", "[::1]", "localhost", "0": return "127.0.0.1"
         default: return host
         }
     }
