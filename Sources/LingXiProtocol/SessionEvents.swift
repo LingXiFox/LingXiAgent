@@ -109,6 +109,20 @@ public struct ContextCompactedSnapshot: Codable, Sendable, Equatable {
     }
 }
 
+/// Goal Mode 的会话级投影：锚定目标本身、何时建立、已推进的模型步数。
+/// 缺省即「当前 Session 没有 Goal」，清除 Goal 时 Core 发布 `nil`。
+public struct GoalRuntimeSnapshot: Codable, Sendable, Equatable {
+    public let text: String
+    public let since: Date
+    public let steps: Int
+
+    public init(text: String, since: Date, steps: Int) {
+        self.text = text
+        self.since = since
+        self.steps = steps
+    }
+}
+
 /// SessionEventPayload：Session 内部规范语义事实。
 public enum SessionEventPayload: Codable, Sendable, Equatable {
     // MARK: - Turn / Message
@@ -162,6 +176,10 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
     case contextPolicyChanged(ContextPolicySnapshot)
     case contextCompacted(ContextCompactedSnapshot)
 
+    // MARK: - Goal Mode
+    /// `nil` is a fact, not an absence: it means the goal was cleared.
+    case goalChanged(GoalRuntimeSnapshot?)
+
     // MARK: - Extensible fallback
     case unknown(String)
 
@@ -175,6 +193,7 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
         case parentRunID, status, resultPreview, late
         case requestID, providerState, detail, statusCode
         case contextState, contextPolicy, contextCompacted
+        case goal
         case rawValue
     }
 
@@ -326,6 +345,10 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
             self = .contextPolicyChanged(try container.decode(ContextPolicySnapshot.self, forKey: .contextPolicy))
         case "contextCompacted":
             self = .contextCompacted(try container.decode(ContextCompactedSnapshot.self, forKey: .contextCompacted))
+
+        // Goal Mode
+        case "goalChanged":
+            self = .goalChanged(try container.decodeIfPresent(GoalRuntimeSnapshot.self, forKey: .goal))
 
         default:
             let raw = (try? container.decode(String.self, forKey: .rawValue)) ?? kind
@@ -492,6 +515,11 @@ public enum SessionEventPayload: Codable, Sendable, Equatable {
         case let .contextCompacted(snapshot):
             try container.encode("contextCompacted", forKey: .kind)
             try container.encode(snapshot, forKey: .contextCompacted)
+
+        // Goal Mode
+        case let .goalChanged(snapshot):
+            try container.encode("goalChanged", forKey: .kind)
+            try container.encodeIfPresent(snapshot, forKey: .goal)
 
         case let .unknown(raw):
             try container.encode("unknown", forKey: .kind)

@@ -44,6 +44,12 @@ public actor SessionGoalRegistry {
         return (state.text, state.steps)
     }
 
+    /// The projected form every frontend consumes: raw text, when it was anchored, steps spent.
+    public func snapshot(_ sessionID: SessionID) -> GoalRuntimeSnapshot? {
+        guard let state = goals[sessionID] else { return nil }
+        return GoalRuntimeSnapshot(text: state.text, since: state.since, steps: state.steps)
+    }
+
     public func clear(_ sessionID: SessionID) {
         goals[sessionID] = nil
     }

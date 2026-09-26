@@ -971,6 +971,8 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
     public let eventCursor: EventCursor
     public let revision: UInt64
     public let todos: [TodoItemData]
+    /// Goal Mode 真值；nil = 该 Session 当前没有锚定目标。
+    public let goal: GoalRuntimeSnapshot?
 
     public init(
         sessionID: SessionID,
@@ -988,7 +990,8 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         historyBeforeCursor: EventCursor? = nil,
         eventCursor: EventCursor,
         revision: UInt64 = 0,
-        todos: [TodoItemData] = []
+        todos: [TodoItemData] = [],
+        goal: GoalRuntimeSnapshot? = nil
     ) {
         self.sessionID = sessionID
         self.info = info
@@ -1006,13 +1009,14 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         self.eventCursor = eventCursor
         self.revision = revision
         self.todos = todos
+        self.goal = goal
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionID, info, recentTurns, activeRootRun, activeChildRuns
         case pendingInteractions, activeModelSteps, recentToolInvocations
         case contextState, permissionConfiguration, agentMode, recentEvents
-        case historyBeforeCursor, eventCursor, revision, todos
+        case historyBeforeCursor, eventCursor, revision, todos, goal
     }
 
     public init(from decoder: Decoder) throws {
@@ -1033,6 +1037,7 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
         eventCursor = try container.decode(EventCursor.self, forKey: .eventCursor)
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
         todos = try container.decodeIfPresent([TodoItemData].self, forKey: .todos) ?? []
+        goal = try container.decodeIfPresent(GoalRuntimeSnapshot.self, forKey: .goal)
     }
 }
 

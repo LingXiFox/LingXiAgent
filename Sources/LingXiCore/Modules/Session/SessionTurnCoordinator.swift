@@ -1035,6 +1035,12 @@ public actor SessionTurnCoordinator {
         _ = try? await eventLog.append(causal: causal, payload: .contextStateChanged(snapshot))
     }
 
+    /// Republishes the Goal anchor (or its removal) into the session's event stream, so every
+    /// frontend projects the same truth after a set, a clear, a reconnect or a session switch.
+    public func recordGoalChanged(_ goal: GoalRuntimeSnapshot?, causal: CausalContext) async {
+        _ = try? await eventLog.append(causal: causal, payload: .goalChanged(goal))
+    }
+
     // MARK: - Subagent lifecycle (projected onto the originating session)
 
     public func recordSubagentCreated(runID: RunID, parentRunID: RunID, causal: CausalContext) async {
@@ -1119,7 +1125,8 @@ public actor SessionTurnCoordinator {
             historyBeforeCursor: nil,
             eventCursor: cursor,
             revision: revision,
-            todos: todoStore?.getTodos(for: sessionID.rawValue) ?? []
+            todos: todoStore?.getTodos(for: sessionID.rawValue) ?? [],
+            goal: await SessionGoalRegistry.shared.snapshot(sessionID)
         )
     }
 

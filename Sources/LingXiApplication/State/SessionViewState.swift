@@ -49,6 +49,10 @@ public struct SessionViewState: Sendable, Equatable, Codable {
     // MARK: - Todos Projection
     public var todos: [TodoItemData]
 
+    // MARK: - Goal Mode Projection
+    /// Core 的 Goal 真值：nil 表示当前 Session 没有锚定目标。
+    public var goal: GoalRuntimeSnapshot?
+
     // MARK: - Context State
     public var contextState: ContextStateSnapshot?
     public var contextPolicy: ContextPolicySnapshot?
@@ -103,6 +107,7 @@ public struct SessionViewState: Sendable, Equatable, Codable {
         self.permissionConfiguration = .askWorkspace
         self.subagents = [:]
         self.todos = []
+        self.goal = nil
         self.contextState = nil
         self.contextPolicy = nil
         self.contextCompacted = nil
@@ -133,6 +138,7 @@ public struct SessionViewState: Sendable, Equatable, Codable {
         case pendingInteractions, activeInteraction, permissionConfiguration
         case subagents, todos
         case contextState, contextPolicy, contextCompacted, isPaging
+        case goal
         case activeProviderRequestID, activeProviderRequestState
         case activeProviderRequestDetail, activeProviderStatusCode
         case hasActiveError, status, reasoningEffort
@@ -168,6 +174,7 @@ public struct SessionViewState: Sendable, Equatable, Codable {
         self.contextPolicy = try c.decodeIfPresent(ContextPolicySnapshot.self, forKey: .contextPolicy)
         self.contextCompacted = try c.decodeIfPresent(ContextCompactedSnapshot.self, forKey: .contextCompacted)
         self.isPaging = try c.decode(Bool.self, forKey: .isPaging)
+        self.goal = try c.decodeIfPresent(GoalRuntimeSnapshot.self, forKey: .goal)
         self.activeProviderRequestID = try c.decodeIfPresent(ProviderRequestID.self, forKey: .activeProviderRequestID)
         self.activeProviderRequestState = try c.decodeIfPresent(ProviderRequestState.self, forKey: .activeProviderRequestState)
         self.activeProviderRequestDetail = try c.decodeIfPresent(String.self, forKey: .activeProviderRequestDetail)
@@ -213,6 +220,7 @@ public struct SessionViewState: Sendable, Equatable, Codable {
         try c.encodeIfPresent(contextPolicy, forKey: .contextPolicy)
         try c.encodeIfPresent(contextCompacted, forKey: .contextCompacted)
         try c.encode(isPaging, forKey: .isPaging)
+        try c.encodeIfPresent(goal, forKey: .goal)
         try c.encodeIfPresent(activeProviderRequestID, forKey: .activeProviderRequestID)
         try c.encodeIfPresent(activeProviderRequestState, forKey: .activeProviderRequestState)
         try c.encodeIfPresent(activeProviderRequestDetail, forKey: .activeProviderRequestDetail)

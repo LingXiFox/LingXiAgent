@@ -2809,6 +2809,12 @@ extension CoreHost {
             reasoningEffort: session.reasoningEffort
         )
         _ = try? await runtimeEventLog.append(payload: .sessionUpdated(summary))
+        // A goal is a session fact, not only a summary field: publish it into the session stream
+        // so a set, a clear, a reconnect and a session switch all project the same truth.
+        await coord.recordGoalChanged(
+            await SessionGoalRegistry.shared.snapshot(sessionID),
+            causal: CausalContext(sessionID: sessionID, runID: nil)
+        )
         let receipt = CommandReceipt<SessionSummary>(
             commandID: envelope.commandID,
             applied: true,

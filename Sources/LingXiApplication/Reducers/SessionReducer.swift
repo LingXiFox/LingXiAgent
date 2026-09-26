@@ -618,6 +618,11 @@ public enum SessionReducer {
             state.contextCompacted = snapshot
             state.isPaging = false
             changes.contextChanged = true
+
+        // MARK: 7b. Goal Mode
+        case let .goalChanged(goal):
+            state.goal = goal
+            changes.contextChanged = true
             changes.transcriptStructureChanged = true
 
         // MARK: 8. Provider Request
@@ -795,6 +800,7 @@ public enum SessionReducer {
         state.activeInteraction = snapshot.pendingInteractions.first
         state.permissionConfiguration = snapshot.permissionConfiguration
         state.todos = snapshot.todos
+        state.goal = snapshot.goal
 
         for turn in snapshot.recentTurns {
             state.turns[turn.turnID] = turn
