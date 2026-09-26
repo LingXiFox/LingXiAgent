@@ -21,8 +21,13 @@ private final class RawClient: @unchecked Sendable {
     private var received = Data()
     private var consumed = 0
     private(set) var peerClosed = false
+    private var closed = false
 
     init?(port: UInt16, host: String = "127.0.0.1") {
+        // Winsock has to be initialized on the thread that calls socket(); on the server side that
+        // is the accept/connection threads, and this client runs on a test thread that nobody else
+        // has registered. The pair is reference-counted, so `close()` releases it again.
+        guard PlatformHTTPSocket.beginThread() else { return nil }
         #if canImport(Darwin)
         let sockType = SOCK_STREAM
         #elseif canImport(Glibc)
@@ -31,7 +36,10 @@ private final class RawClient: @unchecked Sendable {
         let sockType = SOCK_STREAM
         #endif
         let created = socket(AF_INET, sockType, 0)
-        guard created != kHTTPInvalidSocket else { return nil }
+        guard created != kHTTPInvalidSocket else {
+            PlatformHTTPSocket.endThread()
+            return nil
+        }
         var address = sockaddr_in()
         #if os(Windows) || canImport(WinSDK)
         address.sin_family = ADDRESS_FAMILY(AF_INET)
@@ -52,6 +60,7 @@ private final class RawClient: @unchecked Sendable {
         }
         guard connected == 0 else {
             PlatformHTTPSocket.closeSocket(created)
+            PlatformHTTPSocket.endThread()
             return nil
         }
         fd = created
@@ -62,7 +71,10 @@ private final class RawClient: @unchecked Sendable {
     }
 
     func close() {
+        guard !closed else { return }
+        closed = true
         PlatformHTTPSocket.closeSocket(fd)
+        PlatformHTTPSocket.endThread()
     }
 
     /// Every byte read so far.

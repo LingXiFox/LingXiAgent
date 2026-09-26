@@ -163,6 +163,8 @@ final class ServerState: @unchecked Sendable {
     private var acceptThreadStarted = false
     private var acceptEnded = false
     private var stopping = false
+    /// Whether this instance still owes the Winsock reference `init` took. Meaningless off Windows.
+    private var holdsWinsock = true
     private let drained = DispatchSemaphore(value: 0)
 
     /// Stop is terminal: the bound listener is closed and never reopened, so a caller that
@@ -183,6 +185,7 @@ final class ServerState: @unchecked Sendable {
             self.port = boundPort
         } catch {
             PlatformHTTPSocket.endThread()
+            holdsWinsock = false
             throw error
         }
     }
@@ -361,6 +364,13 @@ final class ServerState: @unchecked Sendable {
             PlatformHTTPSocket.shutdownForClose(connection)
         }
         waitForDrain()
+        // The reference `init` took on the creating thread is released here, once, so a server
+        // that is stopped and thrown away does not keep Winsock alive.
+        lock.lock()
+        let owesCleanup = holdsWinsock
+        holdsWinsock = false
+        lock.unlock()
+        if owesCleanup { PlatformHTTPSocket.endThread() }
         log("HTTP stopped")
     }
 
@@ -397,11 +407,13 @@ final class ServerState: @unchecked Sendable {
     // MARK: - Accept loop
 
     private func acceptLoop(_ socket: HTTPSocket) {
-        defer { PlatformHTTPSocket.endThread() }
+        // Only a thread that actually initialized Winsock owes the cleanup: deferring it ahead of
+        // the guard made a failed startup decrement a reference this thread never took.
         guard PlatformHTTPSocket.beginThread() else {
             finishAcceptLoop()
             return
         }
+        defer { PlatformHTTPSocket.endThread() }
 
         while true {
             if isStopping { break }
