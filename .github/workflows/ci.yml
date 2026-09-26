@@ -366,8 +366,11 @@ jobs:
         run: swift build --build-tests
 
       - name: Stage 2 - Architecture Boundary & Platform Gate
+        # Measured: every case in these five suites passes on Windows; five `swift test` launches
+        # of a 1300-case bundle simply cost more than the macOS/Linux budget (one suite alone took
+        # 25s, and the step died at the 5-minute mark). Budget, not expectation.
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
           swift test --skip-build --filter LingXiPlatformContractTests < /dev/null
           swift test --skip-build --filter LingXiWireContractTests < /dev/null
@@ -377,12 +380,12 @@ jobs:
 
       - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
 
       - name: Stage 4 - IPC & Process Robustness Gate
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
           swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
           swift test --skip-build --filter LingXiIPCRobustnessContractTests < /dev/null
