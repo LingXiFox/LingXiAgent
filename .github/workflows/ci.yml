@@ -26,7 +26,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   test-macos:
     name: macOS Build & Test (arm64)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,10 @@ jobs:
 
       - name: Select Xcode & print versions
         run: |
-          XCODE_APP=$(find /Applications -maxdepth 1 -name "Xcode_16*.app" | sort -V | tail -n 1)
+          # The GUI layer uses macOS 26 SDK symbols (`glassEffect`, `GlassEffectContainer`)
+          # behind `#available` guards, so the gate needs an SDK that declares them. Pick the
+          # newest toolchain on the image instead of pinning a pre-26 one.
+          XCODE_APP=$(find /Applications -maxdepth 1 -name "Xcode_*.app" | sort -V | tail -n 1)
           if [ -n "$XCODE_APP" ]; then sudo xcode-select -s "$XCODE_APP"; fi
           swift --version
           xcodebuild -version
@@ -251,19 +254,17 @@ jobs:
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────────────────────
-  # Windows：正式发布平台，与 macOS / Linux 同等门禁
+  # Windows：V1.1.0 起为正式发布平台，与 macOS / Linux 同等门禁
   # ─────────────────────────────────────────────────────────────
-  # Experimental only. Windows is not a supported platform for V1.0.0 and is not a release
-  # blocker; formal support is deferred to V1.1.0 together with a dedicated runtime, pipe and
-  # process-lifetime review. What stays here is the one thing worth knowing on every commit: that
-  # the package still compiles, links and boots on x86_64-windows. Nothing in this job can fail the
-  # gate -- the full integration suite, the crash forensics and the per-chunk watchdogs were
-  # Windows-specific cost with no V1.0.0 decision hanging on them.
+  # V1.0.0 held Windows to a compile check while the pipe, process-lifetime and path layers were
+  # still moving. V1.1.0 releases on three platforms, so Windows runs the same stages as the other
+  # two and can fail the gate. Nothing is skipped here to make it green: where the platform has no
+  # equivalent capability (desktop Computer Use), the capability declaration is the contract, not a
+  # test exclusion.
   test-windows:
-    name: Windows Compile Check (informational)
+    name: Windows Build & Test (x86_64)
     runs-on: windows-2022
-    continue-on-error: true
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -298,6 +299,18 @@ jobs:
           "LINGXI_DISABLE_PLUGINS=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           swift --version
           Get-Command swift, link, cl -ErrorAction SilentlyContinue | Format-Table Name, Source
+
+      - name: Prepare isolated test environment
+        shell: pwsh
+        run: |
+          # Same isolation the macOS and Linux gates run under: no test may read or write the
+          # runner account's real profile, and HOME has to point somewhere that exists.
+          $testHome = Join-Path $env:RUNNER_TEMP 'test-home'
+          New-Item -ItemType Directory -Force -Path $testHome | Out-Null
+          $dataDir = Join-Path $testHome '.lingxiagent'
+          "HOME=$testHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "USERPROFILE=$testHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LINGXI_DATA_DIR=$dataDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Provide ripgrep for the search tools
         shell: bash
@@ -346,6 +359,31 @@ jobs:
           swift test --skip-build --filter PlatformAbstractionAndDecouplingTests < /dev/null
           swift test --skip-build --filter PlatformBuildGateTests < /dev/null
 
+      - name: Stage 3 - Platform Crypto KAT & Concurrency Gate
+        shell: bash
+        timeout-minutes: 5
+        run: swift test --skip-build --filter PlatformCryptoKATTests < /dev/null
+
+      - name: Stage 4 - IPC & Process Robustness Gate
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
+          swift test --skip-build --filter LingXiIPCRobustnessContractTests < /dev/null
+
+      - name: Stage 5 - Controlled Full Integration Test Suite
+        shell: bash
+        timeout-minutes: 40
+        run: LINGXI_CI_XUNIT_DIR="$PWD/test-results" bash Scripts/ci-integration-tests.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows
+          path: test-results-artifact/
+          if-no-files-found: ignore
+
       - name: Stage 6 - Smoke test CLI executables
         # Runs even when the compile gate above failed: the two verdicts are independent, and this
         # one is the only evidence that the linked executables still start.
@@ -371,16 +409,16 @@ jobs:
   gate:
     name: CI Gate
     runs-on: ubuntu-latest
-    needs: [test-macos, test-linux]
+    needs: [test-macos, test-linux, test-windows]
     if: always()
     steps:
       - name: Check required jobs
         run: |
-          # V1.0.0 supports macOS and Linux. Windows is not in `needs` at all, so it cannot hold a
-          # release; its outcome is reported for the V1.1.0 record only.
+          # V1.1.0 releases on three platforms, so all three hold the gate.
           if [ "${{ needs.test-macos.result }}" != "success" ] || \
-             [ "${{ needs.test-linux.result }}" != "success" ]; then
-            echo "::error::macOS or Linux gate failed"
+             [ "${{ needs.test-linux.result }}" != "success" ] || \
+             [ "${{ needs.test-windows.result }}" != "success" ]; then
+            echo "::error::macOS, Linux or Windows gate failed"
             exit 1
           fi
-          echo "V1.0.0 gate passed (macOS, Linux)."
+          echo "V1.1.0 gate passed (macOS, Linux, Windows)."

@@ -47,5 +47,32 @@ public final class WindowsProcessAdapter: PlatformProcessProtocol, @unchecked Se
         try? taskkill.run()
         taskkill.waitUntilExit()
     }
+
+    /// Read whatever the pipe buffer already holds without ever blocking the calling thread.
+    /// `PeekNamedPipe` is the only non-blocking query an anonymous pipe supports, so a handle
+    /// that is not a pipe (a console, a closed end) reports failure and drains nothing.
+    public func nonblockingDrain(handle: PlatformPipeHandle, chunkSize: Int = 64 * 1024) -> Data {
+        let pipe = handle.win32Handle
+        var pending = DWORD(0)
+        guard PeekNamedPipe(pipe, nil, 0, nil, &pending, nil) != 0, pending > 0 else { return Data() }
+        var accumulated = Data()
+        var chunk = [UInt8](repeating: 0, count: chunkSize)
+        while accumulated.count < Int(pending) {
+            var obtained = DWORD(0)
+            guard ReadFile(pipe, &chunk, DWORD(chunk.count), &obtained, nil) != 0, obtained > 0 else { break }
+            accumulated.append(contentsOf: chunk[0..<Int(obtained)])
+        }
+        return accumulated
+    }
+
+    public func readAvailable(handle: PlatformPipeHandle) -> Data {
+        let pipe = handle.win32Handle
+        var pending = DWORD(0)
+        guard PeekNamedPipe(pipe, nil, 0, nil, &pending, nil) != 0, pending > 0 else { return Data() }
+        var chunk = [UInt8](repeating: 0, count: min(Int(pending), 4096))
+        var obtained = DWORD(0)
+        guard ReadFile(pipe, &chunk, DWORD(chunk.count), &obtained, nil) != 0, obtained > 0 else { return Data() }
+        return Data(chunk[0..<Int(obtained)])
+    }
 }
 #endif
