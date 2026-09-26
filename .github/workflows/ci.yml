@@ -94,18 +94,26 @@ jobs:
 
       - name: Stage 6 - Smoke test CLI executables
         shell: bash
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           BIN_PATH="$(swift build --show-bin-path)"
           echo "::group::lingxiagent --help"
           "$BIN_PATH/lingxiagent"     --help      < /dev/null
           echo "::endgroup::"
+          echo "::group::lingxiagent --version"
+          "$BIN_PATH/lingxiagent"     --version   < /dev/null
+          echo "::endgroup::"
           echo "::group::LingXiCoreHost auth list"
           "$BIN_PATH/LingXiCoreHost"  auth list   < /dev/null
           echo "::endgroup::"
-          echo "::group::lingxiagent --smoke"
-          "$BIN_PATH/lingxiagent"     --smoke     < /dev/null
+          echo "::group::lingxiagent-ops --smoke"
+          # `--smoke` moved to the operations CLI; the user binary refuses it deliberately, so
+          # invoking it on `lingxiagent` only ever printed a redirect message.
+          "$BIN_PATH/lingxiagent-ops" --smoke     < /dev/null
+          echo "::endgroup::"
+          echo "::group::serve smoke"
+          bash Scripts/ci-serve-smoke.sh "$BIN_PATH"
           echo "::endgroup::"
 
       - name: Upload test results
@@ -238,11 +246,19 @@ jobs:
           echo "::group::lingxiagent --help"
           su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --help      < /dev/null"
           echo "::endgroup::"
+          echo "::group::lingxiagent --version"
+          su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --version   < /dev/null"
+          echo "::endgroup::"
           echo "::group::LingXiCoreHost auth list"
           su -s /bin/bash -m testuser -c "'$BIN_PATH/LingXiCoreHost'  auth list   < /dev/null"
           echo "::endgroup::"
-          echo "::group::lingxiagent --smoke"
-          su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent'     --smoke     < /dev/null"
+          echo "::group::lingxiagent-ops --smoke"
+          # `--smoke` moved to the operations CLI; the user binary refuses it deliberately, so
+          # invoking it on `lingxiagent` only ever printed a redirect message.
+          su -s /bin/bash -m testuser -c "'$BIN_PATH/lingxiagent-ops' --smoke     < /dev/null"
+          echo "::endgroup::"
+          echo "::group::serve smoke"
+          su -s /bin/bash -m testuser -c "bash Scripts/ci-serve-smoke.sh '$BIN_PATH'"
           echo "::endgroup::"
 
       - name: Upload test results
@@ -398,11 +414,19 @@ jobs:
           echo "::group::lingxiagent --help"
           "$BIN_PATH/lingxiagent.exe"    --help     < /dev/null
           echo "::endgroup::"
+          echo "::group::lingxiagent --version"
+          "$BIN_PATH/lingxiagent.exe"    --version  < /dev/null
+          echo "::endgroup::"
           echo "::group::LingXiCoreHost auth list"
           "$BIN_PATH/LingXiCoreHost.exe" auth list  < /dev/null
           echo "::endgroup::"
-          echo "::group::lingxiagent --smoke"
-          "$BIN_PATH/lingxiagent.exe"    --smoke    < /dev/null
+          echo "::group::lingxiagent-ops --smoke"
+          # `--smoke` moved to the operations CLI; the user binary refuses it deliberately, so
+          # invoking it on `lingxiagent` only ever printed a redirect message.
+          "$BIN_PATH/lingxiagent-ops.exe" --smoke   < /dev/null
+          echo "::endgroup::"
+          echo "::group::serve smoke"
+          bash Scripts/ci-serve-smoke.sh "$BIN_PATH" ".exe"
           echo "::endgroup::"
 
   # ─────────────────────────────────────────────────────────────

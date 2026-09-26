@@ -114,7 +114,33 @@ struct CredentialNonLeakageTripwireTests {
         #expect(!dumped.contains("LINGXI_CREDENTIALS_PASSPHRASE="))
         #expect(!dumped.contains("OPENAI_API_KEY="))
         #else
-        try #require(false, "Windows tripwire lands with the P29 platform-parity work")
+        // Windows reaches the same production call, with the two platform differences the
+        // assertion has to know about: the sentinels are put into the inherited environment
+        // explicitly instead of through `setenv`, and the child prints its own environment via
+        // `cmd.exe`'s `set` because there is no `/bin/sh`. Variable names are case-insensitive
+        // there, so the name assertions compare uppercased text.
+        var inherited = ProcessInfo.processInfo.environment
+        inherited["LINGXI_CREDENTIALS_PASSPHRASE"] = Self.sentinelPassphrase
+        inherited["OPENAI_API_KEY"] = Self.sentinelAPIKey
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: LingXiPlatform.process.resolveExecutable(
+            named: "cmd", customSearchPaths: nil) ?? "C:\\Windows\\System32\\cmd.exe")
+        proc.arguments = ["/c", "set"]
+        proc.environment = EnvironmentSanitizer.sanitized(from: inherited)
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let dumped = String(decoding: data, as: UTF8.self)
+        let upperDumped = dumped.uppercased()
+
+        #expect(!dumped.contains(Self.sentinelPassphrase), "child env contained the vault passphrase")
+        #expect(!dumped.contains(Self.sentinelAPIKey), "child env contained an API key")
+        #expect(!upperDumped.contains("LINGXI_CREDENTIALS_PASSPHRASE="))
+        #expect(!upperDumped.contains("OPENAI_API_KEY="))
         #endif
     }
 }
