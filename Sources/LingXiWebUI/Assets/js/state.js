@@ -52,6 +52,7 @@ function command(payload) {
 const store = {
   revision: 0,
   state: {},
+  activeID: null,        // which session the projected transcript belongs to
   nodes: new Map(),      // TimelineNodeID -> node, always the newest revision of it
   order: [],             // TimelineNodeID[] in Core order
   commands: [],
@@ -70,9 +71,21 @@ function snapshotState(s) {
   store.state = s;
 }
 
+/* A delta carries a trimmed state: its `activeSessionState.timelineNodes` is empty by
+   contract, so switching which session is active can only be resolved by a snapshot.
+   Without this, selecting another session left the transcript empty until a refresh. */
+function trackActiveSession() {
+  const id = idOf(activeSession()?.sessionID);
+  if (!id) return;
+  if (store.activeID && store.activeID !== id) { requestResync('active session changed'); return true; }
+  store.activeID = id;
+  return false;
+}
+
 function applySnapshot(frame) {
   if (typeof frame.revision === 'number') store.revision = frame.revision;
   snapshotState(frame.state);
+  store.activeID = idOf(activeSession()?.sessionID) || store.activeID;
   store.commands = frame.commands || store.commands || [];
   /* `timelineNodes` is the only transcript container Core guarantees in order; the
      other five (committedNodes, activeCell, thinkingNodes, toolNodes) are lookup
@@ -96,7 +109,12 @@ function applyDelta(frame) {
     store.revision = frame.revision;
   }
   snapshotState(frame.state);
-  for (const node of frame.changedNodes || []) putNode(node);
+  if (trackActiveSession()) return;
+  for (const node of frame.changedNodes || []) {
+    putNode(node);
+    const id = node.id?.rawValue ?? node.id;
+    if (typeof id === 'string') dirtyNodes.add(id);
+  }
   const changes = frame.changes || {};
   if (changes.transcriptStructureChanged) reconcileOrder(activeSession()?.timelineNodes || null, changes.nodeChanges);
   markDirty(changes);
@@ -153,8 +171,16 @@ function sessionCatalog() {
 
 /* dirty routing keeps a long timeline cheap */
 const dirty = { all: true, timeline: true, sessions: true, composer: true, meta: true, panel: true, attention: true };
+/* Which node ids Core reported as changed since the last painted frame, and the row
+   element already in the document for every rendered node. Without these, a transcript
+   patch has no choice but to rebuild every row, which is what made a streaming token
+   look like a page refresh. */
+const dirtyNodes = new Set();
+const timelineRows = new Map();
+let timelineFullRebuild = true;
+
 function markDirty(changes) {
-  if (changes === 'all') { Object.keys(dirty).forEach((k) => { dirty[k] = true; }); return; }
+  if (changes === 'all') { Object.keys(dirty).forEach((k) => { dirty[k] = true; }); timelineFullRebuild = true; return; }
   dirty.sessions = dirty.sessions || changes.sessionChanged;
   dirty.timeline = dirty.timeline || changes.transcriptStructureChanged
     || (changes.nodeChanges || []).length > 0 || (changes.transcriptNodesChanged || []).length > 0;
@@ -599,19 +625,55 @@ function renderTimeline() {
   const list = $('timeline');
   const scroller = list;
   const stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
-  list.replaceChildren();
   const session = activeSession();
   $('timeline-empty').hidden = store.order.length > 0 || !session;
 
+  if (timelineFullRebuild) {
+    list.replaceChildren();
+    timelineRows.clear();
+    timelineFullRebuild = false;
+  }
+
+  let previous = null;
   for (const id of store.order) {
     const node = store.nodes.get(id);
     if (!node) continue;
-    const { type, body } = nodeParts(node);
-    const rendered = renderNode(type, body, node, id);
-    if (rendered) list.append(rendered);
+    let element = timelineRows.get(id);
+    if (element) {
+      if (dirtyNodes.has(id)) {
+        const rebuilt = buildRow(node, id);
+        if (rebuilt) {
+          element.replaceWith(rebuilt);
+          timelineRows.set(id, rebuilt);
+          element = rebuilt;
+        }
+      }
+    } else {
+      element = buildRow(node, id);
+      if (!element) continue;
+      timelineRows.set(id, element);
+    }
+    // Reorder only the rows that are not already where the transcript wants them.
+    const wanted = previous ? previous.nextSibling : list.firstChild;
+    if (wanted !== element) list.insertBefore(element, wanted);
+    previous = element;
   }
+
+  for (const [id, element] of timelineRows) {
+    if (!store.nodes.has(id)) {
+      element.remove();
+      timelineRows.delete(id);
+    }
+  }
+  dirtyNodes.clear();
+
   if (stick) scroller.scrollTop = scroller.scrollHeight;
   updateJumpButton();
+}
+
+function buildRow(node, id) {
+  const { type, body } = nodeParts(node);
+  return renderNode(type, body, node, id);
 }
 
 function renderNode(type, body, node, id) {
