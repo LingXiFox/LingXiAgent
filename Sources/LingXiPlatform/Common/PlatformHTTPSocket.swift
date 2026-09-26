@@ -172,16 +172,21 @@ enum PlatformHTTPSocket {
         return (client, dottedQuad(peerAddress), dottedQuad(localAddress))
     }
 
+        /// The protocol number for TCP passed to `setsockopt`. Spelled `Int32` on Darwin, `Int` on
+    /// glibc and an `IPPROTO` enum on Windows, but the value is 6 on every one of them, so the
+    /// call sites use the number rather than three conditional imports of one constant.
+    private static let kIPPROTO_TCP: Int32 = 6
+
     /// SSE frames must leave immediately; Nagle would coalesce them into the next write.
     static func setNoDelay(_ sock: HTTPSocket) {
         var enable: Int32 = 1
         #if os(Windows) || canImport(WinSDK)
-        _ = setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
+        _ = setsockopt(sock, kIPPROTO_TCP, TCP_NODELAY,
                        withUnsafePointer(to: &enable) {
                            $0.withMemoryRebound(to: CChar.self, capacity: 1) { $0 }
                        }, HTTPSocketLen(MemoryLayout<Int32>.size))
         #else
-        _ = setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &enable, HTTPSocketLen(MemoryLayout<Int32>.size))
+        _ = setsockopt(sock, kIPPROTO_TCP, TCP_NODELAY, &enable, HTTPSocketLen(MemoryLayout<Int32>.size))
         #endif
     }
 
@@ -287,7 +292,9 @@ enum PlatformHTTPSocket {
         }
         var byte: UInt8 = 0
         #if os(Windows) || canImport(WinSDK)
-        let flags: Int32 = Int32(MSG_PEEK) | Int32(MSG_NONBLOCK)
+        // No MSG_NONBLOCK on Windows; `waitReadable` above already proved the socket readable,
+        // so a plain peek cannot block, and MSG_DONTWAIT does not exist here.
+        let flags: Int32 = Int32(MSG_PEEK)
         #else
         let flags: Int32 = Int32(MSG_PEEK) | Int32(MSG_DONTWAIT)
         #endif
