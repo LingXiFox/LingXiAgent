@@ -45,8 +45,12 @@ Write-Host "[2/5] 准备本地安装路径: $BinDir" -ForegroundColor DarkGray
 $Installed = $false
 
 function Install-Sidecars-And-Bundles($SourceDir, $TargetBinDir, $Root) {
-    # 1. 复制 LingXiCore 资源 Bundle 与 Resources
-    Get-ChildItem -Path $SourceDir -Directory -Filter "*LingXiCore*" -ErrorAction SilentlyContinue | ForEach-Object {
+    # 1. 复制全部 SwiftPM 资源 Bundle / Resources
+    #    Core 的配置与 Products 是一类，WebUI 的静态资源是另一类：只按 *LingXiCore* 过滤会让
+    #    装好的 `serve` 找不到自己的页面。
+    Get-ChildItem -Path $SourceDir -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like "*.bundle" -or $_.Name -like "*.resources"
+    } | ForEach-Object {
         Copy-Item -Force -Recurse $_.FullName (Join-Path $TargetBinDir $_.Name)
     }
 

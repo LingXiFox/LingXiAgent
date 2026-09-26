@@ -17,14 +17,19 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-15
+    # The GUI layer compiles against macOS 26 SDK symbols behind `#available` guards, so a
+    # pre-26 image cannot build the package at all.
+    runs-on: macos-26
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode_16.app || sudo xcode-select -s /Applications/Xcode.app || true
+          XCODE_APP=$(find /Applications -maxdepth 1 -name "Xcode_*.app" | sort -V | tail -n 1)
+          if [ -n "$XCODE_APP" ]; then sudo xcode-select -s "$XCODE_APP"; fi
+          swift --version
+          xcodebuild -version
 
       - name: Build Release Binaries
         run: |
@@ -40,9 +45,12 @@ jobs:
           if [ -f "$BIN_PATH/LingXiTUI" ]; then
             cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
-          if [ -d "$BIN_PATH/LingXiAgent_LingXiCore.bundle" ]; then
-            cp -R "$BIN_PATH/LingXiAgent_LingXiCore.bundle" staging/
-          fi
+          # Every SwiftPM resource bundle the shipped executables resolve at runtime: Core's
+          # configuration/products/protocols and the WebUI's static assets. Missing the WebUI one
+          # is `serve` failing with "assets were not found next to the executable" for users.
+          for b in "$BIN_PATH"/*.bundle; do
+            if [ -d "$b" ]; then cp -R "$b" staging/; fi
+          done
           mkdir -p staging/Sidecars/browser-host
           if [ -d "Sidecars/browser-host" ]; then
             cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
@@ -81,7 +89,9 @@ jobs:
           if [ -f "$BIN_PATH/LingXiTUI" ]; then
             cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
-          for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiCore*.resources; do
+          # All resource bundles, not just Core's: the WebUI assets have to be next to the
+          # executable or `serve` cannot find its own page.
+          for b in "$BIN_PATH"/*.bundle "$BIN_PATH"/*.resources; do
             if [ -d "$b" ]; then
               cp -R "$b" staging/
             fi
@@ -102,13 +112,75 @@ jobs:
           name: release-linux-x86_64
           path: dist/*
 
+  build-windows:
+    # V1.1.0 releases on Windows too, so the package is built and smoke-checked here rather than
+    # being left to "build from source". The toolchain setup mirrors the CI gate's Windows job; if
+    # the two drift, the release artifact is validated on a machine the tests never ran on.
+    runs-on: windows-2022
+    steps:
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: "2022"
+
+      - name: Set up Swift
+        uses: compnerd/gha-setup-swift@v0.5.0
+        with:
+          swift-version: swift-6.0.3-release
+          swift-build: 6.0.3-RELEASE
+          update-sdk-modules: true
+
+      - name: Provision SQLite Native Dependencies
+        shell: cmd
+        run: |
+          call "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" install sqlite3:x64-windows
+          call "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" integrate install
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Release Binaries
+        shell: bash
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          swift build -c release --product lingxiagent
+          swift build -c release --product LingXiCoreHost
+          swift build -c release --product LingXiTUI
+          BIN_PATH="$(swift build -c release --show-bin-path)"
+          mkdir -p dist staging
+          cp -f "$BIN_PATH/lingxiagent.exe" staging/
+          cp -f "$BIN_PATH/LingXiCoreHost.exe" staging/
+          if [ -f "$BIN_PATH/LingXiTUI.exe" ]; then cp -f "$BIN_PATH/LingXiTUI.exe" staging/; fi
+          for b in "$BIN_PATH"/*.bundle; do
+            if [ -d "$b" ]; then cp -R "$b" staging/; fi
+          done
+          # sqlite3 is a runtime DLL dependency here, not a link-time one: without it beside the
+          # executables the package fails to start on a clean machine.
+          cp -f "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" staging/sqlite3.dll
+          mkdir -p staging/Sidecars/browser-host
+          if [ -d "Sidecars/browser-host" ]; then
+            cp -f Sidecars/browser-host/index.mjs staging/Sidecars/browser-host/
+            cp -f Sidecars/browser-host/package.json staging/Sidecars/browser-host/
+          fi
+          # The same release smoke the other two platforms run, against the unpacked layout.
+          "$PWD/staging/lingxiagent.exe" --version < /dev/null
+          bash Scripts/ci-serve-smoke.sh "$PWD/staging" ".exe"
+          (cd staging && zip -qr ../dist/lingxiagent-windows-x86_64.zip .)
+          (cd dist && sha256sum lingxiagent-windows-x86_64.zip > lingxiagent-windows-x86_64.zip.sha256)
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: dist/*
+
   publish-release:
-    # V1.0.0 ships macOS and Linux. The Windows build job that used to sit here -- vcpkg sqlite,
-    # release build, zip and sha256 -- is a V1.1.0 item along with formal Windows support, so no
-    # Windows asset is published and Windows cannot hold a release. The job text is recoverable from
-    # git history; the platform implementation itself is untouched.
-    needs: [build-macos, build-linux]
-    if: needs.build-macos.result == 'success' && needs.build-linux.result == 'success'
+    # V1.1.0 ships three platforms. The Windows job that used to be absent is the difference
+    # between "supported" and "build it yourself".
+    needs: [build-macos, build-linux, build-windows]
+    if: needs.build-macos.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -132,7 +204,9 @@ jobs:
           tag_name: ${{ steps.tag_info.outputs.tag }}
           name: Release ${{ steps.tag_info.outputs.tag }}
           files: release_assets/*
-          draft: false
+          # Draft only, deliberately: the owner publishes V1.1.0 by hand. A tag push must never be
+          # able to put a release in front of users on its own.
+          draft: true
           prerelease: false
           generate_release_notes: true
           body: |
@@ -142,11 +216,20 @@ jobs:
             | :--- | :--- |
             | macOS (arm64, Apple Silicon / Intel) | Supported |
             | Linux (x86_64, Ubuntu / Debian / Arch / RHEL) | Supported |
-            | Windows 10/11, Server 2022 (x86_64 / ARM64) | Experimental — 正式支持计划 V1.1.0 |
+            | Windows 10/11, Server 2022 (x86_64 / ARM64) | Supported (x86_64 预编译包) |
 
-            Windows 不在本版本的支持范围内：不发布 Windows 预编译包，发布门禁也不看 Windows。
-            源码与 `LingXiPlatform` 的 Windows 适配全部保留，可从源码构建试用，但不保证可用；
-            运行时、pipe 与进程生命周期的 Windows 专项收敛在 V1.1.0 完成。
+            ## 正式前端 / Official front ends
+
+            ```text
+            LingXiAgent
+            ├── CLI        lingxiagent
+            ├── TUI        LingXiTUI
+            └── WebUI      lingxiagent serve
+            ```
+
+            三个前端共用同一套 Core / Application / Frontend Contract：Goal、Todo、分支预测、
+            P-Core / E-Core、Subagent 生命周期、Permission / Question 与 Git/Workspace 状态都由
+            Core 投影，任何前端不自行维护真值。WebUI 静态资源随包发布，用户不需要 Node.js/npm。
 
             ## 安装 / Install
 
@@ -155,12 +238,18 @@ jobs:
             curl -fsSL https://agent.lingxifox.cn/install.sh | bash
             ```
 
-            包内为三个可执行入口与资源：`lingxiagent`（CLI）、`LingXiTUI`（终端界面）、
-            `LingXiCoreHost`（core 服务），外加 `LingXiAgent_LingXiCore.bundle` 资源包与
-            `Sidecars/browser-host`。每个资产附带同名 `.sha256`。
+            ```powershell
+            # Windows：解压 lingxiagent-windows-x86_64.zip 后直接运行，
+            # sqlite3.dll 与资源包已随包放在同一目录。
+            .\install.ps1
+            ```
+
+            包内为可执行入口与资源：`lingxiagent`（CLI）、`LingXiTUI`（终端界面）、
+            `LingXiCoreHost`（core 服务），SwiftPM 资源包（Core 配置 + WebUI 静态资源），
+            以及 `Sidecars/browser-host`。每个资产附带同名 `.sha256`。
 
             ## 已知限制
 
             - macOS 预编译包只提供 `arm64`；Intel Mac 与 AArch64 Linux 请从源码构建。
-            - Linux 不开放桌面视觉 Computer Use（无辅助功能/截屏后端）。
+            - Linux 不开放桌面视觉 Computer Use（无辅助功能/截屏后端），能力按不可用如实申报。
             - `grep` / `glob` 工具依赖外部 `ripgrep`，未安装时相关检索按失败关闭处理。
