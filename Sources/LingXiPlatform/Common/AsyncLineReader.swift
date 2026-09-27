@@ -102,6 +102,32 @@ public enum AsyncLineReader: Sendable {
     /// Scoped to the line reader on purpose. `dataChunks` is the path the background command manager
     /// captures its output through, and that path has its own measured defects on Windows; moving it
     /// here would change a second thing at a time and blur which fix did what.
+    private static func startThreadedChunkReader(
+        handle: FileHandle,
+        bufferSize: Int,
+        onChunk: @escaping @Sendable (Data) -> Void,
+        onEnd: @escaping @Sendable () -> Void
+    ) -> @Sendable () -> Void {
+        let flag = StopFlag()
+        let thread = Thread {
+            while !flag.stopped {
+                do {
+                    guard let data = try handle.read(upToCount: bufferSize) else { break }
+                    if !data.isEmpty { onChunk(data) }
+                } catch {
+                    break // The handle was closed to stop this reader.
+                }
+            }
+            onEnd()
+        }
+        thread.name = "lingxi.pipe.chunks"
+        thread.start()
+        return {
+            flag.stop()
+            try? handle.close()
+        }
+    }
+
     private static func startThreadedLineReader(
         handle: FileHandle,
         bufferSize: Int,
@@ -169,6 +195,14 @@ public enum AsyncLineReader: Sendable {
                 #if os(Linux)
                 let stop = startPollingReader(
                     fd: handle.fileDescriptor,
+                    bufferSize: bufferSize,
+                    onChunk: { continuation.yield($0) },
+                    onEnd: { continuation.finish() }
+                )
+                continuation.onTermination = { _ in stop() }
+                #elseif os(Windows)
+                let stop = startThreadedChunkReader(
+                    handle: handle,
                     bufferSize: bufferSize,
                     onChunk: { continuation.yield($0) },
                     onEnd: { continuation.finish() }

@@ -395,7 +395,17 @@ for chunk in "${chunks[@]}"; do
   # closes (the same deadlock < /dev/null was added for in the other stages).
   # Ask the Swift runtime for a backtrace on a fatal signal, so the kill below can leave one
   # behind: wchan says a thread is parked in a pipe read, only a stack says which case parked it.
-  SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all \
+  #
+  # For stdio chunks the connection deadline is set *below* the per-test watchdog on purpose. A
+  # watchdog that fires first can only print "hung"; a deadline that fires first prints which side
+  # of the pipe stopped talking, in the transport's own error. Nothing is relaxed: the wait is still
+  # bounded and the assertions still run, and the deadline restarts on every frame, so a Core that is
+  # answering is never cut off.
+  stdio_env=()
+  if [ "$is_stdio_chunk" = yes ]; then
+    stdio_env=("LINGXI_CORE_RESPONSE_TIMEOUT_SECONDS=$((STDIO_PER_TEST_TIMEOUT > 10 ? STDIO_PER_TEST_TIMEOUT - 10 : 1))")
+  fi
+  env ${stdio_env[@]+"${stdio_env[@]}"} SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all \
     ${line_buffered[@]+"${line_buffered[@]}"} "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &
   runner=$!
   chunk_start=$(date +%s)

@@ -231,7 +231,17 @@ public actor StdioConnection: LingXiConnection {
         }
     }
 
-    static let responseTimeoutSeconds = 60
+    /// How long a request may go unanswered before the connection calls it dead.
+    ///
+    /// CI overrides it, because a chunk watchdog that fires *before* this deadline can only report
+    /// "hung", while a deadline that fires first reports which side stopped talking. Lowering it for
+    /// the test run buys a diagnosis; it does not relax an assertion, and the window is silence-bound,
+    /// so a Core that is streaming keeps resetting it.
+    static let responseTimeoutSeconds: Int = {
+        let raw = ProcessInfo.processInfo.environment["LINGXI_CORE_RESPONSE_TIMEOUT_SECONDS"]
+        if let raw, let seconds = Int(raw), seconds > 0 { return seconds }
+        return 60
+    }()
 
     private func write(_ message: WireMessage) throws {
         let data = try encoder.encode(message)

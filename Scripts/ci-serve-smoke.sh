@@ -134,10 +134,12 @@ fi
 if command -v pgrep >/dev/null 2>&1; then
   # `-x` matches the process *name*; `-f` searches command lines, which also hits any shell whose
   # argv merely mentions LingXiCoreHost -- the build command that produced it, the ssh line that
-  # carried this script. That reads exactly like an orphan that never existed.
-  if pgrep -x "LingXiCoreHost$EXE" >/dev/null 2>&1; then
+  # carried this script. That reads exactly like an orphan that never existed. And on Git Bash the
+  # name carries no extension: `LingXiCoreHost.exe` matches nothing, which is how this check could
+  # silently pass while three serve processes stayed alive behind it.
+  if pgrep -x LingXiCoreHost >/dev/null 2>&1; then
     echo "::error::a CoreHost child outlived serve"
-    pgrep -xl "LingXiCoreHost$EXE" || true
+    pgrep -xl LingXiCoreHost || true
     exit 1
   fi
 fi
