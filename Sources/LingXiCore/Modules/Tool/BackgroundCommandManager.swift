@@ -132,16 +132,7 @@ public actor BackgroundCommandManager {
             throw CoreError(code: .toolArgumentInvalid, message: "后台任务 ID 已存在: \(taskID)")
         }
 
-        let shellExecutable: String
-        let shellArgs: [String]
-        #if os(Windows)
-        let resolvedShell = LingXiPlatform.process.resolveExecutable(named: "cmd.exe", customSearchPaths: ["C:\\Windows\\System32"]) ?? "C:\\Windows\\System32\\cmd.exe"
-        shellExecutable = resolvedShell
-        shellArgs = ["/c", trimmedCommand]
-        #else
-        shellExecutable = LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: ["/bin", "/usr/bin"]) ?? "/bin/sh"
-        shellArgs = ["-c", trimmedCommand]
-        #endif
+        let (shellExecutable, shellArgs) = try ShellLaunch.invocation(for: trimmedCommand)
 
         let setup = try processSetup(executable: shellExecutable, arguments: shellArgs, workspace: workspace, cwd: cwd, profile: profile)
         let process = ManagedToolProcess(invocation: setup.0, cwd: cwd, environment: setup.1, lifecycleTrace: lifecycleTrace)

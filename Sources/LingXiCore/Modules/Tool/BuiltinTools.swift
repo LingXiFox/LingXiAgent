@@ -1333,14 +1333,8 @@ public struct ShellTool: ToolExecutor {
                     message: "禁止在 shell 中直接使用 '&' 盲放后台。长耗时或后台任务必须使用 'run_background_command'（必须指定 timeout_seconds，1~7200 秒），以便由看门狗管理并在完成后主动注入通知。"
                 )
             }
-            #if os(Windows)
-            let shellExe = LingXiPlatform.process.resolveExecutable(named: "cmd.exe", customSearchPaths: ["C:\\Windows\\System32"]) ?? "C:\\Windows\\System32\\cmd.exe"
-            let shellArgs = ["/c", shell]
+            let (shellExe, shellArgs) = try ShellLaunch.invocation(for: shell)
             command = (shellExe, shellArgs)
-            #else
-            let shellExe = LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: ["/bin", "/usr/bin"]) ?? "/bin/sh"
-            command = (shellExe, ["-c", shell])
-            #endif
         } else if let executable = input.executable {
             command = (executable, input.arguments ?? [])
         } else {
