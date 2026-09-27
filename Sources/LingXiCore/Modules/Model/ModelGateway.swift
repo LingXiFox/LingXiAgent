@@ -422,6 +422,15 @@ public struct ModelBus: Sendable {
                     }
                     continuation.yield(.completed(terminal))
                     continuation.finish()
+                } catch is CancellationError {
+                    // The stream ended because whoever was reading it went away, not because the
+                    // Provider broke. Translating this into a `modelStream` failure is what let a
+                    // user's Esc reach the turn as "Provider stream 连接中断" -- and, because the
+                    // fake verdict raced the real one for the same slot, made a genuine mid-stream
+                    // failure intermittently report as "AgentRun 已取消" instead. The
+                    // `if Task.isCancelled` guard above already treats a cancelled end as no
+                    // failure; this is the same rule on the throw path.
+                    continuation.finish()
                 } catch let error as CoreError {
                     continuation.yield(.failed(error))
                     continuation.finish()

@@ -851,13 +851,24 @@ public actor SessionRuntime {
 
                 try await withTaskCancellationHandler {
                     for try await event in cancellableEvents {
-                        if Task.isCancelled || shuttingDown { throw CancellationError() }
-                        if let currentRev = try? await store.currentRevision(sessionID), currentRev != runLease.revision {
-                            logDiagnostic("session.stale_event_dropped eventType=streaming_delta sessionID=\(sessionID.rawValue) eventRevision=\(runLease.revision) currentRevision=\(currentRev)")
-                            throw StaleRunError(sessionID: sessionID, expected: currentRev, actual: runLease.revision)
-                        }
-                        if await providerActivityRegistry.isCancelled(providerRequestID: providerRequestID, runID: runID) {
-                            throw CancellationError()
+                        // The three checks below each end *this iteration* as a cancellation, so they
+                        // must not run for a `.failed` event. That event is the provider's own verdict
+                        // on the stream it was asked to produce; reading it after the cancellation
+                        // checks let a cancel landing beside an already delivered failure replace the
+                        // failure, and the turn was reported as "AgentRun 已取消" for a stream that
+                        // genuinely broke. Which of the two arrives first is not something a local
+                        // test can pin, so the ordering is stated here instead.
+                        if case .failed = event {
+                            // Falls through to the switch, which rethrows the error unchanged.
+                        } else {
+                            if Task.isCancelled || shuttingDown { throw CancellationError() }
+                            if let currentRev = try? await store.currentRevision(sessionID), currentRev != runLease.revision {
+                                logDiagnostic("session.stale_event_dropped eventType=streaming_delta sessionID=\(sessionID.rawValue) eventRevision=\(runLease.revision) currentRevision=\(currentRev)")
+                                throw StaleRunError(sessionID: sessionID, expected: currentRev, actual: runLease.revision)
+                            }
+                            if await providerActivityRegistry.isCancelled(providerRequestID: providerRequestID, runID: runID) {
+                                throw CancellationError()
+                            }
                         }
                         switch event {
                         case let .providerRequestID(value):

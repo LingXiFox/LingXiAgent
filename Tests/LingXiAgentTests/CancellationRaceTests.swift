@@ -285,8 +285,13 @@ struct CancellationRaceTests {
 
         let updatedRuns = try await client.listAgentRuns(sessionID)
         let updatedRun = try #require(updatedRuns.first { $0.runID == run.runID })
-        #expect(updatedRun.status == .cancelled)
-        #expect(updatedRun.terminalReason == .userCancelled)
+        #expect(updatedRun.status == .cancelled, "status was \(updatedRun.status.rawValue), error \(updatedRun.error?.code.rawValue ?? "nil"): \(updatedRun.error?.message ?? "nil")")
+        #expect(updatedRun.terminalReason == .userCancelled, "reason was \(updatedRun.terminalReason?.rawValue ?? "nil")")
+        // The cause has to be the cancellation itself. The gateway's stream wrapper used to convert
+        // the teardown's `CancellationError` into `.failed(.modelStream, "Provider stream 连接中断")`,
+        // so an Esc could arrive at the turn as a provider outage -- and that invented verdict then
+        // competed with a real mid-stream failure for the same terminal slot.
+        #expect(updatedRun.error?.code == .toolCancelled, "cause was \(updatedRun.error?.code.rawValue ?? "nil"): \(updatedRun.error?.message ?? "nil")")
         await host.shutdown()
     }
 
