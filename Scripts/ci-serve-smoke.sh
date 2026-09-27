@@ -47,10 +47,16 @@ for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 
   pid=$!
 
   ready=0
-  for _ in $(seq 1 30); do
-    if ! kill -0 "$pid" 2>/dev/null; then break; fi          # it died on the way up
+  # Bounded by elapsed seconds only. `kill -0 $pid` is not a liveness test that works here: under
+  # Git Bash the pid of a Windows .exe launched in the background is not always the process that is
+  # answering, so a failed `kill -0` ended this loop on the first probe and reported a server that
+  # was perfectly healthy -- Windows `serve` binds ~5s after start, and every attempt was being cut
+  # short at t<2s. Slowness is now measured and printed rather than mistaken for death.
+  started_at=$(date +%s)
+  while [ $(( $(date +%s) - started_at )) -lt 45 ]; do
     if probe "http://127.0.0.1:$PORT/api/state"; then
       ready=1
+      echo "serve answered on port $PORT after $(( $(date +%s) - started_at ))s"
       break
     fi
     sleep 1
