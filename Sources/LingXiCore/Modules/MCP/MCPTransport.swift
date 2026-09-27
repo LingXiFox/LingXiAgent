@@ -352,6 +352,13 @@ public struct MCPStdioTransport: MCPToolInvoker {
             var buffer = Data()
             var initCompleted = false
             var targetResultData: Data?
+            // "The server did not answer" covers several unrelated failures -- the child never
+            // started, it answered a different id, its reply never reached this reader -- and on a
+            // runner where none of them reproduce locally the difference is the whole diagnosis.
+            // Counted rather than echoed, because an MCP server's output is its own to keep.
+            var linesReceived = 0
+            var repliesParsed = 0
+            var foreignIDs = 0
 
             for try await chunk in chunks {
                 try Task.checkCancellation()
@@ -365,9 +372,11 @@ public struct MCPStdioTransport: MCPToolInvoker {
                     buffer.removeSubrange(0..<newlineRange.upperBound)
 
                     guard !lineData.isEmpty else { continue }
+                    linesReceived += 1
                     guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
                         continue
                     }
+                    repliesParsed += 1
 
                     let msgId = json["id"] as? String
                     let numId = json["id"] as? Int
@@ -389,6 +398,8 @@ public struct MCPStdioTransport: MCPToolInvoker {
                         }
                         targetResultData = lineData
                         break
+                    } else {
+                        foreignIDs += 1
                     }
                 }
                 if targetResultData != nil { break }
@@ -401,7 +412,7 @@ public struct MCPStdioTransport: MCPToolInvoker {
                 if timeoutBox.didTimeout || elapsed >= .seconds(max(0, timeoutSeconds - 0.05)) {
                     throw CoreError(code: .commandTimedOut, message: "MCP stdio \(method) timed out")
                 }
-                throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method); server process \(process.isRunning ? "is still running" : "exited with status \(process.terminationStatus)")")
+                throw CoreError(code: .mcpServerUnavailable, message: "MCP stdio did not return a response for \(method); server process \(process.isRunning ? "is still running" : "exited with status \(process.terminationStatus)") · stdout gave \(linesReceived) line(s), \(repliesParsed) JSON reply(s), \(foreignIDs) with an id this request did not send, initialize \(initCompleted ? "answered" : "not answered"), \(buffer.count) undelimited trailing byte(s)")
             }
             return finalData
         } onCancel: {

@@ -459,15 +459,15 @@ final class ServerState: @unchecked Sendable {
     }
 
     /// Refuse a connection that cannot be adopted. The accept loop is still the only thread
-    /// touching the descriptor, so it answers and closes in place -- and it only writes when
-    /// the descriptor is writable right now, because a client that connects and never reads
-    /// must not be able to park the loop that hands out every other connection.
+    /// touching the descriptor, so it answers and closes in place.
+    ///
+    /// This used to ask whether the descriptor was writable with a zero-length wait and to close
+    /// the connection without a word when it was not. A freshly accepted socket has an empty send
+    /// buffer, so the few bytes of a 503 cannot block, while a 0ms probe is a race the loop can lose
+    /// on a kernel that reports a just-accepted socket as not yet writable -- which is what made the
+    /// surplus connection read zero bytes instead of the refusal it was promised.
     private func refuseOverCapacity(_ socket: HTTPSocket, peer: String) {
         defer { PlatformHTTPSocket.closeSocket(socket) }
-        guard PlatformHTTPSocket.waitWritable(socket, timeoutMs: 0) == .ready else {
-            log("closed \(peer) without an answer: \(configuration.maxConnections) connections in flight")
-            return
-        }
         _ = PlatformHTTPSocket.sendAll(socket, PlatformHTTPResponseWriter.serialize(
             .text(status: 503, body: "server is at capacity"),
             method: "GET",
