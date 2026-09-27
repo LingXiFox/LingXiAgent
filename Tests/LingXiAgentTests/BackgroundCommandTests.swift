@@ -50,6 +50,47 @@ struct BackgroundCommandTests {
         }
     }
 
+    /// The contract this pins is the one the flaky Windows cases kept slipping through: a spawned
+    /// command must be *observed* reaching a terminal state, not merely reach it. Polling one task
+    /// once shows only that task, and a single run says nothing about the next, so this drives
+    /// several at once and fails by naming the ids still reported running.
+    @Test func concurrentCommandsAreAllObservedReachingTerminalState() async throws {
+        let (tempDir, workspace) = try makeTemporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = BackgroundCommandManager()
+        let runTool = RunBackgroundCommandTool(workspace: workspace, manager: manager)
+        let manageTool = ManageBackgroundCommandTool(manager: manager)
+
+        let count = 6
+        var ids: [String] = []
+        for index in 0..<count {
+            let id = "bulk-\(index)"
+            let spawn = """
+            {"command": "echo marker-\(id)", "timeout_seconds": 30, "task_id": "\(id)"}
+            """
+            _ = try await runTool.execute(arguments: spawn, profile: testProfile)
+            ids.append(id)
+        }
+
+        var pending = Set(ids)
+        let deadline = Date().addingTimeInterval(25)
+        var last = ""
+        while !pending.isEmpty && Date() < deadline {
+            for id in Array(pending) {
+                let poll = """
+                {"action": "poll", "task_id": "\(id)"}
+                """
+                last = try await manageTool.execute(arguments: poll, profile: testProfile)
+                if !last.contains("\"running\"") { pending.remove(id) }
+            }
+            if pending.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+
+        #expect(pending.isEmpty, "never observed terminal: \(pending.sorted()) — last poll: \(last)")
+    }
+
     @Test func testSpawnAndPollLifecycle() async throws {
         let (tempDir, workspace) = try makeTemporaryWorkspace()
         defer { try? FileManager.default.removeItem(at: tempDir) }

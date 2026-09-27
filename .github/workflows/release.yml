@@ -193,7 +193,12 @@ jobs:
           # The same release smoke the other two platforms run, against the unpacked layout.
           "$PWD/staging/lingxiagent.exe" --version < /dev/null
           bash Scripts/ci-serve-smoke.sh "$PWD/staging" ".exe"
-          (cd staging && zip -qr ../dist/lingxiagent-windows-x86_64.zip .)
+          # Neither `zip` nor `tar` is safe here. Git for Windows has no `zip`, and its
+          # /usr/bin/tar is GNU tar, which accepts `-a -cf out.zip` happily and writes a *tar
+          # archive named .zip* -- measured locally, and it reaches a user as a corrupt download.
+          # Compress-Archive is PowerShell, present on every Windows image, and its output is a
+          # real zip. `.` is not a valid path for it, hence the wildcard.
+          powershell -NoProfile -Command "Compress-Archive -Force -Path staging/* -DestinationPath dist/lingxiagent-windows-x86_64.zip"
           (cd dist && sha256sum lingxiagent-windows-x86_64.zip > lingxiagent-windows-x86_64.zip.sha256)
 
       - name: Smoke the packaged artifact

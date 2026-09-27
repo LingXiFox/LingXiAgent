@@ -35,8 +35,16 @@ check() { # <label> <command...>
 echo "== extracting $(basename "$ARCHIVE") =="
 case "$ARCHIVE" in
   *.zip)
-    command -v unzip >/dev/null 2>&1 || { echo "::error::unzip is required for a .zip artifact"; exit 1; }
-    unzip -q "$ARCHIVE" -d "$WORK_DIR/root" ;;
+    # Git Bash on Windows ships no unzip, and the runner's bash may not either; bsdtar has been
+    # part of Windows since 10 and reads zip, so the gate does not depend on which shell was
+    # installed on the machine that packaged the release.
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -q "$ARCHIVE" -d "$WORK_DIR/root"
+    elif command -v tar >/dev/null 2>&1; then
+      mkdir -p "$WORK_DIR/root" && tar -xf "$ARCHIVE" -C "$WORK_DIR/root"
+    else
+      echo "::error::neither unzip nor tar is available to extract a .zip artifact"; exit 1
+    fi ;;
   *.tar.gz|*.tgz)
     tar -xzf "$ARCHIVE" -C "$WORK_DIR" 2>"$WORK_DIR/tar.err" || { cat "$WORK_DIR/tar.err"; exit 1; } ;;
   *) echo "::error::unsupported artifact type: $ARCHIVE"; exit 1 ;;
