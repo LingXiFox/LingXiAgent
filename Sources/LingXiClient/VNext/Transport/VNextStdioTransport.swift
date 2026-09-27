@@ -220,6 +220,10 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     }
 
     deinit {
+        // Whatever is still outstanding has to end with this object: an await parked on a transport
+        // that no longer exists would wait for a reader that can never be woken again. `fail` resumes
+        // every pending continuation with the reason, and is also what the deadline relies on.
+        fail(CoreError(code: .transport, message: "VNext transport 已释放，请求未获回应"))
         readTask?.cancel()
         try? input.close()
         outputPipe.fileHandleForReading.readabilityHandler = nil
@@ -425,6 +429,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         return pending.removeValue(forKey: id)
     }
 
+    private func hasPending(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending[id] != nil
+    }
+
     private func isRequestCancelled(_ id: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -527,10 +537,17 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     /// awaits nothing: the executor that would run a task is the thing that may be stuck. It is
     /// silence-bound rather than duration-bound, so a Core that is streaming is never cut off, and
     /// `takePending` keeps the answer and this deadline from resuming one continuation twice.
+    ///
+    /// The block keeps `self` alive for one timeout on purpose. Held weakly, this timer would simply
+    /// stop existing if the last strong reference went away while a request was still pending -- and
+    /// the case it exists to catch is precisely a transport whose peer never answers, so the await
+    /// would be abandoned with no reason reported. A watchdog that can be cancelled by ARC is not a
+    /// watchdog. It stops as soon as the request is no longer outstanding, so holding `self` cannot
+    /// keep a transport alive past the work it was watching.
     private func armDeadline(for wireID: String, since: Date) {
         let seconds = timeoutSeconds
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(seconds)) { [weak self] in
-            guard let self else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(seconds)) { [self] in
+            guard self.hasPending(wireID) else { return }
             if self.frames.value >= since {
                 self.armDeadline(for: wireID, since: Date())
                 return
