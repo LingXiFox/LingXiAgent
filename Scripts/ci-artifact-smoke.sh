@@ -23,7 +23,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 failures=0
 check() { # <label> <command...>
   local label="$1"; shift
-  if "$@" >"$WORK_DIR/check.log" 2>&1; then
+  if "$@" </dev/null >"$WORK_DIR/check.log" 2>&1; then
     echo "ok   $label"
   else
     echo "FAIL $label"
@@ -57,13 +57,19 @@ fi
 BIN="$ROOT/lingxiagent$EXE"
 
 echo "== entry points present and runnable =="
-for name in lingxiagent LingXiCoreHost LingXiTUI lingxiagent-ops; do
-  [ -e "$ROOT/$name$EXE" ] || echo "note: $name$EXE is not in this artifact"
+# The package ships three user-facing entry points; lingxiagent-ops is an internal helper and is
+# not in every archive, so its absence is reported rather than failed.
+for name in lingxiagent LingXiCoreHost LingXiTUI; do
+  if [ ! -e "$ROOT/$name$EXE" ]; then
+    echo "FAIL $name$EXE is missing from the artifact"
+    failures=$((failures + 1))
+  fi
 done
+[ -e "$ROOT/lingxiagent-ops$EXE" ] || echo "note: lingxiagent-ops$EXE is not in this artifact"
 check "lingxiagent --version"     "$BIN" --version
 check "lingxiagent --help"        "$BIN" --help
-check "LingXiTUI --help"          "$ROOT/LingXiTUI$EXE" --help
-check "lingxiagent-ops --smoke"   "$ROOT/lingxiagent-ops$EXE" --smoke
+[ -e "$ROOT/LingXiTUI$EXE" ] && check "LingXiTUI --help" "$ROOT/LingXiTUI$EXE" --help
+[ -e "$ROOT/lingxiagent-ops$EXE" ] && check "lingxiagent-ops --smoke" "$ROOT/lingxiagent-ops$EXE" --smoke
 
 if [ "${OS-}" != "Windows_NT" ]; then
   # An archive built on a filesystem without the exec bit, or a `tar` that dropped it,

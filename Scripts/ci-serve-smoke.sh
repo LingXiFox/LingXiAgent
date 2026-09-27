@@ -96,9 +96,12 @@ if kill -0 "$pid" 2>/dev/null; then
 fi
 
 if command -v pgrep >/dev/null 2>&1; then
-  if pgrep -f "LingXiCoreHost$EXE" >/dev/null 2>&1; then
+  # `-x` matches the process *name*; `-f` searches command lines, which also hits any shell whose
+  # argv merely mentions LingXiCoreHost -- the build command that produced it, the ssh line that
+  # carried this script. That reads exactly like an orphan that never existed.
+  if pgrep -x "LingXiCoreHost$EXE" >/dev/null 2>&1; then
     echo "::error::a CoreHost child outlived serve"
-    pgrep -fal "LingXiCoreHost$EXE" || true
+    pgrep -xl "LingXiCoreHost$EXE" || true
     exit 1
   fi
 fi

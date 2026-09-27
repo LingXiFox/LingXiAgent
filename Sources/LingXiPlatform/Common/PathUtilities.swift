@@ -22,9 +22,27 @@ public enum PathUtilities {
         #endif
     }
 
+    /// The value of an environment variable, looked up the way the platform looks it up.
+    ///
+    /// Windows variable names are case-insensitive and the block store spells this one `Path`,
+    /// `UserProfile`, … An exact `environment["PATH"]` therefore reads nothing, and every tool
+    /// lookup that depends on PATH silently ends up with zero search directories rather than an
+    /// error. POSIX names are case sensitive, so there the exact match is the only match.
+    public static func environmentValue(
+        for name: String,
+        in environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        if let exact = environment[name] { return exact }
+        #if os(Windows)
+        return environment.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+        #else
+        return nil
+        #endif
+    }
+
     /// 获取解析后的 PATH 搜索目录列表
     public static func systemPathDirectories(from environment: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        let pathVar = environment["PATH"] ?? ""
+        let pathVar = environmentValue(for: "PATH", in: environment) ?? ""
         return pathVar.split(separator: pathListSeparator).map(String.init).filter { !$0.isEmpty }
     }
 
@@ -33,9 +51,9 @@ public enum PathUtilities {
         guard path.hasPrefix("~") else { return path }
         let home: String
         #if os(Windows)
-        home = ProcessInfo.processInfo.environment["USERPROFILE"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        home = environmentValue(for: "USERPROFILE") ?? FileManager.default.homeDirectoryForCurrentUser.path
         #else
-        home = ProcessInfo.processInfo.environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        home = environmentValue(for: "HOME") ?? FileManager.default.homeDirectoryForCurrentUser.path
         #endif
         if path == "~" {
             return home

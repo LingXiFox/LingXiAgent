@@ -144,4 +144,21 @@ struct PlatformAbstractionAndDecouplingTests {
         fallback.showCursor()
         fallback.setCursor(column: 1, row: 1)
     }
+
+    @Test func pathVariableIsReadWithTheSpellingTheHostActuallyUses() {
+        // Windows environment names are case-insensitive and the block store writes this one as
+        // `Path`. An exact `environment["PATH"]` lookup does not fail -- it returns no directories
+        // at all, so every tool resolved from PATH (python, rg, node, git) reports "not on PATH"
+        // and the cause shows up as an unrelated child-process error far away from here.
+        #if os(Windows)
+        let environment = ["Path": "C:\\tools;C:\\Windows\\System32"]
+        let expected = ["C:\\tools", "C:\\Windows\\System32"]
+        #else
+        // POSIX names are case sensitive, so a different spelling is a different variable and
+        // must stay unread.
+        let environment = ["Path": "/must/not/be/read"]
+        let expected: [String] = []
+        #endif
+        #expect(PathUtilities.systemPathDirectories(from: environment) == expected)
+    }
 }

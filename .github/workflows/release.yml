@@ -36,6 +36,7 @@ jobs:
           swift build -c release --product lingxiagent
           swift build -c release --product LingXiCoreHost
           swift build -c release --product LingXiTUI
+          swift build -c release --product lingxiagent-ops
           BIN_PATH="$(swift build -c release --show-bin-path)"
           mkdir -p dist staging
           cp -f "$BIN_PATH/lingxiagent" staging/
@@ -45,6 +46,7 @@ jobs:
           if [ -f "$BIN_PATH/LingXiTUI" ]; then
             cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
+          cp -f "$BIN_PATH/lingxiagent-ops" staging/
           # The resource bundles the shipped executables resolve at runtime: Core's
           # configuration/products/protocols and the WebUI's static assets. Missing the WebUI one
           # is `serve` failing with "assets were not found next to the executable" for users.
@@ -60,6 +62,11 @@ jobs:
           fi
           tar -czf "dist/lingxiagent-macos-arm64.tar.gz" -C staging .
           (cd dist && shasum -a 256 lingxiagent-macos-arm64.tar.gz > lingxiagent-macos-arm64.tar.gz.sha256)
+
+      - name: Smoke the packaged artifact
+        # §9: the archive is the product. Run the entry points out of an extracted copy
+        # rather than out of the build tree that produced it.
+        run: bash Scripts/ci-artifact-smoke.sh dist/lingxiagent-macos-arm64.tar.gz
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -84,6 +91,7 @@ jobs:
           swift build -c release --product lingxiagent
           swift build -c release --product LingXiCoreHost
           swift build -c release --product LingXiTUI
+          swift build -c release --product lingxiagent-ops
           BIN_PATH="$(swift build -c release --show-bin-path)"
           mkdir -p dist staging
           cp -f "$BIN_PATH/lingxiagent" staging/
@@ -91,6 +99,7 @@ jobs:
           if [ -f "$BIN_PATH/LingXiTUI" ]; then
             cp -f "$BIN_PATH/LingXiTUI" staging/
           fi
+          cp -f "$BIN_PATH/lingxiagent-ops" staging/
           # All resource bundles the runtime resolves, not just Core's: the WebUI assets have to be
           # next to the executable or `serve` cannot find its own page. The test bundle is excluded
           # on purpose.
@@ -108,6 +117,9 @@ jobs:
           # Recorded from inside dist/ so the name in the file is the bare asset name:
           # with a "dist/" prefix the checksum cannot be verified where it is downloaded to.
           (cd dist && sha256sum lingxiagent-linux-x86_64.tar.gz > lingxiagent-linux-x86_64.tar.gz.sha256)
+
+      - name: Smoke the packaged artifact
+        run: bash Scripts/ci-artifact-smoke.sh dist/lingxiagent-linux-x86_64.tar.gz
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -151,11 +163,13 @@ jobs:
           swift build -c release --product lingxiagent
           swift build -c release --product LingXiCoreHost
           swift build -c release --product LingXiTUI
+          swift build -c release --product lingxiagent-ops
           BIN_PATH="$(swift build -c release --show-bin-path)"
           mkdir -p dist staging
           cp -f "$BIN_PATH/lingxiagent.exe" staging/
           cp -f "$BIN_PATH/LingXiCoreHost.exe" staging/
           if [ -f "$BIN_PATH/LingXiTUI.exe" ]; then cp -f "$BIN_PATH/LingXiTUI.exe" staging/; fi
+          cp -f "$BIN_PATH/lingxiagent-ops.exe" staging/
           for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiWebUI*.bundle; do
             if [ -d "$b" ]; then cp -R "$b" staging/; fi
           done
@@ -172,6 +186,12 @@ jobs:
           bash Scripts/ci-serve-smoke.sh "$PWD/staging" ".exe"
           (cd staging && zip -qr ../dist/lingxiagent-windows-x86_64.zip .)
           (cd dist && sha256sum lingxiagent-windows-x86_64.zip > lingxiagent-windows-x86_64.zip.sha256)
+
+      - name: Smoke the packaged artifact
+        # The zip is what a Windows user extracts, and it has no executable bits and no build
+        # tree next to it: sibling CoreHost lookup and asset resolution can only be checked here.
+        shell: bash
+        run: bash Scripts/ci-artifact-smoke.sh dist/lingxiagent-windows-x86_64.zip .exe
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
