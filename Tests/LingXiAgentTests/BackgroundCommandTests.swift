@@ -65,16 +65,23 @@ struct BackgroundCommandTests {
         #expect(spawnResult.contains("test-task-1"))
         #expect(spawnResult.contains("running"))
 
-        // Wait a short moment for process completion
-        try? await Task.sleep(for: .milliseconds(600))
-
-        let pollArgs = """
-        {"action": "poll", "task_id": "test-task-1"}
-        """
-        let pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
-        #expect(pollResult.contains("LingXi-BG-Output-1"))
-        #expect(pollResult.contains("LingXi-BG-Output-2"))
-        #expect(pollResult.contains("exited"))
+        // Wait for completion rather than sleeping a fixed 600ms: on Windows `cmd.exe /c` can still be
+        // starting at 0.62s, and a fixed sleep turns that into a verdict about machine speed. Poll with
+        // a deadline, and keep every assertion -- if the process exits without ever surfacing its output,
+        // this still fails, and it fails with the state it actually reached.
+        var pollResult = ""
+        for attempt in 0..<50 {
+            let pollArgs = """
+            {"action": "poll", "task_id": "test-task-1"}
+            """
+            pollResult = try await manageTool.execute(arguments: pollArgs, profile: testProfile)
+            if pollResult.contains("exited") || pollResult.contains("failed") { break }
+            try? await Task.sleep(for: .milliseconds(200))
+            _ = attempt
+        }
+        #expect(pollResult.contains("LingXi-BG-Output-1"), "polled: \(pollResult)")
+        #expect(pollResult.contains("LingXi-BG-Output-2"), "polled: \(pollResult)")
+        #expect(pollResult.contains("exited"), "polled: \(pollResult)")
     }
 
     @Test func testWatchdogTimeoutTermination() async throws {
