@@ -180,9 +180,13 @@ struct CodingToolContractTests {
         #expect(singleResult.success)
         let singleMatches = try #require(JSONSerialization.jsonObject(with: Data(singleResult.content.utf8)) as? [[String: Any]])
         #expect(singleMatches.count == 1)
-        #expect(singleMatches[0]["path"] as? String == "Vibe Coding/Apple Operation System Manage/project.pbxproj")
-        #expect(singleMatches[0]["line"] as? Int == 2)
-        #expect(singleMatches[0]["content"] as? String == "SWIFT_VERSION = 5.0;")
+        // Indexing the array after a failed count check killed the whole test process
+        // (`Index out of range`), which took every other suite sharing that CI chunk's results
+        // with it. Require the element instead: same assertion, one test fails.
+        let firstMatch = try #require(singleMatches.first)
+        #expect(firstMatch["path"] as? String == "Vibe Coding/Apple Operation System Manage/project.pbxproj")
+        #expect(firstMatch["line"] as? Int == 2)
+        #expect(firstMatch["content"] as? String == "SWIFT_VERSION = 5.0;")
 
         // 2. Search on the directory path with spaces
         let dirCall = call(

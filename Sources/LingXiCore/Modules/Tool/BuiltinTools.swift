@@ -842,6 +842,12 @@ private func runRipgrep(arguments: [String], root: URL, workspace: WorkspaceRoot
     guard result.exitCode == 0 || result.exitCode == 1 else {
         throw CoreError(code: .commandFailed, message: try json(result))
     }
+    // Exit 1 is also what a sandbox that could not start the program reports: bwrap's failed
+    // `execvp` exits 1 with empty stdout, and only an empty result is ambiguous between "no
+    // matches" and "never ran", so that is where the disambiguation belongs.
+    if result.stdout.isEmpty, result.stderr.contains("bwrap:") {
+        throw CoreError(code: .commandFailed, message: "沙箱未能启动检索进程: \(result.stderr.prefix(400))")
+    }
     return result
 }
 
