@@ -553,7 +553,14 @@ for chunk in "${chunks[@]}"; do
   # Compute issue/failure count
   failed_in_chunk=0
   if [ -s "$chunk_events" ]; then
-    failed_in_chunk="$(grep -ac '"kind":"issueRecorded"' "$chunk_events" 2>/dev/null || echo 0)"
+    # `grep -c` prints 0 *and* exits 1 when nothing matched, so `|| echo 0` used to append a
+    # second line: the later `[ "$failed_in_chunk" -eq 0 ]` then died on "[: 0" and short-circuited
+    # the fallback that catches a chunk that failed without recording any issue.
+    counted="$(grep -ac '"kind":"issueRecorded"' "$chunk_events" 2>/dev/null)"
+    case "$counted" in
+      ''|*[!0-9]*) : ;;
+      *) failed_in_chunk="$counted" ;;
+    esac
   fi
   if [ "$failed_in_chunk" -eq 0 ] && grep -qE 'Test run with [0-9]+ tests failed' "$chunk_log" 2>/dev/null; then
     failed_in_chunk=1
