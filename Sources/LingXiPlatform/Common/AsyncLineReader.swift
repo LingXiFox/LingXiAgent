@@ -111,6 +111,28 @@ public enum AsyncLineReader: Sendable {
                     onEnd: { continuation.finish() }
                 )
                 continuation.onTermination = { _ in stop() }
+                #elseif os(Windows)
+                // A blocking read parked on a cooperative-pool worker is what deadlocked a whole
+                // test stage on Windows: `Task.detached` still runs on the global pool, so with
+                // several pipes open at once every worker ended up parked inside `read`, and
+                // nothing else -- including the work that has to make the child write -- was ever
+                // scheduled. Give the loop its own OS thread; cancellation still works because
+                // closing the handle turns the parked read into a thrown error.
+                let reader = Thread {
+                    do {
+                        while let chunk = try handle.read(upToCount: bufferSize), !chunk.isEmpty {
+                            continuation.yield(chunk)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                reader.stackSize = 1 << 20
+                reader.start()
+                continuation.onTermination = { @Sendable _ in
+                    try? handle.close()
+                }
                 #else
                 let task = Task.detached {
                     do {

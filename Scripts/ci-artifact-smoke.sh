@@ -86,11 +86,17 @@ echo "== resources =="
 # CoreHost is found by sibling lookup, and the WebUI assets come from the resource
 # bundle: both resolve differently in a build tree than in a flat release folder,
 # which is the whole reason this stage exists.
-if ! find "$ROOT" -name 'index.html' -print -quit | grep -q .; then
-  echo "FAIL no WebUI assets (index.html) in the artifact"
+ASSETS_DIR="$(find "$ROOT" -type d -name Assets -print -quit 2>/dev/null)"
+if [ ! -f "$ASSETS_DIR/index.html" ] || [ ! -f "$ASSETS_DIR/js/state.js" ]; then
+  echo "FAIL no WebUI assets (index.html, js/state.js) in the artifact"
   failures=$((failures + 1))
 else
   echo "ok   WebUI assets present"
+  # Stamp the packaged copy and require the marker back from the running server, so a binary that
+  # resolves its resources through the compile-time build path cannot pass for a self-contained one.
+  ASSET_MARKER="lingxi-artifact-provenance-$$"
+  printf '\n/* %s */\n' "$ASSET_MARKER" >> "$ASSETS_DIR/js/state.js"
+  export LINGXI_EXPECTED_ASSET_MARKER="$ASSET_MARKER"
 fi
 
 echo "== serve from the extracted artifact =="
@@ -102,6 +108,7 @@ else
   echo "FAIL serve smoke from packaged artifact"
   failures=$((failures + 1))
 fi
+unset LINGXI_EXPECTED_ASSET_MARKER
 
 if [ "$failures" -ne 0 ]; then
   echo "::error::$failures packaged-artifact check(s) failed"

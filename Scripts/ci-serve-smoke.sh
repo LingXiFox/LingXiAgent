@@ -83,6 +83,26 @@ fi
 # state endpoint, both from the packaged binary.
 probe "http://127.0.0.1:$PORT/"
 probe "http://127.0.0.1:$PORT/js/state.js"
+
+# LINGXI_EXPECTED_ASSET_MARKER is set by the packaged-artifact smoke after it has stamped a
+# marker into the extracted copy of an asset. Requiring the marker in the response is what
+# separates "the package serves its own assets" from "the binary found the build tree it was
+# compiled in" -- the second one works on every CI runner and on no user's machine.
+if [ -n "${LINGXI_EXPECTED_ASSET_MARKER:-}" ]; then
+  body=""
+  if command -v curl >/dev/null 2>&1; then
+    body="$(curl -fsS -H 'X-LingXi-Client: ci' "http://127.0.0.1:$PORT/js/state.js" 2>/dev/null || true)"
+  elif command -v python3 >/dev/null 2>&1; then
+    body="$(python3 -c 'import sys,urllib.request;req=urllib.request.Request(sys.argv[1],headers={"X-LingXi-Client":"ci"});print(urllib.request.urlopen(req,timeout=5).read().decode("utf-8","replace"))' "http://127.0.0.1:$PORT/js/state.js" 2>/dev/null || true)"
+  fi
+  case "$body" in
+    *"$LINGXI_EXPECTED_ASSET_MARKER"*)
+      echo "the served assets are the ones inside this package" ;;
+    *)
+      echo "::error::serve answered without the marker stamped into the packaged asset: the bytes came from outside this package"
+      exit 1 ;;
+  esac
+fi
 echo "serve answered on port $PORT and served its assets"
 
 kill -TERM "$pid" 2>/dev/null || true

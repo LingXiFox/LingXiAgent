@@ -449,6 +449,21 @@ public final class WebUIServer: @unchecked Sendable {
 
     private static func assetBundleCandidates(sourceRelative: String) -> [URL] {
         var list: [URL] = []
+        let execDir = URL(fileURLWithPath: CommandLine.arguments.first ?? ".", isDirectory: false)
+            .deletingLastPathComponent()
+        // Shipped form first: resources sitting next to the executable are the package's own, while
+        // `Bundle.module` resolves to the build directory that compiled the binary. Asked in the
+        // other order, a build machine -- CI included -- answers from its own tree and never
+        // notices that the archive is short of them.
+        //
+        // SwiftPM only spells a resource bundle `.bundle` on Darwin; Linux and Windows ship
+        // `LingXiAgent_LingXiWebUI.resources`, so a lookup limited to `.bundle` cannot find the
+        // packaged directory at all.
+        list.append(execDir.appendingPathComponent("Assets", isDirectory: true))
+        for name in ["LingXiAgent_LingXiWebUI.bundle", "LingXiAgent_LingXiWebUI.resources"] {
+            list.append(execDir.appendingPathComponent("\(name)/Assets", isDirectory: true))
+            list.append(execDir.appendingPathComponent(name, isDirectory: true))
+        }
         #if SWIFT_PACKAGE
         let bundleURL = Bundle.module.resourceURL ?? Bundle.module.bundleURL
         list.append(bundleURL.appendingPathComponent("Assets", isDirectory: true))
@@ -460,10 +475,6 @@ public final class WebUIServer: @unchecked Sendable {
             list.append(resource.appendingPathComponent("LingXiAgent_LingXiWebUI.bundle", isDirectory: true))
             list.append(resource)
         }
-        let execDir = URL(fileURLWithPath: CommandLine.arguments.first ?? ".", isDirectory: false)
-            .deletingLastPathComponent()
-        list.append(execDir.appendingPathComponent("Assets", isDirectory: true))
-        list.append(execDir.appendingPathComponent("LingXiAgent_LingXiWebUI.bundle/Assets", isDirectory: true))
         // Debug convenience inside a checkout: .build/<config>/ -> repo root.
         var parent = execDir
         for _ in 0..<4 {
