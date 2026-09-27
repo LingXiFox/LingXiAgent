@@ -57,7 +57,10 @@ private actor ClientWireWriter {
     func write(data: Data, shouldCancel: () -> Bool = { false }) throws {
         guard !shouldCancel() else { return }
         try handle.write(contentsOf: data)
-        try? handle.synchronize()
+        // No `synchronize()`: a pipe has no user-space buffer to flush, and the call is documented
+        // for disk volumes, not for pipes. Whatever it costs on one platform it is paid on every
+        // request, and waiting on a *peer* from a task is exactly the shape that holds a cooperative
+        // pool worker.
     }
 
     func close() {
@@ -72,6 +75,9 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private let outputPipe: Pipe
     private var readTask: Task<Void, Never>?
     private let writer: ClientWireWriter
+    /// How long a request may go unanswered; see `armDeadline`. Injectable so the bound is testable
+    /// at all, and defaulted from the environment so a CI watchdog can be outrun by a diagnosis.
+    private let timeoutSeconds: Int
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let lock = NSLock()
@@ -83,13 +89,16 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private var frameContinuations: [String: AsyncStream<StreamFrame>.Continuation] = [:]
     private var stateContinuations: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
     private var terminalError: CoreError?
+    /// When the last frame arrived. The per-request deadline below is silence-bound, so a Core that
+    /// is answering slowly is never cut off while one that stopped talking cannot go unanswered.
+    private let frames = LastFrameClock()
     private var currentState = ConnectionState.disconnected
     /// Set when this transport created the pipes and already released its own copy of the ends the
     /// child owns, so teardown does not close the same handle a second time.
     private var parentWriteEndsClosed = false
     public let authorizationContext: ContentAuthorizationContext = .anonymous
 
-    public init(corePath: String? = nil, interactive: Bool = true) throws {
+    public init(corePath: String? = nil, interactive: Bool = true, timeoutSeconds: Int? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: Self.resolveCorePath(corePath))
         process.arguments = ["--vnext"]
@@ -107,6 +116,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         let inputHandle = inputPipe.fileHandleForWriting
         self.input = inputHandle
         self.writer = ClientWireWriter(handle: inputHandle)
+        self.timeoutSeconds = timeoutSeconds ?? StdioConnection.responseTimeoutSeconds
         try process.run()
         Self.trace("process.run.end")
         // A pipe reports end-of-file only once every writer has closed it, and creating the Pipe
@@ -120,11 +130,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         self.readTask = Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
-    public init(inputHandle: FileHandle, outputPipe: Pipe, process: Process? = nil) {
+    public init(inputHandle: FileHandle, outputPipe: Pipe, process: Process? = nil, timeoutSeconds: Int? = nil) {
         self.process = process
         self.input = inputHandle
         self.outputPipe = outputPipe
         self.writer = ClientWireWriter(handle: inputHandle)
+        self.timeoutSeconds = timeoutSeconds ?? StdioConnection.responseTimeoutSeconds
         self.readTask = Task { [weak self] in await self?.readLoop(pipe: outputPipe) }
     }
 
@@ -490,6 +501,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
                         }
                     }
                 }
+                armDeadline(for: wireID, since: Date())
             }
         } onCancel: { [weak self] in
             guard let self else { return }
@@ -506,10 +518,37 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; nextID += 1; return String(nextID)
     }
 
+    /// A request that goes unanswered has to end, with a reason.
+    ///
+    /// `fail` already resumes everything pending once the read loop sees EOF, so an entry still in
+    /// `pending` means the child produced no frame at all -- the shape a `serve` takes when the
+    /// CoreHost it spawned never gets as far as answering, which leaves the caller waiting on a port
+    /// that was never bound because this await gates it. The timer is deliberately not a `Task` and
+    /// awaits nothing: the executor that would run a task is the thing that may be stuck. It is
+    /// silence-bound rather than duration-bound, so a Core that is streaming is never cut off, and
+    /// `takePending` keeps the answer and this deadline from resuming one continuation twice.
+    private func armDeadline(for wireID: String, since: Date) {
+        let seconds = timeoutSeconds
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(seconds)) { [weak self] in
+            guard let self else { return }
+            if self.frames.value >= since {
+                self.armDeadline(for: wireID, since: Date())
+                return
+            }
+            let error = CoreError(
+                code: .transport,
+                message: "Core 在 \(seconds)s 内没有任何回应：子进程可能未能启动或已退出，stdio 读取侧在这段时间没有产生任何帧"
+            )
+            _ = self.takePending(wireID).map { $0.resume(throwing: error) }
+            self.fail(error)
+        }
+    }
+
     private func readLoop(pipe: Pipe) async {
         debug("readLoop.begin")
         do {
             for try await line in LingXiPlatform.lineReader.lines(from: pipe.fileHandleForReading) {
+                frames.mark()
                 if let data = line.data(using: .utf8) { handle(data) }
             }
         } catch { fail(CoreError(code: .transport, message: String(describing: error))) }

@@ -57,12 +57,22 @@ public final class AppCompositionRoot: Sendable {
         // 2. 装配 ApplicationStore（在等待冷启动握手时输出友好提示）
         if LingXiPlatform.terminal.isInteractive() {
             FileHandle.standardError.write(Data("🦊 正在唤醒 LingXiAgent (恢复工作区状态与扩展组件)...\r\n".utf8))
+        } else {
+            // Said out loud because this await is the gate on everything a frontend does next: until it
+            // returns, `serve` has no listener at all, and a caller watching a port that never opens
+            // cannot otherwise distinguish a slow Core from a dead server.
+            FileHandle.standardError.write(Data("🦊 [core] cold-start handshake started; no port listens until it returns\n".utf8))
         }
+        let handshakeBegan = Date()
         let store = try await ApplicationStore.stdio(
             corePath: configuration.corePath,
             interactive: true,
             autoConnect: true
         )
+        let handshakeSeconds = Date().timeIntervalSince(handshakeBegan)
+        if handshakeSeconds > 5 {
+            FileHandle.standardError.write(Data("🦊 [core] cold-start handshake took \(String(format: "%.1f", handshakeSeconds))s\n".utf8))
+        }
 
         // 3. 派发初始业务状态与偏好
         let initialPerm = Self.resolveInitialPermission(isYoloMode: configuration.isYoloMode)

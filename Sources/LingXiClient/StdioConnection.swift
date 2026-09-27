@@ -2,6 +2,29 @@ import Foundation
 import LingXiProtocol
 import LingXiPlatform
 
+/// When the last frame arrived, readable from a timer thread.
+///
+/// The stdio deadlines bound *silence*, not duration: `compactSession` runs a model call that can
+/// take minutes on a live connection, and a fixed cap would fail an operation that is working fine.
+/// A plain `await` of actor state is not an option either -- the timer exists precisely because the
+/// cooperative pool may be the thing that is stuck.
+final class LastFrameClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen = Date()
+
+    func mark() {
+        lock.lock()
+        seen = Date()
+        lock.unlock()
+    }
+
+    var value: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return seen
+    }
+}
+
 /// stdio 子进程连接：spawn LingXiCoreHost，通过 JSON-lines 通信。
 /// 控制面 request/response 与数据面 chunk 在读循环按 plane 分发，
 /// chunk 不经过控制面等待链路。
@@ -27,29 +50,6 @@ public actor StdioConnection: LingXiConnection {
             guard available else { return false }
             available = false
             return true
-        }
-    }
-
-    /// When the last line arrived, readable from the timer thread.
-    ///
-    /// The deadline bounds *silence*, not duration: `compactSession` runs a model call that can take
-    /// minutes on a live connection, and a fixed cap would fail an operation that is working fine.
-    /// A plain `await` of actor state is not an option either -- the timer exists precisely because
-    /// the cooperative pool may be the thing that is stuck.
-    final class LastFrameClock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var seen = Date()
-
-        func mark() {
-            lock.lock()
-            seen = Date()
-            lock.unlock()
-        }
-
-        var value: Date {
-            lock.lock()
-            defer { lock.unlock() }
-            return seen
         }
     }
 

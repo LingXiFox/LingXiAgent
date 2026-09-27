@@ -10,6 +10,11 @@ set -euo pipefail
 
 BIN_PATH="${1:?usage: ci-serve-smoke.sh <swift-bin-path> [exe-suffix]}"
 EXE="${2-}"
+# Below the 60s readiness window below, on purpose: `serve` does not listen until the Core
+# cold-start handshake returns, and the Windows gate showed a handshake that never returned at
+# all. With the bound inside the window, the log says which side stopped talking instead of only
+# showing a port that never appeared.
+export LINGXI_CORE_RESPONSE_TIMEOUT_SECONDS="${LINGXI_CORE_RESPONSE_TIMEOUT_SECONDS:-45}"
 # The port is not chosen here. `serve --port 0` lets the OS assign one and prints the number it got,
 # because a port picked by arithmetic can land in a range the host has reserved: Windows runners keep
 # whole dynamic ranges for Hyper-V/WinNAT, and binding one of those still succeeds while connections
