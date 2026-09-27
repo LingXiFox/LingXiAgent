@@ -7,11 +7,50 @@ import LingXiPlatform
 /// chunk 不经过控制面等待链路。
 public actor StdioConnection: LingXiConnection {
     private enum PendingRequest {
-        case command(CheckedContinuation<CoreResponse, Error>)
+        case command(CheckedContinuation<CoreResponse, Error>, OneShot)
         case stream(
             chunks: AsyncThrowingStream<StreamChunk, Error>.Continuation,
-            open: CheckedContinuation<StreamID, Error>
+            open: CheckedContinuation<StreamID, Error>,
+            OneShot
         )
+    }
+
+    /// One winner per pending request. The answer, the connection failure and the deadline can all
+    /// try to resume the same continuation, and a continuation resumed twice crashes the process.
+    final class OneShot: @unchecked Sendable {
+        private let lock = NSLock()
+        private var available = true
+
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard available else { return false }
+            available = false
+            return true
+        }
+    }
+
+    /// When the last line arrived, readable from the timer thread.
+    ///
+    /// The deadline bounds *silence*, not duration: `compactSession` runs a model call that can take
+    /// minutes on a live connection, and a fixed cap would fail an operation that is working fine.
+    /// A plain `await` of actor state is not an option either -- the timer exists precisely because
+    /// the cooperative pool may be the thing that is stuck.
+    final class LastFrameClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seen = Date()
+
+        func mark() {
+            lock.lock()
+            seen = Date()
+            lock.unlock()
+        }
+
+        var value: Date {
+            lock.lock()
+            defer { lock.unlock() }
+            return seen
+        }
     }
 
     private let process: Process
@@ -24,8 +63,13 @@ public actor StdioConnection: LingXiConnection {
     private var eventContinuations: [UUID: AsyncStream<CoreEvent>.Continuation] = [:]
     private var toolOutputContinuations: [UUID: AsyncStream<ToolOutputChunk>.Continuation] = [:]
     private var terminalError: CoreError?
+    /// How long a request may go unanswered. Injectable so the deadline is testable at all;
+    /// production uses `responseTimeoutSeconds`.
+    private let timeoutSeconds: Int
+    private let lastFrame = LastFrameClock()
 
-    public init(corePath: String, interactive: Bool = false) throws {
+    public init(corePath: String, interactive: Bool = false, timeoutSeconds: Int? = nil) throws {
+        self.timeoutSeconds = timeoutSeconds ?? Self.responseTimeoutSeconds
         let process = Process()
         process.executableURL = URL(fileURLWithPath: corePath)
         process.arguments = []
@@ -44,7 +88,8 @@ public actor StdioConnection: LingXiConnection {
         Task { await self.readLoop(pipe: output) }
     }
 
-    init(input: FileHandle) {
+    init(input: FileHandle, timeoutSeconds: Int? = nil) {
+        self.timeoutSeconds = timeoutSeconds ?? Self.responseTimeoutSeconds
         self.process = Process()
         self.input = input
     }
@@ -85,12 +130,14 @@ public actor StdioConnection: LingXiConnection {
         nextRequestID += 1
         let id = String(nextRequestID)
         _ = try await withCheckedThrowingContinuation { (open: CheckedContinuation<StreamID, Error>) in
-            pending[id] = .stream(chunks: continuation, open: open)
+            let request: PendingRequest = .stream(chunks: continuation, open: open, OneShot())
+            pending[id] = request
             do {
                 try write(.request(id: id, command: command))
             } catch {
                 failConnection(CoreError(code: .transport, message: "Core 请求写入失败: \(error.localizedDescription)"))
             }
+            armDeadline(for: request)
         } as StreamID
         return stream
     }
@@ -131,15 +178,60 @@ public actor StdioConnection: LingXiConnection {
         if let terminalError { throw terminalError }
         nextRequestID += 1
         let id = String(nextRequestID)
-        return try await withCheckedThrowingContinuation { continuation in
-            pending[id] = .command(continuation)
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CoreResponse, Error>) in
+            let request: PendingRequest = .command(continuation, OneShot())
+            pending[id] = request
             do {
                 try write(.request(id: id, command: command))
             } catch {
                 failConnection(CoreError(code: .transport, message: "Core 请求写入失败: \(error.localizedDescription)"))
             }
+            armDeadline(for: request)
         }
     }
+
+    /// A request that goes unanswered has to end, with a reason -- but only when the connection has
+    /// gone *quiet*, which is what makes the wait bounded without capping how long work may take.
+    ///
+    /// `failConnection` already resumes everything pending once EOF is seen, so a request that stays
+    /// unanswered means the read loop produced nothing at all -- reachable on Windows, where the stdio
+    /// reader used to park a cooperative-pool worker inside a blocking read, and a pool with no free
+    /// worker runs no task, including the one that would notice the silence. Which is why this timer is
+    /// not a `Task` and does not await anything: a deadline that needed the same pool to fire could not
+    /// bound the starvation it exists to escape. `OneShot` keeps the answer, the connection failure and
+    /// this deadline from resuming one continuation twice.
+    nonisolated private func armDeadline(for request: PendingRequest) {
+        let seconds = timeoutSeconds
+        let armedAt = Date()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(seconds)) { [weak self] in
+            guard let self else { return }
+            // Frames arrived since this request was armed, so the peer is alive and simply busy: the
+            // same silence window starts over. A long `compactSession` is answered minutes later, and
+            // failing it would be a new defect dressed up as a timeout.
+            if self.lastFrame.value >= armedAt {
+                self.armDeadline(for: request)
+                return
+            }
+            let error = CoreError(
+                code: .transport,
+                message: "Core 在 \(seconds)s 内没有任何回应：子进程可能未能启动或已退出，stdio 读取侧在这段时间没有产生任何帧"
+            )
+            switch request {
+            case let .command(continuation, claim):
+                guard claim.claim() else { return }
+                continuation.resume(throwing: error)
+            case let .stream(chunks, open, claim):
+                guard claim.claim() else { return }
+                chunks.finish(throwing: error)
+                open.resume(throwing: error)
+            }
+            // Everything else on this connection is equally unreachable; each request arms its own
+            // deadline anyway, so this cleanup is best effort and must not block the answer.
+            Task { [weak self] in await self?.failConnection(error) }
+        }
+    }
+
+    static let responseTimeoutSeconds = 60
 
     private func write(_ message: WireMessage) throws {
         let data = try encoder.encode(message)
@@ -159,6 +251,7 @@ public actor StdioConnection: LingXiConnection {
     }
 
     func handle(line: String) {
+        lastFrame.mark()
         guard terminalError == nil else { return }
         let message: WireMessage
         do {
@@ -175,9 +268,10 @@ public actor StdioConnection: LingXiConnection {
         switch message {
         case let .response(id, response):
             switch pending.removeValue(forKey: id) {
-            case let .command(continuation):
-                continuation.resume(returning: response)
-            case let .stream(chunks, open):
+            case let .command(continuation, claim):
+                if claim.claim() { continuation.resume(returning: response) }
+            case let .stream(chunks, open, claim):
+                guard claim.claim() else { break }
                 switch response {
                 case let .streamOpened(streamID):
                     streams[streamID] = chunks
@@ -231,9 +325,10 @@ public actor StdioConnection: LingXiConnection {
         terminalError = error
         for request in pending.values {
             switch request {
-            case let .command(continuation):
-                continuation.resume(throwing: error)
-            case let .stream(chunks, open):
+            case let .command(continuation, claim):
+                if claim.claim() { continuation.resume(throwing: error) }
+            case let .stream(chunks, open, claim):
+                guard claim.claim() else { continue }
                 chunks.finish(throwing: error)
                 open.resume(throwing: error)
             }

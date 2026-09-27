@@ -10,7 +10,12 @@ set -euo pipefail
 
 BIN_PATH="${1:?usage: ci-serve-smoke.sh <swift-bin-path> [exe-suffix]}"
 EXE="${2-}"
-PORT=$(( (RANDOM % 20000) + 20000 ))
+# The port is not chosen here. `serve --port 0` lets the OS assign one and prints the number it got,
+# because a port picked by arithmetic can land in a range the host has reserved: Windows runners keep
+# whole dynamic ranges for Hyper-V/WinNAT, and binding one of those still succeeds while connections
+# to it are dropped. That reads exactly like a server that never bound -- three random ports, three
+# refusals, banner printed. An assigned port cannot be reserved, by definition.
+PORT=""
 # Logs go to a scratch directory, never the working tree: the Linux gate runs Stage 6 as an
 # unprivileged user against a root-owned workspace, and a failed redirect there looks exactly like
 # "serve did not answer" -- which is what it reported, with the child never even starting.
@@ -40,21 +45,28 @@ PY
   fi
 }
 
-for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 20000 )); do
+# Read the bound port out of the banner. serve prints the number it actually has, which is the only
+# number worth probing: `--port 0` means the OS chose it.
+port_from_log() {
+  sed -n 's#.*http://127\.0\.0\.1:\([0-9]\{1,5\}\)/.*#\1#p' "$LOG" | head -1
+}
+
+for _ in 1 2 3; do
   attempt=$((attempt + 1))
-  PORT="$candidate"
-  "$BIN_PATH/lingxiagent$EXE" serve --no-browser --port "$PORT" > "$LOG" 2>&1 &
+  : > "$LOG"
+  "$BIN_PATH/lingxiagent$EXE" serve --no-browser --port 0 > "$LOG" 2>&1 &
   pid=$!
+  PORT=""
 
   ready=0
   # Bounded by elapsed seconds only. `kill -0 $pid` is not a liveness test that works here: under
   # Git Bash the pid of a Windows .exe launched in the background is not always the process that is
   # answering, so a failed `kill -0` ended this loop on the first probe and reported a server that
-  # was perfectly healthy -- Windows `serve` binds ~5s after start, and every attempt was being cut
-  # short at t<2s. Slowness is now measured and printed rather than mistaken for death.
+  # was perfectly healthy. Slowness is now measured and printed rather than mistaken for death.
   started_at=$(date +%s)
-  while [ $(( $(date +%s) - started_at )) -lt 45 ]; do
-    if probe "http://127.0.0.1:$PORT/api/state"; then
+  while [ $(( $(date +%s) - started_at )) -lt 60 ]; do
+    [ -n "$PORT" ] || PORT="$(port_from_log)"
+    if [ -n "$PORT" ] && probe "http://127.0.0.1:$PORT/api/state"; then
       ready=1
       echo "serve answered on port $PORT after $(( $(date +%s) - started_at ))s"
       break
@@ -63,11 +75,9 @@ for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 
   done
   [ "$ready" = 1 ] && break
 
-  # A Windows runner reserves whole dynamic-port ranges for Hyper-V, so one refused bind proves
-  # nothing: retry elsewhere before concluding the server is broken.
   alive=yes
   kill -0 "$pid" 2>/dev/null || alive=no
-  echo "-- attempt $attempt on port $PORT did not answer; process alive: $alive; $(command -v curl >/dev/null 2>&1 && echo 'probe: curl' || (command -v python3 >/dev/null 2>&1 && echo 'probe: python3' || echo 'probe: NONE'))"
+  echo "-- attempt $attempt did not answer (port: ${PORT:-none yet}); process alive: $alive; $(command -v curl >/dev/null 2>&1 && echo 'probe: curl' || (command -v python3 >/dev/null 2>&1 && echo 'probe: python3' || echo 'probe: NONE'))"
   kill -TERM "$pid" 2>/dev/null || true
   # Stop first, then print: a live process has not flushed its redirected output, which is why an
   # earlier failure looked like an empty log rather than a bind refusal.
@@ -75,13 +85,13 @@ for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 
   echo "-- serve output (attempt $attempt, $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes) --"
   cat "$LOG" 2>/dev/null || true
   if kill -0 "$pid" 2>/dev/null; then
-    echo "::error::serve ignored the termination request on port $PORT"
+    echo "::error::serve ignored the termination request (port ${PORT:-unknown})"
     exit 1
   fi
 done
 
 if [ "${ready:-0}" != 1 ]; then
-  echo "::error::serve did not answer on any of the tried ports (last: 127.0.0.1:$PORT)"
+  echo "::error::serve did not answer on any attempt (last port: ${PORT:-none})"
   exit 1
 fi
 

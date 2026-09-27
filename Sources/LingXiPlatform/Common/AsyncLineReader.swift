@@ -67,7 +67,9 @@ public enum AsyncLineReader: Sendable {
         thread.start()
         return { flag.stop() }
     }
+    #endif
 
+    #if os(Linux) || os(Windows)
     /// `Task.isCancelled` means nothing to a Foundation thread, so stopping needs a flag of its own.
     private final class StopFlag: @unchecked Sendable {
         private let lock = NSLock()
@@ -85,6 +87,67 @@ public enum AsyncLineReader: Sendable {
             lock.unlock()
         }
     }
+
+    #if os(Windows)
+    /// Read and split lines on a thread of its own rather than on a detached task.
+    ///
+    /// A Windows pipe handle has no non-blocking read and no `poll`, so `read(upToCount:)` simply
+    /// waits -- and a task that spends its life waiting holds whatever executor runs it. The global
+    /// cooperative pool has one worker per core, so on a four-core runner four concurrent stdio
+    /// clients leave no worker for the code that would answer a request, and the request never
+    /// returns: a stdio turn hangs with nothing on either side of the pipe actually stuck, and no
+    /// timeout armed on the pool can see it either. A parked kernel thread takes nothing from the
+    /// pool, which is the whole difference.
+    ///
+    /// Scoped to the line reader on purpose. `dataChunks` is the path the background command manager
+    /// captures its output through, and that path has its own measured defects on Windows; moving it
+    /// here would change a second thing at a time and blur which fix did what.
+    private static func startThreadedLineReader(
+        handle: FileHandle,
+        bufferSize: Int,
+        onLine: @escaping @Sendable (String) -> Void,
+        onEnd: @escaping @Sendable () -> Void
+    ) -> @Sendable () -> Void {
+        let flag = StopFlag()
+        let thread = Thread {
+            var leftover = Data()
+            let newline = UInt8(ascii: "\n")
+            let cr = UInt8(ascii: "\r")
+            while !flag.stopped {
+                let chunk: Data
+                do {
+                    guard let data = try handle.read(upToCount: bufferSize), !data.isEmpty else { break }
+                    chunk = data
+                } catch {
+                    break // The handle was closed to stop this reader; there is nothing left to read.
+                }
+                leftover.append(chunk)
+                while let newlineIndex = leftover.firstIndex(of: newline) {
+                    var lineData = leftover.subdata(in: leftover.startIndex..<newlineIndex)
+                    if lineData.last == cr { lineData.removeLast() }
+                    onLine(String(decoding: lineData, as: UTF8.self))
+                    leftover.removeSubrange(leftover.startIndex...newlineIndex)
+                }
+            }
+            if !leftover.isEmpty {
+                var lineData = leftover
+                if lineData.last == cr { lineData.removeLast() }
+                let line = String(decoding: lineData, as: UTF8.self)
+                if !line.isEmpty { onLine(line) }
+            }
+            onEnd()
+        }
+        thread.name = "lingxi.stdio.lines"
+        thread.start()
+        return {
+            flag.stop()
+            // The blocked `ReadFile` only returns once the handle is gone, so stopping this reader
+            // means closing it. The stream is already finished by then, so a consumer cannot see the
+            // aborted read.
+            try? handle.close()
+        }
+    }
+    #endif
     #endif
 
     /// 从 FileHandle 异步流式读取 Data 数据块，支持 Darwin、Linux 与 Windows 全平台
@@ -211,6 +274,14 @@ public enum AsyncLineReader: Sendable {
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
                 }
+                #elseif os(Windows)
+                let stop = startThreadedLineReader(
+                    handle: handle,
+                    bufferSize: bufferSize,
+                    onLine: { continuation.yield($0) },
+                    onEnd: { continuation.finish() }
+                )
+                continuation.onTermination = { _ in stop() }
                 #else
                 let task = Task.detached {
                     var leftover = Data()
@@ -263,9 +334,6 @@ public enum AsyncLineReader: Sendable {
 
                 continuation.onTermination = { @Sendable _ in
                     task.cancel()
-                    #if os(Windows)
-                    try? handle.close()
-                    #endif
                 }
                 #endif
             } else {

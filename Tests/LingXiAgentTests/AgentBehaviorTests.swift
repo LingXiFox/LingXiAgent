@@ -35,8 +35,12 @@ struct AgentBehaviorTests {
         // The verification step has to mean the same thing on both shells: succeed only when the
         // file currently reads "fixed". The shell tool hands the string to `cmd.exe /c` on Windows
         // and to `sh -c` elsewhere, so the Windows form must be cmd syntax, not PowerShell.
+        // Measured on a Windows machine: `findstr /x fixed` cannot match a line in a file whose
+        // endings are LF, only in one written with CRLF -- and the tool writes LF. So the exact-line
+        // form silently fails the *recovered* step. A substring match is what cmd can do regardless
+        // of line endings; the fixture's two states ("broken", then "fixed") differ by more than that.
         #if os(Windows)
-        let verifyCommand = #"findstr /x fixed output.txt >nul"#
+        let verifyCommand = #"findstr /c:fixed output.txt >nul"#
         #else
         let verifyCommand = #"test \"$(cat output.txt)\" = fixed"#
         #endif
