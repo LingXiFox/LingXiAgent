@@ -25,12 +25,10 @@ private final class Verdict<Value>: @unchecked Sendable {
 
 @Suite("Platform Build Gate & Cross-Platform Integrity Tests (Round 2 Phase A)", .serialized)
 struct PlatformBuildGateTests {
-    // `.serialized` because every child-process case in here blocks -- `waitUntilExit`, a
-    // semaphore around a pipe drain -- and a blocked call holds its cooperative-pool worker
-    // rather than yielding it. Run concurrently on the 2-4 core Windows runner those cases
-    // consume every worker and the stage stops making progress (531s with no test finishing,
-    // while each of them passes on its own). Serialising changes no coverage: all cases still
-    // run, just not on top of each other.
+    // `.serialized` because every child-process case in here blocks on a real child and a real
+    // pipe. It is not what fixed the Windows wedge -- that was the unbounded `waitUntilExit()`,
+    // see `waitToExit` -- but running these on top of each other buys nothing, and on a 2-4 core
+    // runner it is how a stalled case ends up taking the whole stage's budget with it.
 
     @Test("PlatformCrypto SHA256 produces exact FIPS 180-4 standard digests")
     func platformCryptoSHA256Correctness() {
@@ -147,6 +145,16 @@ struct PlatformBuildGateTests {
         }
     }
 
+    /// `Process.waitUntilExit()` has no deadline, and on Windows a child whose stdout is a pipe we
+    /// still hold can be kept from being reaped by that very handle: the wait then never returns and
+    /// the runner dies on its stage timeout with no verdict to show for it. Wait off-thread and put
+    /// a bound on it, so the worst case is a failed expectation that names the child.
+    private static func waitToExit(_ child: Process, seconds: Double) async -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        Thread { child.waitUntilExit(); done.signal() }.start()
+        return await settled(done, seconds: seconds)
+    }
+
 
     // What is deliberately NOT asserted here: that a drain cycle releases its descriptors. A census
     // of the process's open descriptors cannot show it -- dropping the local `Pipe` closes both ends
@@ -166,7 +174,8 @@ struct PlatformBuildGateTests {
         Self.makeCloseOnExec(pipe)
         let child = try Self.spawn(PortableFixture.python("print(\"alpha\"); print(\"beta\"); print(\"gamma\")"), stdout: pipe)
         try? pipe.fileHandleForWriting.close()
-        child.waitUntilExit()
+        let exitedInTime = await Self.waitToExit(child, seconds: 20)
+        #expect(exitedInTime, "the child never reported exit within 20s while its stdout pipe was still unread")
 
         let (returned, lines) = await Self.drain(pipe)
         try? pipe.fileHandleForReading.close()
@@ -194,7 +203,18 @@ struct PlatformBuildGateTests {
 
         let returned = await Self.settled(done, seconds: 10)
         if child.isRunning { child.terminate() }
-        child.waitUntilExit()
+        // Cleanup, not an assertion: what this case pins is that the cancelled consumer returns.
+        // Foundation reaps the child on its own helper thread, and a `waitUntilExit()` issued after
+        // that reap misses the signal it already broadcast and parks forever -- which is why this
+        // polls for the state instead of waiting on the process, and escalates rather than hanging.
+        var reaped = !child.isRunning
+        for _ in 0..<50 where !reaped {
+            try? await Task.sleep(for: .milliseconds(100))
+            reaped = !child.isRunning
+        }
+        if !reaped {
+            LingXiPlatform.process.terminateProcessTree(pid: child.processIdentifier, force: true)
+        }
         try? pipe.fileHandleForReading.close()
 
         #expect(returned, "a cancelled consumer left the pipe reader parked: nothing can interrupt it while the child keeps the write end open")
