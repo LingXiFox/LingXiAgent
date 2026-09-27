@@ -23,8 +23,14 @@ private final class Verdict<Value>: @unchecked Sendable {
     }
 }
 
-@Suite("Platform Build Gate & Cross-Platform Integrity Tests (Round 2 Phase A)")
+@Suite("Platform Build Gate & Cross-Platform Integrity Tests (Round 2 Phase A)", .serialized)
 struct PlatformBuildGateTests {
+    // `.serialized` because every child-process case in here blocks -- `waitUntilExit`, a
+    // semaphore around a pipe drain -- and a blocked call holds its cooperative-pool worker
+    // rather than yielding it. Run concurrently on the 2-4 core Windows runner those cases
+    // consume every worker and the stage stops making progress (531s with no test finishing,
+    // while each of them passes on its own). Serialising changes no coverage: all cases still
+    // run, just not on top of each other.
 
     @Test("PlatformCrypto SHA256 produces exact FIPS 180-4 standard digests")
     func platformCryptoSHA256Correctness() {
