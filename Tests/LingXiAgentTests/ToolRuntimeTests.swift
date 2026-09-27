@@ -398,7 +398,10 @@ struct ToolRuntimeTests {
             sessionID: SessionID("s")
         ) { _ in }
         #expect(result.success)
-        #expect(try String(contentsOf: root.appendingPathComponent("output.txt"), encoding: .utf8) == "sandboxed")
+        // Report the bytes, not just "not equal": the redirect is written by a different shell on
+        // each platform, so an encoding or framing difference has to be visible in the failure.
+        let written = try String(contentsOf: root.appendingPathComponent("output.txt"), encoding: .utf8)
+        #expect(written == "sandboxed", "output.txt held \(written.utf8.count) bytes \(Array(written.utf8.prefix(48)))")
     }
 
     @Test func completedProcessIsNotRetrospectivelyTimedOut() async throws {

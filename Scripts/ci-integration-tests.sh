@@ -182,6 +182,19 @@ kill_tree() {
 # The event stream is the same information in machine form and, unlike the console, it is written
 # per event to its own file, so a chunk that is killed still says which case it was inside. The
 # console glyphs it would otherwise be parsed from are also exactly what a Windows log mangles.
+# Collapse whatever a counter pipeline produced into a non-negative integer.
+#
+# Needed because these counts come out of log files, and on Windows two separate things leak in:
+# a `|| echo 0` fallback that appends to output the pipeline already printed ("0\n0"), and the CR of
+# a CRLF line ending. Both turn `[ "$n" -eq 0 ]` into `[: 0: integer expected` and an `$(( ))` into
+# a syntax error -- and the arithmetic error was ending the whole chunk loop after ~20 of 87 chunks,
+# so a stage that looked like it ran reported 376 of 1256 tests.
+as_int() {
+  local digits
+  digits="$(printf '%s' "${1-}" | tr -dc '0-9')"
+  printf '%s' "${digits:-0}"
+}
+
 unreported_from_events() {
   local events=$1
   [ -s "$events" ] || return 0
@@ -515,13 +528,13 @@ for chunk in "${chunks[@]}"; do
   # Count what actually ran: swift-testing tests from events or log, plus any XCTest cases
   st_ran=0
   if [ -s "$chunk_events" ]; then
-    st_ran="$(grep -a '"kind":"testEnded"' "$chunk_events" 2>/dev/null | grep '"testID":' | grep '/' | wc -l | tr -d ' ' || echo 0)"
+    st_ran="$(grep -a '"kind":"testEnded"' "$chunk_events" 2>/dev/null | grep '"testID":' | grep '/' | wc -l | tr -dc '0-9')"
   fi
-  if [ "${st_ran:-0}" -eq 0 ]; then
-    st_ran="$(grep -oE 'Test run with [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || echo 0)"
+  if [ "$(as_int "$st_ran")" -eq 0 ]; then
+    st_ran="$(as_int "$(grep -oE 'Test run with [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || echo 0)")"
   fi
-  xct_ran="$(grep -oE 'Executed [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || echo 0)"
-  ran=$(( ${st_ran:-0} + ${xct_ran:-0} ))
+  xct_ran="$(as_int "$(grep -oE 'Executed [0-9]+ test' "$chunk_log" | tail -1 | grep -oE '[0-9]+' || echo 0)")"
+  ran=$(( st_ran + xct_ran ))
   executed=$((executed + ran))
 
   # A skipped suite is a reported outcome, not a lost chunk. `swift test list` counts the cases a
@@ -538,8 +551,8 @@ for chunk in "${chunks[@]}"; do
           skipped_cases=$((skipped_cases + 1))
           ;;
         *)
-          skip_cnt="$(printf '%s\n' "$suite_counts" | awk -v s="$skip_id" '$2 == s { print $1 }')"
-          skipped_cases=$((skipped_cases + ${skip_cnt:-0}))
+          skip_cnt="$(as_int "$(printf '%s\n' "$suite_counts" | awk -v s="$skip_id" '$2 == s { print $1 }')")"
+          skipped_cases=$((skipped_cases + skip_cnt))
           skipped_suites="${skipped_suites} ${skip_id##*.}"
           ;;
       esac
