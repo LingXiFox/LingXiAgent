@@ -173,6 +173,15 @@ jobs:
           for b in "$BIN_PATH"/*LingXiCore*.bundle "$BIN_PATH"/*LingXiWebUI*.bundle; do
             if [ -d "$b" ]; then cp -R "$b" staging/; fi
           done
+          # Windows has the Linux resource layout, not the Darwin one: SwiftPM writes
+          # `LingXiAgent_LingXiWebUI.resources/Assets/index.html` here, never a `.bundle`, so the
+          # two `.bundle` globs above copy nothing on this platform and the package ships without
+          # Core's configuration or the WebUI page -- which `serve` only hides on a build machine,
+          # where the compile-time path still exists. Named rather than `*.resources` so the test
+          # target's own resources directory stays out of the release.
+          for b in "$BIN_PATH"/*LingXiCore*.resources "$BIN_PATH"/*LingXiWebUI*.resources; do
+            if [ -d "$b" ]; then cp -R "$b" staging/; fi
+          done
           # sqlite3 is a runtime DLL dependency here, not a link-time one: without it beside the
           # executables the package fails to start on a clean machine.
           cp -f "$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/sqlite3.dll" staging/sqlite3.dll
