@@ -11,7 +11,14 @@ set -euo pipefail
 BIN_PATH="${1:?usage: ci-serve-smoke.sh <swift-bin-path> [exe-suffix]}"
 EXE="${2-}"
 PORT=$(( (RANDOM % 20000) + 20000 ))
-LOG="serve-smoke-$PORT.log"
+# Logs go to a scratch directory, never the working tree: the Linux gate runs Stage 6 as an
+# unprivileged user against a root-owned workspace, and a failed redirect there looks exactly like
+# "serve did not answer" -- which is what it reported, with the child never even starting.
+WORK_DIR="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/lingxi-serve-smoke-$$")"
+mkdir -p "$WORK_DIR" 2>/dev/null || { echo "::error::cannot create a scratch directory ($WORK_DIR)"; exit 1; }
+LOG="$WORK_DIR/serve.log"
+cleanup() { rm -rf "$WORK_DIR"; }
+trap cleanup EXIT
 
 attempt=0
 # The Linux gate runs inside a slim container where curl is not guaranteed. Probing with a
@@ -36,7 +43,6 @@ PY
 for candidate in "$PORT" $(( (RANDOM % 20000) + 20000 )) $(( (RANDOM % 20000) + 20000 )); do
   attempt=$((attempt + 1))
   PORT="$candidate"
-  LOG="serve-smoke-$PORT.log"
   "$BIN_PATH/lingxiagent$EXE" serve --no-browser --port "$PORT" > "$LOG" 2>&1 &
   pid=$!
 
@@ -97,5 +103,4 @@ if command -v pgrep >/dev/null 2>&1; then
   fi
 fi
 
-rm -f serve-smoke-*.log
 echo "serve smoke passed"
