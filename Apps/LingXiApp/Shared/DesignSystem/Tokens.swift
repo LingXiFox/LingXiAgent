@@ -248,6 +248,13 @@ public enum LingXiMetrics {
         public static let glyphColumn: CGFloat = 18
         public static let navigator: CGFloat = 280
         public static let navigatorMin: CGFloat = 220
+        public static let statusHUD: CGFloat = 232
+        public static let toolRail: CGFloat = 44
+        public static let toolPanel: CGFloat = 420
+        public static let toolPanelMin: CGFloat = 360
+        public static let toolPanelMax: CGFloat = 640
+        public static let stageWithToolMin: CGFloat = 500
+        public static let windowWithToolMin: CGFloat = 980
         /// Inspector 340.
     public static let inspector: CGFloat = 340
         public static let inspectorMin: CGFloat = 300

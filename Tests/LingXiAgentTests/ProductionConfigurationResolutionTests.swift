@@ -120,6 +120,26 @@ struct ProductionConfigurationResolutionTests {
         }
     }
 
+    @Test func missingEnvironmentCredentialDoesNotPreventGUIStartup() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var stored = configuration(wire: .chatCompletions)
+        stored.accounts[0].authentication = .bearer
+        stored.accounts[0].credential = CredentialRef("env:LINGXI_TEST_MISSING_KEY")
+        stored.accounts.append(ProviderAccountConfiguration(id: "fallback", providerID: "custom", displayName: "Fallback"))
+        let resolution = try await RuntimeConfigurationResolver.resolveProviders(
+            stored,
+            credentials: try FileCredentialStore(dataRoot: root),
+            faultTolerant: true,
+            environment: [:]
+        )
+        #expect(resolution.defaultSelection == nil)
+        #expect(resolution.missingRequirements == ["accounts.account.credential"])
+        #expect(resolution.availability["account::profile"] == .unavailable)
+        #expect(resolution.availability["fallback::profile"] == .available)
+        #expect(resolution.runtimes["fallback::profile"] != nil)
+    }
+
     @Test func dataRootUsesOneDefaultAndExplicitOverride() {
         let home = URL(fileURLWithPath: "/home/test", isDirectory: true)
         #expect(LingXiDataRootResolver.resolve(environment: [:], homeDirectory: home).path == "/home/test/.lingxiagent")

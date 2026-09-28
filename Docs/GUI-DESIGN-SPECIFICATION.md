@@ -286,13 +286,13 @@ GUI、TUI、CLI、README、协议字段必须使用同一套名字。TUI 中 `Ta
 | **GUI 能力接入点<br>(交互与控制)** | 1. **每个 AgentRun 独立配置**：在详情区用 `Picker` 设置模型档位或指定模型、思考等级；权限策略与工具授权只能在父级范围内收窄，超出父级的选项呈禁用态并附说明。<br>2. **暂停 / 继续 / 终止此分支**（终止需二次确认）。<br>3. **在时间线中只看此 Agent**：一键筛选主时间线。<br>4. **角色预设**：从「Agent → 管理角色预设…」打开 Sheet，预设内容包括名称、指令、模型档位、思考等级、工具子集、Skills。派生 subagent 时可按预设创建。 |
 | **GUI 显示接入点<br>(呈现与状态)** | 1. **Agent 树 (`AgentTreeView`)**：检查器 Agent 标签内的 `OutlineGroup`，每行显示角色名、模型、状态符号；等待回答的节点显示 `questionmark.bubble`。<br>2. **AgentRun 详情 (`AgentRunDetailView`)**：模型与思考等级、工具授权清单（未授予的以删除线弱化）、独立上下文用量、本分支用量、共享 memory 读写权限、调用链（父 → 子）。<br>3. **本分支时间线**：该 AgentRun 的关键事件列表（派生、工具调用、提问、完成）。 |
 
-### 7. Runtime Inspector 与运行轨迹（美学优先的信息与健康度）
+### 7. Agent 状态浮窗与运行轨迹
 
 | 维度 | 规范与技术接入点 |
 | :--- | :--- |
 | **Core 底层支撑** | • `DiagnosticsDomainClient`：`getDiagnostics`, `getPerformanceMetrics`, `getRunTrace`, `trace.query`, `trace.tail`<br>• 数据模型：`RuntimeTraceEvent`, `RuntimeTraceKind`, `TraceTokenUsage`, `TraceAttributeValue` |
-| **GUI 能力接入点<br>(交互与控制)** | 1. 检查器开关 ⌥⌘I，标签切换 ⌥⌘1–4。<br>2. **运行轨迹窗口**（⌥⌘L）：非模态独立窗口，可与主窗口并排实时观察。<br>3. 轨迹窗口内按 AgentRun、Kind、时间范围筛选；「导出…」经 `NSSavePanel` 写出 JSONL。 |
-| **GUI 显示接入点<br>(呈现与状态)** | 1. **上下文健康度 (`ContextHealthGauge`)**：原生环形 `Gauge` 展示上下文充裕度；副标签为本会话用量（原则 2 允许的唯一常驻数字）。<br>2. **能力清单 (`ActiveCapabilitiesList`)**：MCP 服务器（连接状态 + 传输方式）、已授权工具、已加载 Skills；需要重新授权的 MCP 显示「重新授权」按钮。<br>3. **轨迹表格 (`TraceTableView`)**：原生 `Table`，列为时间戳、AgentRun、Kind、Span 耗时、Token、脱敏合规徽章；支持列排序与复制行。 |
+| **GUI 能力接入点<br>(交互与控制)** | 1. ⌥⌘I 收起 / 展开舞台右上角的状态浮窗；工具面板展开或舞台变窄时自动收成状态胶囊。<br>2. **运行轨迹窗口**（⌥⌘L）：非模态独立窗口，可与主窗口并排实时观察。<br>3. 轨迹窗口内按 AgentRun、Kind、时间范围筛选；「导出…」经 `NSSavePanel` 写出 JSONL。 |
+| **GUI 显示接入点<br>(呈现与状态)** | 1. **AgentStatusHUD**：只显示工作状态、缓存命中、上下文占用、P-Core、E-Core；四根 4pt 中性进度条，指标均取真实运行时数据，上下文占用达到 85% 时用系统警告色。<br>2. 任务、子 Agent 与待办保留在时间线；Git 变更留在右侧 Git 面板，不加入状态浮窗。<br>3. **轨迹表格 (`TraceTableView`)**：原生 `Table`，列为时间戳、AgentRun、Kind、Span 耗时、Token、脱敏合规徽章；支持列排序与复制行。 |
 
 ### 8. Artifacts 产物与变更审查视图
 
@@ -425,10 +425,10 @@ GUI、TUI、CLI、README、协议字段必须使用同一套名字。TUI 中 `Ta
 | A1 | 自定义窗口背景色、面板底色、文字色覆盖系统语义色 | 会让界面失去深浅色适配，退化为网页观感 |
 | A2 | 呼吸光效、光晕、发光边框、渐变描边 | 与 HIG 克制原则冲突 |
 | A3 | 自绘标题栏、红绿灯、分段控件、下拉菜单 | 典型 Electron 做法 |
-| A4 | 把设置、关于、状态按钮放在侧栏底部 | 应在菜单栏、Settings scene 与工具栏 |
+| A4 | 在侧栏底部堆放设置、关于与状态按钮 | 侧栏底部只保留统一的设置入口；关于放在设置与应用菜单，运行状态在舞台浮窗 |
 | A5 | 默认进入非聊天的模式，或把基础对话藏进子菜单、底部弹窗 | ChatGPT 超级应用的主要差评点 |
 | A6 | 设置页堆满开关 | 设置按主题分页，每页只放该主题的必要项 |
-| A7 | 把应用做成「小操作系统」：内嵌浏览器面板、底部终端面板、侧任务面板层层叠加 | 同上 |
+| A7 | 让浏览器、终端、Git 与任务面板层层叠加或默认常开 | 浏览器、终端、Git 共用最右侧 44pt 图标栏，默认收起且一次只展开一个 420pt 面板；任务与待办保留在时间线 |
 | A8 | 在界面上直接暴露大量模型名让用户每次挑选 | 以档位为默认，指定模型收进高级层 |
 | A9 | Esc 触发破坏性操作 | Esc 只负责关闭 |
 | A10 | 通知中直接批准权限 | 审批必须看到完整请求 |
@@ -442,7 +442,7 @@ GUI、TUI、CLI、README、协议字段必须使用同一套名字。TUI 中 `Ta
 | :-: | :--- | :-: | :--- |
 | **G1** | **审批 (HITL) 交互断路**：时间线内仅有假文本展示，无确认 / 拒绝按钮 | 🚨 **阻断级** | 新建 `InlineInteractionCell`，绑定 `InteractionDomainClient`；卡片标注发起方 AgentRun |
 | **G2** | **缺少 TaskCapsule 任务中心**：侧栏只有平铺会话，无任务状态机与控制 | 🚨 **阻断级** | 侧栏改为「工作区 → 目录 → 会话 → 任务」树；实现计划 / 执行 / 报告三视图与收尾三动作 |
-| **G3** | **Inspector 全是写死的假数字**，查不到真 Trace | 🚨 **阻断级** | 改为健康度 `Gauge` + 四标签检查器；运行轨迹改为独立窗口，接入 `trace.query` |
+| **G3** | **Inspector 全是写死的假数字**，查不到真 Trace | 🚨 **阻断级** | 改为只读真实运行时数据的五项 Agent 状态浮窗；运行轨迹改为独立窗口，接入 `trace.query` |
 | **G4** | **执行过程无法中断**：生成时无 Stop 按钮 | ⚠️ **高危 UX** | 发送按钮在生成态变为停止按钮，绑定 ⌘. |
 | **G5** | **Tool 输出只有单行摘要** | ⚠️ **高危 UX** | 可展开控制台、stdout / stderr 分流、E-Core 旁路内容按需拉取、行内 Diff |
 | **G6** | **视觉不合规**：冷蓝紫青多强调色 + 自制 Glass 画板（`LingXiGlass`） | 🎨 **视觉违规** | 删除 `LingXiGlass` 与自定义调色盘；改用系统语义色 + 唯一 AccentColor |
@@ -451,7 +451,7 @@ GUI、TUI、CLI、README、协议字段必须使用同一套名字。TUI 中 `Ta
 | **G9** | **缺少多模型对比** | ⚠️ **功能缺失** | Core 补齐 `MultiRunDomainClient`（含 Fusion）；实现 7.7 |
 | **G10** | **缺少 Worktree 隔离与收尾语义** | 🚨 **阻断级** | `WorkspaceDomainClient` 补齐 `worktree.*`；`TaskDomainClient` 补齐 `finalize`、`report.get` |
 | **G11** | **缺少产物版本** | ⚠️ **功能缺失** | `TaskArtifact` 增加 `version` / `parentVersion`；补齐 `artifact.versions`、`artifact.compare` |
-| **G12** | **没有菜单栏命令体系与 Settings scene** | 🚨 **阻断级** | 按第四章实现完整菜单栏；设置迁入 `Settings` scene |
+| **G12** | **没有菜单栏命令体系与统一设置入口** | 🚨 **阻断级** | 按第四章实现完整菜单栏；侧栏左下角与 ⌘, 打开同一个 `SettingsWorkbench` Sheet |
 | **G13** | **Composer 使用 SwiftUI 文本控件** | ⚠️ **高危 UX** | 按 8.1 改为 `NSTextView` 桥接 |
 | **G14** | **术语不统一**：模式、思考等级在 GUI / TUI / README 中各有一套 | ⚠️ **一致性** | 按第五章统一；同步修改 TUI 的 Tab 模式命名与 README |
 | **G15** | **模型列表写死** | ⚠️ **一致性** | Core 从 `models.lingxifox.cn` 拉取；GUI 删除所有硬编码模型名 |

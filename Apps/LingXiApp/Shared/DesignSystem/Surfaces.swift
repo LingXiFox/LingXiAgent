@@ -292,13 +292,16 @@ public struct LXChipMenu<Items: View>: View {
     let title: String
     let symbol: String
     let help: String
+    let iconOnly: Bool
     let items: Items
     @State private var isHovered = false
 
-    public init(_ title: String, symbol: String, help: String, @ViewBuilder items: () -> Items) {
+    public init(_ title: String, symbol: String, help: String, iconOnly: Bool = false,
+                @ViewBuilder items: () -> Items) {
         self.title = title
         self.symbol = symbol
         self.help = help
+        self.iconOnly = iconOnly
         self.items = items()
     }
 
@@ -307,20 +310,30 @@ public struct LXChipMenu<Items: View>: View {
         Menu {
             items
         } label: {
-            Label(title, systemImage: symbol)
-                .font(LXType.body.weight(.medium))
+            Group {
+                if iconOnly {
+                    Image(systemName: symbol)
+                        .font(.system(size: LXIcon.chip))
+                } else {
+                    Label(title, systemImage: symbol)
+                        .font(LXType.body.weight(.medium))
+                        .lineLimit(1)
+                }
+            }
         }
         .menuStyle(.borderlessButton)
-        .menuIndicator(.visible)
+        .menuIndicator(iconOnly ? .hidden : .visible)
         .tint(.primary)
         .foregroundStyle(.primary)
         .fixedSize()
-        .padding(.horizontal, 10)
+        .padding(.horizontal, iconOnly ? 0 : 10)
+        .frame(width: iconOnly ? LXControl.regular : nil)
         .frame(height: LXControl.regular)
         .background(LXColor.fillControl, in: shape)
         .overlay { if isHovered { shape.fill(LXColor.fillQuinary).allowsHitTesting(false) } }
         .contentShape(shape)
         .onHover { isHovered = $0 }
         .help(help)
+        .accessibilityLabel(iconOnly ? title : help)
     }
 }

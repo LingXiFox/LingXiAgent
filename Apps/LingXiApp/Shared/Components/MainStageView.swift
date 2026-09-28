@@ -1,6 +1,17 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+private struct StageTrailingReserveKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var stageTrailingReserve: CGFloat {
+        get { self[StageTrailingReserveKey.self] }
+        set { self[StageTrailingReserveKey.self] = newValue }
+    }
+}
+
 /// The stage — "what the agent did and is doing". A rounded bg-content panel
 /// inset 8pt from the window, with its own ambient light: the ONLY surface in
 /// the product that carries the brand atmosphere.
@@ -35,6 +46,21 @@ public struct MainStageView: View {
         .padding([.horizontal, .bottom], LingXiMetrics.Space.sm)
         .environment(\.runtimeFrontend, runtime)
         .sheet(item: $runtime.commandOutput) { CommandOutputSheet(output: $0) }
+        .sheet(isPresented: $runtime.isShowingTasks) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("任务").font(LXType.title)
+                    Spacer()
+                    Button { runtime.isShowingTasks = false } label: { Image(systemName: "xmark") }
+                        .buttonStyle(LXIconButtonStyle(side: LXControl.small))
+                        .accessibilityLabel("关闭任务")
+                }
+                .padding(LingXiMetrics.Space.lg)
+                LXHairline()
+                WarmTasksPane(runtime: runtime)
+            }
+            .frame(minWidth: 560, idealWidth: 680, minHeight: 420, idealHeight: 620)
+        }
     }
 }
 
@@ -42,12 +68,14 @@ public struct MainStageView: View {
 /// state and dock share it, so they share one leading edge.
 struct ReadingColumn<Content: View>: View {
     @ViewBuilder var content: Content
+    @Environment(\.stageTrailingReserve) private var trailingReserve
 
     var body: some View {
         content
             .frame(maxWidth: LingXiMetrics.Column.prose, alignment: .leading)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, LingXiMetrics.Column.gutter)
+            .padding(.leading, LingXiMetrics.Column.gutter)
+            .padding(.trailing, LingXiMetrics.Column.gutter + trailingReserve)
     }
 }
 
@@ -56,12 +84,16 @@ struct ReadingColumn<Content: View>: View {
 private struct TimelineStage: View {
     @ObservedObject var runtime: RuntimeFrontend
     @ObservedObject private var conversation: ConversationPresentationModel
+    @ObservedObject private var inspector: RuntimeInspectorPresentationModel
+    @ObservedObject private var composer: ComposerModel
     @State private var isAwayFromBottom = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(runtime: RuntimeFrontend) {
         self.runtime = runtime
         self.conversation = runtime.conversationModel
+        self.inspector = runtime.inspectorModel
+        self.composer = runtime.composerModel
     }
 
     var body: some View {
@@ -74,6 +106,10 @@ private struct TimelineStage: View {
                             TimelineRowView(row: row)
                                 .id(row.id)
                                 .padding(.top, row.isTurnBoundary && row.id != rows.first?.id ? LingXiMetrics.Space.md : 0)
+                        }
+                        if conversation.activeTask != nil || composer.goal != nil ||
+                            !(inspector.live?.todos.isEmpty ?? true) {
+                            taskActivity
                         }
                         if let notice = runtime.providerNotice {
                             TimelineRowView(row: .notice(TimelineItemPresentation(id: "tail-notice", kind: .notice(notice))))
@@ -121,6 +157,39 @@ private struct TimelineStage: View {
     }
 
     static let bottomID = "timeline-bottom"
+
+    private var taskActivity: some View {
+        Button { runtime.isShowingTasks = true } label: {
+            HStack(alignment: .top, spacing: LingXiMetrics.Space.sm) {
+                Image(systemName: "checklist")
+                    .font(.system(size: LXIcon.event))
+                    .foregroundStyle(.secondary)
+                    .frame(width: LingXiMetrics.Size.glyphColumn)
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                    Text(conversation.activeTask?.objective ?? composer.goal ?? "任务")
+                        .font(LXType.callout)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    HStack(spacing: LingXiMetrics.Space.sm) {
+                        if let state = conversation.activeTask?.state {
+                            Text(state)
+                        }
+                        let todoCount = inspector.live?.todos.count ?? 0
+                        if todoCount > 0 { Text("\(todoCount) 项待办") }
+                        Text("查看任务")
+                    }
+                    .font(LXType.meta)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").foregroundStyle(.secondary)
+            }
+            .frame(minHeight: LingXiMetrics.Size.rowEvent)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("任务：\(conversation.activeTask?.objective ?? composer.goal ?? "查看任务")")
+    }
 }
 
 private extension Array where Element == TimelineRow {

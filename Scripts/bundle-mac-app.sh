@@ -17,7 +17,9 @@ swift build -c "${CONFIG}" --product LingXiCoreHost
 BIN_DIR="$(swift build -c "${CONFIG}" --show-bin-path)"
 BIN_PATH="${BIN_DIR}/${BIN_NAME}"
 
-rm -rf "${APP_BUNDLE}"
+if [ -d "${APP_BUNDLE}" ]; then
+    rm -R "${APP_BUNDLE}"
+fi
 mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
 cp "${BIN_PATH}" "${APP_BUNDLE}/Contents/MacOS/${BIN_NAME}"
 cp "${BIN_DIR}/LingXiCoreHost" "${APP_BUNDLE}/Contents/MacOS/LingXiCoreHost"

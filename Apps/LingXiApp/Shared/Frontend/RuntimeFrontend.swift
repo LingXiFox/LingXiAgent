@@ -33,6 +33,7 @@ public final class RuntimeFrontend: ObservableObject {
     @Published public private(set) var workspaceURL: URL?
     @Published public var isCommandPalettePresented = false
     @Published public var isShowingSettings = false
+    @Published public var isShowingTasks = false
     @Published public var isShowingAboutSheet = false
     /// Output of the last slash command, presented as a sheet.
     @Published public var commandOutput: CommandOutput?
@@ -439,11 +440,16 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
-    /// Core has no `submitSideQuestion` implementation — only the protocol
-    /// extension default, which echoes the question back as an answer. Showing
-    /// that would be a mock, so the surface stays closed until Core ships one.
     public func submitSideQuestion(question: String) async -> String {
-        "侧问还没有由 Core 实现，暂时无法回答。"
+        guard let client, let id = sidebarModel.selectedSessionID else {
+            return "请先打开一段对话。"
+        }
+        do {
+            let result = try await client.turn.submitSideQuestion(sessionID: SessionID(id), question: question)
+            return result.answer
+        } catch {
+            return "侧问失败：\(error.localizedDescription)"
+        }
     }
 
     // MARK: - Preview fixture (previews & tests only)

@@ -29,6 +29,42 @@ private actor InFlightMutationLock {
     }
 }
 
+extension CoreHost {
+    public func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {
+        let question = envelope.payload.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else {
+            throw CoreError(code: .toolArgumentInvalid, message: "Side question is empty")
+        }
+        guard let model = gateway.modelID else {
+            throw CoreError(code: .provider, message: "No model is configured for side questions")
+        }
+        let session = try await sessionStore.session(envelope.payload.sessionID)
+        let recent = session.messages.suffix(8).compactMap { message -> ModelMessage? in
+            guard !message.content.isEmpty else { return nil }
+            let role: ModelRole = message.role == .assistant ? .assistant : .user
+            return ModelMessage(role: role, content: String(message.content.prefix(3_000)))
+        }
+        let request = ModelRequest(model: model,
+                                   system: "Answer the user's side question using the recent conversation as context. Do not invoke tools or change files. Be concise.",
+                                   messages: recent + [ModelMessage(role: .user, content: question)],
+                                   tools: [])
+        let started = Date()
+        let stream = try await gateway.stream(request)
+        var answer = ""
+        for try await event in stream {
+            switch event {
+            case .textDelta(let text): answer += text
+            case .failed(let error): throw error
+            default: break
+            }
+        }
+        let result = SideQuestionResult(answer: answer, modelUsed: model.rawValue,
+                                        durationMs: Int(Date().timeIntervalSince(started) * 1_000))
+        return CommandReceipt(commandID: envelope.commandID, applied: true,
+                              revision: session.revision, observedThrough: [], result: result)
+    }
+}
+
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public static let coreVersion = "1.0.0"
@@ -174,6 +210,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let sessionMutationLock: SessionMutationLock
     public let codebaseGraphEngine: CodebaseGraphEngine
     public let browserSessionManager: BrowserSessionManager
+    package let taskRuntime: TaskRuntime
     public let providerActivityRegistry: ProviderActivityRegistry
     public let todoStore: TodoStore
     private var ecoreMutationSubscriptionToken: ECoreObjectStore.MutationSubscriptionToken?
@@ -334,6 +371,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
         }
         self.persistence = persistent
+        self.taskRuntime = TaskRuntime(persistence: persistent)
         self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
         let executionDeadlinePolicy = ExecutionDeadlinePolicy(settings: configuration?.runtime.execution ?? ExecutionTimeoutSettings())
         self.executionDeadlinePolicy = executionDeadlinePolicy

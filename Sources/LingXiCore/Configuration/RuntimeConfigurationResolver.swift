@@ -31,6 +31,7 @@ public enum RuntimeConfigurationResolver {
         provenanceDirectory: URL? = nil,
         diagnosticsEnabled: Bool = false,
         performanceDiagnosticsEnabled: Bool = false,
+        faultTolerant: Bool = false,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws -> ProviderRuntimeResolution {
         try requireUnique(configuration.customProviders.map(\.id), path: "$.customProviders")
@@ -60,7 +61,13 @@ public enum RuntimeConfigurationResolver {
             if builtin != nil, builtinEndpoint == nil {
                 throw ProviderResolutionError.providerEndpointUnverified(ProviderEndpointID(rawValue: profiles.first?.endpointID ?? ""))
             }
-            let authentication = try await authentication(for: account, credentials: credentials, environment: environment)
+            let authentication: ProviderAuthentication
+            do {
+                authentication = try await Self.authentication(for: account, credentials: credentials, environment: environment)
+            } catch let error as ConfigurationValidationError where faultTolerant && error.path == "$.accounts.\(account.id).credential" && error.reason == "credential is missing or invalid" {
+                for profile in profiles { availability["\(account.id)::\(profile.id)"] = .unavailable }
+                continue
+            }
             for profile in profiles {
                 let productEndpoint = builtin.flatMap { product in
                     let requestedWire = Self.providerWire(for: profile.wireProtocol)
@@ -124,6 +131,15 @@ public enum RuntimeConfigurationResolver {
             throw ConfigurationValidationError(path: "$.defaultSelection", reason: "account and model profile use different providers")
         }
         guard let assembly = runtimes["\(account.id)::\(profile.id)"] else {
+            if faultTolerant && availability["\(account.id)::\(profile.id)"] == .unavailable {
+                return ProviderRuntimeResolution(
+                    assembly: .unavailable,
+                    missingRequirements: ["accounts.\(account.id).credential"],
+                    runtimes: runtimes,
+                    defaultSelection: nil,
+                    availability: availability
+                )
+            }
             throw ConfigurationValidationError(path: "$.defaultSelection", reason: "selected provider runtime is unavailable")
         }
         let selection = ModelSelection(providerID: profile.providerID, accountID: account.id, profileID: profile.id, modelID: profile.modelID)

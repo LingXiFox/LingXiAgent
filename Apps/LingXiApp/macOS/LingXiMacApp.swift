@@ -7,7 +7,7 @@ import LingXiFrontendKit
 public struct LingXiMacApp: App {
     @StateObject private var runtime = RuntimeFrontend()
     @StateObject private var settings = SettingsStore()
-    @StateObject private var dock = DockModel()
+    @StateObject private var navigation = WarmNavigation()
     @Environment(\.openWindow) private var openWindow
 
     public init() {}
@@ -24,18 +24,9 @@ public struct LingXiMacApp: App {
     }
 
     public var body: some Scene {
-        // Main workspace window: full-bleed stage, floating panels, titleless toolbar.
         WindowGroup {
-            WorkbenchShell(
-                runtime: runtime,
-                dock: dock,
-                settings: settings,
-                onOpenTraceWindow: {
-                    openWindow(id: "trace-window")
-                }
-            )
+            WarmWorkbench(runtime: runtime, settings: settings, navigation: navigation)
             .environment(\.timelineDisclosureDefaults, settings.timelineDisclosureDefaults)
-            .tint(LXColor.accent)
             .task {
                 settings.runtime = runtime
                 let defaults = settings.composerDefaults
@@ -46,9 +37,9 @@ public struct LingXiMacApp: App {
             }
         }
         .windowToolbarStyle(.unified(showsTitle: true))
-        .defaultSize(width: 1280, height: 800)
+        .defaultSize(width: 1460, height: 900)
         .commands {
-            LingXiMenuCommands(runtime: runtime, dock: dock, onOpenTraceWindow: {
+            LingXiMenuCommands(runtime: runtime, navigation: navigation, onOpenTraceWindow: {
                 openWindow(id: "trace-window")
             })
         }
@@ -64,19 +55,19 @@ public struct LingXiMacApp: App {
 /// macOS 标准主菜单命令集 (遵循规范第四章)
 public struct LingXiMenuCommands: Commands {
     @ObservedObject public var runtime: RuntimeFrontend
-    @ObservedObject public var dock: DockModel
+    @ObservedObject public var navigation: WarmNavigation
     public var onOpenTraceWindow: () -> Void
 
     public var body: some Commands {
         CommandGroup(replacing: .appInfo) {
             Button("关于 LingXi…") {
-                runtime.isShowingAboutSheet = true
+                navigation.showAbout()
             }
         }
 
         CommandGroup(replacing: .appSettings) {
             Button("设置…") {
-                runtime.isShowingSettings = true
+                navigation.showsSettings = true
             }
             .keyboardShortcut(",", modifiers: .command)
         }
@@ -108,19 +99,16 @@ public struct LingXiMenuCommands: Commands {
             ))
             .keyboardShortcut("s", modifiers: [.control, .command])
 
-            Toggle("显示工具面板", isOn: Binding(
-                get: { dock.isPresented },
-                set: { dock.isPresented = $0 }
-            ))
-            .keyboardShortcut("i", modifiers: [.option, .command])
+            Toggle("显示运行上下文", isOn: $navigation.showsContext)
+                .keyboardShortcut("i", modifiers: [.option, .command])
 
             Divider()
 
-            ForEach(DockPanel.allCases) { panel in
-                Button("工具面板 · \(panel.title)") {
-                    dock.select(panel)
+            ForEach(WarmTool.allCases) { tool in
+                Button("工具面板 · \(tool.title)") {
+                    navigation.toggle(tool)
                 }
-                .keyboardShortcut(KeyEquivalent(Character(String(DockPanel.allCases.firstIndex(of: panel)! + 1))),
+                .keyboardShortcut(KeyEquivalent(Character(String(WarmTool.allCases.firstIndex(of: tool)! + 1))),
                                   modifiers: [.option, .command])
             }
 

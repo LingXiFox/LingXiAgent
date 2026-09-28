@@ -107,11 +107,17 @@ struct ComposerSurface: View {
     @State private var isDropTargeted = false
     @State private var isEditingGoal = false
     @State private var goalDraft = ""
+    @State private var confirmYOLO = false
+    @State private var permissionBeforeYOLO: PermissionPreset?
+    @State private var localBranches: [String] = []
+    @State private var newBranchDraft = ""
+    @State private var isCreatingBranch = false
+    @State private var branchError: String?
     @AppStorage(LXPreferenceKey.sendKey) private var sendKey = SendKeyPreference.returnKey
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !isGenerating { contextStrip }
+            contextStrip
             editor
             actionBar
         }
@@ -128,21 +134,83 @@ struct ComposerSurface: View {
             insertFileReferences(urls)
             return !urls.isEmpty
         } isTargeted: { isDropTargeted = $0 }
+        .confirmationDialog("开启 YOLO 完全访问？", isPresented: $confirmYOLO) {
+            Button("开启 YOLO", role: .destructive) {
+                permissionBeforeYOLO = model.permissionPreset
+                model.permissionPreset = .yoloFullAccess
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("本会话将以 YOLO 完全访问运行。Agent 不再逐项请求授权，并可在工作区外读写文件、执行命令；Core 的硬性安全限制仍然生效。")
+        }
+        .alert("新建分支", isPresented: $isCreatingBranch) {
+            TextField("分支名称", text: $newBranchDraft)
+            Button("创建并切换") { changeBranch(newBranchDraft, create: true) }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("无法切换分支", isPresented: Binding(
+            get: { branchError != nil },
+            set: { if !$0 { branchError = nil } }
+        )) {
+            Button("好") { branchError = nil }
+        } message: {
+            Text(branchError ?? "")
+        }
+        .task(id: runtime.workspaceURL) { await loadBranches() }
     }
 
     // MARK: Layer 1 — where
 
     private var contextStrip: some View {
         HStack(spacing: LingXiMetrics.Space.md) {
-            stripItem(workspace.isRemote ? "network" : "desktopcomputer", workspace.isRemote ? "Remote" : "Local")
-            stripItem("folder", runtime.workspaceURL?.lastPathComponent ?? workspace.name)
+            stripItem(workspace.isRemote ? "network" : "desktopcomputer", workspace.isRemote ? "远程" : "本地")
+            Menu {
+                ForEach(RecentWorkspaces.all.filter { FileManager.default.fileExists(atPath: $0.path) },
+                        id: \.path) { url in
+                    Button(url.lastPathComponent) { Task { await runtime.openWorkspace(url) } }
+                }
+                Divider()
+                Button("打开工作区…") { WorkspacePicker.choose(runtime) }
+            } label: {
+                stripMenuLabel("folder", runtime.workspaceURL?.lastPathComponent ?? workspace.name)
+            }
+            .menuStyle(.borderlessButton)
+            .tint(.primary)
+            .menuIndicator(isGenerating ? .hidden : .visible)
+            .disabled(isGenerating)
             if let branch = workspace.gitBranch ?? runtime.inspectorModel.live?.branch, !branch.isEmpty {
-                stripItem("arrow.triangle.branch", branch)
+                Menu {
+                    ForEach(localBranches, id: \.self) { name in
+                        Button(name) { changeBranch(name) }
+                    }
+                    Divider()
+                    Button("新建分支…") {
+                        newBranchDraft = ""
+                        isCreatingBranch = true
+                    }
+                } label: {
+                    stripMenuLabel("arrow.triangle.branch", branch)
+                }
+                .menuStyle(.borderlessButton)
+                .tint(.primary)
+                .menuIndicator(isGenerating ? .hidden : .visible)
+                .disabled(isGenerating)
             }
-            if let worktree = workspace.worktreeBranch, !worktree.isEmpty {
-                stripItem("square.stack.3d.up", worktree)
+            Menu {
+                Button("当前目录 · 改动直接写入工作区") {}
+                    .disabled(true)
+                Button("独立 Worktree · 当前 Core 尚不支持") {}
+                    .disabled(true)
+            } label: {
+                stripMenuLabel("square.stack.3d.up",
+                               workspace.worktreeBranch == nil ? "当前目录" : "独立 Worktree")
             }
+            .menuStyle(.borderlessButton)
+            .tint(.primary)
+            .menuIndicator(isGenerating ? .hidden : .visible)
+            .disabled(isGenerating)
             Spacer(minLength: 0)
+            if isGenerating { Text("运行中不可切换") }
         }
         .font(LXType.meta)
         .foregroundStyle(.secondary)
@@ -160,6 +228,42 @@ struct ComposerSurface: View {
             Text(text).lineLimit(1).truncationMode(.middle)
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private func stripMenuLabel(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            Image(systemName: symbol).font(.system(size: LXIcon.strip))
+            Text(text).lineLimit(1).truncationMode(.middle)
+        }
+        .font(LXType.meta)
+        .foregroundStyle(.secondary)
+        .frame(height: LXControl.small)
+    }
+
+    private func loadBranches() async {
+        guard let workspace = runtime.workspaceURL else { localBranches = []; return }
+        let path = workspace.path
+        let result = await Task.detached {
+            WarmGitModel.run(["-C", path, "branch", "--format=%(refname:short)"])
+        }.value
+        localBranches = result.code == 0 ? result.output.split(separator: "\n").map(String.init) : []
+    }
+
+    private func changeBranch(_ branch: String, create: Bool = false) {
+        guard let workspace = runtime.workspaceURL, !isGenerating else { return }
+        let name = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.hasPrefix("-") else { return }
+        Task {
+            let path = workspace.path
+            let args = ["-C", path, "switch"] + (create ? ["-c"] : []) + [name]
+            let result = await Task.detached { WarmGitModel.run(args) }.value
+            if result.code == 0 {
+                await loadBranches()
+                runtime.refreshRuntimeDetails()
+            } else {
+                branchError = result.output
+            }
+        }
     }
 
     // MARK: Layer 2 — what
@@ -198,23 +302,65 @@ struct ComposerSurface: View {
     // MARK: Layer 3 — how
 
     private var actionBar: some View {
+        ViewThatFits(in: .horizontal) {
+            actionRow(compact: false)
+            actionRow(compact: true)
+        }
+    }
+
+    private func actionRow(compact: Bool) -> some View {
         HStack(spacing: LingXiMetrics.Space.md) {
             HStack(spacing: LingXiMetrics.Space.sm) {
-                LXChipMenu("添加", symbol: "plus.circle", help: "添加文件、引用或设定任务目标") {
+                LXChipMenu("添加", symbol: "plus.circle", help: "添加文件或引用", iconOnly: compact) {
                     Button("文件或图片…", systemImage: "paperclip", action: pickFiles)
                     Button("引用文件 @", systemImage: "at") { insertReference("@") }
                     Button("引用符号 #", systemImage: "number") { insertReference("#") }
-                    Divider()
-                    Button("设定任务目标…", systemImage: "target", action: beginGoalEdit)
                 }
-                LXChipMenu(model.permissionPreset.shortLabel,
-                           symbol: model.permissionPreset.isElevated ? "exclamationmark.shield" : "checkmark.shield",
-                           help: "权限策略：\(model.permissionPreset.label)") {
-                    Picker("权限策略", selection: $model.permissionPreset) {
-                        ForEach(PermissionPreset.allCases) { Text($0.label).tag($0) }
+                Button(action: beginGoalEdit) {
+                    Group {
+                        if compact { Image(systemName: "target") }
+                        else { Label("目标", systemImage: "target") }
                     }
-                    .pickerStyle(.inline)
+                        .font(LXType.body.weight(.medium))
+                        .padding(.horizontal, compact ? 0 : 10)
+                        .frame(width: compact ? LXControl.regular : nil)
+                        .frame(height: LXControl.regular)
+                        .background(LXColor.fillControl,
+                                    in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control))
                 }
+                .buttonStyle(.plain)
+                .help("设定任务目标")
+                Button {
+                    if model.permissionPreset == .yoloFullAccess {
+                        model.permissionPreset = permissionBeforeYOLO ?? .askWorkspace
+                    } else {
+                        confirmYOLO = true
+                    }
+                } label: {
+                    Group {
+                        if compact { Image(systemName: "bolt") }
+                        else {
+                            Label(model.permissionPreset == .yoloFullAccess ? "YOLO 已开启" : "YOLO",
+                                  systemImage: "bolt")
+                        }
+                    }
+                        .font(LXType.body.weight(.medium))
+                        .foregroundStyle(model.permissionPreset == .yoloFullAccess ? LXColor.warning : .primary)
+                        .padding(.horizontal, compact ? 0 : 10)
+                        .frame(width: compact ? LXControl.regular : nil)
+                        .frame(height: LXControl.regular)
+                        .background(LXColor.fillControl,
+                                    in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control))
+                        .overlay {
+                            if model.permissionPreset == .yoloFullAccess {
+                                RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control)
+                                    .strokeBorder(LXColor.warning, lineWidth: 1)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .help(model.permissionPreset == .yoloFullAccess ? "关闭 YOLO" : "开启 YOLO 完全访问")
+                .accessibilityValue(model.permissionPreset == .yoloFullAccess ? "已开启" : "已关闭")
             }
             Spacer(minLength: 0)
             HStack(spacing: LingXiMetrics.Space.sm) {
@@ -227,9 +373,17 @@ struct ComposerSurface: View {
                     }
                     .pickerStyle(.inline)
                 }
-                LXChipMenu("\(modelLabel) · \(model.reasoningEffort.rawValue)", symbol: "cpu",
-                           help: "模型与思考等级") {
+                LXChipMenu(modelLabel, symbol: "cpu", help: "选择模型：\(modelLabel)") {
                     modelMenu
+                }
+                LXChipMenu(model.reasoningEffort.rawValue, symbol: "sparkle", help: "思考等级") {
+                    Picker("思考等级", selection: $model.reasoningEffort) {
+                        ForEach(ReasoningEffortLevel.allCases, id: \.self) { level in
+                            Text(level.rawValue).tag(level)
+                                .disabled(!model.availableReasoningLevels.contains(level))
+                        }
+                    }
+                    .pickerStyle(.inline)
                 }
                 sendButton
             }
@@ -250,25 +404,16 @@ struct ComposerSurface: View {
                 ForEach(groups[provider] ?? [], id: \.id) { info in
                     Toggle(info.displayName, isOn: Binding(
                         get: { model.selectedModelID == info.id || model.selectedModelID == info.modelID },
-                        set: { if $0 { model.selectedModelID = info.id } }))
+                        set: { if $0 { model.selectedModelID = info.modelID } }))
                 }
             }
-        }
-        Section("思考等级") {
-            Picker("思考等级", selection: $model.reasoningEffort) {
-                ForEach(ReasoningEffortLevel.allCases, id: \.self) { level in
-                    Text(level.rawValue).tag(level)
-                        .disabled(!model.availableReasoningLevels.contains(level))
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
         }
     }
 
     private var modelLabel: String {
-        guard let id = model.selectedModelID else { return "选择模型" }
-        return model.models.first { $0.id == id || $0.modelID == id }?.displayName ?? id
+        guard let id = model.selectedModelID, !id.isEmpty else { return "选择模型" }
+        let name = model.models.first { $0.id == id || $0.modelID == id }?.displayName ?? id
+        return name.isEmpty ? id : name
     }
 
     private var modeSymbol: String {

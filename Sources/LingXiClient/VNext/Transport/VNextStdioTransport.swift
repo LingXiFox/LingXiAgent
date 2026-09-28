@@ -339,6 +339,29 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func getCredentialStatus(envelope: QueryEnvelope<GetCredentialStatusRequest>) async throws -> ResponseEnvelope<CredentialStatusInfo> { try await response("credential.status", envelope) }
     public func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult> { try await command("credential.test", envelope) }
 
+    public func createTask(envelope: CommandEnvelope<CreateTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.create", envelope) }
+    public func getTask(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskSnapshot> { try await response("task.get", envelope) }
+    public func listTasks(envelope: QueryEnvelope<ListTasksRequest>) async throws -> ResponseEnvelope<[TaskSnapshot]> { try await response("task.list", envelope) }
+    public func pauseTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.pause", envelope) }
+    public func resumeTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.resume", envelope) }
+    public func cancelTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.cancel", envelope) }
+    public func forkTask(envelope: CommandEnvelope<ForkTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.fork", envelope) }
+    public func updateTaskCriteria(envelope: CommandEnvelope<UpdateTaskCriteriaRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.criteria", envelope) }
+    public func listTaskArtifacts(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<[TaskArtifact]> { try await response("task.artifacts", envelope) }
+    public func getTaskReport(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskReport?> { try await response("task.report", envelope) }
+    public func finalizeTask(envelope: CommandEnvelope<TaskFinalizeRequest>) async throws -> CommandReceipt<TaskSnapshot> { try await command("task.finalize", envelope) }
+
+    public func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> { try await command("worktree.create", envelope) }
+    public func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> { try await response("worktree.list", envelope) }
+    public func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> { try await command("worktree.apply", envelope) }
+    public func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> { try await command("worktree.discard", envelope) }
+    public func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> { try await command("worktree.prune", envelope) }
+
+    public func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> { try await command("agent.sideQuestion", envelope) }
+    public func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]> { try await response("agent.presets", envelope) }
+    public func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]> { try await response("agent.runs", envelope) }
+    public func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult> { try await command("agent.compare", envelope) }
+
     public func subscribeRuntimeEvents(after: EventCursor?) async -> AsyncStream<RuntimeEventEnvelope> {
         let id = makeID()
         let (stream, continuation) = AsyncStream<RuntimeEventEnvelope>.makeStream()

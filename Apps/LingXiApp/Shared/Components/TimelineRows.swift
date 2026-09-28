@@ -89,8 +89,8 @@ extension Array where Element == TimelineItemPresentation {
         "dependency_query", "web_search", "web_fetch"
     ]
 
-    /// 有专属面板、不在时间线里重复出现的工具。
-    private static let suppressedToolNames: Set<String> = ["todo"]
+    /// Keep task activity in the conversation timeline.
+    private static let suppressedToolNames: Set<String> = []
 
     /// 折叠为表现层行序列。
     func foldedIntoRows() -> [TimelineRow] {
