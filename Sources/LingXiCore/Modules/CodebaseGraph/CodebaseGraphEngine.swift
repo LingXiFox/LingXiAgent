@@ -1077,6 +1077,17 @@ public actor CodebaseGraphEngine {
         return cacheDir.appendingPathComponent("graph_\(hashString).meta.json")
     }
 
+    private func writeCacheData(_ data: Data, to url: URL) {
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            #if os(Windows)
+            // The cache is regenerable; keep it usable if Windows rejects the atomic replacement.
+            try? data.write(to: url)
+            #endif
+        }
+    }
+
     private func saveToDiskCache(for workspaceURL: URL) {
         guard let url = cacheFileURL(for: workspaceURL) else { return }
         var manifest: [String: Double] = [:]
@@ -1095,7 +1106,7 @@ public actor CodebaseGraphEngine {
             fileInvocations: fileInvocationSummaries
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
-        try? data.write(to: url, options: .atomic)
+        writeCacheData(data, to: url)
 
         // 写入轻量 Sidecar Metadata，供 prune 和 diagnostics 零反序列化瞬间查询
         let sidecar = GraphCacheSidecarMeta(
@@ -1107,7 +1118,7 @@ public actor CodebaseGraphEngine {
             bodyByteCount: Int64(data.count)
         )
         if let sidecarData = try? JSONEncoder().encode(sidecar), let metaURL = sidecarFileURL(for: workspaceURL) {
-            try? sidecarData.write(to: metaURL, options: .atomic)
+            writeCacheData(sidecarData, to: metaURL)
         }
 
         pruneDiskCache()
