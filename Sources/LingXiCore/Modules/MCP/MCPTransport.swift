@@ -268,8 +268,13 @@ public struct MCPStdioTransport: MCPToolInvoker {
         process.standardOutput = stdoutPipe
         // Server diagnostics must never fill an unread pipe or enter the JSON-RPC stream.
         #if os(Windows)
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
+        // An explicit handle is inherited by the child; Foundation's nullDevice
+        // special case opens NUL without making that handle inheritable on Windows.
+        guard let stderrSink = FileHandle(forWritingAtPath: "NUL") else {
+            throw CoreError(code: .mcpServerUnavailable, message: "Failed to open Windows NUL for MCP diagnostics")
+        }
+        process.standardError = stderrSink
+        defer { try? stderrSink.close() }
         #else
         process.standardError = FileHandle(forWritingAtPath: "/dev/null") ?? FileHandle.nullDevice
         #endif
@@ -279,16 +284,6 @@ public struct MCPStdioTransport: MCPToolInvoker {
         } catch {
             throw CoreError(code: .mcpServerUnavailable, message: "Failed to launch MCP stdio process: \(error.localizedDescription)")
         }
-        #if os(Windows)
-        try? stderrPipe.fileHandleForWriting.close()
-        let diagnostics = LingXiPlatform.lineReader.dataChunks(from: stderrPipe.fileHandleForReading)
-        Task.detached {
-            do {
-                for try await _ in diagnostics {}
-            } catch {}
-        }
-        #endif
-
         let stdinHandle = stdinPipe.fileHandleForWriting
         let stdoutHandle = stdoutPipe.fileHandleForReading
         try stdoutPipe.fileHandleForWriting.close()

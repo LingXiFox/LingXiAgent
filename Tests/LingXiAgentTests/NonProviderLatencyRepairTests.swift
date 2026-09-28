@@ -54,8 +54,11 @@ struct NonProviderLatencyRepairTests {
     }
 
     @Test func mcpStdioDrainsLargeDiagnosticsAndCompletesHandshake() async throws {
-        let marker = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lingxi-mcp-fixture-\(UUID().uuidString).log")
+        let markerDirectory = ProcessInfo.processInfo.environment["CI"] == nil
+            ? FileManager.default.temporaryDirectory
+            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("test-results-artifact")
+        try FileManager.default.createDirectory(at: markerDirectory, withIntermediateDirectories: true)
+        let marker = markerDirectory.appendingPathComponent("lingxi-mcp-fixture-\(UUID().uuidString).log")
         defer { try? FileManager.default.removeItem(at: marker) }
         // Reviewed fixture: flood stderr past the pipe buffer, then answer initialize/tools/list.
         // awk was the original interpreter and only exists on a POSIX userland; python speaks the
@@ -66,8 +69,10 @@ struct NonProviderLatencyRepairTests {
             with open(sys.argv[1], "a", encoding="ascii") as trace:
                 trace.write(phase + "\\n")
         mark("started")
-        for _ in range(20000):
+        for i in range(20000):
             sys.stderr.write("fixture diagnostic output\\n")
+            if i == 10000:
+                mark("diagnostics_halfway")
         sys.stderr.flush()
         mark("diagnostics_flushed")
         # Iterating sys.stdin read-aheads in block sizes, which on a pipe of short requests

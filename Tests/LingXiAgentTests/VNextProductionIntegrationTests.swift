@@ -660,8 +660,14 @@ struct VNextProductionIntegrationTests {
         }
 
         let finalState = try #require(await store.state.activeSessionState)
+        var coreStatus = ""
+        if finalState.toolNodes[allowed.callID]?.phase != .completed {
+            let turns = try? await client.turn.listTurns(sessionID: sessionID)
+            let runs = try? await client.run.listRuns(sessionID: sessionID)
+            coreStatus = "core turns: \(turns?.items.map { $0.status.rawValue } ?? []); core runs: \(runs?.items.map { $0.status.rawValue } ?? [])"
+        }
         #expect(finalState.toolNodes[allowed.callID]?.phase == .completed,
-                "status: \(finalState.status); active turn: \(String(describing: finalState.activeTurnID)); provider requests: \(provider.recorder.requests.count)")
+                "status: \(finalState.status); active turn: \(String(describing: finalState.activeTurnID)); active run: \(String(describing: finalState.activeRootRunID)); queued: \(finalState.queuedTurns.count); provider requests: \(provider.recorder.requests.count); \(coreStatus)")
         #expect(finalState.activeInteraction == nil)
         #expect(FileManager.default.fileExists(atPath: target.path), "allowed tool did not create \(target.path)")
         if FileManager.default.fileExists(atPath: target.path) {
