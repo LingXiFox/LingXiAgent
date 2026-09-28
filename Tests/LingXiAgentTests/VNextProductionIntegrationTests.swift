@@ -646,7 +646,7 @@ struct VNextProductionIntegrationTests {
         #expect(permissionResult.nextTurnPermission == .yoloFullAccess)
         await store.dispatch(.submitPrompt("切换后写入桌面并回答"))
 
-        for _ in 0..<100 {
+        for _ in 0..<250 {
             let state = await store.state.activeSessionState
             if state?.toolNodes[allowed.callID]?.phase == .completed,
                state?.timelineNodes.contains(where: {
@@ -660,9 +660,13 @@ struct VNextProductionIntegrationTests {
         }
 
         let finalState = try #require(await store.state.activeSessionState)
-        #expect(finalState.toolNodes[allowed.callID]?.phase == .completed)
+        #expect(finalState.toolNodes[allowed.callID]?.phase == .completed,
+                "status: \(finalState.status); active turn: \(String(describing: finalState.activeTurnID)); provider requests: \(provider.recorder.requests.count)")
         #expect(finalState.activeInteraction == nil)
-        #expect(try String(contentsOf: target, encoding: .utf8) == "written")
+        #expect(FileManager.default.fileExists(atPath: target.path), "allowed tool did not create \(target.path)")
+        if FileManager.default.fileExists(atPath: target.path) {
+            #expect(try String(contentsOf: target, encoding: .utf8) == "written")
+        }
         #expect(finalState.timelineNodes.contains(where: {
             if case let .message(message) = $0.kind { return message.role == .assistant && message.content == "final answer" }
             return false

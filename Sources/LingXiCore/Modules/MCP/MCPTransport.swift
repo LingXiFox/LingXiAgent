@@ -281,11 +281,12 @@ public struct MCPStdioTransport: MCPToolInvoker {
         }
         #if os(Windows)
         try? stderrPipe.fileHandleForWriting.close()
-        Thread {
-            let reader = stderrPipe.fileHandleForReading
-            while !reader.availableData.isEmpty {}
-            try? reader.close()
-        }.start()
+        let diagnostics = LingXiPlatform.lineReader.dataChunks(from: stderrPipe.fileHandleForReading)
+        Task.detached {
+            do {
+                for try await _ in diagnostics {}
+            } catch {}
+        }
         #endif
 
         let stdinHandle = stdinPipe.fileHandleForWriting

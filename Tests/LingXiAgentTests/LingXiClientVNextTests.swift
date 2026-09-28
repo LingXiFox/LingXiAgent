@@ -424,6 +424,16 @@ struct LingXiClientVNextTests {
     // MARK: - 7. All 13 Protocol Domain Clients End-to-End Availability
     @Test("All 13 protocol domain clients function end-to-end through LingXiClientVNext")
     func testAll13DomainClientsEndToEnd() async throws {
+        func checkpoint(_ domain: String) {
+            FileHandle.standardError.write(Data("vnext.all13 \(domain)\n".utf8))
+            if ProcessInfo.processInfo.environment["CI"] != nil {
+                let artifact = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                    .appendingPathComponent("test-results-artifact/vnext-all13-checkpoint.txt")
+                try? FileManager.default.createDirectory(at: artifact.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? Data(domain.utf8).write(to: artifact, options: .atomic)
+            }
+        }
+        checkpoint("host.start")
         let (host, tempDir) = try await createTestHost()
         defer {
             Task {
@@ -432,10 +442,8 @@ struct LingXiClientVNextTests {
             }
         }
 
+        checkpoint("client.connect")
         let client = try await LingXiClientVNext.inProcess(service: host)
-        func checkpoint(_ domain: String) {
-            FileHandle.standardError.write(Data("vnext.all13 \(domain)\n".utf8))
-        }
 
         // 1. Runtime
         checkpoint("runtime")

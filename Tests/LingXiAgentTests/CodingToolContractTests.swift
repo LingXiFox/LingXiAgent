@@ -96,7 +96,8 @@ struct CodingToolContractTests {
         defer { ApplyPatchFailpoint.fail(after: nil) }
         let rollback = await tools.execute(call("rollback", "apply_patch", #"{"patch":"*** Begin Patch\n*** Update File: first.txt\n-first\n+changed\n*** Update File: second.txt\n-second\n+changed\n*** End Patch"}"#), sessionID: SessionID("s")) { _ in }
         #expect(!rollback.success)
-        #expect(try String(contentsOf: root.appendingPathComponent("first.txt"), encoding: .utf8) == "first\n")
+        let restored = try String(contentsOf: root.appendingPathComponent("first.txt"), encoding: .utf8)
+        #expect(restored == "first\n", "restored: \(String(reflecting: restored)); rollback: \(String(describing: rollback.error))")
         let escaped = await tools.execute(call("escape", "apply_patch", #"{"patch":"*** Begin Patch\n*** Add File: ../escape.txt\n+x\n*** End Patch"}"#), sessionID: SessionID("s")) { _ in }
         #expect(escaped.error?.code == CoreError.Code.workspaceViolation.rawValue)
     }
