@@ -468,13 +468,14 @@ final class ServerState: @unchecked Sendable {
     /// surplus connection read zero bytes instead of the refusal it was promised.
     private func refuseOverCapacity(_ socket: HTTPSocket, peer: String) {
         defer { PlatformHTTPSocket.closeSocket(socket) }
-        _ = PlatformHTTPSocket.sendAll(socket, PlatformHTTPResponseWriter.serialize(
+        let sent = PlatformHTTPSocket.sendAll(socket, PlatformHTTPResponseWriter.serialize(
             .text(status: 503, body: "server is at capacity"),
             method: "GET",
             keepAlive: false,
             date: PlatformHTTPDate.headerValue(),
             serverName: configuration.serverName
         ))
+        if sent { PlatformHTTPSocket.finishRejectedResponse(socket) }
         log("rejected \(peer) at capacity (\(configuration.maxConnections))")
     }
 

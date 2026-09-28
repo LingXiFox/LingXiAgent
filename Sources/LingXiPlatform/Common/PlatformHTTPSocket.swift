@@ -345,6 +345,25 @@ enum PlatformHTTPSocket {
         }
     }
 
+    /// A rejected request may still have bytes in flight. On Windows, closing that receive side
+    /// immediately can reset the connection before the client sees the rejection we just sent.
+    static func finishRejectedResponse(_ sock: HTTPSocket) {
+        #if os(Windows) || canImport(WinSDK)
+        _ = shutdown(sock, SD_SEND)
+        let deadline = Date().addingTimeInterval(0.02)
+        var drained = 0
+        while Date() < deadline && drained < 128 * 1024 {
+            switch waitReadable(sock, timeoutMs: 5) {
+            case .failed: return
+            case .timedOut: continue
+            case .ready:
+                guard let chunk = receive(sock, maxBytes: 16 * 1024) else { return }
+                drained += chunk.count
+            }
+        }
+        #endif
+    }
+
     /// Make a blocked peer wake up. Only the owning thread closes a connection socket,
     /// so `stop()` reaches for `shutdown` rather than `close` -- closing an fd another
     /// thread is about to `poll` can hand it a recycled descriptor.

@@ -165,13 +165,14 @@ final class PlatformHTTPConnection: @unchecked Sendable {
                 keepAlive = wantsKeepAlive
             case .rejection(let status, let message):
                 state.log("refused \(peer): \(status) \(message)")
-                _ = PlatformHTTPSocket.sendAll(socket, PlatformHTTPResponseWriter.serialize(
+                let sent = PlatformHTTPSocket.sendAll(socket, PlatformHTTPResponseWriter.serialize(
                     .text(status: status, body: message),
                     method: "GET",
                     keepAlive: false,
                     date: PlatformHTTPDate.headerValue(),
                     serverName: state.configuration.serverName
                 ))
+                if sent { PlatformHTTPSocket.finishRejectedResponse(socket) }
                 return
             }
         }
