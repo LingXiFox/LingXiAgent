@@ -268,7 +268,8 @@ public struct MCPStdioTransport: MCPToolInvoker {
         process.standardOutput = stdoutPipe
         // Server diagnostics must never fill an unread pipe or enter the JSON-RPC stream.
         #if os(Windows)
-        process.standardError = FileHandle.nullDevice
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
         #else
         process.standardError = FileHandle(forWritingAtPath: "/dev/null") ?? FileHandle.nullDevice
         #endif
@@ -278,6 +279,14 @@ public struct MCPStdioTransport: MCPToolInvoker {
         } catch {
             throw CoreError(code: .mcpServerUnavailable, message: "Failed to launch MCP stdio process: \(error.localizedDescription)")
         }
+        #if os(Windows)
+        try? stderrPipe.fileHandleForWriting.close()
+        Thread {
+            let reader = stderrPipe.fileHandleForReading
+            while !reader.availableData.isEmpty {}
+            try? reader.close()
+        }.start()
+        #endif
 
         let stdinHandle = stdinPipe.fileHandleForWriting
         let stdoutHandle = stdoutPipe.fileHandleForReading

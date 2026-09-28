@@ -194,8 +194,11 @@ struct BackgroundCommandTests {
         """
         _ = try await runTool.execute(arguments: spawnArgs, profile: testProfile)
 
-        // Allow process to finish
-        try? await Task.sleep(for: .milliseconds(500))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await manager.hasRunningTasks && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(await !manager.hasRunningTasks)
 
         // Before poll, generate notice: should detect unobserved completed task
         let notice1 = await manager.generateSystemNotice(currentStep: 1)
