@@ -174,9 +174,11 @@ public actor BackgroundCommandManager {
         record.watchExitTask?.cancel()
         record.watchExitTask = nil
         record.process.terminate(timedOut: true)
+        #if !os(Windows)
         if let pid = record.process.snapshot(id: taskID, stdoutCursor: nil, stderrCursor: nil).pid {
             LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
         }
+        #endif
         notifyWaiters()
     }
 
@@ -220,9 +222,11 @@ public actor BackgroundCommandManager {
             record.watchExitTask?.cancel()
             record.watchExitTask = nil
             record.process.terminate()
+            #if !os(Windows)
             if let pid = record.process.snapshot(id: id, stdoutCursor: nil, stderrCursor: nil).pid {
                 LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
             }
+            #endif
             notifyWaiters()
         }
         record.hasBeenObserved = true
@@ -247,9 +251,11 @@ public actor BackgroundCommandManager {
                 record.status = .terminated
                 record.completedAt = Date()
                 record.process.terminate()
+                #if !os(Windows)
                 if let pid = record.process.snapshot(id: id, stdoutCursor: nil, stderrCursor: nil).pid {
                     LingXiPlatform.process.terminateProcessTree(pid: pid, force: true)
                 }
+                #endif
             }
         }
         for record in tasks.values {

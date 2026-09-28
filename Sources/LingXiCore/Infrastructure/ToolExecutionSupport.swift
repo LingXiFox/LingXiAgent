@@ -167,11 +167,16 @@ final class ManagedToolProcess: @unchecked Sendable {
         didTimeOut = didTimeOut || (timedOut && running)
         lock.unlock()
         if running {
+            #if os(Windows)
+            // Kill the shell while it still owns its children; killing it first makes /T lose them.
+            LingXiPlatform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
+            #else
             process.terminate()
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(250))
                 self?.forceKillIfRunning()
             }
+            #endif
         }
     }
 
