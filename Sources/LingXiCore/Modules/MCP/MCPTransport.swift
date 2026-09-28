@@ -335,11 +335,11 @@ public struct MCPStdioTransport: MCPToolInvoker {
         }
         defer {
             watchdog.cancel()
-            try? stdoutHandle.close()
             try? stdinHandle.close()
             if process.isRunning {
                 Platform.process.terminateProcessTree(pid: process.processIdentifier, force: true)
             }
+            try? stdoutHandle.close()
         }
 
         return try await withTaskCancellationHandler {

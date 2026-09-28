@@ -2144,7 +2144,10 @@ extension CoreHost {
         var backoffMs: UInt64 = 50
         while true {
             do {
-                let next = try await coordinator.finishRun(runID: runID, reason: reason, error: error)
+                // Serialize with submitTurn so a queued turn cannot commit after finishRun checked an empty queue.
+                let next = try await sessionMutationLock.withExclusiveMutation(sessionID) {
+                    try await coordinator.finishRun(runID: runID, reason: reason, error: error)
+                }
                 return next
             } catch {
                 retries -= 1
