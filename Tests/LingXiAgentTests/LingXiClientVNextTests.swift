@@ -433,8 +433,12 @@ struct LingXiClientVNextTests {
         }
 
         let client = try await LingXiClientVNext.inProcess(service: host)
+        func checkpoint(_ domain: String) {
+            FileHandle.standardError.write(Data("vnext.all13 \(domain)\n".utf8))
+        }
 
         // 1. Runtime
+        checkpoint("runtime")
         let info = try await client.runtime.getInfo()
         #expect(!info.version.isEmpty)
         let health = try await client.runtime.getHealth()
@@ -449,6 +453,7 @@ struct LingXiClientVNextTests {
         #expect(updateSetting.applied)
 
         // 2. Session
+        checkpoint("session")
         let sessReceipt = try await client.session.create(workspace: tempDir.path)
         #expect(sessReceipt.applied)
         let sessionID = try #require(sessReceipt.result?.sessionID)
@@ -462,6 +467,7 @@ struct LingXiClientVNextTests {
         #expect(snapshot.sessionID == sessionID)
 
         // 3. Turn
+        checkpoint("turn")
         let turnReceipt = try await client.turn.submitTurn(sessionID: sessionID, input: UserInput(text: "SDK Turn"))
         #expect(turnReceipt.applied)
         let turnID = try #require(turnReceipt.result?.turnID)
@@ -471,6 +477,7 @@ struct LingXiClientVNextTests {
         #expect(!turnList.items.isEmpty)
 
         // 4. Run
+        checkpoint("run")
         if let runID = turnReceipt.result?.runID {
             let run = try await client.run.getRun(sessionID: sessionID, runID: runID)
             #expect(run.runID == runID)
@@ -483,10 +490,12 @@ struct LingXiClientVNextTests {
         #expect(tree.session.id == sessionID)
 
         // 5. Interaction
+        checkpoint("interaction")
         let interactions = try await client.interaction.listPending(sessionID: sessionID)
         #expect(interactions.isEmpty || !interactions.isEmpty)
 
         // 6. Provider
+        checkpoint("provider")
         let providers = try await client.provider.list()
         #expect(providers.isEmpty || !providers.isEmpty)
         let pStatus = try await client.provider.status()
@@ -501,6 +510,7 @@ struct LingXiClientVNextTests {
         #expect(reloadProv.applied)
 
         // 7. Model
+        checkpoint("model")
         let models = try await client.model.list()
         #expect(models.isEmpty || !models.isEmpty)
         let modelSel = try await client.model.getSelection()
@@ -509,6 +519,7 @@ struct LingXiClientVNextTests {
         #expect(modelCaps.supportsStreaming)
 
         // 8. Context
+        checkpoint("context")
         let ctxState = try await client.context.getState(sessionID: sessionID)
         #expect(ctxState.sessionID == sessionID)
         let ctxPolicy = try await client.context.getPolicy()
@@ -523,6 +534,7 @@ struct LingXiClientVNextTests {
         #expect(updateCtxPolicy.applied)
 
         // 9. Extension
+        checkpoint("extension")
         let extensions = try await client.extensionDomain.list()
         #expect(extensions.isEmpty || !extensions.isEmpty)
         let installExt = try await client.extensionDomain.install(name: "sdk-tool", location: "/tmp/sdk-tool")
@@ -542,6 +554,7 @@ struct LingXiClientVNextTests {
         #expect(uninstExt.applied)
 
         // 10. Workspace
+        checkpoint("workspace")
         let ws = try await client.workspace.get()
         #expect(ws.rootPath == tempDir.path)
         let wsSummary = try await client.workspace.summary()
@@ -552,6 +565,7 @@ struct LingXiClientVNextTests {
         #expect(wsDiff.diff.isEmpty || !wsDiff.diff.isEmpty)
 
         // 11. Resource
+        checkpoint("resource")
         let uploadRef = try await client.resource.upload(data: Data("hello resource".utf8), filename: "res.txt")
         #expect(uploadRef.byteCount == 14)
         let downloaded = try await client.resource.download(ref: uploadRef)
@@ -560,6 +574,7 @@ struct LingXiClientVNextTests {
         #expect(String(data: range, encoding: .utf8) == "hello")
 
         // 12. Diagnostics
+        checkpoint("diagnostics")
         let diag = try await client.diagnostics.getBundle()
         #expect(!diag.runtimeVersion.isEmpty)
         let provMetrics = try await client.diagnostics.getProviderMetrics()
@@ -568,6 +583,7 @@ struct LingXiClientVNextTests {
         #expect(trace.runID == RunID("r-trace"))
 
         // 13. Credential
+        checkpoint("credential")
         let storeCred = try await client.credential.store(secret: "top-secret")
         #expect(storeCred.applied)
         let credRef = try #require(storeCred.result?.reference)
@@ -583,6 +599,7 @@ struct LingXiClientVNextTests {
         // Clean up session
         let delSess = try await client.session.delete(sessionID: sessionID)
         #expect(delSess.applied)
+        checkpoint("done")
     }
 
     // MARK: - 8. Real Reconnect Tests with FaultInjectingTransport

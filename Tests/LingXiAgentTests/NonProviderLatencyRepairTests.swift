@@ -54,14 +54,22 @@ struct NonProviderLatencyRepairTests {
     }
 
     @Test func mcpStdioDrainsLargeDiagnosticsAndCompletesHandshake() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lingxi-mcp-fixture-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: marker) }
         // Reviewed fixture: flood stderr past the pipe buffer, then answer initialize/tools/list.
         // awk was the original interpreter and only exists on a POSIX userland; python speaks the
         // same JSON as the transport instead of regex-scraping an id out of the request line.
         let script = """
         import json, sys
+        def mark(phase):
+            with open(sys.argv[1], "a", encoding="ascii") as trace:
+                trace.write(phase + "\\n")
+        mark("started")
         for _ in range(20000):
             sys.stderr.write("fixture diagnostic output\\n")
         sys.stderr.flush()
+        mark("diagnostics_flushed")
         # Iterating sys.stdin read-aheads in block sizes, which on a pipe of short requests
         # means the first line is never returned until the peer closes. readline() hands over
         # each line as it arrives, which is what a request/response fixture needs.
@@ -75,13 +83,20 @@ struct NonProviderLatencyRepairTests {
                 continue
             if "id" not in request:
                 continue
+            mark("request_received")
             response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"tools": []}})
             sys.stdout.buffer.write((response + "\\n").encode("utf-8"))
             sys.stdout.buffer.flush()
+            mark("reply_flushed")
         """
         let server = PortableFixture.python(script)
-        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("fixture"), alias: "fixture", transport: .stdio, command: server.command, arguments: server.arguments, timeoutSeconds: 15))
-        #expect(try await transport.listTools().isEmpty)
+        let transport = MCPStdioTransport(configuration: MCPServerConfiguration(serverID: MCPServerID("fixture"), alias: "fixture", transport: .stdio, command: server.command, arguments: server.arguments + [marker.path], timeoutSeconds: 15))
+        do {
+            #expect(try await transport.listTools().isEmpty)
+        } catch {
+            let phases = (try? String(contentsOf: marker, encoding: .utf8)) ?? "marker missing"
+            Issue.record("MCP fixture phases: \(phases); transport: \(error)")
+        }
     }
 
     @Test func sessionPaginationTraversesEverySessionWithoutRepeatingFirstPage() async throws {
