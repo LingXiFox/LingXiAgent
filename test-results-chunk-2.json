@@ -1,0 +1,15 @@
+{
+  "chunk": 2,
+  "total_chunks": 90,
+  "suites": ["UnifiedModelRegistryTests"],
+  "filter": "LingXiAgentTests\.UnifiedModelRegistryTests/",
+  "expected_tests": 33,
+  "executed_tests": 33,
+  "passed_tests": 33,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

@@ -1,0 +1,15 @@
+{
+  "chunk": 32,
+  "total_chunks": 90,
+  "suites": ["MCPRuntimeTests", "UndoAndCompactSpacingTests"],
+  "filter": "LingXiAgentTests\.MCPRuntimeTests/|LingXiAgentTests\.UndoAndCompactSpacingTests/",
+  "expected_tests": 19,
+  "executed_tests": 19,
+  "passed_tests": 19,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

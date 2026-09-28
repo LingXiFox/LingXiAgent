@@ -1,0 +1,15 @@
+{
+  "chunk": 72,
+  "total_chunks": 90,
+  "suites": ["UnifiedRetrievalPhaseGTests", "ThemeEngineTests", "TUIPerformanceBenchmarkTests"],
+  "filter": "LingXiAgentTests\.UnifiedRetrievalPhaseGTests/|LingXiAgentTests\.ThemeEngineTests/|LingXiAgentTests\.TUIPerformanceBenchmarkTests/",
+  "expected_tests": 12,
+  "executed_tests": 8,
+  "passed_tests": 8,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

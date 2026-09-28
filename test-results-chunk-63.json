@@ -1,0 +1,15 @@
+{
+  "chunk": 63,
+  "total_chunks": 90,
+  "suites": ["ResumeCLITests"],
+  "filter": "LingXiAgentTests\.ResumeCLITests/",
+  "expected_tests": 5,
+  "executed_tests": 5,
+  "passed_tests": 5,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

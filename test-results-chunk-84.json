@@ -1,0 +1,15 @@
+{
+  "chunk": 84,
+  "total_chunks": 90,
+  "suites": ["Round4SystemHardeningTests", "RewindPhase7Tests", "RewindPhase3Tests", "PublicProviderConfigurationTests"],
+  "filter": "LingXiAgentTests\.Round4SystemHardeningTests/|LingXiAgentTests\.RewindPhase7Tests/|LingXiAgentTests\.RewindPhase3Tests/|LingXiAgentTests\.PublicProviderConfigurationTests/",
+  "expected_tests": 12,
+  "executed_tests": 12,
+  "passed_tests": 12,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

@@ -1,0 +1,15 @@
+{
+  "chunk": 29,
+  "total_chunks": 90,
+  "suites": ["OAuthStrategyTests"],
+  "filter": "LingXiAgentTests\.OAuthStrategyTests/",
+  "expected_tests": 11,
+  "executed_tests": 11,
+  "passed_tests": 11,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

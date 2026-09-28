@@ -1,0 +1,15 @@
+{
+  "chunk": 45,
+  "total_chunks": 90,
+  "suites": ["UnifiedRetrievalPhaseR1HardBenchmarkTests", "UnifiedRetrievalPhaseR0Tests"],
+  "filter": "LingXiAgentTests\.UnifiedRetrievalPhaseR1HardBenchmarkTests/|LingXiAgentTests\.UnifiedRetrievalPhaseR0Tests/",
+  "expected_tests": 14,
+  "executed_tests": 14,
+  "passed_tests": 14,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

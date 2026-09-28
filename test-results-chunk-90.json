@@ -1,0 +1,15 @@
+{
+  "chunk": 90,
+  "total_chunks": 90,
+  "suites": ["ACPServerTests", "OrphanContractTests", "IPCRobustnessContractTests", "FrontendContractTests", "VNextStdioTransportDeadlineTests", "ResponsesGoldenReplayTests", "PlatformDesktopEnvironmentFactoryTests", "MCPToolStrategyBenchmarkTests", "BuiltinProviderCatalogTests"],
+  "filter": "LingXiAgentTests\.ACPServerTests/|LingXiWireContractTests\.OrphanContractTests/|LingXiIPCRobustnessContractTests\.IPCRobustnessContractTests/|LingXiFrontendContractTests\.FrontendContractTests/|LingXiAgentTests\.VNextStdioTransportDeadlineTests/|LingXiAgentTests\.ResponsesGoldenReplayTests/|LingXiAgentTests\.PlatformDesktopEnvironmentFactoryTests/|LingXiAgentTests\.MCPToolStrategyBenchmarkTests/|LingXiAgentTests\.BuiltinProviderCatalogTests/",
+  "expected_tests": 10,
+  "executed_tests": 10,
+  "passed_tests": 10,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 10,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

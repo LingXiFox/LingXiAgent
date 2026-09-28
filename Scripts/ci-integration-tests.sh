@@ -371,7 +371,7 @@ for chunk in "${chunks[@]}"; do
   STDIO_PER_TEST_TIMEOUT="${LINGXI_CI_STDIO_PER_TEST_TIMEOUT:-30}"
   is_stdio_chunk=no
   case "$names" in
-    *ClientVNext*|*VNextProduction*|*Round6*|*Round14*)
+    *ClientVNext*|*VNextProduction*|*VNextStdioTransport*|*Round6*|*Round14*)
       is_stdio_chunk=yes
       ;;
   esac
@@ -403,7 +403,7 @@ for chunk in "${chunks[@]}"; do
   # answering is never cut off.
   stdio_env=()
   if [ "$is_stdio_chunk" = yes ]; then
-    stdio_env=("LINGXI_CORE_RESPONSE_TIMEOUT_SECONDS=$((STDIO_PER_TEST_TIMEOUT > 10 ? STDIO_PER_TEST_TIMEOUT - 10 : 1))")
+    stdio_env=("LINGXI_CORE_RESPONSE_TIMEOUT_SECONDS=$((STDIO_PER_TEST_TIMEOUT > 10 ? STDIO_PER_TEST_TIMEOUT - 10 : 1))" "LINGXI_TUI_DEBUG=1")
   fi
   env ${stdio_env[@]+"${stdio_env[@]}"} SWIFT_BACKTRACE=enable=yes,demangle=yes,threads=all \
     ${line_buffered[@]+"${line_buffered[@]}"} "${run_args[@]}" < /dev/null > "$chunk_log" 2>&1 &

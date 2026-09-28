@@ -1,0 +1,15 @@
+{
+  "chunk": 60,
+  "total_chunks": 90,
+  "suites": ["CancellationRaceTests", "ProtocolVersionContractTests", "EnumDecoderRobustnessTests"],
+  "filter": "LingXiAgentTests\.CancellationRaceTests/|LingXiWireContractTests\.ProtocolVersionContractTests/|LingXiWireContractTests\.EnumDecoderRobustnessTests/",
+  "expected_tests": 16,
+  "executed_tests": 16,
+  "passed_tests": 16,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

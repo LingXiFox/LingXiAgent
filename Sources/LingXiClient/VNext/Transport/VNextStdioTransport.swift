@@ -547,6 +547,12 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private func armDeadline(for wireID: String, since: Date) {
         let seconds = timeoutSeconds
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(seconds)) { [self] in
+            // Whether this block ran at all is the difference between "the peer went silent" and
+            // "nothing was ever scheduled to notice", and on the Windows runner those two look
+            // identical from the outside: the test starts and never reports. `LINGXI_TUI_DEBUG=1`
+            // is set for the stdio chunks by Scripts/ci-integration-tests.sh, which is where the
+            // question has to be answered because none of them reproduce locally.
+            debug("deadline.check wireID=\(wireID) after=\(seconds)s")
             guard self.hasPending(wireID) else { return }
             if self.frames.value >= since {
                 self.armDeadline(for: wireID, since: Date())

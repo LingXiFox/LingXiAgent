@@ -1,0 +1,15 @@
+{
+  "chunk": 65,
+  "total_chunks": 90,
+  "suites": ["ProviderWorkloadAuditTests", "PECoreSnapshotSemanticsTests", "NonProviderLatencyRepairTests"],
+  "filter": "LingXiAgentTests\.ProviderWorkloadAuditTests/|LingXiAgentTests\.PECoreSnapshotSemanticsTests/|LingXiAgentTests\.NonProviderLatencyRepairTests/",
+  "expected_tests": 15,
+  "executed_tests": 16,
+  "passed_tests": 16,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

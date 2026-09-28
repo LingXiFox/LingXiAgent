@@ -1,0 +1,15 @@
+{
+  "chunk": 1,
+  "total_chunks": 90,
+  "suites": ["TUIRenderingTests"],
+  "filter": "LingXiAgentTests\.TUIRenderingTests/",
+  "expected_tests": 60,
+  "executed_tests": 60,
+  "passed_tests": 60,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

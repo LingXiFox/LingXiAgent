@@ -1,0 +1,15 @@
+{
+  "chunk": 87,
+  "total_chunks": 90,
+  "suites": ["UnifiedRetrievalPhaseR13Tests", "TaskRuntimeTests", "RuntimeDiagnosticsTests", "RewindPhase5Tests", "RewindPhase4Tests", "RewindPhase2Tests"],
+  "filter": "LingXiAgentTests\.UnifiedRetrievalPhaseR13Tests/|LingXiAgentTests\.TaskRuntimeTests/|LingXiAgentTests\.RuntimeDiagnosticsTests/|LingXiAgentTests\.RewindPhase5Tests/|LingXiAgentTests\.RewindPhase4Tests/|LingXiAgentTests\.RewindPhase2Tests/",
+  "expected_tests": 12,
+  "executed_tests": 12,
+  "passed_tests": 12,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

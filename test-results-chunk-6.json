@@ -1,0 +1,15 @@
+{
+  "chunk": 6,
+  "total_chunks": 90,
+  "suites": ["SubagentRuntimeTests"],
+  "filter": "LingXiAgentTests\.SubagentRuntimeTests/",
+  "expected_tests": 21,
+  "executed_tests": 21,
+  "passed_tests": 21,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

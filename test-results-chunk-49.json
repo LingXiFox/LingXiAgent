@@ -1,0 +1,15 @@
+{
+  "chunk": 49,
+  "total_chunks": 90,
+  "suites": ["InteractionBatchExecutorTests", "ExtensionPlatformTests"],
+  "filter": "LingXiAgentTests\.InteractionBatchExecutorTests/|LingXiAgentTests\.ExtensionPlatformTests/",
+  "expected_tests": 14,
+  "executed_tests": 14,
+  "passed_tests": 14,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

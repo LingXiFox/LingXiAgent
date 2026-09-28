@@ -1,0 +1,15 @@
+{
+  "chunk": 76,
+  "total_chunks": 90,
+  "suites": ["PECoreSchemaMigrationTests", "NativeGUIVisualArchitectureTests", "LSPCoordinatorTests"],
+  "filter": "LingXiAgentTests\.PECoreSchemaMigrationTests/|LingXiAgentTests\.NativeGUIVisualArchitectureTests/|LingXiAgentTests\.LSPCoordinatorTests/",
+  "expected_tests": 12,
+  "executed_tests": 13,
+  "passed_tests": 13,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

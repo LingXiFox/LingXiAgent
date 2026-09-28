@@ -1,0 +1,15 @@
+{
+  "chunk": 80,
+  "total_chunks": 90,
+  "suites": ["AgentBehaviorTests"],
+  "filter": "LingXiAgentTests\.AgentBehaviorTests/",
+  "expected_tests": 4,
+  "executed_tests": 4,
+  "passed_tests": 4,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}
