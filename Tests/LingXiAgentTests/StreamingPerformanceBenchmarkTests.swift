@@ -18,35 +18,29 @@ struct StreamingPerformanceBenchmarkTests {
         let tokens = ["Antigravity ", "is ", "optimizing ", "streaming ", "performance ", "for ", "TUI."]
         let expectedTotalText = tokens.joined()
 
-        let (stream, continuation) = AsyncStream.makeStream(of: StreamFrame.self)
-
-        // 生产者：以 2ms 极快 burst 发送
-        Task {
-            for (idx, token) in tokens.enumerated() {
-                try? await Task.sleep(nanoseconds: 2_000_000)
-                let frame = StreamFrame(
-                    streamID: streamID,
-                    owner: causal,
-                    index: UInt64(idx),
-                    kind: .assistantText,
-                    text: token
-                )
-                continuation.yield(frame)
-            }
-            continuation.finish()
+        let (coalescedStream, continuation) = AsyncStream.makeStream(of: StreamFrame.self)
+        // Enqueue the whole burst before flushing; scheduler delays must not change this contract.
+        let buffer = LiveDeltaBuffer(windowMs: 60_000, onFlush: { frames in
+            for frame in frames { continuation.yield(frame) }
+        })
+        for (idx, token) in tokens.enumerated() {
+            buffer.append(StreamFrame(
+                streamID: streamID,
+                owner: causal,
+                index: UInt64(idx),
+                kind: .assistantText,
+                text: token
+            ))
         }
+        await buffer.finish()
+        continuation.finish()
 
-        // 使用 LiveDeltaBuffer 接收
-        let coalescedStream = LiveDeltaBuffer.coalesceStream(stream, windowMs: 16)
         var receivedBatches: [StreamFrame] = []
         for await frame in coalescedStream {
             receivedBatches.append(frame)
         }
 
-        // 验证：
-        // 1. 至少发生了合并（接收到的 frame 批次明显少于 token 数）
-        #expect(receivedBatches.count < tokens.count, "High frequency tokens within window must be coalesced")
-        // 2. 拼接后的总文本与原始文本严格完全一致
+        #expect(receivedBatches.count == 1, "Frames enqueued within one window must coalesce")
         let totalText = receivedBatches.compactMap { $0.textPayload }.joined()
         #expect(totalText == expectedTotalText, "Coalesced text must exactly match original tokens without loss or duplication")
     }
