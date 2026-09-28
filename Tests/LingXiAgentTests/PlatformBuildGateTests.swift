@@ -84,6 +84,38 @@ struct PlatformBuildGateTests {
 
     // MARK: - Pipe readers
 
+    @Test("Short pipe messages arrive while the writer stays open", arguments: [false, true])
+    func shortPipeMessagesArriveBeforeEOF(asLines: Bool) async throws {
+        let pipe = Pipe()
+        Self.makeCloseOnExec(pipe)
+        let arrived = DispatchSemaphore(value: 0)
+        let verdict = Verdict<String>()
+        let reader = Task {
+            do {
+                if asLines {
+                    for try await line in LingXiPlatform.lineReader.lines(from: pipe.fileHandleForReading) {
+                        verdict.set(line)
+                        arrived.signal()
+                    }
+                } else {
+                    for try await chunk in LingXiPlatform.lineReader.dataChunks(from: pipe.fileHandleForReading) {
+                        verdict.set(String(decoding: chunk, as: UTF8.self))
+                        arrived.signal()
+                    }
+                }
+            } catch {
+                verdict.set("read failed: \(error)")
+            }
+        }
+        try pipe.fileHandleForWriting.write(contentsOf: Data("hi\n".utf8))
+        let deliveredBeforeEOF = await Self.settled(arrived, seconds: 5)
+        try pipe.fileHandleForWriting.close()
+        await reader.value
+        try? pipe.fileHandleForReading.close()
+        #expect(deliveredBeforeEOF, "a short message must not wait for 4096 bytes or EOF")
+        #expect(verdict.value == (asLines ? "hi" : "hi\n"))
+    }
+
     /// Marks both ends close-on-exec before anything is spawned.
     ///
     /// Only the descriptor a child is *told* to use survives exec, so a pipe created here would

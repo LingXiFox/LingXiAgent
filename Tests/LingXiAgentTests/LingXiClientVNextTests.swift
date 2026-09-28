@@ -602,13 +602,15 @@ struct LingXiClientVNextTests {
         let sessionRes = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(sessionRes.result?.sessionID)
 
+        // Capture the replay boundary before T1; a nil cursor only subscribes to future events.
+        let initialCursor = try await client.session.snapshot(sessionID: sessionID).eventCursor
         // Submit first turn
         _ = try await client.turn.submitTurn(sessionID: sessionID, input: UserInput(text: "T1"))
 
         // Consume initial events. Polling `next()` under a per-attempt timeout does not just abandon
         // that attempt -- it ends the AsyncStream iteration for good, so the events already on their
         // way were lost whenever the first one took longer than 100ms to arrive.
-        let eventStream1 = try await client.session.events(sessionID: sessionID)
+        let eventStream1 = try await client.session.events(sessionID: sessionID, after: initialCursor)
         let collector1 = EventCollector<SessionEventEnvelope>()
         let pump1 = collector1.pump(eventStream1)
         defer { pump1.cancel() }

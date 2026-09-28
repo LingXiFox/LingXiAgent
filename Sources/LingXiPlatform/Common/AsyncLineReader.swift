@@ -3,6 +3,8 @@ import Foundation
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif os(Windows)
+import WinSDK
 #endif
 
 /// 跨平台异步行解码流 (AsyncLineReader)
@@ -89,36 +91,38 @@ public enum AsyncLineReader: Sendable {
     }
 
     #if os(Windows)
-    /// Read and split lines on a thread of its own rather than on a detached task.
-    ///
-    /// A Windows pipe handle has no non-blocking read and no `poll`, so `read(upToCount:)` simply
-    /// waits -- and a task that spends its life waiting holds whatever executor runs it. The global
-    /// cooperative pool has one worker per core, so on a four-core runner four concurrent stdio
-    /// clients leave no worker for the code that would answer a request, and the request never
-    /// returns: a stdio turn hangs with nothing on either side of the pipe actually stuck, and no
-    /// timeout armed on the pool can see it either. A parked kernel thread takes nothing from the
-    /// pool, which is the whole difference.
-    ///
-    /// Scoped to the line reader on purpose. `dataChunks` is the path the background command manager
-    /// captures its output through, and that path has its own measured defects on Windows; moving it
-    /// here would change a second thing at a time and blur which fix did what.
+    /// Foundation 6.0's read(upToCount:) fills the requested buffer before returning.
+    /// A protocol pipe needs one read: its peer waits for our response before writing more.
+    private static func readChunk(handle: FileHandle, bufferSize: Int) throws -> Data? {
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        var count: DWORD = 0
+        guard ReadFile(handle._handle, &buffer, DWORD(buffer.count), &count, nil) else {
+            let code = GetLastError()
+            if code == ERROR_BROKEN_PIPE || code == ERROR_HANDLE_EOF { return nil }
+            throw NSError(domain: "NSWin32ErrorDomain", code: Int(code))
+        }
+        return count == 0 ? nil : Data(buffer.prefix(Int(count)))
+    }
+
+    /// Blocking I/O stays on a dedicated thread, outside the cooperative task pool.
     private static func startThreadedChunkReader(
         handle: FileHandle,
         bufferSize: Int,
         onChunk: @escaping @Sendable (Data) -> Void,
-        onEnd: @escaping @Sendable () -> Void
+        onEnd: @escaping @Sendable ((any Error)?) -> Void
     ) -> @Sendable () -> Void {
         let flag = StopFlag()
         let thread = Thread {
             while !flag.stopped {
                 do {
-                    guard let data = try handle.read(upToCount: bufferSize) else { break }
+                    guard let data = try readChunk(handle: handle, bufferSize: bufferSize) else { break }
                     if !data.isEmpty { onChunk(data) }
                 } catch {
-                    break // The handle was closed to stop this reader.
+                    onEnd(flag.stopped ? nil : error)
+                    return
                 }
             }
-            onEnd()
+            onEnd(nil)
         }
         thread.name = "lingxi.pipe.chunks"
         thread.start()
@@ -132,7 +136,7 @@ public enum AsyncLineReader: Sendable {
         handle: FileHandle,
         bufferSize: Int,
         onLine: @escaping @Sendable (String) -> Void,
-        onEnd: @escaping @Sendable () -> Void
+        onEnd: @escaping @Sendable ((any Error)?) -> Void
     ) -> @Sendable () -> Void {
         let flag = StopFlag()
         let thread = Thread {
@@ -142,10 +146,11 @@ public enum AsyncLineReader: Sendable {
             while !flag.stopped {
                 let chunk: Data
                 do {
-                    guard let data = try handle.read(upToCount: bufferSize), !data.isEmpty else { break }
+                    guard let data = try readChunk(handle: handle, bufferSize: bufferSize) else { break }
                     chunk = data
                 } catch {
-                    break // The handle was closed to stop this reader; there is nothing left to read.
+                    onEnd(flag.stopped ? nil : error)
+                    return
                 }
                 leftover.append(chunk)
                 while let newlineIndex = leftover.firstIndex(of: newline) {
@@ -161,7 +166,7 @@ public enum AsyncLineReader: Sendable {
                 let line = String(decoding: lineData, as: UTF8.self)
                 if !line.isEmpty { onLine(line) }
             }
-            onEnd()
+            onEnd(nil)
         }
         thread.name = "lingxi.stdio.lines"
         thread.start()
@@ -205,7 +210,7 @@ public enum AsyncLineReader: Sendable {
                     handle: handle,
                     bufferSize: bufferSize,
                     onChunk: { continuation.yield($0) },
-                    onEnd: { continuation.finish() }
+                    onEnd: { continuation.finish(throwing: $0) }
                 )
                 continuation.onTermination = { _ in stop() }
                 #else
@@ -313,7 +318,7 @@ public enum AsyncLineReader: Sendable {
                     handle: handle,
                     bufferSize: bufferSize,
                     onLine: { continuation.yield($0) },
-                    onEnd: { continuation.finish() }
+                    onEnd: { continuation.finish(throwing: $0) }
                 )
                 continuation.onTermination = { _ in stop() }
                 #else

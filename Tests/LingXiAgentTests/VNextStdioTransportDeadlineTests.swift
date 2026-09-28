@@ -33,8 +33,8 @@ struct VNextStdioTransportDeadlineTests {
         // end the transport still owns waits forever, which is the very shape this test is about. The
         // round trip through a real CoreHost is covered by the VNext stdio suites.
 
+        // Release the writer before cancelling its blocked reader.
+        await transport.disconnect()
         try? toCore.fileHandleForReading.close()
-        try? fromCore.fileHandleForReading.close()
-        try? fromCore.fileHandleForWriting.close()
     }
 }
