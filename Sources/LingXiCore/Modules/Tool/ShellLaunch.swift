@@ -26,6 +26,7 @@ enum ShellLaunch {
         // shape is not free either: the background-command cases that pass `echo 'A' && echo 'B'`
         // (no quotes at all, which cmd handles verbatim) went blind through the batch file. So take
         // the file only where the direct form is known to corrupt the command.
+        if !command.contains("\"") { return (cmd, ["/c", command]) }
         return (cmd, ["/c", try writeScript(command)])
         #else
         let sh = LingXiPlatform.process.resolveExecutable(named: "sh", customSearchPaths: ["/bin", "/usr/bin"]) ?? "/bin/sh"

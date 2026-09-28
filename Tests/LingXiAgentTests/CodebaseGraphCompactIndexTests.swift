@@ -101,10 +101,14 @@ struct CodebaseGraphCompactIndexTests {
 
     @Test("Disk cache V2 format roundtrip and legacy cache auto-invalidation")
     func testDiskCacheV2RoundtripAndInvalidation() async {
-        let engine = CodebaseGraphEngine()
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            try? FileManager.default.removeItem(at: cacheDir)
+        }
+        let engine = CodebaseGraphEngine(cachePolicy: .temporary(cacheDir))
 
         let file = tempDir.appendingPathComponent("Hello.swift")
         try? "func hello() {}".write(to: file, atomically: false, encoding: .utf8)
@@ -115,7 +119,7 @@ struct CodebaseGraphCompactIndexTests {
         #expect(FileManager.default.fileExists(atPath: cacheFile.path))
 
         // Create a new engine instance to test loading from V2 cache
-        let engine2 = CodebaseGraphEngine()
+        let engine2 = CodebaseGraphEngine(cachePolicy: .temporary(cacheDir))
         _ = await engine2.indexWorkspace(workspaceURL: tempDir, forceReindex: false)
         #expect(await engine2.isIndexed)
         let results = await engine2.search(query: "hello")
@@ -125,7 +129,7 @@ struct CodebaseGraphCompactIndexTests {
         let legacyData = "{\"nodes\":[],\"edges\":[]}".data(using: .utf8)!
         try? legacyData.write(to: cacheFile)
 
-        let engine3 = CodebaseGraphEngine()
+        let engine3 = CodebaseGraphEngine(cachePolicy: .temporary(cacheDir))
         // Should ignore corrupt/legacy cache and reindex freshly
         _ = await engine3.indexWorkspace(workspaceURL: tempDir, forceReindex: false)
         #expect(await engine3.isIndexed)

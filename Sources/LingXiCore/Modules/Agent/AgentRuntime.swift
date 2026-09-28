@@ -889,6 +889,7 @@ public actor AgentRuntime {
             logDiagnostic("finishRun persistence failed run=\(runID.rawValue): \(error)")
             return
         }
+        if let result, unclaimed { await deliverUnclaimedOutcome(result, run: run) }
         runs[runID] = run
         Task { await diagnostics?.record(kind: status == .completed ? .agentRun : .error, event: "agentRun.\(status.rawValue)", sessionID: run.sessionID, runID: run.runID, rootRunID: run.rootRunID, parentRunID: run.parentRunID, errorCode: error?.code.rawValue) }
         if status.isTerminal { activeSessions.remove(run.sessionID) }
@@ -899,7 +900,6 @@ public actor AgentRuntime {
             await scheduler.complete(runID)
             await eventSink(status == .completed ? .agentRunCompleted(run) : status == .cancelled ? .agentRunCancelled(run) : .agentRunFailed(run))
             await eventSink(.subagentResultAvailable(result))
-            if unclaimed { await deliverUnclaimedOutcome(result, run: run) }
             runOriginSessions.removeValue(forKey: runID)
         } else {
             await eventSink(.agentRunStatusChanged(run))

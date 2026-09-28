@@ -1051,7 +1051,15 @@ private func patchSnapshots(for plan: PatchPlan) throws -> [PatchSnapshot] {
 private func restorePatchSnapshots(_ snapshots: [PatchSnapshot]) throws {
     for snapshot in snapshots {
         if let data = snapshot.data {
-            try data.write(to: snapshot.url, options: .atomic)
+            do {
+                try data.write(to: snapshot.url, options: .atomic)
+            } catch {
+                #if os(Windows)
+                try data.write(to: snapshot.url)
+                #else
+                throw error
+                #endif
+            }
         } else if FileManager.default.fileExists(atPath: snapshot.url.path) {
             try FileManager.default.removeItem(at: snapshot.url)
         }

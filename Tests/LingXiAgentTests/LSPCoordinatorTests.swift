@@ -23,29 +23,9 @@ struct LSPCoordinatorTests {
         let tsConfig = configs.first { $0.languageID == "typescript" }
         #expect(tsConfig?.extensions.contains("ts") == true)
         #expect(tsConfig?.extensions.contains("tsx") == true)
-    }
-
-    @Test func lspCoordinatorMapsFileExtensionsToLanguages() async {
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let coordinator = LSPCoordinator(workspaceURL: tmpDir)
-
-        // swift
-        let swiftURL = URL(fileURLWithPath: "/path/to/MyFile.swift")
-        // python
-        let pyURL = URL(fileURLWithPath: "/path/to/script.py")
-        // rust
-        let rsURL = URL(fileURLWithPath: "/path/to/main.rs")
-
-        _ = await coordinator.getOrStartClient(for: swiftURL)
-        _ = await coordinator.getOrStartClient(for: pyURL)
-        _ = await coordinator.getOrStartClient(for: rsURL)
-
-        // 验证生命周期查询 API 正常响应
-        let statuses = await coordinator.statusAll()
-        #expect(statuses.count >= 0)
-
-        // 关闭所有
-        await coordinator.shutdownAll()
+        #expect(configs.first { $0.extensions.contains("swift") }?.languageID == "swift")
+        #expect(configs.first { $0.extensions.contains("py") }?.languageID == "python")
+        #expect(configs.first { $0.extensions.contains("rs") }?.languageID == "rust")
     }
 
     @Test func codeIntelligenceSupportsHoverAndCompletionWithFallback() async throws {
@@ -65,7 +45,14 @@ struct LSPCoordinatorTests {
         let workspace = try WorkspaceRoot(path: tmpDir.path)
         let scanner = ProjectScanner(root: tmpDir, minimumPageBytes: 32, maximumPageBytes: 64)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768)
-        let intelligence = CodeIntelligence(workspace: workspace, scanner: scanner, pager: pager)
+        let coordinator = LSPCoordinator(workspaceURL: tmpDir)
+        await coordinator.registerLanguage(LSPLanguageConfig(
+            languageID: "swift", extensions: ["swift"], binaryNames: []
+        ))
+        let intelligence = CodeIntelligence(
+            workspace: workspace, scanner: scanner, pager: pager,
+            lsp: LSPClient(transport: nil), coordinator: coordinator
+        )
 
         // 1. 验证 Hover 降级响应
         let hover = await intelligence.hover(path: "main.swift", line: 2, character: 6)

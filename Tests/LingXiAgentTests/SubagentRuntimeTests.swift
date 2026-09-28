@@ -42,6 +42,7 @@ private actor ChildQuestionProvider: ModelProvider {
     }
 }
 
+@Suite(.serialized)
 struct SubagentRuntimeTests {
     @Test func spawnCreatesIndependentChildSessionAndRunResult() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
