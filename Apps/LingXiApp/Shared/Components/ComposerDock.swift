@@ -319,7 +319,8 @@ struct ComposerSurface: View {
             MacNativeTextView(text: $model.text,
                               placeholder: "给 Agent 发消息…",
                               submitRequiresCommand: sendKey == .commandReturn,
-                              onSubmit: submit)
+                              onSubmit: submit,
+                              wantsInitialFocus: true)
                 .frame(height: editorHeight)
                 .accessibilityLabel("消息输入框")
                 .help("@ 引用文件，/ 命令与技能，# 引用符号")

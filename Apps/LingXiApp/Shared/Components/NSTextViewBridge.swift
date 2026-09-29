@@ -12,6 +12,9 @@ public struct MacNativeTextView: NSViewRepresentable {
     /// When true, plain Return inserts a newline and only ⌘Return submits.
     public var submitRequiresCommand: Bool
     public var onSubmit: (() -> Void)?
+    /// Claims keyboard focus the first time the view joins a window, so the app
+    /// opens ready to type instead of landing in the sidebar search field.
+    public var wantsInitialFocus: Bool
 
     public init(
         text: Binding<String>,
@@ -19,7 +22,8 @@ public struct MacNativeTextView: NSViewRepresentable {
         isMonospace: Bool = false,
         placeholder: String? = nil,
         submitRequiresCommand: Bool = false,
-        onSubmit: (() -> Void)? = nil
+        onSubmit: (() -> Void)? = nil,
+        wantsInitialFocus: Bool = false
     ) {
         self._text = text
         self.isEditable = isEditable
@@ -27,6 +31,7 @@ public struct MacNativeTextView: NSViewRepresentable {
         self.placeholder = placeholder
         self.submitRequiresCommand = submitRequiresCommand
         self.onSubmit = onSubmit
+        self.wantsInitialFocus = wantsInitialFocus
     }
 
     /// Line height of the body font, used by callers to size the view per line.
@@ -93,6 +98,7 @@ public struct MacNativeTextView: NSViewRepresentable {
         textView.onSubmit = onSubmit
         textView.submitRequiresCommand = submitRequiresCommand
         context.coordinator.textView = textView
+        context.coordinator.claimsInitialFocus = wantsInitialFocus
         scrollView.documentView = textView
 
         return scrollView
@@ -108,11 +114,17 @@ public struct MacNativeTextView: NSViewRepresentable {
         textView.submitRequiresCommand = submitRequiresCommand
         textView.placeholderString = placeholder
         textView.needsDisplay = true
+
+        if context.coordinator.claimsInitialFocus, let window = textView.window {
+            context.coordinator.claimsInitialFocus = false
+            window.makeFirstResponder(textView)
+        }
     }
 
     public final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MacNativeTextView
         weak var textView: KeyInterceptingTextView?
+        var claimsInitialFocus = false
 
         init(_ parent: MacNativeTextView) {
             self.parent = parent
