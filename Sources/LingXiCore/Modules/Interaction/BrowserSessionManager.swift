@@ -56,8 +56,21 @@ public actor BrowserSessionManager {
         }
     }
 
-    private func ensureClient() async throws -> BrowserHostClient {
-        if let client = hostClient {
+    /// Whether the browser host this manager drives could start here. Checks
+    /// the resolved paths only; it never launches anything.
+    public func hostStatus() -> (ready: Bool, detail: String) {
+        guard mode == .real else { return (false, "当前指向 mock 宿主，不是真实浏览器") }
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            return (false, "未找到浏览器宿主：\(scriptPath)")
+        }
+        let node = BrowserHostClient.resolveNodeExecutable()
+        guard node.extraArgs.isEmpty else {
+            return (false, "未找到 Node 运行时（可用 LINGXI_NODE_PATH 指定）")
+        }
+        return (true, "\(node.executable) · \(scriptPath)")
+    }
+
+    private func ensureClient() async throws -> BrowserHostClient {        if let client = hostClient {
             return client
         }
         let client = BrowserHostClient(scriptPath: scriptPath, mode: mode)

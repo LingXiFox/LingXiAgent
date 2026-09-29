@@ -158,7 +158,7 @@ struct SettingsDetailView: View {
         case .context: ContextSettingsPage(store: store)
         case .execution: ExecutionSettingsPage(store: store)
         case .codeIntelligence: CodeIntelligenceSettingsPage(store: store)
-        case .computerUse: ComputerUseSettingsPage()
+        case .computerUse: ComputerUseSettingsPage(store: store)
         case .mcp: ExtensionsSettingsPage(store: store, kinds: [.mcp])
         case .skills: ExtensionsSettingsPage(store: store, kinds: [.skill])
         case .plugins: ExtensionsSettingsPage(store: store, kinds: [.plugin, .command])

@@ -779,6 +779,11 @@ public protocol LingXiProtocolService: Sendable {
     func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary>
     func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]>
 
+    /// What Core really knows about named tools: whether they are registered,
+    /// whether the model must load them first, and whether their backend is
+    /// reachable here.
+    func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]>
+
     // MARK: - 10b. Agent Browser Session (read-only projection)
     func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]>
     func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture>
@@ -953,6 +958,10 @@ public extension LingXiProtocolService {
 
     func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> {
         throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供语言服务运行状态")
+    }
+
+    func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供工具运行状态")
     }
 
     func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {

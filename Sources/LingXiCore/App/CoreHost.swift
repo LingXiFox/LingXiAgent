@@ -4615,6 +4615,50 @@ extension CoreHost {
         return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: payload)
     }
 
+    /// What the settings window may claim about a named tool: whether it is
+    /// registered, whether the model has to load it first, how the permission
+    /// policy treats it, and whether the thing it drives is reachable here.
+    public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
+        let registry = toolRuntime.registry
+        let configuration = await permissionEngine.currentConfiguration()
+        var payload: [ToolStatusEntry] = []
+        for rawID in envelope.payload.toolIDs {
+            let id = ToolID(rawID)
+            guard let definition = registry.tool(for: id)?.definition else {
+                payload.append(ToolStatusEntry(toolID: rawID, exposure: .unavailable, backendReady: false))
+                continue
+            }
+            let request = PermissionRequest(
+                permissionID: PermissionID("status-\(UUID().uuidString)"),
+                sessionID: SessionID("status"),
+                toolCallID: ToolCallID("status"),
+                toolID: id,
+                capabilities: definition.capability.kinds,
+                resource: "tool://\(rawID)",
+                description: definition.description)
+            let backend = await backendStatus(for: rawID)
+            payload.append(ToolStatusEntry(
+                toolID: rawID,
+                exposure: ToolRuntime.coreToolIDs.contains(id) ? .core : .onDemand,
+                permission: await permissionEngine.preview(request, configuration: configuration),
+                backendReady: backend.ready,
+                backendDetail: backend.detail))
+        }
+        return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: payload)
+    }
+
+    /// The out-of-process thing a tool drives, when there is one. A tool that is
+    /// fully in-process has no backend to report.
+    private func backendStatus(for toolID: String) async -> (ready: Bool, detail: String?) {
+        switch toolID {
+        case "browser_navigate", "browser_act":
+            let host = await browserSessionManager.hostStatus()
+            return (host.ready, host.detail)
+        default:
+            return (true, nil)
+        }
+    }
+
     /// The Agent's live browser sessions, as the host last reported them.
     ///
     /// Read-only by design: the page itself belongs to the Agent's browser host,

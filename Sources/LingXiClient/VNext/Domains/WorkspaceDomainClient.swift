@@ -34,6 +34,13 @@ public struct WorkspaceDomainClient: Sendable {
         return resp.payload
     }
 
+    /// What Core really knows about the named tools.
+    public func toolStatus(_ toolIDs: [String]) async throws -> [ToolStatusEntry] {
+        let req = GetToolStatusRequest(toolIDs: toolIDs)
+        let resp = try await transport.getToolStatus(envelope: QueryEnvelope(payload: req))
+        return resp.payload
+    }
+
     // MARK: - Worktree Operations (G10)
 
     public func createWorktree(name: String, baseRef: String? = nil) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {

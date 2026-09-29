@@ -451,9 +451,11 @@ import CoreGraphics
 // MARK: - Computer use & browser
 
 /// Real capability state only: system permissions this app holds (Core runs as
-/// its child, so macOS attributes them to LingXi) and the frozen status Core
-/// declares for its desktop / browser tools. No toggles for disabled capabilities.
+/// its child, so macOS attributes them to LingXi) and what Core itself reports
+/// about its desktop and browser tools. No toggles, no verdicts of this window's
+/// own.
 struct ComputerUseSettingsPage: View {
+    @ObservedObject var store: SettingsStore
     @State private var accessibility = AXIsProcessTrusted()
     @State private var screenRecording = CGPreflightScreenCaptureAccess()
 
@@ -476,24 +478,72 @@ struct ComputerUseSettingsPage: View {
             }
             .settingsAnchor("computer.permissions")
 
-            // Core: BuiltinTools removes computer_batch / browser_* from the default tool list
-            // ("frozen and disabled per owner directive").
+            // Core answers what these tools are; the window only renders it.
             LXSettingsCard(title: LXSettingsSectionHeader("Computer Use")) {
-                LabeledContent("状态") {
-                    LXStatusText("已冻结", systemImage: "snowflake", tone: .neutral)
-                }
-                .lxSettingsRow()
-                PlaceholderLine("computer_batch 已从 Core 默认工具列表移除。解冻并提供允许应用与确认策略契约前，不提供开关。")
+                toolRows(["computer_batch"])
             }
 
             LXSettingsCard(title: LXSettingsSectionHeader("浏览器")) {
-                LabeledContent("状态") {
-                    LXStatusText("已冻结", systemImage: "snowflake", tone: .neutral)
-                }
-                .lxSettingsRow()
-                PlaceholderLine("Core 已注册 browser_navigate / browser_act；右侧浏览器面板目前使用独立会话，尚未共享 Agent 的页面、Cookie 与下载。")
+                toolRows(["browser_navigate", "browser_act"])
             }
         }
+    }
+
+    @ViewBuilder private func toolRows(_ ids: [String]) -> some View {
+        ForEach(ids, id: \.self) { id in
+            if let entry = store.toolStatus?[id] {
+                LabeledContent(id) {
+                    LXStatusText(Self.exposureText(entry), systemImage: Self.exposureImage(entry),
+                                 tone: Self.exposureTone(entry))
+                }
+                .lxSettingsRow()
+                let detail = Self.detailText(entry)
+                if !detail.isEmpty { PlaceholderLine(detail) }
+            } else {
+                LabeledContent(id) {
+                    LXStatusText(store.toolStatus == nil ? "尚未从 Core 读取" : "Core 未报告该工具",
+                                 systemImage: "questionmark.circle", tone: .neutral)
+                }
+                .lxSettingsRow()
+            }
+        }
+    }
+
+    private static func exposureText(_ entry: ToolStatusEntry) -> String {
+        switch entry.exposure {
+        case .core: return "默认可用"
+        case .onDemand: return "按需加载"
+        case .unavailable: return "未注册"
+        }
+    }
+
+    private static func exposureImage(_ entry: ToolStatusEntry) -> String {
+        switch entry.exposure {
+        case .core: return "checkmark.circle"
+        case .onDemand: return "circle.dashed"
+        case .unavailable: return "xmark.circle"
+        }
+    }
+
+    private static func exposureTone(_ entry: ToolStatusEntry) -> LXStatusText.Tone {
+        switch entry.exposure {
+        case .core: return .success
+        case .onDemand: return .neutral
+        case .unavailable: return .warning
+        }
+    }
+
+    private static func detailText(_ entry: ToolStatusEntry) -> String {
+        var parts: [String] = []
+        if entry.exposure == .onDemand { parts.append("不在默认工具列表，模型先调用 load_tool 载入") }
+        if let permission = entry.permission {
+            parts.append(permission == .allow ? "权限：自动允许"
+                    : permission == .ask ? "权限：每次询问" : "权限：拒绝")
+        }
+        if let detail = entry.backendDetail {
+            parts.append(entry.backendReady ? "后端：\(detail)" : "后端不可用：\(detail)")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

@@ -239,6 +239,7 @@ public struct VNextStdioCoreServer: Sendable {
                 case "workspace.set": try await reply(request, try await service.setWorkspace(envelope: commandEnvelope(request, as: SetWorkspaceRequest.self)), writer)
                 case "workspace.diff": try await reply(request, try await service.getWorkspaceDiffSummary(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
                 case "workspace.languageServices": try await reply(request, try await service.getLanguageServiceStatuses(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
+                case "workspace.toolStatus": try await reply(request, try await service.getToolStatus(envelope: queryEnvelope(request, as: GetToolStatusRequest.self)), writer)
                 case "browser.sessions": try await reply(request, try await service.getBrowserSessions(envelope: queryEnvelope(request, as: VoidResult.self)), writer)
                 case "browser.capture": try await reply(request, try await service.getBrowserCapture(envelope: queryEnvelope(request, as: GetBrowserCaptureRequest.self)), writer)
                 case "terminal.list": try await reply(request, try await service.listTerminalSessions(envelope: queryEnvelope(request, as: VoidResult.self)), writer)

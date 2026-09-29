@@ -307,6 +307,7 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope) }
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> { try await response("workspace.diff", envelope) }
     public func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> { try await response("workspace.languageServices", envelope) }
+    public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> { try await response("workspace.toolStatus", envelope) }
     public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> { try await response("browser.sessions", envelope) }
     public func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> { try await response("browser.capture", envelope) }
     public func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]> { try await response("terminal.list", envelope) }

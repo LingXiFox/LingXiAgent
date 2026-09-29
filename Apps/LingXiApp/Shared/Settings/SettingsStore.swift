@@ -58,6 +58,9 @@ public final class SettingsStore: ObservableObject {
     @Published private(set) var workspace: WorkspaceSummary?
     /// Language servers Core reports as running; nil until the first refresh.
     @Published private(set) var languageServices: [LanguageServiceStatus]?
+    /// Core's own answer about the tools the Computer Use page displays.
+    static let reportedToolIDs = ["browser_navigate", "browser_act", "computer_batch"]
+    @Published private(set) var toolStatus: [String: ToolStatusEntry]?
     @Published private(set) var worktrees: [WorkspaceWorktreeInfo] = []
     /// `mcp.json` servers as stored (the form's source of truth).
     @Published private(set) var mcpServers: [MCPServerConfigurationDetail] = []
@@ -208,6 +211,7 @@ public final class SettingsStore: ObservableObject {
         async let policy = try? client.context.getPolicy()
         async let workspace = try? client.workspace.summary()
         async let languageServices = try? client.workspace.languageServices()
+        async let toolStatus = try? client.workspace.toolStatus(Self.reportedToolIDs)
         async let worktrees = try? client.workspace.listWorktrees()
         async let tasks = try? client.diagnostics.getBackgroundTasks()
         async let metrics = try? client.diagnostics.getProviderMetrics()
@@ -224,6 +228,7 @@ public final class SettingsStore: ObservableObject {
         self.contextPolicy = await policy
         self.workspace = await workspace
         self.languageServices = await languageServices
+        self.toolStatus = (await toolStatus).map { Dictionary(uniqueKeysWithValues: $0.map { ($0.toolID, $0) }) }
         self.worktrees = await worktrees ?? []
         self.backgroundTasks = await tasks ?? []
         self.providerMetrics = await metrics

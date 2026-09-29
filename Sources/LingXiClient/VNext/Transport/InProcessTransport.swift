@@ -395,6 +395,10 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.getLanguageServiceStatuses(envelope: envelope)
     }
 
+    public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
+        try await service.getToolStatus(envelope: envelope)
+    }
+
     public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {
         try await service.getBrowserSessions(envelope: envelope)
     }

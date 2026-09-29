@@ -917,6 +917,23 @@ struct ProtocolVNextFrozenContractTests {
         // Read-only projections the settings window and tool panes consume.
         let langRes = try await service.getLanguageServiceStatuses(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(langRes.payload.allSatisfy { !$0.language.isEmpty })
+        // Tool status is Core's own answer about its registry, policy and backends.
+        let toolRes = try await service.getToolStatus(envelope: QueryEnvelope(payload: GetToolStatusRequest(
+            toolIDs: ["shell", "browser_navigate", "not-a-tool"])))
+        #expect(toolRes.payload.count == 3)
+        #expect(toolRes.payload.first { $0.toolID == "shell" }?.exposure == .core)
+        let browserTool = try #require(toolRes.payload.first { $0.toolID == "browser_navigate" })
+        #expect(browserTool.exposure == .onDemand)
+        #expect(browserTool.permission != nil)
+        // The backend claim has to match a host that is actually reachable here.
+        if browserTool.backendReady {
+            #expect(browserTool.backendDetail?.contains("browser-host") == true)
+        } else {
+            #expect(browserTool.backendDetail?.isEmpty == false)
+        }
+        let missing = try #require(toolRes.payload.first { $0.toolID == "not-a-tool" })
+        #expect(missing.exposure == .unavailable)
+        #expect(missing.permission == nil)
         let browserRes = try await service.getBrowserSessions(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(browserRes.payload.allSatisfy { !$0.sessionID.isEmpty })
         let authRes = try await service.listProviderAuthProducts(envelope: QueryEnvelope(payload: VoidResult()))
