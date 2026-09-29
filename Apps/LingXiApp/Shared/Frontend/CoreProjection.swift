@@ -97,7 +97,8 @@ enum CoreProjection {
         case .runTerminal(let terminal):
             return .terminal(title: terminalTitle(terminal.terminalReason),
                              isSuccess: terminal.terminalReason == .completed,
-                             message: runSummary(terminal.runID, in: session))
+                             message: runSummary(terminal.runID, in: session),
+                             isCancelled: terminal.terminalReason == .userCancelled)
         case .error(let error):
             return .notice(NoticePresentation(level: .error, title: errorTitle(error.code), message: error.message))
         }
@@ -248,13 +249,21 @@ enum CoreProjection {
 
     static func workspace(_ state: ApplicationState, root: URL?) -> WorkspaceSummaryPresentation {
         let path = state.currentWorkspace?.rootPath ?? root?.path
+        let branch = path.flatMap { gitBranch(at: URL(fileURLWithPath: $0)) }
+        // A LingXi-managed isolated worktree: linked checkout on a `lingxi/` branch.
+        let isManagedWorktree = state.currentWorkspace?.isLinkedWorktree == true
+            && branch?.hasPrefix(managedWorktreeBranchPrefix) == true
         return WorkspaceSummaryPresentation(
             name: path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "未打开工作区",
             rootBadge: "local",
             isRemote: false,
-            gitBranch: path.flatMap { gitBranch(at: URL(fileURLWithPath: $0)) },
+            gitBranch: branch,
+            worktreeBranch: isManagedWorktree ? branch : nil,
             indexingState: state.currentWorkspace?.indexingState ?? "ready")
     }
+
+    /// Branch prefix Core gives the worktrees it manages.
+    static let managedWorktreeBranchPrefix = "lingxi/"
 
     /// Reads `.git/HEAD` directly (worktrees point `.git` at their gitdir) — no process spawn.
     static func gitBranch(at root: URL) -> String? {

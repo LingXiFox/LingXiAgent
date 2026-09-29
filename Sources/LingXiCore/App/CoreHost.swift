@@ -214,7 +214,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let providerActivityRegistry: ProviderActivityRegistry
     public let todoStore: TodoStore
     private var ecoreMutationSubscriptionToken: ECoreObjectStore.MutationSubscriptionToken?
-    private var currentRevision: UInt64 = 1
+    private(set) var currentRevision: UInt64 = 1
     private var contextStateRevisions: [SessionID: UInt64] = [:]
     public let eventLogStorageDirectory: URL?
     public private(set) var activeFailpoint: CommitFailpoint?
@@ -1397,12 +1397,24 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
     }
 
-    private func requireConfigurationStore() throws -> ConfigurationStore {
+    /// Re-resolves the running model after its provider's configuration was
+    /// edited, so a new Base URL, key or header applies to the next request.
+    func reassembleCurrentModel(ifProvider providerID: String) async {
+        guard let current = currentAssembly, current.endpoint.providerID == providerID,
+              let agent = try? requireAgent() else { return }
+        let value = "\(providerID)/\(current.modelID.rawValue)"
+        guard let selection = try? await modelSelection(for: value),
+              let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: value) else { return }
+        guard (try? await agent.selectModel(selection, assembly: assembly)) != nil else { return }
+        currentAssembly = assembly
+    }
+
+    func requireConfigurationStore() throws -> ConfigurationStore {
         guard let configurationStore else { throw CoreError(code: .persistence, message: "Provider 配置存储未连接") }
         return configurationStore
     }
 
-    private func requireCredentialStore() throws -> any CredentialStore {
+    func requireCredentialStore() throws -> any CredentialStore {
         guard let credentialStore else { throw CoreError(code: .persistence, message: "CredentialStore 未连接") }
         return credentialStore
     }
@@ -2064,7 +2076,7 @@ extension CoreHost {
         }
     }
 
-    private func nextRevision() -> UInt64 {
+    func nextRevision() -> UInt64 {
         currentRevision += 1
         return currentRevision
     }
@@ -3928,11 +3940,13 @@ extension CoreHost {
         if let contextWindow = try await modelContextWindow(for: envelope.payload.model) {
             setSelectedModelContextWindow(contextWindow)
         }
-        if let store = configurationStore {
-            if var config = try? await store.load() {
-                config.providers.model = envelope.payload.model
-                try? await store.save(config)
-            }
+        if let store = configurationStore, let config = try? await store.load() {
+            // Rebuilt, not mutated: ProvidersConfiguration encodes from its
+            // account/profile form, so `config.providers.model = …` never landed.
+            try? await store.saveProviders(ProvidersConfiguration(
+                schema: config.providers.schema, version: config.providers.version,
+                model: "\(selection.providerID)/\(selection.modelID)",
+                providers: config.providers.providers))
         }
         let watermark = await runtimeEventLog.currentWatermark()
         let result = ModelSelectionInfo(modelID: envelope.payload.model, providerID: selection.providerID)

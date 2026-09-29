@@ -29,6 +29,22 @@ cp -R "${BIN_DIR}/LingXiAgent_LingXiCore.bundle" "${APP_BUNDLE}/Contents/Resourc
 if [ -d "${BIN_DIR}/LingXiAgent_LingXiWebUI.bundle" ]; then
     cp -R "${BIN_DIR}/LingXiAgent_LingXiWebUI.bundle" "${APP_BUNDLE}/Contents/Resources/"
 fi
+# GUI resources (app icon previews for the empty workspace and About).
+cp -R "${BIN_DIR}/LingXiAgent_LingXiFrontendKit.bundle" "${APP_BUNDLE}/Contents/Resources/"
+
+# Dock icon from the Icon Composer export (Default appearance). The .icon source
+# itself needs Xcode 26's actool; the .icns keeps SwiftPM builds self-contained.
+ICON_SRC="${PACKAGE_ROOT}/LingXiAgent Icon/Icon-iOS-Default-1024@1x.png"
+if [ -f "${ICON_SRC}" ]; then
+    ICONSET="$(mktemp -d)/AppIcon.iconset"
+    mkdir -p "${ICONSET}"
+    for size in 16 32 128 256 512; do
+        sips -z "${size}" "${size}" "${ICON_SRC}" --out "${ICONSET}/icon_${size}x${size}.png" >/dev/null
+        sips -z "$((size * 2))" "$((size * 2))" "${ICON_SRC}" --out "${ICONSET}/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns "${ICONSET}" -o "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+    rm -R "$(dirname "${ICONSET}")"
+fi
 
 cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,6 +54,9 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>              <string>LingXiMacApp</string>
   <key>CFBundleIdentifier</key>              <string>com.lingxi.LingXiApp</string>
   <key>CFBundleName</key>                    <string>LingXi</string>
+  <key>CFBundleIconFile</key>                <string>AppIcon</string>
+  <key>CFBundleDevelopmentRegion</key>       <string>zh_CN</string>
+  <key>CFBundleLocalizations</key>           <array><string>zh-Hans</string></array>
   <key>CFBundleDisplayName</key>             <string>LingXi</string>
   <key>CFBundlePackageType</key>             <string>APPL</string>
   <key>CFBundleShortVersionString</key>      <string>1.0.0</string>

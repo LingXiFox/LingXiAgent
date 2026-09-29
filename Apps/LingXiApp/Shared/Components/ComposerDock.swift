@@ -2,6 +2,7 @@
 import SwiftUI
 import AppKit
 import LingXiProtocol
+import LingXiApplication
 
 // MARK: - Dock
 
@@ -113,6 +114,13 @@ struct ComposerSurface: View {
     @State private var newBranchDraft = ""
     @State private var isCreatingBranch = false
     @State private var branchError: String?
+    @State private var composerWidth: CGFloat = 0
+    @State private var confirmWorktree: WorktreeConfirmation?
+
+    private enum WorktreeConfirmation: Identifiable {
+        case apply, discard
+        var id: Self { self }
+    }
     @AppStorage(LXPreferenceKey.sendKey) private var sendKey = SendKeyPreference.returnKey
 
     var body: some View {
@@ -157,31 +165,70 @@ struct ComposerSurface: View {
             Text(branchError ?? "")
         }
         .task(id: runtime.workspaceURL) { await loadBranches() }
+        .confirmationDialog(confirmWorktree == .apply ? "把 Worktree 的改动应用到主工作区？" : "丢弃此 Worktree？",
+                            isPresented: Binding(get: { confirmWorktree != nil }, set: { if !$0 { confirmWorktree = nil } }),
+                            presenting: confirmWorktree) { choice in
+            if choice == .apply {
+                Button("应用") { Task { await runtime.applyCurrentWorktree() } }
+            } else {
+                Button("丢弃", role: .destructive) { Task { await runtime.discardCurrentWorktree() } }
+            }
+            Button("取消", role: .cancel) {}
+        } message: { choice in
+            Text(choice == .apply
+                 ? "改动会以「已暂存、未提交」的形式落到主工作区，由你审阅后提交；随后移除此 Worktree 并回到主工作区。"
+                 : "Worktree 目录与分支 \(workspace.worktreeBranch ?? "") 会被删除，其中未应用的改动无法恢复。")
+        }
+        .alert("Worktree", isPresented: Binding(get: { runtime.worktreeError != nil },
+                                                set: { if !$0 { runtime.worktreeError = nil } })) {
+            Button("好") { runtime.worktreeError = nil }
+        } message: {
+            Text(runtime.worktreeError ?? "")
+        }
     }
 
     // MARK: Layer 1 — where
 
+    /// Always present, in every state: Local · workspace · branch · execution
+    /// environment. 24pt borderless menus with a 10pt caret; while a run is in
+    /// flight they keep their value but lock (no caret, not clickable).
     private var contextStrip: some View {
-        HStack(spacing: LingXiMetrics.Space.md) {
-            stripItem(workspace.isRemote ? "network" : "desktopcomputer", workspace.isRemote ? "远程" : "本地")
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            // Core only runs locally today: a plain label, not a menu.
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Image(systemName: "desktopcomputer").font(.system(size: LXIcon.strip))
+                Text("Local")
+            }
+            .padding(.horizontal, 6)
+            .frame(height: 24)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("运行位置 本地")
+
             Menu {
-                ForEach(RecentWorkspaces.all.filter { FileManager.default.fileExists(atPath: $0.path) },
-                        id: \.path) { url in
-                    Button(url.lastPathComponent) { Task { await runtime.openWorkspace(url) } }
+                Section("最近的工作区") {
+                    ForEach(RecentWorkspaces.all.filter { FileManager.default.fileExists(atPath: $0.path) },
+                            id: \.path) { url in
+                        Button(url.lastPathComponent) { Task { await runtime.openWorkspace(url) } }
+                    }
                 }
                 Divider()
                 Button("打开工作区…") { WorkspacePicker.choose(runtime) }
+                    .keyboardShortcut("o", modifiers: .command)
             } label: {
-                stripMenuLabel("folder", runtime.workspaceURL?.lastPathComponent ?? workspace.name)
+                StripMenuLabel(symbol: "folder",
+                               text: runtime.workspaceURL?.lastPathComponent ?? workspace.name,
+                               locked: isGenerating)
             }
-            .menuStyle(.borderlessButton)
-            .tint(.primary)
-            .menuIndicator(isGenerating ? .hidden : .visible)
-            .disabled(isGenerating)
+            .stripMenu(locked: isGenerating)
+            .help(runtime.workspaceURL?.path ?? workspace.name)
+            .accessibilityLabel("工作区 \(runtime.workspaceURL?.lastPathComponent ?? workspace.name)")
+
             if let branch = workspace.gitBranch ?? runtime.inspectorModel.live?.branch, !branch.isEmpty {
                 Menu {
-                    ForEach(localBranches, id: \.self) { name in
-                        Button(name) { changeBranch(name) }
+                    Section("本地分支") {
+                        ForEach(localBranches, id: \.self) { name in
+                            Toggle(name, isOn: Binding(get: { name == branch }, set: { _ in changeBranch(name) }))
+                        }
                     }
                     Divider()
                     Button("新建分支…") {
@@ -189,56 +236,51 @@ struct ComposerSurface: View {
                         isCreatingBranch = true
                     }
                 } label: {
-                    stripMenuLabel("arrow.triangle.branch", branch)
+                    StripMenuLabel(symbol: "arrow.triangle.branch", text: branch, locked: isGenerating)
                 }
-                .menuStyle(.borderlessButton)
-                .tint(.primary)
-                .menuIndicator(isGenerating ? .hidden : .visible)
-                .disabled(isGenerating)
+                .stripMenu(locked: isGenerating)
+                .accessibilityLabel("分支 \(branch)")
             }
+
             Menu {
-                Button("当前目录 · 改动直接写入工作区") {}
-                    .disabled(true)
-                Button("独立 Worktree · 当前 Core 尚不支持") {}
-                    .disabled(true)
+                let inWorktree = workspace.worktreeBranch != nil
+                Section("执行环境") {
+                    Toggle(isOn: Binding(get: { !inWorktree },
+                                         set: { if $0 { Task { await runtime.returnToMainWorkspace() } } })) {
+                        Text("当前目录")
+                        Text("改动直接写入工作区，放弃时回滚到 Core 的备份")
+                    }
+                    Toggle(isOn: Binding(get: { inWorktree },
+                                         set: { if $0 { Task { await runtime.enterNewWorktree() } } })) {
+                        Text("独立 Worktree")
+                        Text("改动在隔离的 Worktree 中进行，接受后才落到工作区")
+                    }
+                    .disabled(workspace.gitBranch == nil)
+                }
+                if inWorktree {
+                    Divider()
+                    Button("应用到主工作区…") { confirmWorktree = .apply }
+                    Button("丢弃此 Worktree…", role: .destructive) { confirmWorktree = .discard }
+                }
             } label: {
-                stripMenuLabel("square.stack.3d.up",
-                               workspace.worktreeBranch == nil ? "当前目录" : "独立 Worktree")
+                StripMenuLabel(symbol: "square.stack.3d.up",
+                               text: workspace.worktreeBranch == nil ? "当前目录" : "独立 Worktree",
+                               locked: isGenerating)
             }
-            .menuStyle(.borderlessButton)
-            .tint(.primary)
-            .menuIndicator(isGenerating ? .hidden : .visible)
-            .disabled(isGenerating)
+            .stripMenu(locked: isGenerating)
+            .accessibilityLabel("执行环境")
+
             Spacer(minLength: 0)
             if isGenerating { Text("运行中不可切换") }
         }
         .font(LXType.meta)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, LingXiMetrics.Space.lg)
-        .padding(.vertical, LingXiMetrics.Space.sm)
+        .padding(.horizontal, LingXiMetrics.Space.sm)
+        .padding(.vertical, 6)
         .overlay(alignment: .bottom) { LXHairline() }
-        .help(runtime.workspaceURL?.path ?? workspace.name)
     }
 
     private var workspace: WorkspaceSummaryPresentation { runtime.sidebarModel.workspace }
-
-    private func stripItem(_ symbol: String, _ text: String) -> some View {
-        HStack(spacing: LingXiMetrics.Space.xs) {
-            Image(systemName: symbol).font(.system(size: LXIcon.strip))
-            Text(text).lineLimit(1).truncationMode(.middle)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private func stripMenuLabel(_ symbol: String, _ text: String) -> some View {
-        HStack(spacing: LingXiMetrics.Space.xs) {
-            Image(systemName: symbol).font(.system(size: LXIcon.strip))
-            Text(text).lineLimit(1).truncationMode(.middle)
-        }
-        .font(LXType.meta)
-        .foregroundStyle(.secondary)
-        .frame(height: LXControl.small)
-    }
 
     private func loadBranches() async {
         guard let workspace = runtime.workspaceURL else { localBranches = []; return }
@@ -301,11 +343,18 @@ struct ComposerSurface: View {
 
     // MARK: Layer 3 — how
 
+    /// Left group collapses to 28×28 icon chips only when the composer itself is
+    /// narrower than 560pt (stage squeezed by a tool panel). Width, not content,
+    /// decides: a longer label such as 「YOLO 已开启」 must never flip the mode.
     private var actionBar: some View {
-        ViewThatFits(in: .horizontal) {
-            actionRow(compact: false)
-            actionRow(compact: true)
-        }
+        actionRow(compact: composerWidth > 0 && composerWidth < LingXiMetrics.Column.composerCompact)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { composerWidth = geometry.size.width }
+                        .onChange(of: geometry.size.width) { _, width in composerWidth = width }
+                }
+            }
     }
 
     private func actionRow(compact: Bool) -> some View {
@@ -403,17 +452,20 @@ struct ComposerSurface: View {
             Section(provider) {
                 ForEach(groups[provider] ?? [], id: \.id) { info in
                     Toggle(info.displayName, isOn: Binding(
-                        get: { model.selectedModelID == info.id || model.selectedModelID == info.modelID },
-                        set: { if $0 { model.selectedModelID = info.modelID } }))
+                        get: { model.selectedModelID.map(info.matches(selection:)) ?? false },
+                        set: { if $0 { model.selectedModelID = info.qualifiedID } }))
                 }
             }
         }
     }
 
+    /// Display name, clipped so a long model name never pushes the send button
+    /// out of the row.
     private var modelLabel: String {
         guard let id = model.selectedModelID, !id.isEmpty else { return "选择模型" }
-        let name = model.models.first { $0.id == id || $0.modelID == id }?.displayName ?? id
-        return name.isEmpty ? id : name
+        let name = model.models.first { $0.matches(selection: id) }?.displayName ?? id
+        let label = name.isEmpty ? id : name
+        return label.count > 20 ? String(label.prefix(19)) + "…" : label
     }
 
     private var modeSymbol: String {
@@ -479,6 +531,51 @@ struct ComposerSurface: View {
     private var separator: String {
         model.text.isEmpty || model.text.hasSuffix(" ") || model.text.hasSuffix("\n") ? "" : " "
     }
+}
+
+// MARK: - Context strip menus
+
+/// 24pt light menu button: no fill at rest, fill-control on hover, 10pt caret.
+private struct StripMenuLabel: View {
+    let symbol: String
+    let text: String
+    let locked: Bool
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            Image(systemName: symbol).font(.system(size: LXIcon.strip))
+            Text(text).lineLimit(1).truncationMode(.middle)
+            if !locked {
+                Image(systemName: "chevron.down").font(.system(size: LXIcon.stripCaret))
+            }
+        }
+        .font(LXType.meta)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct StripMenuModifier: ViewModifier {
+    let locked: Bool
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .frame(height: 24)
+            .background(isHovered && !locked ? LXColor.fillControl : .clear,
+                        in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.sm, style: .continuous))
+            .onHover { isHovered = $0 }
+            .disabled(locked)
+    }
+}
+
+private extension View {
+    func stripMenu(locked: Bool) -> some View { modifier(StripMenuModifier(locked: locked)) }
 }
 
 // MARK: - Goal

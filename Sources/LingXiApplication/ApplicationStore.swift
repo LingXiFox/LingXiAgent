@@ -617,14 +617,14 @@ public actor ApplicationStore {
         }
         var effectiveModelSelection = state.currentModelID
         if !state.models.isEmpty {
-            if let current = effectiveModelSelection, !state.models.contains(where: { $0.modelID == current }) {
-                effectiveModelSelection = state.selectedModel?.modelID ?? state.models.first?.modelID
+            if let current = effectiveModelSelection, !state.models.contains(where: { $0.matches(selection: current) }) {
+                effectiveModelSelection = state.selectedModel?.qualifiedID ?? state.models.first?.qualifiedID
                 state.currentModelID = effectiveModelSelection
             }
         } else {
             if let selection = try? await client.model.getSelection() {
                 state.selectedModel = selection
-                effectiveModelSelection = selection.modelID
+                effectiveModelSelection = selection.qualifiedID
                 state.currentModelID = effectiveModelSelection
             }
         }
@@ -771,7 +771,10 @@ public actor ApplicationStore {
             if let effort = preservedEffort, effort != .auto {
                 state.nextTurnReasoningEffort = effort
                 state.activeSessionState?.reasoningEffort = effort
-                _ = try? await client.session.setReasoningEffort(sessionID: sessionID, effort: effort)
+                // Only write when it differs: an idle re-assert is not activity.
+                if snapshot.info.reasoningEffort != effort {
+                    _ = try? await client.session.setReasoningEffort(sessionID: sessionID, effort: effort)
+                }
             }
 
             // 若恢复的会话属于其它工作目录，自动切换当前工作文件夹
@@ -849,9 +852,11 @@ public actor ApplicationStore {
             state.models = models
         }
         if let selection {
-            let modelAvailable = models?.contains(where: { $0.modelID == state.currentModelID }) ?? false
+            let modelAvailable = state.currentModelID.map { current in
+                models?.contains(where: { $0.matches(selection: current) }) ?? false
+            } ?? false
             if !modelAvailable {
-                state.currentModelID = selection.modelID
+                state.currentModelID = selection.qualifiedID
             }
             state.selectedModel = selection
         }

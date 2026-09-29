@@ -14,7 +14,7 @@ public enum WarmTool: String, CaseIterable, Identifiable {
     }
     var symbol: String {
         switch self {
-        case .browser: "safari"
+        case .browser: "globe"
         case .terminal: "terminal"
         case .git: "arrow.triangle.branch"
         }
@@ -80,9 +80,9 @@ public struct WarmWorkbench: View {
                         }
 
                     if let tool = navigation.selectedTool {
-                        Rectangle()
-                            .fill(LXColor.separator)
-                            .frame(width: 4)
+                        // The 8pt gap between stage and panel is the resize handle.
+                        Color.clear
+                            .frame(width: LingXiMetrics.Space.sm)
                             .contentShape(Rectangle())
                             .gesture(DragGesture(minimumDistance: 1)
                                 .onChanged { value in
@@ -92,14 +92,20 @@ public struct WarmWorkbench: View {
                                                                     (dragStartWidth ?? LingXiMetrics.Size.toolPanel) - value.translation.width)))
                                 }
                                 .onEnded { _ in dragStartWidth = nil })
+                            .onHover { inside in
+                                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                            }
                             .help("拖动调整工具面板宽度")
                         WarmToolPane(tool: tool, runtime: runtime) { navigation.selectedTool = nil }
                             .frame(width: min(CGFloat(savedToolWidth),
                                               max(LingXiMetrics.Size.toolPanelMin,
                                                   geometry.size.width - LingXiMetrics.Size.toolRail -
                                                   LingXiMetrics.Size.stageWithToolMin)))
+                            .padding(.bottom, LingXiMetrics.Space.sm)
                     }
                     toolRail
+                        .padding(.horizontal, LingXiMetrics.Space.sm)
+                        .padding(.bottom, LingXiMetrics.Space.sm)
                 }
                 .background(LXColor.window)
                 .overlay { if runtime.isCommandPalettePresented { palette } }
@@ -142,8 +148,17 @@ public struct WarmWorkbench: View {
                 set: { sidebar.isNavigatorVisible = $0 != .detailOnly })
     }
 
+    /// The HUD becomes a capsule when the user collapses it or when the stage
+    /// can no longer give it room beside a full reading column.
     private func compactHUD(for width: CGFloat) -> Bool {
-        !navigation.showsContext || navigation.selectedTool != nil || width < 1000
+        guard navigation.showsContext else { return true }
+        var stage = width - LingXiMetrics.Size.toolRail - 2 * LingXiMetrics.Space.sm
+        if navigation.selectedTool != nil {
+            stage -= CGFloat(savedToolWidth) + LingXiMetrics.Space.sm
+        }
+        let needed = LingXiMetrics.Column.prose + 2 * LingXiMetrics.Column.gutter +
+            LingXiMetrics.Size.statusHUD + 2 * LingXiMetrics.Space.md
+        return stage < needed
     }
 
     private var sessionTitle: String {
@@ -164,41 +179,56 @@ public struct WarmWorkbench: View {
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
+    /// size-rail 44: the same floating panel as the sidebar (bg-window, 1px
+    /// separator, radius-panel), always present. Open tool = neutral fill-control
+    /// + accent-text glyph, the navigator's selection rule.
     private var toolRail: some View {
-        VStack(spacing: LingXiMetrics.Space.sm) {
+        VStack(spacing: LingXiMetrics.Space.xs) {
             ForEach(WarmTool.allCases) { tool in
+                let isOpen = navigation.selectedTool == tool
                 Button { navigation.toggle(tool) } label: {
                     Image(systemName: tool.symbol)
-                        .font(.system(size: LXIcon.toolbar))
-                        .foregroundStyle(navigation.selectedTool == tool ? LXColor.accentText : .secondary)
+                        .font(.system(size: LXIcon.row))
+                        .foregroundStyle(isOpen ? AnyShapeStyle(LXColor.accentText) : AnyShapeStyle(.secondary))
                         .frame(width: LXControl.toolbarWidth, height: LXControl.toolbarWidth)
-                        .background(navigation.selectedTool == tool ? LXColor.fillControl : .clear,
-                                    in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control))
-                        .overlay(alignment: .topTrailing) {
-                            if tool == .terminal && agentUsesTerminal {
-                                Circle().fill(LXColor.running)
-                                    .frame(width: LXControl.dot, height: LXControl.dot)
-                            } else if tool == .git, let count = inspector.live?.changes.count, count > 0 {
-                                Text(count > 99 ? "99+" : "\(count)")
-                                    .font(LXType.micro)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 3)
-                                    .background(LXColor.fillControl, in: Capsule())
-                                    .offset(x: 8, y: -6)
-                            }
-                        }
+                        .background(isOpen ? LXColor.fillControl : .clear,
+                                    in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .topTrailing) { railBadge(for: tool) }
                 }
                 .buttonStyle(.plain)
-                .help(tool.title)
-                .accessibilityLabel("打开\(tool.title)面板")
-                .accessibilityValue(navigation.selectedTool == tool ? "已展开" : "已收起")
+                .help("\(tool.title) (⌥⌘\(WarmTool.allCases.firstIndex(of: tool)! + 1))")
+                .accessibilityLabel("\(tool.title)面板")
+                .accessibilityValue(isOpen ? "已展开" : "已收起")
             }
             Spacer(minLength: 0)
         }
-        .padding(.top, LingXiMetrics.Space.md)
-        .frame(width: LingXiMetrics.Size.toolRail)
-        .background(LXColor.window)
-        .overlay(alignment: .leading) { LXHairline() }
+        .padding(.top, LingXiMetrics.Space.sm)
+        .frame(width: LingXiMetrics.Size.toolRail - 2)
+        .frame(maxHeight: .infinity)
+        .lxPanel(LXColor.window)
+    }
+
+    /// Terminal: 6pt running dot while the agent runs a process. Git: neutral
+    /// count of uncommitted changes.
+    @ViewBuilder
+    private func railBadge(for tool: WarmTool) -> some View {
+        if tool == .terminal && agentUsesTerminal {
+            Circle().fill(LXColor.running)
+                .frame(width: LXControl.dot, height: LXControl.dot)
+                .offset(x: -2, y: 2)
+                .accessibilityLabel("Agent 正在使用终端")
+        } else if tool == .git, let count = inspector.live?.changes.count, count > 0 {
+            Text(count > 99 ? "99+" : "\(count)")
+                .font(LXType.micro)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, LingXiMetrics.Space.xs)
+                .frame(minWidth: 16, minHeight: 16)
+                .background(LXColor.elevated, in: Capsule())
+                .overlay { Capsule().strokeBorder(LXColor.separator, lineWidth: 1) }
+                .offset(x: 6, y: -4)
+                .accessibilityLabel("\(count) 个未提交改动")
+        }
     }
 
     private var agentUsesTerminal: Bool {
@@ -222,15 +252,14 @@ public struct WarmWorkbench: View {
     private var paletteActions: [PaletteAction] {
         var actions = [
             PaletteAction(id: "app.new", title: "新建会话", symbol: "square.and.pencil", shortcut: "⌘N") { runtime.newSession() },
-            PaletteAction(id: "app.context", title: "显示或隐藏运行上下文", symbol: "gauge.with.dots.needle.50percent", shortcut: "⌥⌘I") {
-                navigation.showsContext.toggle()
-            },
             PaletteAction(id: "app.settings", title: "设置", symbol: "gearshape", shortcut: "⌘,") {
                 navigation.showsSettings = true
             },
         ]
         for tool in WarmTool.allCases {
-            actions.append(PaletteAction(id: "tool.\(tool.rawValue)", title: "打开\(tool.title)", symbol: tool.symbol) {
+            let index = WarmTool.allCases.firstIndex(of: tool)! + 1
+            actions.append(PaletteAction(id: "tool.\(tool.rawValue)", title: "\(tool.title)面板", symbol: tool.symbol,
+                                         shortcut: "⌥⌘\(index)") {
                 navigation.toggle(tool)
             })
         }

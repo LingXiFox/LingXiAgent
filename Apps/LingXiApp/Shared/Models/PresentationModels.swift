@@ -195,7 +195,8 @@ public enum TimelineItemKind: Sendable, Equatable {
     case diff(filePath: String, diffContent: String)
     case subagent(SubagentEventPresentation)
     case notice(NoticePresentation)
-    case terminal(title: String, isSuccess: Bool, message: String)
+    /// `isCancelled`: the user stopped the run — neither success nor failure.
+    case terminal(title: String, isSuccess: Bool, message: String, isCancelled: Bool = false)
 }
 
 public struct TimelineItemPresentation: Identifiable, Sendable, Equatable {
@@ -543,7 +544,7 @@ public final class ComposerModel: ObservableObject {
 
     /// Reasoning levels the selected model can honour (all of them when unknown).
     public var availableReasoningLevels: [ReasoningEffortLevel] {
-        guard let id = selectedModelID, let model = models.first(where: { $0.modelID == id }) else {
+        guard let id = selectedModelID, let model = models.first(where: { $0.matches(selection: id) }) else {
             return ReasoningEffortLevel.allCases
         }
         return model.reasoning ? ReasoningEffortLevel.allCases : [.auto, .off]

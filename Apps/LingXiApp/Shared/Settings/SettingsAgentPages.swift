@@ -1,6 +1,7 @@
 #if canImport(SwiftUI)
 import SwiftUI
 import LingXiProtocol
+import LingXiApplication
 
 // MARK: - Providers
 
@@ -12,78 +13,92 @@ import LingXiProtocol
 struct ProvidersSettingsPage: View {
     @ObservedObject var store: SettingsStore
     @State private var pendingRemoval: ProviderAccountInfo?
-    @State private var expandedProviders: Set<String> = []
+    @State private var detail: ProviderConfigurationDetail?
+    @State private var isAdding = false
+    @Environment(\.settingsSelection) private var selection
+    @Environment(\.settingsAddTrigger) private var addTrigger
+    @Environment(\.settingsSelect) private var select
+
+    private var account: ProviderAccountInfo? {
+        store.providers.first { $0.id == selection } ?? store.providers.first
+    }
 
     var body: some View {
         LXSettingsScrollPage(title: "Provider",
                              subtitle: "管理 LingXiAgent 使用的模型服务、账户与连接状态。") {
-            LXSettingsCard("已连接提供商账户",
-                           subtitle: "模型元数据权威来自 models.lingxifox.cn 官方实时索引，账户可访问性由 Provider Discovery 动态确认。",
-                           rowSpacing: 0,
-                           accessory: {
-                Button("重新发现") { Task { await store.reloadProviders() } }
-                    .controlSize(.small)
-                    .disabled(store.client == nil)
-                    .settingsAnchor("providers.reload")
-            }) {
-                if store.client != nil && store.providers.isEmpty {
-                    PlaceholderLine("Core 尚未配置 Provider 账户。可在 providers.json 中配置或通过登录关联。")
-                        .lxSettingsRow()
+            if let account {
+                LXSettingsCard(title: EmptyView()) {
+                    ProviderRow(account: account,
+                                test: store.providerTests[account.id],
+                                onTest: { Task { await store.testProvider(account.id) } },
+                                onRemove: { pendingRemoval = account })
                 }
-                ForEach(Array(store.providers.enumerated()), id: \.element.id) { index, account in
-                    if index > 0 { LXSettingsDivider() }
-                    VStack(alignment: .leading, spacing: 0) {
-                        ProviderRow(
-                            account: account,
-                            test: store.providerTests[account.id],
-                            isExpanded: expandedProviders.contains(account.id),
-                            onToggleExpand: {
-                                if expandedProviders.contains(account.id) {
-                                    expandedProviders.remove(account.id)
-                                } else {
-                                    expandedProviders.insert(account.id)
-                                }
-                            },
-                            onTest: { Task { await store.testProvider(account.id) } },
-                            onRemove: { pendingRemoval = account }
-                        )
+                .settingsAnchor("provider.\(account.id)")
 
-                        // 展开的真实 Core 模型列表 (Provider Account Discovery ∩ models.json metadata)
-                        if expandedProviders.contains(account.id) {
-                            ProviderModelList(store: store, account: account)
-                        }
+                if let detail, detail.providerID == account.id {
+                    // providers.json entry: every field is editable.
+                    ProviderConnectionEditor(store: store, detail: detail) { self.detail = $0 }
+                        .id(detail.providerID)
+                    ProviderModelsEditor(store: store, detail: detail) { self.detail = $0 }
+                        .settingsAnchor("providers.list")
+                } else {
+                    // OAuth / built-in account: Core manages it, shown read-only.
+                    LXSettingsCard("连接", subtitle: "此账户由登录或内置目录管理，不在 providers.json 中，因此不能在这里编辑连接。") {
+                        ValueRow(title: "名称", value: account.displayName)
+                        ValueRow(title: "接入方式", value: ProviderRow.accountTypeLabel(account.accountType))
+                        ValueRow(title: "Base URL", value: account.endpoint ?? "Provider 默认", monospaced: account.endpoint != nil)
                     }
-                    .settingsAnchor("provider.\(account.id)")
+                    let models = store.models.filter { $0.providerID == account.id || $0.providerID == account.productID }
+                    LXSettingsCard(title: HStack(spacing: LingXiMetrics.Space.xs) {
+                        LXSettingsSectionHeader("模型")
+                        Text("\(models.count)").font(LXType.sectionHead).foregroundStyle(.secondary)
+                    }, rowSpacing: 0) {
+                        ProviderModelList(store: store, models: models)
+                    } footer: {
+                        Text("模型元数据默认来自 models.lingxifox.cn 官方实时索引；可用性由 Provider Discovery 动态确认。")
+                    }
+                    .settingsAnchor("providers.list")
                 }
+            } else if store.client != nil {
+                PlaceholderLine("Core 尚未配置 Provider 账户。用中间列的「＋」添加一个。")
             }
-            .settingsAnchor("providers.list")
 
-            if let status = store.providerStatus {
-                LXSettingsCard("当前连接") {
-                    ValueRow(title: "已配置", value: status.configured ? "是" : "否")
-                    if let model = status.model {
-                        ValueRow(title: "当前活跃模型", value: model, monospaced: true)
-                    }
-                    if let base = status.baseURL {
-                        ValueRow(title: "Endpoint", value: base, monospaced: true)
-                    }
-                    if !status.missingRequirements.isEmpty {
-                        LXStatusText("缺少：\(status.missingRequirements.joined(separator: "、"))",
-                                     systemImage: "exclamationmark.triangle",
-                                     tone: .warning)
-                    }
-                }
+            if let status = store.providerStatus, !status.missingRequirements.isEmpty {
+                LXStatusText("当前连接缺少：\(status.missingRequirements.joined(separator: "、"))",
+                             systemImage: "exclamationmark.triangle",
+                             tone: .warning)
+            }
+        }
+        .task(id: account?.id) { await loadDetail() }
+        .onChange(of: addTrigger) { _, _ in isAdding = true }
+        .sheet(isPresented: $isAdding) {
+            AddProviderSheet(store: store) { added in
+                isAdding = false
+                if let added { select(added.providerID) }
             }
         }
         .confirmationDialog("移除 Provider 账户？", isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }
         ), presenting: pendingRemoval) { account in
             Button("移除 \(account.displayName)", role: .destructive) {
-                Task { await store.removeProvider(account.id) }
+                Task {
+                    if detail?.providerID == account.id {
+                        if await store.deleteProvider(account.id) { select(nil) }
+                    } else {
+                        await store.removeProvider(account.id)
+                    }
+                }
             }
         } message: { account in
-            Text("\(account.displayName) 将从 Core 的账户列表中移除，依赖它的模型将不可用。")
+            Text(detail?.providerID == account.id
+                 ? "\(account.displayName) 会从 providers.json 中移除，保存的 API Key 一并删除，依赖它的模型将不可用。"
+                 : "\(account.displayName) 将从 Core 的账户列表中移除，依赖它的模型将不可用。")
         }
+    }
+
+    private func loadDetail() async {
+        guard let id = account?.id else { detail = nil; return }
+        detail = await store.providerConfiguration(id)
     }
 
     static func formatTokens(_ n: Int) -> String {
@@ -97,48 +112,25 @@ struct ProvidersSettingsPage: View {
 /// "metadata incomplete" state instead of a guessed window or capability.
 private struct ProviderModelList: View {
     @ObservedObject var store: SettingsStore
-    let account: ProviderAccountInfo
+    let models: [ProviderModelInfo]
 
     var body: some View {
-        let providerModels = store.models.filter {
-            $0.providerID == account.id || $0.providerID == account.productID
+        if models.isEmpty {
+            PlaceholderLine("该账户已连接，还没有发现可用模型。")
+                .lxSettingsRow()
         }
-        VStack(alignment: .leading, spacing: 0) {
-            LXSettingsDivider()
-            if providerModels.isEmpty {
-                LXStatusText("该提供商已连接，可通过 /v1/models 或模型目录发现模型。",
-                             systemImage: "circle.dotted",
-                             tone: .muted)
-                    .lxSettingsModelSubRow()
-            } else {
-                ForEach(providerModels, id: \.id) { model in
-                    ExpandableModelSubRow(
-                        model: model,
-                        isSelected: model.modelID == (store.modelSelection?.modelID ?? store.preferences.lastModelID),
-                        onSelect: {
-                            Task { await store.selectDefaultModel(model.modelID) }
-                        }
-                    )
-                }
-            }
+        ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
+            if index > 0 { LXSettingsDivider() }
+            ExpandableModelSubRow(
+                model: model,
+                isSelected: (store.modelSelection?.qualifiedID ?? store.preferences.lastModelID)
+                    .map(model.matches(selection:)) ?? false,
+                onSelect: { Task { await store.selectDefaultModel(model.qualifiedID) } }
+            )
         }
     }
 }
 
-/// §7: expanded model sub-rows indent 44 from the group edge. The shared row
-/// already carries the group's 16pt inset, so only the remainder is added.
-private let lxModelSubRowIndent = LingXiMetrics.Size.formRow - LingXiMetrics.Space.lg
-
-extension View {
-    /// Sub-row scale: same 44pt minimum as a settings row, indented to 44.
-    func lxSettingsModelSubRow() -> some View {
-        self.font(LXType.body)
-            .frame(maxWidth: .infinity, minHeight: LingXiMetrics.Size.formRow, alignment: .leading)
-            .padding(.leading, lxModelSubRowIndent)
-            .padding(.trailing, LingXiMetrics.Space.lg)
-            .padding(.vertical, LingXiMetrics.Space.md)
-    }
-}
 
 private struct ExpandableModelSubRow: View {
     let model: ProviderModelInfo
@@ -192,11 +184,10 @@ private struct ExpandableModelSubRow: View {
 
             if !isSelected {
                 Button("设为默认", action: onSelect)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(LXButtonStyle(.secondary, size: .small))
             }
         }
-        .lxSettingsModelSubRow()
+        .lxSettingsRow()
     }
 
     /// Only flags Core actually reports; nothing is guessed when the index has
@@ -210,34 +201,30 @@ private struct ExpandableModelSubRow: View {
     }
 }
 
-private struct ProviderRow: View {
+struct ProviderRow: View {
     let account: ProviderAccountInfo
     let test: TestProviderResult?
-    let isExpanded: Bool
-    var onToggleExpand: () -> Void
     var onTest: () -> Void
     var onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: LingXiMetrics.Space.md) {
             Image(systemName: Self.glyph(for: account.accountType))
-                .font(LXType.body)
+                .font(.system(size: LXIcon.surfaceHead))
                 .foregroundStyle(.secondary)
-                .frame(width: LXControl.regular, height: LXControl.regular)
+                .frame(width: LXControl.large, height: LXControl.large)
                 .background(LXColor.fillControl,
-                            in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
+                            in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control, style: .continuous))
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                HStack(spacing: LingXiMetrics.Space.xs) {
-                    Text(account.displayName)
-                        .font(LXType.body.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    LXBadge(Self.accountTypeLabel(account.accountType), kind: .outline)
-                }
-                Text(account.endpoint ?? account.productID)
-                    .font(LXType.monoSmall)
+                Text(account.displayName)
+                    .font(LXType.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text([Self.accountTypeLabel(account.accountType), account.endpoint ?? account.productID]
+                    .joined(separator: " · "))
+                    .font(LXType.meta)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -248,35 +235,12 @@ private struct ProviderRow: View {
 
             connectivity
 
-            Button(action: onToggleExpand) {
-                HStack(spacing: LingXiMetrics.Space.xs) {
-                    Text("模型列表")
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(LXType.meta)
-                        .foregroundStyle(.secondary)
-                }
-                .foregroundStyle(.primary)
-                .frame(height: LXControl.tab)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(account.displayName) 模型列表")
-
             Button("测试连接", action: onTest)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-            Menu {
-                Button("移除…", role: .destructive, action: onRemove)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(LXType.body)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: LXControl.tab)
-            .accessibilityLabel("\(account.displayName) 操作")
+                .buttonStyle(LXButtonStyle(.secondary, size: .small))
+            Button("移除…", action: onRemove)
+                .buttonStyle(LXButtonStyle(.destructive, size: .small))
         }
+        .padding(.vertical, LingXiMetrics.Space.sm)
         .lxSettingsRow()
     }
 
@@ -322,7 +286,7 @@ private struct ProviderRow: View {
 
     /// Protocol account type → short badge label. Maps a real Core value; it is
     /// not a provider list.
-    private static func accountTypeLabel(_ type: ProviderAccountType) -> String {
+    static func accountTypeLabel(_ type: ProviderAccountType) -> String {
         switch type {
         case .apiKey: return "API"
         case .oauthUser: return "OAuth"
@@ -359,12 +323,16 @@ struct AgentDefaultsSettingsPage: View {
                            subtitle: "新会话启动时默认启用的模型。元数据来自 models.lingxifox.cn 官方实时索引，可用性由 Provider 发现决定。") {
                 LabeledContent {
                     Picker(selection: Binding(
-                        get: { store.modelSelection?.modelID ?? store.preferences.lastModelID ?? "" },
+                        get: {
+                            let current = store.modelSelection?.qualifiedID
+                                ?? store.preferences.lastModelID ?? ""
+                            return store.models.first { $0.matches(selection: current) }?.qualifiedID ?? current
+                        },
                         set: { id in Task { await store.selectDefaultModel(id) } }
                     )) {
                         if store.models.isEmpty { Text("—").tag("") }
-                        ForEach(store.models.filter(\.configured), id: \.modelID) { model in
-                            Text(model.displayName).tag(model.modelID)
+                        ForEach(store.models.filter(\.configured), id: \.qualifiedID) { model in
+                            Text(model.displayName).tag(model.qualifiedID)
                         }
                     } label: { EmptyView() }
                     .labelsHidden()
@@ -471,39 +439,17 @@ struct PermissionsSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Form {
-            LXSettingsPageHeader(title: "权限与沙箱",
-                                 subtitle: "默认审批策略、访问范围与 Core 的审批矩阵。")
-                .padding(.bottom, LingXiMetrics.Space.xl)
-
-            Section {
+        LXSettingsScrollPage(title: "权限与沙箱", subtitle: "默认审批策略、访问范围与 Core 的审批矩阵。") {
+            LXSettingsCard(title: LXSettingsSectionHeader("默认权限")) {
                 ConfigPicker(title: "审批策略", key: ConfigKeys.permissionPolicy, options: [
                     ("ask", "每次询问"), ("auto", "自动批准"),
                 ], store: store)
                 ConfigPicker(title: "访问范围", key: ConfigKeys.executionProfile, options: [
                     ("readOnly", "只读"), ("workspace", "工作区"), ("fullAccess", "完全访问"),
                 ], store: store)
-                .pickerStyle(.segmented)
-            } header: {
-                LXSettingsSectionHeader("默认权限")
-            } footer: {
-                if store.config(ConfigKeys.executionProfile) == "fullAccess" {
-                    LXStatusText(store.config(ConfigKeys.permissionPolicy) == "auto"
-                                 ? "自动批准 + 完全访问即 YOLO：Agent 可不经确认修改工作区外的任何文件并执行任意命令。"
-                                 : "完全访问允许 Agent 读写工作区以外的路径，每次仍会请求你确认。",
-                                 systemImage: "exclamationmark.triangle",
-                                 tone: .warning)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text("启动时从 config.json 读取。命令行 -y / --yolo 优先于此设置。")
-                        .font(LXType.meta)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section {
                 LabeledContent {
                     Button("应用") { Task { await store.applyPermissionToCore() } }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
                         .disabled(store.client == nil)
                 } label: {
                     HStack(spacing: LingXiMetrics.Space.xs) {
@@ -513,9 +459,20 @@ struct PermissionsSettingsPage: View {
                 }
                 .lxSettingsRow()
                 .settingsAnchor("permissions.apply")
+            } footer: {
+                if store.config(ConfigKeys.executionProfile) == "fullAccess" {
+                    LXStatusText(store.config(ConfigKeys.permissionPolicy) == "auto"
+                                 ? "自动批准 + 完全访问即 YOLO：Agent 可不经确认修改工作区外的任何文件并执行任意命令。"
+                                 : "完全访问允许 Agent 读写工作区以外的路径，每次仍会请求你确认。",
+                                 systemImage: "exclamationmark.triangle",
+                                 tone: .warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("启动时读取。命令行 -y / --yolo 优先于此设置。Composer 里的 YOLO 开关只作用于当前会话，不修改这里的默认值。")
+                }
             }
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("审批矩阵")) {
                 let policy = store.composerDefaults.permission.configuration.approvalPolicy
                 ApprovalRow(title: "安全读取", decision: policy.safeRead)
                 ApprovalRow(title: "工作区写入", decision: policy.workspaceMutation)
@@ -523,8 +480,6 @@ struct PermissionsSettingsPage: View {
                 ApprovalRow(title: "外部读取", decision: policy.externalRead)
                 ApprovalRow(title: "外部写入", decision: policy.externalMutation)
                 ApprovalRow(title: "敏感访问", decision: policy.sensitiveAccess)
-            } header: {
-                LXSettingsSectionHeader("审批矩阵")
             } footer: {
                 Text("上面组合对应 Core 的冻结权限预设，逐类决定允许、询问或拒绝。自定义规则需要 Core 提供规则契约后开放。")
                     .font(LXType.meta)
@@ -532,18 +487,15 @@ struct PermissionsSettingsPage: View {
             }
             .settingsAnchor("permissions.matrix")
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("固定边界")) {
                 ValueRow(title: "凭据", value: "由 CredentialBroker 持有，不下发给子 Agent 或 MCP")
                 ValueRow(title: "子 Agent 授权", value: "只能单调收窄于父集（child ⊆ parent）")
-            } header: {
-                LXSettingsSectionHeader("固定边界")
             } footer: {
                 Text("以上由 Core 强制执行，不提供开关。")
                     .font(LXType.meta)
                     .foregroundStyle(.secondary)
             }
         }
-        .lxSettingsFormChrome()
     }
 }
 
@@ -584,12 +536,8 @@ struct CodeIntelligenceSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Form {
-            LXSettingsPageHeader(title: "代码智能",
-                                 subtitle: "代码图谱工具的启用状态与当前工作区索引。")
-                .padding(.bottom, LingXiMetrics.Space.xl)
-
-            Section {
+        LXSettingsScrollPage(title: "代码智能", subtitle: "代码图谱工具的启用状态与当前工作区索引。") {
+            LXSettingsCard(title: LXSettingsSectionHeader("代码智能")) {
                 ConfigToggle(title: "代码智能工具", info: "启用符号查找、定义、引用与依赖查询等代码图谱工具。",
                              key: ConfigKeys.codeIntelligence, store: store)
             } footer: {
@@ -598,7 +546,7 @@ struct CodeIntelligenceSettingsPage: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("项目索引")) {
                 if let workspace = store.workspace {
                     ValueRow(title: "索引状态", value: workspace.indexingState ?? "—")
                     ValueRow(title: "图谱节点", value: workspace.codebaseNodes.map { "\($0)" } ?? "—")
@@ -606,18 +554,13 @@ struct CodeIntelligenceSettingsPage: View {
                 } else {
                     PlaceholderLine(store.client == nil ? "连接 Core 后显示当前工作区的索引状态。" : "Core 未返回工作区索引信息。")
                 }
-            } header: {
-                LXSettingsSectionHeader("项目索引")
             }
             .settingsAnchor("code.index")
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("语言服务")) {
                 PlaceholderLine("各语言 LSP、Formatter 与诊断的运行状态需要 Core 提供前端数据契约，暂不展示。")
-            } header: {
-                LXSettingsSectionHeader("语言服务")
             }
         }
-        .lxSettingsFormChrome()
     }
 }
 
@@ -627,13 +570,9 @@ struct ContextSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Form {
-            LXSettingsPageHeader(title: "上下文",
-                                 subtitle: "当前生效的双核上下文策略与全局预算配置。")
-                .padding(.bottom, LingXiMetrics.Space.xl)
-
+        LXSettingsScrollPage(title: "上下文", subtitle: "当前生效的双核上下文策略与全局预算配置。") {
             if let policy = store.contextPolicy {
-                Section {
+                LXSettingsCard(title: LXSettingsSectionHeader("当前生效策略 (Dual-Core Snapshot)")) {
                     ValueRow(title: "模型窗口", value: tokens(policy.modelWindow))
                     ValueRow(title: "可寻址预算", value: tokens(policy.addressableBudget))
                     ValueRow(title: "P-Core 目标 / 软限 / 硬限",
@@ -642,8 +581,6 @@ struct ContextSettingsPage: View {
                     ValueRow(title: "E-Core 召回预算", value: tokens(policy.eCoreRecallBudget))
                     ValueRow(title: "E-Core 压力保护阈值", value: String(format: "%.0f%%", policy.eCorePressureThreshold * 100))
                     ValueRow(title: "经济阈值", value: policy.economicThreshold.map(tokens) ?? "未启用")
-                } header: {
-                    LXSettingsSectionHeader("当前生效策略 (Dual-Core Snapshot)")
                 } footer: {
                     Text("由 Core 按当前模型窗口与双核策略计算后的实际工作值；下方为全局双核配置。")
                         .font(LXType.meta)
@@ -652,29 +589,25 @@ struct ContextSettingsPage: View {
                 .settingsAnchor("context.live")
             }
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("预算基线")) {
                 ConfigNumberField(title: "可寻址预算", unit: "tokens", key: ConfigKeys.addressableBudget, store: store)
                 ConfigNumberField(title: "保留余量", info: "为输出与工具结果预留、不参与上下文填充的 token。",
                                   unit: "tokens", key: ConfigKeys.reserve, store: store)
                 ConfigNumberField(title: "经济阈值", info: "超过此值时优先压缩而非继续扩充上下文，避免跨入更高计费档。",
                                   unit: "tokens", key: ConfigKeys.economicThreshold, store: store)
-            } header: {
-                LXSettingsSectionHeader("预算基线")
             }
             .settingsAnchor("context.budget")
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("P-Core 实时工作集 (Primary Working Set)")) {
                 ConfigNumberField(title: "P-Core 目标工作集", unit: "tokens", key: ConfigKeys.pCoreTarget, store: store)
                 ConfigNumberField(title: "P-Core 软限制 (Soft Limit)", info: "超过软限时触发非关键上下文降权淘汰与对象化流出。",
                                   unit: "tokens", key: ConfigKeys.pCoreSoftLimit, store: store)
                 ConfigNumberField(title: "P-Core 硬限制 (Hard Limit)", info: "绝对硬上限，超过时强制阻断或深度截断以保护 Prefix Cache。",
                                   unit: "tokens", key: ConfigKeys.pCoreHardLimit, store: store)
-            } header: {
-                LXSettingsSectionHeader("P-Core 实时工作集 (Primary Working Set)")
             }
             .settingsAnchor("context.pcore")
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("E-Core 对象与召回织网 (Context Fabric)")) {
                 ConfigNumberField(title: "E-Core 存储预算", info: "外延对象存储的容量上限，超限时触发冷热分级淘汰。",
                                   unit: "tokens", key: ConfigKeys.eCoreStorageBudget, store: store)
                 ConfigNumberField(title: "E-Core 召回预算", info: "单次回合中自外延存储召回注入的最大 token 数。",
@@ -685,12 +618,9 @@ struct ContextSettingsPage: View {
                              key: ConfigKeys.observationProjection, store: store)
                 ConfigToggle(title: "访问热度追踪", info: "按访问热度决定上下文淘汰与召回优先顺序。",
                              key: ConfigKeys.heatTracking, store: store)
-            } header: {
-                LXSettingsSectionHeader("E-Core 对象与召回织网 (Context Fabric)")
             }
             .settingsAnchor("context.ecore")
         }
-        .lxSettingsFormChrome()
     }
 
     private func tokens(_ n: Int) -> String {
@@ -704,19 +634,13 @@ struct ExecutionSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Form {
-            LXSettingsPageHeader(title: "执行与超时",
-                                 subtitle: "各工具环节与运行阶段的超时上限。")
-                .padding(.bottom, LingXiMetrics.Space.xl)
-
-            Section {
+        LXSettingsScrollPage(title: "执行与超时", subtitle: "各工具环节与运行阶段的超时上限。") {
+            LXSettingsCard(title: LXSettingsSectionHeader("工具时限")) {
                 ConfigSecondsField(title: "前台命令", key: ConfigKeys.foregroundShellSeconds, store: store)
                 ConfigSecondsField(title: "快速文件操作", key: ConfigKeys.quickFilesystemSeconds, store: store)
                 ConfigSecondsField(title: "搜索", key: ConfigKeys.searchSeconds, store: store)
                 ConfigSecondsField(title: "构建与测试", key: ConfigKeys.buildTestSeconds, store: store)
                 ConfigSecondsField(title: "MCP 调用", key: ConfigKeys.mcpSeconds, store: store)
-            } header: {
-                LXSettingsSectionHeader("工具时限")
             } footer: {
                 Text("超时后 Core 终止对应进程并把超时作为工具结果返回给 Agent。")
                     .font(LXType.meta)
@@ -724,18 +648,15 @@ struct ExecutionSettingsPage: View {
             }
             .settingsAnchor("execution.budgets")
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("模型与运行")) {
                 ConfigSecondsField(title: "Provider 请求", key: ConfigKeys.providerSeconds, store: store)
                 ConfigSecondsField(title: "Provider 流空闲", info: "流式响应无新数据超过此时长即视为中断。",
                                    key: ConfigKeys.providerIdleSeconds, store: store)
                 ConfigSecondsField(title: "子 Agent", key: ConfigKeys.subagentSeconds, store: store)
                 ConfigSecondsField(title: "单次 Agent 运行", key: ConfigKeys.agentRunSeconds, store: store)
                 ConfigSecondsField(title: "绝对上限", info: "任何单项时限都不会超过此值。", key: ConfigKeys.maximumSeconds, store: store)
-            } header: {
-                LXSettingsSectionHeader("模型与运行")
             }
         }
-        .lxSettingsFormChrome()
     }
 }
 

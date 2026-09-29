@@ -54,4 +54,24 @@ public struct ProviderDomainClient: Sendable {
     public func reload() async throws -> CommandReceipt<VoidResult> {
         try await transport.reloadProviders(envelope: CommandEnvelope(payload: VoidResult()))
     }
+
+    // MARK: providers.json editing
+
+    public func configuration(providerID: String) async throws -> ProviderConfigurationDetail {
+        let req = GetProviderConfigurationRequest(providerID: providerID)
+        return try await transport.getProviderConfiguration(envelope: QueryEnvelope(payload: req)).payload
+    }
+
+    public func saveConfiguration(_ request: SaveProviderConfigurationRequest) async throws -> ProviderConfigurationDetail {
+        let receipt = try await transport.saveProviderConfiguration(envelope: CommandEnvelope(payload: request))
+        guard let detail = receipt.result else {
+            throw RuntimeError(category: .runtime, code: "emptyResult", message: "保存 Provider 配置没有返回结果", retryability: .none, source: .client)
+        }
+        return detail
+    }
+
+    public func deleteConfiguration(providerID: String, deleteCredential: Bool = true) async throws {
+        let req = DeleteProviderConfigurationRequest(providerID: providerID, deleteCredential: deleteCredential)
+        _ = try await transport.deleteProviderConfiguration(envelope: CommandEnvelope(payload: req))
+    }
 }

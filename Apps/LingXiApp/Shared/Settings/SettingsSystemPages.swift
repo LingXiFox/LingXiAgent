@@ -10,38 +10,68 @@ import AppKit
 struct ExtensionsSettingsPage: View {
     @ObservedObject var store: SettingsStore
     let kinds: [ExtensionKind]
+    @Environment(\.settingsSelection) private var selection
+    @Environment(\.settingsAddTrigger) private var addTrigger
+    @Environment(\.settingsSelect) private var select
+    @State private var isAdding = false
 
     var body: some View {
         LXSettingsScrollPage(title: pageHeaderTitle, subtitle: pageHeaderSubtitle) {
-            ForEach(kinds, id: \.self) { kind in
-                let items = store.extensions.filter { $0.kind == kind }
-                LXSettingsCard(title(kind),
-                               subtitle: kind == .mcp
-                                   ? "新增或修改服务器请编辑 mcp.json（「通用 › 配置文件」），然后重新加载。"
-                                   : nil,
-                               rowSpacing: 0,
-                               accessory: {
-                    if kind == kinds.first {
-                        Button("重新加载") { Task { await store.reloadExtensions() } }
-                            .controlSize(.small)
-                            .disabled(store.client == nil)
-                            .settingsAnchor("mcp.reload")
-                    }
-                }) {
-                    if store.client != nil && items.isEmpty {
-                        PlaceholderLine(emptyText(kind))
-                            .lxSettingsRow()
-                    }
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, ext in
-                        if index > 0 { LXSettingsDivider() }
-                        ExtensionRow(ext: ext) { enabled in
-                            Task { await store.setExtension(ext.id, enabled: enabled) }
-                        }
-                        .settingsAnchor("extension.\(ext.id)")
-                    }
+            if kinds == [.mcp] {
+                mcpDetail
+            } else {
+                ForEach(kinds, id: \.self) { kind in
+                    list(kind)
                 }
-                .settingsAnchor(kind == .mcp ? "mcp.list" : "extensions.list")
             }
+        }
+        .onChange(of: addTrigger) { _, _ in if kinds == [.mcp] { isAdding = true } }
+        .sheet(isPresented: $isAdding) {
+            AddMCPServerSheet(store: store) { added in
+                isAdding = false
+                if let added { select(added.id) }
+            }
+        }
+    }
+
+    /// Skills / Plugins / Hooks: one row per object, collection action on the head.
+    private func list(_ kind: ExtensionKind) -> some View {
+        let items = store.extensions.filter { $0.kind == kind }
+        return LXSettingsCard(title: HStack(spacing: LingXiMetrics.Space.xs) {
+            LXSettingsSectionHeader(title(kind))
+            Text("\(items.count)").font(LXType.sectionHead).foregroundStyle(.secondary)
+        }, rowSpacing: 0, accessory: {
+            if kind == kinds.first {
+                Button("重新加载") { Task { await store.reloadExtensions() } }
+                    .disabled(store.client == nil)
+                    .settingsAnchor("extensions.reload")
+            }
+        }) {
+            if store.client != nil && items.isEmpty {
+                PlaceholderLine(emptyText(kind))
+                    .lxSettingsRow()
+            }
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, ext in
+                if index > 0 { LXSettingsDivider() }
+                ExtensionRow(ext: ext) { enabled in
+                    Task { await store.setExtension(ext.id, enabled: enabled) }
+                }
+                .settingsAnchor("extension.\(ext.id)")
+            }
+        }
+        .settingsAnchor("extensions.list")
+    }
+
+    /// MCP is master–detail: the middle column lists every server (from
+    /// mcp.json), this page edits only the selected one.
+    @ViewBuilder
+    private var mcpDetail: some View {
+        MCPRestartBanner(store: store)
+        if let server = store.mcpServers.first(where: { $0.id == selection }) ?? store.mcpServers.first {
+            MCPServerEditor(store: store, server: server)
+                .id(server.id)
+        } else if store.client != nil {
+            PlaceholderLine("mcp.json 里还没有服务器。用中间列的「＋」添加一个。")
         }
     }
 
@@ -73,7 +103,7 @@ struct ExtensionsSettingsPage: View {
 
     private var pageHeaderSubtitle: String {
         switch kinds.first {
-        case .mcp: return "查看 Core 加载的 MCP 服务器，控制各服务器的启用状态。"
+        case .mcp: return "查看与配置 Core 加载的 MCP 服务器。"
         case .skill: return "查看 Core 加载的 Skills，控制各技能的启用状态。"
         case .plugin: return "查看 Core 加载的插件与命令，控制各自的启用状态。"
         case .hook: return "查看 Core 加载的 Hooks，控制各钩子的启用状态。"
@@ -87,23 +117,8 @@ private struct ExtensionRow: View {
     let ext: ExtensionInfo
     var onToggle: (Bool) -> Void
 
-    var isReady: Bool {
-        let s = ext.lifecycleState.lowercased()
-        return s.contains("ready") || s.contains("active") || s.contains("running") || (ext.enabled && !s.contains("fail") && !s.contains("err"))
-    }
-
-    var isError: Bool {
-        let s = ext.lifecycleState.lowercased()
-        return s.contains("fail") || s.contains("err") || s.contains("deg")
-    }
-
     /// §1: colour lands on the 6pt dot only — the state text stays text-primary.
-    var dotColor: Color {
-        if !ext.enabled { return LXColor.separator }
-        if isError { return LXStatus.error }
-        if isReady { return LXStatus.success }
-        return LXStatus.running
-    }
+    var dotColor: Color { ExtensionState(ext: ext).tone }
 
     var body: some View {
         HStack(spacing: LingXiMetrics.Space.md) {
@@ -146,6 +161,8 @@ private struct ExtensionRow: View {
 
             Toggle("", isOn: Binding(get: { ext.enabled }, set: onToggle))
                 .toggleStyle(.switch)
+                .controlSize(.small)
+                .tint(LXColor.accent)
                 .labelsHidden()
                 .accessibilityLabel("\(ext.id) 启用状态")
         }
@@ -158,6 +175,31 @@ private struct ExtensionRow: View {
 struct WorkspaceSettingsPage: View {
     @ObservedObject var store: SettingsStore
     @State private var confirmPrune = false
+    @State private var pendingAction: PendingWorktreeAction?
+
+    struct PendingWorktreeAction {
+        enum Action { case apply, discard }
+        let tree: WorkspaceWorktreeInfo
+        let action: Action
+    }
+
+    private func isCurrent(_ tree: WorkspaceWorktreeInfo) -> Bool {
+        guard let current = store.runtime?.workspaceURL else { return false }
+        return URL(fileURLWithPath: tree.path).resolvingSymlinksInPath() == current.resolvingSymlinksInPath()
+    }
+
+    /// The Core serving a worktree workspace cannot keep running inside a
+    /// removed directory, so that case goes through the main window's runtime.
+    private func perform(_ pending: PendingWorktreeAction) async {
+        if isCurrent(pending.tree), let runtime = store.runtime {
+            if pending.action == .apply { await runtime.applyCurrentWorktree() } else { await runtime.discardCurrentWorktree() }
+            await store.refresh()
+        } else if pending.action == .apply {
+            _ = await store.applyWorktree(pending.tree.id)
+        } else {
+            _ = await store.discardWorktree(pending.tree.id)
+        }
+    }
 
     var body: some View {
         LXSettingsScrollPage(title: "工作区与 Worktree",
@@ -179,48 +221,43 @@ struct WorkspaceSettingsPage: View {
                 .settingsAnchor("workspace.summary")
             }
 
-            LXSettingsCard("Worktree",
-                           subtitle: "Core 还没有实现 workspace.worktree.* 接口，因此这里不会有真实数据。",
-                           rowSpacing: 0,
-                           accessory: {
+            LXSettingsCard(title: HStack(spacing: LingXiMetrics.Space.xs) {
+                LXSettingsSectionHeader("Worktree 列表")
+                Text("\(store.worktrees.count)").font(LXType.sectionHead).foregroundStyle(.secondary)
+            }, rowSpacing: 0, accessory: {
                 Button("清理失效…") { confirmPrune = true }
-                    .controlSize(.small)
-                    .disabled(true)
-                    .help("Core 尚未实现 Worktree 接口")
+                    .disabled(store.client == nil)
             }) {
                 if store.worktrees.isEmpty {
-                    PlaceholderLine("Worktree 能力尚未由 Core 提供；列表恒为空不代表没有 Worktree。")
+                    PlaceholderLine(store.workspace?.isGitRepository == false
+                                    ? "当前工作区不是 Git 仓库，无法使用独立 Worktree。"
+                                    : "还没有独立 Worktree。在 Composer 的执行环境里选择「独立 Worktree」即可创建。")
                         .lxSettingsRow()
                 }
                 ForEach(Array(store.worktrees.enumerated()), id: \.element.id) { index, tree in
                     if index > 0 { LXSettingsDivider() }
-                    HStack(spacing: LingXiMetrics.Space.md) {
-                        Image(systemName: "arrow.triangle.branch")
-                            .font(LXType.body)
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                            Text(tree.branch)
-                                .font(LXType.monoSmall)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Text(tree.path)
-                                .font(LXType.monoSmall)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.head)
-                        }
-                        Spacer(minLength: LingXiMetrics.Space.md)
-                        if tree.isActive {
-                            LXBadge("使用中", kind: .outline)
-                        }
-                        Text(tree.createdAt, style: .relative)
-                            .font(LXType.meta)
-                            .foregroundStyle(.secondary)
-                    }
-                    .lxSettingsRow()
+                    WorktreeRow(tree: tree,
+                                isCurrent: isCurrent(tree),
+                                onApply: { pendingAction = PendingWorktreeAction(tree: tree, action: .apply) },
+                                onDiscard: { pendingAction = PendingWorktreeAction(tree: tree, action: .discard) })
                 }
+            } footer: {
+                Text("应用会把 Worktree 的改动以「已暂存、未提交」的形式放进主工作区，由你审阅后提交，随后移除该 Worktree。")
             }
             .settingsAnchor("workspace.worktrees")
+            .confirmationDialog(pendingAction?.action == .apply ? "应用这个 Worktree？" : "丢弃这个 Worktree？",
+                                isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }),
+                                presenting: pendingAction) { pending in
+                if pending.action == .apply {
+                    Button("应用") { Task { await perform(pending) } }
+                } else {
+                    Button("丢弃", role: .destructive) { Task { await perform(pending) } }
+                }
+            } message: { pending in
+                Text(pending.action == .apply
+                     ? "\(pending.tree.branch) 的改动会落到主工作区，随后删除该 Worktree。"
+                     : "\(pending.tree.branch) 与其目录会被删除，未应用的改动无法恢复。")
+            }
             .confirmationDialog("清理失效的 Worktree？", isPresented: $confirmPrune) {
                 Button("清理", role: .destructive) { Task { await store.pruneWorktrees() } }
             } message: {
@@ -232,6 +269,44 @@ struct WorkspaceSettingsPage: View {
 
 // MARK: - Diagnostics
 
+private struct WorktreeRow: View {
+    let tree: WorkspaceWorktreeInfo
+    let isCurrent: Bool
+    let onApply: () -> Void
+    let onDiscard: () -> Void
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.md) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(LXType.body)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: LingXiMetrics.Space.xs) {
+                    Text(tree.branch).font(LXType.monoSmall).foregroundStyle(.primary).lineLimit(1)
+                    if isCurrent { LXBadge("当前", kind: .accent) }
+                    if !tree.isActive { LXBadge("已失效", kind: .outline) }
+                }
+                Text([tree.path, tree.baseCommit.map { "基于 \($0.prefix(7))" }].compactMap { $0 }.joined(separator: " · "))
+                    .font(LXType.meta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: LingXiMetrics.Space.md)
+            Text(tree.createdAt, style: .relative)
+                .font(LXType.meta)
+                .foregroundStyle(.secondary)
+            Button("应用…", action: onApply)
+                .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                .disabled(!tree.isActive)
+            Button("丢弃…", action: onDiscard)
+                .buttonStyle(LXButtonStyle(.destructive, size: .small))
+        }
+        .lxSettingsRow()
+    }
+}
+
 struct DiagnosticsSettingsPage: View {
     @ObservedObject var store: SettingsStore
     @State private var copied = false
@@ -239,13 +314,10 @@ struct DiagnosticsSettingsPage: View {
     var body: some View {
         LXSettingsScrollPage(title: "诊断",
                              subtitle: "Core 运行时状态、后台任务与诊断工具。") {
-            LXSettingsCard("运行时",
-                           rowSpacing: LingXiMetrics.Space.md,
-                           accessory: {
+            LXSettingsCard("运行时状态", accessory: {
                 HStack(spacing: LingXiMetrics.Space.sm) {
                     if store.isRefreshing { ProgressView().controlSize(.small) }
                     Button("刷新") { Task { await store.refresh() } }
-                        .controlSize(.small)
                         .disabled(store.client == nil)
                 }
             }) {
@@ -304,8 +376,7 @@ struct DiagnosticsSettingsPage: View {
                         Spacer(minLength: LingXiMetrics.Space.md)
                         if task.status == .running {
                             Button("终止") { Task { await store.terminateBackgroundTask(task.id) } }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                                .buttonStyle(LXButtonStyle(.destructive, size: .small))
                         }
                     }
                     .lxSettingsRow()
@@ -313,9 +384,37 @@ struct DiagnosticsSettingsPage: View {
             }
             .settingsAnchor("diagnostics.background")
 
-            LXSettingsCard("工具",
-                           subtitle: "诊断包包含配置摘要、近期错误、运行与 trace，分享前请自行检查。") {
-                LabeledContent("诊断包") {
+            LXSettingsCard("配置",
+                           subtitle: "所有设置都在设置窗口里修改，不需要编辑文件。某个配置文件损坏时，这里会指出是哪一个。") {
+                LabeledContent("配置状态") {
+                    if store.isConfigReadable {
+                        LXStatusText("全部可读", systemImage: "checkmark.circle", tone: .success)
+                    } else {
+                        LXStatusText("config.json 无法解析，设置不会覆盖它", systemImage: "exclamationmark.triangle",
+                                     tone: .danger)
+                    }
+                }
+                .lxSettingsRow()
+                .settingsAnchor("diagnostics.config")
+                #if os(macOS)
+                LabeledContent("数据目录") {
+                    Button("在 Finder 中显示") { NSWorkspace.shared.open(LingXiDataRoot.url) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(LXColor.accentText)
+                }
+                .lxSettingsRow()
+                .settingsAnchor("files")
+                #endif
+                LabeledContent("让 Core 重新读取配置") {
+                    Button("重新加载") { Task { await store.reloadConfiguration() } }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                        .disabled(store.client == nil)
+                }
+                .lxSettingsRow()
+            }
+
+            LXSettingsCard("诊断包") {
+                LabeledContent {
                     Button(copied ? "已复制" : "复制 JSON") {
                         Task {
                             guard let json = await store.diagnosticsBundleJSON() else { return }
@@ -326,20 +425,18 @@ struct DiagnosticsSettingsPage: View {
                             copied = true
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(LXButtonStyle(.secondary, size: .small))
                     .disabled(store.client == nil)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("诊断包")
+                        Text("包含配置摘要、近期错误、运行与 trace，分享前请自行检查。")
+                            .font(LXType.meta)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .lxSettingsRow()
                 .settingsAnchor("diagnostics.bundle")
-
-                LabeledContent("配置") {
-                    Button("让 Core 重新加载") { Task { await store.reloadConfiguration() } }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(store.client == nil)
-                }
-                .lxSettingsRow()
             }
         }
     }
@@ -361,27 +458,17 @@ struct ComputerUseSettingsPage: View {
     @State private var screenRecording = CGPreflightScreenCaptureAccess()
 
     var body: some View {
-        Form {
-            LXSettingsPageHeader(title: "Computer Use 与浏览器",
-                                 subtitle: "LingXi 获得的系统权限，与 Core 中桌面、浏览器工具的当前状态。")
-                .padding(.bottom, LingXiMetrics.Space.xl)
-
-            Section {
+        LXSettingsScrollPage(title: "Computer Use 与浏览器", subtitle: "LingXi 获得的系统权限，与 Core 中桌面、浏览器工具的当前状态。") {
+            LXSettingsCard(title: LXSettingsSectionHeader("系统权限"), accessory: {
+                Button("重新检测") {
+                    accessibility = AXIsProcessTrusted()
+                    screenRecording = CGPreflightScreenCaptureAccess()
+                }
+            }) {
                 PermissionStatusRow(title: "辅助功能（输入控制）", granted: accessibility,
                                     settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
                 PermissionStatusRow(title: "屏幕录制", granted: screenRecording,
                                     settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-            } header: {
-                HStack {
-                    LXSettingsSectionHeader("系统权限")
-                    Spacer()
-                    Button("重新检测") {
-                        accessibility = AXIsProcessTrusted()
-                        screenRecording = CGPreflightScreenCaptureAccess()
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                }
             } footer: {
                 Text("这是 LingXi 本身获得的系统授权；桌面操作工具仍由 Core 的权限策略逐次审批。")
                     .font(LXType.meta)
@@ -391,27 +478,22 @@ struct ComputerUseSettingsPage: View {
 
             // Core: BuiltinTools removes computer_batch / browser_* from the default tool list
             // ("frozen and disabled per owner directive").
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("Computer Use")) {
                 LabeledContent("状态") {
                     LXStatusText("已冻结", systemImage: "snowflake", tone: .neutral)
                 }
                 .lxSettingsRow()
                 PlaceholderLine("computer_batch 已从 Core 默认工具列表移除。解冻并提供允许应用与确认策略契约前，不提供开关。")
-            } header: {
-                LXSettingsSectionHeader("Computer Use")
             }
 
-            Section {
+            LXSettingsCard(title: LXSettingsSectionHeader("浏览器")) {
                 LabeledContent("状态") {
                     LXStatusText("已冻结", systemImage: "snowflake", tone: .neutral)
                 }
                 .lxSettingsRow()
                 PlaceholderLine("browser_navigate / browser_act 已冻结，与桌面 Computer Use 分开管理；会话、Cookie、下载与站点权限待解冻后接入。")
-            } header: {
-                LXSettingsSectionHeader("浏览器")
             }
         }
-        .lxSettingsFormChrome()
     }
 }
 
@@ -429,7 +511,7 @@ private struct PermissionStatusRow: View {
                              tone: granted ? .success : .warning)
                 if !granted, let url = URL(string: settingsURL) {
                     Button("打开系统设置") { NSWorkspace.shared.open(url) }
-                        .buttonStyle(.link)
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
                 }
             }
         }
@@ -441,57 +523,40 @@ struct AboutSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Form {
-            // 关于页的居中品牌块即页面头部：标题 + 一行说明。
-            VStack(spacing: LingXiMetrics.Space.xl) {
-                ZStack {
-                    Circle()
-                        .fill(LXColor.fillQuinary)
-                        .frame(width: 96, height: 96)
-                        .overlay {
-                            Circle()
-                                .strokeBorder(LXColor.separator, lineWidth: 1)
-                        }
-                    // Fox orange lands here and only here on this page: the mark,
-                    // never the background.
-                    Image(systemName: "flame.fill")
-                        .font(LXType.display)
-                        .foregroundStyle(LXColor.accentText)
+        ScrollView {
+            SettingsContentColumn {
+                // The one display title on this page, beside the official icon.
+                HStack(spacing: LingXiMetrics.Space.lg) {
+                    LXAppIcon(side: 64)
+                    VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                        Text("LingXi Agent")
+                            .font(LXType.display)
+                            .foregroundStyle(.primary)
+                        Text("LingXiAgent · 次世代智能体研发工作台")
+                            .font(LXType.meta)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .padding(.bottom, LingXiMetrics.Space.xxl)
 
-                VStack(spacing: LingXiMetrics.Space.sm) {
-                    Text("LingXi Agent")
-                        .font(LXType.title)
-                        .foregroundStyle(.primary)
-                    Text("LingXiAgent · 次世代智能体研发工作台")
-                        .font(LXType.meta)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
+                    LXSettingsCard("系统规格") {
+                        ValueRow(title: "应用版本", value: appVersion)
+                        ValueRow(title: "协议版本",
+                                 value: store.runtimeInfo.map { "\($0.protocolVersion)" } ?? "未连接 Core 时不可知")
+                        ValueRow(title: "本地架构", value: Self.nativeArchitecture)
+                        ValueRow(title: "核心状态", value: store.client != nil ? "Core 已连接" : "Core 未连接")
+                    }
+
+                    LXSettingsCard("赛博契约") {
+                        ValueRow(title: "准则", value: "以认真查询为荣，以遵循规范为荣。")
+                        ValueRow(title: "专属标识", value: "Crafted for high-performance agentic engineering.")
+                    }
                 }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.top, LingXiMetrics.Space.xxxl)
-            .padding(.bottom, LingXiMetrics.Space.xxl)
-
-            Section {
-                ValueRow(title: "应用版本", value: appVersion)
-                ValueRow(title: "协议版本",
-                         value: store.runtimeInfo.map { "\($0.protocolVersion)" } ?? "未连接 Core 时不可知")
-                ValueRow(title: "本地架构", value: Self.nativeArchitecture)
-                ValueRow(title: "核心状态", value: store.client != nil ? "Core 已连接" : "Core 未连接")
-            } header: {
-                LXSettingsSectionHeader("系统规格")
-            }
-
-            Section {
-                LabeledContent("准则", value: "以认真查询为荣，以遵循规范为荣。")
-                    .lxSettingsRow()
-                LabeledContent("专属标识", value: "Crafted for high-performance agentic engineering.")
-                    .lxSettingsRow()
-            } header: {
-                LXSettingsSectionHeader("赛博契约")
-            }
+            .padding(.horizontal, LingXiMetrics.Space.xxl)
+            .padding(.bottom, LingXiMetrics.Space.xxxl)
         }
-        .lxSettingsFormChrome()
     }
 
     /// Read from the built bundle, never typed in here.

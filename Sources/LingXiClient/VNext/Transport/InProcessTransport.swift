@@ -306,6 +306,50 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.configureExtension(envelope: envelope)
     }
 
+    public func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
+        try await service.getProviderConfiguration(envelope: envelope)
+    }
+
+    public func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
+        try await service.saveProviderConfiguration(envelope: envelope)
+    }
+
+    public func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.deleteProviderConfiguration(envelope: envelope)
+    }
+
+    public func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {
+        try await service.listMCPServerConfigurations(envelope: envelope)
+    }
+
+    public func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> {
+        try await service.saveMCPServerConfiguration(envelope: envelope)
+    }
+
+    public func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.deleteMCPServerConfiguration(envelope: envelope)
+    }
+
+    public func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {
+        try await service.createWorktree(envelope: envelope)
+    }
+
+    public func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> {
+        try await service.listWorktrees(envelope: envelope)
+    }
+
+    public func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.applyWorktree(envelope: envelope)
+    }
+
+    public func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.discardWorktree(envelope: envelope)
+    }
+
+    public func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.pruneWorktrees(envelope: envelope)
+    }
+
     public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
         try await service.executeExtensionCommand(envelope: envelope)
     }

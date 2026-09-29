@@ -10,7 +10,10 @@ public struct LingXiMacApp: App {
     @StateObject private var navigation = WarmNavigation()
     @Environment(\.openWindow) private var openWindow
 
-    public init() {}
+    public init() {
+        // One window, no document tabs: keeps 「显示」 free of tab-bar commands.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
 
     /// Reopens the most recent workspace at launch unless the user turned it off.
     @MainActor
@@ -92,24 +95,22 @@ public struct LingXiMenuCommands: Commands {
             .keyboardShortcut("o", modifiers: .command)
         }
 
-        CommandMenu("视图") {
+        // The system View menu (「显示」): navigator, the three tool panels, palettes.
+        CommandGroup(before: .toolbar) {
             Toggle("显示导航面板", isOn: Binding(
                 get: { runtime.sidebarModel.isNavigatorVisible },
                 set: { runtime.sidebarModel.isNavigatorVisible = $0 }
             ))
             .keyboardShortcut("s", modifiers: [.control, .command])
 
-            Toggle("显示运行上下文", isOn: $navigation.showsContext)
-                .keyboardShortcut("i", modifiers: [.option, .command])
-
             Divider()
 
-            ForEach(WarmTool.allCases) { tool in
-                Button("工具面板 · \(tool.title)") {
-                    navigation.toggle(tool)
-                }
-                .keyboardShortcut(KeyEquivalent(Character(String(WarmTool.allCases.firstIndex(of: tool)! + 1))),
-                                  modifiers: [.option, .command])
+            ForEach(Array(WarmTool.allCases.enumerated()), id: \.element) { index, tool in
+                Toggle("\(tool.title)面板", isOn: Binding(
+                    get: { navigation.selectedTool == tool },
+                    set: { _ in navigation.toggle(tool) }
+                ))
+                .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.option, .command])
             }
 
             Divider()
@@ -130,6 +131,8 @@ public struct LingXiMenuCommands: Commands {
                 })
             }
             .keyboardShortcut(.space, modifiers: .option)
+
+            Divider()
         }
 
         CommandMenu("Agent") {

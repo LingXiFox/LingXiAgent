@@ -127,7 +127,7 @@ public enum LXType {
     public static let title = Font.system(size: 20, weight: .semibold)
     /// headline 15/20 semibold — floating-surface titles.
     public static let headline = Font.system(size: 15, weight: .semibold)
-    /// callout 14/20 medium — timeline events, inspector body, options.
+    /// callout 14/20 medium — timeline events, panel body, options.
     public static let callout = Font.system(size: 14, weight: .medium)
     /// body 13/18 — controls, menus, settings rows.
     public static let body = Font.system(size: 13)
@@ -181,6 +181,8 @@ public enum LXIcon {
     public static let small: CGFloat = 12
     /// Chip caret 11.
     public static let caret: CGFloat = 11
+    /// Composer context-strip caret 10.
+    public static let stripCaret: CGFloat = 10
     /// Empty / unavailable state glyph 26.
     public static let emptyState: CGFloat = 26
 }
@@ -196,7 +198,7 @@ public enum LXControl {
     public static let large: CGFloat = 36
     /// Badge 20.
     public static let badge: CGFloat = 20
-    /// Inspector tab 24.
+    /// Tab / segment 24.
     public static let tab: CGFloat = 24
     /// Toolbar button hit target 32 × 28.
     public static let toolbarWidth: CGFloat = 32
@@ -255,13 +257,6 @@ public enum LingXiMetrics {
         public static let toolPanelMax: CGFloat = 640
         public static let stageWithToolMin: CGFloat = 500
         public static let windowWithToolMin: CGFloat = 980
-        /// Inspector 340.
-    public static let inspector: CGFloat = 340
-        public static let inspectorMin: CGFloat = 300
-        /// Wider than this, the inspector docks; narrower, it floats over the stage.
-        public static let inspectorDockWidth: CGFloat = 1120
-        /// Trailing launcher strip for the workbench dock.
-        public static let dockRail: CGFloat = 40
         public static let windowMinWidth: CGFloat = 760
         public static let windowMinHeight: CGFloat = 520
     }
@@ -281,6 +276,10 @@ public enum LingXiMetrics {
         public static let settings: CGFloat = 760
         /// Settings sidebar.
         public static let settingsSidebar: CGFloat = 230
+        /// Settings master column (Provider accounts, MCP servers).
+        public static let settingsObjects: CGFloat = 220
+        /// Below this composer width the left chip group shows icons only.
+        public static let composerCompact: CGFloat = 560
         /// Command palette.
         public static let palette: CGFloat = 640
     }

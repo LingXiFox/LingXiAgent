@@ -105,7 +105,7 @@ enum SettingsSearchIndex {
     static let staticItems: [SettingsSearchItem] = [
         .init(anchor: "core.link", page: .general, title: "Core 连接", keywords: ["connect", "进程", "stdio"]),
         .init(anchor: "core.workspace", page: .general, title: "工作区目录", keywords: ["workspace", "cwd", "目录"]),
-        .init(anchor: "files", page: .general, title: "配置文件", keywords: ["config.json", "providers.json", "mcp.json", "finder"]),
+        .init(anchor: "files", page: .diagnostics, title: "数据目录", keywords: ["配置", "finder", "config"]),
         .init(anchor: "general.reopen", page: .general, title: "启动时打开上次的工作区", keywords: ["launch", "startup", "restore", "恢复"]),
         .init(anchor: "general.sleep", page: .general, title: "运行时阻止系统睡眠", keywords: ["sleep", "caffeinate", "睡眠"]),
 

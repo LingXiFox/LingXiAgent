@@ -11,19 +11,23 @@ struct WarmToolPane: View {
     @ObservedObject var runtime: RuntimeFrontend
     let onClose: () -> Void
 
+    /// size-tool-panel: a bg-content floating panel (radius-panel, 1px ring)
+    /// with a title row — icon, name, close. Never an overlay drawer.
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: LingXiMetrics.Space.sm) {
-                Image(systemName: tool.symbol).foregroundStyle(.secondary)
+                Image(systemName: tool.symbol)
+                    .font(.system(size: LXIcon.row))
+                    .foregroundStyle(.secondary)
                 Text(tool.title).font(LXType.headline)
                 Spacer()
                 Button(action: onClose) { Image(systemName: "xmark") }
                     .buttonStyle(LXIconButtonStyle(side: LXControl.small))
-                    .help("收起工具面板")
-                    .accessibilityLabel("收起工具面板")
+                    .help("收起\(tool.title)面板")
+                    .accessibilityLabel("收起\(tool.title)面板")
             }
-            .padding(.horizontal, LingXiMetrics.Space.lg)
-            .frame(height: LingXiMetrics.Size.toolbar)
+            .padding(.horizontal, LingXiMetrics.Space.panelInset)
+            .frame(height: LingXiMetrics.Size.sidebarHead)
             LXHairline()
             Group {
                 switch tool {
@@ -34,8 +38,7 @@ struct WarmToolPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(LXColor.content)
-        .overlay(alignment: .leading) { Rectangle().fill(LXColor.separator).frame(width: 1) }
+        .lxPanel(LXColor.content)
     }
 }
 
@@ -55,40 +58,40 @@ struct WarmTasksPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("任务目标").font(.system(size: 12.5, weight: .semibold))
+            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+                    Text("任务目标").font(LXType.sectionHead)
                     HStack {
                         TextField("为当前任务设定目标", text: $goalDraft)
                             .textFieldStyle(.plain)
                         Button("设定") { runtime.setGoal(goalDraft) }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(LXButtonStyle(.secondary, size: .small))
                             .disabled(goalDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    .padding(9)
-                    .background(LXColor.window, in: RoundedRectangle(cornerRadius: 9))
+                    .padding(LingXiMetrics.Space.sm)
+                    .background(LXColor.fillQuinary, in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
                 }
-                VStack(alignment: .leading, spacing: 9) {
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
                     HStack {
-                        Text("任务胶囊").font(.system(size: 12.5, weight: .semibold))
+                        Text("任务胶囊").font(LXType.sectionHead)
                         Spacer()
                         Button { loadTasks() } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.plain)
                     }
                     Button("从目标创建任务") { createTask() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
                         .disabled(runtime.client == nil || runtime.sidebarModel.selectedSessionID == nil || goalDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if let taskError {
-                        Text(taskError).font(.system(size: 11.5)).foregroundStyle(LXColor.danger)
+                        Text(taskError).font(LXType.meta).foregroundStyle(LXColor.danger)
                     }
                     ForEach(tasks, id: \.capsule.taskID) { snapshot in
                         let capsule = snapshot.capsule
-                        VStack(alignment: .leading, spacing: 7) {
+                        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
                             Text(capsule.objective)
-                                .font(.system(size: 12.5, weight: .medium))
+                                .font(LXType.body.weight(.medium))
                                 .textSelection(.enabled)
                             Text(capsule.state.rawValue)
-                                .font(.system(size: 11.5))
+                                .font(LXType.meta)
                                 .foregroundStyle(Color.secondary)
                             HStack {
                                 if capsule.state == .running {
@@ -102,78 +105,78 @@ struct WarmTasksPane: View {
                                 }
                                 Button("分叉") { taskAction { try await $0.fork(sourceTaskID: capsule.taskID) } }
                             }
-                            .font(.system(size: 11.5))
+                            .font(LXType.meta)
                         }
-                        .padding(10)
+                        .padding(LingXiMetrics.Space.md)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(LXColor.window, in: RoundedRectangle(cornerRadius: 9))
+                        .background(LXColor.fillQuinary, in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
                     }
                 }
                 if let task = conversation.activeTask {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("当前任务").font(.system(size: 12.5, weight: .semibold))
-                        Text(task.objective).font(.system(size: 12.5)).textSelection(.enabled)
-                        Text(task.state).font(.system(size: 11.5)).foregroundStyle(Color.secondary)
+                    VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+                        Text("当前任务").font(LXType.sectionHead)
+                        Text(task.objective).font(LXType.body).textSelection(.enabled)
+                        Text(task.state).font(LXType.meta).foregroundStyle(Color.secondary)
                         if let plan = task.plan {
                             ForEach(plan.phases) { phase in
-                                Text(phase.name).font(.system(size: 11.5)).textSelection(.enabled)
+                                Text(phase.name).font(LXType.meta).textSelection(.enabled)
                             }
                         }
                         if let report = task.report {
-                            Text(report.summary).font(.system(size: 11.5)).textSelection(.enabled)
+                            Text(report.summary).font(LXType.meta).textSelection(.enabled)
                         }
                     }
                 }
                 if let live = inspector.live {
                     if !live.todos.isEmpty {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Text("待办事项").font(.system(size: 12.5, weight: .semibold))
+                        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+                            Text("待办事项").font(LXType.sectionHead)
                             ForEach(live.todos, id: \.id) { todo in
-                                HStack(spacing: 7) {
+                                HStack(spacing: LingXiMetrics.Space.sm) {
                                     Image(systemName: todo.status == "completed" ? "checkmark.circle.fill" : "circle")
                                         .foregroundStyle(todo.status == "completed" ? LXColor.success : LXColor.warning)
                                     Text(todo.title).textSelection(.enabled)
                                 }
-                                .font(.system(size: 11.5))
+                                .font(LXType.meta)
                             }
                         }
                     }
                     if !live.workflows.isEmpty {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Text("工作流").font(.system(size: 12.5, weight: .semibold))
+                        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+                            Text("工作流").font(LXType.sectionHead)
                             ForEach(live.workflows, id: \.id) { workflow in
                                 Text("\(workflow.tasks.count) 步 · \(workflow.status.rawValue)")
-                                    .font(.system(size: 11.5))
+                                    .font(LXType.meta)
                                     .textSelection(.enabled)
                             }
                         }
                     }
                     if !live.backgroundTasks.isEmpty {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Text("后台任务").font(.system(size: 12.5, weight: .semibold))
+                        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+                            Text("后台任务").font(LXType.sectionHead)
                             ForEach(live.backgroundTasks, id: \.id) { task in
                                 HStack {
                                     Text(task.id).lineLimit(1)
                                     Spacer()
                                     Button("停止") { runtime.terminateBackgroundTask(id: task.id) }
                                 }
-                                .font(.system(size: 11.5))
+                                .font(LXType.meta)
                             }
                         }
                     }
                     if live.todos.isEmpty && live.workflows.isEmpty && live.backgroundTasks.isEmpty && conversation.activeTask == nil {
                         Text("当前没有活动任务。")
-                            .font(.system(size: 12.5))
+                            .font(LXType.body)
                             .foregroundStyle(Color.secondary)
                     }
                 } else {
                     Text("打开工作区后查看任务。")
-                        .font(.system(size: 12.5))
+                        .font(LXType.body)
                         .foregroundStyle(Color.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
+            .padding(LingXiMetrics.Space.lg)
         }
         .onAppear {
             goalDraft = runtime.composerModel.goal ?? ""
@@ -246,7 +249,7 @@ private struct WarmBrowserPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
+            HStack(spacing: LingXiMetrics.Space.sm) {
                 Button { browser.webView.goBack() } label: { Image(systemName: "chevron.left") }
                     .disabled(!browser.webView.canGoBack)
                 Button { browser.webView.goForward() } label: { Image(systemName: "chevron.right") }
@@ -263,15 +266,14 @@ private struct WarmBrowserPane: View {
                 WarmBrowserView(webView: browser.webView)
             } else {
                 VStack(spacing: LingXiMetrics.Space.sm) {
-                    Image(systemName: "safari").font(.system(size: LXIcon.emptyState))
-                    Text("输入网址开始浏览").font(LXType.body)
+                    Image(systemName: "globe").font(.system(size: LXIcon.emptyState))
+                    Text("输入网址开始浏览。").font(LXType.callout)
                 }
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack(spacing: LingXiMetrics.Space.xs) {
-                Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
-                Text("用户浏览器 · 独立会话").foregroundStyle(.secondary)
+                Text("你的浏览会话 · Agent 浏览器工具在 Core 中已冻结").foregroundStyle(.secondary)
                 Spacer()
             }
             .font(LXType.meta)
@@ -286,7 +288,7 @@ private struct WarmBrowserPane: View {
     @Published var status = ""
     @Published var diff = ""
     @Published var stats = ""
-    @Published var fileStats: [String: String] = [:]
+    @Published var fileStats: [String: (additions: Int, deletions: Int)] = [:]
     @Published var log = ""
     @Published var branch = ""
     @Published var aheadBehind: String?
@@ -302,18 +304,20 @@ private struct WarmBrowserPane: View {
             let diffResult = await Task.detached { Self.run(["-C", path, "diff", "HEAD", "--no-ext-diff"]) }.value
             let statsResult = await Task.detached { Self.run(["-C", path, "diff", "--stat", "HEAD", "--no-ext-diff"]) }.value
             let numstatResult = await Task.detached { Self.run(["-C", path, "diff", "--numstat", "HEAD", "--no-ext-diff"]) }.value
-            let logResult = await Task.detached { Self.run(["-C", path, "log", "-8", "--oneline", "--decorate"]) }.value
+            let logResult = await Task.detached { Self.run(["-C", path, "log", "-8", "--format=%h%x09%s"]) }.value
             let trackingResult = await Task.detached { Self.run(["-C", path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) }.value
             status = statusResult.output
             diff = diffResult.output
             stats = statsResult.output
             fileStats = Dictionary(uniqueKeysWithValues: numstatResult.output.split(separator: "\n").compactMap { line in
                 let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-                guard parts.count == 3 else { return nil }
-                return (String(parts[2]), "+\(parts[0]) −\(parts[1])")
+                guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
+                return (String(parts[2]), (add, del))
             })
             log = logResult.output
-            branch = String((statusResult.output.components(separatedBy: "\n").first ?? "").dropFirst(3))
+            // "## main...origin/main [ahead 1]" → "main"
+            let head = String((statusResult.output.components(separatedBy: "\n").first ?? "").dropFirst(3))
+            branch = head.components(separatedBy: "...").first?.components(separatedBy: " ").first ?? head
             if trackingResult.code == 0 {
                 let counts = trackingResult.output.split(whereSeparator: \.isWhitespace)
                 aheadBehind = counts.count == 2 ? "↑\(counts[0]) ↓\(counts[1])" : nil
@@ -382,85 +386,121 @@ private struct WarmGitPane: View {
         changedFiles.filter { $0.code.last != " " || $0.code == "??" }
     }
 
+    private var commits: [(hash: String, subject: String)] {
+        git.log.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 1)
+            guard parts.count == 2 else { return nil }
+            return (String(parts[0]), String(parts[1]))
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
-            HStack {
-                Text(git.branch.isEmpty ? "工作区变更" : git.branch)
-                    .font(LXType.callout)
-                    .lineLimit(1)
-                if let tracking = git.aheadBehind {
-                    Text(tracking).font(LXType.meta).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            // Branch + ahead/behind, remote actions behind one menu.
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: LXIcon.small))
+                Text(git.branch.isEmpty ? "工作区变更" : git.branch).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: LingXiMetrics.Space.sm)
+                if git.isBusy { ProgressView().controlSize(.mini) }
+                if let tracking = git.aheadBehind { Text(tracking).monospacedDigit() }
+                Menu {
+                    Button("刷新") { git.refresh(at: workspace) }
+                    Divider()
+                    Button("暂存全部") { git.action(["add", "-A"], at: workspace) }
+                    Button("取消暂存全部") { git.action(["restore", "--staged", "."], at: workspace) }
+                    Divider()
+                    Button("获取") { git.action(["fetch"], at: workspace) }
+                    Button("拉取") { git.action(["pull", "--ff-only"], at: workspace) }
+                    Button("推送") { git.action(["push"], at: workspace) }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: LXIcon.status))
+                        .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Button { git.refresh(at: workspace) } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain)
-            }
-            HStack(spacing: LingXiMetrics.Space.md) {
-                Text("\(staged.count) 已暂存")
-                Text("\(unstaged.count) 未暂存")
-                if git.isBusy { ProgressView().controlSize(.small) }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(git.isBusy || workspace == nil)
+                .accessibilityLabel("Git 操作")
             }
             .font(LXType.meta)
             .foregroundStyle(.secondary)
-            HStack(spacing: LingXiMetrics.Space.sm) {
-                TextField("提交信息", text: $message)
-                    .textFieldStyle(.roundedBorder)
+            .padding(.horizontal, LingXiMetrics.Space.panelInset)
+            .padding(.top, LingXiMetrics.Space.md)
+
+            VStack(alignment: .trailing, spacing: LingXiMetrics.Space.sm) {
+                TextField("提交信息", text: $message, axis: .vertical)
+                    .textFieldStyle(.plain)
                     .font(LXType.body)
-                Button("提交 \(staged.count) 个文件") {
-                    git.action(["commit", "-m", message], at: workspace) { message = "" }
+                    .lineLimit(2...5)
+                    .padding(LingXiMetrics.Space.sm)
+                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
+                    .background(LXColor.content,
+                                in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control, style: .continuous))
+                    .lxRing(cornerRadius: LingXiMetrics.Radius.control)
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    Button(waitingForAgentReply ? "Agent 正在拟写…" : "让 Agent 写提交信息") {
+                        replyStartCount = conversation.items.count
+                        waitingForAgentReply = true
+                        runtime.sendMessage(text: "请根据当前已暂存的改动拟写一条英文 Git commit subject。只回复这一行，不执行提交。")
+                    }
+                    .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                    .disabled(staged.isEmpty || waitingForAgentReply || conversation.isGenerating)
+                    Button("提交 \(staged.count) 个文件") {
+                        git.action(["commit", "-m", message], at: workspace) { message = "" }
+                    }
+                    .buttonStyle(LXButtonStyle(.primary, size: .small))
+                    .disabled(staged.isEmpty || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.lxPrimary)
-                .disabled(staged.isEmpty || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            Button(waitingForAgentReply ? "Agent 正在拟写…" : "让 Agent 写提交信息") {
-                replyStartCount = conversation.items.count
-                waitingForAgentReply = true
-                runtime.sendMessage(text: "请根据当前已暂存的改动拟写一条英文 Git commit subject。只回复这一行，不执行提交。")
+            .padding(LingXiMetrics.Space.panelInset)
+
+            if let error = git.error {
+                LXStatusText(error.trimmingCharacters(in: .whitespacesAndNewlines),
+                             systemImage: "exclamationmark.triangle", tone: .danger)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, LingXiMetrics.Space.panelInset)
+                    .padding(.bottom, LingXiMetrics.Space.sm)
             }
-            .buttonStyle(.plain)
-            .font(LXType.body)
-            .foregroundStyle(LXColor.accentText)
-            .disabled(staged.isEmpty || waitingForAgentReply || conversation.isGenerating)
+            LXHairline()
+
             ScrollView {
-                VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
-                    fileSection("已暂存", files: staged)
-                    fileSection("未暂存", files: unstaged)
+                VStack(alignment: .leading, spacing: 0) {
                     if changedFiles.isEmpty {
-                        Text("工作区没有未提交改动").font(LXType.meta).foregroundStyle(.secondary)
+                        PlaceholderLine("工作区没有未提交改动。")
+                            .padding(.vertical, LingXiMetrics.Space.md)
+                    } else {
+                        fileSection("已暂存", files: staged)
+                        fileSection("未暂存", files: unstaged)
                     }
-                    HStack {
-                        Button("暂存全部") { git.action(["add", "-A"], at: workspace) }
-                        Button("取消暂存") { git.action(["restore", "--staged", "."], at: workspace) }
+                    LXSection("最近提交", separated: !changedFiles.isEmpty) {
+                        if commits.isEmpty {
+                            PlaceholderLine("还没有提交。")
+                        }
+                        ForEach(commits, id: \.hash) { commit in
+                            HStack(spacing: LingXiMetrics.Space.sm) {
+                                Text(commit.hash).font(LXType.monoSmall).foregroundStyle(.secondary)
+                                Text(commit.subject).font(LXType.body).lineLimit(1)
+                            }
+                            .frame(minHeight: 26)
+                        }
                     }
-                    .font(LXType.body)
-                    Button(showsDiff ? "收起差异" : "查看差异") { showsDiff.toggle() }
-                        .buttonStyle(.plain)
-                        .font(LXType.body)
                     if showsDiff {
-                        Text(git.diff.isEmpty ? "没有可显示的差异" : git.diff)
-                            .font(LXType.monoSmall)
-                            .textSelection(.enabled)
+                        LXSection("差异") {
+                            OutputBlock(text: git.diff.isEmpty ? "没有可显示的差异" : git.diff, isDiff: !git.diff.isEmpty)
+                        }
                     }
-                    LXHairline()
-                    Text("最近提交").font(LXType.sectionHead).foregroundStyle(.secondary)
-                    Text(git.log.isEmpty ? "暂无提交" : git.log)
-                        .font(LXType.monoSmall)
-                        .textSelection(.enabled)
+                    Button(showsDiff ? "收起差异" : "查看差异") { showsDiff.toggle() }
+                        .buttonStyle(LXButtonStyle(.plain, size: .small))
+                        .padding(.vertical, LingXiMetrics.Space.sm)
+                        .disabled(changedFiles.isEmpty)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, LingXiMetrics.Space.panelInset)
             }
-            if let error = git.error {
-                Text(error).font(.system(size: 11.5)).foregroundStyle(LXColor.danger)
-            }
-            HStack {
-                Button("获取") { git.action(["fetch"], at: workspace) }
-                Button("拉取") { git.action(["pull", "--ff-only"], at: workspace) }
-                Button("推送") { git.action(["push"], at: workspace) }
-            }
-            .font(LXType.body)
-            .disabled(git.isBusy || workspace == nil)
         }
-        .padding(15)
         .onAppear { git.refresh(at: workspace) }
         .onChange(of: workspace) { _, new in git.refresh(at: new) }
         .onChange(of: conversation.items) { _, items in
@@ -476,24 +516,34 @@ private struct WarmGitPane: View {
         }
     }
 
+    /// Status letter · mono path · `+a −d` counts. No per-type colours.
     private func fileSection(_ title: String, files: [(code: String, path: String)]) -> some View {
-        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-            Text("\(title) · \(files.count)").font(LXType.sectionHead).foregroundStyle(.secondary)
+        LXSection(title, separated: title != "已暂存") {
+            Text("\(files.count)")
+        } content: {
+            if files.isEmpty {
+                PlaceholderLine(title == "已暂存" ? "还没有暂存的文件。" : "没有未暂存的改动。")
+            }
             ForEach(files.indices, id: \.self) { index in
+                let file = files[index]
                 HStack(spacing: LingXiMetrics.Space.sm) {
-                    Text(files[index].code)
+                    Text(file.code.trimmingCharacters(in: .whitespaces) == "??" ? "?" :
+                            String(title == "已暂存" ? file.code.prefix(1) : file.code.suffix(1)))
                         .font(LXType.monoSmall)
                         .foregroundStyle(.secondary)
-                    Text(files[index].path)
-                        .font(LXType.body)
+                        .frame(width: 12, alignment: .leading)
+                    Text(file.path)
+                        .font(LXType.monoSmall)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let counts = git.fileStats[files[index].path] {
-                        Text(counts).font(LXType.meta.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer(minLength: LingXiMetrics.Space.sm)
+                    if let counts = git.fileStats[file.path] {
+                        LXDiffCount(additions: counts.additions, deletions: counts.deletions)
+                            .font(LXType.meta)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: LingXiMetrics.Size.rowList)
+                .frame(minHeight: 26)
+                .help(file.path)
             }
         }
     }
@@ -595,83 +645,135 @@ private struct WarmTerminalPane: View {
         }
     }
 
+    private var agentRunning: Bool {
+        agentCommands.contains { EventStatus($0.status) == .running }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            Picker("终端会话", selection: $selectedTab) {
-                Text("用户 Shell").tag(0)
-                Text("Agent 运行记录").tag(1)
+            // Session tabs: the agent's command record and the user's own shell.
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                sessionTab(1, title: agentCommands.last.map { "Agent · \($0.summary)" } ?? "Agent", running: agentRunning)
+                sessionTab(0, title: "zsh", running: false)
+                Spacer(minLength: 0)
+                if selectedTab == 0 {
+                    Button { terminal.interrupt() } label: { Image(systemName: "stop.circle") }
+                        .buttonStyle(LXIconButtonStyle(side: LXControl.small))
+                        .disabled(!terminal.isRunning)
+                        .help("中断 (⌃C)")
+                        .accessibilityLabel("中断")
+                    Button {
+                        if terminal.isRunning { terminal.stop() } else { terminal.start(at: workspace) }
+                    } label: { Image(systemName: terminal.isRunning ? "xmark.circle" : "play.circle") }
+                        .buttonStyle(LXIconButtonStyle(side: LXControl.small))
+                        .disabled(workspace == nil)
+                        .help(terminal.isRunning ? "结束 shell" : "启动 shell")
+                        .accessibilityLabel(terminal.isRunning ? "结束 shell" : "启动 shell")
+                }
             }
-            .pickerStyle(.segmented)
-            .padding(LingXiMetrics.Space.sm)
+            .padding(.horizontal, LingXiMetrics.Space.sm)
+            .padding(.vertical, 6)
+            LXHairline()
+
             if selectedTab == 0 {
-            HStack {
-                Text(workspace?.path ?? "未打开工作区")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("中断") { terminal.interrupt() }.disabled(!terminal.isRunning)
-                Button(terminal.isRunning ? "结束" : "启动") {
-                    if terminal.isRunning { terminal.stop() } else { terminal.start(at: workspace) }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(terminal.output.isEmpty ? "终端已就绪" : terminal.output)
+                            .font(LXType.monoSmall)
+                            .lineSpacing(3)
+                            .foregroundStyle(terminal.output.isEmpty ? Color.secondary : Color.primary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(LingXiMetrics.Space.md)
+                            .id("tail")
+                    }
+                    .onChange(of: terminal.output.count) { _, _ in proxy.scrollTo("tail", anchor: .bottom) }
                 }
-                .disabled(workspace == nil)
-            }
-            .font(.system(size: 11.5))
-            .padding(10)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(terminal.output.isEmpty ? "终端已就绪" : terminal.output)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(terminal.output.isEmpty ? Color.secondary : Color.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .id("tail")
-                        .padding(12)
+                if let error = terminal.error {
+                    LXStatusText(error, systemImage: "exclamationmark.triangle", tone: .danger)
+                        .padding(.horizontal, LingXiMetrics.Space.md)
                 }
-                .background(LXColor.window)
-                .onChange(of: terminal.output.count) { _, _ in proxy.scrollTo("tail", anchor: .bottom) }
-            }
-            if let error = terminal.error {
-                Text(error).font(.system(size: 11.5)).foregroundStyle(LXColor.danger)
-            }
-            HStack {
-                TextField("输入命令并回车", text: $terminal.command, onCommit: terminal.send)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11.5, design: .monospaced))
-                Button { terminal.send() } label: { Image(systemName: "arrow.up") }
-                    .disabled(!terminal.isRunning || terminal.command.isEmpty)
-            }
-            .padding(10)
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    Text("$").font(LXType.monoSmall).foregroundStyle(.secondary)
+                    TextField("输入命令并回车", text: $terminal.command, onCommit: terminal.send)
+                        .textFieldStyle(.plain)
+                        .font(LXType.monoSmall)
+                        .disabled(!terminal.isRunning)
+                }
+                .padding(.horizontal, LingXiMetrics.Space.md)
+                .frame(height: LingXiMetrics.Size.rowList)
+                .overlay(alignment: .top) { LXHairline() }
+                footer(workspace.map { "你的 shell · \($0.lastPathComponent)" } ?? "未打开工作区")
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.lg) {
+                    LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
                         ForEach(agentCommands, id: \.callID) { call in
                             VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                                HStack {
-                                    Text(call.summary).font(LXType.monoSmall).lineLimit(2)
-                                    Spacer()
-                                    Text(call.status).font(LXType.meta).foregroundStyle(.secondary)
+                                HStack(alignment: .firstTextBaseline, spacing: LingXiMetrics.Space.sm) {
+                                    Text("$ \(call.summary)").font(LXType.monoSmall).lineLimit(2)
+                                    Spacer(minLength: LingXiMetrics.Space.sm)
+                                    EventStatusGlyph(status: EventStatus(call.status))
                                 }
                                 if let output = call.output, !output.isEmpty {
-                                    Text(output).font(LXType.monoSmall).textSelection(.enabled)
+                                    Text(output).font(LXType.monoSmall).lineSpacing(3).textSelection(.enabled)
                                 }
                                 if let stderr = call.stderr, !stderr.isEmpty {
-                                    Text(stderr).font(LXType.monoSmall).foregroundStyle(LXColor.danger)
+                                    Text(stderr).font(LXType.monoSmall).lineSpacing(3)
+                                        .foregroundStyle(LXColor.danger)
                                         .textSelection(.enabled)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         if agentCommands.isEmpty {
-                            Text("当前会话还没有 Agent 终端运行记录")
-                                .font(LXType.meta).foregroundStyle(.secondary)
+                            PlaceholderLine("本会话还没有 Agent 执行过终端命令。")
                         }
                     }
                     .padding(LingXiMetrics.Space.md)
                 }
+                footer(agentRunning ? "Agent 正在使用终端 · 输出实时更新" : "Agent 的命令记录 · 只读")
             }
         }
-        .onAppear { terminal.start(at: workspace) }
+        .onAppear {
+            selectedTab = agentCommands.isEmpty ? 0 : 1
+            terminal.start(at: workspace)
+        }
         .onDisappear { terminal.stop() }
+    }
+
+    /// 24pt tab: fill-control when selected; the agent tab carries the 6pt
+    /// running dot while it executes.
+    private func sessionTab(_ tag: Int, title: String, running: Bool) -> some View {
+        Button { selectedTab = tag } label: {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                if running {
+                    Circle().fill(LXColor.running).frame(width: LXControl.dot, height: LXControl.dot)
+                        .accessibilityLabel("执行中")
+                }
+                Text(title).lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: 180, alignment: .leading)
+            }
+            .font(LXType.meta)
+            .foregroundStyle(selectedTab == tag ? .primary : .secondary)
+            .padding(.horizontal, LingXiMetrics.Space.sm)
+            .frame(minHeight: LXControl.tab)
+            .fixedSize()
+            .background(selectedTab == tag ? LXColor.fillControl : .clear,
+                        in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.sm, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selectedTab == tag ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func footer(_ text: String) -> some View {
+        Text(text)
+            .font(LXType.meta)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, LingXiMetrics.Space.md)
+            .frame(height: LingXiMetrics.Size.rowList)
+            .overlay(alignment: .top) { LXHairline() }
     }
 }
 #endif

@@ -118,9 +118,10 @@ public struct Session: Sendable, Equatable {
         return (prompt, removed)
     }
 
+    /// A setting, not activity: `updatedAt` orders sessions by conversation
+    /// recency, so changing the effort must not move a session to the top.
     public mutating func setReasoningEffort(_ effort: ReasoningEffort) {
         self.reasoningEffort = effort
-        self.updatedAt = Date()
     }
 }
 

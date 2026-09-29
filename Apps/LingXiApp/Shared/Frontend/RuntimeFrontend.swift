@@ -37,6 +37,9 @@ public final class RuntimeFrontend: ObservableObject {
     @Published public var isShowingAboutSheet = false
     /// Output of the last slash command, presented as a sheet.
     @Published public var commandOutput: CommandOutput?
+    /// Failure of a worktree action, shown as an alert.
+    @Published public var worktreeError: String?
+    @Published public private(set) var isSwitchingWorktree = false
     @Published public private(set) var availableCommands: [CommandDescriptor] = []
     /// Timeline tail notice for a live provider condition (rate limit, retry).
     @Published public private(set) var providerNotice: NoticePresentation?
@@ -165,7 +168,7 @@ public final class RuntimeFrontend: ObservableObject {
         sidebarModel.selectedSessionID = state.activeSessionID?.rawValue
 
         composerModel.models = state.models
-        composerModel.selectedModelID = state.currentModelID ?? state.selectedModel?.modelID
+        composerModel.selectedModelID = state.currentModelID ?? state.selectedModel?.qualifiedID
         let mode = state.nextTurnMode ?? session?.mode ?? .build
         composerModel.selectedMode = AgentRunMode(mode)
         composerModel.reasoningEffort = ReasoningEffortLevel(protocolEffort: state.effectiveReasoningEffort)
@@ -197,7 +200,7 @@ public final class RuntimeFrontend: ObservableObject {
         return InspectorSnapshot(
             status: state.status,
             runStartedAt: session?.activeTurnID.flatMap { session?.turns[$0]?.createdAt },
-            modelID: state.currentModelID ?? state.selectedModel?.modelID,
+            modelID: state.currentModelID ?? state.selectedModel?.qualifiedID,
             reasoning: state.effectiveReasoningEffort.rawValue,
             permission: state.activeTurnPermissionConfiguration?.displayName ?? "",
             providerState: session?.activeProviderRequestState,
@@ -255,6 +258,79 @@ public final class RuntimeFrontend: ObservableObject {
     private func forward(_ action: ApplicationAction) {
         guard !isApplyingProjection, let backend else { return }
         Task { await backend.dispatch(action) }
+    }
+
+    // MARK: - Isolated worktree
+
+    /// Creates a Core-managed worktree off the current HEAD and moves the
+    /// workspace into it: the agent's edits stay isolated until applied.
+    public func enterNewWorktree() async {
+        guard let client, !isSwitchingWorktree else { return }
+        isSwitchingWorktree = true
+        defer { isSwitchingWorktree = false }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMdd-HHmmss"
+        do {
+            let receipt = try await client.workspace.createWorktree(name: "task-\(formatter.string(from: .now))")
+            guard let info = receipt.result else { throw CoreError(code: .commandFailed, message: "Core 没有返回 Worktree") }
+            await openWorkspace(URL(fileURLWithPath: info.path))
+        } catch {
+            worktreeError = "无法创建独立 Worktree：\(error.localizedDescription)"
+        }
+    }
+
+    /// Squashes the worktree into the main checkout as staged changes, removes
+    /// it and returns there.
+    public func applyCurrentWorktree() async {
+        await leaveWorktree(label: "应用") { client, id in
+            _ = try await client.workspace.applyWorktree(worktreeID: id)
+        }
+    }
+
+    /// Drops the worktree and its branch, then returns to the main checkout.
+    public func discardCurrentWorktree() async {
+        await leaveWorktree(label: "丢弃") { client, id in
+            _ = try await client.workspace.discardWorktree(worktreeID: id, force: true)
+        }
+    }
+
+    /// Back to the main checkout; the worktree stays for later.
+    public func returnToMainWorkspace() async {
+        await leaveWorktree(label: "返回", action: nil)
+    }
+
+    private func leaveWorktree(label: String,
+                               action: ((LingXiClientVNext, String) async throws -> Void)?) async {
+        guard let client, let current = workspaceURL, !isSwitchingWorktree else { return }
+        isSwitchingWorktree = true
+        defer { isSwitchingWorktree = false }
+        guard let main = Self.mainWorktreeRoot(of: current) else {
+            worktreeError = "找不到主工作区。"
+            return
+        }
+        do {
+            try await action?(client, current.lastPathComponent)
+            await openWorkspace(main)
+        } catch {
+            worktreeError = "\(label) Worktree 失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// First entry of `git worktree list`: the repository's main checkout.
+    nonisolated static func mainWorktreeRoot(of directory: URL) -> URL? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory.path, "worktree", "list", "--porcelain"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let line = String(decoding: data, as: UTF8.self).split(separator: "\n").first,
+              line.hasPrefix("worktree ") else { return nil }
+        return URL(fileURLWithPath: String(line.dropFirst("worktree ".count)))
     }
 
     // MARK: - Actions

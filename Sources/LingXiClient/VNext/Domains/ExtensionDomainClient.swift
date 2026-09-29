@@ -50,6 +50,24 @@ public struct ExtensionDomainClient: Sendable {
         try await transport.reloadExtensions(envelope: CommandEnvelope(payload: VoidResult()))
     }
 
+    // MARK: mcp.json editing
+
+    public func mcpServers() async throws -> [MCPServerConfigurationDetail] {
+        try await transport.listMCPServerConfigurations(envelope: QueryEnvelope(payload: VoidResult())).payload
+    }
+
+    public func saveMCPServer(_ request: SaveMCPServerRequest) async throws -> MCPServerConfigurationDetail {
+        let receipt = try await transport.saveMCPServerConfiguration(envelope: CommandEnvelope(payload: request))
+        guard let detail = receipt.result else {
+            throw RuntimeError(category: .runtime, code: "emptyResult", message: "保存 MCP 服务器没有返回结果", retryability: .none, source: .client)
+        }
+        return detail
+    }
+
+    public func deleteMCPServer(id: String) async throws {
+        _ = try await transport.deleteMCPServerConfiguration(envelope: CommandEnvelope(payload: DeleteMCPServerRequest(id: id)))
+    }
+
     public func configure(id: String, configuration: [String: String]) async throws -> CommandReceipt<ExtensionInfo> {
         let req = ConfigureExtensionRequest(id: id, configuration: configuration)
         return try await transport.configureExtension(envelope: CommandEnvelope(payload: req))

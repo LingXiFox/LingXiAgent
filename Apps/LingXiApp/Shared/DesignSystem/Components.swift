@@ -418,9 +418,12 @@ public struct LXSection<Accessory: View, Content: View>: View {
 
 /// 1px separator.
 public struct LXHairline: View {
-    public init() {}
+    let vertical: Bool
+    public init(vertical: Bool = false) { self.vertical = vertical }
     public var body: some View {
-        Rectangle().fill(LXColor.separator).frame(height: 1).allowsHitTesting(false).accessibilityHidden(true)
+        Rectangle().fill(LXColor.separator)
+            .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
+            .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 
@@ -619,36 +622,34 @@ struct LXDiffCount: View {
     }
 }
 
-// MARK: Brand mark
+// MARK: App icon
 
-/// Stand-in mark until the real logo lands: 18-radius block (ink in light,
-/// milk in dark), two concentric rings in bg-content, a 4pt accent dot.
-public struct LXBrandMark: View {
+/// The official app icon (`LingXiAgent Icon/ICON.icon` export): Default in
+/// light appearance, Dark in dark. Only the empty workspace and About use it;
+/// it is never an in-interface icon button.
+public struct LXAppIcon: View {
     var side: CGFloat
     @Environment(\.colorScheme) private var colorScheme
 
     public init(side: CGFloat = 64) { self.side = side }
 
     public var body: some View {
-        let unit = side / 64
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 18 * unit, style: .continuous)
-                .fill(colorScheme == .dark ? LXBrand.milk50 : LXBrand.ink900)
-            RoundedRectangle(cornerRadius: 10 * unit, style: .continuous)
-                .stroke(LXColor.content, lineWidth: 1.5)
-                .frame(width: 44 * unit, height: 44 * unit)
-                .offset(x: 10 * unit, y: 10 * unit)
-            RoundedRectangle(cornerRadius: 4 * unit, style: .continuous)
-                .stroke(LXColor.content, lineWidth: 1.5)
-                .frame(width: 28 * unit, height: 28 * unit)
-                .offset(x: 18 * unit, y: 18 * unit)
-            Circle()
-                .fill(LXColor.accent)
-                .frame(width: 8 * unit, height: 8 * unit)
-                .offset(x: 42 * unit, y: 14 * unit)
+        Group {
+            if let image = Self.image(dark: colorScheme == .dark) {
+                Image(nsImage: image).resizable().interpolation(.high)
+            } else {
+                RoundedRectangle(cornerRadius: side * 0.225, style: .continuous).fill(LXBrand.ink900)
+            }
         }
         .frame(width: side, height: side)
         .accessibilityHidden(true)
+    }
+
+    private static func image(dark: Bool) -> NSImage? {
+        let name = dark ? "AppIcon-Dark" : "AppIcon-Default"
+        guard let url = Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "Resources")
+        else { return nil }
+        return NSImage(contentsOf: url)
     }
 }
 
@@ -661,15 +662,19 @@ public struct LXSidebarRow<Trailing: View>: View {
     let title: String
     let symbol: String
     let isSelected: Bool
+    let height: CGFloat
     let action: () -> Void
     let trailing: Trailing
     @State private var isHovered = false
 
-    public init(_ title: String, symbol: String, isSelected: Bool, action: @escaping () -> Void,
+    public init(_ title: String, symbol: String, isSelected: Bool,
+                height: CGFloat = LingXiMetrics.Size.rowList,
+                action: @escaping () -> Void,
                 @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
         self.title = title
         self.symbol = symbol
         self.isSelected = isSelected
+        self.height = height
         self.action = action
         self.trailing = trailing()
     }
@@ -689,7 +694,7 @@ public struct LXSidebarRow<Trailing: View>: View {
                 trailing
             }
             .padding(.horizontal, LingXiMetrics.Space.sm)
-            .frame(height: LingXiMetrics.Size.rowList)
+            .frame(height: height)
             .background(isSelected ? LXColor.fillControl : (isHovered ? LXColor.fillQuinary : .clear),
                         in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
             .contentShape(Rectangle())

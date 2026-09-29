@@ -821,6 +821,14 @@ public protocol LingXiProtocolService: Sendable {
     func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult>
     func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult>
 
+    // MARK: - 17. Configuration editing (providers.json / mcp.json)
+    func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail>
+    func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail>
+    func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult>
+    func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]>
+    func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail>
+    func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult>
+
     // MARK: - 16. Agent Preset & Side Question
     func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult>
     func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]>
@@ -921,6 +929,30 @@ public extension LingXiProtocolService {
 
     func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
         throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
+    }
+
+    func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
+    }
+
+    func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
+    }
+
+    func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
+    }
+
+    func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 MCP 配置")
+    }
+
+    func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 MCP 配置")
+    }
+
+    func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 MCP 配置")
     }
 
     func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {

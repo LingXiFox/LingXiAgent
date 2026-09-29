@@ -357,6 +357,13 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> { try await command("worktree.discard", envelope) }
     public func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> { try await command("worktree.prune", envelope) }
 
+    public func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> { try await response("provider.config.get", envelope) }
+    public func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> { try await command("provider.config.save", envelope) }
+    public func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> { try await command("provider.config.delete", envelope) }
+    public func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> { try await response("mcp.config.list", envelope) }
+    public func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> { try await command("mcp.config.save", envelope) }
+    public func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> { try await command("mcp.config.delete", envelope) }
+
     public func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> { try await command("agent.sideQuestion", envelope) }
     public func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]> { try await response("agent.presets", envelope) }
     public func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]> { try await response("agent.runs", envelope) }

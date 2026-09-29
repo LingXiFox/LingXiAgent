@@ -57,6 +57,10 @@ public final class SettingsStore: ObservableObject {
     @Published private(set) var contextPolicy: ContextCachePolicySnapshot?
     @Published private(set) var workspace: WorkspaceSummary?
     @Published private(set) var worktrees: [WorkspaceWorktreeInfo] = []
+    /// `mcp.json` servers as stored (the form's source of truth).
+    @Published private(set) var mcpServers: [MCPServerConfigurationDetail] = []
+    /// Set after an MCP write: connections change only when Core restarts.
+    @Published var mcpNeedsRestart = false
     @Published private(set) var backgroundTasks: [BackgroundTaskSnapshot] = []
     @Published private(set) var providerMetrics: ProviderMetricsInfo?
     @Published private(set) var isRefreshing = false
@@ -204,6 +208,7 @@ public final class SettingsStore: ObservableObject {
         async let worktrees = try? client.workspace.listWorktrees()
         async let tasks = try? client.diagnostics.getBackgroundTasks()
         async let metrics = try? client.diagnostics.getProviderMetrics()
+        async let mcpServers = try? client.extensionDomain.mcpServers()
 
         self.runtimeInfo = await info
         self.health = await health
@@ -218,6 +223,7 @@ public final class SettingsStore: ObservableObject {
         self.worktrees = await worktrees ?? []
         self.backgroundTasks = await tasks ?? []
         self.providerMetrics = await metrics
+        self.mcpServers = await mcpServers ?? []
     }
 
     private func clearLiveState() {
@@ -225,7 +231,7 @@ public final class SettingsStore: ObservableObject {
         providers = []; providerStatus = nil; providerTests = [:]
         models = []; modelSelection = nil; extensions = []
         contextPolicy = nil; workspace = nil; worktrees = []
-        backgroundTasks = []; providerMetrics = nil
+        backgroundTasks = []; providerMetrics = nil; mcpServers = []
     }
 
     // MARK: - Core commands
@@ -292,6 +298,82 @@ public final class SettingsStore: ObservableObject {
 
     func pruneWorktrees() async {
         await perform("清理 Worktree") { _ = try await $0.workspace.pruneWorktrees(force: false) }
+    }
+
+    func applyWorktree(_ id: String, message: String? = nil) async -> Bool {
+        await performReporting("应用 Worktree") { _ = try await $0.workspace.applyWorktree(worktreeID: id, commitMessage: message) }
+    }
+
+    func discardWorktree(_ id: String) async -> Bool {
+        await performReporting("丢弃 Worktree") { _ = try await $0.workspace.discardWorktree(worktreeID: id, force: true) }
+    }
+
+    // MARK: - providers.json
+
+    /// nil when the account is not a providers.json entry (OAuth / built-in).
+    func providerConfiguration(_ providerID: String) async -> ProviderConfigurationDetail? {
+        try? await client?.provider.configuration(providerID: providerID)
+    }
+
+    /// Validated and written by Core; the key goes to its vault.
+    func saveProvider(_ request: SaveProviderConfigurationRequest) async -> ProviderConfigurationDetail? {
+        guard let client else { notice = "未连接 Core。"; return nil }
+        do {
+            let detail = try await client.provider.saveConfiguration(request)
+            notice = "已保存 \(detail.name)。"
+            await refresh()
+            return detail
+        } catch {
+            notice = "保存 Provider 失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func deleteProvider(_ providerID: String) async -> Bool {
+        await performReporting("移除 Provider") { try await $0.provider.deleteConfiguration(providerID: providerID) }
+    }
+
+    // MARK: - mcp.json
+
+    func saveMCPServer(_ request: SaveMCPServerRequest) async -> MCPServerConfigurationDetail? {
+        guard let client else { notice = "未连接 Core。"; return nil }
+        do {
+            let detail = try await client.extensionDomain.saveMCPServer(request)
+            mcpNeedsRestart = true
+            notice = nil
+            await refresh()
+            return detail
+        } catch {
+            notice = "保存 MCP 服务器失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func deleteMCPServer(_ id: String) async -> Bool {
+        let ok = await performReporting("移除 MCP 服务器") { try await $0.extensionDomain.deleteMCPServer(id: id) }
+        if ok { mcpNeedsRestart = true }
+        return ok
+    }
+
+    /// Restarts Core in the same workspace so new MCP connections take effect.
+    func restartCore() async {
+        guard let runtime, let workspace = runtime.workspaceURL else { return }
+        await runtime.openWorkspace(workspace)
+        mcpNeedsRestart = false
+        await refresh()
+    }
+
+    /// Like `perform`, and tells the caller whether it worked.
+    private func performReporting(_ label: String, _ body: (LingXiClientVNext) async throws -> Void) async -> Bool {
+        guard let client else { notice = "未连接 Core。"; return false }
+        do {
+            try await body(client)
+            await refresh()
+            return true
+        } catch {
+            notice = "\(label)失败：\(error.localizedDescription)"
+            return false
+        }
     }
 
     /// Diagnostics bundle as pretty JSON, for pasting into an issue.

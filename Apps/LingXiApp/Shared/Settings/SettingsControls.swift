@@ -22,9 +22,8 @@ private struct SettingsAnchorModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .id(anchor)
-            // The search hit is the only tinted state here, and it uses the brand
-            // accent-soft wash — never the system accent colour.
-            .listRowBackground(highlight == anchor ? LXColor.accentSoft : nil)
+            // A search hit washes its row with fill-quinary; nothing else tints.
+            .background(highlight == anchor ? LXColor.fillQuinary : .clear)
     }
 }
 
@@ -67,18 +66,20 @@ extension EnvironmentValues {
     }
 }
 
-/// §7 Settings row: control text (13), min-height 44, and inside a group
-/// container 16 horizontal / 12 vertical padding, so the hairline that
-/// separates adjacent rows spans the full group width.
+/// §7 Settings row: control text (13). A group container lays its children
+/// out as 44pt rows (16/8 padding); in a self-padding row list (`rowSpacing:
+/// 0`) the row pads itself to the same metrics so hairlines span the group.
 private struct LXSettingsRowModifier: ViewModifier {
     @Environment(\.lxSettingsRowInset) private var inset
 
     func body(content: Content) -> some View {
         content
             .font(LXType.body)
-            .frame(maxWidth: .infinity, minHeight: LingXiMetrics.Size.formRow, alignment: .leading)
+            .frame(maxWidth: .infinity,
+                   minHeight: inset > 0 ? LingXiMetrics.Size.formRow - 2 * LingXiMetrics.Space.sm : nil,
+                   alignment: .leading)
             .padding(.horizontal, inset)
-            .padding(.vertical, inset > 0 ? LingXiMetrics.Space.md : 0)
+            .padding(.vertical, inset > 0 ? LingXiMetrics.Space.sm : 0)
     }
 }
 
@@ -86,6 +87,43 @@ extension View {
     /// Shared row scale for every Settings row, Form or group alike.
     func lxSettingsRow() -> some View {
         modifier(LXSettingsRowModifier())
+    }
+}
+
+/// Settings rows put the label on the left and the control on the right.
+struct LXSettingsLabeledContentStyle: LabeledContentStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .center, spacing: LingXiMetrics.Space.md) {
+            configuration.label
+                .foregroundStyle(.primary)
+            Spacer(minLength: LingXiMetrics.Space.md)
+            configuration.content
+        }
+    }
+}
+
+/// Toggle row: label left, 32×18 switch right; on is accent.
+struct LXSettingsSwitchStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .center, spacing: LingXiMetrics.Space.md) {
+            configuration.label
+            Spacer(minLength: LingXiMetrics.Space.md)
+            Toggle("", isOn: configuration.$isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .tint(LXColor.accent)
+        }
+    }
+}
+
+extension View {
+    /// Row styles shared by every settings page.
+    func lxSettingsControlStyles() -> some View {
+        labeledContentStyle(LXSettingsLabeledContentStyle())
+            .toggleStyle(LXSettingsSwitchStyle())
+            // Pop-up menus stay neutral; only a switch's on state is accent.
+            .tint(Color(nsColor: .secondaryLabelColor))
     }
 }
 
@@ -165,10 +203,14 @@ struct ConfigPicker: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        Picker(selection: store.binding(key)) {
-            ForEach(options, id: \.value) { option in
-                Text(option.label).tag(option.value)
-            }
+        LabeledContent {
+            Picker(selection: store.binding(key)) {
+                ForEach(options, id: \.value) { option in
+                    Text(option.label).tag(option.value)
+                }
+            } label: { EmptyView() }
+            .labelsHidden()
+            .fixedSize()
         } label: {
             ConfigLabel(title: title, info: info, key: key, store: store)
         }
@@ -192,7 +234,7 @@ struct ConfigNumberField: View {
                 TextField(title, value: store.binding(key), format: .number)
                     .labelsHidden()
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 120)
+                    .frame(width: 96)
                 if let unit {
                     Text(unit)
                         .font(LXType.meta)
@@ -219,7 +261,7 @@ struct ConfigSecondsField: View {
                 TextField(title, value: store.binding(key), format: .number.precision(.fractionLength(0...1)))
                     .labelsHidden()
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 88)
+                    .frame(width: 96)
                 Text("秒")
                     .font(LXType.meta)
                     .foregroundStyle(.secondary)
@@ -348,4 +390,258 @@ struct ValueRow: View {
     }
 }
 
+#endif
+
+#if canImport(SwiftUI)
+import LingXiProtocol
+
+// MARK: - Editing rows (providers.json / mcp.json forms)
+
+/// Text row: label left, 280pt field right; URLs, commands and IDs are mono.
+struct LXTextRow: View {
+    let title: String
+    var info: String?
+    @Binding var text: String
+    var prompt: String = ""
+    var monospaced = false
+
+    var body: some View {
+        LabeledContent {
+            TextField(title, text: $text, prompt: Text(prompt))
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .font(monospaced ? LXType.mono : LXType.body)
+                .frame(width: 280)
+        } label: {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Text(title)
+                if let info { InfoHint(info) }
+            }
+        }
+        .lxSettingsRow()
+    }
+}
+
+/// Number row: 96pt tabular field + unit. Empty means "not set" when optional.
+struct LXNumberRow: View {
+    let title: String
+    var info: String?
+    @Binding var value: Int?
+    var unit: String?
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                TextField(title, value: $value, format: .number, prompt: Text("—"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .font(LXType.body.monospacedDigit())
+                    .frame(width: 96)
+                if let unit { Text(unit).font(LXType.meta).foregroundStyle(.secondary) }
+            }
+        } label: {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Text(title)
+                if let info { InfoHint(info) }
+            }
+        }
+        .lxSettingsRow()
+    }
+}
+
+extension Binding where Value == Int {
+    /// Adapts a required number to `LXNumberRow`; clearing the field keeps the value.
+    var optional: Binding<Int?> {
+        Binding<Int?>(get: { wrappedValue }, set: { if let new = $0 { wrappedValue = new } })
+    }
+}
+
+/// Secret row: dots + 「替换…」 when stored; never shows or reads back a value.
+/// The typed value only lives in `pending` until the form is saved.
+struct LXSecretRow: View {
+    let title: String
+    var info: String?
+    let stored: SecretSource
+    @Binding var pending: SecretUpdate
+    @State private var isEditing = false
+    @State private var draft = ""
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Text(stateText)
+                    .font(isDots || isEnvironment ? LXType.mono : LXType.body)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(isEnvironment ? "运行时从环境变量读取" : "")
+                    .accessibilityLabel(accessibilityState)
+                Button(buttonTitle) { draft = ""; isEditing = true }
+                    .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                    .popover(isPresented: $isEditing, arrowEdge: .bottom) { editor }
+            }
+        } label: {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Text(title)
+                if let info { InfoHint(info) }
+            }
+        }
+        .lxSettingsRow()
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
+            Text(title).font(LXType.headline)
+            SecureField("粘贴新的值", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .font(LXType.mono)
+                .frame(width: 300)
+                .onSubmit(commit)
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                if hasValue {
+                    Button("清除") { pending = .clear; isEditing = false }
+                        .buttonStyle(LXButtonStyle(.destructive, size: .small))
+                }
+                Spacer(minLength: 0)
+                Button("取消") { isEditing = false }
+                    .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                Button("确定", action: commit)
+                    .buttonStyle(LXButtonStyle(.primary, size: .small))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(LingXiMetrics.Space.lg)
+    }
+
+    private func commit() {
+        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        pending = .replace(value)
+        draft = ""
+        isEditing = false
+    }
+
+    private var hasValue: Bool {
+        switch pending {
+        case .replace: return true
+        case .clear: return false
+        case .keep: return stored != .none
+        }
+    }
+
+    private var isDots: Bool {
+        if case .keep = pending, stored == .vault { return true }
+        return false
+    }
+
+    private var stateText: String {
+        switch pending {
+        case .replace: return "将替换（未保存）"
+        case .clear: return "将清除（未保存）"
+        case .keep:
+            switch stored {
+            case .none: return "未设置"
+            case .vault: return "••••••••••••"
+            case .environment(let name): return "$\(name)"
+            }
+        }
+    }
+
+    private var isEnvironment: Bool {
+        if case .keep = pending, case .environment = stored { return true }
+        return false
+    }
+
+    private var accessibilityState: String {
+        if isDots { return "已保存" }
+        if case .keep = pending, case .environment(let name) = stored { return "来自环境变量 \(name)" }
+        return stateText
+    }
+
+    private var buttonTitle: String { hasValue ? "替换…" : "设置…" }
+}
+
+/// Key–value list: one row per pair (two fields + delete) and an 「添加…」 row.
+struct LXKeyValueEditor: View {
+    @Binding var pairs: [KeyValuePair]
+    let keyPrompt: String
+    let valuePrompt: String
+    let addTitle: String
+
+    struct KeyValuePair: Identifiable, Equatable {
+        let id = UUID()
+        var key: String
+        var value: String
+
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key && lhs.value == rhs.value }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+            ForEach($pairs) { $pair in
+                HStack(spacing: LingXiMetrics.Space.sm) {
+                    TextField(keyPrompt, text: $pair.key)
+                        .textFieldStyle(.roundedBorder)
+                        .font(LXType.mono)
+                    TextField(valuePrompt, text: $pair.value)
+                        .textFieldStyle(.roundedBorder)
+                        .font(LXType.mono)
+                    Button {
+                        pairs.removeAll { $0.id == pair.id }
+                    } label: { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("删除 \(pair.key)")
+                }
+            }
+            Button {
+                pairs.append(KeyValuePair(key: "", value: ""))
+            } label: {
+                Label(addTitle, systemImage: "plus.circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(LXColor.accentText)
+        }
+        .lxSettingsRow()
+    }
+
+    static func pairs(from dictionary: [String: String]) -> [KeyValuePair] {
+        dictionary.keys.sorted().map { KeyValuePair(key: $0, value: dictionary[$0] ?? "") }
+    }
+
+    static func dictionary(from pairs: [KeyValuePair]) -> [String: String] {
+        var result: [String: String] = [:]
+        for pair in pairs {
+            let key = pair.key.trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty { result[key] = pair.value }
+        }
+        return result
+    }
+}
+
+// MARK: - Master–detail plumbing
+
+private struct SettingsAddTriggerKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+private struct SettingsSelectKey: EnvironmentKey {
+    static let defaultValue: @MainActor (String?) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    /// Bumped by the master column's 「＋」; the page presents its add form.
+    var settingsAddTrigger: Int {
+        get { self[SettingsAddTriggerKey.self] }
+        set { self[SettingsAddTriggerKey.self] = newValue }
+    }
+
+    /// Selects an object in the master column (after adding one).
+    var settingsSelect: @MainActor (String?) -> Void {
+        get { self[SettingsSelectKey.self] }
+        set { self[SettingsSelectKey.self] = newValue }
+    }
+}
 #endif

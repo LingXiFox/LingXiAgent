@@ -61,8 +61,8 @@ struct TimelineRowView: View {
         case .notice(let item):
             if case .notice(let notice) = item.kind { NoticeRow(notice: notice) }
         case .terminal(let item):
-            if case .terminal(let title, let isSuccess, let message) = item.kind {
-                CompletionRow(title: title, isSuccess: isSuccess, message: message)
+            if case .terminal(let title, let isSuccess, let message, let isCancelled) = item.kind {
+                CompletionRow(title: title, isSuccess: isSuccess, message: message, isCancelled: isCancelled)
             }
         }
     }
@@ -541,21 +541,30 @@ private struct CompletionRow: View {
     let title: String
     let isSuccess: Bool
     let message: String
+    var isCancelled = false
+
+    /// Success: checkmark.circle / status-success. Stopped by the user:
+    /// slash.circle / text-secondary. Failure: exclamationmark.triangle.fill.
+    private var glyph: (symbol: String, tint: AnyShapeStyle) {
+        if isSuccess { return ("checkmark.circle", AnyShapeStyle(LXStatus.success)) }
+        if isCancelled { return ("slash.circle", AnyShapeStyle(.secondary)) }
+        return ("exclamationmark.triangle.fill", AnyShapeStyle(LXStatus.error))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: LingXiMetrics.Space.sm) {
-                Image(systemName: isSuccess ? "checkmark.circle" : "exclamationmark.triangle.fill")
+                Image(systemName: glyph.symbol)
                     .font(.system(size: LXIcon.event))
-                    .foregroundStyle(isSuccess ? LXStatus.success : LXStatus.error)
+                    .foregroundStyle(glyph.tint)
                     .frame(width: LingXiMetrics.Size.glyphColumn)
-                eventTitle(title, caption: isSuccess ? message : nil)
+                eventTitle(title, caption: isSuccess || isCancelled ? message : nil)
                     .lineLimit(1)
                     .layoutPriority(1)
                 LXHairline()
             }
             .frame(minHeight: LingXiMetrics.Size.rowEvent)
-            if !isSuccess && !message.isEmpty {
+            if !isSuccess && !isCancelled && !message.isEmpty {
                 Text(message)
                     .font(LXType.meta)
                     .foregroundStyle(.secondary)

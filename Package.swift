@@ -16,7 +16,9 @@ let guiTargets: [Target] = [
     .target(
         name: "LingXiFrontendKit",
         dependencies: ["LingXiApplication", "LingXiClient", "LingXiProtocol"],
-        path: "Apps/LingXiApp/Shared"
+        path: "Apps/LingXiApp/Shared",
+        // App icon previews exported from `LingXiAgent Icon/ICON.icon` (Default / Dark).
+        resources: [.copy("Resources")]
     ),
     // macOS GUI executable entry. Wrapped into LingXi.app by Scripts/bundle-mac-app.sh.
     .executableTarget(

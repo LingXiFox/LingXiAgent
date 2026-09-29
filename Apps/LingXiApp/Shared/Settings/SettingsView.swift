@@ -6,26 +6,29 @@ import SwiftUI
 struct SettingsSidebar: View {
     @ObservedObject var store: SettingsStore
     @Binding var selectedPage: SettingsPage
+    @Binding var highlight: String?
     @State private var query = ""
 
-    init(store: SettingsStore, selectedPage: Binding<SettingsPage>) {
+    init(store: SettingsStore, selectedPage: Binding<SettingsPage>, highlight: Binding<String?> = .constant(nil)) {
         self.store = store
         self._selectedPage = selectedPage
+        self._highlight = highlight
     }
 
     var body: some View {
         VStack(spacing: 0) {
             NativeSearchField(text: $query, prompt: "搜索设置")
                 .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
-                .padding(.vertical, LingXiMetrics.Space.sm)
+                .padding(.top, LingXiMetrics.Space.lg)
+                .padding(.bottom, LingXiMetrics.Space.sm)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if query.trimmingCharacters(in: .whitespaces).isEmpty {
                         ForEach(SettingsPage.Group.allCases) { group in
                             LXSidebarSectionHead(group.rawValue)
                             ForEach(group.pages) { page in
-                                LXSidebarRow(page.title, symbol: page.symbol,
-                                             isSelected: page == selectedPage) { selectedPage = page }
+                                LXSidebarRow(page.title, symbol: page.symbol, isSelected: page == selectedPage,
+                                             height: LingXiMetrics.Size.menuItem) { selectedPage = page }
                             }
                         }
                     } else {
@@ -68,7 +71,11 @@ struct SettingsSidebar: View {
             ForEach(SettingsPage.allCases.filter { page in hits.contains { $0.page == page } }) { page in
                 LXSidebarSectionHead(page.title)
                 ForEach(hits.filter { $0.page == page }) { item in
-                    LXSidebarRow(item.title, symbol: page.symbol, isSelected: false) { selectedPage = item.page }
+                    LXSidebarRow(item.title, symbol: page.symbol, isSelected: false,
+                                 height: LingXiMetrics.Size.menuItem) {
+                        selectedPage = item.page
+                        DispatchQueue.main.async { highlight = item.anchor }
+                    }
                 }
             }
         }
@@ -87,7 +94,7 @@ struct SettingsSidebar: View {
 /// transient notice and the Core-required banner.
 ///
 /// The stage's quiet ambient (§5 `is-quiet`) is painted by whoever hosts this
-/// detail column — `MainStageSplitView` for the shipping window, `SettingsView`
+/// detail column — `SettingsWorkbench` for the shipping sheet, `SettingsView`
 /// below for the standalone preview — and stays a single instance. This root
 /// deliberately does NOT fill itself with an opaque `LXColor.window`: doing so
 /// hid the ambient and re-created the old defect of a flat gray form area with

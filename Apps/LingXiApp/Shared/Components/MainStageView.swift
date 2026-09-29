@@ -43,7 +43,7 @@ public struct MainStageView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: LingXiMetrics.Radius.panel, style: .continuous))
         .lxRing(cornerRadius: LingXiMetrics.Radius.panel)
-        .padding([.horizontal, .bottom], LingXiMetrics.Space.sm)
+        .padding([.leading, .bottom], LingXiMetrics.Space.sm)
         .environment(\.runtimeFrontend, runtime)
         .sheet(item: $runtime.commandOutput) { CommandOutputSheet(output: $0) }
         .sheet(isPresented: $runtime.isShowingTasks) {
@@ -219,8 +219,8 @@ private struct BottomTracking: ViewModifier {
 
 // MARK: - Empty workspace
 
-/// A centred composition, not a landing page: one question whose object is the
-/// workspace itself → the composer → a row of starters. The lower half of the
+/// A centred composition, not a landing page: the app icon, one question and
+/// the workspace line → the composer → a row of starters. The lower half of the
 /// window stays empty on purpose; an empty workspace is not a dashboard.
 private struct EmptyWorkspaceStage: View {
     @ObservedObject var runtime: RuntimeFrontend
@@ -235,16 +235,11 @@ private struct EmptyWorkspaceStage: View {
         ReadingColumn {
             VStack(spacing: LingXiMetrics.Space.xl) {
                 VStack(spacing: LingXiMetrics.Space.md) {
-                    LXBrandMark(side: 34)
-                    HStack(spacing: LingXiMetrics.Space.sm) {
-                        Text("想在")
-                        workspaceMenu
-                        Text("里做什么？")
-                    }
-                    .font(LXType.display)
-                    .kerning(-0.28)
-                    .multilineTextAlignment(.center)
-                    .accessibilityAddTraits(.isHeader)
+                    LXAppIcon(side: 64)
+                    Text("今天想让灵犀做什么？")
+                        .font(LXType.display)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
                     Text(caption)
                         .font(LXType.meta)
                         .foregroundStyle(.secondary)
@@ -265,35 +260,11 @@ private struct EmptyWorkspaceStage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The workspace is the subject of the question, so switching it lives here
-    /// rather than buried in the sidebar footer.
-    private var workspaceMenu: some View {
-        Menu {
-            Button("打开其他工作区…") { WorkspacePicker.choose(runtime) }
-            Divider()
-            ForEach(RecentWorkspaces.all.filter { FileManager.default.fileExists(atPath: $0.path) },
-                    id: \.path) { url in
-                Button(url.lastPathComponent) {
-                    Task { await runtime.openWorkspace(url) }
-                }
-            }
-        } label: {
-            Text(sidebar.workspace.name)
-                .foregroundStyle(LXColor.accentText)
-                .padding(.horizontal, LingXiMetrics.Space.sm)
-                .background(LXColor.accentSoft, in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control,
-                                                                     style: .continuous))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("切换工作区")
-        .accessibilityLabel("工作区 \(sidebar.workspace.name)")
-    }
-
     /// Workspace, branch and index state, all from the runtime.
     private var caption: String {
         var parts: [String] = []
-        if let branch = sidebar.workspace.gitBranch, !branch.isEmpty { parts.append(branch) }
+        if !sidebar.workspace.name.isEmpty { parts.append("工作区 \(sidebar.workspace.name)") }
+        if let branch = sidebar.workspace.gitBranch, !branch.isEmpty { parts.append("分支 \(branch)") }
         switch sidebar.workspace.indexingState.lowercased() {
         case "ready": parts.append("索引就绪")
         case "indexing", "running", "in_progress", "pending": parts.append("索引进行中")
@@ -360,7 +331,7 @@ private struct WorkspaceGate: View {
     var body: some View {
         VStack(spacing: LingXiMetrics.Space.xl) {
             VStack(spacing: LingXiMetrics.Space.lg) {
-                LXBrandMark(side: 48)
+                LXAppIcon(side: 64)
                 Text(title).font(LXType.title)
                 Text(detail)
                     .font(LXType.body)

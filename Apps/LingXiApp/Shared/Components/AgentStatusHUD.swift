@@ -18,13 +18,11 @@ struct AgentStatusHUD: View {
     var body: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
             HStack(spacing: LingXiMetrics.Space.sm) {
-                HStack(spacing: LingXiMetrics.Space.xs) {
-                    Image(systemName: status.symbol)
-                        .foregroundStyle(status.color)
-                        .font(.system(size: LXIcon.status))
-                    Text(status.label).font(LXType.meta.weight(.medium))
+                HStack(spacing: 6) {
+                    statusGlyph
+                    Text(status.label).font(LXType.meta.weight(.medium)).foregroundStyle(.primary)
                     if compact {
-                        Text(percent(contextUsage))
+                        Text("上下文 \(percent(contextUsage))")
                             .font(LXType.meta.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -32,45 +30,70 @@ struct AgentStatusHUD: View {
                 .accessibilityElement(children: .combine)
                 if !compact { Spacer(minLength: 0) }
                 Button(action: onToggle) {
-                    Image(systemName: compact ? "chevron.down" : "chevron.up")
-                        .font(.system(size: LXIcon.caret))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: LXIcon.caret, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(compact ? -90 : 0))
+                        .frame(width: LXControl.small - 4, height: LXControl.small - 4)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(compact ? "展开运行上下文" : "收起运行上下文")
+                .help(compact ? "展开运行状态" : "收起运行状态")
+                .accessibilityLabel(compact ? "展开运行状态" : "收起运行状态")
             }
             if !compact {
-                metric("缓存命中", value: cacheHit, detail: percent(cacheHit))
-                metric("上下文", value: contextUsage, detail: percent(contextUsage), warning: (contextUsage ?? 0) >= 0.85)
-                metric("P-Core", value: pCoreUsage, detail: percent(pCoreUsage))
-                metric("E-Core", value: eCoreUsage, detail: percent(eCoreUsage))
+                VStack(spacing: 6) {
+                    metric("缓存命中", value: cacheHit)
+                    metric("上下文", value: contextUsage, warning: (contextUsage ?? 0) >= 0.85)
+                    metric("P-Core", value: pCoreUsage)
+                    metric("E-Core", value: eCoreUsage)
+                }
             }
         }
-        .padding(compact ? LingXiMetrics.Space.sm : LingXiMetrics.Space.panelInset)
+        .padding(.horizontal, compact ? LingXiMetrics.Space.md : LingXiMetrics.Space.panelInset)
+        .padding(.vertical, compact ? 6 : LingXiMetrics.Space.md)
         .frame(width: compact ? nil : LingXiMetrics.Size.statusHUD, alignment: .leading)
-        .lxFloating(cornerRadius: LingXiMetrics.Radius.control)
+        .lxFloating(cornerRadius: compact ? LingXiMetrics.Radius.surface : LingXiMetrics.Radius.control)
     }
 
-    private func metric(_ title: String, value: Double?, detail: String, warning: Bool = false) -> some View {
-        VStack(spacing: LingXiMetrics.Space.xs) {
-            HStack {
-                Text(title).foregroundStyle(.secondary)
-                Spacer()
-                Text(detail).foregroundStyle(.primary).monospacedDigit()
-            }
-            .font(LXType.meta)
+    /// Running: teal dot · thinking: indigo dot · needs you: warning clock ·
+    /// idle: hollow secondary circle.
+    @ViewBuilder
+    private var statusGlyph: some View {
+        if status.symbol == "circle.fill" {
+            Circle().fill(status.color).frame(width: LXControl.dot, height: LXControl.dot)
+        } else {
+            Image(systemName: status.symbol)
+                .font(.system(size: LXIcon.small))
+                .foregroundStyle(status.color)
+        }
+    }
+
+    /// label (text-secondary) · 4pt neutral bar · percent (tabular). Only a
+    /// context ≥ 85% bar turns status-warning: compaction is near.
+    private func metric(_ title: String, value: Double?, warning: Bool = false) -> some View {
+        HStack(spacing: LingXiMetrics.Space.md) {
+            Text(title)
+                .foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .leading)
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(LXColor.fillControl)
                     if let value {
-                        Capsule().fill(warning ? LXColor.warning : Color.secondary.opacity(0.55))
+                        Capsule().fill(warning ? AnyShapeStyle(LXColor.warning) : AnyShapeStyle(.secondary))
                             .frame(width: geometry.size.width * min(1, max(0, value)))
                     }
                 }
             }
             .frame(height: 4)
+            Text(percent(value))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+                .frame(width: 36, alignment: .trailing)
         }
-        .accessibilityElement(children: .combine)
+        .font(LXType.meta)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title) \(percent(value))")
     }
 
     private func percent(_ value: Double?) -> String {
@@ -98,9 +121,7 @@ struct AgentStatusHUD: View {
 
     private var contextWindow: Int? {
         guard let selected = composer.selectedModelID else { return nil }
-        return composer.models.first {
-            $0.modelID == selected || $0.id == selected
-        }.flatMap { $0.contextWindow > 0 ? $0.contextWindow : nil }
+        return composer.models.first { $0.matches(selection: selected) }.flatMap { $0.contextWindow > 0 ? $0.contextWindow : nil }
     }
 
     private var pCoreUsage: Double? {
