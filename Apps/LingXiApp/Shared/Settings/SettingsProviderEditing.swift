@@ -389,51 +389,106 @@ struct ProviderModelSheet: View {
 
 // MARK: - Add account
 
-/// 添加 Provider 账户: an API Key account becomes a providers.json entry, and
-/// 「登录账户」 runs the OAuth flow Core owns — this sheet only opens the
-/// authorize URL and reads the phase back.
+/// 添加 Provider 账户.
+///
+/// The list comes from Core's provider catalog — the curated registry plus the
+/// published models.lingxifox.cn index — and the form is then driven by what the
+/// chosen entry says it needs: a key, a browser sign-in, a local endpoint, or
+/// nothing. Endpoints, wire protocols and model lists stay in Core. A relay the
+/// user runs themselves is still written into `providers.json` by hand.
 struct AddProviderSheet: View {
-    private enum Access: String, CaseIterable, Identifiable {
-        case apiKey = "API Key"
-        case account = "登录账户"
-        var id: String { rawValue }
+    private enum Choice: Hashable {
+        case custom
+        case entry(String)
     }
 
     @ObservedObject var store: SettingsStore
     let onFinish: (ProviderConfigurationDetail?) -> Void
     @Environment(\.openURL) private var openURL
 
-    @State private var access: Access = .apiKey
+    @State private var query = ""
+    @State private var choice: Choice = .custom
+
+    // 自定义中转
     @State private var providerID = ""
     @State private var name = ""
     @State private var adapter = ProviderAdapterOption.openAICompatible.rawValue
     @State private var baseURL = "https://"
-    @State private var apiKey = ""
     @State private var apiKeyHeader = ""
     @State private var modelID = ""
     @State private var contextWindow = 128_000
     @State private var maxOutput = 8_192
-    @State private var isSaving = false
-    @State private var isTesting = false
-    @State private var testResult: TestProviderResult?
-    /// Key already written to Core's vault, referenced instead of resent.
+
+    // shared
+    @State private var apiKey = ""
+    @State private var endpoint = ""
+    @State private var fieldValues: [String: String] = [:]
     @State private var stagedRef: CredentialRef?
-    @State private var authProducts: [ProviderAuthProduct] = []
-    @State private var authProductID = ""
+    @State private var testResult: TestProviderResult?
+    @State private var isTesting = false
+    @State private var isSaving = false
+    @State private var isRefreshingCatalog = false
+
+    // models of the selected catalog entry
+    @State private var catalogModels: [String] = []
+    @State private var chosenModels: Set<String> = []
+    @State private var modelQuery = ""
+
+    // 登录账户
     @State private var authFlow: ProviderAuthFlow?
     @State private var pollTask: Task<Void, Never>?
 
-    private var existingIDs: Set<String> { Set(store.providers.map(\.id)) }
+    private var entries: [ProviderCatalogEntry] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return store.providerCatalog }
+        return store.providerCatalog.filter {
+            $0.name.lowercased().contains(needle) || $0.id.lowercased().contains(needle)
+        }
+    }
 
+    private var selectedEntry: ProviderCatalogEntry? {
+        guard case .entry(let id) = choice else { return nil }
+        return store.providerCatalog.first { $0.id == id }
+    }
+
+    private var connectedIDs: Set<String> { Set(store.providers.map(\.productID)) }
     private var trimmedID: String { providerID.trimmingCharacters(in: .whitespaces) }
 
+    private var visibleModels: [String] {
+        let needle = modelQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return catalogModels }
+        return catalogModels.filter { $0.lowercased().contains(needle) }
+    }
+
+    private var needsModelChoice: Bool {
+        guard let entry = selectedEntry else { return false }
+        // A curated product discovers its own models once connected; only an
+        // index entry needs the choice written into providers.json.
+        return entry.source == .modelsIndex && entry.signInMode != .browser && entry.connectable
+    }
+
     private var isValid: Bool {
-        switch access {
-        case .account:
-            return !authProductID.isEmpty
-        case .apiKey:
+        switch choice {
+        case .entry(let id):
+            guard let entry = store.providerCatalog.first(where: { $0.id == id }), entry.connectable else { return false }
+            // Only an index entry needs a model written into providers.json.
+            let needsModel = entry.source == .modelsIndex && chosenModels.isEmpty
+            switch entry.signInMode {
+            case .browser:
+                return authFlow?.phase != .connected
+            case .localEndpoint:
+                return !endpoint.trimmingCharacters(in: .whitespaces).isEmpty && !needsModel
+            case .apiKey:
+                if needsKey(entry), stagedRef == nil,
+                   apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+                let missingFields = entry.requiredAccountFields.filter { (fieldValues[$0] ?? "").isEmpty }
+                return missingFields.isEmpty && !needsModel
+            case .none:
+                return !needsModel
+            }
+        case .custom:
             return trimmedID.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", options: .regularExpression) != nil
-                && !existingIDs.contains(trimmedID)
+                && !Set(store.providers.map(\.id)).contains(trimmedID)
                 && !name.trimmingCharacters(in: .whitespaces).isEmpty
                 && baseURL.count > "https://".count
                 && !modelID.trimmingCharacters(in: .whitespaces).isEmpty
@@ -441,11 +496,15 @@ struct AddProviderSheet: View {
         }
     }
 
+    private func needsKey(_ entry: ProviderCatalogEntry) -> Bool {
+        entry.signInMode == .apiKey
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("添加 Provider 账户").font(LXType.title)
-                Text("选择接入方式，填入连接信息。保存前会先测试连接。")
+                Text("选择提供商，按其契约完成连接。保存前会先测试连接。")
                     .font(LXType.meta).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -453,89 +512,12 @@ struct AddProviderSheet: View {
             .padding(.vertical, LingXiMetrics.Space.lg)
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
-                    LXSettingsCard(title: LXSettingsSectionHeader("接入方式")) {
-                        LabeledContent("方式") {
-                            Picker("方式", selection: $access) {
-                                ForEach(Access.allCases) { Text($0.rawValue).tag($0) }
-                            }
-                            .labelsHidden()
-                            .fixedSize()
-                        }
-                        .lxSettingsRow()
-                    } footer: {
-                        Text("接口类型：OpenAI 兼容（/v1/chat/completions）· OpenAI Responses · Anthropic Messages。「登录账户」用浏览器完成 OAuth，不需要填 Key。")
-                    }
-
-                    if access == .apiKey {
-                        LXSettingsCard(title: LXSettingsSectionHeader("连接")) {
-                            LXTextRow(title: "名称", text: $name, prompt: "例如：公司中转")
-                            LXTextRow(title: "ID", info: "providers.json 中的键，也是模型名前缀，如 relay/model。",
-                                      text: $providerID, prompt: "relay", monospaced: true)
-                            LabeledContent("接口类型") {
-                                Picker("接口类型", selection: $adapter) {
-                                    ForEach(ProviderAdapterOption.allCases) { Text($0.label).tag($0.rawValue) }
-                                }
-                                .labelsHidden()
-                                .fixedSize()
-                            }
-                            .lxSettingsRow()
-                            LXTextRow(title: "Base URL", text: $baseURL, prompt: "https://", monospaced: true)
-                            LabeledContent("API Key") {
-                                SecureField("粘贴 API Key", text: $apiKey)
-                                    .labelsHidden()
-                                    .textFieldStyle(.roundedBorder)
-                                    .font(LXType.mono)
-                                    .frame(width: 280)
-                            }
-                            .lxSettingsRow()
-                            LXTextRow(title: "API Key 请求头", text: $apiKeyHeader, prompt: "Authorization", monospaced: true)
-                        } footer: {
-                            Text("API Key 由 CredentialBroker 保存，不下发给子 Agent 或 MCP，也不会以明文显示。")
-                        }
-                        LXSettingsCard("首个模型") {
-                            LXTextRow(title: "模型 ID", text: $modelID, prompt: "例如 deepseek-v4-flash", monospaced: true)
-                            LXNumberRow(title: "上下文窗口", value: $contextWindow.optional, unit: "tokens")
-                            LXNumberRow(title: "输出上限", value: $maxOutput.optional, unit: "tokens")
-                        }
-                        if existingIDs.contains(trimmedID) {
-                            LXStatusText("已存在 ID 为 \(trimmedID) 的账户。", systemImage: "exclamationmark.triangle", tone: .warning)
-                        }
-                        if let testResult {
-                            LXStatusText(
-                                testResult.reachable
-                                    ? "连接可达" + (testResult.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? "")
-                                    : "连接失败：\(testResult.message ?? "未知错误")",
-                                systemImage: testResult.reachable ? "checkmark.circle" : "xmark.circle",
-                                tone: testResult.reachable ? .success : .danger)
-                        }
+                VStack(alignment: .leading, spacing: LingXiMetrics.Space.lg) {
+                    pickerCard
+                    if let entry = selectedEntry {
+                        entryForm(entry)
                     } else {
-                        LXSettingsCard(title: LXSettingsSectionHeader("账户")) {
-                            LabeledContent("产品") {
-                                Picker("产品", selection: $authProductID) {
-                                    Text("请选择").tag("")
-                                    ForEach(authProducts) { product in
-                                        Text(product.displayName).tag(product.productID)
-                                    }
-                                }
-                                .labelsHidden()
-                                .fixedSize()
-                            }
-                            .lxSettingsRow()
-                            if let authFlow {
-                                LabeledContent("状态") {
-                                    LXStatusText(Self.authText(authFlow.phase),
-                                                 systemImage: Self.authImage(authFlow.phase),
-                                                 tone: Self.authTone(authFlow.phase))
-                                }
-                                .lxSettingsRow()
-                                if let message = authFlow.message {
-                                    LXStatusText(message, systemImage: "exclamationmark.triangle", tone: .warning)
-                                }
-                            }
-                        } footer: {
-                            Text("登录由 Core 完成：浏览器授权后由 Core 接收回调并保存凭据，本窗口不会看到令牌。")
-                        }
+                        customForm
                     }
                 }
                 .padding(.horizontal, LingXiMetrics.Space.xxl)
@@ -548,33 +530,361 @@ struct AddProviderSheet: View {
                 Button("取消") { dismiss() }
                     .buttonStyle(LXButtonStyle(.secondary, size: .regular))
                     .keyboardShortcut(.cancelAction)
-                if access == .apiKey {
+                if selectedEntry?.signInMode == .browser {
+                    Button(authFlow?.phase == .awaitingCallback ? "重新登录" : "登录") { startSignIn() }
+                        .buttonStyle(LXButtonStyle(.primary, size: .regular))
+                        .disabled(!isValid)
+                } else {
                     Button(isTesting ? "测试中…" : "测试连接") { testConnection() }
                         .buttonStyle(LXButtonStyle(.secondary, size: .regular))
-                        .disabled(isTesting || baseURL.count <= "https://".count)
-                    Button(isSaving ? "添加中…" : "添加") { save() }
+                        .disabled(isTesting || !canTest)
+                    Button(isSaving ? "连接中…" : (choice == .custom ? "添加" : "连接")) { save() }
                         .buttonStyle(LXButtonStyle(.primary, size: .regular))
                         .keyboardShortcut(.defaultAction)
                         .disabled(!isValid || isSaving)
-                } else {
-                    Button(authFlow?.phase == .awaitingCallback ? "重新登录" : "登录") { startSignIn() }
-                        .buttonStyle(LXButtonStyle(.primary, size: .regular))
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!isValid)
                 }
             }
             .padding(LingXiMetrics.Space.lg)
         }
-        .frame(width: 620, height: 600)
+        .frame(width: 640, height: 680)
         .background(LXColor.window)
         .lxSettingsControlStyles()
         .task {
-            if authProducts.isEmpty {
-                authProducts = await store.providerAuthProducts()
-                authProductID = authProducts.first?.productID ?? ""
-            }
+            if store.providerCatalog.isEmpty { await store.loadProviderCatalog(refresh: false) }
         }
         .onDisappear { pollTask?.cancel() }
+    }
+
+    // MARK: 提供商
+
+    private var pickerCard: some View {
+        LXSettingsCard(title: LXSettingsSectionHeader("提供商"), rowSpacing: LingXiMetrics.Space.xs, accessory: {
+            Button(isRefreshingCatalog ? "刷新中…" : "刷新列表") {
+                isRefreshingCatalog = true
+                Task {
+                    await store.loadProviderCatalog(refresh: true)
+                    isRefreshingCatalog = false
+                }
+            }
+            .disabled(isRefreshingCatalog)
+        }) {
+            NativeSearchField(text: $query, prompt: "搜索提供商")
+                .navigatorChrome()
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: 0) {
+                    choiceRow(id: "custom", name: "自定义中转 / 自建端点",
+                              mode: "API Key", models: nil, connected: false)
+                    ForEach(entries) { entry in
+                        choiceRow(id: entry.id, name: entry.name, mode: Self.modeLabel(entry),
+                                  models: entry.modelCount, connected: connectedIDs.contains(entry.id),
+                                  connectable: entry.connectable)
+                    }
+                }
+            }
+            .frame(maxHeight: 200)
+        } footer: {
+            Text("共 \(store.providerCatalog.count) 个提供商，来自 Core 的注册表与 models.lingxifox.cn 索引；端点、协议与模型清单由目录提供。")
+        }
+    }
+
+    private func choiceRow(id: String, name: String, mode: String, models: Int?,
+                           connected: Bool, connectable: Bool = true) -> some View {
+        let selected: Choice = id == "custom" ? .custom : .entry(id)
+        return Button { select(id) } label: {
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(LXType.body).lineLimit(1)
+                    HStack(spacing: LingXiMetrics.Space.xs) {
+                        Text(mode).font(LXType.meta).foregroundStyle(.secondary)
+                        if let models {
+                            Text("· \(models) 个模型").font(LXType.meta).foregroundStyle(.secondary)
+                        }
+                        if !connectable {
+                            Text("· 驱动未支持").font(LXType.meta).foregroundStyle(LXColor.warning)
+                        }
+                    }
+                }
+                Spacer(minLength: LingXiMetrics.Space.sm)
+                if connected { LXBadge("已连接") }
+                if choice == selected {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(LXColor.accent)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, LingXiMetrics.Space.sm)
+            .frame(minHeight: LingXiMetrics.Size.rowList)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func select(_ id: String) {
+        choice = id == "custom" ? .custom : .entry(id)
+        testResult = nil
+        authFlow = nil
+        catalogModels = []
+        chosenModels = []
+        guard let entry = store.providerCatalog.first(where: { $0.id == id }) else { return }
+        Task {
+            let models = await store.providerCatalogModels(entryID: entry.id)
+            catalogModels = models
+            // A provider is unusable without at least one model, so the first
+            // published one is preselected rather than left blank.
+            chosenModels = models.first.map { [$0] } ?? []
+        }
+    }
+
+    static func modeLabel(_ entry: ProviderCatalogEntry) -> String {
+        switch entry.signInMode {
+        case .apiKey: return "API Key"
+        case .browser: return "登录账户"
+        case .localEndpoint: return "本地端点"
+        case .none: return "无需凭据"
+        }
+    }
+
+    // MARK: 所选提供商的表单
+
+    @ViewBuilder private func entryForm(_ entry: ProviderCatalogEntry) -> some View {
+        LXSettingsCard(title: LXSettingsSectionHeader("连接")) {
+            ValueRow(title: "接入方式", value: Self.modeLabel(entry))
+            switch entry.signInMode {
+            case .browser:
+                if let authFlow {
+                    LabeledContent("状态") {
+                        LXStatusText(Self.authText(authFlow.phase), systemImage: Self.authImage(authFlow.phase),
+                                     tone: Self.authTone(authFlow.phase))
+                    }
+                    .lxSettingsRow()
+                    if let message = authFlow.message {
+                        LXStatusText(message, systemImage: "exclamationmark.triangle", tone: .warning)
+                    }
+                }
+            case .apiKey, .localEndpoint, .none:
+                if needsKey(entry) {
+                    LabeledContent("API Key") {
+                        SecureField("粘贴 API Key", text: $apiKey)
+                            .labelsHidden().textFieldStyle(.roundedBorder)
+                            .font(LXType.mono).frame(width: 280)
+                    }
+                    .lxSettingsRow()
+                }
+                if entry.signInMode == .localEndpoint {
+                    LXTextRow(title: "本地端点", info: "目录给出的地址留空时沿用目录值。",
+                              text: $endpoint, prompt: "http://127.0.0.1:11434/v1", monospaced: true)
+                }
+                ForEach(entry.requiredAccountFields, id: \.self) { field in
+                    LXTextRow(title: field, text: binding(for: field))
+                }
+            }
+            if let testResult {
+                LXStatusText(testResult.reachable
+                    ? "连接可达" + (testResult.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? "")
+                        + (testResult.message.map { " · \($0)" } ?? "")
+                    : "连接失败：\(testResult.message ?? "未知错误")",
+                    systemImage: testResult.reachable ? "checkmark.circle" : "xmark.circle",
+                    tone: testResult.reachable ? .success : .danger)
+            }
+            if !entry.connectable {
+                LXStatusText("该提供商的接口驱动本机运行时还不支持，无法从这里连接。",
+                             systemImage: "exclamationmark.triangle", tone: .warning)
+            }
+        } footer: {
+            Text("端点、协议与模型清单来自目录。"
+                 + (entry.signInMode == .browser
+                    ? "登录由 Core 完成：浏览器授权后由 Core 接收回调并保存凭据，本窗口不会看到令牌。"
+                    : "API Key 由 CredentialBroker 保存，不下发给子 Agent 或 MCP，也不会以明文显示。"))
+        }
+
+        if needsModelChoice {
+            LXSettingsCard(title: LXSettingsSectionHeader("模型"), rowSpacing: LingXiMetrics.Space.xs) {
+                NativeSearchField(text: $modelQuery, prompt: "搜索模型")
+                    .navigatorChrome()
+                if catalogModels.isEmpty {
+                    PlaceholderLine(modelQuery.isEmpty ? "目录未列出该提供商的模型。" : "没有匹配的模型。")
+                } else {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 0) {
+                            ForEach(visibleModels, id: \.self) { model in
+                                modelRow(model)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 170)
+                }
+            } footer: {
+                Text("已选 \(chosenModels.count) 个。未填的字段跟随 models.lingxifox.cn 的元数据。")
+            }
+        }
+    }
+
+    private func modelRow(_ model: String) -> some View {
+        Button {
+            if chosenModels.contains(model) { chosenModels.remove(model) } else { chosenModels.insert(model) }
+        } label: {
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Image(systemName: chosenModels.contains(model) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(chosenModels.contains(model) ? LXColor.accent : Color.secondary)
+                Text(model).font(LXType.monoSmall).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, LingXiMetrics.Space.sm)
+            .frame(minHeight: LingXiMetrics.Size.rowList)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func binding(for field: String) -> Binding<String> {
+        Binding(get: { fieldValues[field] ?? "" }, set: { fieldValues[field] = $0 })
+    }
+
+    // MARK: 自定义中转
+
+    private var customForm: some View {
+        Group {
+            LXSettingsCard(title: LXSettingsSectionHeader("连接")) {
+                LXTextRow(title: "名称", text: $name, prompt: "例如：公司中转")
+                LXTextRow(title: "ID", info: "providers.json 中的键，也是模型名前缀，如 relay/model。",
+                          text: $providerID, prompt: "relay", monospaced: true)
+                LabeledContent("接口类型") {
+                    Picker("接口类型", selection: $adapter) {
+                        ForEach(ProviderAdapterOption.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                .lxSettingsRow()
+                LXTextRow(title: "Base URL", text: $baseURL, prompt: "https://", monospaced: true)
+                LabeledContent("API Key") {
+                    SecureField("粘贴 API Key", text: $apiKey)
+                        .labelsHidden().textFieldStyle(.roundedBorder)
+                        .font(LXType.mono).frame(width: 280)
+                }
+                .lxSettingsRow()
+                LXTextRow(title: "API Key 请求头", text: $apiKeyHeader, prompt: "Authorization", monospaced: true)
+            } footer: {
+                Text("自己搭的中转或内网端点，写入 providers.json。API Key 由 CredentialBroker 保存，"
+                     + "不下发给子 Agent 或 MCP，也不会以明文显示。")
+            }
+            LXSettingsCard("首个模型") {
+                LXTextRow(title: "模型 ID", text: $modelID, prompt: "例如 deepseek-v4-flash", monospaced: true)
+                LXNumberRow(title: "上下文窗口", value: $contextWindow.optional, unit: "tokens")
+                LXNumberRow(title: "输出上限", value: $maxOutput.optional, unit: "tokens")
+            }
+            if let testResult {
+                LXStatusText(testResult.reachable
+                    ? "连接可达" + (testResult.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? "")
+                    : "连接失败：\(testResult.message ?? "未知错误")",
+                    systemImage: testResult.reachable ? "checkmark.circle" : "xmark.circle",
+                    tone: testResult.reachable ? .success : .danger)
+            }
+        }
+    }
+
+    private var canTest: Bool {
+        switch choice {
+        case .custom: return baseURL.count > "https://".count
+        case .entry(let id):
+            guard let entry = store.providerCatalog.first(where: { $0.id == id }) else { return false }
+            if !entry.connectable { return false }
+            if entry.signInMode == .localEndpoint { return true }
+            return true
+        }
+    }
+
+    // MARK: 动作
+
+    private func testConnection() {
+        isTesting = true
+        Task {
+            defer { isTesting = false }
+            await stageKeyIfNeeded()
+            switch choice {
+            case .custom:
+                testResult = await store.testProviderDraft(TestProviderDraftRequest(
+                    adapter: adapter, baseURL: baseURL.trimmingCharacters(in: .whitespaces),
+                    apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
+                    credentialRef: stagedRef))
+            case .entry(let id):
+                testResult = await store.testProviderDraft(TestProviderDraftRequest(
+                    credentialRef: stagedRef, productID: id))
+            }
+        }
+    }
+
+    /// Writes a typed key into Core's vault once and keeps only its reference.
+    private func stageKeyIfNeeded() async {
+        guard stagedRef == nil else { return }
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        stagedRef = await store.stageSecret(key)
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            await stageKeyIfNeeded()
+            switch choice {
+            case .custom:
+                let request = SaveProviderConfigurationRequest(
+                    providerID: trimmedID,
+                    name: name.trimmingCharacters(in: .whitespaces),
+                    adapter: adapter,
+                    baseURL: baseURL.trimmingCharacters(in: .whitespaces),
+                    apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
+                    apiKey: stagedRef.map { SecretUpdate.staged(reference: $0) } ?? .keep,
+                    models: [ProviderModelConfigurationDetail(
+                        modelID: modelID.trimmingCharacters(in: .whitespaces),
+                        name: modelID.trimmingCharacters(in: .whitespaces),
+                        contextWindow: contextWindow, maxOutputTokens: maxOutput)])
+                if let saved = await store.saveProvider(request) {
+                    stagedRef = nil
+                    onFinish(saved)
+                } else if let staged = stagedRef {
+                    await store.discardStagedSecret(staged)
+                    stagedRef = nil
+                }
+            case .entry(let id):
+                let fields = fieldValues.filter { !$0.value.isEmpty }
+                let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespaces)
+                if let account = await store.connectProvider(ConnectProviderRequest(
+                    productID: id, credentialRef: stagedRef,
+                    endpoint: trimmedEndpoint.isEmpty ? nil : trimmedEndpoint,
+                    fields: fields, modelIDs: Array(chosenModels).sorted())) {
+                    stagedRef = nil
+                    _ = account
+                    onFinish(nil)
+                } else if let staged = stagedRef {
+                    await store.discardStagedSecret(staged)
+                    stagedRef = nil
+                }
+            }
+        }
+    }
+
+    private func startSignIn() {
+        guard case .entry(let id) = choice else { return }
+        pollTask?.cancel()
+        Task {
+            guard let flow = await store.beginProviderAuth(productID: id) else { return }
+            authFlow = flow
+            if let string = flow.authorizeURL, let url = URL(string: string) { openURL(url) }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let status = await store.providerAuthStatus(flowID: flow.flowID) else { break }
+                authFlow = status
+                if status.phase == .connected { onFinish(nil); break }
+                if status.phase == .failed || status.phase == .cancelled { break }
+            }
+        }
+    }
+
+    private func dismiss() {
+        pollTask?.cancel()
+        if let stagedRef {
+            Task { await store.discardStagedSecret(stagedRef) }
+        }
+        onFinish(nil)
     }
 
     private static func authText(_ phase: ProviderAuthPhase) -> String {
@@ -605,73 +915,6 @@ struct AddProviderSheet: View {
         case .awaitingCallback, .exchanging, .cancelled: .neutral
         }
     }
-
-    private func testConnection() {
-        isTesting = true
-        Task {
-            defer { isTesting = false }
-            if stagedRef == nil {
-                let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !key.isEmpty { stagedRef = await store.stageSecret(key) }
-            }
-            testResult = await store.testProviderDraft(TestProviderDraftRequest(
-                adapter: adapter,
-                baseURL: baseURL.trimmingCharacters(in: .whitespaces),
-                apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
-                credentialRef: stagedRef))
-        }
-    }
-
-    private func startSignIn() {
-        pollTask?.cancel()
-        Task {
-            guard let flow = await store.beginProviderAuth(productID: authProductID) else { return }
-            authFlow = flow
-            if let string = flow.authorizeURL, let url = URL(string: string) { openURL(url) }
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard let status = await store.providerAuthStatus(flowID: flow.flowID) else { break }
-                authFlow = status
-                if status.phase == .connected || status.phase == .failed || status.phase == .cancelled { break }
-            }
-        }
-    }
-
-    /// Drops the staged key when the form is abandoned; an adopted one is
-    /// already the account's own credential.
-    private func dismiss() {
-        pollTask?.cancel()
-        if let stagedRef {
-            Task { await store.discardStagedSecret(stagedRef) }
-        }
-        onFinish(nil)
-    }
-
-    private func save() {
-        isSaving = true
-        let staged = stagedRef
-        let request = SaveProviderConfigurationRequest(
-            providerID: trimmedID,
-            name: name.trimmingCharacters(in: .whitespaces),
-            adapter: adapter,
-            baseURL: baseURL.trimmingCharacters(in: .whitespaces),
-            apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
-            apiKey: staged.map { .staged(reference: $0) } ?? .keep,
-            models: [ProviderModelConfigurationDetail(
-                modelID: modelID.trimmingCharacters(in: .whitespaces),
-                name: modelID.trimmingCharacters(in: .whitespaces),
-                contextWindow: contextWindow, maxOutputTokens: maxOutput)])
-        Task {
-            let saved = await store.saveProvider(request)
-            isSaving = false
-            if saved != nil {
-                stagedRef = nil
-                onFinish(saved)
-            } else if let staged {
-                await store.discardStagedSecret(staged)
-                stagedRef = nil
-            }
-        }
-    }
 }
+
 #endif

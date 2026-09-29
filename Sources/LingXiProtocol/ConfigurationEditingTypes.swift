@@ -34,14 +34,20 @@ public struct TestProviderDraftRequest: Codable, Sendable, Equatable {
     public var apiKeyHeader: String?
     public var headers: [String: String]
     public var credentialRef: CredentialRef?
+    /// A registry product to test instead of a hand-written endpoint: Core
+    /// resolves its base URL, wire protocol and required headers from its own
+    /// catalog, so the front end never needs to know them.
+    public var productID: String?
 
-    public init(adapter: String, baseURL: String, apiKeyHeader: String? = nil,
-                headers: [String: String] = [:], credentialRef: CredentialRef? = nil) {
+    public init(adapter: String = "", baseURL: String = "", apiKeyHeader: String? = nil,
+                headers: [String: String] = [:], credentialRef: CredentialRef? = nil,
+                productID: String? = nil) {
         self.adapter = adapter
         self.baseURL = baseURL
         self.apiKeyHeader = apiKeyHeader
         self.headers = headers
         self.credentialRef = credentialRef
+        self.productID = productID
     }
 }
 

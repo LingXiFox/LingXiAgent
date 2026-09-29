@@ -49,6 +49,8 @@ public final class SettingsStore: ObservableObject {
     @Published private(set) var health: RuntimeHealth?
     @Published private(set) var capabilities: RuntimeCapabilities?
     @Published private(set) var providers: [ProviderAccountInfo] = []
+    /// Every provider Core knows: curated registry plus the published models index.
+    @Published private(set) var providerCatalog: [ProviderCatalogEntry] = []
     @Published private(set) var providerStatus: ProviderStatus?
     @Published private(set) var providerTests: [String: TestProviderResult] = [:]
     @Published private(set) var models: [ProviderModelInfo] = []
@@ -204,6 +206,7 @@ public final class SettingsStore: ObservableObject {
         async let health = try? client.runtime.getHealth()
         async let caps = try? client.runtime.getCapabilities()
         async let providers = try? client.provider.list()
+        async let catalog = try? client.provider.catalog()
         async let status = try? client.provider.status()
         async let models = try? client.model.list()
         async let selection = try? client.model.getSelection()
@@ -221,6 +224,7 @@ public final class SettingsStore: ObservableObject {
         self.health = await health
         self.capabilities = await caps
         self.providers = await providers ?? []
+        self.providerCatalog = await catalog ?? []
         self.providerStatus = await status
         self.models = await models ?? []
         self.modelSelection = await selection
@@ -238,9 +242,11 @@ public final class SettingsStore: ObservableObject {
     private func clearLiveState() {
         runtimeInfo = nil; health = nil; capabilities = nil
         providers = []; providerStatus = nil; providerTests = [:]
+        providerCatalog = []
         models = []; modelSelection = nil; extensions = []
         contextPolicy = nil; workspace = nil; worktrees = []
         languageServices = nil
+        toolStatus = nil
         backgroundTasks = []; providerMetrics = nil; mcpServers = []
     }
 
@@ -320,6 +326,20 @@ public final class SettingsStore: ObservableObject {
 
     // MARK: - providers.json
 
+    /// Reloads the provider catalog, optionally forcing Core to refetch the
+    /// published index first.
+    func loadProviderCatalog(refresh: Bool) async {
+        guard let client else { return }
+        if let entries = try? await client.provider.catalog(refresh: refresh) {
+            providerCatalog = entries
+        }
+    }
+
+    func providerCatalogModels(entryID: String) async -> [String] {
+        guard let client else { return [] }
+        return (try? await client.provider.catalogModels(entryID: entryID)) ?? []
+    }
+
     /// Products Core can actually sign a user in to; empty when the runtime
     /// offers no OAuth login.
     func providerAuthProducts() async -> [ProviderAuthProduct] {
@@ -361,6 +381,19 @@ public final class SettingsStore: ObservableObject {
 
     func discardStagedSecret(_ reference: CredentialRef) async {
         await perform("清除暂存凭据") { _ = try await $0.credential.delete(reference: reference) }
+    }
+
+    /// Connects a registry product through its own contract.
+    func connectProvider(_ request: ConnectProviderRequest) async -> ProviderAccountInfo? {
+        guard let client else { notice = "未连接 Core。"; return nil }
+        do {
+            let account = try await client.provider.connect(request)
+            notice = "已连接 \(account.displayName)。"
+            return account
+        } catch {
+            notice = "连接失败：\(error.localizedDescription)"
+            return nil
+        }
     }
 
     /// A real connection test of a provider that is not saved yet.

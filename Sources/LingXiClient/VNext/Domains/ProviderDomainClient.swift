@@ -83,6 +83,27 @@ public struct ProviderDomainClient: Sendable {
     }
 
     /// Starts a sign-in flow; the caller opens `authorizeURL` in the system browser.
+    /// Curated registry plus the published models.lingxifox.cn index.
+    public func catalog(refresh: Bool = false) async throws -> [ProviderCatalogEntry] {
+        try await transport.getProviderCatalog(
+            envelope: QueryEnvelope(payload: GetProviderCatalogRequest(refresh: refresh))).payload
+    }
+
+    public func catalogModels(entryID: String) async throws -> [String] {
+        try await transport.getProviderCatalogModels(
+            envelope: QueryEnvelope(payload: GetProviderCatalogModelsRequest(entryID: entryID))).payload
+    }
+
+    /// Connects a registry product with the credential or endpoint its contract requires.
+    public func connect(_ request: ConnectProviderRequest) async throws -> ProviderAccountInfo {
+        let receipt = try await transport.connectProvider(envelope: CommandEnvelope(payload: request))
+        guard let account = receipt.result else {
+            throw RuntimeError(category: .runtime, code: "emptyResult", message: "连接 Provider 没有返回结果",
+                               retryability: .none, source: .client)
+        }
+        return account
+    }
+
     public func beginAuth(productID: String) async throws -> ProviderAuthFlow {
         let receipt = try await transport.beginProviderAuth(
             envelope: CommandEnvelope(payload: BeginProviderAuthRequest(productID: productID)))

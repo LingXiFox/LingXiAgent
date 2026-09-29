@@ -175,6 +175,55 @@ struct ConfigurationEditingAndWorktreeTests {
         }
     }
 
+    @Test("A registry product connects through its own contract, not a hand-written form")
+    func connectProductByContract() async throws {
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+
+        let products = BuiltinProviderCatalog.connectableProducts().filter { $0.connectable }
+        #expect(!products.isEmpty)
+
+        // An API Key product: the key arrives as a staged vault reference and the
+        // endpoint comes from the catalog, so the request carries no URL at all.
+        if let keyed = products.first(where: { $0.requiresCredential && $0.requestAuthentication != .oauthAccessToken }) {
+            let staged = try await f.host.storeCredential(
+                envelope: CommandEnvelope(payload: StoreCredentialRequest(secret: "sk-product-1")))
+            let reference = try #require(staged.result?.reference)
+            let fields = Dictionary(uniqueKeysWithValues: keyed.requiredAccountFields.map { ($0, "cn") })
+            let account = try await f.host.connectProvider(envelope: CommandEnvelope(payload: ConnectProviderRequest(
+                productID: keyed.id, credentialRef: reference, fields: fields))).result
+            let info = try #require(account)
+            #expect(info.productID == keyed.id)
+            #expect(info.credentialRef == reference)
+            let file = try String(contentsOf: f.root.appendingPathComponent("providers.json"), encoding: .utf8)
+            #expect(!file.contains("sk-product-1"), "明文密钥不得写入 providers.json")
+            #expect(try await f.credentials.secret(for: reference) == "sk-product-1")
+
+            // Declared account fields are mandatory.
+            await #expect(throws: (any Error).self) {
+                _ = try await f.host.connectProvider(envelope: CommandEnvelope(payload: ConnectProviderRequest(
+                    productID: keyed.id, credentialRef: reference)))
+            }
+
+            // Same product without a key is refused with a readable reason.
+            await #expect(throws: (any Error).self) {
+                _ = try await f.host.connectProvider(envelope: CommandEnvelope(payload: ConnectProviderRequest(productID: keyed.id)))
+            }
+        }
+
+        // An OAuth product is never satisfied by a typed key.
+        if let oauth = products.first(where: { $0.requestAuthentication == .oauthAccessToken || $0.accountTypes.contains(.oauthUser) }) {
+            await #expect(throws: (any Error).self) {
+                _ = try await f.host.connectProvider(envelope: CommandEnvelope(payload: ConnectProviderRequest(productID: oauth.id)))
+            }
+        }
+
+        // A product outside the catalog cannot be connected.
+        await #expect(throws: (any Error).self) {
+            _ = try await f.host.connectProvider(envelope: CommandEnvelope(payload: ConnectProviderRequest(productID: "not-a-product")))
+        }
+    }
+
     @Test("A provider test reports the real answer, not a stored one")
     func providerTestIsNotHardcoded() async throws {
         let f = try await fixture()

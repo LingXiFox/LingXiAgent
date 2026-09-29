@@ -249,7 +249,7 @@ extension CoreHost {
             // The plaintext already reached Core once, through the credential
             // API. Adopt it under this entry's own reference and drop the
             // staged copy, so a pre-save test key never lingers.
-            let store = try await requireCredentialStore()
+            let store = try requireCredentialStore()
             guard staged.rawValue != reference.rawValue, let secret = try await store.secret(for: staged), !secret.isEmpty else {
                 throw CoreError(code: .toolArgumentInvalid, message: "暂存的凭据已失效，请重新输入")
             }

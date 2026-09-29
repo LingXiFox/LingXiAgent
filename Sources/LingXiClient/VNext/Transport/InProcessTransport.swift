@@ -326,6 +326,18 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.listProviderAuthProducts(envelope: envelope)
     }
 
+    public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        try await service.connectProvider(envelope: envelope)
+    }
+
+    public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
+        try await service.getProviderCatalog(envelope: envelope)
+    }
+
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+        try await service.getProviderCatalogModels(envelope: envelope)
+    }
+
     public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {
         try await service.beginProviderAuth(envelope: envelope)
     }

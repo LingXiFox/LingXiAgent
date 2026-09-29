@@ -103,6 +103,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let diagnosticsEnabled: Bool
     private let configurationStore: ConfigurationStore?
     private let credentialStore: (any CredentialStore)?
+    /// Reader for the published `models.lingxifox.cn` index behind the provider
+    /// catalog. Injectable so the catalog can be exercised without network I/O.
+    let modelsCatalogClient: LingXiModelsCatalogClient
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private let diagnosticsStore: RuntimeDiagnosticsStore
@@ -258,6 +261,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         restoreScheduler: SessionRestoreScheduler? = nil,
         extensionPlatform: ExtensionPlatform? = nil,
         backgroundManager: BackgroundCommandManager? = nil,
+        modelsCatalogClient: LingXiModelsCatalogClient = .shared,
         crashTestStage: String? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
@@ -311,6 +315,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.interactive = supportsInteraction
         self.configurationStore = configurationStore ?? dataRoot.flatMap { try? ConfigurationStore(dataRoot: $0) }
         self.credentialStore = credentialStore
+        self.modelsCatalogClient = modelsCatalogClient
         self.restoreScheduler = restoreScheduler
         self.dataRootURL = dataRoot
         self.cachedAssemblies = modelRuntimes
@@ -1866,7 +1871,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     func requireProviderAuthCoordinator() async throws -> ProviderAuthCoordinator {
         if let providerAuthCoordinator { return providerAuthCoordinator }
         let coordinator = ProviderAuthCoordinator(
-            credentialStore: try await requireCredentialStore(),
+            credentialStore: try requireCredentialStore(),
             configurationStore: configurationStore)
         providerAuthCoordinator = coordinator
         return coordinator
@@ -1998,6 +2003,109 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let info = await accountInfo(account)
         runtimeProviderAccounts[request.id] = info
         return info
+    }
+
+    /// Connects a registry product with whatever its own contract requires.
+    ///
+    /// Mirrors the Application layer's connect flow: the endpoint, wire protocol
+    /// and stored authentication all come from the catalog, the key arrives as an
+    /// already-staged vault reference, and a failed account creation takes the
+    /// staged secret back with it.
+    public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        let request = envelope.payload
+        let productID = request.productID.trimmingCharacters(in: .whitespaces)
+        guard let product = BuiltinProviderCatalog.connectableProducts().first(where: { $0.id == productID }),
+              product.connectable, product.verificationStatus == .verified else {
+            // Not a curated product. It may still be a published-index provider,
+            // whose endpoint, wire protocol and models the index states.
+            return try await connectPublishedProvider(envelope: envelope, productID: productID)
+        }
+        if product.requestAuthentication == .oauthAccessToken || product.accountTypes.contains(.oauthUser) {
+            throw CoreError(code: .provider, message: "\(product.displayName) 通过浏览器登录连接，请改用「登录账户」")
+        }
+        for field in product.requiredAccountFields where request.fields[field]?.isEmpty != false {
+            throw CoreError(code: .toolArgumentInvalid, message: "缺少 \(product.displayName) 所需字段：\(field)")
+        }
+
+        var credentialRef = request.credentialRef
+        if product.requiresCredential {
+            guard let credentialRef, try await requireCredentialStore().secret(for: credentialRef) != nil else {
+                throw CoreError(code: .toolArgumentInvalid, message: "\(product.displayName) 需要 API Key")
+            }
+        } else {
+            credentialRef = nil
+        }
+        if product.requiresLocalEndpoint, (request.endpoint ?? "").isEmpty {
+            throw CoreError(code: .toolArgumentInvalid, message: "\(product.displayName) 需要本地端点")
+        }
+
+        let accountType = product.accountTypes.first { $0 == .apiKey || $0 == .subscription || $0 == .localInstance || $0 == .anonymousLocal }
+            ?? product.accountTypes.first ?? .apiKey
+        let authentication: ProviderStoredAuthentication
+        switch product.requestAuthentication {
+        case nil, .some(.none), .some(.providerNative): authentication = .none
+        case .some(.bearerToken), .some(.oauthAccessToken), .some(.workloadIdentityToken), .some(.gatewayToken): authentication = .bearer
+        case .some(.apiKeyHeader), .some(.customHeaderSet): authentication = .header
+        }
+
+        do {
+            let info = try await createProviderAccount(ProviderAccountCreateRequest(
+                id: "provider-account-\(UUID().uuidString)",
+                productID: product.id,
+                displayName: product.displayName,
+                accountType: accountType,
+                credentialRef: credentialRef,
+                endpoint: request.endpoint,
+                authentication: authentication,
+                headerName: product.requestAuthenticationHeaderName,
+                fields: request.fields))
+            return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
+                                  observedThrough: [], result: info)
+        } catch {
+            if let credentialRef {
+                try? await requireCredentialStore().removeSecret(for: credentialRef)
+            }
+            throw error
+        }
+    }
+
+    /// Connects a provider that comes from the published models.lingxifox.cn
+    /// index: everything except the key is taken from the index, and the entry is
+    /// stored as a normal `providers.json` account.
+    private func connectPublishedProvider(envelope: CommandEnvelope<ConnectProviderRequest>,
+                                          productID: String) async throws -> CommandReceipt<ProviderAccountInfo> {
+        let request = envelope.payload
+        guard var plan = await ProviderCatalog.plan(entryID: productID, siteClient: modelsCatalogClient) else {
+            throw CoreError(code: .provider, message: "\(productID) 不在可连接的 Provider 目录中")
+        }
+        if let endpoint = request.endpoint?.trimmingCharacters(in: .whitespaces), !endpoint.isEmpty {
+            plan = ProviderCatalog.Plan(providerID: plan.providerID, name: plan.name,
+                                        baseURL: endpoint, adapter: plan.adapter)
+        }
+        guard let reference = request.credentialRef,
+              try await requireCredentialStore().secret(for: reference) != nil else {
+            throw CoreError(code: .toolArgumentInvalid, message: "\(plan.name) 需要 API Key")
+        }
+        let models = request.modelIDs.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !models.isEmpty else {
+            throw CoreError(code: .toolArgumentInvalid, message: "至少选择一个模型")
+        }
+
+        let save = SaveProviderConfigurationRequest(
+            providerID: plan.providerID,
+            name: plan.name,
+            adapter: plan.adapter,
+            baseURL: plan.baseURL,
+            apiKey: .staged(reference: reference),
+            models: models.map { ProviderModelConfigurationDetail(modelID: $0, name: $0) })
+        _ = try await saveProviderConfiguration(envelope: CommandEnvelope(payload: save))
+        guard let info = try await providerAccounts().first(where: {
+            $0.id == plan.providerID || $0.productID == plan.providerID
+        }) else {
+            throw CoreError(code: .provider, message: "已保存 \(plan.name)，但账户列表尚未刷新")
+        }
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
+                              observedThrough: [], result: info)
     }
 
     private func deleteProviderAccount(id: String, deleteUnusedCredential: Bool) async throws -> ProviderDisconnectResult {

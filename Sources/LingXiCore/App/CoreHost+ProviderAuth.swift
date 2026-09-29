@@ -16,11 +16,31 @@ extension CoreHost {
     /// Tests a provider that is not saved yet.
     public func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult> {
         let request = envelope.payload
-        guard Self.editableAdapters.contains(request.adapter) else {
-            throw CoreError(code: .toolArgumentInvalid, message: "不支持的接口类型: \(request.adapter)")
+        var adapter = request.adapter
+        var baseURL = request.baseURL.trimmingCharacters(in: .whitespaces)
+        var apiKeyHeader = request.apiKeyHeader
+        var headers = request.headers
+
+        if let productID = request.productID?.trimmingCharacters(in: .whitespaces), !productID.isEmpty {
+            // A registry product: Core knows its endpoint, wire and headers.
+            guard let definition = BuiltinProviderCatalog.definition(id: productID),
+                  let endpoint = definition.endpoints.first, let resolved = endpoint.baseURL else {
+                throw CoreError(code: .provider, message: "\(productID) 的端点尚未验证，无法测试连接")
+            }
+            switch endpoint.wire {
+            case .anthropicMessages: adapter = "anthropic-messages"
+            case .openAIResponses: adapter = "openai-responses"
+            default: adapter = "openai-compatible"
+            }
+            baseURL = resolved.absoluteString
+            headers = endpoint.requiredHeaders
+            if case let .apiKeyHeader(name) = endpoint.requestAuthentication { apiKeyHeader = name }
+        } else {
+            guard Self.editableAdapters.contains(adapter) else {
+                throw CoreError(code: .toolArgumentInvalid, message: "不支持的接口类型: \(adapter)")
+            }
+            _ = try ConfigurationEndpointPolicy.resolve(baseURL, path: "$.draft.baseURL")
         }
-        let baseURL = request.baseURL.trimmingCharacters(in: .whitespaces)
-        _ = try ConfigurationEndpointPolicy.resolve(baseURL, path: "$.draft.baseURL")
 
         var secret: String?
         if let reference = request.credentialRef {
@@ -29,8 +49,8 @@ extension CoreHost {
         let result: TestProviderResult
         do {
             let outcome = try await ProviderConnectivityProbe.probe(
-                baseURL: baseURL, adapter: request.adapter, apiKeyHeader: request.apiKeyHeader,
-                credential: secret, headers: request.headers)
+                baseURL: baseURL, adapter: adapter, apiKeyHeader: apiKeyHeader,
+                credential: secret, headers: headers)
             result = TestProviderResult(providerID: Self.draftProviderID, reachable: true,
                                         latencyMs: outcome.latencyMs,
                                         message: outcome.models > 0 ? "\(outcome.models) 个模型" : nil)
@@ -66,6 +86,19 @@ extension CoreHost {
     public func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> {
         ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
                          payload: ProviderAuthCoordinator.authProducts())
+    }
+
+    /// Curated registry plus the published models.lingxifox.cn index.
+    public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
+        ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
+                         payload: await ProviderCatalog.entries(refresh: envelope.payload.refresh,
+                                                                siteClient: modelsCatalogClient))
+    }
+
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+        ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
+                         payload: await ProviderCatalog.modelIDs(entryID: envelope.payload.entryID,
+                                                                 siteClient: modelsCatalogClient))
     }
 
     public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {

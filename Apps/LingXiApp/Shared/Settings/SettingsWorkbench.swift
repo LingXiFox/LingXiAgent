@@ -99,6 +99,8 @@ struct SettingsWorkbench: View {
     private var objects: [SettingObject] {
         switch page {
         case .providers:
+            // Only accounts that actually exist. The registry's ~90 products are
+            // picked inside 「添加账户」, not dumped into this list.
             return store.providers.map {
                 SettingObject(id: $0.id, title: $0.displayName,
                               detail: [$0.productID, $0.availability == .active ? nil : $0.availability.rawValue]

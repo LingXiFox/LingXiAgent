@@ -847,9 +847,21 @@ public protocol LingXiProtocolService: Sendable {
 
     // MARK: - Provider sign-in (OAuth)
     func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]>
+
     func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow>
     func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow>
     func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult>
+
+    // MARK: - Provider catalog & connect
+
+    /// Every provider Core knows about: curated registry plus the published
+    /// models.lingxifox.cn index.
+    func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]>
+    func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]>
+
+    /// Connects a catalog entry using the credential or endpoint its contract asks for.
+    func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo>
+
     func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]>
     func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail>
     func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult>
@@ -1025,6 +1037,18 @@ public extension LingXiProtocolService {
 
     func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> {
         throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
+    }
+
+    func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持连接 Provider 产品")
+    }
+
+    func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Provider 目录")
+    }
+
+    func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Provider 目录模型")
     }
 
     func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {

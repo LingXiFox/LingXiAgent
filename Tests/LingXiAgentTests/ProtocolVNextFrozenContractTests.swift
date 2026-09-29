@@ -938,6 +938,22 @@ struct ProtocolVNextFrozenContractTests {
         #expect(browserRes.payload.allSatisfy { !$0.sessionID.isEmpty })
         let authRes = try await service.listProviderAuthProducts(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(authRes.payload.allSatisfy { !$0.productID.isEmpty })
+        // The provider picker lists every published provider, including ones
+        // with no account yet and ones this runtime cannot drive.
+        let catalogRes = try await service.getProviderCatalog(envelope: QueryEnvelope(payload: GetProviderCatalogRequest()))
+        #expect(!catalogRes.payload.isEmpty, "提供商目录不应为空")
+        #expect(catalogRes.payload.allSatisfy { !$0.id.isEmpty && !$0.name.isEmpty })
+        #expect(catalogRes.payload.contains { $0.source == .registry && $0.connectable })
+        let registryIDs = catalogRes.payload.filter { $0.source == .registry }.map(\.id)
+        #expect(Set(registryIDs).count == registryIDs.count, "同一提供商不得出现两次")
+        let curated = try #require(catalogRes.payload.first { $0.source == .registry && $0.signInMode == .apiKey },
+                                   "目录里没有可用 API Key 的内置产品")
+        // A row's roster and its count come from the same source, so they agree
+        // whether or not this machine has the published index cached.
+        let modelsRes = try await service.getProviderCatalogModels(
+            envelope: QueryEnvelope(payload: GetProviderCatalogModelsRequest(entryID: curated.id)))
+        #expect(modelsRes.payload.count == curated.modelCount)
+        #expect(modelsRes.payload.allSatisfy { !$0.isEmpty })
         // Terminal sessions: the panel's only source of a live process.
         let termList = try await service.listTerminalSessions(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(termList.payload.allSatisfy { !$0.id.isEmpty })

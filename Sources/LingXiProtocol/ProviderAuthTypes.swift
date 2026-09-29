@@ -75,3 +75,28 @@ public struct CancelProviderAuthRequest: Codable, Sendable, Equatable {
     public let flowID: String
     public init(flowID: String) { self.flowID = flowID }
 }
+
+/// Connects a registry product with whatever its own contract requires.
+///
+/// The key never appears here: it is staged in Core's vault first and referenced.
+/// Built-in products carry their endpoint, so the form sends no URL.
+public struct ConnectProviderRequest: Codable, Sendable, Equatable {
+    public let productID: String
+    public var credentialRef: CredentialRef?
+    /// Only for products whose contract requires a local endpoint.
+    public var endpoint: String?
+    /// Values for `requiredAccountFields` the product declares.
+    public var fields: [String: String]
+    /// Models to configure. Only published-index providers need them; a curated
+    /// registry product discovers its own list.
+    public var modelIDs: [String]
+
+    public init(productID: String, credentialRef: CredentialRef? = nil, endpoint: String? = nil,
+                fields: [String: String] = [:], modelIDs: [String] = []) {
+        self.productID = productID
+        self.credentialRef = credentialRef
+        self.endpoint = endpoint
+        self.fields = fields
+        self.modelIDs = modelIDs
+    }
+}
