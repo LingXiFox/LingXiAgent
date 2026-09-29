@@ -48,15 +48,16 @@ public struct GetBrowserCaptureRequest: Codable, Sendable, Equatable {
 }
 
 /// A page image taken from the Agent's browser. Exactly one side is populated:
-/// the host either returns the bytes or writes them to a path.
+/// the host either returns the bytes or writes them to a path. The host encodes
+/// JPEG, so the field says JPEG.
 public struct BrowserCapture: Codable, Sendable, Equatable {
     public let sessionID: String
-    public let base64PNG: String?
+    public let base64JPEG: String?
     public let savedPath: String?
 
-    public init(sessionID: String, base64PNG: String? = nil, savedPath: String? = nil) {
+    public init(sessionID: String, base64JPEG: String? = nil, savedPath: String? = nil) {
         self.sessionID = sessionID
-        self.base64PNG = base64PNG
+        self.base64JPEG = base64JPEG
         self.savedPath = savedPath
     }
 }

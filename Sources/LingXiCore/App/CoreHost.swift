@@ -4800,7 +4800,7 @@ extension CoreHost {
             sessionID: request.sessionID, savePath: request.savePath)
         return ResponseEnvelope(
             requestID: envelope.requestID, revision: currentRevision,
-            payload: BrowserCapture(sessionID: request.sessionID, base64PNG: capture.base64, savedPath: capture.path))
+            payload: BrowserCapture(sessionID: request.sessionID, base64JPEG: capture.base64, savedPath: capture.path))
     }
 
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
