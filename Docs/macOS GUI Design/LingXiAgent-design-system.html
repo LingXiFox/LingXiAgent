@@ -848,14 +848,13 @@ h3 { font: 600 15px/20px var(--font-sans); margin: 20px 0 8px; }
 <li><strong>Provider 登录账户（OAuth）</strong>：契约与实现已完成 —— <code>provider.authProducts / authBegin / authStatus / authCancel</code>，Core 起 loopback 回调、换令牌、写凭据库并同步账号级模型缓存；GUI 只发起、开系统浏览器、读状态。产品列表由目录数据驱动，界面未硬编码产品 ID。真机浏览器往返需人工点验。</li>
 <li><strong>保存前测试连接</strong>：已完成。明文密钥只经凭据写入 API 进 Core 一次并返回引用，<code>provider.testDraft</code> 只引用该凭据；成功后保存采纳、失败或取消即清除。</li>
 <li><strong>Provider 测试连接</strong>：<code>provider.test</code> 不再返回固定「可达 · 12.5ms · OK」，改为真实探测（OAuth 校验令牌有效性、providers.json 与内置产品请求其模型列表端点），失败给可读原因且不泄露凭据。</li>
-<li><strong>Browser Panel</strong>：本轮只补可观察契约（<code>browser.sessions</code> 给出 sessionID / URL / title / tab / 快照版本与元素数，<code>browser.capture</code> 走 host 既有截屏能力）。面板仍是独立 <code>WKWebView</code>；页面共享与「Agent 正在浏览 · 点击页面即可接管」按项目负责人决定延后为浏览器架构专项，控制权状态机未发明、未实现。</li>
+<li><strong>Browser Panel</strong>：本轮只补可观察契约（<code>browser.sessions</code> 给出 sessionID / URL / title / tab / 快照版本与元素数，<code>browser.capture</code> 走 host 既有截屏能力）。面板仍是独立 <code>WKWebView</code>；页面共享与「Agent 正在浏览 · 点击页面即可接管」已由项目负责人 2026-09-29 裁定为「镜像 View」路线（见本节末两条与 <code>Docs/AC/Browser-Computer-Architecture-Audit-Revision.md</code> 第 15、16 节），本轮未实现，控制权状态机未发明。</li>
 <li><strong>Terminal Panel</strong>：已完成。PTY 已从 GUI 迁入 <code>LingXiPlatform</code>，Core 的 <code>TerminalSessionManager</code> 把 Agent 进程与用户 shell 统一成 terminal session 契约（list / spawn / read / write / interrupt / close）；面板收起、RightRail 切换、View 重建都不再结束会话。Agent 的管道进程没有 tty，因此不支持中断（明确拒绝而非伪造），输入按底层真实能力开放。</li>
+<li><strong>添加 Provider 账户</strong>：按项目负责人 2026-09-29 指示改为契约驱动 —— 先在表单内搜索并选择注册表提供商（列表来自 models.lingxifox.cn，与 TUI 一致），再按该产品声明的认证方式分支：API Key 产品只填密钥、OAuth 产品直接浏览器登录、本地运行时填端点、声明了 <code>requiredAccountFields</code> 的产品按声明索取字段；端点、协议与必需请求头始终由 Core 的注册表提供，表单不再要求手填名称/ID/Base URL。自定义中转仍写 providers.json。<strong>未连接的内置产品不进入 Provider 主列表</strong>（主列表只列真实账户）。表单内的候选列表由 Core 合并两个真实来源：内置注册表 27 个产品 + <code>models.lingxifox.cn</code> 发布索引 225 个提供商（实测 2026-09-29，其中 199 个既有端点又落在 providers.json 支持的三种协议内；其余 26 个索引未给出端点，列出但标记为不可连接，不猜端点也不猜协议），按 id 去重后共 248 条。</li>
+<li><strong>侧栏搜索框</strong>：按项目负责人 2026-09-29 反馈修正。搜索控件不再使用 AppKit 圆角胶囊（白色底在暖色面板上突兀），改为无边框无底色单元格 + 自绘内边距，放大镜图标与占位文本不再重叠；底色沿用设计系统 <code>fill-control</code>，行高 28，与「新建会话」按钮同一视觉家族。设置窗口分类栏使用同一组件。</li>
 <li><strong>语言服务</strong>：已完成。设置 › 代码智能 › 语言服务显示 Core 真实提供的 per-language LSP 状态（空闲 / 启动中 / 就绪 / 已降级 / 已停止），无服务时为真实空状态。Formatter 是一次性进程、无运行状态，本轮不显示；未伪造任何服务、pid、版本或错误原因。</li>
-</ul>
-<h2>待项目负责人裁决</h2>
-<ul>
-<li>本设计稿「Computer Use 与浏览器」页把 <code>browser_navigate</code> / <code>browser_act</code> 写成「已冻结」，而 Core 已注册这两个工具并由会话中枢持有；文案与实现冲突，是否改设计稿由项目负责人定，本轮未自行动产品级删改。</li>
-<li>浏览器页面共享（Chromium headless 与 WKWebView 两套引擎）与「点击接管」控制权的最终形态，另立浏览器架构专项。</li>
+<li><strong>Computer Use 与浏览器页</strong>：设计稿此前写的「已冻结」是错的，已修正。Core 从未删除 <code>browser_navigate</code> / <code>browser_act</code> / <code>computer_batch</code>，它们注册在工具表里、只是不在默认列表（要 <code>load_tool</code>），权限默认走询问。现在两张卡渲染 Core 经 <code>workspace.toolStatus</code> 给出的事实：注册与否、默认还是按需、当前权限策略、后端是否可用及缺什么。界面不再自行下判断。</li>
+<li><strong>浏览器路线已裁定（2026-09-29）</strong>：Browser Runtime 归 Core，GUI 面板改为同一 Browser Session 的镜像 View（先保证会话/页面/输入同源，再用帧流优化流畅度），引擎经模块化 BrowserHost 承载，本轮不换引擎。裁定与分 Stage 清单见 <code>Docs/AC/Browser-Computer-Architecture-Audit-Revision.md</code> 第 15、16 节；面板改造属于 Stage 3，本轮未动，页面上仍是独立 WKWebView。</li>
 </ul>
 <h2>未同步</h2>
 <ul>

@@ -682,4 +682,121 @@ Phase 5: Vision Grounding 视觉定位增强
 | **P0-6** | **Fake 基础设施与单元测试** | 实现全套 `FakeAccessibilityBackend`, `FakeInputBackend`, `FakeCaptureBackend` | `Tests/LingXiCoreTests` | **否** (仅测试代码) | P0-4, P0-5 | 编写无 GUI 单元测试，验证 ActionBatch 熔断、中立化调用与坐标映射 100% 通过 |
 
 ---
-*(报告完毕，全篇技术边界严密收敛，随时可直接按 Phase 0 TODO 启动第一阶段契约代码编写)*
+
+## 15. Browser Runtime 归属与 BrowserHost 迁移裁定（2026-09-29 项目负责人）
+
+调查结论（实测，非推断）：现有 Node + Playwright sidecar 已经是「独立进程 + 行分隔 JSON-RPC + 会话内 refs/版本」的形态，具备演进为 BrowserHost 第一个后端的全部骨架。因此本轮**不重写引擎、不换引擎**，只补契约层缺失的能力；引擎替换留到边界稳定之后。
+
+### 15.1 裁定清单
+
+| # | 裁定 | 工程含义 |
+|---|---|---|
+| 1 | Browser Runtime 归 Core / Runtime 所有 | GUI / WebUI 的 Browser Panel 只是同一个 Browser Session 的 View，不持有任何浏览器真值 |
+| 2 | 接受「镜像 View」为当前正确架构 | 先保证 Session / 页面 / 输入完全同源，流畅度后续用 screencast / frame stream 优化；不为「像本地浏览器一样丝滑」把所有权下放给 GUI |
+| 3 | macOS WebKit helper 不提前到 Stage 3 | 先用现有 Playwright sidecar 完成 BrowserHost 协议、事件、输入、会话投影与 GUI 同 Session View；不同时「重做协议 + 换引擎」 |
+| 4 | BrowserHost 协议必须是 LingXi 自己的引擎无关语义 | 不得把 Playwright API 包一层当协议；协议与 DTO 放共享协议层，引擎实现模块化，Core 不新增散落的 `#if os` |
+| 5 | Stage 0 先修真实可用性 | 发行版里浏览器后端目前根本不可用（见 15.2），先止血再谈架构 |
+| 6 | Stage 1-3 补齐会话能力 | tab 模型、loading/导航状态、push 事件、人工输入通道、cookie/storageState/profile、崩溃与断连与对话框生命周期、宿主重启恢复 |
+| 7 | CI 分层 | 普通 CI 保留 mock / contract；新增独立 Real Browser Integration Smoke；Release Gate 三平台跑真实 Chromium；Chromium 下载走缓存 |
+| 8 | 独立 WKWebView 面板最终删除「自有浏览会话」语义 | 但不立即重写，先完成 BrowserHost Contract 与 Runtime projection |
+| 9 | 依赖收敛为 LingXiAgent 自管的 Browser Runtime Pack | Stage 0 不切换系统原生引擎，也不把几百 MB 的 Node + Chromium 塞进主发行包；`PlaywrightBrowserHost` 仍是 Stage 0-3 的首个正式后端 |
+
+### 15.1.1 Browser Runtime Pack（裁定 9 的展开）
+
+| 约束 | 内容 |
+|---|---|
+| 组成 | 固定版本 Node runtime + Playwright BrowserHost + 固定版本 Chromium，三者作为一个 Pack 一起版本化 |
+| 用户侧 | 用户不需要自行安装 Node / npm / Chrome |
+| 生命周期 | LingXiAgent 负责检测、下载、校验、安装与升级 |
+| 分发 | Release 可把 Browser Runtime 作为独立可缓存 artifact 提供；离线用户可手工下载对应 Pack |
+| 边界 | **Core 不感知 npm / Playwright 安装细节**；runtime discovery 与 readiness 归 BrowserHost backend / Platform 层 |
+| README 目标语义 | 「Browser Use 不要求用户自行安装 Node.js、npm 或浏览器；LingXiAgent 会管理所需 Browser Runtime。」 |
+
+README 的改写必须在 Pack 真正可自动获取之后进行，否则只是把一句新的假话换上去；在此之前保持现状并由 `workspace.toolStatus` 报出「后端不可用 + 缺什么」。
+
+明确否决：GUI 里的 WKWebView 就是 Agent 浏览器；Core 直接强绑定 WKWebView（裸 CLI 二进制里 WKWebView 拿不到 `com.apple.WebKit.*` 的 XPC bundle id，通常渲染空白）；同时重做协议与更换引擎；为手感把浏览器所有权下放给前端。
+
+### 15.2 Stage 0 的现状证据（已逐条核实）
+
+| 缺陷 | 证据 |
+|---|---|
+| macOS `.app` 完全不含 sidecar，`Bundle.main.resourcePath/Sidecars/...` 候选必然落空 | `Scripts/bundle-mac-app.sh:23-45` 只拷 bundle 资源与图标；解析链见 `BrowserSessionManager.swift:43-55` |
+| 发行产物只拷 `index.mjs` + `package.json`，不带 `node_modules`，且没有任何地方跑 `npx playwright install` | `Scripts/package-release.sh:79-82`；`.github/workflows/release.yml:58-61,111-114,188-191` |
+| README 宣称用户不需要 Node/npm，与实际前置冲突 | `README.md:69,266` 对照 `Sidecars/browser-host/package.json:15` |
+| `LINGXI_BROWSER_DISABLE_SANDBOX` 永远传不到子进程（Linux / 容器必挂） | 白名单显式排除所有 `LINGXI_*`：`EnvironmentSanitizer.swift:19-24`；`BrowserHostClient.swift:89-90` 只补回 `..._MODE`；消费点 `index.mjs:4,44-47` |
+| Node 版本声明不一致 | `package.json:15` 要求 `>=18`，锁定的 Playwright 1.63.0 要求 `>=20`（`package-lock.json:16-18`） |
+| `browser_act` 的 enum 写着 `hover`，sidecar 只实现 click / type / key / wait | `BrowserTools.swift:59` 对照 `index.mjs:515-534` |
+| `capabilities` 声明了 `settle`，背后没有任何方法 | `index.mjs:215` |
+| `BrowserCapture.base64PNG` 实际装的是 JPEG | `BrowserSessionTypes.swift:54-59` 对照 `index.mjs:374,418-422` |
+| 无 push 通道：sidecar 只回 `id`+`result`，零 `page.on/browser.on` 监听；Swift 侧 `notificationHandler` 从未安装（`JSONRPCPeer` 本身支持） | `index.mjs:25-35`；`BrowserHostClient.swift:23-33`；`JSONRPCPeer.swift:28,129-144,301-309` |
+| 死宿主被永久缓存，无重启恢复 | `BrowserSessionManager.swift:73-81`（仅 `shutdown()` :212-216 清理） |
+| 无 cookie / storageState / profile，登录无法跨会话复用 | `index.mjs:239-241,274` 的 `newContext` 只带 viewport |
+| 面板自持 WKWebView 且生命周期长在 View 里，收起面板即销毁 | `WarmToolPane.swift:230-250` |
+| 没有任何测试驱动真实浏览器，全部 `mode: .mock` | `BrowserSessionManagerTests.swift:15-16,32-53`；`BrowserCorrectnessTests.swift:44,66,91,194,219` |
+
+---
+
+## 16. 分 Stage 实施清单
+
+### Stage 0 · 后端真实可用与契约诚实（不改架构）
+
+| 编号 | 任务 | 核心目标 | 涉及模块 | 破坏 API | 验收标准 |
+|---|---|---|---|---|---|
+| B0-1 | Runtime Pack 定义 | 固定版本 Node + Playwright BrowserHost + Chromium 打成一个可校验的 Browser Runtime Pack，不塞进主发行包 | `Sidecars/`、`Scripts/`、新 Pack 清单 | 否 | 同一 Pack 在三平台可被解出并握手成功；版本与校验和写死在清单里 |
+| B0-2 | 自动获取与升级 | LingXiAgent 检测 / 下载 / 校验 / 安装 / 升级 Pack；离线可手工放置 | BrowserHost backend / Platform 层（**Core 不参与安装细节**） | 否 | 全新机器上用户不装 Node/npm/Chrome 即可用；下载损坏时报可读错误且不安装；离线手工路径生效 |
+| B0-2b | Release artifact | Pack 作为独立可缓存 artifact 随发布提供 | `release.yml`、发布产物布局 | 否 | Release 页可单独下载对应平台 Pack；CI 与用户都按版本缓存 |
+| B0-2c | README 语义 | 改为「不要求用户自行安装 Node.js、npm 或浏览器；LingXiAgent 会管理所需 Browser Runtime」 | `README.md:69,266` | 否 | 与 B0-1/B0-2 同时落地，不得先于实现改文案 |
+| B0-3 | 环境透传 | 沙箱开关等必要的宿主变量真正到达子进程 | `BrowserHostClient.swift`、`EnvironmentSanitizer.swift` | 否 | 新增测试断言子进程实际收到的环境变量集合 |
+| B0-4 | 版本对齐 | engines 与锁定依赖一致，不匹配时握手即报错 | `Sidecars/browser-host/package.json` | 否 | 低版本 Node 下握手失败并给出明确原因，而非运行期神秘崩溃 |
+| B0-5 | 契约去谎 | `hover` 要么实现要么从 enum 删除；`settle` 能力声明要么实现要么撤销 | `BrowserTools.swift`、`index.mjs` | 是（收窄工具入参） | 契约测试覆盖「声明的动作 sidecar 必须实现」 |
+| B0-6 | 图像类型一致 | 捕获字段名与真实编码一致（`base64Image` + `mime`，或统一转 PNG） | `BrowserSessionTypes.swift`、`index.mjs` | 是（字段改名） | 解码端不再依赖「名字叫 PNG 实为 JPEG」的口头知识 |
+
+### Stage 1 · BrowserHost 协议与模块化后端
+
+| 编号 | 任务 | 核心目标 | 涉及模块 | 破坏 API | 验收标准 |
+|---|---|---|---|---|---|
+| B1-1 | 引擎无关协议 | 定义 `BrowserHost` 协议与 DTO：session / tab / navigate / snapshot / act / capture / input / state / storage / restart | `LingXiProtocol` | 否（纯新增） | 协议中不出现 Playwright 专有词汇；`Codable` + `Sendable` 无警告 |
+| B1-2 | 现有 sidecar 收编 | Playwright 成为 `PlaywrightBrowserHost`，Core 只经协议访问 | `Modules/Interaction`、`Sidecars/browser-host` | 否 | 现有 mock 契约测试全绿，无直接 `session.*` 字符串散落在 Core |
+| B1-3 | 后端装配 | 新增 `LingXiPlatform.browser` facet + 能力探测，按 `DesktopEnvironment` 的组合 + probe 先例选型 | `LingXiPlatform` | 否 | LingXiCore 内不新增 `#if os`；探测失败时状态可读 |
+| B1-4 | tab 模型 | session → tabs[]，真实 tabID，可列出 / 打开 / 关闭 / 激活 | 协议 + sidecar + `BrowserSessionStatus` | 是（投影扩展） | `browser.sessions` 能区分同会话多标签 |
+| B1-5 | 存储与 profile | cookie / storageState / profile 归 Runtime，按既有落盘分级 | `BrowserSessionManager`、sidecar | 否 | 无 GUI 的 CLI 会话登录一次，重开仍复用 |
+| B1-6 | 单一写者 | `BrowserSessionManager` 是会话权威，工具保持无状态 | `Modules/Tool/BrowserTools.swift` | 否 | 并发两会话交叉导航无串扰 |
+
+### Stage 2 · 事件、生命周期与自愈
+
+| 编号 | 任务 | 核心目标 | 验收标准 |
+|---|---|---|---|
+| B2-1 | push 通道 | sidecar 注册 `page.on(load / framenavigated / dialog / requestfailed / close)` 与 `browser.on(disconnected)`，发 JSON-RPC notification；Swift 侧安装 `notificationHandler` | 页面导航期间 Core 被动收到状态变化，无需轮询 |
+| B2-2 | loading 状态 | `BrowserSessionStatus` 增加真实 loading / 导航态 | 前端能区分「加载中」与「已稳定」 |
+| B2-3 | 投影进事件流 | 会话变化经 `broadcast` 进入 runtime 事件流 | GUI / TUI / WebUI 订阅同一事实源 |
+| B2-4 | 对话框与崩溃 | dialog 有明确策略（默认拒绝并上报，不静默）；页面崩溃对 Agent 可见 | 崩溃后下一次调用返回结构化错误而非超时 |
+| B2-5 | 宿主重启恢复 | 死宿主不再被永久缓存；探测失败即重启并重放会话表 | 手动 kill sidecar 后 Core 自愈，进程不受牵连 |
+
+### Stage 3 · 人工输入与面板同 Session View
+
+| 编号 | 任务 | 核心目标 | 验收标准 |
+|---|---|---|---|
+| B3-1 | 输入通道 | `input.dispatch`（鼠标 / 键盘 / 滚轮 / 粘贴）进入 Runtime，权限沿用现有 ASK 通道 | 面板里的一次点击真实改变页面 |
+| B3-2 | 面板改 View | 删除自有会话语义：帧画面来自会话投影（先 capture 轮询，后 screencast），refs 叠加显示 | 面板不再自己 `load(URLRequest)` |
+| B3-3 | 生命周期解耦 | 关闭面板只解除订阅，不销毁会话（与终端会话同一裁定） | 面板收起后 Agent 继续在同页操作 |
+| B3-4 | 控制权状态 | Agent 驱动 / 用户驱动 / 空闲 成为 Runtime 的显式状态，前端只消费 | 用户操作后 Agent 下一次 snapshot 反映变化，且不存在两套页面状态 |
+
+### Stage 4 · 引擎后端矩阵（暂缓，边界稳定后启动）
+
+macOS WebKit（必须打包成带 bundle id 的 helper 才能出图）、Windows WebView2、Linux WebKitGTK 或继续 Chromium。协议与上层在 Stage 1-3 已定型，换后端不动 Core、前端与工具。
+
+### CI 分层
+
+| 编号 | 任务 | 验收标准 |
+|---|---|---|
+| C-1 | 普通 CI 继续只跑 mock / contract 测试 | 普通 suite 时长不因浏览器后端上升 |
+| C-2 | 新增独立 Real Browser Integration Smoke（Linux 真 Chromium + 本地 HTTP fixture） | Push / PR 上真实导航、snapshot refs、act 后 DOM 变化 |
+| C-3 | Release Gate 在 macOS / Windows / Linux 跑真实 Chromium backend | 三平台后端可用才算发布 |
+| C-4 | Chromium 下载按 Playwright 版本 + lockfile 做缓存 | 冷缓存一次，后续命中缓存 |
+
+### 文档同步义务
+
+Stage 3 落地时必须一并改写：`Docs/macOS GUI Design/LingXiAgent-design-system.html:851,860`（面板「独立会话 · 尚未连接 Agent」的表述）、`Sources/LingXiCore/App/CoreHost.swift:4726-4730` 与 `Sources/LingXiProtocol/BrowserSessionTypes.swift:3-8` 的「本轮不共享页面」注释。
+
+---
+*(复核与迁移裁定完毕。Stage 0 可立即启动；Stage 1 起需按表逐条准入准出，不得与引擎替换并行。)*

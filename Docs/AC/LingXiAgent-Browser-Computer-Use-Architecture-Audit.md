@@ -4,6 +4,8 @@
 > **审计日期**: 2026-09-15  
 > **执行角色**: 本狐（Antigravity 架构助理）  
 > **约束准则**: 纯架构审计与可行性调研，零生产代码修改，零提前重构，零未经审计的外部依赖引入。
+>
+> **后续裁定**: 本文末尾的 Phase 实施顺序已被复核报告取代。Browser Runtime 归属、BrowserHost 迁移裁定与分 Stage 实施清单见 `Browser-Computer-Architecture-Audit-Revision.md` 第 15、16 节（2026-09-29 项目负责人裁定）。
 
 ---
 
