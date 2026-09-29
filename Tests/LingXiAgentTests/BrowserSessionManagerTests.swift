@@ -123,7 +123,14 @@ struct BrowserSessionManagerTests {
             )
         }
 
-        // 4. 清理会话
+        // 4. 会话状态投影读出 host 真实报告的页面
+        let states = await manager.sessionStates()
+        #expect(states.map(\.sessionID) == [sessionID])
+        #expect(states.first?.currentURL.isEmpty == false)
+        #expect(states.first?.latestObservation != nil)
+
+        // 5. 清理会话
         await manager.close(sessionID: sessionID)
+        #expect(await manager.sessionStates().isEmpty)
     }
 }

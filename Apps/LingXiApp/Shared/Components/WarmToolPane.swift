@@ -575,221 +575,220 @@ private struct WarmGitPane: View {
     }
 }
 
+/// Renders the terminal sessions Core owns. It starts no process and ends none:
+/// collapsing the panel only stops polling, which is what keeps a session alive
+/// across a view rebuild.
 @MainActor private final class WarmTerminalModel: ObservableObject {
-    @Published var output = ""
+    @Published var sessions: [TerminalSessionInfo] = []
+    @Published var selectedID: String?
     @Published var command = ""
-    @Published var isRunning = false
     @Published var error: String?
-    private var process: Process?
-    private var master: FileHandle?
+    private weak var runtime: RuntimeFrontend?
+    private var pollTask: Task<Void, Never>?
 
-    func start(at workspace: URL?) {
-        guard !isRunning, let workspace else { return }
-        var masterFD: Int32 = -1
-        var slaveFD: Int32 = -1
-        guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else {
-            error = "无法创建 PTY"
-            return
+    var selected: TerminalSessionInfo? { sessions.first { $0.id == selectedID } }
+    var output: String { selected.flatMap { runtime?.terminalOutput[$0.id] } ?? "" }
+    var isRunning: Bool { selected?.state == .running }
+
+    func attach(to runtime: RuntimeFrontend) {
+        self.runtime = runtime
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.refresh()
+                try? await Task.sleep(for: .milliseconds(700))
+            }
         }
-        let master = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
-        let slave = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: true)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-f", "-s", "+i"]
-        process.currentDirectoryURL = workspace
-        process.environment = ProcessInfo.processInfo.environment.merging(["TERM": "dumb", "NO_COLOR": "1"]) { _, new in new }
-        process.standardInput = slave
-        process.standardOutput = slave
-        process.standardError = slave
-        do {
-            try process.run()
-            self.process = process
-            self.master = master
-            isRunning = true
-            output = ""
-            master.readabilityHandler = { [weak self] handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                let text = String(decoding: data, as: UTF8.self)
-                Task { @MainActor [weak self] in
-                    let plain = text
-                        .replacingOccurrences(of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
-                        .replacingOccurrences(of: "\u{001B}\\][^\u{0007}]*\u{0007}", with: "", options: .regularExpression)
-                        .replacingOccurrences(of: "\r", with: "")
-                    self?.output += plain
-                    if (self?.output.count ?? 0) > 120_000 { self?.output.removeFirst(20_000) }
-                }
-            }
-            process.terminationHandler = { [weak self] _ in
-                Task { @MainActor [weak self] in self?.isRunning = false }
-            }
-        } catch {
-            self.error = error.localizedDescription
-            master.closeFile()
-            slave.closeFile()
+    }
+
+    /// Stops reading. The sessions themselves keep running in Core.
+    func detach() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    func refresh() async {
+        guard let runtime else { return }
+        await runtime.refreshTerminalSessions()
+        sessions = runtime.terminalSessions
+        if selected == nil { selectedID = sessions.first?.id }
+        if let selected, selected.state == .running {
+            await runtime.pollTerminalOutput(sessionID: selected.id, columns: 80, rows: 24)
+        }
+        error = runtime.terminalError
+    }
+
+    func select(_ id: String) {
+        selectedID = id
+        Task { await refresh() }
+    }
+
+    func spawnShell() {
+        guard let runtime else { return }
+        Task {
+            await runtime.spawnTerminalShell()
+            await refresh()
         }
     }
 
     func send() {
-        guard let master, isRunning else { return }
+        guard let runtime, let selected else { return }
         let value = command + "\n"
         command = ""
-        master.write(Data(value.utf8))
+        Task {
+            await runtime.sendTerminalInput(sessionID: selected.id, text: value)
+            await refresh()
+        }
     }
 
-    func interrupt() { master?.write(Data([3])) }
+    func interrupt() {
+        guard let runtime, let selected else { return }
+        Task {
+            await runtime.interruptTerminal(sessionID: selected.id)
+            await refresh()
+        }
+    }
 
-    func stop() {
-        master?.readabilityHandler = nil
-        if process?.isRunning == true { process?.terminate() }
-        master?.closeFile()
-        master = nil
-        process = nil
-        isRunning = false
+    func closeSession() {
+        guard let runtime, let selected else { return }
+        Task {
+            await runtime.closeTerminalSession(selected.id)
+            selectedID = nil
+            await refresh()
+        }
     }
 }
 
 private struct WarmTerminalPane: View {
     @ObservedObject var runtime: RuntimeFrontend
-    @ObservedObject private var conversation: ConversationPresentationModel
     @StateObject private var terminal = WarmTerminalModel()
-    @State private var selectedTab = 0
 
     init(runtime: RuntimeFrontend) {
         self.runtime = runtime
-        self.conversation = runtime.conversationModel
-    }
-
-    private var workspace: URL? { runtime.workspaceURL }
-    private var agentCommands: [ToolCallPresentation] {
-        conversation.items.compactMap {
-            guard case .tool(let call) = $0.kind,
-                  ["shell", "terminal", "exec", "command", "bash", "zsh"].contains(where: {
-                      call.toolName.localizedCaseInsensitiveContains($0)
-                  }) else { return nil }
-            return call
-        }
-    }
-
-    private var agentRunning: Bool {
-        agentCommands.contains { EventStatus($0.status) == .running }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Session tabs: the agent's command record and the user's own shell.
+            // One tab per session that actually exists right now.
             HStack(spacing: LingXiMetrics.Space.xs) {
-                sessionTab(1, title: agentCommands.last.map { "Agent · \($0.summary)" } ?? "Agent", running: agentRunning)
-                sessionTab(0, title: "zsh", running: false)
+                ForEach(terminal.sessions) { session in
+                    sessionTab(session)
+                }
                 Spacer(minLength: 0)
-                if selectedTab == 0 {
+                if terminal.selected != nil {
                     Button { terminal.interrupt() } label: { Image(systemName: "stop.circle") }
                         .buttonStyle(LXIconButtonStyle(side: LXControl.small))
-                        .disabled(!terminal.isRunning)
-                        .help("中断 (⌃C)")
+                        .disabled(terminal.selected?.supportsInterrupt != true)
+                        .help(terminal.selected?.supportsInterrupt == true
+                              ? "中断 (Ctrl-C)" : "该进程没有连接终端，无法中断")
                         .accessibilityLabel("中断")
-                    Button {
-                        if terminal.isRunning { terminal.stop() } else { terminal.start(at: workspace) }
-                    } label: { Image(systemName: terminal.isRunning ? "xmark.circle" : "play.circle") }
+                    Button { terminal.closeSession() } label: { Image(systemName: "xmark.circle") }
                         .buttonStyle(LXIconButtonStyle(side: LXControl.small))
-                        .disabled(workspace == nil)
-                        .help(terminal.isRunning ? "结束 shell" : "启动 shell")
-                        .accessibilityLabel(terminal.isRunning ? "结束 shell" : "启动 shell")
+                        .help("结束该会话")
+                        .accessibilityLabel("结束会话")
+                } else {
+                    Button { terminal.spawnShell() } label: { Image(systemName: "play.circle") }
+                        .buttonStyle(LXIconButtonStyle(side: LXControl.small))
+                        .disabled(runtime.workspaceURL == nil)
+                        .help("新建 shell")
+                        .accessibilityLabel("新建 shell")
                 }
             }
             .padding(.horizontal, LingXiMetrics.Space.sm)
             .padding(.vertical, 6)
             LXHairline()
 
-            if selectedTab == 0 {
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: false) {
-                        Text(terminal.output.isEmpty ? "终端已就绪" : terminal.output)
-                            .font(LXType.monoSmall)
-                            .lineSpacing(3)
-                            .foregroundStyle(terminal.output.isEmpty ? Color.secondary : Color.primary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(LingXiMetrics.Space.md)
-                            .id("tail")
-                    }
-                    .onChange(of: terminal.output.count) { _, _ in proxy.scrollTo("tail", anchor: .bottom) }
-                }
-                if let error = terminal.error {
-                    LXStatusText(error, systemImage: "exclamationmark.triangle", tone: .danger)
-                        .padding(.horizontal, LingXiMetrics.Space.md)
-                }
-                HStack(spacing: LingXiMetrics.Space.sm) {
-                    Text("$").font(LXType.monoSmall).foregroundStyle(.secondary)
-                    TextField("输入命令并回车", text: $terminal.command, onCommit: terminal.send)
-                        .textFieldStyle(.plain)
-                        .font(LXType.monoSmall)
-                        .disabled(!terminal.isRunning)
-                }
-                .padding(.horizontal, LingXiMetrics.Space.md)
-                .frame(height: LingXiMetrics.Size.rowList)
-                .overlay(alignment: .top) { LXHairline() }
-                footer(workspace.map { "你的 shell · \($0.lastPathComponent)" } ?? "未打开工作区")
-            } else {
+            ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
-                        ForEach(agentCommands, id: \.callID) { call in
-                            VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                                HStack(alignment: .firstTextBaseline, spacing: LingXiMetrics.Space.sm) {
-                                    Text("$ \(call.summary)").font(LXType.monoSmall).lineLimit(2)
-                                    Spacer(minLength: LingXiMetrics.Space.sm)
-                                    EventStatusGlyph(status: EventStatus(call.status))
-                                }
-                                if let output = call.output, !output.isEmpty {
-                                    Text(output).font(LXType.monoSmall).lineSpacing(3).textSelection(.enabled)
-                                }
-                                if let stderr = call.stderr, !stderr.isEmpty {
-                                    Text(stderr).font(LXType.monoSmall).lineSpacing(3)
-                                        .foregroundStyle(LXColor.danger)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if agentCommands.isEmpty {
-                            PlaceholderLine("本会话还没有 Agent 执行过终端命令。")
+                    Group {
+                        if terminal.sessions.isEmpty {
+                            PlaceholderLine(runtime.workspaceURL == nil
+                                ? "未打开工作区。"
+                                : (terminal.isRunning ? "等待输出…" : "还没有终端会话。"))
+                                .padding(LingXiMetrics.Space.md)
+                        } else {
+                            Text(terminal.output.isEmpty ? "终端已就绪" : terminal.output)
+                                .font(LXType.monoSmall)
+                                .lineSpacing(3)
+                                .foregroundStyle(terminal.output.isEmpty ? Color.secondary : Color.primary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(LingXiMetrics.Space.md)
                         }
                     }
-                    .padding(LingXiMetrics.Space.md)
+                    .id("tail")
                 }
-                footer(agentRunning ? "Agent 正在使用终端 · 输出实时更新" : "Agent 的命令记录 · 只读")
+                .onChange(of: terminal.output.count) { _, _ in proxy.scrollTo("tail", anchor: .bottom) }
             }
+            if let error = terminal.error {
+                LXStatusText(error, systemImage: "exclamationmark.triangle", tone: .danger)
+                    .padding(.horizontal, LingXiMetrics.Space.md)
+            }
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Text("$").font(LXType.monoSmall).foregroundStyle(.secondary)
+                TextField("输入命令并回车", text: $terminal.command, onCommit: terminal.send)
+                    .textFieldStyle(.plain)
+                    .font(LXType.monoSmall)
+                    .disabled(terminal.selected?.supportsInput != true)
+            }
+            .padding(.horizontal, LingXiMetrics.Space.md)
+            .frame(height: LingXiMetrics.Size.rowList)
+            .overlay(alignment: .top) { LXHairline() }
+            footer(terminal.selected.map(Self.describe) ?? "没有会话 · 点击 ▶ 新建 shell")
         }
-        .onAppear {
-            selectedTab = agentCommands.isEmpty ? 0 : 1
-            terminal.start(at: workspace)
-        }
-        .onDisappear { terminal.stop() }
+        .onAppear { terminal.attach(to: runtime) }
+        // Collapsing the panel stops reading. It never ends a session.
+        .onDisappear { terminal.detach() }
     }
 
-    /// 24pt tab: fill-control when selected; the agent tab carries the 6pt
-    /// running dot while it executes.
-    private func sessionTab(_ tag: Int, title: String, running: Bool) -> some View {
-        Button { selectedTab = tag } label: {
+    /// 24pt tab: fill-control when selected; a running session carries the 6pt dot.
+    private func sessionTab(_ session: TerminalSessionInfo) -> some View {
+        let isSelected = terminal.selectedID == session.id
+        return Button { terminal.select(session.id) } label: {
             HStack(spacing: LingXiMetrics.Space.xs) {
-                if running {
+                if session.state == .running {
                     Circle().fill(LXColor.running).frame(width: LXControl.dot, height: LXControl.dot)
                         .accessibilityLabel("执行中")
                 }
-                Text(title).lineLimit(1).truncationMode(.tail)
+                Text(Self.tabTitle(session)).lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: 180, alignment: .leading)
             }
             .font(LXType.meta)
-            .foregroundStyle(selectedTab == tag ? .primary : .secondary)
+            .foregroundStyle(isSelected ? .primary : .secondary)
             .padding(.horizontal, LingXiMetrics.Space.sm)
             .frame(minHeight: LXControl.tab)
             .fixedSize()
-            .background(selectedTab == tag ? LXColor.fillControl : .clear,
+            .background(isSelected ? LXColor.fillControl : .clear,
                         in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.sm, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selectedTab == tag ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private static func tabTitle(_ session: TerminalSessionInfo) -> String {
+        switch session.kind {
+        case .user: (session.title as NSString).lastPathComponent
+        case .agent: "Agent · \(session.title)"
+        }
+    }
+
+    /// The footer states what the session is, from Core's own fields.
+    private static func describe(_ session: TerminalSessionInfo) -> String {
+        let state: String
+        switch session.state {
+        case .running: state = "运行中"
+        case .exited: state = "已退出\(session.exitCode.map { " · 退出码 \($0)" } ?? "")"
+        case .timedOut: state = "已超时"
+        case .terminated: state = "已终止"
+        }
+        switch session.kind {
+        case .user: return "你的 shell · \(state)"
+        case .agent:
+            let owner = session.ownerRunID.map { " · run \($0.prefix(8))" } ?? ""
+            return "Agent 会话 · \(state)\(owner)"
+        }
     }
 
     private func footer(_ text: String) -> some View {
@@ -802,4 +801,5 @@ private struct WarmTerminalPane: View {
             .overlay(alignment: .top) { LXHairline() }
     }
 }
+
 #endif

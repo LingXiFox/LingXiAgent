@@ -79,6 +79,113 @@ struct ConfigurationEditingAndWorktreeTests {
         #expect(try await f.store.load().providers.providers["relay"] == nil)
     }
 
+    @Test("A model override is stored field by field and reset drops only that key")
+    func modelOverrideSemantics() async throws {
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+
+        // The user states one limit, one capability and one retry field; nothing else.
+        let draft = ProviderModelConfigurationDetail(
+            modelID: "fast-1", name: "Fast", contextWindow: 200_000, reasoning: true, maxRetries: 7)
+        var request = providerRequest(apiKey: .replace("sk-test-123"))
+        request.models = [draft]
+        let saved = try await f.host.saveProviderConfiguration(
+            envelope: CommandEnvelope(payload: request)).result
+        #expect(saved?.models.first?.catalogDefaults.tokensPerMinute == nil)
+        #expect(saved?.models.first?.effective.maxRetries == 7)
+        #expect(saved?.models.first?.effective.contextWindow == 200_000)
+
+        let stored = try #require(
+            try await f.store.load().providers.providers["relay"]?.models["fast-1"])
+        #expect(stored.limit?.context == 200_000)
+        #expect(stored.limit?.output == nil)
+        #expect(stored.reasoning == true)
+        #expect(stored.toolCalling == nil)
+        #expect(stored.rateLimits?.retryPolicy?.maxRetries == 7)
+        #expect(stored.rateLimits?.retryPolicy?.initialDelayMilliseconds == nil)
+
+        // The untouched fields are absent from the file, so a catalog update
+        // can still reach them; no default was baked in.
+        let file = try String(contentsOf: f.root.appendingPathComponent("providers.json"), encoding: .utf8)
+        #expect(!file.contains("\"output\""))
+        #expect(!file.contains("toolCalling"))
+        #expect(!file.contains("parallelToolCalling"))
+        #expect(!file.contains("initialDelayMilliseconds"))
+
+        // Resetting the context window deletes that override and keeps the others.
+        var resetOne = request
+        resetOne.models = [ProviderModelConfigurationDetail(
+            modelID: "fast-1", name: "Fast", reasoning: true, maxRetries: 7)]
+        _ = try await f.host.saveProviderConfiguration(envelope: CommandEnvelope(payload: resetOne))
+        let afterOne = try #require(
+            try await f.store.load().providers.providers["relay"]?.models["fast-1"])
+        #expect(afterOne.limit?.context == nil)
+        #expect(afterOne.reasoning == true)
+        #expect(afterOne.rateLimits?.retryPolicy?.maxRetries == 7)
+
+        // 恢复全部默认 removes every override, leaving the entry itself in place.
+        var resetAll = request
+        resetAll.models = [ProviderModelConfigurationDetail(modelID: "fast-1", name: "Fast")]
+        _ = try await f.host.saveProviderConfiguration(envelope: CommandEnvelope(payload: resetAll))
+        let afterAll = try #require(
+            try await f.store.load().providers.providers["relay"]?.models["fast-1"])
+        #expect(afterAll.limit == nil)
+        #expect(afterAll.reasoning == nil)
+        #expect(afterAll.rateLimits == nil)
+        #expect(afterAll.name == "Fast")
+    }
+
+    @Test("A staged key is adopted on save and a draft test reports what actually happened")
+    func stagedCredentialAndDraftTest() async throws {
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+
+        // The key reaches Core once, through the credential API.
+        let staged = try await f.host.storeCredential(
+            envelope: CommandEnvelope(payload: StoreCredentialRequest(secret: "sk-draft-1")))
+        let reference = try #require(staged.result?.reference)
+
+        // Nothing is listening on that port, so the honest answer is unreachable.
+        var draft = TestProviderDraftRequest(adapter: "openai-compatible",
+                                             baseURL: "https://127.0.0.1:9/v1", credentialRef: reference)
+        let tested = try await f.host.testProviderDraft(envelope: CommandEnvelope(payload: draft)).result
+        #expect(tested?.reachable == false)
+        #expect(tested?.latencyMs == nil)
+        #expect(tested?.message?.contains("sk-draft-1") == false)
+
+        // An invalid adapter is refused before anything is probed.
+        draft.adapter = "grpc"
+        await #expect(throws: (any Error).self) {
+            _ = try await f.host.testProviderDraft(envelope: CommandEnvelope(payload: draft))
+        }
+
+        // Saving adopts the staged secret instead of resending the plaintext.
+        let saved = try await f.host.saveProviderConfiguration(
+            envelope: CommandEnvelope(payload: providerRequest(apiKey: .staged(reference: reference)))).result
+        #expect(saved?.apiKey == .vault)
+        let file = try String(contentsOf: f.root.appendingPathComponent("providers.json"), encoding: .utf8)
+        #expect(!file.contains("sk-draft-1"))
+        #expect(try await f.credentials.secret(for: CredentialRef("provider-relay-key")) == "sk-draft-1")
+        #expect(try await f.credentials.secret(for: reference) == nil, "暂存凭据不应残留")
+
+        // A stale reference cannot be adopted.
+        await #expect(throws: (any Error).self) {
+            _ = try await f.host.saveProviderConfiguration(
+                envelope: CommandEnvelope(payload: providerRequest(apiKey: .staged(reference: reference))))
+        }
+    }
+
+    @Test("A provider test reports the real answer, not a stored one")
+    func providerTestIsNotHardcoded() async throws {
+        let f = try await fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let result = try await f.host.testProvider(
+            envelope: CommandEnvelope(payload: TestProviderRequest(providerID: "does-not-exist"))).result
+        #expect(result?.reachable == false)
+        #expect(result?.latencyMs == nil)
+        #expect(result?.message?.contains("未找到") == true)
+    }
+
     @Test("An MCP server resolves its command and keeps env values in the vault")
     func mcpRoundTrip() async throws {
         let f = try await fixture()

@@ -19,14 +19,14 @@ extension CoreHost {
             throw CoreError(code: .provider, message: "Provider \(providerID) 不在 providers.json 中，由登录或内置目录管理")
         }
         return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
-                                payload: Self.providerDetail(providerID, provider))
+                                payload: await Self.providerDetail(providerID, provider))
     }
 
     public func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
         let request = envelope.payload
         let providerID = request.providerID.trimmingCharacters(in: .whitespaces)
         try Self.validateIdentifier(providerID, what: "Provider ID")
-        guard ["openai-compatible", "openai-responses", "anthropic-messages"].contains(request.adapter) else {
+        guard Self.editableAdapters.contains(request.adapter) else {
             throw CoreError(code: .toolArgumentInvalid, message: "不支持的接口类型: \(request.adapter)")
         }
         let name = request.name.trimmingCharacters(in: .whitespaces)
@@ -49,26 +49,32 @@ extension CoreHost {
             for model in edited {
                 let modelID = model.modelID.trimmingCharacters(in: .whitespaces)
                 guard !modelID.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "模型 ID 不能为空") }
-                guard model.contextWindow > 0, model.maxOutputTokens > 0 else {
-                    throw CoreError(code: .toolArgumentInvalid, message: "\(modelID) 的上下文窗口与输出上限必须大于 0")
+                for (field, value) in [("上下文窗口", model.contextWindow), ("输出上限", model.maxOutputTokens)] {
+                    if let value, value <= 0 {
+                        throw CoreError(code: .toolArgumentInvalid, message: "\(modelID) 的\(field)必须大于 0")
+                    }
                 }
-                var config = models[modelID] ?? PublicModelConfiguration(
-                    name: modelID, limit: PublicModelLimit(context: model.contextWindow, output: model.maxOutputTokens))
+                var config = models[modelID] ?? PublicModelConfiguration(name: modelID)
                 config.name = model.name.isEmpty ? modelID : model.name
-                config.limit = PublicModelLimit(context: model.contextWindow, output: model.maxOutputTokens)
+                // Only what the user actually set is stored. An absent field is an
+                // absent key, so a later catalog update still reaches the model.
+                let limit = PublicModelLimit(context: model.contextWindow, output: model.maxOutputTokens)
+                config.limit = limit.isEmpty ? nil : limit
                 config.reasoning = model.reasoning
                 config.toolCalling = model.toolCalling
                 config.parallelToolCalling = model.parallelToolCalling
                 config.vision = model.vision
                 config.structuredOutput = model.structuredOutput
-                config.rateLimits = ProviderRateLimits(
+                let retry = StoredRetryPolicyOverrides(
+                    maxRetries: model.maxRetries,
+                    initialDelayMilliseconds: model.initialRetryDelayMilliseconds,
+                    maxDelayMilliseconds: model.maxRetryDelayMilliseconds,
+                    jitterRatio: model.retryJitterRatio.map { min(1, max(0, $0)) })
+                let rates = StoredRateLimitOverrides(
                     tpm: model.tokensPerMinute, rpm: model.requestsPerMinute,
                     maxConcurrentRequests: model.maxConcurrentRequests,
-                    retryPolicy: ProviderRetryPolicy(
-                        maxRetries: model.maxRetries,
-                        initialDelayMilliseconds: model.initialRetryDelayMilliseconds,
-                        maxDelayMilliseconds: model.maxRetryDelayMilliseconds,
-                        jitterRatio: min(1, max(0, model.retryJitterRatio))))
+                    retryPolicy: retry.isEmpty ? nil : retry)
+                config.rateLimits = rates.isEmpty ? nil : rates
                 next[modelID] = config
             }
             models = next
@@ -98,7 +104,7 @@ extension CoreHost {
         try await store.saveProviders(Self.rebuiltProviders(snapshot.providers, model: selected, providers: providers))
         await reassembleCurrentModel(ifProvider: providerID)
 
-        let detail = Self.providerDetail(providerID, providers[providerID]!)
+        let detail = await Self.providerDetail(providerID, providers[providerID]!)
         return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
                               observedThrough: [], result: detail)
     }
@@ -239,6 +245,17 @@ extension CoreHost {
             guard !secret.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "密钥不能为空") }
             try await requireCredentialStore().setSecret(secret, for: reference)
             return "{vault:\(reference.rawValue)}"
+        case .staged(let staged):
+            // The plaintext already reached Core once, through the credential
+            // API. Adopt it under this entry's own reference and drop the
+            // staged copy, so a pre-save test key never lingers.
+            let store = try await requireCredentialStore()
+            guard staged.rawValue != reference.rawValue, let secret = try await store.secret(for: staged), !secret.isEmpty else {
+                throw CoreError(code: .toolArgumentInvalid, message: "暂存的凭据已失效，请重新输入")
+            }
+            try await store.removeSecret(for: staged)
+            try await store.setSecret(secret, for: reference)
+            return "{vault:\(reference.rawValue)}"
         }
     }
 
@@ -281,7 +298,7 @@ extension CoreHost {
         ProvidersConfiguration(schema: current.schema, version: current.version, model: model, providers: providers)
     }
 
-    static func providerDetail(_ providerID: String, _ provider: PublicProviderConfiguration) -> ProviderConfigurationDetail {
+    static func providerDetail(_ providerID: String, _ provider: PublicProviderConfiguration) async -> ProviderConfigurationDetail {
         ProviderConfigurationDetail(
             providerID: providerID,
             name: provider.name,
@@ -290,26 +307,44 @@ extension CoreHost {
             apiKeyHeader: provider.options.apiKeyHeader,
             headers: provider.options.headers,
             apiKey: secretSource(provider.options.apiKey),
-            models: provider.models.keys.sorted().map { id in
-                let model = provider.models[id]!
-                return ProviderModelConfigurationDetail(
-                    modelID: id,
-                    name: model.name,
-                    contextWindow: model.limit.context,
-                    maxOutputTokens: model.limit.output,
-                    reasoning: model.reasoning,
-                    toolCalling: model.toolCalling,
-                    parallelToolCalling: model.parallelToolCalling,
-                    vision: model.vision,
-                    structuredOutput: model.structuredOutput,
-                    tokensPerMinute: model.rateLimits.tpm,
-                    requestsPerMinute: model.rateLimits.rpm,
-                    maxConcurrentRequests: model.rateLimits.maxConcurrentRequests,
-                    maxRetries: model.rateLimits.retryPolicy.maxRetries,
-                    initialRetryDelayMilliseconds: model.rateLimits.retryPolicy.initialDelayMilliseconds,
-                    maxRetryDelayMilliseconds: model.rateLimits.retryPolicy.maxDelayMilliseconds,
-                    retryJitterRatio: model.rateLimits.retryPolicy.jitterRatio)
+            models: await withTaskGroup(of: ProviderModelConfigurationDetail.self, returning: [ProviderModelConfigurationDetail].self) { group in
+                for id in provider.models.keys.sorted() {
+                    group.addTask { await Self.modelDetail(providerID: providerID, modelID: id, model: provider.models[id]!) }
+                }
+                var collected: [ProviderModelConfigurationDetail] = []
+                for await model in group { collected.append(model) }
+                return collected.sorted { $0.modelID < $1.modelID }
             })
+    }
+
+    /// One stored model plus the two layers the form needs to show it honestly:
+    /// what the catalog states, and what Core will therefore actually use.
+    static func modelDetail(providerID: String, modelID: String,
+                            model: PublicModelConfiguration) async -> ProviderModelConfigurationDetail {
+        ProviderModelConfigurationDetail(
+            modelID: modelID,
+            name: model.name,
+            contextWindow: model.limit?.context,
+            maxOutputTokens: model.limit?.output,
+            reasoning: model.reasoning,
+            toolCalling: model.toolCalling,
+            parallelToolCalling: model.parallelToolCalling,
+            vision: model.vision,
+            structuredOutput: model.structuredOutput,
+            tokensPerMinute: model.rateLimits?.tpm,
+            requestsPerMinute: model.rateLimits?.rpm,
+            maxConcurrentRequests: model.rateLimits?.maxConcurrentRequests,
+            maxRetries: model.rateLimits?.retryPolicy?.maxRetries,
+            initialRetryDelayMilliseconds: model.rateLimits?.retryPolicy?.initialDelayMilliseconds,
+            maxRetryDelayMilliseconds: model.rateLimits?.retryPolicy?.maxDelayMilliseconds,
+            retryJitterRatio: model.rateLimits?.retryPolicy?.jitterRatio,
+            catalogDefaults: await ModelCatalogDefaults.resolve(providerID: providerID, modelID: modelID))
+    }
+
+    /// The settings of one configured model as the runtime will use them.
+    static func effectiveModelSettings(providerID: String, modelID: String,
+                                       model: PublicModelConfiguration) async -> ProviderModelEffectiveValues {
+        await Self.modelDetail(providerID: providerID, modelID: modelID, model: model).effective
     }
 
     static func mcpDetail(_ server: StoredMCPServerConfiguration) -> MCPServerConfigurationDetail {

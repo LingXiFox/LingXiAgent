@@ -28,6 +28,12 @@ public struct WorkspaceDomainClient: Sendable {
         return resp.payload
     }
 
+    /// Language servers Core has actually started for this workspace.
+    public func languageServices() async throws -> [LanguageServiceStatus] {
+        let resp = try await transport.getLanguageServiceStatuses(envelope: QueryEnvelope(payload: VoidResult()))
+        return resp.payload
+    }
+
     // MARK: - Worktree Operations (G10)
 
     public func createWorktree(name: String, baseRef: String? = nil) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {

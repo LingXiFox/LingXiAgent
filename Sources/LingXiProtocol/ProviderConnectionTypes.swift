@@ -47,6 +47,27 @@ public struct ProviderProductSummary: Codable, Sendable, Equatable, Identifiable
     }
 }
 
+/// Credential and connectivity state Core actually observes for an account.
+///
+/// A front end renders these cases instead of pattern-matching on a string, so
+/// an unrecognised value is reported as such rather than guessed at.
+public enum ProviderAccountAvailability: String, Codable, Sendable, Equatable {
+    case configured
+    case active
+    case refreshing
+    case refreshFailedTransient = "refresh_failed"
+    case reauthenticationRequired
+    case unavailable
+    /// A value this build does not know: shown as unknown, never mapped onto a
+    /// nearby state.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ProviderAccountAvailability(rawValue: raw) ?? .unknown
+    }
+}
+
 public struct ProviderAccountInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let productID: String
@@ -54,8 +75,8 @@ public struct ProviderAccountInfo: Codable, Sendable, Equatable, Identifiable {
     public let accountType: ProviderAccountType
     public let credentialRef: CredentialRef?
     public let endpoint: String?
-    public let availability: String
-    public init(id: String, productID: String, displayName: String, accountType: ProviderAccountType, credentialRef: CredentialRef?, endpoint: String?, availability: String) {
+    public let availability: ProviderAccountAvailability
+    public init(id: String, productID: String, displayName: String, accountType: ProviderAccountType, credentialRef: CredentialRef?, endpoint: String?, availability: ProviderAccountAvailability) {
         self.id = id; self.productID = productID; self.displayName = displayName; self.accountType = accountType; self.credentialRef = credentialRef; self.endpoint = endpoint; self.availability = availability
     }
 }

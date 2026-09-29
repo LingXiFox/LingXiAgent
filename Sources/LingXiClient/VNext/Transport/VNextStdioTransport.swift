@@ -306,6 +306,15 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> { try await command("workspace.set", envelope) }
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope) }
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> { try await response("workspace.diff", envelope) }
+    public func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> { try await response("workspace.languageServices", envelope) }
+    public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> { try await response("browser.sessions", envelope) }
+    public func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> { try await response("browser.capture", envelope) }
+    public func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]> { try await response("terminal.list", envelope) }
+    public func spawnTerminalSession(envelope: CommandEnvelope<SpawnTerminalSessionRequest>) async throws -> CommandReceipt<TerminalSessionInfo> { try await command("terminal.spawn", envelope) }
+    public func readTerminalSession(envelope: QueryEnvelope<ReadTerminalSessionRequest>) async throws -> ResponseEnvelope<TerminalSessionOutput> { try await response("terminal.read", envelope) }
+    public func writeTerminalSession(envelope: CommandEnvelope<WriteTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("terminal.write", envelope) }
+    public func interruptTerminalSession(envelope: CommandEnvelope<InterruptTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("terminal.interrupt", envelope) }
+    public func closeTerminalSession(envelope: CommandEnvelope<CloseTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("terminal.close", envelope) }
 
     public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> { try await command("content.beginUpload", envelope) }
     public func uploadContentChunk(uploadID: String, chunkIndex: UInt64, data: Data) async throws {
@@ -360,6 +369,11 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> { try await response("provider.config.get", envelope) }
     public func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> { try await command("provider.config.save", envelope) }
     public func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> { try await command("provider.config.delete", envelope) }
+    public func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult> { try await command("provider.testDraft", envelope) }
+    public func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> { try await response("provider.authProducts", envelope) }
+    public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> { try await command("provider.authBegin", envelope) }
+    public func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow> { try await response("provider.authStatus", envelope) }
+    public func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> { try await command("provider.authCancel", envelope) }
     public func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> { try await response("mcp.config.list", envelope) }
     public func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> { try await command("mcp.config.save", envelope) }
     public func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> { try await command("mcp.config.delete", envelope) }

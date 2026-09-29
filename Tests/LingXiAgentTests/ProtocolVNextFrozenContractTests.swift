@@ -907,7 +907,35 @@ struct ProtocolVNextFrozenContractTests {
         #expect(cfgProvRes.applied)
         let testProvRes = try await service.testProvider(envelope: CommandEnvelope(payload: TestProviderRequest(providerID: "mock-provider")))
         #expect(testProvRes.applied)
-        #expect(testProvRes.result?.reachable == true)
+        // The answer comes from a real round trip, so an unconfigured name can
+        // never read as reachable, and every refusal carries a reason.
+        #expect(testProvRes.result?.providerID == "mock-provider")
+        if testProvRes.result?.reachable != true {
+            #expect(testProvRes.result?.message?.isEmpty == false)
+            #expect(testProvRes.result?.latencyMs == nil)
+        }
+        // Read-only projections the settings window and tool panes consume.
+        let langRes = try await service.getLanguageServiceStatuses(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(langRes.payload.allSatisfy { !$0.language.isEmpty })
+        let browserRes = try await service.getBrowserSessions(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(browserRes.payload.allSatisfy { !$0.sessionID.isEmpty })
+        let authRes = try await service.listProviderAuthProducts(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(authRes.payload.allSatisfy { !$0.productID.isEmpty })
+        // Terminal sessions: the panel's only source of a live process.
+        let termList = try await service.listTerminalSessions(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(termList.payload.allSatisfy { !$0.id.isEmpty })
+        let termSpawn = try await service.spawnTerminalSession(
+            envelope: CommandEnvelope(payload: SpawnTerminalSessionRequest(columns: 80, rows: 24)))
+        let spawned = try #require(termSpawn.result)
+        #expect(spawned.kind == .user)
+        #expect(spawned.supportsInterrupt)
+        let termRead = try await service.readTerminalSession(
+            envelope: QueryEnvelope(payload: ReadTerminalSessionRequest(sessionID: spawned.id)))
+        #expect(termRead.payload.sessionID == spawned.id)
+        _ = try await service.closeTerminalSession(
+            envelope: CommandEnvelope(payload: CloseTerminalSessionRequest(sessionID: spawned.id)))
+        let afterClose = try await service.listTerminalSessions(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(afterClose.payload.allSatisfy { $0.id != spawned.id })
         let getProvRes = try await service.getProvider(envelope: QueryEnvelope(payload: GetProviderRequest(providerID: "acc-mock")))
         #expect(getProvRes.payload.id == "acc-mock")
         let remProvRes = try await service.removeProvider(envelope: CommandEnvelope(payload: RemoveProviderRequest(accountID: "acc-mock")))

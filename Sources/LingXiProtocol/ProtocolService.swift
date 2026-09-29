@@ -777,6 +777,19 @@ public protocol LingXiProtocolService: Sendable {
     func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary>
     func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary>
     func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary>
+    func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]>
+
+    // MARK: - 10b. Agent Browser Session (read-only projection)
+    func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]>
+    func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture>
+
+    // MARK: - 10c. Terminal Sessions (Agent processes and user shells)
+    func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]>
+    func spawnTerminalSession(envelope: CommandEnvelope<SpawnTerminalSessionRequest>) async throws -> CommandReceipt<TerminalSessionInfo>
+    func readTerminalSession(envelope: QueryEnvelope<ReadTerminalSessionRequest>) async throws -> ResponseEnvelope<TerminalSessionOutput>
+    func writeTerminalSession(envelope: CommandEnvelope<WriteTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult>
+    func interruptTerminalSession(envelope: CommandEnvelope<InterruptTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult>
+    func closeTerminalSession(envelope: CommandEnvelope<CloseTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult>
 
     // MARK: - 11. Resource / Content Data Plane & Control Plane
     func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse>
@@ -825,6 +838,13 @@ public protocol LingXiProtocolService: Sendable {
     func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail>
     func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail>
     func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult>
+    func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult>
+
+    // MARK: - Provider sign-in (OAuth)
+    func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]>
+    func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow>
+    func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow>
+    func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult>
     func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]>
     func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail>
     func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult>
@@ -931,16 +951,71 @@ public extension LingXiProtocolService {
         throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
     }
 
+    func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供语言服务运行状态")
+    }
+
+    func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供浏览器会话状态")
+    }
+
+    func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供浏览器会话截图")
+    }
+
+    func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供终端会话")
+    }
+
+    func spawnTerminalSession(envelope: CommandEnvelope<SpawnTerminalSessionRequest>) async throws -> CommandReceipt<TerminalSessionInfo> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持创建终端会话")
+    }
+
+    func readTerminalSession(envelope: QueryEnvelope<ReadTerminalSessionRequest>) async throws -> ResponseEnvelope<TerminalSessionOutput> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供终端会话输出")
+    }
+
+    func writeTerminalSession(envelope: CommandEnvelope<WriteTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持终端输入")
+    }
+
+    func interruptTerminalSession(envelope: CommandEnvelope<InterruptTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持终端中断")
+    }
+
+    func closeTerminalSession(envelope: CommandEnvelope<CloseTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持关闭终端会话")
+    }
+
     func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
         throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
     }
-
     func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
         throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
     }
 
     func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> {
         throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
+    }
+
+    func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持测试未保存的 Provider")
+    }
+
+    func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
+    }
+
+    func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
+    }
+
+    func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
+    }
+
+    func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> {
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
     }
 
     func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {

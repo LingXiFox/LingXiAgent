@@ -56,6 +56,8 @@ public final class SettingsStore: ObservableObject {
     @Published private(set) var extensions: [ExtensionInfo] = []
     @Published private(set) var contextPolicy: ContextCachePolicySnapshot?
     @Published private(set) var workspace: WorkspaceSummary?
+    /// Language servers Core reports as running; nil until the first refresh.
+    @Published private(set) var languageServices: [LanguageServiceStatus]?
     @Published private(set) var worktrees: [WorkspaceWorktreeInfo] = []
     /// `mcp.json` servers as stored (the form's source of truth).
     @Published private(set) var mcpServers: [MCPServerConfigurationDetail] = []
@@ -205,6 +207,7 @@ public final class SettingsStore: ObservableObject {
         async let extensions = try? client.extensionDomain.list()
         async let policy = try? client.context.getPolicy()
         async let workspace = try? client.workspace.summary()
+        async let languageServices = try? client.workspace.languageServices()
         async let worktrees = try? client.workspace.listWorktrees()
         async let tasks = try? client.diagnostics.getBackgroundTasks()
         async let metrics = try? client.diagnostics.getProviderMetrics()
@@ -220,6 +223,7 @@ public final class SettingsStore: ObservableObject {
         self.extensions = await extensions ?? []
         self.contextPolicy = await policy
         self.workspace = await workspace
+        self.languageServices = await languageServices
         self.worktrees = await worktrees ?? []
         self.backgroundTasks = await tasks ?? []
         self.providerMetrics = await metrics
@@ -231,6 +235,7 @@ public final class SettingsStore: ObservableObject {
         providers = []; providerStatus = nil; providerTests = [:]
         models = []; modelSelection = nil; extensions = []
         contextPolicy = nil; workspace = nil; worktrees = []
+        languageServices = nil
         backgroundTasks = []; providerMetrics = nil; mcpServers = []
     }
 
@@ -309,6 +314,61 @@ public final class SettingsStore: ObservableObject {
     }
 
     // MARK: - providers.json
+
+    /// Products Core can actually sign a user in to; empty when the runtime
+    /// offers no OAuth login.
+    func providerAuthProducts() async -> [ProviderAuthProduct] {
+        guard let client else { return [] }
+        return (try? await client.provider.authProducts()) ?? []
+    }
+
+    /// Starts a sign-in in Core. The caller opens the returned URL in the system
+    /// browser; tokens and the callback stay inside Core.
+    func beginProviderAuth(productID: String) async -> ProviderAuthFlow? {
+        guard let client else { notice = "未连接 Core。"; return nil }
+        do {
+            return try await client.provider.beginAuth(productID: productID)
+        } catch {
+            notice = "发起登录失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func providerAuthStatus(flowID: String) async -> ProviderAuthFlow? {
+        guard let client else { return nil }
+        let flow = try? await client.provider.authStatus(flowID: flowID)
+        // Once the account exists, the provider list has to show it.
+        if flow?.phase == .connected { await refresh() }
+        return flow
+    }
+
+    func cancelProviderAuth(flowID: String) async {
+        await perform("取消登录") { try await $0.provider.cancelAuth(flowID: flowID) }
+    }
+
+    /// Writes an unsaved key into Core's vault once and returns its reference, so
+    /// the plaintext never travels inside a provider test or save request.
+    func stageSecret(_ secret: String) async -> CredentialRef? {
+        guard let client else { notice = "未连接 Core。"; return nil }
+        let receipt = try? await client.credential.store(secret: secret)
+        return receipt?.result?.reference
+    }
+
+    func discardStagedSecret(_ reference: CredentialRef) async {
+        await perform("清除暂存凭据") { _ = try await $0.credential.delete(reference: reference) }
+    }
+
+    /// A real connection test of a provider that is not saved yet.
+    func testProviderDraft(_ draft: TestProviderDraftRequest) async -> TestProviderResult? {
+        guard let client else { notice = "未连接 Core。"; return nil }
+        do {
+            return try await client.provider.testDraft(draft)
+        } catch {
+            notice = "测试连接失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
 
     /// nil when the account is not a providers.json entry (OAuth / built-in).
     func providerConfiguration(_ providerID: String) async -> ProviderConfigurationDetail? {

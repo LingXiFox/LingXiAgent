@@ -101,9 +101,9 @@ struct SettingsWorkbench: View {
         case .providers:
             return store.providers.map {
                 SettingObject(id: $0.id, title: $0.displayName,
-                              detail: [$0.productID, $0.availability == "active" ? nil : $0.availability]
+                              detail: [$0.productID, $0.availability == .active ? nil : $0.availability.rawValue]
                                 .compactMap { $0 }.joined(separator: " · "),
-                              tone: $0.availability == "active" ? LXColor.success : LXColor.warning)
+                              tone: $0.availability == .active ? LXColor.success : LXColor.warning)
             }
         case .mcp:
             // mcp.json is the list; the running Core adds live state.

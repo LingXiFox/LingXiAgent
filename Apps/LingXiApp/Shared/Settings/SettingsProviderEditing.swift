@@ -141,8 +141,7 @@ struct ProviderModelsEditor: View {
             Text("\(detail.models.count)").font(LXType.sectionHead).foregroundStyle(.secondary)
         }, rowSpacing: 0, accessory: {
             Button("添加模型…") {
-                editing = EditingModel(model: ProviderModelConfigurationDetail(
-                    modelID: "", name: "", contextWindow: 128_000, maxOutputTokens: 8_192), isNew: true)
+                editing = EditingModel(model: ProviderModelConfigurationDetail(modelID: "", name: ""), isNew: true)
             }
         }) {
             ForEach(Array(detail.models.enumerated()), id: \.element.id) { index, model in
@@ -156,7 +155,7 @@ struct ProviderModelsEditor: View {
                         Text(model.modelID).font(LXType.monoSmall).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: LingXiMetrics.Space.md)
-                    Text("上下文 \(ProvidersSettingsPage.formatTokens(model.contextWindow)) · 输出 \(ProvidersSettingsPage.formatTokens(model.maxOutputTokens))")
+                    Text(modelMetadataSummary(model))
                         .font(LXType.meta.monospacedDigit())
                         .foregroundStyle(.secondary)
                     if !isDefault(model) {
@@ -171,7 +170,7 @@ struct ProviderModelsEditor: View {
                 .lxSettingsRow()
             }
         } footer: {
-            Text("模型元数据默认来自 models.lingxifox.cn 官方实时索引；这里的限制、能力与速率由你覆盖。可用性由 Provider Discovery 动态确认。")
+            Text("模型元数据默认来自 models.lingxifox.cn 官方实时索引；「编辑…」里改过的项标为「已自定义」，可逐项恢复。可用性由 Provider Discovery 动态确认。")
         }
         .sheet(item: $editing) { item in
             ProviderModelSheet(model: item.model, isNew: item.isNew, canRemove: detail.models.count > 1,
@@ -186,6 +185,16 @@ struct ProviderModelsEditor: View {
     private func isDefault(_ model: ProviderModelConfigurationDetail) -> Bool {
         let current = store.modelSelection?.qualifiedID ?? store.preferences.lastModelID
         return current == "\(detail.providerID)/\(model.modelID)"
+    }
+
+    /// 「上下文 200K · 输出 64K」 from the effective values, with 「已自定义」 once
+    /// the user overrides a field, and 「元数据待同步」 when no catalog describes
+    /// the model.
+    private func modelMetadataSummary(_ model: ProviderModelConfigurationDetail) -> String {
+        guard !model.catalogDefaults.isEmpty else { return "元数据待同步" }
+        let summary = "上下文 \(ProvidersSettingsPage.formatTokens(model.effective.contextWindow))"
+            + " · 输出 \(ProvidersSettingsPage.formatTokens(model.effective.maxOutputTokens))"
+        return model.isCustomized ? summary + " · 已自定义" : summary
     }
 
     /// Saves the whole model list with one entry added, replaced or removed.
@@ -226,7 +235,29 @@ struct ProviderModelSheet: View {
 
     private var isValid: Bool {
         !model.modelID.trimmingCharacters(in: .whitespaces).isEmpty && !idConflict
-            && model.contextWindow > 0 && model.maxOutputTokens > 0
+            && (model.contextWindow.map { $0 > 0 } ?? true)
+            && (model.maxOutputTokens.map { $0 > 0 } ?? true)
+    }
+
+    /// Fields the user has not overridden show Core's effective value, which
+    /// already resolved override → catalog default → last-resort default.
+    private var defaults: ProviderModelEffectiveValues { model.effective }
+
+    private func resetAll() {
+        model.contextWindow = nil
+        model.maxOutputTokens = nil
+        model.reasoning = nil
+        model.toolCalling = nil
+        model.parallelToolCalling = nil
+        model.vision = nil
+        model.structuredOutput = nil
+        model.tokensPerMinute = nil
+        model.requestsPerMinute = nil
+        model.maxConcurrentRequests = nil
+        model.maxRetries = nil
+        model.initialRetryDelayMilliseconds = nil
+        model.maxRetryDelayMilliseconds = nil
+        model.retryJitterRatio = nil
     }
 
     var body: some View {
@@ -253,34 +284,66 @@ struct ProviderModelSheet: View {
                         LXTextRow(title: "显示名称", text: $model.name, prompt: model.modelID)
                     }
                     LXSettingsCard("限制") {
-                        LXNumberRow(title: "上下文窗口", value: $model.contextWindow.optional, unit: "tokens")
-                        LXNumberRow(title: "输出上限", value: $model.maxOutputTokens.optional, unit: "tokens")
+                        LXNumberRow(title: "上下文窗口", value: $model.contextWindow, unit: "tokens",
+                                    defaultValue: defaults.contextWindow,
+                                    reset: model.contextWindow == nil ? nil : { model.contextWindow = nil })
+                        LXNumberRow(title: "输出上限", value: $model.maxOutputTokens, unit: "tokens",
+                                    defaultValue: defaults.maxOutputTokens,
+                                    reset: model.maxOutputTokens == nil ? nil : { model.maxOutputTokens = nil })
                     }
                     LXSettingsCard("能力") {
-                        Toggle("推理（思考）", isOn: $model.reasoning)
-                        Toggle("工具调用", isOn: $model.toolCalling)
-                        Toggle("并行工具调用", isOn: $model.parallelToolCalling)
-                        Toggle("视觉输入", isOn: $model.vision)
-                        Toggle("结构化输出", isOn: $model.structuredOutput)
+                        LXOverrideToggle(title: "推理（思考）", override: $model.reasoning,
+                                         defaultValue: defaults.reasoning)
+                        LXOverrideToggle(title: "工具调用", override: $model.toolCalling,
+                                         defaultValue: defaults.toolCalling)
+                        LXOverrideToggle(title: "并行工具调用", override: $model.parallelToolCalling,
+                                         defaultValue: defaults.parallelToolCalling)
+                        LXOverrideToggle(title: "视觉输入", override: $model.vision,
+                                         defaultValue: defaults.vision)
+                        LXOverrideToggle(title: "结构化输出", override: $model.structuredOutput,
+                                         defaultValue: defaults.structuredOutput)
                     }
                     LXSettingsCard("速率限制") {
-                        LXNumberRow(title: "每分钟 token (TPM)", value: $model.tokensPerMinute)
-                        LXNumberRow(title: "每分钟请求 (RPM)", value: $model.requestsPerMinute)
-                        LXNumberRow(title: "最大并发请求", value: $model.maxConcurrentRequests)
+                        LXNumberRow(title: "每分钟 token (TPM)", value: $model.tokensPerMinute,
+                                    defaultValue: defaults.tokensPerMinute,
+                                    reset: model.tokensPerMinute == nil ? nil : { model.tokensPerMinute = nil })
+                        LXNumberRow(title: "每分钟请求 (RPM)", value: $model.requestsPerMinute,
+                                    defaultValue: defaults.requestsPerMinute,
+                                    reset: model.requestsPerMinute == nil ? nil : { model.requestsPerMinute = nil })
+                        LXNumberRow(title: "最大并发请求", value: $model.maxConcurrentRequests,
+                                    defaultValue: defaults.maxConcurrentRequests,
+                                    reset: model.maxConcurrentRequests == nil ? nil : { model.maxConcurrentRequests = nil })
                     }
                     LXSettingsCard("重试策略", subtitle: "遇到 429 或可重试错误时按指数退避重试。") {
-                        LXNumberRow(title: "最大重试次数", value: $model.maxRetries.optional, unit: "次")
-                        LXNumberRow(title: "初始延迟", value: $model.initialRetryDelayMilliseconds.optional, unit: "毫秒")
-                        LXNumberRow(title: "最大延迟", value: $model.maxRetryDelayMilliseconds.optional, unit: "毫秒")
+                        LXNumberRow(title: "最大重试次数", value: $model.maxRetries, unit: "次",
+                                    defaultValue: defaults.maxRetries,
+                                    reset: model.maxRetries == nil ? nil : { model.maxRetries = nil })
+                        LXNumberRow(title: "初始延迟", value: $model.initialRetryDelayMilliseconds, unit: "毫秒",
+                                    defaultValue: defaults.initialRetryDelayMilliseconds,
+                                    reset: model.initialRetryDelayMilliseconds == nil ? nil : { model.initialRetryDelayMilliseconds = nil })
+                        LXNumberRow(title: "最大延迟", value: $model.maxRetryDelayMilliseconds, unit: "毫秒",
+                                    defaultValue: defaults.maxRetryDelayMilliseconds,
+                                    reset: model.maxRetryDelayMilliseconds == nil ? nil : { model.maxRetryDelayMilliseconds = nil })
                         LabeledContent("抖动比例") {
-                            TextField("抖动比例", value: $model.retryJitterRatio, format: .number.precision(.fractionLength(0...2)))
-                                .labelsHidden()
-                                .textFieldStyle(.roundedBorder)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 96)
+                            HStack(spacing: LingXiMetrics.Space.xs) {
+                                if model.retryJitterRatio != nil {
+                                    Button("恢复默认") { model.retryJitterRatio = nil }
+                                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                                }
+                                TextField("抖动比例", value: $model.retryJitterRatio,
+                                          format: .number.precision(.fractionLength(0...2)))
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .multilineTextAlignment(.trailing)
+                                    .foregroundStyle(model.retryJitterRatio == nil ? Color.secondary : Color.primary)
+                                    .frame(width: 96)
+                            }
                         }
                         .lxSettingsRow()
                     }
+                    Text("未改动的项跟随 models.lingxifox.cn 的元数据；改过的项在左侧出现「恢复默认」。")
+                        .font(LXType.meta)
+                        .foregroundStyle(.secondary)
                     if idConflict {
                         LXStatusText("这个 Provider 已有同名模型。", systemImage: "exclamationmark.triangle", tone: .warning)
                     }
@@ -296,6 +359,10 @@ struct ProviderModelSheet: View {
                         .buttonStyle(LXButtonStyle(.destructive, size: .regular))
                         .disabled(!canRemove)
                         .help(canRemove ? "从 providers.json 中移除" : "Provider 至少需要一个模型")
+                    if model.isCustomized {
+                        Button("恢复全部默认", action: resetAll)
+                            .buttonStyle(LXButtonStyle(.secondary, size: .regular))
+                    }
                 }
                 Spacer()
                 Button("取消") { onFinish(nil) }
@@ -322,12 +389,21 @@ struct ProviderModelSheet: View {
 
 // MARK: - Add account
 
-/// 添加 Provider 账户: API Key accounts become a providers.json entry. OAuth
-/// accounts sign in with `lingxiagent auth login`, which Settings points to.
+/// 添加 Provider 账户: an API Key account becomes a providers.json entry, and
+/// 「登录账户」 runs the OAuth flow Core owns — this sheet only opens the
+/// authorize URL and reads the phase back.
 struct AddProviderSheet: View {
+    private enum Access: String, CaseIterable, Identifiable {
+        case apiKey = "API Key"
+        case account = "登录账户"
+        var id: String { rawValue }
+    }
+
     @ObservedObject var store: SettingsStore
     let onFinish: (ProviderConfigurationDetail?) -> Void
+    @Environment(\.openURL) private var openURL
 
+    @State private var access: Access = .apiKey
     @State private var providerID = ""
     @State private var name = ""
     @State private var adapter = ProviderAdapterOption.openAICompatible.rawValue
@@ -338,25 +414,38 @@ struct AddProviderSheet: View {
     @State private var contextWindow = 128_000
     @State private var maxOutput = 8_192
     @State private var isSaving = false
+    @State private var isTesting = false
+    @State private var testResult: TestProviderResult?
+    /// Key already written to Core's vault, referenced instead of resent.
+    @State private var stagedRef: CredentialRef?
+    @State private var authProducts: [ProviderAuthProduct] = []
+    @State private var authProductID = ""
+    @State private var authFlow: ProviderAuthFlow?
+    @State private var pollTask: Task<Void, Never>?
 
     private var existingIDs: Set<String> { Set(store.providers.map(\.id)) }
 
     private var trimmedID: String { providerID.trimmingCharacters(in: .whitespaces) }
 
     private var isValid: Bool {
-        trimmedID.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", options: .regularExpression) != nil
-            && !existingIDs.contains(trimmedID)
-            && !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && baseURL.count > "https://".count
-            && !modelID.trimmingCharacters(in: .whitespaces).isEmpty
-            && contextWindow > 0 && maxOutput > 0
+        switch access {
+        case .account:
+            return !authProductID.isEmpty
+        case .apiKey:
+            return trimmedID.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", options: .regularExpression) != nil
+                && !existingIDs.contains(trimmedID)
+                && !name.trimmingCharacters(in: .whitespaces).isEmpty
+                && baseURL.count > "https://".count
+                && !modelID.trimmingCharacters(in: .whitespaces).isEmpty
+                && contextWindow > 0 && maxOutput > 0
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("添加 Provider 账户").font(LXType.title)
-                Text("填入连接信息与一个可用模型。保存后可在 Provider 页继续补充模型与请求头。")
+                Text("选择接入方式，填入连接信息。保存前会先测试连接。")
                     .font(LXType.meta).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -365,38 +454,88 @@ struct AddProviderSheet: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
-                    LXSettingsCard(title: LXSettingsSectionHeader("连接")) {
-                        LXTextRow(title: "名称", text: $name, prompt: "例如：公司中转")
-                        LXTextRow(title: "ID", info: "providers.json 中的键，也是模型名前缀，如 relay/model。",
-                                  text: $providerID, prompt: "relay", monospaced: true)
-                        LabeledContent("接口类型") {
-                            Picker("接口类型", selection: $adapter) {
-                                ForEach(ProviderAdapterOption.allCases) { Text($0.label).tag($0.rawValue) }
+                    LXSettingsCard(title: LXSettingsSectionHeader("接入方式")) {
+                        LabeledContent("方式") {
+                            Picker("方式", selection: $access) {
+                                ForEach(Access.allCases) { Text($0.rawValue).tag($0) }
                             }
                             .labelsHidden()
                             .fixedSize()
                         }
                         .lxSettingsRow()
-                        LXTextRow(title: "Base URL", text: $baseURL, prompt: "https://", monospaced: true)
-                        LabeledContent("API Key") {
-                            SecureField("粘贴 API Key", text: $apiKey)
-                                .labelsHidden()
-                                .textFieldStyle(.roundedBorder)
-                                .font(LXType.mono)
-                                .frame(width: 280)
-                        }
-                        .lxSettingsRow()
-                        LXTextRow(title: "API Key 请求头", text: $apiKeyHeader, prompt: "Authorization", monospaced: true)
                     } footer: {
-                        Text("OAuth 登录的账户请在终端运行 lingxiagent auth login <产品 ID>，完成后会出现在列表里。")
+                        Text("接口类型：OpenAI 兼容（/v1/chat/completions）· OpenAI Responses · Anthropic Messages。「登录账户」用浏览器完成 OAuth，不需要填 Key。")
                     }
-                    LXSettingsCard("首个模型") {
-                        LXTextRow(title: "模型 ID", text: $modelID, prompt: "例如 deepseek-v4-flash", monospaced: true)
-                        LXNumberRow(title: "上下文窗口", value: $contextWindow.optional, unit: "tokens")
-                        LXNumberRow(title: "输出上限", value: $maxOutput.optional, unit: "tokens")
-                    }
-                    if existingIDs.contains(trimmedID) {
-                        LXStatusText("已存在 ID 为 \(trimmedID) 的账户。", systemImage: "exclamationmark.triangle", tone: .warning)
+
+                    if access == .apiKey {
+                        LXSettingsCard(title: LXSettingsSectionHeader("连接")) {
+                            LXTextRow(title: "名称", text: $name, prompt: "例如：公司中转")
+                            LXTextRow(title: "ID", info: "providers.json 中的键，也是模型名前缀，如 relay/model。",
+                                      text: $providerID, prompt: "relay", monospaced: true)
+                            LabeledContent("接口类型") {
+                                Picker("接口类型", selection: $adapter) {
+                                    ForEach(ProviderAdapterOption.allCases) { Text($0.label).tag($0.rawValue) }
+                                }
+                                .labelsHidden()
+                                .fixedSize()
+                            }
+                            .lxSettingsRow()
+                            LXTextRow(title: "Base URL", text: $baseURL, prompt: "https://", monospaced: true)
+                            LabeledContent("API Key") {
+                                SecureField("粘贴 API Key", text: $apiKey)
+                                    .labelsHidden()
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(LXType.mono)
+                                    .frame(width: 280)
+                            }
+                            .lxSettingsRow()
+                            LXTextRow(title: "API Key 请求头", text: $apiKeyHeader, prompt: "Authorization", monospaced: true)
+                        } footer: {
+                            Text("API Key 由 CredentialBroker 保存，不下发给子 Agent 或 MCP，也不会以明文显示。")
+                        }
+                        LXSettingsCard("首个模型") {
+                            LXTextRow(title: "模型 ID", text: $modelID, prompt: "例如 deepseek-v4-flash", monospaced: true)
+                            LXNumberRow(title: "上下文窗口", value: $contextWindow.optional, unit: "tokens")
+                            LXNumberRow(title: "输出上限", value: $maxOutput.optional, unit: "tokens")
+                        }
+                        if existingIDs.contains(trimmedID) {
+                            LXStatusText("已存在 ID 为 \(trimmedID) 的账户。", systemImage: "exclamationmark.triangle", tone: .warning)
+                        }
+                        if let testResult {
+                            LXStatusText(
+                                testResult.reachable
+                                    ? "连接可达" + (testResult.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? "")
+                                    : "连接失败：\(testResult.message ?? "未知错误")",
+                                systemImage: testResult.reachable ? "checkmark.circle" : "xmark.circle",
+                                tone: testResult.reachable ? .success : .danger)
+                        }
+                    } else {
+                        LXSettingsCard(title: LXSettingsSectionHeader("账户")) {
+                            LabeledContent("产品") {
+                                Picker("产品", selection: $authProductID) {
+                                    Text("请选择").tag("")
+                                    ForEach(authProducts) { product in
+                                        Text(product.displayName).tag(product.productID)
+                                    }
+                                }
+                                .labelsHidden()
+                                .fixedSize()
+                            }
+                            .lxSettingsRow()
+                            if let authFlow {
+                                LabeledContent("状态") {
+                                    LXStatusText(Self.authText(authFlow.phase),
+                                                 systemImage: Self.authImage(authFlow.phase),
+                                                 tone: Self.authTone(authFlow.phase))
+                                }
+                                .lxSettingsRow()
+                                if let message = authFlow.message {
+                                    LXStatusText(message, systemImage: "exclamationmark.triangle", tone: .warning)
+                                }
+                            }
+                        } footer: {
+                            Text("登录由 Core 完成：浏览器授权后由 Core 接收回调并保存凭据，本窗口不会看到令牌。")
+                        }
                     }
                 }
                 .padding(.horizontal, LingXiMetrics.Space.xxl)
@@ -406,31 +545,118 @@ struct AddProviderSheet: View {
             LXHairline()
             HStack(spacing: LingXiMetrics.Space.sm) {
                 Spacer()
-                Button("取消") { onFinish(nil) }
+                Button("取消") { dismiss() }
                     .buttonStyle(LXButtonStyle(.secondary, size: .regular))
                     .keyboardShortcut(.cancelAction)
-                Button(isSaving ? "添加中…" : "添加") { save() }
-                    .buttonStyle(LXButtonStyle(.primary, size: .regular))
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!isValid || isSaving)
+                if access == .apiKey {
+                    Button(isTesting ? "测试中…" : "测试连接") { testConnection() }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .regular))
+                        .disabled(isTesting || baseURL.count <= "https://".count)
+                    Button(isSaving ? "添加中…" : "添加") { save() }
+                        .buttonStyle(LXButtonStyle(.primary, size: .regular))
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!isValid || isSaving)
+                } else {
+                    Button(authFlow?.phase == .awaitingCallback ? "重新登录" : "登录") { startSignIn() }
+                        .buttonStyle(LXButtonStyle(.primary, size: .regular))
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!isValid)
+                }
             }
             .padding(LingXiMetrics.Space.lg)
         }
         .frame(width: 620, height: 600)
         .background(LXColor.window)
         .lxSettingsControlStyles()
+        .task {
+            if authProducts.isEmpty {
+                authProducts = await store.providerAuthProducts()
+                authProductID = authProducts.first?.productID ?? ""
+            }
+        }
+        .onDisappear { pollTask?.cancel() }
+    }
+
+    private static func authText(_ phase: ProviderAuthPhase) -> String {
+        switch phase {
+        case .awaitingCallback, .exchanging: "登录中"
+        case .connected: "已连接"
+        case .needsReauthentication: "需要重新登录"
+        case .failed: "登录失败"
+        case .cancelled: "已取消"
+        }
+    }
+
+    private static func authImage(_ phase: ProviderAuthPhase) -> String {
+        switch phase {
+        case .awaitingCallback, .exchanging: "arrow.triangle.2.circlepath"
+        case .connected: "checkmark.circle"
+        case .needsReauthentication: "exclamationmark.triangle"
+        case .failed: "xmark.circle"
+        case .cancelled: "circle.dashed"
+        }
+    }
+
+    private static func authTone(_ phase: ProviderAuthPhase) -> LXStatusText.Tone {
+        switch phase {
+        case .connected: .success
+        case .failed: .danger
+        case .needsReauthentication: .warning
+        case .awaitingCallback, .exchanging, .cancelled: .neutral
+        }
+    }
+
+    private func testConnection() {
+        isTesting = true
+        Task {
+            defer { isTesting = false }
+            if stagedRef == nil {
+                let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !key.isEmpty { stagedRef = await store.stageSecret(key) }
+            }
+            testResult = await store.testProviderDraft(TestProviderDraftRequest(
+                adapter: adapter,
+                baseURL: baseURL.trimmingCharacters(in: .whitespaces),
+                apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
+                credentialRef: stagedRef))
+        }
+    }
+
+    private func startSignIn() {
+        pollTask?.cancel()
+        Task {
+            guard let flow = await store.beginProviderAuth(productID: authProductID) else { return }
+            authFlow = flow
+            if let string = flow.authorizeURL, let url = URL(string: string) { openURL(url) }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let status = await store.providerAuthStatus(flowID: flow.flowID) else { break }
+                authFlow = status
+                if status.phase == .connected || status.phase == .failed || status.phase == .cancelled { break }
+            }
+        }
+    }
+
+    /// Drops the staged key when the form is abandoned; an adopted one is
+    /// already the account's own credential.
+    private func dismiss() {
+        pollTask?.cancel()
+        if let stagedRef {
+            Task { await store.discardStagedSecret(stagedRef) }
+        }
+        onFinish(nil)
     }
 
     private func save() {
         isSaving = true
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let staged = stagedRef
         let request = SaveProviderConfigurationRequest(
             providerID: trimmedID,
             name: name.trimmingCharacters(in: .whitespaces),
             adapter: adapter,
             baseURL: baseURL.trimmingCharacters(in: .whitespaces),
             apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
-            apiKey: key.isEmpty ? .keep : .replace(key),
+            apiKey: staged.map { .staged(reference: $0) } ?? .keep,
             models: [ProviderModelConfigurationDetail(
                 modelID: modelID.trimmingCharacters(in: .whitespaces),
                 name: modelID.trimmingCharacters(in: .whitespaces),
@@ -438,7 +664,13 @@ struct AddProviderSheet: View {
         Task {
             let saved = await store.saveProvider(request)
             isSaving = false
-            if saved != nil { onFinish(saved) }
+            if saved != nil {
+                stagedRef = nil
+                onFinish(saved)
+            } else if let staged {
+                await store.discardStagedSecret(staged)
+                stagedRef = nil
+            }
         }
     }
 }

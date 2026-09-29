@@ -509,6 +509,89 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
+    // MARK: - Terminal sessions
+
+    /// Sessions Core reports right now: the user's shells and the Agent's
+    /// running processes. The pane never creates or kills a process itself.
+    @Published public private(set) var terminalSessions: [TerminalSessionInfo] = []
+    @Published public private(set) var terminalOutput: [String: String] = [:]
+    @Published public var terminalError: String?
+
+    public func refreshTerminalSessions() async {
+        guard let client else { return }
+        if let sessions = try? await client.terminal.sessions() {
+            terminalSessions = sessions
+        }
+    }
+
+    /// Pulls whatever the session produced since the last poll.
+    public func pollTerminalOutput(sessionID: String, columns: Int, rows: Int) async {
+        guard let client else { return }
+        do {
+            let chunk = try await client.terminal.read(sessionID: sessionID, columns: columns, rows: rows)
+            if !chunk.text.isEmpty {
+                var text = terminalOutput[sessionID] ?? ""
+                text += Self.plainTerminalText(chunk.text)
+                if text.count > 120_000 { text.removeFirst(text.count - 120_000) }
+                terminalOutput[sessionID] = text
+            }
+            if chunk.state != .running { await refreshTerminalSessions() }
+        } catch {
+            terminalError = error.localizedDescription
+        }
+    }
+
+    public func spawnTerminalShell() async {
+        guard let client else { return }
+        do {
+            _ = try await client.terminal.spawnShell(cwd: workspaceURL?.path, columns: 80, rows: 24)
+            terminalError = nil
+            await refreshTerminalSessions()
+        } catch {
+            terminalError = error.localizedDescription
+        }
+    }
+
+    public func sendTerminalInput(sessionID: String, text: String) async {
+        guard let client else { return }
+        do {
+            try await client.terminal.write(sessionID: sessionID, text: text)
+            terminalError = nil
+        } catch {
+            terminalError = error.localizedDescription
+        }
+    }
+
+    public func interruptTerminal(sessionID: String) async {
+        guard let client else { return }
+        do {
+            try await client.terminal.interrupt(sessionID: sessionID)
+            terminalError = nil
+        } catch {
+            terminalError = error.localizedDescription
+        }
+    }
+
+    public func closeTerminalSession(_ sessionID: String) async {
+        guard let client else { return }
+        do {
+            try await client.terminal.close(sessionID: sessionID)
+            terminalOutput[sessionID] = nil
+            terminalError = nil
+            await refreshTerminalSessions()
+        } catch {
+            terminalError = error.localizedDescription
+        }
+    }
+
+    /// The pane renders text, not a screen: escape sequences are dropped rather
+    /// than drawn. Core's output is untouched.
+    private static func plainTerminalText(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\u{001B}\\][^\u{0007}]*\u{0007}", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\r", with: "")
+    }
+
     /// Sets the goal through the existing `/goal` command and keeps it visible in the composer.
     public func setGoal(_ goal: String?) {
         let trimmed = goal?.trimmingCharacters(in: .whitespacesAndNewlines)

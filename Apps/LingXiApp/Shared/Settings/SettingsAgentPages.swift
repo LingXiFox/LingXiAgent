@@ -263,24 +263,27 @@ struct ProviderRow: View {
         }
     }
 
-    /// Availability states Core actually reports. The 自动刷新 wording is only
-    /// used for OAuth accounts, where refresh cycles really exist; anything
-    /// unrecognised falls through to the raw Core string instead of a guess.
+    /// Availability states Core actually reports, read through the contract's
+    /// enum rather than by matching strings. The wording for the four credential
+    /// states is already the shipped one; anything the design system does not
+    /// name falls through to Core's own value instead of a guess.
     @ViewBuilder
     private var availability: some View {
-        let state = account.availability
-        if state == "reauthenticationRequired" || state.contains("撤销") || state.contains("失效") {
+        switch account.availability {
+        case .reauthenticationRequired:
             LXStatusText("凭据已失效（需重新登录）", systemImage: "exclamationmark.triangle", tone: .danger)
-        } else if state == "refresh_failed" || state.contains("刷新失败") {
+        case .refreshFailedTransient:
             LXStatusText("刷新失败（可重试）", systemImage: "arrow.clockwise.circle", tone: .warning)
-        } else if state == "refreshing" || state.contains("刷新中") {
+        case .refreshing:
             LXStatusText("令牌刷新中…", systemImage: "arrow.triangle.2.circlepath", tone: .neutral)
-        } else if state == "active", account.accountType == .oauthUser {
-            LXStatusText("会话有效（自动刷新）", systemImage: "checkmark.shield", tone: .success)
-        } else if state == "active" {
-            LXStatusText("凭据有效", systemImage: "checkmark.circle", tone: .success)
-        } else {
-            LXStatusText(state, systemImage: "circle.dotted", tone: .muted)
+        case .active:
+            if account.accountType == .oauthUser {
+                LXStatusText("会话有效（自动刷新）", systemImage: "checkmark.shield", tone: .success)
+            } else {
+                LXStatusText("凭据有效", systemImage: "checkmark.circle", tone: .success)
+            }
+        case .configured, .unavailable, .unknown:
+            LXStatusText(account.availability.rawValue, systemImage: "circle.dotted", tone: .muted)
         }
     }
 
@@ -557,9 +560,59 @@ struct CodeIntelligenceSettingsPage: View {
             }
             .settingsAnchor("code.index")
 
-            LXSettingsCard(title: LXSettingsSectionHeader("语言服务")) {
-                PlaceholderLine("各语言 LSP、Formatter 与诊断的运行状态需要 Core 提供前端数据契约，暂不展示。")
+            LXSettingsCard(title: LXSettingsSectionHeader("语言服务"), rowSpacing: 0) {
+                if store.client == nil {
+                    PlaceholderLine("连接 Core 后显示各语言 LSP 的运行状态。")
+                        .lxSettingsRow()
+                } else if let services = store.languageServices, !services.isEmpty {
+                    ForEach(Array(services.enumerated()), id: \.element.id) { index, service in
+                        if index > 0 { LXSettingsDivider() }
+                        HStack(spacing: LingXiMetrics.Space.md) {
+                            Text(service.language).font(LXType.body)
+                            Spacer(minLength: LingXiMetrics.Space.md)
+                            LXStatusText(LanguageServicePresentation.text(service.state),
+                                         systemImage: LanguageServicePresentation.image(service.state),
+                                         tone: LanguageServicePresentation.tone(service.state))
+                        }
+                        .lxSettingsRow()
+                    }
+                } else {
+                    PlaceholderLine("当前工作区没有正在运行的语言服务。")
+                        .lxSettingsRow()
+                }
             }
+        }
+    }
+}
+
+/// 状态 = 图标 + 文字，不只靠颜色（设计系统「状态」规则）。
+private enum LanguageServicePresentation {
+    static func text(_ state: LanguageServiceState) -> String {
+        switch state {
+        case .idle: "空闲"
+        case .starting: "启动中"
+        case .ready: "就绪"
+        case .degraded: "已降级"
+        case .stopped: "已停止"
+        }
+    }
+
+    static func image(_ state: LanguageServiceState) -> String {
+        switch state {
+        case .idle: "circle.dashed"
+        case .starting: "arrow.triangle.2.circlepath"
+        case .ready: "checkmark.circle"
+        case .degraded: "exclamationmark.triangle"
+        case .stopped: "stop.circle"
+        }
+    }
+
+    static func tone(_ state: LanguageServiceState) -> LXStatusText.Tone {
+        switch state {
+        case .idle, .stopped: .muted
+        case .starting: .neutral
+        case .ready: .success
+        case .degraded: .warning
         }
     }
 }

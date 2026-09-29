@@ -18,8 +18,7 @@ public enum LingXiPlatform {
     }()
 
     /// 终端/控制台模式与尺寸适配器
-    public static let terminal: any PlatformTerminalProtocol = {
-        #if canImport(Darwin)
+    public static let terminal: any PlatformTerminalProtocol = {        #if canImport(Darwin)
         return DarwinTerminalAdapter()
         #elseif os(Linux) || canImport(Glibc)
         return LinuxTerminalAdapter()
@@ -27,6 +26,15 @@ public enum LingXiPlatform {
         return WindowsTerminalAdapter()
         #else
         fatalError("Unsupported operating system for terminal adapter")
+        #endif
+    }()
+
+    /// 伪终端后端：Core 用它托管用户 shell 会话
+    public static let pty: any PlatformPtyProtocol = {
+        #if canImport(Darwin) || canImport(Glibc)
+        return PosixPtyAdapter()
+        #else
+        return UnsupportedPtyAdapter()
         #endif
     }()
 

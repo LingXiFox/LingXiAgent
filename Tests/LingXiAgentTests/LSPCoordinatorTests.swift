@@ -90,4 +90,36 @@ struct LSPCoordinatorTests {
         let r2 = try JSONDecoder().decode(LSPHoverResult.self, from: markupJSON)
         #expect(r2.contents.contains("func doSomething()"))
     }
+
+    @Test func languageServiceStatusesOnlyReportStartedServers() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let workspace = try WorkspaceRoot(path: tmpDir.path)
+        let scanner = ProjectScanner(root: tmpDir, minimumPageBytes: 32, maximumPageBytes: 64)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768)
+        let intelligence = CodeIntelligence(
+            workspace: workspace, scanner: scanner, pager: pager,
+            lsp: LSPClient(transport: nil), coordinator: LSPCoordinator(workspaceURL: tmpDir)
+        )
+
+        // Nothing has been opened yet, so the honest answer is an empty list:
+        // the contract must not invent a row per configured language.
+        #expect(await intelligence.languageServiceStatuses().isEmpty)
+        await intelligence.shutdown()
+        #expect(await intelligence.languageServiceStatuses().isEmpty)
+    }
+
+    @Test func languageServiceStateContractCoversEveryClientState() {
+        // CoreHost maps LSPClientState → LanguageServiceState by raw value and
+        // falls back to `.stopped`. A new client state must therefore appear in
+        // the contract instead of silently reading as stopped.
+        for state in [LSPClientState.idle, .starting, .ready, .degraded, .stopped] {
+            let mapped = LanguageServiceState(rawValue: state.rawValue)
+            #expect(mapped != nil, "缺失契约状态: \(state.rawValue)")
+            #expect(mapped?.rawValue == state.rawValue)
+        }
+        #expect(LanguageServiceState.allCases.count == 5)
+    }
 }

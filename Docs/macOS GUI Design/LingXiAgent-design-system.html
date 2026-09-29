@@ -831,16 +831,31 @@ h3 { font: 600 15px/20px var(--font-sans); margin: 20px 0 8px; }
 </ul>
 <p>每张 Screens 卡片的说明里列出了该屏逐项的数据来源。</p>
 <h2>实现待办（交接清单）</h2>
-<p>设计系统里已定、但仓库代码还没跟上的项。实现时逐条核对：</p>
+<p>设计系统里已定、但仓库代码还没跟上的项。2026-09-29 按当前分支实测更新；只勾「已验证」的，部分完成的写明缺哪一块：</p>
 <ul>
-<li>[ ] <strong>应用图标</strong>：把 <code>LingXiAgent Icon/ICON.icon</code> 加入 Xcode 工程并设为 macOS target 的 App Icon（目前工程未引用任何图标）。</li>
-<li>[ ] <strong>窗口布局</strong>：取消 <code>.inspector()</code> 检查器，改为舞台右侧 AgentStatusHUD 运行上下文 + 最右侧 RightRail（浏览器 / 终端 / Git）；<code>dockRail</code> 由 40 改为 <code>size-rail</code> 44。</li>
-<li>[ ] <strong>快捷键</strong>：删除「显示或隐藏检查器 ⌥⌘I」「检查器标签 ⌥⌘1–5」，改为「浏览器 / 终端 / Git 面板 ⌥⌘1 – ⌥⌘3」。</li>
-<li>[ ] <strong>Composer</strong>：上下文条改为常驻的工作区 / 分支 / 执行环境选择器；动作条改为 添加 · 目标 · YOLO | 模式 · 模型档位 · 思考等级 · 发送。</li>
-<li>[ ] <strong>设置窗口</strong>：Provider 与 MCP 改为真正的主从结构；Skills / Plugins / Hooks 去掉中间列表；删除「配置文件」一节与所有「编辑 .json」提示。</li>
-<li>[ ] <strong>设置写入能力</strong>：providers.json（账户、请求头、模型覆盖）与 mcp.json（服务器表单）需要 Core 或 SettingsStore 提供写入接口；密钥经 CredentialBroker 保存。</li>
-<li>[ ] <strong>Core 依赖</strong>：浏览器面板依赖 Core 解冻 browser_navigate / browser_act；「独立 Worktree」执行环境依赖 workspace.worktree.* 接口。</li>
-<li>[ ] <strong>规范文档</strong>：GUI-DESIGN-SPECIFICATION.md 同步 A7（内置浏览器 / 终端）与第三章布局。</li>
+<li>[x] <strong>应用图标</strong>：AppIcon.icns 已进入 .app 且 Info.plist 写入 <code>CFBundleIconFile</code>，由 <code>Scripts/bundle-mac-app.sh</code> 完成；<code>LingXiApp.xcodeproj</code> 本身仍未引用任何图标 asset catalog（走 Xcode 直接运行时无图标）。</li>
+<li>[x] <strong>窗口布局</strong>：舞台右侧 AgentStatusHUD + 最右 RightRail（浏览器 / 终端 / Git）已实现，<code>.inspector()</code> 不再出现在窗口场景；rail 宽度用 <code>size-rail</code> 44（<code>WarmWorkbench.swift:207</code>）。</li>
+<li>[x] <strong>快捷键</strong>：浏览器 / 终端 / Git 面板为 ⌥⌘1–3（<code>LingXiMacApp.swift:109-113</code>，按 <code>WarmTool.allCases</code> 生成）；检查器相关快捷键已不存在。</li>
+<li>[ ] <strong>Composer</strong>：上下文条与动作条已按设计常驻（工作区 / 分支 / 执行环境；添加 · 目标 · YOLO · 模式 · 思考等级 · 发送）。未勾原因：动作条含「模型档位」，而项目已明确不存在模型档位，需先修订本条设计文字。</li>
+<li>[ ] <strong>设置窗口</strong>：部分核实 —— Provider 与 MCP 已是真主从（<code>settingsSelection</code> 驱动详情），「配置文件」一节与「编辑 .json」提示已删除；Skills / Plugins / Hooks 是否仍保留中间列表未逐页核实。</li>
+<li>[x] <strong>设置写入能力</strong>：providers.json（账户、请求头、模型覆盖）与 mcp.json（服务器表单）均由 Core 校验后原子写入，密钥经凭据库；模型条目只写用户显式覆盖的字段，未覆盖字段不落盘（<code>ConfigurationEditingAndWorktreeTests</code> 断言文件中不含未覆盖键）。</li>
+<li>[x] <strong>Core 依赖</strong>：<code>browser_navigate</code> / <code>browser_act</code> 已在 Core 注册并由 <code>BrowserSessionManager</code> 持有会话；「独立 Worktree」走 <code>workspace.worktree.*</code> 接口。</li>
+<li>[ ] <strong>规范文档</strong>：<code>Docs/AC/GUI-DESIGN-SPECIFICATION.md</code> 尚未同步 A7（内置浏览器 / 终端）与第三章布局。</li>
+</ul>
+<h2>本轮真实接入状态（2026-09-29 实测）</h2>
+<ul>
+<li><strong>模型 Override</strong>：已完成。<code>目录默认 → 用户覆盖（可选）→ 生效值</code> 三层在协议、存储与运行时都真实存在；逐项「恢复默认」= 删除该字段覆盖，「恢复全部默认」= 删除该模型全部覆盖；生效值确实进入运行时上下文预算、能力与速率限制。</li>
+<li><strong>Provider 登录账户（OAuth）</strong>：契约与实现已完成 —— <code>provider.authProducts / authBegin / authStatus / authCancel</code>，Core 起 loopback 回调、换令牌、写凭据库并同步账号级模型缓存；GUI 只发起、开系统浏览器、读状态。产品列表由目录数据驱动，界面未硬编码产品 ID。真机浏览器往返需人工点验。</li>
+<li><strong>保存前测试连接</strong>：已完成。明文密钥只经凭据写入 API 进 Core 一次并返回引用，<code>provider.testDraft</code> 只引用该凭据；成功后保存采纳、失败或取消即清除。</li>
+<li><strong>Provider 测试连接</strong>：<code>provider.test</code> 不再返回固定「可达 · 12.5ms · OK」，改为真实探测（OAuth 校验令牌有效性、providers.json 与内置产品请求其模型列表端点），失败给可读原因且不泄露凭据。</li>
+<li><strong>Browser Panel</strong>：本轮只补可观察契约（<code>browser.sessions</code> 给出 sessionID / URL / title / tab / 快照版本与元素数，<code>browser.capture</code> 走 host 既有截屏能力）。面板仍是独立 <code>WKWebView</code>；页面共享与「Agent 正在浏览 · 点击页面即可接管」按项目负责人决定延后为浏览器架构专项，控制权状态机未发明、未实现。</li>
+<li><strong>Terminal Panel</strong>：已完成。PTY 已从 GUI 迁入 <code>LingXiPlatform</code>，Core 的 <code>TerminalSessionManager</code> 把 Agent 进程与用户 shell 统一成 terminal session 契约（list / spawn / read / write / interrupt / close）；面板收起、RightRail 切换、View 重建都不再结束会话。Agent 的管道进程没有 tty，因此不支持中断（明确拒绝而非伪造），输入按底层真实能力开放。</li>
+<li><strong>语言服务</strong>：已完成。设置 › 代码智能 › 语言服务显示 Core 真实提供的 per-language LSP 状态（空闲 / 启动中 / 就绪 / 已降级 / 已停止），无服务时为真实空状态。Formatter 是一次性进程、无运行状态，本轮不显示；未伪造任何服务、pid、版本或错误原因。</li>
+</ul>
+<h2>待项目负责人裁决</h2>
+<ul>
+<li>本设计稿「Computer Use 与浏览器」页把 <code>browser_navigate</code> / <code>browser_act</code> 写成「已冻结」，而 Core 已注册这两个工具并由会话中枢持有；文案与实现冲突，是否改设计稿由项目负责人定，本轮未自行动产品级删改。</li>
+<li>浏览器页面共享（Chromium headless 与 WKWebView 两套引擎）与「点击接管」控制权的最终形态，另立浏览器架构专项。</li>
 </ul>
 <h2>未同步</h2>
 <ul>

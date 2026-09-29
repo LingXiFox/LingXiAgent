@@ -181,9 +181,15 @@ public actor BrowserSessionManager {
         return try await client.capture(sessionID: sessionID, savePath: savePath)
     }
 
+    /// The browser sessions Core is holding right now, as they were last
+    /// reported by the host. A read-only projection for front ends: nothing here
+    /// creates, closes or steers a session.
+    public func sessionStates() -> [BrowserSessionState] {
+        sessions.values.sorted { $0.sessionID < $1.sessionID }
+    }
+
     /// 关闭会话
-    public func close(sessionID: String) async {
-        if let client = hostClient {
+    public func close(sessionID: String) async {        if let client = hostClient {
             try? await client.closeSession(sessionID: sessionID)
         }
         sessions.removeValue(forKey: sessionID)

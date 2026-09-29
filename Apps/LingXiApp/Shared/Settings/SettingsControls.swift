@@ -423,22 +423,74 @@ struct LXTextRow: View {
 }
 
 /// Number row: 96pt tabular field + unit. Empty means "not set" when optional.
+///
+/// Override semantics (design system 「数值」): an unset field shows the default
+/// value in secondary colour; once the user has overridden it the field reads
+/// primary and 「恢复默认」 appears to its left.
 struct LXNumberRow: View {
     let title: String
     var info: String?
     @Binding var value: Int?
     var unit: String?
+    /// The value the field falls back to; shown as the placeholder when not overridden.
+    var defaultValue: Int?
+    /// Present only while this field carries a user override.
+    var reset: (() -> Void)?
 
     var body: some View {
         LabeledContent {
             HStack(spacing: LingXiMetrics.Space.xs) {
-                TextField(title, value: $value, format: .number, prompt: Text("—"))
+                if let reset {
+                    Button("恢复默认", action: reset)
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                }
+                TextField(title, value: $value, format: .number, prompt: promptText)
                     .labelsHidden()
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .font(LXType.body.monospacedDigit())
+                    .foregroundStyle(value == nil ? Color.secondary : Color.primary)
                     .frame(width: 96)
                 if let unit { Text(unit).font(LXType.meta).foregroundStyle(.secondary) }
+            }
+        } label: {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Text(title)
+                if let info { InfoHint(info) }
+            }
+        }
+        .lxSettingsRow()
+    }
+
+    private var promptText: Text {
+        if let defaultValue { return Text(defaultValue, format: .number) }
+        return Text("—")
+    }
+}
+
+/// Boolean settings row with the same override semantics as `LXNumberRow`.
+struct LXOverrideToggle: View {
+    let title: String
+    var info: String?
+    /// `nil` while the value follows the model catalog.
+    @Binding var override: Bool?
+    /// The value to show when there is no override.
+    let defaultValue: Bool
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                if override != nil {
+                    Button("恢复默认") { override = nil }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                }
+                Toggle(title, isOn: Binding(
+                    get: { override ?? defaultValue },
+                    set: { override = $0 }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .tint(LXColor.accent)
             }
         } label: {
             HStack(spacing: LingXiMetrics.Space.xs) {
@@ -525,7 +577,7 @@ struct LXSecretRow: View {
 
     private var hasValue: Bool {
         switch pending {
-        case .replace: return true
+        case .replace, .staged: return true
         case .clear: return false
         case .keep: return stored != .none
         }
@@ -538,7 +590,7 @@ struct LXSecretRow: View {
 
     private var stateText: String {
         switch pending {
-        case .replace: return "将替换（未保存）"
+        case .replace, .staged: return "将替换（未保存）"
         case .clear: return "将清除（未保存）"
         case .keep:
             switch stored {
