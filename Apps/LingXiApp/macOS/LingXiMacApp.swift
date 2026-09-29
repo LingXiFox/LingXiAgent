@@ -49,7 +49,7 @@ public struct LingXiMacApp: App {
 
         // 独立非模态运行轨迹窗口
         WindowGroup("运行轨迹", id: "trace-window") {
-            TraceWindowView(model: runtime.inspectorModel)
+            TraceWindowView(model: runtime.inspectorModel) { await runtime.refreshTrace() }
                 .tint(LXColor.accent)
         }
     }

@@ -85,7 +85,7 @@ struct CommandPalette: View {
 
     private var suggestions: some View {
         ScrollViewReader { proxy in
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if sections.isEmpty {
                         PlaceholderLine("没有匹配的命令。")

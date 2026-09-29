@@ -89,7 +89,7 @@ public struct QuickAskView: View {
                     .controlSize(.regular)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else if !answer.isEmpty {
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     Text(answer)
                         .font(LXType.body)
                         .foregroundStyle(.primary)

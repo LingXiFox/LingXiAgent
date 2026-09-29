@@ -58,6 +58,7 @@ struct SettingsWorkbench: View {
         }
         .frame(minWidth: 900, idealWidth: 1120, minHeight: 560, idealHeight: 700)
         .background(LXColor.window)
+        .scrollIndicators(.hidden)
         .onChange(of: page) { _, next in
             selection = nil
             highlight = nil
@@ -153,7 +154,7 @@ struct SettingsWorkbench: View {
             .padding(.horizontal, LingXiMetrics.Space.panelInset)
             .frame(height: LingXiMetrics.Size.toolbar)
 
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if objects.isEmpty {
                         PlaceholderLine(store.client == nil ? "连接 Core 后显示。"

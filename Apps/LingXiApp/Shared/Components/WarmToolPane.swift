@@ -57,7 +57,7 @@ struct WarmTasksPane: View {
     }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
                     Text("任务目标").font(LXType.sectionHead)
@@ -95,15 +95,15 @@ struct WarmTasksPane: View {
                                 .foregroundStyle(Color.secondary)
                             HStack {
                                 if capsule.state == .running {
-                                    Button("暂停") { taskAction { try await $0.pause(taskID: capsule.taskID) } }
+                                    Button("标记暂停") { taskAction { try await $0.pause(taskID: capsule.taskID) } }
                                 }
                                 if capsule.state == .paused || capsule.state == .waiting {
-                                    Button("继续") { taskAction { try await $0.resume(taskID: capsule.taskID) } }
+                                    Button("标记继续") { taskAction { try await $0.resume(taskID: capsule.taskID) } }
                                 }
                                 if !capsule.state.isTerminal {
-                                    Button("取消") { taskAction { try await $0.cancel(taskID: capsule.taskID) } }
+                                    Button("标记取消") { taskAction { try await $0.cancel(taskID: capsule.taskID) } }
                                 }
-                                Button("分叉") { taskAction { try await $0.fork(sourceTaskID: capsule.taskID) } }
+                                Button("复制胶囊") { taskAction { try await $0.fork(sourceTaskID: capsule.taskID) } }
                             }
                             .font(LXType.meta)
                         }
@@ -111,10 +111,13 @@ struct WarmTasksPane: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(LXColor.fillQuinary, in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
                     }
+                    Text("这些操作只更新任务记录；停止正在运行的 Agent 请使用输入框的停止按钮。")
+                        .font(LXType.meta)
+                        .foregroundStyle(.secondary)
                 }
                 if let task = conversation.activeTask {
                     VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
-                        Text("当前任务").font(LXType.sectionHead)
+                        Text("最近的任务胶囊").font(LXType.sectionHead)
                         Text(task.objective).font(LXType.body).textSelection(.enabled)
                         Text(task.state).font(LXType.meta).foregroundStyle(Color.secondary)
                         if let plan = task.plan {
@@ -178,17 +181,20 @@ struct WarmTasksPane: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(LingXiMetrics.Space.lg)
         }
-        .onAppear {
+        .task(id: runtime.sidebarModel.selectedSessionID) {
             goalDraft = runtime.composerModel.goal ?? ""
             loadTasks()
         }
     }
 
     private func loadTasks() {
-        guard let client = runtime.client else { return }
+        guard runtime.client != nil else { tasks = []; return }
+        let sessionID = runtime.sidebarModel.selectedSessionID
         Task {
             do {
-                tasks = try await client.task.list(sessionID: runtime.sidebarModel.selectedSessionID.map(SessionID.init))
+                let result = try await runtime.refreshTasks()
+                guard runtime.sidebarModel.selectedSessionID == sessionID else { return }
+                tasks = result
                 taskError = nil
             } catch {
                 taskError = error.localizedDescription
@@ -273,7 +279,7 @@ private struct WarmBrowserPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack(spacing: LingXiMetrics.Space.xs) {
-                Text("你的浏览会话 · Agent 浏览器工具在 Core 中已冻结").foregroundStyle(.secondary)
+                Text("独立浏览会话 · 尚未连接 Agent 的浏览器会话").foregroundStyle(.secondary)
                 Spacer()
             }
             .font(LXType.meta)
@@ -287,7 +293,6 @@ private struct WarmBrowserPane: View {
 @MainActor final class WarmGitModel: ObservableObject {
     @Published var status = ""
     @Published var diff = ""
-    @Published var stats = ""
     @Published var fileStats: [String: (additions: Int, deletions: Int)] = [:]
     @Published var log = ""
     @Published var branch = ""
@@ -300,20 +305,21 @@ private struct WarmBrowserPane: View {
         isBusy = true
         Task {
             let path = workspace.path
-            let statusResult = await Task.detached { Self.run(["-C", path, "status", "--short", "--branch"]) }.value
+            let statusResult = await Task.detached { Self.run(["-C", path, "status", "--short", "--branch", "--untracked-files=all"]) }.value
             let diffResult = await Task.detached { Self.run(["-C", path, "diff", "HEAD", "--no-ext-diff"]) }.value
-            let statsResult = await Task.detached { Self.run(["-C", path, "diff", "--stat", "HEAD", "--no-ext-diff"]) }.value
             let numstatResult = await Task.detached { Self.run(["-C", path, "diff", "--numstat", "HEAD", "--no-ext-diff"]) }.value
+            let untracked = await Task.detached { Self.untrackedDiffs(at: path) }.value
             let logResult = await Task.detached { Self.run(["-C", path, "log", "-8", "--format=%h%x09%s"]) }.value
             let trackingResult = await Task.detached { Self.run(["-C", path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) }.value
             status = statusResult.output
-            diff = diffResult.output
-            stats = statsResult.output
-            fileStats = Dictionary(uniqueKeysWithValues: numstatResult.output.split(separator: "\n").compactMap { line in
+            diff = [diffResult.output, untracked.patches].filter { !$0.isEmpty }.joined(separator: "\n")
+            var counts: [String: (additions: Int, deletions: Int)] = Dictionary(uniqueKeysWithValues: numstatResult.output.split(separator: "\n").compactMap { line in
                 let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
                 guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
                 return (String(parts[2]), (add, del))
             })
+            counts.merge(untracked.counts) { _, latest in latest }
+            fileStats = counts
             log = logResult.output
             // "## main...origin/main [ahead 1]" → "main"
             let head = String((statusResult.output.components(separatedBy: "\n").first ?? "").dropFirst(3))
@@ -356,6 +362,26 @@ private struct WarmBrowserPane: View {
         } catch {
             return (error.localizedDescription, -1)
         }
+    }
+
+    nonisolated static func untrackedDiffs(at workspace: String) ->
+        (patches: String, counts: [String: (additions: Int, deletions: Int)]) {
+        // ponytail: One Git process per untracked file; batch only if large workspaces make refresh slow.
+        let files = run(["-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
+        guard files.code == 0 else { return ("", [:]) }
+        var patches: [String] = []
+        var counts: [String: (additions: Int, deletions: Int)] = [:]
+        for file in files.output.split(separator: "\0") {
+            let path = String(file)
+            let patch = run(["-C", workspace, "diff", "--no-index", "--", "/dev/null", path])
+            if patch.code == 1 { patches.append(patch.output) }
+            let stat = run(["-C", workspace, "diff", "--no-index", "--numstat", "--", "/dev/null", path])
+            let parts = stat.output.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            if parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) {
+                counts[path] = (add, del)
+            }
+        }
+        return (patches.joined(separator: "\n"), counts)
     }
 }
 
@@ -466,7 +492,7 @@ private struct WarmGitPane: View {
             }
             LXHairline()
 
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     if changedFiles.isEmpty {
                         PlaceholderLine("工作区没有未提交改动。")
@@ -677,7 +703,7 @@ private struct WarmTerminalPane: View {
 
             if selectedTab == 0 {
                 ScrollViewReader { proxy in
-                    ScrollView {
+                    ScrollView(.vertical, showsIndicators: false) {
                         Text(terminal.output.isEmpty ? "终端已就绪" : terminal.output)
                             .font(LXType.monoSmall)
                             .lineSpacing(3)
@@ -705,7 +731,7 @@ private struct WarmTerminalPane: View {
                 .overlay(alignment: .top) { LXHairline() }
                 footer(workspace.map { "你的 shell · \($0.lastPathComponent)" } ?? "未打开工作区")
             } else {
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
                         ForEach(agentCommands, id: \.callID) { call in
                             VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {

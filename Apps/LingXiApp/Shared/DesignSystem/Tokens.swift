@@ -53,23 +53,22 @@ public enum LXColor {
         })
     }
 
-    // Structure — system semantic colours, so Increase Contrast and Reduce
-    // Transparency are honoured by the OS.
+    // Structure — warm neutrals in light appearance, neutral charcoal in dark.
 
     /// bg-window: window ground, settings, behind panels.
-    public static let window = Color(nsColor: .windowBackgroundColor)
+    public static let window = adaptive(light: 0xF3EEE6, dark: 0x323232)
     /// bg-content: conversation stage, code and tables.
-    public static let content = Color(nsColor: .textBackgroundColor)
+    public static let content = adaptive(light: 0xFFFCF8, dark: 0x1E1E1E)
     /// surface-elevated: the solid stand-in for floating glass.
-    public static let elevated = adaptive(light: 0xFFFFFF, dark: 0x2A2A2A)
+    public static let elevated = adaptive(light: 0xFFFEFB, dark: 0x2A2A2A)
     /// separator: hairlines and the 1px ring of panels and surfaces.
-    public static let separator = Color(nsColor: .separatorColor)
+    public static let separator = adaptive(light: 0x6D594B, dark: 0xFFFFFF, lightAlpha: 0.16, darkAlpha: 0.10)
     /// fill-quinary: inset / output blocks, badges.
-    public static let fillQuinary = adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.05, darkAlpha: 0.05)
+    public static let fillQuinary = adaptive(light: 0x6D594B, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.05)
     /// fill-control: secondary buttons, chips, selected rows and tabs.
-    public static let fillControl = adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.12)
+    public static let fillControl = adaptive(light: 0x6D594B, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.12)
     /// fill-bubble: the user bubble, ~6% wash that flips with appearance.
-    public static let fillBubble = adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.06, darkAlpha: 0.08)
+    public static let fillBubble = adaptive(light: 0x6D594B, dark: 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.08)
 
     // Interactive brand — the ONE accent.
 
@@ -250,7 +249,7 @@ public enum LingXiMetrics {
         public static let glyphColumn: CGFloat = 18
         public static let navigator: CGFloat = 280
         public static let navigatorMin: CGFloat = 220
-        public static let statusHUD: CGFloat = 232
+        public static let statusHUD: CGFloat = 264
         public static let toolRail: CGFloat = 44
         public static let toolPanel: CGFloat = 420
         public static let toolPanelMin: CGFloat = 360
@@ -264,6 +263,8 @@ public enum LingXiMetrics {
     public enum Column {
         /// measure-prose: message reading column.
         public static let prose: CGFloat = 720
+        /// Wider controls leave a clear gap between the composer action groups.
+        public static let composer: CGFloat = 920
         /// measure-stage: diffs, tables and output blocks may use this width.
         public static let stage: CGFloat = 1080
         /// bubble-max.

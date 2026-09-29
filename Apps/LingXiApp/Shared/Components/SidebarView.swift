@@ -15,9 +15,12 @@ public struct SidebarView: View {
     @ObservedObject private var conversation: ConversationPresentationModel
 
     @State private var collapsed: Set<String> = []
+    @State private var expanded: Set<String> = []
+    @State private var showsOtherWorkspaces = false
     @State private var renaming: SessionItemPresentation?
     @State private var renameDraft = ""
     @State private var pendingDeletion: SessionItemPresentation?
+    @State private var projectlessError: String?
 
     public init(runtime: RuntimeFrontend) {
         self.runtime = runtime
@@ -29,25 +32,58 @@ public struct SidebarView: View {
         VStack(spacing: 0) {
             SidebarHead(runtime: runtime, workspace: model.workspace)
 
-            if runtime.link == .connected {
-                NativeSearchField(text: $model.searchText, prompt: "搜索会话")
-                    .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
-                    .padding(.bottom, LingXiMetrics.Space.sm)
-            }
+            NativeSearchField(text: $model.searchText, prompt: "搜索会话")
+                .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
+                .padding(.bottom, LingXiMetrics.Space.sm)
 
-            ScrollView {
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Button {
+                    runtime.newSession()
+                } label: {
+                    Label("新建会话", systemImage: "square.and.pencil")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(runtime.link != .connected)
+                .help("在当前工作区新建会话")
+
+                Button {
+                    Task {
+                        do { try await runtime.newSessionWithoutWorkspace() }
+                        catch { projectlessError = error.localizedDescription }
+                    }
+                } label: {
+                    Label("无项目", systemImage: "plus.square")
+                        .frame(maxWidth: .infinity)
+                }
+                .help("新建无项目会话")
+                .accessibilityLabel("新建无项目会话")
+            }
+            .font(LXType.meta.weight(.medium))
+            .buttonStyle(LXButtonStyle(.secondary, size: .small))
+            .padding(.horizontal, LingXiMetrics.Space.panelInset)
+            .padding(.bottom, LingXiMetrics.Space.sm)
+
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(sections) { section in
-                        sectionHeader(section)
-                        if !collapsed.contains(section.id) {
-                            ForEach(section.sessions) { session in
-                                row(session)
+                    ForEach(sections.filter(\.isCurrent)) { section in
+                        sectionContent(section)
+                    }
+                    if !otherSections.isEmpty {
+                        disclosureHeader("其他工作区 · \(otherSections.count)", isExpanded: otherWorkspacesVisible) {
+                            showsOtherWorkspaces.toggle()
+                        }
+                        if otherWorkspacesVisible {
+                            ForEach(otherSections) { section in
+                                sectionContent(section)
+                                    .padding(.leading, LingXiMetrics.Space.sm)
                             }
                         }
                     }
                 }
                 .padding(.bottom, LingXiMetrics.Space.sm)
+                .background(ScrollBarDisabler())
             }
+            .scrollIndicators(.hidden)
             .overlay {
                 if sections.isEmpty {
                     PlaceholderLine(emptyText)
@@ -58,6 +94,9 @@ public struct SidebarView: View {
 
             SidebarFooter(link: runtime.link) { runtime.isShowingSettings = true }
         }
+        .lxPanel()
+        .padding([.top, .leading, .bottom], LingXiMetrics.Space.sm)
+        .background(LXColor.window)
         .sheet(item: $renaming) { session in
             RenameSessionSheet(title: $renameDraft) {
                 runtime.renameSession(id: session.id, title: renameDraft)
@@ -71,6 +110,13 @@ public struct SidebarView: View {
         } message: { _ in
             Text("会话记录将从 Core 中删除，无法恢复。")
         }
+        .alert("无法新建无项目会话", isPresented: Binding(
+            get: { projectlessError != nil }, set: { if !$0 { projectlessError = nil } }
+        )) {
+            Button("好") { projectlessError = nil }
+        } message: {
+            Text(projectlessError ?? "")
+        }
     }
 
     // MARK: Sections
@@ -79,27 +125,60 @@ public struct SidebarView: View {
         let id: String
         let title: String
         let sessions: [SessionItemPresentation]
+        let isCurrent: Bool
     }
 
-    /// The current workspace's sessions read as「最近」; sessions recorded in
-    /// other directories keep their folder name.
     private var sections: [Section] {
         let query = model.searchText.trimmingCharacters(in: .whitespaces)
         return model.folders.compactMap { folder in
-            let sessions = query.isEmpty ? folder.sessions
+            let sessions = query.isEmpty || folder.folderName.localizedCaseInsensitiveContains(query) ? folder.sessions
                 : folder.sessions.filter { $0.title.localizedCaseInsensitiveContains(query) }
             guard !sessions.isEmpty else { return nil }
-            let isCurrent = folder.folderName == model.workspace.name || model.folders.count == 1
-            return Section(id: folder.id, title: isCurrent ? "最近" : folder.folderName, sessions: sessions)
+            let currentPath = runtime.workspaceURL?.standardizedFileURL.path
+            let isCurrent = folder.id == currentPath ||
+                (currentPath == nil && folder.folderName == model.workspace.name)
+            return Section(id: folder.id, title: folder.folderName, sessions: sessions, isCurrent: isCurrent)
+        }
+    }
+
+    private var otherSections: [Section] { sections.filter { !$0.isCurrent } }
+
+    private var otherWorkspacesVisible: Bool {
+        showsOtherWorkspaces || !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty ||
+            otherSections.contains { section in section.sessions.contains { $0.id == model.selectedSessionID } }
+    }
+
+    private func isExpanded(_ section: Section) -> Bool {
+        if collapsed.contains(section.id) { return false }
+        if !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        return expanded.contains(section.id) ||
+            section.sessions.contains { $0.id == model.selectedSessionID }
+    }
+
+    @ViewBuilder
+    private func sectionContent(_ section: Section) -> some View {
+        sectionHeader(section)
+        if isExpanded(section) {
+            ForEach(section.sessions) { session in row(session) }
         }
     }
 
     private func sectionHeader(_ section: Section) -> some View {
-        Button {
-            if collapsed.contains(section.id) { collapsed.remove(section.id) } else { collapsed.insert(section.id) }
-        } label: {
+        disclosureHeader(section.title, isExpanded: isExpanded(section)) {
+            if isExpanded(section) {
+                collapsed.insert(section.id)
+                expanded.remove(section.id)
+            } else {
+                collapsed.remove(section.id)
+                expanded.insert(section.id)
+            }
+        }
+    }
+
+    private func disclosureHeader(_ title: String, isExpanded: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: LingXiMetrics.Space.xs) {
-                Text(section.title)
+                Text(title)
                     .font(LXType.micro)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -107,7 +186,7 @@ public struct SidebarView: View {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(collapsed.contains(section.id) ? 0 : 90))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
             .padding(.horizontal, LingXiMetrics.Space.panelInset)
             .padding(.top, LingXiMetrics.Space.sm)
@@ -115,7 +194,7 @@ public struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(section.title)，\(collapsed.contains(section.id) ? "已折叠" : "已展开")")
+        .accessibilityLabel("\(title)，\(isExpanded ? "已展开" : "已折叠")")
     }
 
     private func row(_ session: SessionItemPresentation) -> some View {
@@ -146,6 +225,22 @@ public struct SidebarView: View {
         return conversation.items.contains {
             if case .interaction(let card) = $0.kind { return card.status == .pending }
             return false
+        }
+    }
+}
+
+private struct ScrollBarDisabler: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { ScrollBarDisablerView() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.enclosingScrollView?.hasVerticalScroller = false
+    }
+}
+
+private final class ScrollBarDisablerView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.async { [weak self] in
+            self?.enclosingScrollView?.hasVerticalScroller = false
         }
     }
 }
@@ -264,14 +359,21 @@ private struct SidebarFooter: View {
             .buttonStyle(.plain)
             .help("设置 (⌘,)")
             Spacer(minLength: 0)
-            LXStatusText(label, systemImage: symbol, tone: isFailed ? .danger : .muted)
+            LXStatusText(label, systemImage: symbol, tone: tone)
         }
         .padding(.horizontal, LingXiMetrics.Space.panelInset)
         .padding(.vertical, LingXiMetrics.Space.md)
         .overlay(alignment: .top) { LXHairline().padding(.horizontal, LingXiMetrics.Space.panelInset) }
     }
 
-    private var isFailed: Bool { if case .failed = link { return true } else { return false } }
+    private var tone: LXStatusText.Tone {
+        switch link {
+        case .connected: .success
+        case .connecting: .warning
+        case .failed: .danger
+        case .disconnected: .muted
+        }
+    }
 
     private var symbol: String {
         switch link {
@@ -285,7 +387,7 @@ private struct SidebarFooter: View {
     private var label: String {
         switch link {
         case .connected: return "已连接"
-        case .connecting: return "连接中"
+        case .connecting: return "正在连接"
         case .failed: return "连接失败"
         case .disconnected: return "未连接"
         }

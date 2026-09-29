@@ -293,11 +293,12 @@ public struct SessionItemPresentation: Identifiable, Sendable, Equatable {
 // MARK: - Directory Group Folder Presentation
 
 public struct SessionFolderPresentation: Identifiable, Sendable, Equatable {
-    public var id: String { folderName }
+    public let id: String
     public let folderName: String
     public var sessions: [SessionItemPresentation]
 
-    public init(folderName: String, sessions: [SessionItemPresentation] = []) {
+    public init(folderName: String, id: String? = nil, sessions: [SessionItemPresentation] = []) {
+        self.id = id ?? folderName
         self.folderName = folderName
         self.sessions = sessions
     }
@@ -318,31 +319,6 @@ public enum InspectorTab: String, CaseIterable, Identifiable {
         case .changes: return "变更"
         case .context: return "上下文"
         }
-    }
-}
-
-public struct TraceEventItemPresentation: Identifiable, Sendable, Equatable {
-    public let id: String
-    public let timestamp: Date
-    public let eventType: String
-    public let module: String
-    public let durationMs: Int
-    public let status: String
-
-    public init(
-        id: String = UUID().uuidString,
-        timestamp: Date = Date(),
-        eventType: String,
-        module: String,
-        durationMs: Int = 0,
-        status: String = "ok"
-    ) {
-        self.id = id
-        self.timestamp = timestamp
-        self.eventType = eventType
-        self.module = module
-        self.durationMs = durationMs
-        self.status = status
     }
 }
 
@@ -448,7 +424,7 @@ public final class RuntimeInspectorPresentationModel: ObservableObject {
     @Published public var selectedTab: InspectorTab = .overview
     /// Live runtime state; nil while no Core is connected (the inspector says so).
     @Published public var live: InspectorSnapshot?
-    @Published public var traceEvents: [TraceEventItemPresentation] = []
+    @Published public var traceEvents: [RuntimeTraceEvent] = []
     @Published public var isPresented: Bool = true
 
     public init() {}

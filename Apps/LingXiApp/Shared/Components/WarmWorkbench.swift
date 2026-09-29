@@ -45,6 +45,7 @@ public struct WarmWorkbench: View {
     @AppStorage(LXPreferenceKey.colorScheme) private var colorScheme = ColorSchemePreference.system
     @AppStorage("lingxi.toolPanelWidth") private var savedToolWidth = Double(LingXiMetrics.Size.toolPanel)
     @State private var dragStartWidth: CGFloat?
+    @State private var showsCompactContext = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(runtime: RuntimeFrontend, settings: SettingsStore, navigation: WarmNavigation) {
@@ -57,69 +58,99 @@ public struct WarmWorkbench: View {
     }
 
     public var body: some View {
-        NavigationSplitView(columnVisibility: columnVisibility) {
-            SidebarView(runtime: runtime)
-                .navigationSplitViewColumnWidth(min: LingXiMetrics.Size.navigatorMin,
-                                                ideal: LingXiMetrics.Size.navigator,
-                                                max: LingXiMetrics.Size.navigator + LingXiMetrics.Space.xxxl)
-        } detail: {
-            GeometryReader { geometry in
+        NavigationStack {
+            GeometryReader { window in
                 HStack(spacing: 0) {
-                    MainStageView(runtime: runtime)
-                        .environment(\.stageTrailingReserve, compactHUD(for: geometry.size.width) ?
-                                     0 : LingXiMetrics.Size.statusHUD + 2 * LingXiMetrics.Space.md)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .overlay(alignment: .topTrailing) {
-                            if runtime.link == .connected {
-                                AgentStatusHUD(runtime: runtime, compact: compactHUD(for: geometry.size.width)) {
-                                    navigation.showsContext.toggle()
+                    if sidebar.isNavigatorVisible {
+                        SidebarView(runtime: runtime)
+                            .frame(width: LingXiMetrics.Size.navigator)
+                    }
+                    GeometryReader { geometry in
+                        HStack(spacing: 0) {
+                            MainStageView(runtime: runtime)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .overlay(alignment: .topTrailing) {
+                                    if runtime.link == .connected && compactHUD(for: geometry.size.width) {
+                                        AgentStatusHUD(runtime: runtime, compact: true) {
+                                            if canFitContext(for: geometry.size.width) {
+                                                navigation.showsContext = true
+                                            } else {
+                                                showsCompactContext = true
+                                            }
+                                        }
+                                        .padding(.top, LingXiMetrics.Space.md)
+                                        .padding(.trailing, LingXiMetrics.Space.md)
+                                        .popover(isPresented: $showsCompactContext, arrowEdge: .leading) {
+                                            AgentStatusHUD(runtime: runtime, compact: false) {
+                                                showsCompactContext = false
+                                            }
+                                            .frame(height: 400)
+                                        }
+                                    }
                                 }
-                                .padding(.top, LingXiMetrics.Space.md)
-                                .padding(.trailing, LingXiMetrics.Space.md)
+
+                            if runtime.link == .connected && !compactHUD(for: geometry.size.width) {
+                                AgentStatusHUD(runtime: runtime, compact: false) {
+                                    navigation.showsContext = false
+                                }
+                                .padding(.leading, LingXiMetrics.Space.sm)
+                                .padding(.vertical, LingXiMetrics.Space.sm)
+                            }
+
+                            if let tool = navigation.selectedTool {
+                                // The 8pt gap between stage and panel is the resize handle.
+                                Color.clear
+                                    .frame(width: LingXiMetrics.Space.sm)
+                                    .contentShape(Rectangle())
+                                    .gesture(DragGesture(minimumDistance: 1)
+                                        .onChanged { value in
+                                            if dragStartWidth == nil { dragStartWidth = CGFloat(savedToolWidth) }
+                                            savedToolWidth = Double(min(LingXiMetrics.Size.toolPanelMax,
+                                                                        max(LingXiMetrics.Size.toolPanelMin,
+                                                                            (dragStartWidth ?? LingXiMetrics.Size.toolPanel) - value.translation.width)))
+                                        }
+                                        .onEnded { _ in dragStartWidth = nil })
+                                    .onHover { inside in
+                                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                                    }
+                                    .help("拖动调整工具面板宽度")
+                                WarmToolPane(tool: tool, runtime: runtime) { navigation.selectedTool = nil }
+                                    .frame(width: min(CGFloat(savedToolWidth),
+                                                      max(LingXiMetrics.Size.toolPanelMin,
+                                                          geometry.size.width - LingXiMetrics.Size.toolRail -
+                                                          LingXiMetrics.Size.stageWithToolMin)))
+                                    .padding(.vertical, LingXiMetrics.Space.sm)
+                            }
+                            toolRail
+                                .padding(.horizontal, LingXiMetrics.Space.sm)
+                                .padding(.vertical, LingXiMetrics.Space.sm)
+                        }
+                        .background(LXColor.window)
+                        .overlay { if runtime.isCommandPalettePresented { palette } }
+                        .onChange(of: navigation.selectedTool) { _, selected in
+                            if selected != nil && geometry.size.width < 1024 {
+                                sidebar.isNavigatorVisible = false
                             }
                         }
-
-                    if let tool = navigation.selectedTool {
-                        // The 8pt gap between stage and panel is the resize handle.
-                        Color.clear
-                            .frame(width: LingXiMetrics.Space.sm)
-                            .contentShape(Rectangle())
-                            .gesture(DragGesture(minimumDistance: 1)
-                                .onChanged { value in
-                                    if dragStartWidth == nil { dragStartWidth = CGFloat(savedToolWidth) }
-                                    savedToolWidth = Double(min(LingXiMetrics.Size.toolPanelMax,
-                                                                max(LingXiMetrics.Size.toolPanelMin,
-                                                                    (dragStartWidth ?? LingXiMetrics.Size.toolPanel) - value.translation.width)))
-                                }
-                                .onEnded { _ in dragStartWidth = nil })
-                            .onHover { inside in
-                                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                            }
-                            .help("拖动调整工具面板宽度")
-                        WarmToolPane(tool: tool, runtime: runtime) { navigation.selectedTool = nil }
-                            .frame(width: min(CGFloat(savedToolWidth),
-                                              max(LingXiMetrics.Size.toolPanelMin,
-                                                  geometry.size.width - LingXiMetrics.Size.toolRail -
-                                                  LingXiMetrics.Size.stageWithToolMin)))
-                            .padding(.bottom, LingXiMetrics.Space.sm)
                     }
-                    toolRail
-                        .padding(.horizontal, LingXiMetrics.Space.sm)
-                        .padding(.bottom, LingXiMetrics.Space.sm)
+                    .frame(width: window.size.width - (sidebar.isNavigatorVisible ? LingXiMetrics.Size.navigator : 0))
                 }
+                .frame(width: window.size.width, height: window.size.height)
                 .background(LXColor.window)
-                .overlay { if runtime.isCommandPalettePresented { palette } }
-                .onChange(of: navigation.selectedTool) { _, selected in
-                    if selected != nil && geometry.size.width < 1024 {
-                        sidebar.isNavigatorVisible = false
-                    }
-                }
             }
         }
-        .navigationSplitViewStyle(.balanced)
+        .scrollIndicators(.hidden)
         .navigationTitle(sessionTitle)
         .navigationSubtitle(subtitle)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    sidebar.isNavigatorVisible.toggle()
+                } label: {
+                    Label("显示或隐藏侧栏", systemImage: "sidebar.left")
+                }
+                .help(sidebar.isNavigatorVisible ? "隐藏侧栏" : "显示侧栏")
+            }
             ToolbarItem(placement: .navigation) {
                 Button(action: runtime.newSession) { Label("新建会话", systemImage: "square.and.pencil") }
                     .disabled(runtime.link != .connected)
@@ -143,22 +174,16 @@ public struct WarmWorkbench: View {
         }
     }
 
-    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(get: { sidebar.isNavigatorVisible ? .all : .detailOnly },
-                set: { sidebar.isNavigatorVisible = $0 != .detailOnly })
+    /// Preserve a full reading column before showing the docked context pane.
+    private func compactHUD(for width: CGFloat) -> Bool {
+        !navigation.showsContext || !canFitContext(for: width)
     }
 
-    /// The HUD becomes a capsule when the user collapses it or when the stage
-    /// can no longer give it room beside a full reading column.
-    private func compactHUD(for width: CGFloat) -> Bool {
-        guard navigation.showsContext else { return true }
-        var stage = width - LingXiMetrics.Size.toolRail - 2 * LingXiMetrics.Space.sm
-        if navigation.selectedTool != nil {
-            stage -= CGFloat(savedToolWidth) + LingXiMetrics.Space.sm
-        }
-        let needed = LingXiMetrics.Column.prose + 2 * LingXiMetrics.Column.gutter +
-            LingXiMetrics.Size.statusHUD + 2 * LingXiMetrics.Space.md
-        return stage < needed
+    private func canFitContext(for width: CGFloat) -> Bool {
+        let toolWidth = navigation.selectedTool == nil ? 0 : CGFloat(savedToolWidth) + LingXiMetrics.Space.sm
+        let stage = width - LingXiMetrics.Size.toolRail - 2 * LingXiMetrics.Space.sm - toolWidth
+        return stage >= LingXiMetrics.Column.prose + 2 * LingXiMetrics.Column.gutter +
+            LingXiMetrics.Size.statusHUD + LingXiMetrics.Space.sm
     }
 
     private var sessionTitle: String {

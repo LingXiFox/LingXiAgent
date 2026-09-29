@@ -513,7 +513,7 @@ struct OutputBlock: View {
     @State private var isHovered = false
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             Group {
                 if isDiff {
                     VStack(alignment: .leading, spacing: 0) {

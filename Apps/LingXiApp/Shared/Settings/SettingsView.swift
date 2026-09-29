@@ -21,7 +21,7 @@ struct SettingsSidebar: View {
                 .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
                 .padding(.top, LingXiMetrics.Space.lg)
                 .padding(.bottom, LingXiMetrics.Space.sm)
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if query.trimmingCharacters(in: .whitespaces).isEmpty {
                         ForEach(SettingsPage.Group.allCases) { group in

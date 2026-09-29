@@ -1,5 +1,17 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import LingXiProtocol
+
+private struct TraceRow: Identifiable {
+    let raw: RuntimeTraceEvent
+    var id: String { raw.traceID }
+    var timestamp: Date { raw.timestamp }
+    var event: String { raw.event }
+    var kind: RuntimeTraceKind { raw.kind }
+    var runID: AgentRunID? { raw.runID }
+    var durationMicroseconds: Int64? { raw.durationMicroseconds }
+    var errorCode: String? { raw.errorCode }
+}
 
 /// 独立运行轨迹窗口 (TraceWindow)
 /// 原生 Table 展示执行轨迹事件，支持排序与 JSONL 导出
@@ -9,21 +21,26 @@ import SwiftUI
 /// radius-inset 内嵌块。这一层不是浮层：无玻璃、无阴影、无氛围光。
 public struct TraceWindowView: View {
     @ObservedObject public var model: RuntimeInspectorPresentationModel
-    @State private var sortOrder = [KeyPathComparator(\TraceEventItemPresentation.timestamp, order: .reverse)]
+    public let onRefresh: () async -> Void
+    @State private var sortOrder = [KeyPathComparator(\TraceRow.timestamp, order: .reverse)]
     @State private var filterKeyword: String = ""
+    @State private var exportError = ""
+    @State private var showsExportError = false
 
-    public init(model: RuntimeInspectorPresentationModel) {
+    public init(model: RuntimeInspectorPresentationModel, onRefresh: @escaping () async -> Void) {
         self.model = model
+        self.onRefresh = onRefresh
     }
 
-    public var filteredEvents: [TraceEventItemPresentation] {
-        let events = model.traceEvents
+    private var filteredEvents: [TraceRow] {
+        let events = model.traceEvents.map(TraceRow.init)
         if filterKeyword.isEmpty {
             return events.sorted(using: sortOrder)
         } else {
             return events.filter {
-                $0.eventType.localizedCaseInsensitiveContains(filterKeyword) ||
-                $0.module.localizedCaseInsensitiveContains(filterKeyword)
+                $0.event.localizedCaseInsensitiveContains(filterKeyword) ||
+                $0.kind.rawValue.localizedCaseInsensitiveContains(filterKeyword) ||
+                ($0.runID?.rawValue.localizedCaseInsensitiveContains(filterKeyword) ?? false)
             }.sorted(using: sortOrder)
         }
     }
@@ -33,7 +50,7 @@ public struct TraceWindowView: View {
             // 工具栏：搜索与导出。控制条是内嵌块（fill-quinary + radius-inset），
             // 不是卡片：无描边、无阴影、无玻璃。
             HStack(spacing: LingXiMetrics.Space.md) {
-                TextField("按事件类型或模块筛选…", text: $filterKeyword)
+                TextField("按事件、类别或 AgentRun 筛选…", text: $filterKeyword)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.large)
                     .font(LXType.body)
@@ -58,22 +75,30 @@ public struct TraceWindowView: View {
                 }
                 .width(min: 90, ideal: 110)
 
-                TableColumn("事件类型", value: \.eventType) { event in
-                    Text(event.eventType)
+                TableColumn("事件", value: \.event) { event in
+                    Text(event.event)
                         .font(LXType.monoSmall)
                         .foregroundStyle(.primary)
                 }
                 .width(min: 160, ideal: 200)
 
-                TableColumn("所属模块", value: \.module) { event in
-                    Text(event.module)
+                TableColumn("AgentRun") { event in
+                    Text(event.runID?.rawValue ?? "—")
+                        .font(LXType.monoSmall)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .width(min: 110, ideal: 150)
+
+                TableColumn("类别") { event in
+                    Text(event.kind.rawValue)
                         .font(LXType.meta)
                         .foregroundStyle(.secondary)
                 }
-                .width(min: 120, ideal: 150)
+                .width(min: 90, ideal: 110)
 
-                TableColumn("耗时 (ms)", value: \.durationMs) { event in
-                    Text("\(event.durationMs) ms")
+                TableColumn("耗时") { event in
+                    Text(event.durationMicroseconds.map { "\($0 / 1_000) ms" } ?? "—")
                         .font(LXType.meta)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
@@ -81,12 +106,13 @@ public struct TraceWindowView: View {
                 .width(min: 80, ideal: 96)
 
                 // 状态：颜色只落在 6pt 圆点上，文字恒为 text-primary。
-                TableColumn("状态", value: \.status) { event in
+                TableColumn("状态") { event in
+                    let failed = event.errorCode != nil || event.kind == .error
                     HStack(spacing: LingXiMetrics.Space.xs) {
                         Circle()
-                            .fill(event.status == "ok" ? LXStatus.success : LXStatus.error)
+                            .fill(failed ? LXStatus.error : LXStatus.success)
                             .frame(width: LXControl.dot, height: LXControl.dot)
-                        Text(event.status)
+                        Text(failed ? "错误" : "正常")
                             .font(LXType.meta)
                             .foregroundStyle(.primary)
                     }
@@ -96,27 +122,45 @@ public struct TraceWindowView: View {
         }
         .overlay {
             if model.traceEvents.isEmpty {
-                ContentUnavailableView("运行轨迹暂不可用", systemImage: "list.bullet.rectangle",
-                                       description: Text("Core 还没有实现 getRunTrace 的 spans，"
-                                                       + "本会话的执行事件不会写入这里。"))
+                ContentUnavailableView("暂无运行轨迹", systemImage: "list.bullet.rectangle",
+                                       description: Text("Core 尚未记录诊断事件。"))
             }
         }
         .background(LXColor.content)
-        .frame(minWidth: 640, minHeight: 400)
+        .frame(minWidth: 760, minHeight: 400)
+        .task {
+            while !Task.isCancelled {
+                await onRefresh()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+        .alert("导出失败", isPresented: $showsExportError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(exportError)
+        }
     }
 
     private func exportTraceJSONL() {
         #if os(macOS)
         let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.json]
         savePanel.nameFieldStringValue = "lingxi-trace-\(Date().timeIntervalSince1970).jsonl"
         if savePanel.runModal() == .OK, let url = savePanel.url {
-            let lines = filteredEvents.map {
-                "{\"timestamp\":\"\($0.timestamp)\",\"type\":\"\($0.eventType)\",\"module\":\"\($0.module)\",\"duration\":\($0.durationMs),\"status\":\"\($0.status)\"}"
-            }.joined(separator: "\n")
-            try? lines.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try Self.jsonl(filteredEvents.map(\.raw)).write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                exportError = error.localizedDescription
+                showsExportError = true
+            }
         }
         #endif
+    }
+
+    static func jsonl(_ events: [RuntimeTraceEvent]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return try events.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+            .joined(separator: "\n")
     }
 }
 #endif

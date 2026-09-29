@@ -350,7 +350,7 @@ struct AddMCPServerSheet: View {
             .padding(.horizontal, LingXiMetrics.Space.xxl)
             .padding(.vertical, LingXiMetrics.Space.lg)
 
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
                     MCPServerForm(draft: $draft, isNew: true)
                     if idTaken {

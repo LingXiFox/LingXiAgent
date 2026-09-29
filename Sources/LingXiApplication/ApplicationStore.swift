@@ -19,6 +19,8 @@ public actor ApplicationStore {
     private var sessionEventsTask: Task<Void, Never>?
     private var activeStreamTasks: [StreamID: Task<Void, Never>] = [:]
     private var runtimeRefreshTask: Task<Void, Never>?
+    private var inFlightSubmissions: [UUID: SessionID] = [:]
+    private var stoppedSubmissionIDs: Set<UUID> = []
     private let preferencesStore: UserPreferencesStore
 
     public init(
@@ -40,9 +42,6 @@ public actor ApplicationStore {
         let prefsStore = preferencesStore ?? (isTesting ? UserPreferencesStore(fileURL: URL(fileURLWithPath: "/dev/null")) : UserPreferencesStore.shared)
         self.preferencesStore = prefsStore
         let initialPrefs = prefsStore.load()
-        if let lastModel = initialPrefs.lastModelID, !lastModel.isEmpty {
-            self.state.currentModelID = lastModel
-        }
         if let savedPerm = Self.parsePermissionConfiguration(initialPrefs.lastPermissionConfiguration),
            savedPerm != .yoloFullAccess { // 严格遵守 AppCompositionRoot 安全契约：禁止从 preferences.json 隐式继承 YOLO 全量越权
             self.state.nextTurnPermission = savedPerm
@@ -261,6 +260,11 @@ public actor ApplicationStore {
             }
 
         case .stopCurrentRun:
+            if let sessionID = state.activeSessionID {
+                for (submissionID, owner) in inFlightSubmissions where owner == sessionID {
+                    stoppedSubmissionIDs.insert(submissionID)
+                }
+            }
             _ = try? await client.runtime.terminateAllBackgroundTasks()
             state.backgroundTasks.removeAll()
             if let sID = state.activeSessionID {
@@ -337,9 +341,13 @@ public actor ApplicationStore {
                 if let sel = receipt.result {
                     state.selectedModel = sel
                 }
+                if let status = try? await client.provider.status() {
+                    state.providerStatus = status
+                }
                 notifyStateChanged()
             } catch {
                 debug("selectModel.failed: \(error)")
+                state.currentModelID = state.selectedModel?.qualifiedID
                 let errMsg = (error as? CoreError)?.message ?? error.localizedDescription
                 if state.activeSessionID != nil {
                     let errID = RuntimeErrorID()
@@ -662,12 +670,33 @@ public actor ApplicationStore {
         notifyStateChanged()
 
         debug("handleSubmitPrompt.calling submitTurn sessionID=\(validSessionID)")
+        let submissionID = UUID()
+        inFlightSubmissions[submissionID] = validSessionID
+        defer {
+            inFlightSubmissions.removeValue(forKey: submissionID)
+            stoppedSubmissionIDs.remove(submissionID)
+        }
         do {
-            _ = try await client.turn.submitTurn(
+            let receipt = try await client.turn.submitTurn(
                 sessionID: validSessionID,
                 input: input,
                 executionIntent: intent
             )
+            if let result = receipt.result {
+                if stoppedSubmissionIDs.contains(submissionID) {
+                    if let runID = result.runID {
+                        _ = try? await client.run.cancelRun(sessionID: validSessionID, runID: runID, reason: "User stopped")
+                    }
+                    _ = try? await client.turn.cancelTurn(sessionID: validSessionID, turnID: result.turnID)
+                } else if result.status == .running,
+                          state.activeSessionID == validSessionID,
+                          state.activeSessionState?.activeTurnID == nil,
+                          state.activeSessionState?.status.isActiveRun == true {
+                    state.activeSessionState?.activeTurnID = result.turnID
+                    state.activeSessionState?.activeRootRunID = result.runID
+                    notifyStateChanged()
+                }
+            }
             debug("handleSubmitPrompt.submitTurn.done")
         } catch {
             debug("handleSubmitPrompt.submitTurn.failed error=\(error)")
@@ -852,12 +881,7 @@ public actor ApplicationStore {
             state.models = models
         }
         if let selection {
-            let modelAvailable = state.currentModelID.map { current in
-                models?.contains(where: { $0.matches(selection: current) }) ?? false
-            } ?? false
-            if !modelAvailable {
-                state.currentModelID = selection.qualifiedID
-            }
+            state.currentModelID = selection.qualifiedID.isEmpty ? nil : selection.qualifiedID
             state.selectedModel = selection
         }
         if let providers {

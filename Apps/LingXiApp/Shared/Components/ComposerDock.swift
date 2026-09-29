@@ -422,7 +422,8 @@ struct ComposerSurface: View {
                     }
                     .pickerStyle(.inline)
                 }
-                LXChipMenu(modelLabel, symbol: "cpu", help: "选择模型：\(modelLabel)") {
+                LXChipMenu(modelLabel, symbol: runtime.providerStatus?.configured == false ? "exclamationmark.triangle" : "cpu",
+                           help: runtime.providerStatus?.configured == false ? "Provider 未就绪，请在设置中连接账户" : "选择模型：\(modelLabel)") {
                     modelMenu
                 }
                 LXChipMenu(model.reasoningEffort.rawValue, symbol: "sparkle", help: "思考等级") {
@@ -444,6 +445,9 @@ struct ComposerSurface: View {
 
     @ViewBuilder
     private var modelMenu: some View {
+        if runtime.providerStatus?.configured == false {
+            Text("Provider 未就绪，请在设置中连接账户")
+        }
         let groups = Dictionary(grouping: model.models.filter(\.configured), by: \.providerID)
         if groups.isEmpty {
             Text("Core 还没有返回可用模型")
@@ -462,6 +466,7 @@ struct ComposerSurface: View {
     /// Display name, clipped so a long model name never pushes the send button
     /// out of the row.
     private var modelLabel: String {
+        if runtime.providerStatus?.configured == false { return "模型未连接" }
         guard let id = model.selectedModelID, !id.isEmpty else { return "选择模型" }
         let name = model.models.first { $0.matches(selection: id) }?.displayName ?? id
         let label = name.isEmpty ? id : name

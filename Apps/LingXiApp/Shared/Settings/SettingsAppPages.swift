@@ -54,7 +54,7 @@ struct LXSettingsScrollPage<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             SettingsContentColumn {
                 LXSettingsPageHeader(title: title, subtitle: subtitle)
                     .padding(.bottom, LingXiMetrics.Space.xl)

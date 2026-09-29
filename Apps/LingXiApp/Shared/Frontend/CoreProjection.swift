@@ -53,6 +53,11 @@ public enum PermissionPreset: String, CaseIterable, Identifiable, Sendable {
 /// presentation values. No I/O except `gitBranch(at:)`, no invented data: a
 /// value Core does not provide stays nil and the view says so.
 enum CoreProjection {
+    static func task(_ capsule: TaskCapsule) -> TaskPresentation {
+        TaskPresentation(taskID: capsule.taskID.rawValue, objective: capsule.objective,
+                         state: capsule.state.rawValue, criteria: capsule.successCriteria,
+                         artifacts: capsule.artifacts)
+    }
 
     // MARK: Timeline
 
@@ -226,15 +231,17 @@ enum CoreProjection {
 
     // MARK: Sidebar
 
-    static func sessionFolders(_ state: ApplicationState, workspaceName: String? = nil) -> [SessionFolderPresentation] {
-        let runningID = state.activeSessionState?.activeTurnID == nil ? nil : state.activeSessionID
+    static func sessionFolders(_ state: ApplicationState, workspaceRoot: URL? = nil) -> [SessionFolderPresentation] {
+        let runningID = state.activeSessionState?.activeTurnID != nil || state.activeSessionState?.status.isActiveRun == true
+            ? state.activeSessionID : nil
         let sessions = state.sessionCatalog.sorted { $0.updatedAt > $1.updatedAt }
         var order: [String] = []
         var grouped: [String: [SessionItemPresentation]] = [:]
         for summary in sessions {
             // Sessions without a recorded directory belong to the workspace this Core serves.
-            let folder = summary.workingDirectory.map { URL(fileURLWithPath: $0).lastPathComponent }
-                ?? workspaceName ?? "当前工作区"
+            let folder = summary.workingDirectory.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+                ?? (state.currentWorkspace?.rootPath).map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+                ?? workspaceRoot?.standardizedFileURL.path ?? "当前工作区"
             if grouped[folder] == nil { order.append(folder) }
             grouped[folder, default: []].append(SessionItemPresentation(
                 id: summary.sessionID.rawValue,
@@ -244,7 +251,14 @@ enum CoreProjection {
                 mode: summary.mode.displayName,
                 isActive: summary.sessionID == runningID))
         }
-        return order.map { SessionFolderPresentation(folderName: $0, sessions: grouped[$0] ?? []) }
+        if let current = state.currentWorkspace?.rootPath,
+           let index = order.firstIndex(of: URL(fileURLWithPath: current).standardizedFileURL.path) {
+            order.insert(order.remove(at: index), at: 0)
+        }
+        return order.map { path in
+            SessionFolderPresentation(folderName: path.hasPrefix("/") ? URL(fileURLWithPath: path).lastPathComponent : path,
+                                      id: path, sessions: grouped[path] ?? [])
+        }
     }
 
     static func workspace(_ state: ApplicationState, root: URL?) -> WorkspaceSummaryPresentation {

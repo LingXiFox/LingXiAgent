@@ -64,16 +64,29 @@ struct GUICoreProjectionTests {
             SessionSummary(sessionID: SessionID("old"), title: "旧", updatedAt: Date(timeIntervalSince1970: 1), workingDirectory: "/w/LingXi"),
             SessionSummary(sessionID: SessionID("s1"), title: nil, updatedAt: Date(timeIntervalSince1970: 9), workingDirectory: "/w/LingXi"),
             SessionSummary(sessionID: SessionID("x"), title: "别处", updatedAt: Date(timeIntervalSince1970: 5), workingDirectory: "/w/Other"),
+            SessionSummary(sessionID: SessionID("same-name"), title: "同名目录", updatedAt: Date(timeIntervalSince1970: 4), workingDirectory: "/else/LingXi"),
         ]
         state.activeSessionID = SessionID("s1")
         state.activeSessionState = sessionState()
 
         let folders = CoreProjection.sessionFolders(state)
-        #expect(folders.map(\.folderName) == ["LingXi", "Other"])
+        #expect(folders.map(\.folderName) == ["LingXi", "Other", "LingXi"])
+        #expect(folders.map(\.id) == ["/w/LingXi", "/w/Other", "/else/LingXi"])
         #expect(folders[0].sessions.map(\.id) == ["s1", "old"])
         #expect(folders[0].sessions[0].title == "未命名会话")
         #expect(folders[0].sessions[0].isActive)
         #expect(!folders[0].sessions[1].isActive)
+    }
+
+    @Test("Sessions without a recorded directory use the connected workspace path")
+    func sidebarProjectionWithoutSessionDirectory() {
+        var state = ApplicationState()
+        state.sessionCatalog = [SessionSummary(sessionID: SessionID("new"), title: nil)]
+
+        let root = URL(fileURLWithPath: "/tmp/LingXiAgent/无项目", isDirectory: true)
+        let folders = CoreProjection.sessionFolders(state, workspaceRoot: root)
+        #expect(folders.map(\.id) == [root.standardizedFileURL.path])
+        #expect(folders.map(\.folderName) == ["无项目"])
     }
 
     @Test("Unified diff parses into Git-style file changes")
@@ -116,6 +129,55 @@ struct GUICoreProjectionTests {
         #expect(!PermissionPreset.autoWorkspace.isElevated)
     }
 
+    @Test("Task capsule projects its real Core state")
+    func taskProjection() {
+        let capsule = TaskCapsule(sessionID: SessionID("s1"), projectID: "default",
+                                  objective: "Ship GUI", state: .paused)
+        let view = CoreProjection.task(capsule)
+        #expect(view.taskID == capsule.taskID.rawValue)
+        #expect(view.objective == "Ship GUI")
+        #expect(view.state == "paused")
+    }
+
+    @Test("Git pane includes untracked files in its diff")
+    func untrackedGitDiff() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-git-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(WarmGitModel.run(["-C", root.path, "init", "-q"]).code == 0)
+        try "hello\n".write(to: root.appendingPathComponent("new file.txt"), atomically: true, encoding: .utf8)
+
+        let result = WarmGitModel.untrackedDiffs(at: root.path)
+        #expect(result.patches.contains("+hello"))
+        #expect(result.counts["new file.txt"]?.additions == 1)
+    }
+
+    @Test("Runtime diagnostics populate the trace window and export valid JSONL")
+    @MainActor
+    func traceProjection() throws {
+        let event = RuntimeTraceEvent(timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+                                      kind: .tool, event: "tool.\"finished\"",
+                                      runID: AgentRunID("run-1"), durationMicroseconds: 42_000,
+                                      metadata: ["detail": "line one\nline two"])
+        var state = ApplicationState()
+        state.latestDiagnostics = RuntimeDiagnosticsBundle(
+            runtimeVersion: "test", configurationSummary: [:], trace: [event], recentErrors: [],
+            provider: RuntimeDiagnosticProviderStatus(configured: false, model: nil, missingRequirements: []),
+            mcp: RuntimeDiagnosticMCPStatus(catalogTools: 0, schemaFiles: 0, schemaBytes: 0,
+                                            pageFaults: 0, activeLeases: 0),
+            runs: [], workflows: [], recoveryRequiredRunIDs: [], orphanRunIDs: [])
+        let runtime = RuntimeFrontend()
+        runtime.apply(state)
+        #expect(runtime.inspectorModel.traceEvents == [event])
+
+        let lines = try TraceWindowView.jsonl([event])
+        #expect(lines.split(separator: "\n").count == 1)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let restored = try decoder.decode(RuntimeTraceEvent.self, from: Data(lines.utf8))
+        #expect(restored == event)
+    }
+
     @Test("Live backend: updates project into models, intents dispatch to the store")
     @MainActor
     func liveBackend() async throws {
@@ -150,6 +212,46 @@ struct GUICoreProjectionTests {
         #expect(actions.contains { $0.hasPrefix("submitPrompt(\"继续\")") })
         #expect(actions.contains { $0.hasPrefix("setMode(") && $0.contains("plan") })
         #expect(actions.contains { $0.hasPrefix("grantPermission(") && $0.contains("deny") })
+    }
+
+    @Test("Pending provider request shows Stop before a turn ID arrives")
+    @MainActor
+    func pendingTurnStop() async throws {
+        var state = ApplicationState()
+        state.activeSessionID = SessionID("pending")
+        var session = SessionViewState(sessionID: SessionID("pending"))
+        session.status = .waitingForProvider
+        state.activeSessionState = session
+        state.status = .waitingForProvider
+        state.providerStatus = ProviderStatus(configured: false, model: nil, baseURL: nil, missingRequirements: [])
+        state.sessionCatalog = [SessionSummary(sessionID: SessionID("pending"), title: "等待模型")]
+        #expect(CoreProjection.sessionFolders(state).first?.sessions.first?.isActive == true)
+
+        let runtime = RuntimeFrontend()
+        let mock = MockFrontendRuntime(initialState: state)
+        runtime.attach(mock)
+        mock.emitUpdate(ApplicationUpdate(revision: 1, state: state, changes: .fullSnapshot))
+        for _ in 0..<50 where !runtime.conversationModel.isGenerating {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(runtime.conversationModel.isGenerating)
+        #expect(runtime.providerStatus?.configured == false)
+        #expect(state.activeSessionState?.activeTurnID == nil)
+
+        runtime.stopGenerating()
+        for _ in 0..<50 where mock.dispatchedActions.isEmpty {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(mock.dispatchedActions.contains { if case .stopCurrentRun = $0 { return true }; return false })
+
+        session.status = .error
+        state.activeSessionState = session
+        state.status = .error
+        mock.emitUpdate(ApplicationUpdate(revision: 2, state: state, changes: .fullSnapshot))
+        for _ in 0..<50 where runtime.conversationModel.isGenerating {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(!runtime.conversationModel.isGenerating)
     }
 }
 #endif

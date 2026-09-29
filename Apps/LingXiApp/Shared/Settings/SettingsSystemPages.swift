@@ -491,7 +491,7 @@ struct ComputerUseSettingsPage: View {
                     LXStatusText("已冻结", systemImage: "snowflake", tone: .neutral)
                 }
                 .lxSettingsRow()
-                PlaceholderLine("browser_navigate / browser_act 已冻结，与桌面 Computer Use 分开管理；会话、Cookie、下载与站点权限待解冻后接入。")
+                PlaceholderLine("Core 已注册 browser_navigate / browser_act；右侧浏览器面板目前使用独立会话，尚未共享 Agent 的页面、Cookie 与下载。")
             }
         }
     }
@@ -523,7 +523,7 @@ struct AboutSettingsPage: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             SettingsContentColumn {
                 // The one display title on this page, beside the official icon.
                 HStack(spacing: LingXiMetrics.Space.lg) {

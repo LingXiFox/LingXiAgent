@@ -225,6 +225,31 @@ struct VNextProductionIntegrationTests {
     }
 
     // MARK: - 2. Queued Turn Execution Test
+    @Test("Stop action cancels a live Core turn and clears the active run")
+    func testStopCurrentRun() async throws {
+        let provider = ControllableFakeProvider()
+        let (host, tempDir) = try await createTestEnvironment(provider: provider)
+        defer { removeTemporaryWorkspace(tempDir) }
+
+        let client = try await LingXiClientVNext.connectInProcess(service: host)
+        let store = await ApplicationStore(client: client)
+        await store.dispatch(.createSession())
+        let sessionID = try #require(await store.state.activeSessionID)
+        await store.dispatch(.submitPrompt("Stop this turn"))
+        await provider.waitStreams(1)
+
+        await store.dispatch(.stopCurrentRun)
+        var snapshot = try await client.session.snapshot(sessionID: sessionID)
+        for _ in 0..<100 where snapshot.recentTurns.first?.status != .cancelled {
+            try await Task.sleep(for: .milliseconds(20))
+            snapshot = try await client.session.snapshot(sessionID: sessionID)
+        }
+        #expect(snapshot.recentTurns.first?.status == .cancelled)
+        #expect(await store.state.activeSessionState?.activeTurnID == nil)
+        await client.disconnect()
+        await host.shutdown()
+    }
+
     @Test("Queued turns execute sequentially when active run completes")
     func testQueuedTurnsExecuteSequentially() async throws {
         let provider = ControllableFakeProvider()

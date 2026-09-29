@@ -58,7 +58,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
         await host.shutdown()
     }
 
-    @Test func applicationStorePreservesUserSelectedModelAcrossRefresh() async throws {
+    @Test func applicationStoreKeepsCoreModelAfterRejectedSelection() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-app-store-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -84,16 +84,17 @@ struct ModelSelectionAndTurnExecutionFixTests {
         let initialModel = await store.state.currentModelID
         #expect(initialModel != nil)
 
-        // 2. User selects a custom model
+        // 2. An unconfigured model must not replace Core's selected model.
         await store.dispatch(.selectModel("user-chosen-provider/user-model"))
+        #expect(await store.state.currentModelID == initialModel)
 
         // Simulate reconnect with an already chosen model
         await store.dispatch(._connectionStateChanged(ConnectionState(status: .connected)))
         try await Task.sleep(for: .milliseconds(200))
 
-        // Ensure refreshBasics does not wipe non-empty currentModelID
+        // Refresh must keep the Core-confirmed model.
         let currentModel = await store.state.currentModelID
-        #expect(currentModel != nil)
+        #expect(currentModel == initialModel)
         await host.shutdown()
     }
 
@@ -196,7 +197,7 @@ struct ModelSelectionAndTurnExecutionFixTests {
         #expect(defaultPerm == .askWorkspace)
     }
 
-    @Test func customProviderInProvidersJsonTakesPrecedenceAndHonorsEnvApiKey() async throws {
+    @Test func customProviderInProvidersJsonTakesPrecedenceAndRunsSelectedModel() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-test-custom-provider-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -229,7 +230,17 @@ struct ModelSelectionAndTurnExecutionFixTests {
         """
         try providersJson.write(to: tempDir.appendingPathComponent("providers.json"), atomically: false, encoding: .utf8)
 
+        let provider = ScriptedFakeProvider(script: [[.started, .textDelta("Selected model replied"), .completed(.stop)]])
+        let assembly = ModelRuntimeAssembly(
+            provider: provider,
+            modelID: ModelID("muse-spark-1.3-contributor-free"),
+            endpoint: ResolvedModelEndpoint(providerID: "opencode-zen",
+                                            modelID: ModelID("muse-spark-1.3-contributor-free"),
+                                            baseURL: URL(string: "https://opencode.ai/zen/v1")!,
+                                            wireProtocol: .responses)
+        )
         let host = try CoreHost(
+            modelRuntimes: ["opencode-zen": assembly],
             dataRoot: tempDir,
             permissionDecision: .allow
         )
@@ -241,6 +252,21 @@ struct ModelSelectionAndTurnExecutionFixTests {
         #expect(selectReceipt.applied == true)
         #expect(selectReceipt.result?.modelID == "opencode-zen/muse-spark-1.3-contributor-free")
         #expect(selectReceipt.result?.providerID == "opencode-zen")
+        #expect(try await client.provider.status().configured)
+
+        let sessionID = try #require(try await client.session.create().result?.sessionID)
+        let turn = try await client.turn.submitTurn(sessionID: sessionID,
+                                                   input: UserInput(text: "Hello"),
+                                                   executionIntent: TurnExecutionIntent(modelSelection: "opencode-zen/muse-spark-1.3-contributor-free"))
+        let turnID = try #require(turn.result?.turnID)
+        var snapshot = try await client.session.snapshot(sessionID: sessionID)
+        for _ in 0..<100 where snapshot.recentTurns.first?.status != .completed {
+            try await Task.sleep(for: .milliseconds(20))
+            snapshot = try await client.session.snapshot(sessionID: sessionID)
+        }
+        let finalTurn = snapshot.recentTurns.first { $0.turnID == turnID }
+        #expect(finalTurn?.status == .completed)
+        #expect(provider.recorder.requests.count == 1)
         await host.shutdown()
     }
 
@@ -286,5 +312,3 @@ struct ModelSelectionAndTurnExecutionFixTests {
         await host.shutdown()
     }
 }
-
-

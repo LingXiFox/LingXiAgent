@@ -43,6 +43,7 @@ public final class RuntimeFrontend: ObservableObject {
     @Published public private(set) var availableCommands: [CommandDescriptor] = []
     /// Timeline tail notice for a live provider condition (rate limit, retry).
     @Published public private(set) var providerNotice: NoticePresentation?
+    @Published public private(set) var providerStatus: ProviderStatus?
 
     /// Shared with Settings so only one Core process ever runs.
     public private(set) var client: LingXiClientVNext?
@@ -87,7 +88,7 @@ public final class RuntimeFrontend: ObservableObject {
         workspaceURL = workspace
         do {
             FileManager.default.changeCurrentDirectoryPath(workspace.path)
-            let client = try await LingXiClientVNext.stdioCore(interactive: false, handshakeImmediately: false)
+            let client = try await LingXiClientVNext.stdioCore(interactive: true, handshakeImmediately: false)
             let store = await ApplicationStore(client: client, autoConnect: true)
             self.client = client
             attach(store)
@@ -158,13 +159,19 @@ public final class RuntimeFrontend: ObservableObject {
         }
         let session = state.activeSessionState
 
+        let previousSessionID = conversationModel.sessionID
         conversationModel.sessionID = state.activeSessionID?.rawValue ?? ""
+        if conversationModel.sessionID != previousSessionID {
+            conversationModel.activeTask = nil
+            if isLive { Task { _ = try? await refreshTasks() } }
+        }
         conversationModel.items = CoreProjection.timeline(session)
-        conversationModel.isGenerating = session?.activeTurnID != nil
+        conversationModel.isGenerating = session?.activeTurnID != nil || session?.status.isActiveRun == true
         providerNotice = CoreProjection.providerNotice(session)
+        providerStatus = state.providerStatus
 
         sidebarModel.workspace = CoreProjection.workspace(state, root: workspaceURL)
-        sidebarModel.folders = CoreProjection.sessionFolders(state, workspaceName: sidebarModel.workspace.name)
+        sidebarModel.folders = CoreProjection.sessionFolders(state, workspaceRoot: workspaceURL)
         sidebarModel.selectedSessionID = state.activeSessionID?.rawValue
 
         composerModel.models = state.models
@@ -177,6 +184,7 @@ public final class RuntimeFrontend: ObservableObject {
         }
 
         inspectorModel.live = isLive ? inspectorSnapshot(state) : nil
+        inspectorModel.traceEvents = state.latestDiagnostics?.trace ?? []
         setSleepPrevention(conversationModel.isGenerating)
     }
 
@@ -430,6 +438,20 @@ public final class RuntimeFrontend: ObservableObject {
         switchSession(id: newID)
     }
 
+    /// A private app-owned working directory lets Core run a session without
+    /// binding it to any of the user's projects.
+    public func newSessionWithoutWorkspace() async throws {
+        let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = support.appendingPathComponent("LingXiAgent", isDirectory: true)
+            .appendingPathComponent("无项目", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        if link != .connected || workspaceURL?.standardizedFileURL != root.standardizedFileURL {
+            await openWorkspace(root)
+        }
+        if link == .connected { newSession() }
+    }
+
     public func renameSession(id: String, title: String) {
         guard let backend else { return }
         Task {
@@ -461,6 +483,22 @@ public final class RuntimeFrontend: ObservableObject {
                 apply(lastState)
             }
         }
+    }
+
+    public func refreshTrace() async {
+        guard let backend else { return }
+        await backend.dispatch(.refreshDiagnostics)
+    }
+
+    public func refreshTasks() async throws -> [TaskSnapshot] {
+        guard let client, let sessionID = sidebarModel.selectedSessionID else { return [] }
+        let tasks = try await client.task.list(sessionID: SessionID(sessionID))
+        if sidebarModel.selectedSessionID == sessionID {
+            conversationModel.activeTask = tasks.first(where: { !$0.capsule.state.isTerminal })
+                .map { CoreProjection.task($0.capsule) }
+                ?? tasks.first.map { CoreProjection.task($0.capsule) }
+        }
+        return tasks
     }
 
     public func terminateBackgroundTask(id: String) {

@@ -3934,8 +3934,9 @@ extension CoreHost {
         }
         let selection = try await modelSelection(for: envelope.payload.model)
         let agent = try requireAgent()
-        let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: envelope.payload.model)
+        let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: envelope.payload.model)
         try await agent.selectModel(selection, assembly: assembly)
+        setCurrentAssembly(assembly)
         setSelectedModelOverride(envelope.payload.model)
         if let contextWindow = try await modelContextWindow(for: envelope.payload.model) {
             setSelectedModelContextWindow(contextWindow)

@@ -243,7 +243,7 @@ struct ProviderModelSheet: View {
             .padding(.horizontal, LingXiMetrics.Space.xxl)
             .frame(height: LingXiMetrics.Size.toolbar + LingXiMetrics.Space.md)
 
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
                     LXSettingsCard("模型") {
                         if isNew {
@@ -363,7 +363,7 @@ struct AddProviderSheet: View {
             .padding(.horizontal, LingXiMetrics.Space.xxl)
             .padding(.vertical, LingXiMetrics.Space.lg)
 
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.xl) {
                     LXSettingsCard(title: LXSettingsSectionHeader("连接")) {
                         LXTextRow(title: "名称", text: $name, prompt: "例如：公司中转")

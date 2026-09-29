@@ -1,17 +1,6 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
-private struct StageTrailingReserveKey: EnvironmentKey {
-    static let defaultValue: CGFloat = 0
-}
-
-extension EnvironmentValues {
-    var stageTrailingReserve: CGFloat {
-        get { self[StageTrailingReserveKey.self] }
-        set { self[StageTrailingReserveKey.self] = newValue }
-    }
-}
-
 /// The stage — "what the agent did and is doing". A rounded bg-content panel
 /// inset 8pt from the window, with its own ambient light: the ONLY surface in
 /// the product that carries the brand atmosphere.
@@ -43,7 +32,7 @@ public struct MainStageView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: LingXiMetrics.Radius.panel, style: .continuous))
         .lxRing(cornerRadius: LingXiMetrics.Radius.panel)
-        .padding([.leading, .bottom], LingXiMetrics.Space.sm)
+        .padding([.top, .leading, .bottom], LingXiMetrics.Space.sm)
         .environment(\.runtimeFrontend, runtime)
         .sheet(item: $runtime.commandOutput) { CommandOutputSheet(output: $0) }
         .sheet(isPresented: $runtime.isShowingTasks) {
@@ -67,15 +56,20 @@ public struct MainStageView: View {
 /// Centres content on measure-prose with the 28pt gutter. Timeline, empty
 /// state and dock share it, so they share one leading edge.
 struct ReadingColumn<Content: View>: View {
-    @ViewBuilder var content: Content
-    @Environment(\.stageTrailingReserve) private var trailingReserve
+    let maxWidth: CGFloat
+    let content: Content
+
+    init(maxWidth: CGFloat = LingXiMetrics.Column.prose, @ViewBuilder content: () -> Content) {
+        self.maxWidth = maxWidth
+        self.content = content()
+    }
 
     var body: some View {
         content
-            .frame(maxWidth: LingXiMetrics.Column.prose, alignment: .leading)
+            .frame(maxWidth: maxWidth, alignment: .leading)
             .frame(maxWidth: .infinity)
             .padding(.leading, LingXiMetrics.Column.gutter)
-            .padding(.trailing, LingXiMetrics.Column.gutter + trailingReserve)
+            .padding(.trailing, LingXiMetrics.Column.gutter)
     }
 }
 
@@ -99,7 +93,7 @@ private struct TimelineStage: View {
     var body: some View {
         let rows = conversation.items.foldedIntoRows()
         ScrollViewReader { proxy in
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 ReadingColumn {
                     LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
                         ForEach(rows) { row in
@@ -118,7 +112,8 @@ private struct TimelineStage: View {
                             HStack(spacing: LingXiMetrics.Space.sm) {
                                 LXSpinner(tone: .running)
                                     .frame(width: LingXiMetrics.Size.glyphColumn)
-                                Text("执行中…").font(LXType.callout).foregroundStyle(.secondary)
+                                Text(inspector.live?.status == .waitingForProvider ? "等待模型…" : "执行中…")
+                                    .font(LXType.callout).foregroundStyle(.secondary)
                             }
                             .frame(minHeight: LingXiMetrics.Size.rowEvent)
                         }
@@ -131,7 +126,7 @@ private struct TimelineStage: View {
             .defaultScrollAnchor(.bottom)
             .modifier(BottomTracking(isAwayFromBottom: $isAwayFromBottom))
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                ReadingColumn { ComposerDock(runtime: runtime) }
+                ReadingColumn(maxWidth: LingXiMetrics.Column.composer) { ComposerDock(runtime: runtime) }
                     .padding(.bottom, LingXiMetrics.Space.lg)
             }
             .overlay(alignment: .bottom) {
@@ -188,7 +183,7 @@ private struct TimelineStage: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("任务：\(conversation.activeTask?.objective ?? composer.goal ?? "查看任务")")
+        .accessibilityLabel("任务胶囊：\(conversation.activeTask?.objective ?? composer.goal ?? "查看任务")")
     }
 }
 
@@ -232,7 +227,7 @@ private struct EmptyWorkspaceStage: View {
     }
 
     var body: some View {
-        ReadingColumn {
+        ReadingColumn(maxWidth: LingXiMetrics.Column.composer) {
             VStack(spacing: LingXiMetrics.Space.xl) {
                 VStack(spacing: LingXiMetrics.Space.md) {
                     LXAppIcon(side: 64)
@@ -429,7 +424,7 @@ struct CommandOutputSheet: View {
                 Spacer()
                 LXCopyButton(output.text, label: "复制")
             }
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 Text(output.text)
                     .font(LXType.monoSmall)
                     .lineSpacing(3)

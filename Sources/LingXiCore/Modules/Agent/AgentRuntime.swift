@@ -440,7 +440,10 @@ public actor AgentRuntime {
     ) async throws -> OpenedStream {
         guard !activeSessions.contains(sessionID) else { throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次") }
         // Preserve the established contract: an unavailable provider still records the user turn.
-        if modelBus.gateway.modelID == nil { return try await runtime(for: sessionID).startTurn(content) }
+        if modelBus.gateway.modelID == nil,
+           (try? await modelResolver.resolve(explicitModel)) == nil {
+            return try await runtime(for: sessionID).startTurn(content)
+        }
         do {
             // Reserve before the first await so concurrent callers cannot create a second lane.
             activeSessions.insert(sessionID)
