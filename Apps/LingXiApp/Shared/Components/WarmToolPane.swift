@@ -299,40 +299,67 @@ private struct WarmBrowserPane: View {
     @Published var aheadBehind: String?
     @Published var error: String?
     @Published var isBusy = false
+    /// False until git has answered once: an unloaded panel must not claim the
+    /// workspace is clean.
+    @Published private(set) var hasLoaded = false
+    @Published private(set) var isDiffLoading = false
 
     func refresh(at workspace: URL?) {
         guard let workspace else { return }
         isBusy = true
+        let path = workspace.path
         Task {
-            let path = workspace.path
-            let statusResult = await Task.detached { Self.run(["-C", path, "status", "--short", "--branch", "--untracked-files=all"]) }.value
-            let diffResult = await Task.detached { Self.run(["-C", path, "diff", "HEAD", "--no-ext-diff"]) }.value
-            let numstatResult = await Task.detached { Self.run(["-C", path, "diff", "--numstat", "HEAD", "--no-ext-diff"]) }.value
-            let untracked = await Task.detached { Self.untrackedDiffs(at: path) }.value
-            let logResult = await Task.detached { Self.run(["-C", path, "log", "-8", "--format=%h%x09%s"]) }.value
-            let trackingResult = await Task.detached { Self.run(["-C", path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) }.value
-            status = statusResult.output
-            diff = [diffResult.output, untracked.patches].filter { !$0.isEmpty }.joined(separator: "\n")
-            var counts: [String: (additions: Int, deletions: Int)] = Dictionary(uniqueKeysWithValues: numstatResult.output.split(separator: "\n").compactMap { line in
-                let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-                guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
-                return (String(parts[2]), (add, del))
-            })
-            counts.merge(untracked.counts) { _, latest in latest }
+            // Four independent git calls, run at once: the panel used to read as
+            // "no changes" while they were still being serialised one by one.
+            async let status = Task.detached { Self.run(["-C", path, "status", "--short", "--branch", "--untracked-files=all"]) }.value
+            async let numstat = Task.detached { Self.run(["-C", path, "diff", "--numstat", "HEAD", "--no-ext-diff"]) }.value
+            async let log = Task.detached { Self.run(["-C", path, "log", "-8", "--format=%h%x09%s"]) }.value
+            async let tracking = Task.detached { Self.run(["-C", path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) }.value
+            async let untracked = Self.untrackedStats(at: path)
+
+            let statusResult = await status
+            let numstatResult = await numstat
+            let logResult = await log
+            let trackingResult = await tracking
+            let untrackedCounts = await untracked
+
+            guard !Task.isCancelled else { return }
+            self.status = statusResult.output
+            self.log = logResult.output
+            var counts = [String: (additions: Int, deletions: Int)](uniqueKeysWithValues:
+                numstatResult.output.split(separator: "\n").compactMap { line -> (String, (additions: Int, deletions: Int))? in
+                    let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+                    guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
+                    return (String(parts[2]), (additions: add, deletions: del))
+                })
+            counts.merge(untrackedCounts) { _, latest in latest }
             fileStats = counts
-            log = logResult.output
             // "## main...origin/main [ahead 1]" → "main"
             let head = String((statusResult.output.components(separatedBy: "\n").first ?? "").dropFirst(3))
             branch = head.components(separatedBy: "...").first?.components(separatedBy: " ").first ?? head
             if trackingResult.code == 0 {
-                let counts = trackingResult.output.split(whereSeparator: \.isWhitespace)
-                aheadBehind = counts.count == 2 ? "↑\(counts[0]) ↓\(counts[1])" : nil
+                let deltas = trackingResult.output.split(whereSeparator: \.isWhitespace)
+                aheadBehind = deltas.count == 2 ? "↑\(deltas[0]) ↓\(deltas[1])" : nil
             } else {
                 aheadBehind = nil
             }
             error = statusResult.code == 0 ? nil : statusResult.output
+            hasLoaded = true
             isBusy = false
         }
+    }
+
+    /// Patch text is only built when the diff is actually on screen: it costs one
+    /// git process per untracked file.
+    func loadDiff(at workspace: URL?) async {
+        guard let workspace, !isDiffLoading else { return }
+        isDiffLoading = true
+        defer { isDiffLoading = false }
+        let path = workspace.path
+        let tracked = await Task.detached { Self.run(["-C", path, "diff", "HEAD", "--no-ext-diff"]) }.value
+        let patches = await Task.detached { Self.untrackedPatches(at: path) }.value
+        guard !Task.isCancelled else { return }
+        diff = [tracked.output, patches].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     func action(_ args: [String], at workspace: URL?, onSuccess: (() -> Void)? = nil) {
@@ -344,6 +371,47 @@ private struct WarmBrowserPane: View {
             if result.code == 0 { onSuccess?() }
             refresh(at: workspace)
         }
+    }
+
+    /// Line counts for untracked files, eight at a time: a workspace with
+    /// hundreds of them used to block the whole panel, and firing one git process
+    /// per file at once would only move the stall somewhere worse.
+    nonisolated static func untrackedStats(at workspace: String) async -> [String: (additions: Int, deletions: Int)] {
+        let listing = run(["-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
+        guard listing.code == 0 else { return [:] }
+        let files = listing.output.split(separator: "\0").prefix(400).map(String.init)
+        var collected: [String: (additions: Int, deletions: Int)] = [:]
+        var index = 0
+        while index < files.count {
+            let batch = Array(files[index..<min(index + 8, files.count)])
+            index += batch.count
+            await withTaskGroup(of: (String, (additions: Int, deletions: Int))?.self) { group in
+                for file in batch {
+                    group.addTask {
+                        let stat = run(["-C", workspace, "diff", "--no-index", "--numstat", "--", "/dev/null", file])
+                        let parts = stat.output.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+                        guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
+                        return (file, (additions: add, deletions: del))
+                    }
+                }
+                for await entry in group {
+                    if let (path, counts) = entry { collected[path] = counts }
+                }
+            }
+        }
+        return collected
+    }
+
+    nonisolated static func untrackedPatches(at workspace: String) -> String {
+        let listing = run(["-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
+        guard listing.code == 0 else { return "" }
+        var patches: [String] = []
+        for file in listing.output.split(separator: "\0").prefix(200) {
+            let path = String(file)
+            let patch = run(["-C", workspace, "diff", "--no-index", "--", "/dev/null", path])
+            if patch.code == 1 { patches.append(patch.output) }
+        }
+        return patches.joined(separator: "\n")
     }
 
     nonisolated static func run(_ args: [String]) -> (output: String, code: Int32) {
@@ -364,25 +432,6 @@ private struct WarmBrowserPane: View {
         }
     }
 
-    nonisolated static func untrackedDiffs(at workspace: String) ->
-        (patches: String, counts: [String: (additions: Int, deletions: Int)]) {
-        // ponytail: One Git process per untracked file; batch only if large workspaces make refresh slow.
-        let files = run(["-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
-        guard files.code == 0 else { return ("", [:]) }
-        var patches: [String] = []
-        var counts: [String: (additions: Int, deletions: Int)] = [:]
-        for file in files.output.split(separator: "\0") {
-            let path = String(file)
-            let patch = run(["-C", workspace, "diff", "--no-index", "--", "/dev/null", path])
-            if patch.code == 1 { patches.append(patch.output) }
-            let stat = run(["-C", workspace, "diff", "--no-index", "--numstat", "--", "/dev/null", path])
-            let parts = stat.output.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-            if parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) {
-                counts[path] = (add, del)
-            }
-        }
-        return (patches.joined(separator: "\n"), counts)
-    }
 }
 
 private struct WarmGitPane: View {
@@ -494,7 +543,10 @@ private struct WarmGitPane: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    if changedFiles.isEmpty {
+                    if !git.hasLoaded {
+                        PlaceholderLine(git.isBusy ? "正在读取工作区状态…" : "未打开工作区。")
+                            .padding(.vertical, LingXiMetrics.Space.md)
+                    } else if changedFiles.isEmpty {
                         PlaceholderLine("工作区没有未提交改动。")
                             .padding(.vertical, LingXiMetrics.Space.md)
                     } else {
@@ -502,7 +554,9 @@ private struct WarmGitPane: View {
                         fileSection("未暂存", files: unstaged)
                     }
                     LXSection("最近提交", separated: !changedFiles.isEmpty) {
-                        if commits.isEmpty {
+                        if !git.hasLoaded {
+                            PlaceholderLine(git.isBusy ? "正在读取…" : "未打开工作区。")
+                        } else if commits.isEmpty {
                             PlaceholderLine("还没有提交。")
                         }
                         ForEach(commits, id: \.hash) { commit in
@@ -515,13 +569,18 @@ private struct WarmGitPane: View {
                     }
                     if showsDiff {
                         LXSection("差异") {
-                            OutputBlock(text: git.diff.isEmpty ? "没有可显示的差异" : git.diff, isDiff: !git.diff.isEmpty)
+                            OutputBlock(text: git.isDiffLoading ? "正在读取差异…"
+                                        : (git.diff.isEmpty ? "没有可显示的差异" : git.diff),
+                                        isDiff: !git.diff.isEmpty)
                         }
                     }
-                    Button(showsDiff ? "收起差异" : "查看差异") { showsDiff.toggle() }
-                        .buttonStyle(LXButtonStyle(.plain, size: .small))
-                        .padding(.vertical, LingXiMetrics.Space.sm)
-                        .disabled(changedFiles.isEmpty)
+                    Button(showsDiff ? "收起差异" : "查看差异") {
+                        showsDiff.toggle()
+                        if showsDiff { Task { await git.loadDiff(at: workspace) } }
+                    }
+                    .buttonStyle(LXButtonStyle(.plain, size: .small))
+                    .padding(.vertical, LingXiMetrics.Space.sm)
+                    .disabled(!git.hasLoaded || changedFiles.isEmpty)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, LingXiMetrics.Space.panelInset)

@@ -139,17 +139,17 @@ struct GUICoreProjectionTests {
         #expect(view.state == "paused")
     }
 
-    @Test("Git pane includes untracked files in its diff")
-    func untrackedGitDiff() throws {
+    @Test("Git pane counts and diffs untracked files, including paths with spaces")
+    func untrackedGitDiff() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-git-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(WarmGitModel.run(["-C", root.path, "init", "-q"]).code == 0)
         try "hello\n".write(to: root.appendingPathComponent("new file.txt"), atomically: true, encoding: .utf8)
 
-        let result = WarmGitModel.untrackedDiffs(at: root.path)
-        #expect(result.patches.contains("+hello"))
-        #expect(result.counts["new file.txt"]?.additions == 1)
+        let counts = await WarmGitModel.untrackedStats(at: root.path)
+        #expect(counts["new file.txt"]?.additions == 1)
+        #expect(WarmGitModel.untrackedPatches(at: root.path).contains("+hello"))
     }
 
     @Test("Runtime diagnostics populate the trace window and export valid JSONL")
