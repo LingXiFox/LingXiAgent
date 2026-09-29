@@ -18,6 +18,7 @@ struct SettingsSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             NativeSearchField(text: $query, prompt: "搜索设置")
+                .navigatorChrome()
                 .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
                 .padding(.top, LingXiMetrics.Space.lg)
                 .padding(.bottom, LingXiMetrics.Space.sm)

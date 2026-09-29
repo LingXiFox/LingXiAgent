@@ -33,6 +33,7 @@ public struct SidebarView: View {
             SidebarHead(runtime: runtime, workspace: model.workspace)
 
             NativeSearchField(text: $model.searchText, prompt: "搜索会话")
+                .navigatorChrome()
                 .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
                 .padding(.bottom, LingXiMetrics.Space.sm)
 
