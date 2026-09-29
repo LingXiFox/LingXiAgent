@@ -708,9 +708,23 @@ Phase 5: Vision Grounding 视觉定位增强
 | 组成 | 固定版本 Node runtime + Playwright BrowserHost + 固定版本 Chromium，三者作为一个 Pack 一起版本化 |
 | 用户侧 | 用户不需要自行安装 Node / npm / Chrome |
 | 生命周期 | LingXiAgent 负责检测、下载、校验、安装与升级 |
-| 分发 | Release 可把 Browser Runtime 作为独立可缓存 artifact 提供；离线用户可手工下载对应 Pack |
+| 分发 | **唯一官方来源是 GitHub Release Assets**：每个 LingXiAgent Release 携带与该版本一一对应的 Pack（`LingXiAgent-BrowserRuntime-<version>-<platform>-<arch>.tar.gz`）。不加 lingxifox.cn 镜像，不加独立 runtime manifest 服务，客户端不在安装期从 nodejs.org / Playwright CDN 动态拼装正式 Runtime；离线用户从同一个 Release 页面手工下载 |
+| 安装 | Release Asset → 下载为 `.partial` → SHA-256 校验 → 解到临时目录 → Pack 内部 manifest 校验（仅用于安装后的完整性与兼容性，不构成独立版本体系）→ 原子安装 → BrowserHost readiness probe |
+| 兜底 | 保留本地文件安装入口，支持离线安装；不把 Node/npm/Playwright/Chromium 的第三方下载逻辑暴露给普通用户 |
 | 边界 | **Core 不感知 npm / Playwright 安装细节**；runtime discovery 与 readiness 归 BrowserHost backend / Platform 层 |
 | README 目标语义 | 「Browser Use 不要求用户自行安装 Node.js、npm 或浏览器；LingXiAgent 会管理所需 Browser Runtime。」 |
+
+#### Pack 落地前必须先修的 CD 前置（2026-09-29 实测现有流程）
+
+现有流程：`release.yml` 由 `push: tags v*/V*` 或 `workflow_dispatch` 触发 → `build-macos`(macos-26, arm64) / `build-linux`(ubuntu-latest, x86_64) / `build-windows`(windows-2022, x86_64) 三个 job 各自 `swift build -c release` 并把二进制、`*.bundle`、`Sidecars/browser-host/{index.mjs,package.json}` 拷进 `staging/`，打成 `dist/lingxiagent-<platform>-<arch>.tar.gz`（Windows 为 `.zip`）并就地生成同名 `.sha256` → 各自 `Scripts/ci-artifact-smoke.sh` 从解包副本跑入口 → `upload-artifact` → `publish-release`（三台全绿才跑）用 `softprops/action-gh-release@v2` 以 `files: release_assets/*` 建 **draft** Release，由项目负责人手工发布。
+
+| 前置 | 现状 | 为什么挡住 Pack |
+|---|---|---|
+| 版本真值 | `CoreHost.coreVersion = "1.0.0"` 写死（`CoreHost.swift:70`），构建不把 tag 注进二进制；已存在 tag 为 `V1.0.0` 与 `v1.1.0`，大小写混用 | 「按当前 LingXiAgent 版本读同 tag 的 Asset」没有可信的版本来源，客户端会去找 `v1.0.0` |
+| 资产命名 | 主包叫 `lingxiagent-<platform>-<arch>.tar.gz`，`install.sh:150-151` 依赖 `releases/latest/download/` 这个**不含版本号**的稳定名，并有 `ALT_ARCH` 兜底 | 主包名里加版本号会直接打断 `install.sh`；Pack 可以带版本号（客户端知道自己的 tag），主包不行 |
+| 架构矩阵 | 只产 macos-arm64 / linux-x86_64 / windows-x86_64 三件，Release 正文却写「macOS (arm64 / Intel)」 | Pack 要按 platform/arch 确定性取件，缺的 arch 要么补构建要么在 Pack 侧明确不支持 |
+| 打包入口 | 真正生效的是 `release.yml` 内联步骤；`Scripts/package-release.sh` 与 `Scripts/build-alpha.sh` 无任何 workflow/文档引用，是孤儿脚本 | Pack 步骤若写进脚本，CI 不会跑到；必须先收敛成一条路径 |
+| 手工触发 | `workflow_dispatch` 的 `tag_name` 默认值是 `vNext` | 默认参数会去建一个叫 `vNext` 的 Release，Asset 名里的版本随之失真 |
 
 README 的改写必须在 Pack 真正可自动获取之后进行，否则只是把一句新的假话换上去；在此之前保持现状并由 `workspace.toolStatus` 报出「后端不可用 + 缺什么」。
 
@@ -721,7 +735,7 @@ README 的改写必须在 Pack 真正可自动获取之后进行，否则只是�
 | 缺陷 | 证据 |
 |---|---|
 | macOS `.app` 完全不含 sidecar，`Bundle.main.resourcePath/Sidecars/...` 候选必然落空 | `Scripts/bundle-mac-app.sh:23-45` 只拷 bundle 资源与图标；解析链见 `BrowserSessionManager.swift:43-55` |
-| 发行产物只拷 `index.mjs` + `package.json`，不带 `node_modules`，且没有任何地方跑 `npx playwright install` | `Scripts/package-release.sh:79-82`；`.github/workflows/release.yml:58-61,111-114,188-191` |
+| 发行产物只拷 `index.mjs` + `package.json`，不带 `node_modules`，且没有任何地方跑 `npx playwright install` | 生效路径：`.github/workflows/release.yml:58-61`（macOS）、`:111-114`（Linux）、`:188-191`（Windows）；`Scripts/package-release.sh:79-82` 是同内容的孤儿脚本，无 workflow 引用 |
 | README 宣称用户不需要 Node/npm，与实际前置冲突 | `README.md:69,266` 对照 `Sidecars/browser-host/package.json:15` |
 | `LINGXI_BROWSER_DISABLE_SANDBOX` 永远传不到子进程（Linux / 容器必挂） | 白名单显式排除所有 `LINGXI_*`：`EnvironmentSanitizer.swift:19-24`；`BrowserHostClient.swift:89-90` 只补回 `..._MODE`；消费点 `index.mjs:4,44-47` |
 | Node 版本声明不一致 | `package.json:15` 要求 `>=18`，锁定的 Playwright 1.63.0 要求 `>=20`（`package-lock.json:16-18`） |
@@ -742,9 +756,10 @@ README 的改写必须在 Pack 真正可自动获取之后进行，否则只是�
 
 | 编号 | 任务 | 核心目标 | 涉及模块 | 破坏 API | 验收标准 |
 |---|---|---|---|---|---|
-| B0-1 | Runtime Pack 定义 | 固定版本 Node + Playwright BrowserHost + Chromium 打成一个可校验的 Browser Runtime Pack，不塞进主发行包 | `Sidecars/`、`Scripts/`、新 Pack 清单 | 否 | 同一 Pack 在三平台可被解出并握手成功；版本与校验和写死在清单里 |
+| B0-0 | CD 前置 | 版本真值注进二进制、打包入口收敛、arch 矩阵与 dispatch 默认值定案（见 15.1.1 前置表） | `CoreHost.swift:70`、`release.yml`、`Scripts/package-release.sh`、`build-alpha.sh` | 是（版本来源变更） | `lingxiagent --version` 与所在 tag 一致；孤儿打包脚本删除或接入 CI；`workflow_dispatch` 不再默认 `vNext` |
+| B0-1 | Runtime Pack 定义 | 固定版本 Node + Playwright BrowserHost + Chromium 打成一个可校验的 Browser Runtime Pack，不塞进主发行包 | `Sidecars/`、`Scripts/`、`release.yml` | 否 | 同一 Pack 在三平台可被解出并握手成功；版本与校验和写死在清单里 |
 | B0-2 | 自动获取与升级 | LingXiAgent 检测 / 下载 / 校验 / 安装 / 升级 Pack；离线可手工放置 | BrowserHost backend / Platform 层（**Core 不参与安装细节**） | 否 | 全新机器上用户不装 Node/npm/Chrome 即可用；下载损坏时报可读错误且不安装；离线手工路径生效 |
-| B0-2b | Release artifact | Pack 作为独立可缓存 artifact 随发布提供 | `release.yml`、发布产物布局 | 否 | Release 页可单独下载对应平台 Pack；CI 与用户都按版本缓存 |
+| B0-2b | Release asset | Pack 以 `LingXiAgent-BrowserRuntime-<version>-<platform>-<arch>.tar.gz` 随同一 tag 的 Release 发布，**GitHub Release Assets 为唯一官方来源** | `release.yml` 的三个 build job 与 `publish-release` | 否 | 客户端只按自己的版本号拼出同 tag 资产名；Release 页可单独下载；CI 与本地都按版本缓存 |
 | B0-2c | README 语义 | 改为「不要求用户自行安装 Node.js、npm 或浏览器；LingXiAgent 会管理所需 Browser Runtime」 | `README.md:69,266` | 否 | 与 B0-1/B0-2 同时落地，不得先于实现改文案 |
 | B0-3 | 环境透传 | 沙箱开关等必要的宿主变量真正到达子进程 | `BrowserHostClient.swift`、`EnvironmentSanitizer.swift` | 否 | 新增测试断言子进程实际收到的环境变量集合 |
 | B0-4 | 版本对齐 | engines 与锁定依赖一致，不匹配时握手即报错 | `Sidecars/browser-host/package.json` | 否 | 低版本 Node 下握手失败并给出明确原因，而非运行期神秘崩溃 |
