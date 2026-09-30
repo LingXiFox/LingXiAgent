@@ -52,6 +52,7 @@ let providers = try await RuntimeConfigurationResolver.resolveProviders(
     provenanceDirectory: dataRoot.appendingPathComponent("provider-provenance", isDirectory: true),
     diagnosticsEnabled: environment["LINGXI_PROVIDER_DIAGNOSTICS"] == "1",
     performanceDiagnosticsEnabled: environment["LINGXI_PERF_DEBUG"] == "1",
+    faultTolerant: true,
     environment: environment
 )
 let mcp: MCPRuntimeResolution

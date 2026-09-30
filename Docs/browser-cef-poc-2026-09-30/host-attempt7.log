@@ -1,0 +1,7 @@
+
+DevTools listening on ws://127.0.0.1:64732/devtools/browser/8d2d1e09-c6bb-43fd-957f-8ac49e3536a1
+NSAPP_CLASS BrowserApplication
+NATIVE_CONTAINER 1000 679 parent=0x104016802c0 window=0x10401672f40 browser=0x10401d68dc0 frame=1000 679
+CEF_BROWSER_CREATED id=1 popup=0
+CEF_LOADING 1 1
+CEF_LOADING 1 0

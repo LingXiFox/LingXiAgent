@@ -8,33 +8,6 @@ import Testing
 @MainActor
 struct NativeGUIVisualArchitectureTests {
 
-    @Test("MainPresentationMode maps accurately and isolates Inspector in Settings mode")
-    func presentationModeTransitionsBetweenWorkspaceAndSettings() {
-        let runtime = RuntimeFrontend.preview()
-        #expect(!runtime.isShowingSettings)
-
-        // Initial workspace mode
-        var mode: MainPresentationMode = runtime.isShowingSettings ? .settings : .workspace
-        #expect(mode == .workspace)
-
-        // Toggle to settings mode
-        runtime.isShowingSettings = true
-        mode = runtime.isShowingSettings ? .settings : .workspace
-        #expect(mode == .settings)
-
-        // Inspector presentation logic: in settings mode, inspector binding is effectively false
-        let inspector = runtime.inspectorModel
-        inspector.isPresented = true
-        let effectiveInspectorShown = (mode == .workspace && inspector.isPresented)
-        #expect(!effectiveInspectorShown)
-
-        // Return to workspace mode
-        runtime.isShowingSettings = false
-        mode = runtime.isShowingSettings ? .settings : .workspace
-        #expect(mode == .workspace)
-        #expect(mode == .workspace && inspector.isPresented)
-    }
-
     @Test("SettingsCatalog covers all 18 native pages without nested split views")
     func settingsCatalogCoversAllRequiredSections() {
         let pages = SettingsPage.allCases

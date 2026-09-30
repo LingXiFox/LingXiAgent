@@ -1,0 +1,8 @@
+
+DevTools listening on ws://127.0.0.1:49441/devtools/browser/13e1f4c4-7ae8-4214-8a40-3736243be8d1
+OBS OnAfterCreated 1 popup=0
+[47734:8189855:0930/154831.244622:ERROR:base/mac/process_requirement.cc:159] Unable to derive validation category for current process. Signature validation of current process failed: Error Domain=NSOSStatusErrorDomain Code=-67030 "(null)" (-67030)
+OBS OnAfterCreated 2 popup=1
+2026-09-30 15:48:57.775 cefsimple[47734:8189799] TSM AdjustCapsLockLEDForKeyTransitionHandling - _ISSetPhysicalKeyboardCapsLockLED Inhibit
+OBS DoClose 1 popup=0
+OBS DoClose 2 popup=1

@@ -1,12 +1,12 @@
 import Foundation
 
 public enum BuiltinThemes {
-    /// 1. 默认暗色：赛博极光星夜狐 (Cyber Fox Dark)
+    /// 1. Default dark palette.
     public static let cyberFoxDark = ThemeDefinition(
         id: "cyber-fox-dark",
-        name: "赛博极光星夜狐 (Dark)",
+        name: "LingXiAgent Dark",
         appearance: .dark,
-        author: "LingXi Fox Team",
+        author: "LingXiAgent",
         palette: ThemePalette(
             pageBg: "#13111C",
             cardBg: "#1E1B29",
@@ -23,12 +23,12 @@ public enum BuiltinThemes {
         )
     )
 
-    /// 2. 默认浅色：暖雪琉璃浅狐 (Pearl Fox Light) - 专为白底浅色终端打造
+    /// 2. Default light palette.
     public static let pearlFoxLight = ThemeDefinition(
         id: "pearl-fox-light",
-        name: "暖雪琉璃浅狐 (Light)",
+        name: "LingXiAgent Light",
         appearance: .light,
-        author: "LingXi Fox Team",
+        author: "LingXiAgent",
         palette: ThemePalette(
             pageBg: "#F8FAFC",
             cardBg: "#FFFFFF",
@@ -116,7 +116,7 @@ public enum BuiltinThemes {
         id: "monochrome",
         name: "Monochrome Minimal",
         appearance: .dark,
-        author: "LingXi Fox Team",
+        author: "LingXiAgent",
         palette: ThemePalette(
             pageBg: "#000000",
             cardBg: "#1C1C1C",

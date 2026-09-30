@@ -1104,7 +1104,7 @@ struct TUIRenderingTests {
         #expect(lines[1].text.hasPrefix("      ")) // 续行增加 6 空格缩进对齐
     }
 
-    @Test func heroCenteredModeRendersPermissionBadgeAndCyberFoxMascot() {
+    @Test func heroCenteredModeRendersPermissionBadgeAndProductBranding() {
         let app = TUIApp()
         app.heroConfig = TUIHeroConfig(
             modeName: "Build",
@@ -1122,9 +1122,12 @@ struct TUIRenderingTests {
         let yoloCells = frame.cells.filter { $0.style == .badgeYolo }
         #expect(!yoloCells.isEmpty)
 
-        // 2. 验证 泠溪 (LingXi Fox) 小狐狸吉祥物立绘及专属标语完整展现
-        #expect(cleanText.contains("LingXi Fox"))
-        #expect(cleanText.contains("随时为主人效劳"))
+        // Public branding must stay separate from private assistant personas.
+        #expect(cleanText.contains("LingXiAgent"))
+        #expect(cleanText.contains("AI coding workspace"))
+        #expect(!cleanText.contains("主人"))
+        #expect(!cleanText.contains("泠溪"))
+        #expect(!cleanText.contains("LingXi Fox"))
         #expect(cleanText.contains("/\\___/\\"))
 
         // 3. 验证输入框圆角边框单元格正常存在

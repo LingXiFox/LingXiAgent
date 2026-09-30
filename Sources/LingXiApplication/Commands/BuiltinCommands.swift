@@ -97,7 +97,7 @@ public enum BuiltinCommands {
                 let list = (try? await ctx.client.provider.list()) ?? []
                 let pStatus = try? await ctx.client.provider.status()
                 let statusVal = pStatus?.configured == true ? "✓ 已就绪 (\(pStatus?.model ?? "-"))" : "○ 未就绪"
-                let accountLines = list.map { "  • [\($0.productID)] \($0.displayName) (\($0.availability))" }
+                let accountLines = list.map { "  • [\($0.productID)] \($0.displayName) (\($0.availability.rawValue))" }
                 let output = CLIFormatter.renderCard(
                     title: "Provider 状态 (/providers)",
                     fields: [("网关状态", statusVal)],

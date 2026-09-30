@@ -12,17 +12,29 @@ let guiProducts: [Product] = [
     .executable(name: "LingXiMacApp", targets: ["LingXiMacApp"]),
 ]
 let guiTargets: [Target] = [
-    // FrontendKit: macOS/iOS GUI Shared Component Library (Strictly no LingXiCore)
+    // FrontendKit: the macOS GUI component library. It is not platform-neutral and was never
+    // going to be: `DesignSystem/Tokens.swift`, `Components.swift` and `WallpaperStyle.swift`
+    // import AppKit with no `#if` guard at all, so iOS cannot compile this layer as it stands.
+    // It therefore sits under `Apps/macOS`, named after the module rather than after a promise
+    // of reuse it never kept.
     .target(
         name: "LingXiFrontendKit",
         dependencies: ["LingXiApplication", "LingXiClient", "LingXiProtocol"],
-        path: "Apps/LingXiApp/Shared"
+        path: "Apps/macOS/FrontendKit",
+        // App icon previews exported from `LingXiAgent Icon/ICON.icon` (Default / Dark).
+        resources: [.copy("Resources")]
     ),
-    // macOS GUI executable entry. Wrapped into LingXi.app by Scripts/bundle-mac-app.sh.
+    // macOS GUI executable entry. Wrapped into LingXiAgent.app by Scripts/bundle-mac-app.sh.
+    // The library keeps its own directory: pointing both targets at `Apps/macOS` is rejected
+    // outright with "target 'LingXiMacApp' has overlapping sources", because a recursive sweep
+    // from that path also claims `LingXiMacApp.swift` for the library. Disjoint target paths are
+    // what keeps the two lists below from ever needing to grow as the GUI gains files.
     .executableTarget(
         name: "LingXiMacApp",
-        dependencies: ["LingXiFrontendKit", "LingXiClient", "LingXiProtocol"],
-        path: "Apps/LingXiApp/macOS"
+        dependencies: ["LingXiFrontendKit"],
+        path: "Apps/macOS",
+        exclude: ["FrontendKit", "LingXiMacApp.xcodeproj"],
+        sources: ["LingXiMacApp.swift"]
     ),
 ]
 let guiTestDependency: [Target.Dependency] = [.target(name: "LingXiFrontendKit", condition: .when(platforms: [.macOS]))]

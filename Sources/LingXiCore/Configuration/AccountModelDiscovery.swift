@@ -207,7 +207,7 @@ public enum AccountModelDiscovery {
                 productID: product.id,
                 accountRef: accountRef,
                 models: models,
-                source: product.discoveryProfile?.url ?? "LingXi Registry",
+                source: product.discoveryProfile?.url ?? "LingXiAgent Registry",
                 ttl: ttlSeconds(for: product)
             )
             return .success(models)

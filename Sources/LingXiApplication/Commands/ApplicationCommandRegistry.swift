@@ -58,7 +58,7 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
                 )
                 if res.isPrompt {
                     return ApplicationCommandResult(
-                        output: "🦊 [插件提示词宏 /\(res.name)] 已展开：\n\n\(res.output)",
+                        output: "[插件提示词宏 /\(res.name)] 已展开：\n\n\(res.output)",
                         presentation: .inline,
                         revertedComposerText: res.output
                     )
@@ -219,7 +219,7 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
         if let pluginResult = try? await client.extensionDomain.executeCommand(name: name, arguments: args, sessionID: sessionID?.rawValue) {
             if pluginResult.isPrompt {
                 return ApplicationCommandResult(
-                    output: "🦊 [插件提示词宏 /\(pluginResult.name)] 已展开：\n\n\(pluginResult.output)",
+                    output: "[插件提示词宏 /\(pluginResult.name)] 已展开：\n\n\(pluginResult.output)",
                     presentation: .inline,
                     revertedComposerText: pluginResult.output
                 )
@@ -268,7 +268,7 @@ public final class ApplicationCommandRegistry: @unchecked Sendable {
             switch parsed.type {
             case .prompt:
                 return ApplicationCommandResult(
-                    output: "🦊 [自定义提示词宏 /\(parsed.name)] 已展开：\n\n\(interpolated)",
+                    output: "[自定义提示词宏 /\(parsed.name)] 已展开：\n\n\(interpolated)",
                     revertedComposerText: interpolated
                 )
             case .script:

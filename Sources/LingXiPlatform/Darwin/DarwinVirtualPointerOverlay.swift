@@ -7,7 +7,7 @@ import LingXiProtocol
 /// 特性：
 /// 1. 绝对鼠标穿透 (ignoresMouseEvents = true)，完全不阻碍底层任何操作，不与硬件鼠标冲突；
 /// 2. 不抢占系统焦点 (nonactivatingPanel)，不在 Dock 栏显示图标；
-/// 3. GPU 硬件加速动画：包含小狐狸专属荧光光标、平滑跟随与点击扩散光晕涟漪 (Click Ripple)。
+/// 3. GPU-accelerated pointer tracking and click ripple animations.
 @MainActor
 public final class DarwinVirtualPointerOverlay: NSObject, @unchecked Sendable {
     public static let shared = DarwinVirtualPointerOverlay()
@@ -172,7 +172,7 @@ public final class DarwinVirtualPointerOverlay: NSObject, @unchecked Sendable {
         rippleLayer.add(group, forKey: "clickRipple")
     }
 
-    /// 绑定并高亮显示目标窗口区域（让主人明确获知 Agent 当前锁定在哪个 App/窗口）
+    /// Highlight the target window so users can identify the active app.
     public func attachTargetBounds(_ bounds: CoordinateRect?) {
         ensureInitialized()
         guard let targetFrameLayer, let screen = NSScreen.main else { return }

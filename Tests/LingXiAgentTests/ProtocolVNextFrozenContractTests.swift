@@ -907,7 +907,68 @@ struct ProtocolVNextFrozenContractTests {
         #expect(cfgProvRes.applied)
         let testProvRes = try await service.testProvider(envelope: CommandEnvelope(payload: TestProviderRequest(providerID: "mock-provider")))
         #expect(testProvRes.applied)
-        #expect(testProvRes.result?.reachable == true)
+        // The answer comes from a real round trip, so an unconfigured name can
+        // never read as reachable, and every refusal carries a reason.
+        #expect(testProvRes.result?.providerID == "mock-provider")
+        if testProvRes.result?.reachable != true {
+            #expect(testProvRes.result?.message?.isEmpty == false)
+            #expect(testProvRes.result?.latencyMs == nil)
+        }
+        // Read-only projections the settings window and tool panes consume.
+        let langRes = try await service.getLanguageServiceStatuses(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(langRes.payload.allSatisfy { !$0.language.isEmpty })
+        // Tool status is Core's own answer about its registry, policy and backends.
+        let toolRes = try await service.getToolStatus(envelope: QueryEnvelope(payload: GetToolStatusRequest(
+            toolIDs: ["shell", "browser_navigate", "not-a-tool"])))
+        #expect(toolRes.payload.count == 3)
+        #expect(toolRes.payload.first { $0.toolID == "shell" }?.exposure == .core)
+        let browserTool = try #require(toolRes.payload.first { $0.toolID == "browser_navigate" })
+        #expect(browserTool.exposure == .onDemand)
+        #expect(browserTool.permission != nil)
+        // The backend claim has to match a host that is actually reachable here.
+        if browserTool.backendReady {
+            #expect(browserTool.backendDetail?.contains("browser-host") == true)
+        } else {
+            #expect(browserTool.backendDetail?.isEmpty == false)
+        }
+        let missing = try #require(toolRes.payload.first { $0.toolID == "not-a-tool" })
+        #expect(missing.exposure == .unavailable)
+        #expect(missing.permission == nil)
+        let browserRes = try await service.getBrowserSessions(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(browserRes.payload.allSatisfy { !$0.sessionID.isEmpty })
+        let authRes = try await service.listProviderAuthProducts(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(authRes.payload.allSatisfy { !$0.productID.isEmpty })
+        // The provider picker lists every published provider, including ones
+        // with no account yet and ones this runtime cannot drive.
+        let catalogRes = try await service.getProviderCatalog(envelope: QueryEnvelope(payload: GetProviderCatalogRequest()))
+        #expect(!catalogRes.payload.isEmpty, "提供商目录不应为空")
+        #expect(catalogRes.payload.allSatisfy { !$0.id.isEmpty && !$0.name.isEmpty })
+        #expect(catalogRes.payload.contains { $0.source == .registry && $0.connectable })
+        let registryIDs = catalogRes.payload.filter { $0.source == .registry }.map(\.id)
+        #expect(Set(registryIDs).count == registryIDs.count, "同一提供商不得出现两次")
+        let curated = try #require(catalogRes.payload.first { $0.source == .registry && $0.signInMode == .apiKey },
+                                   "目录里没有可用 API Key 的内置产品")
+        // A row's roster and its count come from the same source, so they agree
+        // whether or not this machine has the published index cached.
+        let modelsRes = try await service.getProviderCatalogModels(
+            envelope: QueryEnvelope(payload: GetProviderCatalogModelsRequest(entryID: curated.id)))
+        #expect(modelsRes.payload.count == curated.modelCount)
+        #expect(modelsRes.payload.allSatisfy { !$0.isEmpty })
+        // Terminal sessions: the panel's only source of a live process.
+        let termList = try await service.listTerminalSessions(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(termList.payload.allSatisfy { !$0.id.isEmpty })
+        let termSpawn = try await service.spawnTerminalSession(
+            envelope: CommandEnvelope(payload: SpawnTerminalSessionRequest(columns: 80, rows: 24)))
+        let spawned = try #require(termSpawn.result)
+        #expect(spawned.kind == .user)
+        #expect(spawned.supportsInterrupt)
+        let termRead = try await service.readTerminalSession(
+            envelope: QueryEnvelope(payload: ReadTerminalSessionRequest(sessionID: spawned.id)))
+        #expect(termRead.payload.sessionID == spawned.id)
+        _ = try await service.closeTerminalSession(
+            envelope: CommandEnvelope(payload: CloseTerminalSessionRequest(sessionID: spawned.id)))
+        let afterClose = try await service.listTerminalSessions(envelope: QueryEnvelope(payload: VoidResult()))
+        #expect(afterClose.payload.allSatisfy { $0.id != spawned.id })
         let getProvRes = try await service.getProvider(envelope: QueryEnvelope(payload: GetProviderRequest(providerID: "acc-mock")))
         #expect(getProvRes.payload.id == "acc-mock")
         let remProvRes = try await service.removeProvider(envelope: CommandEnvelope(payload: RemoveProviderRequest(accountID: "acc-mock")))

@@ -1,0 +1,4 @@
+2026-09-30T06:56:46.207Z pw:protocol ◀ RECV {"method":"Page.windowOpen","params":{"url":"http://127.0.0.1:63479/popup","windowName":"poc-popup","windowFeatures":["menubar","toolbar","status","scrollbars","resizable"],"userGesture":true},"sessionId":"EF42328998D2B15D919F0D68AC3F8C90"}
+2026-09-30T06:56:46.217Z pw:protocol ◀ RECV {"method":"Target.attachedToTarget","params":{"sessionId":"2D7D7CE3518AAC746285C700E7FAAD09","targetInfo":{"targetId":"8BDE3AA9621861667F721EAD29E7F7B3","type":"other","title":"","url":"","attached":true,"openerId":"2C3143A56866D2186A88D33F0BEF6C14","canAccessOpener":true,"openerFrameId":"2C3143A56866D2186A88D33F0BEF6C14","browserContextId":"CF53ACD53FB58F3268DFA588AA74236F"},"waitingForDebugger":true}}
+2026-09-30T06:56:46.217Z pw:protocol SEND ► {"id":331,"method":"Runtime.runIfWaitingForDebugger","sessionId":"2D7D7CE3518AAC746285C700E7FAAD09"}
+popup_shared_context_attempt2 FAIL

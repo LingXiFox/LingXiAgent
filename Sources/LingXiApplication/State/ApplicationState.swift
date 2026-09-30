@@ -143,3 +143,27 @@ public struct ApplicationState: Sendable, Equatable, Codable {
         }
     }
 }
+
+// MARK: - Model selection identity
+
+public extension ProviderModelInfo {
+    /// `provider/model`: the only selection value Core resolves unambiguously.
+    /// A bare model ID is looked up in providers.json and then under the
+    /// current provider, so a model from any other account fails to select.
+    var qualifiedID: String {
+        id.contains("/") ? id : "\(providerID)/\(modelID)"
+    }
+
+    /// Whether a stored selection (qualified or bare, old or new) names this model.
+    func matches(selection: String) -> Bool {
+        selection == qualifiedID || selection == id || selection == modelID
+    }
+}
+
+public extension ModelSelectionInfo {
+    /// `provider/model` when Core reported the provider, else the bare ID.
+    var qualifiedID: String {
+        guard let providerID, !providerID.isEmpty, !modelID.contains("/") else { return modelID }
+        return "\(providerID)/\(modelID)"
+    }
+}

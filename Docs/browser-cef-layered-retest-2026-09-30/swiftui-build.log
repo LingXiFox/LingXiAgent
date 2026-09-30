@@ -1,0 +1,49 @@
+-- *** CEF CONFIGURATION SETTINGS ***
+-- Generator:                    Unix Makefiles
+-- Platform:                     Darwin
+-- Project architecture:         arm64
+-- Build type:                   Release
+-- Binary distribution root:     /tmp/lingxi-cef-layered-retest-20260930/sdk/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64
+-- Base SDK:                     
+-- Target SDK:                   12.0
+-- CEF sandbox:                  ON
+-- CEF installer mode:           OFF
+-- Standard libraries:           -lpthread;-framework AppKit;-framework Cocoa;-framework IOSurface
+-- Compile defines:              __STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;CEF_USE_SANDBOX
+-- Compile defines (Debug):      
+-- Compile defines (Release):    
+-- C compile flags:              -fno-strict-aliasing;-fstack-protector;-funwind-tables;-fvisibility=hidden;-Wall;-Werror;-Wextra;-Wendif-labels;-Wnewline-eof;-Wno-missing-field-initializers;-Wno-unused-parameter;-mmacosx-version-min=12.0 -std=c99
+-- C compile flags (Debug):      -O0;-g 
+-- C compile flags (Release):    -O3 
+-- C++ compile flags:            -fno-strict-aliasing;-fstack-protector;-funwind-tables;-fvisibility=hidden;-Wall;-Werror;-Wextra;-Wendif-labels;-Wnewline-eof;-Wno-missing-field-initializers;-Wno-unused-parameter;-mmacosx-version-min=12.0 -fno-exceptions;-fno-rtti;-fno-threadsafe-statics;-fobjc-call-cxx-cdtors;-fvisibility-inlines-hidden;-std=c++20;-Wno-narrowing;-Wsign-compare;-Wno-undefined-var-template
+-- C++ compile flags (Debug):    -O0;-g 
+-- C++ compile flags (Release):  -O3 
+-- Exe link flags:               -Wl,-search_paths_first;-Wl,-ObjC;-Wl,-pie 
+-- Exe link flags (Debug):        
+-- Exe link flags (Release):     -Wl,-dead_strip 
+-- Shared link flags:            -Wl,-search_paths_first;-Wl,-ObjC;-Wl,-pie 
+-- Shared link flags (Debug):     
+-- Shared link flags (Release):  -Wl,-dead_strip 
+-- Could NOT find Doxygen (missing: DOXYGEN_EXECUTABLE) 
+CMake Warning at CMakeLists.txt:283 (message):
+  Doxygen must be installed to generate API documentation.
+
+
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /tmp/lingxi-cef-layered-retest-20260930/build
+[ 93%] Built target libcef_dll_wrapper
+[ 93%] Linking CXX executable "Release/cefsimple Helper (GPU).app/Contents/MacOS/cefsimple Helper (GPU)"
+[ 96%] Built target cefsimple_Helper
+[ 96%] Linking CXX executable "Release/cefsimple Helper (Plugin).app/Contents/MacOS/cefsimple Helper (Plugin)"
+[ 96%] Linking CXX executable "Release/cefsimple Helper (Renderer).app/Contents/MacOS/cefsimple Helper (Renderer)"
+[ 96%] Linking CXX executable "Release/cefsimple Helper (Alerts).app/Contents/MacOS/cefsimple Helper (Alerts)"
+[ 96%] Built target cefsimple_Helper_plugin
+[100%] Built target cefsimple_Helper_renderer
+[100%] Built target cefsimple_Helper_gpu
+[100%] Built target cefsimple_Helper_alerts
+[100%] Building CXX object tests/cefsimple/CMakeFiles/cefsimple.dir/simple_app.cc.o
+[100%] Building CXX object tests/cefsimple/CMakeFiles/cefsimple.dir/simple_handler_mac.mm.o
+[100%] Linking CXX executable Release/cefsimple.app/Contents/MacOS/cefsimple
+ld: warning: building for macOS-12.0, but linking with dylib '@rpath/libSwiftHost.dylib' which was built for newer version 27.2
+[100%] Built target cefsimple

@@ -1,0 +1,168 @@
+[
+  {
+    "report": "LingXiBrowserPOC-2026-09-30-150924.ips",
+    "exception": {
+      "codes": "0x0000000000000001, 0x0000000000000000",
+      "rawCodes": [
+        1,
+        0
+      ],
+      "type": "EXC_BAD_ACCESS",
+      "signal": "SIGSEGV",
+      "subtype": "KERN_INVALID_ADDRESS at 0x0000000000000000"
+    },
+    "termination": {
+      "flags": 0,
+      "code": 11,
+      "namespace": "SIGNAL",
+      "indicator": "Segmentation fault: 11",
+      "byProc": "exc handler",
+      "byPid": 28194
+    },
+    "frames": [
+      {
+        "symbol": "ChromeAppModeStart_v8",
+        "offset": 25433724,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeAppModeStart_v8",
+        "offset": 25433252,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "___forwarding___",
+        "offset": 224,
+        "image": "CoreFoundation"
+      },
+      {
+        "symbol": "_CF_forwarding_prep_0",
+        "offset": 96,
+        "image": "CoreFoundation"
+      },
+      {
+        "symbol": "AutoreleasePoolPage::releaseUntil(objc_object**)",
+        "offset": 204,
+        "image": "libobjc.A.dylib"
+      },
+      {
+        "symbol": "objc_autoreleasePoolPop",
+        "offset": 244,
+        "image": "libobjc.A.dylib"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 1461044,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 1470156,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": null,
+        "offset": null,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 1466064,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "__CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__",
+        "offset": 28,
+        "image": "CoreFoundation"
+      },
+      {
+        "symbol": "__CFRunLoopDoSource0",
+        "offset": 224,
+        "image": "CoreFoundation"
+      }
+    ]
+  },
+  {
+    "report": "LingXiBrowserPOC-2026-09-30-151158.ips",
+    "exception": {
+      "codes": "0x0000000000000001, 0x0000000000000058",
+      "rawCodes": [
+        1,
+        88
+      ],
+      "type": "EXC_BAD_ACCESS",
+      "signal": "SIGSEGV",
+      "subtype": "KERN_INVALID_ADDRESS at 0x0000000000000058"
+    },
+    "termination": {
+      "flags": 0,
+      "code": 11,
+      "namespace": "SIGNAL",
+      "indicator": "Segmentation fault: 11",
+      "byProc": "exc handler",
+      "byPid": 29299
+    },
+    "frames": [
+      {
+        "symbol": "cef_zip_reader_create",
+        "offset": 104320,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "cef_zip_reader_create",
+        "offset": 141540,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "cef_zip_reader_create",
+        "offset": 123768,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "v8_internal_simulator_ProbeMemory",
+        "offset": 5483896,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "reading_mode$cxxbridge1$199$parse_distilled_html",
+        "offset": 14143280,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 2238168,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 2256820,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 2244096,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 5171756,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 5173128,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 1068440,
+        "image": "Chromium Embedded Framework"
+      },
+      {
+        "symbol": "ChromeWebAppShortcutCopierMain",
+        "offset": 1176552,
+        "image": "Chromium Embedded Framework"
+      }
+    ]
+  }
+]

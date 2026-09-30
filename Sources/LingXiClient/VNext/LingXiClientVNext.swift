@@ -23,6 +23,8 @@ public final class LingXiClientVNext: Sendable {
     public let context: ContextDomainClient
     public let extensionDomain: ExtensionDomainClient
     public let workspace: WorkspaceDomainClient
+    public let browser: BrowserDomainClient
+    public let terminal: TerminalDomainClient
     public let resource: ResourceDomainClient
     public let diagnostics: DiagnosticsDomainClient
     public let credential: CredentialDomainClient
@@ -51,6 +53,8 @@ public final class LingXiClientVNext: Sendable {
         self.context = ContextDomainClient(transport: transport)
         self.extensionDomain = ExtensionDomainClient(transport: transport)
         self.workspace = WorkspaceDomainClient(transport: transport)
+        self.browser = BrowserDomainClient(transport: transport)
+        self.terminal = TerminalDomainClient(transport: transport)
         self.resource = ResourceDomainClient(transport: transport)
         self.diagnostics = DiagnosticsDomainClient(transport: transport)
         self.credential = CredentialDomainClient(transport: transport)

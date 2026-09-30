@@ -29,6 +29,42 @@ private actor InFlightMutationLock {
     }
 }
 
+extension CoreHost {
+    public func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {
+        let question = envelope.payload.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else {
+            throw CoreError(code: .toolArgumentInvalid, message: "Side question is empty")
+        }
+        guard let model = gateway.modelID else {
+            throw CoreError(code: .provider, message: "No model is configured for side questions")
+        }
+        let session = try await sessionStore.session(envelope.payload.sessionID)
+        let recent = session.messages.suffix(8).compactMap { message -> ModelMessage? in
+            guard !message.content.isEmpty else { return nil }
+            let role: ModelRole = message.role == .assistant ? .assistant : .user
+            return ModelMessage(role: role, content: String(message.content.prefix(3_000)))
+        }
+        let request = ModelRequest(model: model,
+                                   system: "Answer the user's side question using the recent conversation as context. Do not invoke tools or change files. Be concise.",
+                                   messages: recent + [ModelMessage(role: .user, content: question)],
+                                   tools: [])
+        let started = Date()
+        let stream = try await gateway.stream(request)
+        var answer = ""
+        for try await event in stream {
+            switch event {
+            case .textDelta(let text): answer += text
+            case .failed(let error): throw error
+            default: break
+            }
+        }
+        let result = SideQuestionResult(answer: answer, modelUsed: model.rawValue,
+                                        durationMs: Int(Date().timeIntervalSince(started) * 1_000))
+        return CommandReceipt(commandID: envelope.commandID, applied: true,
+                              revision: session.revision, observedThrough: [], result: result)
+    }
+}
+
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public static let coreVersion = "1.0.0"
@@ -67,6 +103,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let diagnosticsEnabled: Bool
     private let configurationStore: ConfigurationStore?
     private let credentialStore: (any CredentialStore)?
+    /// Reader for the published `models.lingxifox.cn` index behind the provider
+    /// catalog. Injectable so the catalog can be exercised without network I/O.
+    let modelsCatalogClient: LingXiModelsCatalogClient
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private let diagnosticsStore: RuntimeDiagnosticsStore
@@ -90,6 +129,13 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private var runtimeExtensions: [String: ExtensionInfo] = [:]
     private var cachedAssemblies: [String: ModelRuntimeAssembly] = [:]
     private var oauthRefreshers: [String: OAuthTokenRefresher] = [:]
+    /// Sign-in flows started from a front end; created once a login is asked for.
+    var providerAuthCoordinator: ProviderAuthCoordinator?
+    /// Terminal sessions a front end may render (user shells); Agent processes
+    /// stay owned by `backgroundManager` and are projected through this.
+    var terminalSessions: TerminalSessionManager?
+    /// Flows whose success has already been folded into the runtime.
+    var appliedAuthFlows: Set<String> = []
     private var currentAssembly: ModelRuntimeAssembly?
     private let dataRootURL: URL?
     private var selectedModelOverride: String?
@@ -174,10 +220,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let sessionMutationLock: SessionMutationLock
     public let codebaseGraphEngine: CodebaseGraphEngine
     public let browserSessionManager: BrowserSessionManager
+    package let taskRuntime: TaskRuntime
     public let providerActivityRegistry: ProviderActivityRegistry
     public let todoStore: TodoStore
     private var ecoreMutationSubscriptionToken: ECoreObjectStore.MutationSubscriptionToken?
-    private var currentRevision: UInt64 = 1
+    private(set) var currentRevision: UInt64 = 1
     private var contextStateRevisions: [SessionID: UInt64] = [:]
     public let eventLogStorageDirectory: URL?
     public private(set) var activeFailpoint: CommitFailpoint?
@@ -214,6 +261,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         restoreScheduler: SessionRestoreScheduler? = nil,
         extensionPlatform: ExtensionPlatform? = nil,
         backgroundManager: BackgroundCommandManager? = nil,
+        modelsCatalogClient: LingXiModelsCatalogClient = .shared,
         crashTestStage: String? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
@@ -267,6 +315,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.interactive = supportsInteraction
         self.configurationStore = configurationStore ?? dataRoot.flatMap { try? ConfigurationStore(dataRoot: $0) }
         self.credentialStore = credentialStore
+        self.modelsCatalogClient = modelsCatalogClient
         self.restoreScheduler = restoreScheduler
         self.dataRootURL = dataRoot
         self.cachedAssemblies = modelRuntimes
@@ -334,6 +383,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             try SQLitePersistenceStore(dataRoot: $0, mainRoot: workspace.url)
         }
         self.persistence = persistent
+        self.taskRuntime = TaskRuntime(persistence: persistent)
         self.sessionStore = sessionStore ?? persistent.map(PersistentSessionStore.init) ?? InMemorySessionStore()
         let executionDeadlinePolicy = ExecutionDeadlinePolicy(settings: configuration?.runtime.execution ?? ExecutionTimeoutSettings())
         self.executionDeadlinePolicy = executionDeadlinePolicy
@@ -790,6 +840,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         await browserSessionManager.shutdown()
         await codeIntelligence?.shutdown()
         codeIntelligence = nil
+        await providerAuthCoordinator?.shutdown()
+        providerAuthCoordinator = nil
+        await terminalSessions?.closeAll()
+        terminalSessions = nil
         lifecycle("cleanupCompleted", waitingOn: "processes")
         await providerActivityRegistry.reset()
         registryRefreshTask?.cancel()
@@ -1310,7 +1364,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         guard let configurationStore else { return nil }
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
-        return try await configurationStore.load().providers.providers[providerID]?.models[modelID]?.limit.context
+        return try await configurationStore.load().providers.providers[providerID]?.models[modelID]?.limit?.context
     }
 
     private func workspaceDiff() async throws -> String {
@@ -1359,12 +1413,24 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
     }
 
-    private func requireConfigurationStore() throws -> ConfigurationStore {
+    /// Re-resolves the running model after its provider's configuration was
+    /// edited, so a new Base URL, key or header applies to the next request.
+    func reassembleCurrentModel(ifProvider providerID: String) async {
+        guard let current = currentAssembly, current.endpoint.providerID == providerID,
+              let agent = try? requireAgent() else { return }
+        let value = "\(providerID)/\(current.modelID.rawValue)"
+        guard let selection = try? await modelSelection(for: value),
+              let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: value) else { return }
+        guard (try? await agent.selectModel(selection, assembly: assembly)) != nil else { return }
+        currentAssembly = assembly
+    }
+
+    func requireConfigurationStore() throws -> ConfigurationStore {
         guard let configurationStore else { throw CoreError(code: .persistence, message: "Provider 配置存储未连接") }
         return configurationStore
     }
 
-    private func requireCredentialStore() throws -> any CredentialStore {
+    func requireCredentialStore() throws -> any CredentialStore {
         guard let credentialStore else { throw CoreError(code: .persistence, message: "CredentialStore 未连接") }
         return credentialStore
     }
@@ -1381,23 +1447,23 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         for (providerID, pConfig) in snapshot.providers.providers {
             if !accounts.contains(where: { $0.id == providerID || $0.productID == providerID }) {
                 let isOAuth = pConfig.options.apiKey?.hasPrefix("{oauth:") == true || BuiltinProviderCatalog.profile(for: providerID)?.authMethods.contains("oauth") == true
-                var availability = "configured"
+                var availability = ProviderAccountAvailability.configured
                 if isOAuth {
                     if let refresher = oauthRefreshers[providerID] {
                         switch await refresher.authState {
                         case .valid:
-                            availability = "active"
+                            availability = .active
                         case .refreshing:
-                            availability = "refreshing"
+                            availability = .refreshing
                         case .refreshFailedTransient:
-                            availability = "refresh_failed"
+                            availability = .refreshFailedTransient
                         case .reauthenticationRequired:
-                            availability = "reauthenticationRequired"
+                            availability = .reauthenticationRequired
                         }
                     } else if let credStore = credentialStore {
                         let oauthRef = CredentialRef("provider-\(providerID)-oauth")
                         if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
-                            availability = "active"
+                            availability = .active
                         }
                     }
                 }
@@ -1462,7 +1528,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             // User explicit configuration ALWAYS takes precedence over built-in catalog entries.
             for providerID in snapshot.providers.providers.keys.sorted() {
                 guard let provider = snapshot.providers.providers[providerID] else { continue }
-                let models = configuredModelInfos(providerID: providerID, provider: provider)
+                let models = await configuredModelInfos(providerID: providerID, provider: provider)
                 for m in models {
                     customModelIDs.insert(m.id)
                     results.append(m)
@@ -1618,22 +1684,40 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
     /// Models from the user's own configured list, used only for products the
     /// registry catalog does not describe.
+    ///
+    /// Each entry reports the *effective* settings: the user's override where
+    /// one exists, otherwise what the model catalog states, otherwise Core's
+    /// last-resort default. `metadataIncomplete` marks a model no catalog has
+    /// described yet.
     private func configuredModelInfos(
         providerID: String,
         provider: PublicProviderConfiguration
-    ) -> [ProviderModelInfo] {
-        provider.models.keys.sorted().compactMap { modelID in
-            guard let model = provider.models[modelID] else { return nil }
-            return ProviderModelInfo(
-                id: "\(providerID)/\(modelID)",
-                providerID: providerID,
-                modelID: modelID,
-                displayName: model.name,
-                contextWindow: model.limit.context,
-                maxOutputTokens: model.limit.output,
-                reasoning: model.reasoning,
-                configured: true
-            )
+    ) async -> [ProviderModelInfo] {
+        await withTaskGroup(of: ProviderModelInfo?.self) { group in
+            for modelID in provider.models.keys.sorted() {
+                guard let model = provider.models[modelID] else { continue }
+                group.addTask {
+                    let detail = await CoreHost.modelDetail(providerID: providerID, modelID: modelID, model: model)
+                    return ProviderModelInfo(
+                        id: "\(providerID)/\(modelID)",
+                        providerID: providerID,
+                        modelID: modelID,
+                        displayName: model.name,
+                        contextWindow: detail.effective.contextWindow,
+                        maxOutputTokens: detail.effective.maxOutputTokens,
+                        reasoning: detail.effective.reasoning,
+                        configured: true,
+                        metadataIncomplete: detail.catalogDefaults.contextWindow == nil,
+                        vision: detail.effective.vision,
+                        toolCalling: detail.effective.toolCalling
+                    )
+                }
+            }
+            var collected: [ProviderModelInfo] = []
+            for await info in group {
+                if let info { collected.append(info) }
+            }
+            return collected.sorted { $0.id < $1.id }
         }
     }
 
@@ -1741,7 +1825,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
     /// Reads whichever credential this product authenticates with. Returns nil
     /// when the product needs none or none is stored.
-    private func providerCredential(providerID: String) async -> String? {
+    func providerCredential(providerID: String) async -> String? {
         guard let credentialStore else { return nil }
         for suffix in ["oauth", "key"] {
             let ref = CredentialRef("provider-\(providerID)-\(suffix)")
@@ -1750,6 +1834,56 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
         }
         return nil
+    }
+
+    /// The bearer token a provider test should send.
+    ///
+    /// An OAuth account's vault entry is a token document, not a key: sending it
+    /// verbatim would put JSON in an Authorization header. Anything Core can
+    /// resolve from the file (`{vault:…}`, `{env:…}`) is read here, so the
+    /// credential never leaves the process that holds it.
+    func resolveProviderSecret(_ source: String?, providerID: String) async -> String? {
+        if let source, source.hasPrefix("{env:"), source.hasSuffix("}") {
+            return ProcessInfo.processInfo.environment[String(source.dropFirst(5).dropLast())]
+        }
+        if let source, source.hasPrefix("{vault:"), source.hasSuffix("}"),
+           let credentialStore {
+            let ref = CredentialRef(String(source.dropFirst(7).dropLast()))
+            if let secret = try? await credentialStore.secret(for: ref), !secret.isEmpty {
+                return Self.bearerToken(from: secret)
+            }
+            return nil
+        }
+        return Self.bearerToken(from: await providerCredential(providerID: providerID))
+    }
+
+    private static func bearerToken(from secret: String?) -> String? {
+        guard let secret, !secret.isEmpty else { return nil }
+        if let data = secret.data(using: .utf8),
+           let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: data),
+           !tokens.accessToken.isEmpty {
+            return tokens.accessToken
+        }
+        return secret
+    }
+
+    /// The sign-in flow owner, built once with the stores it may write to.
+    func requireProviderAuthCoordinator() async throws -> ProviderAuthCoordinator {
+        if let providerAuthCoordinator { return providerAuthCoordinator }
+        let coordinator = ProviderAuthCoordinator(
+            credentialStore: try requireCredentialStore(),
+            configurationStore: configurationStore)
+        providerAuthCoordinator = coordinator
+        return coordinator
+    }
+
+    /// The terminal session owner, bound to the current workspace.
+    func requireTerminalSessions() -> TerminalSessionManager {
+        if let terminalSessions { return terminalSessions }
+        let created = TerminalSessionManager(background: backgroundManager,
+                                             workspaceRoot: workspaceURL)
+        terminalSessions = created
+        return created
     }
 
     private func modelSelection(for value: String) async throws -> ModelSelection {
@@ -1871,6 +2005,109 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         return info
     }
 
+    /// Connects a registry product with whatever its own contract requires.
+    ///
+    /// Mirrors the Application layer's connect flow: the endpoint, wire protocol
+    /// and stored authentication all come from the catalog, the key arrives as an
+    /// already-staged vault reference, and a failed account creation takes the
+    /// staged secret back with it.
+    public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        let request = envelope.payload
+        let productID = request.productID.trimmingCharacters(in: .whitespaces)
+        guard let product = BuiltinProviderCatalog.connectableProducts().first(where: { $0.id == productID }),
+              product.connectable, product.verificationStatus == .verified else {
+            // Not a curated product. It may still be a published-index provider,
+            // whose endpoint, wire protocol and models the index states.
+            return try await connectPublishedProvider(envelope: envelope, productID: productID)
+        }
+        if product.requestAuthentication == .oauthAccessToken || product.accountTypes.contains(.oauthUser) {
+            throw CoreError(code: .provider, message: "\(product.displayName) 通过浏览器登录连接，请改用「登录账户」")
+        }
+        for field in product.requiredAccountFields where request.fields[field]?.isEmpty != false {
+            throw CoreError(code: .toolArgumentInvalid, message: "缺少 \(product.displayName) 所需字段：\(field)")
+        }
+
+        var credentialRef = request.credentialRef
+        if product.requiresCredential {
+            guard let credentialRef, try await requireCredentialStore().secret(for: credentialRef) != nil else {
+                throw CoreError(code: .toolArgumentInvalid, message: "\(product.displayName) 需要 API Key")
+            }
+        } else {
+            credentialRef = nil
+        }
+        if product.requiresLocalEndpoint, (request.endpoint ?? "").isEmpty {
+            throw CoreError(code: .toolArgumentInvalid, message: "\(product.displayName) 需要本地端点")
+        }
+
+        let accountType = product.accountTypes.first { $0 == .apiKey || $0 == .subscription || $0 == .localInstance || $0 == .anonymousLocal }
+            ?? product.accountTypes.first ?? .apiKey
+        let authentication: ProviderStoredAuthentication
+        switch product.requestAuthentication {
+        case nil, .some(.none), .some(.providerNative): authentication = .none
+        case .some(.bearerToken), .some(.oauthAccessToken), .some(.workloadIdentityToken), .some(.gatewayToken): authentication = .bearer
+        case .some(.apiKeyHeader), .some(.customHeaderSet): authentication = .header
+        }
+
+        do {
+            let info = try await createProviderAccount(ProviderAccountCreateRequest(
+                id: "provider-account-\(UUID().uuidString)",
+                productID: product.id,
+                displayName: product.displayName,
+                accountType: accountType,
+                credentialRef: credentialRef,
+                endpoint: request.endpoint,
+                authentication: authentication,
+                headerName: product.requestAuthenticationHeaderName,
+                fields: request.fields))
+            return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
+                                  observedThrough: [], result: info)
+        } catch {
+            if let credentialRef {
+                try? await requireCredentialStore().removeSecret(for: credentialRef)
+            }
+            throw error
+        }
+    }
+
+    /// Connects a provider that comes from the published models.lingxifox.cn
+    /// index: everything except the key is taken from the index, and the entry is
+    /// stored as a normal `providers.json` account.
+    private func connectPublishedProvider(envelope: CommandEnvelope<ConnectProviderRequest>,
+                                          productID: String) async throws -> CommandReceipt<ProviderAccountInfo> {
+        let request = envelope.payload
+        guard var plan = await ProviderCatalog.plan(entryID: productID, siteClient: modelsCatalogClient) else {
+            throw CoreError(code: .provider, message: "\(productID) 不在可连接的 Provider 目录中")
+        }
+        if let endpoint = request.endpoint?.trimmingCharacters(in: .whitespaces), !endpoint.isEmpty {
+            plan = ProviderCatalog.Plan(providerID: plan.providerID, name: plan.name,
+                                        baseURL: endpoint, adapter: plan.adapter)
+        }
+        guard let reference = request.credentialRef,
+              try await requireCredentialStore().secret(for: reference) != nil else {
+            throw CoreError(code: .toolArgumentInvalid, message: "\(plan.name) 需要 API Key")
+        }
+        let models = request.modelIDs.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !models.isEmpty else {
+            throw CoreError(code: .toolArgumentInvalid, message: "至少选择一个模型")
+        }
+
+        let save = SaveProviderConfigurationRequest(
+            providerID: plan.providerID,
+            name: plan.name,
+            adapter: plan.adapter,
+            baseURL: plan.baseURL,
+            apiKey: .staged(reference: reference),
+            models: models.map { ProviderModelConfigurationDetail(modelID: $0, name: $0) })
+        _ = try await saveProviderConfiguration(envelope: CommandEnvelope(payload: save))
+        guard let info = try await providerAccounts().first(where: {
+            $0.id == plan.providerID || $0.productID == plan.providerID
+        }) else {
+            throw CoreError(code: .provider, message: "已保存 \(plan.name)，但账户列表尚未刷新")
+        }
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
+                              observedThrough: [], result: info)
+    }
+
     private func deleteProviderAccount(id: String, deleteUnusedCredential: Bool) async throws -> ProviderDisconnectResult {
         let store = try requireConfigurationStore()
         var snapshot = try await store.load()
@@ -1903,23 +2140,23 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private func accountInfo(_ account: ProviderAccountConfiguration) async -> ProviderAccountInfo {
         let isOAuth = account.accountType == .oauthUser || BuiltinProviderCatalog.profile(for: account.providerID)?.authMethods.contains("oauth") == true
         let resolvedAccountType = isOAuth ? ProviderAccountType.oauthUser : account.accountType
-        var availability = account.enabled ? "configured" : "unavailable"
+        var availability: ProviderAccountAvailability = account.enabled ? .configured : .unavailable
         if isOAuth {
             if let refresher = oauthRefreshers[account.providerID] ?? oauthRefreshers[account.id] {
                 switch await refresher.authState {
                 case .valid:
-                    availability = "active"
+                    availability = .active
                 case .refreshing:
-                    availability = "refreshing"
+                    availability = .refreshing
                 case .refreshFailedTransient:
-                    availability = "refresh_failed"
+                    availability = .refreshFailedTransient
                 case .reauthenticationRequired:
-                    availability = "reauthenticationRequired"
+                    availability = .reauthenticationRequired
                 }
             } else if let credStore = credentialStore {
                 let oauthRef = CredentialRef("provider-\(account.providerID)-oauth")
                 if let secret = try? await credStore.secret(for: oauthRef), !secret.isEmpty {
-                    availability = "active"
+                    availability = .active
                 }
             }
         }
@@ -2026,7 +2263,7 @@ extension CoreHost {
         }
     }
 
-    private func nextRevision() -> UInt64 {
+    func nextRevision() -> UInt64 {
         currentRevision += 1
         return currentRevision
     }
@@ -3884,17 +4121,20 @@ extension CoreHost {
         }
         let selection = try await modelSelection(for: envelope.payload.model)
         let agent = try requireAgent()
-        let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: envelope.payload.model)
+        let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: envelope.payload.model)
         try await agent.selectModel(selection, assembly: assembly)
+        setCurrentAssembly(assembly)
         setSelectedModelOverride(envelope.payload.model)
         if let contextWindow = try await modelContextWindow(for: envelope.payload.model) {
             setSelectedModelContextWindow(contextWindow)
         }
-        if let store = configurationStore {
-            if var config = try? await store.load() {
-                config.providers.model = envelope.payload.model
-                try? await store.save(config)
-            }
+        if let store = configurationStore, let config = try? await store.load() {
+            // Rebuilt, not mutated: ProvidersConfiguration encodes from its
+            // account/profile form, so `config.providers.model = …` never landed.
+            try? await store.saveProviders(ProvidersConfiguration(
+                schema: config.providers.schema, version: config.providers.version,
+                model: "\(selection.providerID)/\(selection.modelID)",
+                providers: config.providers.providers))
         }
         let watermark = await runtimeEventLog.currentWatermark()
         let result = ModelSelectionInfo(modelID: envelope.payload.model, providerID: selection.providerID)
@@ -4211,9 +4451,21 @@ extension CoreHost {
             auth = .none
         }
 
-        let contextWindow = (try? await modelContextWindow(for: fullModelValue)) ?? 128_000
-        let maxOutput = 4_096
-        let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow, maxOutputTokens: maxOutput, source: "custom:\(fullModelValue)")
+        // Effective settings for this model: user override → catalog default →
+        // Core's last-resort default. Reading them here is what makes the
+        // 「编辑模型」 form part of the runtime path instead of a note.
+        let storedModel = providerConfig.models[selection.modelID]
+        let settings: ProviderModelEffectiveValues
+        if let storedModel {
+            settings = await CoreHost.effectiveModelSettings(
+                providerID: providerID, modelID: selection.modelID, model: storedModel)
+        } else {
+            settings = await ModelCatalogDefaults.resolve(providerID: providerID, modelID: selection.modelID)
+                .effectiveOrDefaults()
+        }
+        let contextProfile = ModelContextProfile(contextWindowTokens: settings.contextWindow,
+                                                 maxOutputTokens: settings.maxOutputTokens,
+                                                 source: "custom:\(fullModelValue)")
 
         let runtimeConfig = ProviderConfig(
             baseURL: baseURL,
@@ -4223,8 +4475,9 @@ extension CoreHost {
             diagnosticsEnabled: false,
             performanceDiagnosticsEnabled: false,
             remoteStateEnabled: false,
-            maxOutputTokens: maxOutput,
-            requiredHeaders: providerConfig.options.headers
+            maxOutputTokens: settings.maxOutputTokens,
+            requiredHeaders: providerConfig.options.headers,
+            parallelToolCalling: settings.parallelToolCalling
         )
 
         let provenance = ProviderProvenanceStore(directory: dataRootURL?.appendingPathComponent("provider-provenance", isDirectory: true))
@@ -4252,7 +4505,21 @@ extension CoreHost {
                 baseURL: baseURL,
                 wireProtocol: wireProtocol,
                 contextProfile: contextProfile,
-                capabilities: ModelCapabilities(toolCalling: true, parallelToolCalling: true, reasoning: true, vision: true, structuredOutput: true)
+                capabilities: ModelCapabilities(
+                    toolCalling: settings.toolCalling,
+                    parallelToolCalling: settings.parallelToolCalling,
+                    reasoning: settings.reasoning,
+                    vision: settings.vision,
+                    structuredOutput: settings.structuredOutput),
+                rateLimits: ProviderRateLimits(
+                    tpm: settings.tokensPerMinute,
+                    rpm: settings.requestsPerMinute,
+                    maxConcurrentRequests: settings.maxConcurrentRequests,
+                    retryPolicy: ProviderRetryPolicy(
+                        maxRetries: settings.maxRetries,
+                        initialDelayMilliseconds: settings.initialRetryDelayMilliseconds,
+                        maxDelayMilliseconds: settings.maxRetryDelayMilliseconds,
+                        jitterRatio: settings.retryJitterRatio))
             )
         )
     }
@@ -4442,6 +4709,98 @@ extension CoreHost {
             eventCursor: await runtimeEventLog.currentCursor(),
             payload: summary
         )
+    }
+
+    /// The language services running for the current workspace, per language.
+    ///
+    /// Only a client Core has actually started is reported: an enabled feature
+    /// with no server running yet is an honest empty list, not a fake state.
+    public func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> {
+        let running = await codeIntelligence?.languageServiceStatuses() ?? [:]
+        let payload = running
+            .map { LanguageServiceStatus(language: $0.key, state: LanguageServiceState(rawValue: $0.value.rawValue) ?? .stopped) }
+            .sorted { $0.language < $1.language }
+        return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: payload)
+    }
+
+    /// What the settings window may claim about a named tool: whether it is
+    /// registered, whether the model has to load it first, how the permission
+    /// policy treats it, and whether the thing it drives is reachable here.
+    public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
+        let registry = toolRuntime.registry
+        let configuration = await permissionEngine.currentConfiguration()
+        var payload: [ToolStatusEntry] = []
+        for rawID in envelope.payload.toolIDs {
+            let id = ToolID(rawID)
+            guard let definition = registry.tool(for: id)?.definition else {
+                payload.append(ToolStatusEntry(toolID: rawID, exposure: .unavailable, backendReady: false))
+                continue
+            }
+            let request = PermissionRequest(
+                permissionID: PermissionID("status-\(UUID().uuidString)"),
+                sessionID: SessionID("status"),
+                toolCallID: ToolCallID("status"),
+                toolID: id,
+                capabilities: definition.capability.kinds,
+                resource: "tool://\(rawID)",
+                description: definition.description)
+            let backend = await backendStatus(for: rawID)
+            payload.append(ToolStatusEntry(
+                toolID: rawID,
+                exposure: ToolRuntime.coreToolIDs.contains(id) ? .core : .onDemand,
+                permission: await permissionEngine.preview(request, configuration: configuration),
+                backendReady: backend.ready,
+                backendDetail: backend.detail))
+        }
+        return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: payload)
+    }
+
+    /// The out-of-process thing a tool drives, when there is one. A tool that is
+    /// fully in-process has no backend to report.
+    private func backendStatus(for toolID: String) async -> (ready: Bool, detail: String?) {
+        switch toolID {
+        case "browser_navigate", "browser_act":
+            let host = await browserSessionManager.hostStatus()
+            return (host.ready, host.detail)
+        default:
+            return (true, nil)
+        }
+    }
+
+    /// The Agent's live browser sessions, as the host last reported them.
+    ///
+    /// Read-only by design: the page itself belongs to the Agent's browser host,
+    /// and this round shares no page with the GUI, so only the facts Core holds —
+    /// URL, title, tab, snapshot generation and element count — are exposed.
+    public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {
+        let states = await browserSessionManager.sessionStates()
+        let payload = states.map { state -> BrowserSessionStatus in
+            var tabID: String?
+            if case let .browser(tab, _, _) = state.latestObservation?.source { tabID = tab }
+            return BrowserSessionStatus(
+                sessionID: state.sessionID,
+                url: state.currentURL,
+                title: state.currentTitle,
+                tabID: tabID,
+                observationVersion: state.latestObservation?.version,
+                observedAt: state.latestObservation?.observedAt,
+                observedElementCount: state.latestObservation?.elements.count ?? 0)
+        }
+        return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: payload)
+    }
+
+    /// A page image from one live Agent browser session, taken on demand.
+    public func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> {
+        let request = envelope.payload
+        let live = await browserSessionManager.sessionStates()
+        guard live.contains(where: { $0.sessionID == request.sessionID }) else {
+            throw CoreError(code: .toolArgumentInvalid, message: "没有 ID 为 \(request.sessionID) 的 Agent 浏览器会话")
+        }
+        let capture = try await browserSessionManager.captureScreenshot(
+            sessionID: request.sessionID, savePath: request.savePath)
+        return ResponseEnvelope(
+            requestID: envelope.requestID, revision: currentRevision,
+            payload: BrowserCapture(sessionID: request.sessionID, base64JPEG: capture.base64, savedPath: capture.path))
     }
 
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
@@ -4643,22 +5002,46 @@ extension CoreHost {
         }
         let watermark = await runtimeEventLog.currentWatermark()
         let providerID = envelope.payload.providerID
-        var reachable = true
-        var latencyMs: Double? = 12.5
-        var message: String? = "OK"
+        var reachable = false
+        var latencyMs: Double?
+        var message: String?
 
         if let refresher = oauthRefreshers[providerID] {
+            // A live refresher is the authority: prove the token still works.
             do {
                 _ = try await refresher.validAccessToken()
+                reachable = true
             } catch let error as OAuthRefreshError {
-                reachable = false
-                latencyMs = nil
                 message = error.errorDescription ?? error.localizedDescription
             } catch {
-                reachable = false
-                latencyMs = nil
                 message = error.localizedDescription
             }
+        } else if let store = configurationStore, let snapshot = try? await store.load(),
+                  let provider = snapshot.providers.providers[providerID] {
+            let secret = await resolveProviderSecret(provider.options.apiKey, providerID: providerID)
+            do {
+                let outcome = try await ProviderConnectivityProbe.probe(
+                    baseURL: provider.options.baseURL, adapter: provider.adapter,
+                    apiKeyHeader: provider.options.apiKeyHeader, credential: secret,
+                    headers: provider.options.headers)
+                reachable = true
+                latencyMs = outcome.latencyMs
+            } catch {
+                message = Self.providerTestMessage(error)
+            }
+        } else if let profile = BuiltinProviderCatalog.profile(for: providerID) {
+            let secret = await resolveProviderSecret(nil, providerID: providerID)
+            do {
+                let outcome = try await ProviderConnectivityProbe.probe(
+                    baseURL: profile.endpoint, adapter: Self.testAdapter(for: profile.protocolFamily),
+                    credential: secret)
+                reachable = true
+                latencyMs = outcome.latencyMs
+            } catch {
+                message = Self.providerTestMessage(error)
+            }
+        } else {
+            message = "未找到 Provider \(providerID)"
         }
 
         let result = TestProviderResult(providerID: providerID, reachable: reachable, latencyMs: latencyMs, message: message)
@@ -4688,7 +5071,7 @@ extension CoreHost {
             accountType: .apiKey,
             credentialRef: envelope.payload.credentialReference,
             endpoint: envelope.payload.endpointURL,
-            availability: "configured"
+            availability: .configured
         )
         runtimeProviderAccounts[info.id] = info
         let receipt = CommandReceipt<ProviderAccountInfo>(
@@ -5151,6 +5534,9 @@ extension CoreHost {
             await oldCI.shutdown()
         }
         self.codeIntelligence = candidateCodeIntelligence
+        // An interactive shell belongs to the workspace it was opened in.
+        await self.terminalSessions?.closeAll()
+        self.terminalSessions = nil
 
         // 关键闭环：更新 AgentRuntime 内部持有的 ToolRuntime、Scanner、Pager 和 BehaviorContext
         if let agent = self.agent {

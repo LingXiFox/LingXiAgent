@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  🦊 LingXiAgent 一键全自动安装部署器 (Official One-Line Installer)
+#  LingXiAgent 一键全自动安装部署器 (Official One-Line Installer)
 #  URL: https://agent.lingxifox.cn/install.sh
 #  Repo: https://github.com/LingXiFox/LingXiAgent
 # ==============================================================================
@@ -20,7 +20,7 @@ RESET="\033[0m"
 echo -e "${PURPLE}"
 cat << "EOF"
   /\_/\  
- ( o.o )  🦊 LingXiAgent — Native Swift AI Coding Agent
+ ( o.o )  LingXiAgent — Native Swift AI Coding Agent
   > ^ <   LingXiAgent · Terminal AI Coding Agent Installer
 EOF
 echo -e "${RESET}"
@@ -328,7 +328,7 @@ if [ -x "$TARGET_BIN" ]; then
     echo -e "     ${GREEN}${BOLD}lingxiagent${RESET}"
     echo ""
     echo -e "${GRAY}📖 官方文档: https://agent.lingxifox.cn/#docs${RESET}"
-    echo -e "${GRAY}🦊 祝主人编程愉快！${RESET}"
+    echo -e "${GRAY}感谢使用 LingXiAgent。${RESET}"
     echo ""
 else
     echo -e "${RED}[ERROR] 安装验证失败，未找到可执行文件: ${TARGET_BIN}${RESET}"

@@ -155,7 +155,7 @@ struct ProviderConnectionApplicationTests {
             case let .createProviderAccount(request):
                 if failAccount { return .error(CoreError(code: .provider, message: "account create failed")) }
                 createdRequest = request
-                return .providerAccount(ProviderAccountInfo(id: "account", productID: request.productID, displayName: request.displayName, accountType: request.accountType, credentialRef: request.credentialRef, endpoint: request.endpoint, availability: "configured"))
+                return .providerAccount(ProviderAccountInfo(id: "account", productID: request.productID, displayName: request.displayName, accountType: request.accountType, credentialRef: request.credentialRef, endpoint: request.endpoint, availability: .configured))
             case let .deleteProviderAccount(accountID, deleteUnusedCredential):
                 deletedAccountIDs.append(accountID); lastDeleteUnusedCredential = deleteUnusedCredential
                 return .providerDisconnected(ProviderDisconnectResult(accountID: accountID, credentialDeleted: false))
@@ -169,5 +169,24 @@ struct ProviderConnectionApplicationTests {
         func openDataStream(_ command: ClientCommand) async throws -> OpenedStream { throw CoreError(code: .unsupportedCommand, message: "unsupported") }
         func toolOutputEvents() async -> AsyncStream<ToolOutputChunk> { AsyncStream { $0.finish() } }
         func events() async -> AsyncStream<CoreEvent> { AsyncStream { $0.finish() } }
+    }
+
+    @Test("Account availability is a contract enum, not a string the UI guesses at")
+    func accountAvailabilityContract() throws {
+        let json = #"{"id":"a","productID":"p","displayName":"P","accountType":"oauthUser","credentialRef":null,"endpoint":null,"availability":"reauthenticationRequired"}"#
+        let account = try JSONDecoder().decode(ProviderAccountInfo.self, from: Data(json.utf8))
+        #expect(account.availability == .reauthenticationRequired)
+
+        // The wire keeps Core's own spelling, so older clients still parse it.
+        let encoded = try JSONEncoder().encode(account)
+        #expect(String(data: encoded, encoding: .utf8)?.contains("reauthenticationRequired") == true)
+
+        let refresh = #"{"id":"a","productID":"p","displayName":"P","accountType":"oauthUser","credentialRef":null,"endpoint":null,"availability":"refresh_failed"}"#
+        #expect(try JSONDecoder().decode(ProviderAccountInfo.self, from: Data(refresh.utf8)).availability == .refreshFailedTransient)
+
+        // A value this build has never seen reads as unknown instead of being
+        // mapped onto a nearby, wrong state.
+        let future = #"{"id":"a","productID":"p","displayName":"P","accountType":"oauthUser","credentialRef":null,"endpoint":null,"availability":"rotating-something-new"}"#
+        #expect(try JSONDecoder().decode(ProviderAccountInfo.self, from: Data(future.utf8)).availability == .unknown)
     }
 }

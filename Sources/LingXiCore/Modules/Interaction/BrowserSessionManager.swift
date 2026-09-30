@@ -56,8 +56,21 @@ public actor BrowserSessionManager {
         }
     }
 
-    private func ensureClient() async throws -> BrowserHostClient {
-        if let client = hostClient {
+    /// Whether the browser host this manager drives could start here. Checks
+    /// the resolved paths only; it never launches anything.
+    public func hostStatus() -> (ready: Bool, detail: String) {
+        guard mode == .real else { return (false, "当前指向 mock 宿主，不是真实浏览器") }
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            return (false, "未找到浏览器宿主：\(scriptPath)")
+        }
+        let node = BrowserHostClient.resolveNodeExecutable()
+        guard node.extraArgs.isEmpty else {
+            return (false, "未找到 Node 运行时（可用 LINGXI_NODE_PATH 指定）")
+        }
+        return (true, "\(node.executable) · \(scriptPath)")
+    }
+
+    private func ensureClient() async throws -> BrowserHostClient {        if let client = hostClient {
             return client
         }
         let client = BrowserHostClient(scriptPath: scriptPath, mode: mode)
@@ -181,9 +194,15 @@ public actor BrowserSessionManager {
         return try await client.capture(sessionID: sessionID, savePath: savePath)
     }
 
+    /// The browser sessions Core is holding right now, as they were last
+    /// reported by the host. A read-only projection for front ends: nothing here
+    /// creates, closes or steers a session.
+    public func sessionStates() -> [BrowserSessionState] {
+        sessions.values.sorted { $0.sessionID < $1.sessionID }
+    }
+
     /// 关闭会话
-    public func close(sessionID: String) async {
-        if let client = hostClient {
+    public func close(sessionID: String) async {        if let client = hostClient {
             try? await client.closeSession(sessionID: sessionID)
         }
         sessions.removeValue(forKey: sessionID)

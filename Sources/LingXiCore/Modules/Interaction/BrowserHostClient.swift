@@ -66,6 +66,20 @@ public final class BrowserHostClient: @unchecked Sendable {
         return ("/usr/bin/env", ["node"])
     }
 
+    /// The environment the host process actually gets: the sanitized parent plus
+    /// the values the host reads. Anything else would either leak credentials or
+    /// silently drop a switch the host depends on — the Linux sandbox flag is
+    /// read by the host, so it has to cross.
+    static func childEnvironment(mode: BrowserHostMode,
+                                 parent: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = EnvironmentSanitizer.sanitized(from: parent)
+        env["LINGXI_BROWSER_HOST_MODE"] = mode.rawValue
+        for key in ["LINGXI_BROWSER_DISABLE_SANDBOX"] where parent[key]?.isEmpty == false {
+            env[key] = parent[key]
+        }
+        return env
+    }
+
     public init(
         executablePath: String? = nil,
         scriptPath: String,
@@ -86,8 +100,7 @@ public final class BrowserHostClient: @unchecked Sendable {
 
         // Inheriting the full parent environment would hand the sidecar every LINGXI_* credential
         // var the host has. Sanitize first, then re-add only what the browser host actually needs.
-        var procEnv = EnvironmentSanitizer.sanitized()
-        procEnv["LINGXI_BROWSER_HOST_MODE"] = mode.rawValue
+        let procEnv = Self.childEnvironment(mode: mode)
 
         let managedProc = ManagedProcess(
             executablePath: resolvedExec,

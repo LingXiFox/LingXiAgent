@@ -1,0 +1,20 @@
+[
+  {
+    "description": "",
+    "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@a654841425914cbb703a2931e07b70a83aedbafd/inspector.html?ws=127.0.0.1:49174/devtools/page/8A3D9B1D52826A7389A39A0C85718943",
+    "id": "8A3D9B1D52826A7389A39A0C85718943",
+    "title": "LingXiAgent Layered Browser Test",
+    "type": "page",
+    "url": "http://127.0.0.1:65383/popup",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:49174/devtools/page/8A3D9B1D52826A7389A39A0C85718943"
+  },
+  {
+    "description": "",
+    "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@a654841425914cbb703a2931e07b70a83aedbafd/inspector.html?ws=127.0.0.1:49174/devtools/page/1888F864A1FC54C5386827AF5BE5CFD6",
+    "id": "1888F864A1FC54C5386827AF5BE5CFD6",
+    "title": "LingXiAgent Layered Browser Test",
+    "type": "page",
+    "url": "http://127.0.0.1:65383/",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:49174/devtools/page/1888F864A1FC54C5386827AF5BE5CFD6"
+  }
+]

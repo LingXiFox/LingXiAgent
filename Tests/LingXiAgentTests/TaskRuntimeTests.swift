@@ -5,6 +5,33 @@ import LingXiProtocol
 
 struct TaskRuntimeTests {
 
+    @Test("CoreHost task RPCs persist created and cancelled tasks")
+    func coreHostTaskService() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("task_service_test_\(UUID().uuidString)")
+        let projectDir = tempDir.appendingPathComponent("project_root")
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let workspace = try WorkspaceRoot(path: projectDir.path)
+        let host = try CoreHost(workspaceRoot: workspace, dataRoot: tempDir)
+        let session = SessionID("task-service-session")
+        let created = try await host.createTask(envelope: CommandEnvelope(payload:
+            CreateTaskRequest(sessionID: session, objective: "Verify task service")))
+        let id = try #require(created.result?.capsule.taskID)
+
+        let listed = try await host.listTasks(envelope: QueryEnvelope(payload: ListTasksRequest(sessionID: session)))
+        #expect(listed.payload.count == 1)
+        #expect(listed.payload[0].capsule.taskID == id)
+
+        let cancelled = try await host.cancelTask(envelope: CommandEnvelope(payload:
+            TaskLifecycleRequest(taskID: id, command: .cancel)))
+        #expect(cancelled.result?.capsule.state == .cancelled)
+
+        let reopened = try CoreHost(workspaceRoot: workspace, dataRoot: tempDir)
+        let loaded = try await reopened.getTask(envelope: QueryEnvelope(payload: GetTaskRequest(taskID: id)))
+        #expect(loaded.payload.capsule.state == .cancelled)
+    }
+
     @Test("TaskRuntime registers capsule, serializes state transitions, and records events in SQLitePersistenceStore")
     func taskRuntimeLifecycleAndPersistence() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("task_runtime_test_\(UUID().uuidString)")

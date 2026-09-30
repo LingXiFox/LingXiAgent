@@ -1,0 +1,4 @@
+[0930/154334.794325:WARNING:cef/libcef/common/resource_util.cc:83] Please customize CefSettings.root_cache_path for your application. Use of the default value may lead to unintended process singleton behavior.
+
+DevTools listening on ws://127.0.0.1:49174/devtools/browser/c5e83f6e-a2f4-4aa4-a1aa-9c5a314936d0
+[45356:8177444:0930/154337.083450:ERROR:base/mac/process_requirement.cc:159] Unable to derive validation category for current process. Signature validation of current process failed: Error Domain=NSOSStatusErrorDomain Code=-67030 "(null)" (-67030)

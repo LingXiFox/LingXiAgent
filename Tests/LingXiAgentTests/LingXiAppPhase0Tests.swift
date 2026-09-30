@@ -131,11 +131,11 @@ struct LingXiAppPhase0Tests {
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // Repo root
 
-        let sharedDir = repoRoot.appendingPathComponent("Apps/LingXiApp/Shared")
+        let appsDir = repoRoot.appendingPathComponent("Apps")
         let fileManager = FileManager.default
 
-        guard let enumerator = fileManager.enumerator(at: sharedDir, includingPropertiesForKeys: nil) else {
-            Issue.record("Failed to enumerate Apps/LingXiApp/Shared")
+        guard let enumerator = fileManager.enumerator(at: appsDir, includingPropertiesForKeys: nil) else {
+            Issue.record("Failed to enumerate Apps")
             return
         }
 

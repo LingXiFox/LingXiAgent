@@ -29,6 +29,37 @@ struct BrowserSessionManagerTests {
         }
     }
 
+    @Test("The host gets the switches it reads and no other LINGXI value")
+    func childEnvironmentForwardsHostSwitches() {
+        let parent = ["LINGXI_BROWSER_HOST_MODE": "mock",
+                      "LINGXI_BROWSER_DISABLE_SANDBOX": "1",
+                      "LINGXI_API_KEY": "sk-must-not-travel",
+                      "PATH": "/usr/bin:/bin",
+                      "HOME": "/root"]
+        let env = BrowserHostClient.childEnvironment(mode: .real, parent: parent)
+        #expect(env["LINGXI_BROWSER_DISABLE_SANDBOX"] == "1",
+                "Linux 与容器里读不到这个开关就起不了 Chromium")
+        #expect(env["LINGXI_BROWSER_HOST_MODE"] == "real", "模式由 Core 决定，不随父进程")
+        #expect(env["LINGXI_API_KEY"] == nil)
+
+        let empty = BrowserHostClient.childEnvironment(mode: .mock,
+                                                      parent: ["LINGXI_BROWSER_DISABLE_SANDBOX": ""])
+        #expect(empty["LINGXI_BROWSER_DISABLE_SANDBOX"] == nil, "空值不等于打开")
+    }
+
+    @Test("Every action browser_act advertises is one the host performs")
+    func advertisedActionsExistInTheHost() async throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sidecars/browser-host/index.mjs")
+        let source = try String(contentsOf: script, encoding: .utf8)
+        let advertised = BrowserActTool().definition.inputSchema.properties["action"]?.enumValues ?? []
+        #expect(advertised.contains("hover"), "枚举不该再退回只认点击")
+        for action in advertised {
+            #expect(source.contains("\"\(action)\""), "browser_act 宣传 \(action)，宿主没有实现")
+        }
+    }
+
     @Test("BrowserHostClient protocol cycle in explicit Mock mode")
     func testSidecarHandshakeAndProtocolCycleInMockMode() async throws {
         let scriptPath = URL(fileURLWithPath: #filePath)
@@ -123,7 +154,14 @@ struct BrowserSessionManagerTests {
             )
         }
 
-        // 4. 清理会话
+        // 4. 会话状态投影读出 host 真实报告的页面
+        let states = await manager.sessionStates()
+        #expect(states.map(\.sessionID) == [sessionID])
+        #expect(states.first?.currentURL.isEmpty == false)
+        #expect(states.first?.latestObservation != nil)
+
+        // 5. 清理会话
         await manager.close(sessionID: sessionID)
+        #expect(await manager.sessionStates().isEmpty)
     }
 }

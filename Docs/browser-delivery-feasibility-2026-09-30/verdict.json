@@ -1,0 +1,40 @@
+{
+  "cefCommit": "682c378",
+  "sources": {
+    "cef_types_mac.h": {
+      "url": "https://raw.githubusercontent.com/chromiumembedded/cef/682c378/include/internal/cef_types_mac.h",
+      "sha256": "112154288332dac0dfb9b147d4910a18995cb11942267ecbf9731938723c9845"
+    },
+    "browser_host_create.cc": {
+      "url": "https://raw.githubusercontent.com/chromiumembedded/cef/682c378/libcef/browser/browser_host_create.cc",
+      "sha256": "6eacf94c20978f2e4d3a05225d6c1a45d78cdab0c8742444e8e29287b56afe78"
+    }
+  },
+  "contractCheck": "PASS: macOS native parent disables Chrome style and resets to Alloy",
+  "binaryChromeEmbeddingTest": "NOT RUN: documented and implemented unsupported path",
+  "externalChromium": {
+    "tests": {
+      "automaticPopupThreeCycles": "PASS",
+      "agentInput": "PASS",
+      "nativeTakeoverSameDocument": "NOT RUN: CUA resolves existing personal Chrome instance; no native actions performed",
+      "agentResumeSameDocument": "PASS",
+      "gracefulBrowserClose": "PASS"
+    },
+    "versions": {
+      "playwright": "1.63.0",
+      "chrome": "153.0.8010.53"
+    },
+    "documentId": "16c352a9-65a4-4abb-94d7-480f4c0b78f0",
+    "nativeReady": {
+      "url": "http://127.0.0.1:50751",
+      "title": "LingXiAgent Delivery Validation",
+      "expected": "Native takeover"
+    }
+  },
+  "nativeUIAttempt": "NOT RUN: CUA selected the existing personal Chrome process; no native actions were performed. Initial harness timed out and closed its own context.",
+  "probeExitCodes": {
+    "nativeAttempt": 1,
+    "automationOnly": 0
+  },
+  "productDiffSHA256": "1ca577d1d7ee7a3ee0ad61ec5914e4599da3584643d7da9a711ae61a218d5b10"
+}

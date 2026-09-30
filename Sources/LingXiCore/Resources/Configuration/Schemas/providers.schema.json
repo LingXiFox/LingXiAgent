@@ -41,7 +41,6 @@
                     "context": { "type": "integer", "minimum": 1 },
                     "output": { "type": "integer", "minimum": 1 }
                   },
-                  "required": ["context", "output"],
                   "additionalProperties": false
                 },
                 "toolCalling": { "type": "boolean" },
@@ -68,7 +67,7 @@
                   "additionalProperties": false
                 }
               },
-              "required": ["name", "limit"],
+              "required": ["name"],
               "additionalProperties": false
             }
           }

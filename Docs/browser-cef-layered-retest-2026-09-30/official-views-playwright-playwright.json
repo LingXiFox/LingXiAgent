@@ -1,0 +1,34 @@
+{
+  "phase": "official-views-playwright",
+  "events": [
+    {
+      "event": "page",
+      "url": "http://127.0.0.1:65383/popup"
+    }
+  ],
+  "mainBefore": {
+    "documentId": "203ef4fb-017c-4425-afe7-da4d2a404b2d",
+    "popupCount": 0
+  },
+  "mainAfter": {
+    "documentId": "203ef4fb-017c-4425-afe7-da4d2a404b2d",
+    "popupCount": 0,
+    "trusted": true,
+    "result": "Playwright 同页测试"
+  },
+  "popup": {
+    "documentId": "9196255e-79ea-4e05-bee3-34e65a88998d",
+    "popupCount": 0,
+    "url": "http://127.0.0.1:65383/popup"
+  },
+  "popupAfter": {
+    "documentId": "9196255e-79ea-4e05-bee3-34e65a88998d",
+    "popupCount": 0,
+    "trusted": true,
+    "result": "Automated popup"
+  },
+  "pages": [
+    "http://127.0.0.1:65383/",
+    "http://127.0.0.1:65383/popup"
+  ]
+}

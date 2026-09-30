@@ -8,9 +8,9 @@ struct FoxPlugin: LingXiPlugin {
     var manifest: LingXiPluginSDK.PluginManifest {
         LingXiPluginSDK.PluginManifest(
             id: "fox-plugin",
-            name: "灵犀小狐狸健康管家",
+            name: "LingXiAgent 诊断插件",
             version: "1.0.0",
-            description: "灵犀官方参考插件：提供双核运行指标诊断与 /fox-info 交互命令",
+            description: "LingXiAgent 官方参考插件：提供双核运行指标诊断与 /fox-info 交互命令",
             author: "LingXiFox",
             capabilities: [.projectRead]
         )
@@ -25,7 +25,7 @@ struct FoxPlugin: LingXiPlugin {
 
         // 3. 注册生命周期钩子
         context.on(.sessionStart) { payload in
-            context.logger.info("🦊 灵犀小狐狸插件感知到新会话启动: \(payload.subjectID)")
+            context.logger.info("LingXiAgent 诊断插件收到会话启动事件: \(payload.subjectID)")
         }
     }
 }
@@ -34,7 +34,7 @@ struct FoxPlugin: LingXiPlugin {
 struct FoxInfoCommand: PluginCommand {
     let name = "fox-info"
     let aliases = ["fox", "fox-health"]
-    let description = "查看小狐狸插件状态、双核指标与当前工作区详情"
+    let description = "查看 LingXiAgent 诊断插件状态、双核指标与当前工作区详情"
     let category = "Plugin"
 
     func execute(args: [String], context: CommandExecutionContext) async throws -> PluginCommandResult {
@@ -54,27 +54,27 @@ struct FoxInfoCommand: PluginCommand {
           • 首字延迟     : \(perf.timeToFirstTokenMs) ms
           • 附加参数     : \(args.isEmpty ? "无" : args.joined(separator: " "))
 
-        🐾 恭喜主人！外部二进制插件已成功通过 IPC 沙箱在 LingXiAgent 跑通！
+        外部二进制插件已通过 IPC 沙箱连接 LingXiAgent。
         """
-        return .message(info, presentation: .modal, title: "小狐狸健康管家 (/fox-info)")
+        return .message(info, presentation: .modal, title: "LingXiAgent 诊断插件 (/fox-info)")
     }
 }
 
 /// 模型自主调用工具：fox_ping
 struct FoxPingTool: PluginTool {
     let name = "fox_ping"
-    let description = "小狐狸探针工具：返回插件进程的心跳与当前系统时间戳"
+    let description = "LingXiAgent 诊断探针：返回插件进程的心跳与当前系统时间戳"
     let inputSchema = """
     {
       "type": "object",
       "properties": {
-        "message": { "type": "string", "description": "要发送给小狐狸的问候语" }
+        "message": { "type": "string", "description": "发送给诊断插件的消息" }
       }
     }
     """
 
     func execute(arguments: String, context: LingXiPluginSDK.ToolExecutionContext) async throws -> String {
         context.logger.info("fox_ping 被调用，参数: \(arguments)")
-        return "🦊 Pong! 小狐狸收到你的消息: \(arguments)，插件进程运行正常！"
+        return "Pong! LingXiAgent 诊断插件收到消息: \(arguments)，插件进程运行正常！"
     }
 }

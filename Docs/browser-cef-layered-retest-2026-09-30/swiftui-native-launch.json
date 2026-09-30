@@ -1,0 +1,15 @@
+{
+  "pid": 50808,
+  "argv": [
+    "/private/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/MacOS/cefsimple",
+    "--url=http://127.0.0.1:65383",
+    "--use-native",
+    "--use-alloy-style",
+    "--swiftui-host",
+    "--force-renderer-accessibility",
+    "--use-mock-keychain",
+    "--remote-debugging-port=0",
+    "--root-cache-path=/private/tmp/lingxi-cef-layered-retest-20260930/swiftui-native-profile",
+    "--cache-path=/private/tmp/lingxi-cef-layered-retest-20260930/swiftui-native-profile"
+  ]
+}

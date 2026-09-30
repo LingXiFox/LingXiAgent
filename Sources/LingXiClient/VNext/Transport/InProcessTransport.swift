@@ -306,6 +306,82 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.configureExtension(envelope: envelope)
     }
 
+    public func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
+        try await service.getProviderConfiguration(envelope: envelope)
+    }
+
+    public func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
+        try await service.saveProviderConfiguration(envelope: envelope)
+    }
+
+    public func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.deleteProviderConfiguration(envelope: envelope)
+    }
+
+    public func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult> {
+        try await service.testProviderDraft(envelope: envelope)
+    }
+
+    public func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> {
+        try await service.listProviderAuthProducts(envelope: envelope)
+    }
+
+    public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        try await service.connectProvider(envelope: envelope)
+    }
+
+    public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
+        try await service.getProviderCatalog(envelope: envelope)
+    }
+
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+        try await service.getProviderCatalogModels(envelope: envelope)
+    }
+
+    public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {
+        try await service.beginProviderAuth(envelope: envelope)
+    }
+
+    public func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow> {
+        try await service.getProviderAuthFlow(envelope: envelope)
+    }
+
+    public func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.cancelProviderAuth(envelope: envelope)
+    }
+
+    public func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {
+        try await service.listMCPServerConfigurations(envelope: envelope)
+    }
+
+    public func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> {
+        try await service.saveMCPServerConfiguration(envelope: envelope)
+    }
+
+    public func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.deleteMCPServerConfiguration(envelope: envelope)
+    }
+
+    public func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {
+        try await service.createWorktree(envelope: envelope)
+    }
+
+    public func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> {
+        try await service.listWorktrees(envelope: envelope)
+    }
+
+    public func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.applyWorktree(envelope: envelope)
+    }
+
+    public func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.discardWorktree(envelope: envelope)
+    }
+
+    public func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.pruneWorktrees(envelope: envelope)
+    }
+
     public func executeExtensionCommand(envelope: CommandEnvelope<ExecuteExtensionCommandRequest>) async throws -> CommandReceipt<ExtensionCommandExecutionResult> {
         try await service.executeExtensionCommand(envelope: envelope)
     }
@@ -325,6 +401,46 @@ public final class InProcessTransport: ClientTransport, Sendable {
 
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
         try await service.getWorkspaceDiffSummary(envelope: envelope)
+    }
+
+    public func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> {
+        try await service.getLanguageServiceStatuses(envelope: envelope)
+    }
+
+    public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
+        try await service.getToolStatus(envelope: envelope)
+    }
+
+    public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {
+        try await service.getBrowserSessions(envelope: envelope)
+    }
+
+    public func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> {
+        try await service.getBrowserCapture(envelope: envelope)
+    }
+
+    public func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]> {
+        try await service.listTerminalSessions(envelope: envelope)
+    }
+
+    public func spawnTerminalSession(envelope: CommandEnvelope<SpawnTerminalSessionRequest>) async throws -> CommandReceipt<TerminalSessionInfo> {
+        try await service.spawnTerminalSession(envelope: envelope)
+    }
+
+    public func readTerminalSession(envelope: QueryEnvelope<ReadTerminalSessionRequest>) async throws -> ResponseEnvelope<TerminalSessionOutput> {
+        try await service.readTerminalSession(envelope: envelope)
+    }
+
+    public func writeTerminalSession(envelope: CommandEnvelope<WriteTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.writeTerminalSession(envelope: envelope)
+    }
+
+    public func interruptTerminalSession(envelope: CommandEnvelope<InterruptTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.interruptTerminalSession(envelope: envelope)
+    }
+
+    public func closeTerminalSession(envelope: CommandEnvelope<CloseTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await service.closeTerminalSession(envelope: envelope)
     }
 
     // MARK: - LingXiProtocolService: 11. Resource & Content Data Plane

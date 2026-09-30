@@ -43,6 +43,12 @@ public actor PermissionEngine {
         await resolve(request, configuration: configuration, onAsk: onAsk).decision
     }
 
+    /// How the current policy would treat this request, without asking anyone.
+    public func preview(_ request: PermissionRequest, action: PermissionAction? = nil,
+                        configuration: PermissionConfiguration? = nil) -> PermissionDecision {
+        decision(for: request, action: action, configuration: configuration)
+    }
+
     public func resolve(
         _ request: PermissionRequest,
         action: PermissionAction? = nil,

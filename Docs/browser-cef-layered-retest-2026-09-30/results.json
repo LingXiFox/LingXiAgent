@@ -1,0 +1,43 @@
+{
+  "date": "2026-09-30",
+  "CEF": "154.0.32+g682c378+chromium-154.0.8037.58",
+  "Playwright": "1.63.0",
+  "macOS": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2\nBuildVersion:\t\t26B5091g\n",
+  "architecture": "arm64",
+  "signature": "Local ad-hoc signing; deep strict verification passed. Not vendor notarization.",
+  "trackedDiffSHA256": "1ca577d1d7ee7a3ee0ad61ec5914e4599da3584643d7da9a711ae61a218d5b10",
+  "tests": {
+    "official_native_alloy": {
+      "nativePopupInput": "PASS",
+      "exit": "FAIL: DoClose for main and popup; no OnBeforeClose; SIGTERM cleanup"
+    },
+    "swiftui_native_alloy": {
+      "nativeMainAndPopupInput": "PASS",
+      "exit": "FAIL: DoClose and main content release, no OnBeforeClose; SIGTERM cleanup"
+    },
+    "swiftui_alloy_playwright": {
+      "sameDocumentTrustedInput": "PASS",
+      "automaticPopup": "FAIL: click timeout; popup target URL empty"
+    },
+    "official_native_alloy_playwright": {
+      "sameDocumentTrustedInput": "PASS",
+      "automaticPopup": "FAIL: target other, waitingForDebugger true; Runtime.runIfWaitingForDebugger id60 unanswered"
+    },
+    "official_views_chrome_playwright": {
+      "sameDocumentTrustedInput": "PASS",
+      "automaticPopupTrustedInput": "PASS",
+      "exit": "PASS: both OnBeforeClose; CefShutdown begin/end; exit0"
+    }
+  },
+  "notRun": [
+    "Chrome-style SwiftUI embedding",
+    "IME candidate composition",
+    "GPU profiling",
+    "Product integration"
+  ],
+  "qualifications": [
+    "The initial pristine native run used ignored CLI cache flags and showed a blank popup. Controlled runs set CefSettings cache paths and enabled renderer AX; native popup loaded. Individual causality of the transient white screen is not established.",
+    "The first Views native run did not exit promptly after CmdQ; CmdW closed both browsers, but shutdown was not observed before SIGTERM cleanup. The later controlled Views/Chrome Playwright round completed graceful exit0.",
+    "This macOS beta and local ad-hoc signing may affect behavior. Findings apply to this configuration, not all CEF versions or platforms."
+  ]
+}

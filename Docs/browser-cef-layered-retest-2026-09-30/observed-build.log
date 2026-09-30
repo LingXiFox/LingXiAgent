@@ -1,0 +1,14 @@
+[ 93%] Built target libcef_dll_wrapper
+[ 93%] Linking CXX executable "Release/cefsimple Helper (Plugin).app/Contents/MacOS/cefsimple Helper (Plugin)"
+[ 93%] Linking CXX executable "Release/cefsimple Helper (GPU).app/Contents/MacOS/cefsimple Helper (GPU)"
+[ 93%] Linking CXX executable "Release/cefsimple Helper (Alerts).app/Contents/MacOS/cefsimple Helper (Alerts)"
+[ 96%] Built target cefsimple_Helper
+[ 96%] Linking CXX executable "Release/cefsimple Helper (Renderer).app/Contents/MacOS/cefsimple Helper (Renderer)"
+[100%] Built target cefsimple_Helper_renderer
+[100%] Built target cefsimple_Helper_gpu
+[100%] Built target cefsimple_Helper_alerts
+[100%] Built target cefsimple_Helper_plugin
+[100%] Building CXX object tests/cefsimple/CMakeFiles/cefsimple.dir/simple_handler.cc.o
+[100%] Building CXX object tests/cefsimple/CMakeFiles/cefsimple.dir/cefsimple_mac.mm.o
+[100%] Linking CXX executable Release/cefsimple.app/Contents/MacOS/cefsimple
+[100%] Built target cefsimple

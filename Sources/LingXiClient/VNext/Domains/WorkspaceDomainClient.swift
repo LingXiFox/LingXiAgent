@@ -28,6 +28,19 @@ public struct WorkspaceDomainClient: Sendable {
         return resp.payload
     }
 
+    /// Language servers Core has actually started for this workspace.
+    public func languageServices() async throws -> [LanguageServiceStatus] {
+        let resp = try await transport.getLanguageServiceStatuses(envelope: QueryEnvelope(payload: VoidResult()))
+        return resp.payload
+    }
+
+    /// What Core really knows about the named tools.
+    public func toolStatus(_ toolIDs: [String]) async throws -> [ToolStatusEntry] {
+        let req = GetToolStatusRequest(toolIDs: toolIDs)
+        let resp = try await transport.getToolStatus(envelope: QueryEnvelope(payload: req))
+        return resp.payload
+    }
+
     // MARK: - Worktree Operations (G10)
 
     public func createWorktree(name: String, baseRef: String? = nil) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {

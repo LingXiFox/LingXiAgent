@@ -1,0 +1,17 @@
+{
+  "tests": {
+    "automaticPopupThreeCycles": "PASS",
+    "agentInput": "PASS"
+  },
+  "versions": {
+    "playwright": "1.63.0",
+    "chrome": "153.0.8010.53"
+  },
+  "documentId": "a5afa375-7a6b-48f7-acec-b13e69ef7ac7",
+  "nativeReady": {
+    "url": "http://127.0.0.1:50640",
+    "title": "LingXiAgent Delivery Validation",
+    "expected": "Native takeover"
+  },
+  "error": "page.waitForFunction: Timeout 120000ms exceeded.\n    at /private/tmp/lingxi-browser-feasibility-20260930/probe.mjs:30:13"
+}

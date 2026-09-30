@@ -1,5 +1,5 @@
 # ==============================================================================
-#  🦊 LingXiAgent 一键全自动安装部署器 (Official Windows PowerShell Installer)
+#  LingXiAgent 一键全自动安装部署器 (Official Windows PowerShell Installer)
 #  URL: https://agent.lingxifox.cn/install.ps1
 #  Repo: https://github.com/LingXiFox/LingXiAgent
 # ==============================================================================
@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "  /\_/\  " -ForegroundColor Magenta
-Write-Host " ( o.o )  🦊 LingXiAgent — Native Swift AI Coding Agent" -ForegroundColor Magenta
+Write-Host " ( o.o )  LingXiAgent — Native Swift AI Coding Agent" -ForegroundColor Magenta
 Write-Host "  > ^ <   Windows PowerShell Installer" -ForegroundColor Magenta
 Write-Host ""
 
@@ -246,7 +246,7 @@ if (Test-Path $TargetBin) {
     Write-Host "     lingxiagent" -ForegroundColor Green
     Write-Host ""
     Write-Host "📖 官方文档: https://agent.lingxifox.cn/#docs" -ForegroundColor DarkGray
-    Write-Host "🦊 祝主人编程愉快！" -ForegroundColor DarkGray
+    Write-Host "感谢使用 LingXiAgent。" -ForegroundColor DarkGray
     Write-Host ""
 } else {
     Write-Host "[ERROR] 安装验证失败，未找到可执行文件: $TargetBin" -ForegroundColor Red

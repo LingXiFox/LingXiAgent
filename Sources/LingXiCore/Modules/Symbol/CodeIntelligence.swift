@@ -190,6 +190,11 @@ public actor CodeIntelligence {
     }
 
     public func status() async -> LSPClientState { await lsp.lifecycle() }
+
+    /// Lifecycle state of every language server this workspace has started.
+    public func languageServiceStatuses() async -> [String: LSPClientState] {
+        await coordinator.statusAll()
+    }
     public func refresh() async { _ = try? await pager.rebuildStaleFiles(using: scanner) }
     public func shutdown() async {
         await lsp.stop()

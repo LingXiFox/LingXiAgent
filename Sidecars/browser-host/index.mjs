@@ -212,7 +212,7 @@ rl.on("line", async (line) => {
           hostVersion: "lingxi-browser-host-1.1.0",
           mode: HOST_MODE,
           playwrightAvailable: isPlaywrightAvailable,
-          capabilities: ["navigation", "dom", "screenshot", "actions", "settle", "capture"]
+          capabilities: ["navigation", "dom", "screenshot", "actions", "capture"]
         });
         break;
       }
@@ -523,6 +523,10 @@ rl.on("line", async (line) => {
             }
             if (action.text) {
               await session.page.keyboard.type(action.text);
+            }
+          } else if (action.type === "hover") {
+            if (clickX !== undefined && clickY !== undefined) {
+              await session.page.mouse.move(clickX, clickY);
             }
           } else if (action.type === "key" || action.type === "keypress") {
             await session.page.keyboard.press(action.key || "Enter");

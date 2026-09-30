@@ -97,13 +97,13 @@ final class WebUIFrontend: Frontend, @unchecked Sendable {
         await terminal.waitUntilStopped()
         server.stop()
         if let reason = terminal.reason {
-            FileHandle.standardError.write(Data("🦊 [serve] stopped (\(reason))\n".utf8))
+            FileHandle.standardError.write(Data("[serve] stopped (\(reason))\n".utf8))
         }
     }
 
     private func renderBanner(options: WebUIServeOptions, server: WebUIServer) {
         var lines: [String] = []
-        lines.append("🦊 LingXiAgent WebUI")
+        lines.append("LingXiAgent WebUI")
         lines.append("   URL      \(server.baseURL)")
         lines.append("   Bind     \(options.host):\(server.port)"
             + (options.isLoopbackHost ? "  (loopback only)" : "  (REMOTE — token required)"))

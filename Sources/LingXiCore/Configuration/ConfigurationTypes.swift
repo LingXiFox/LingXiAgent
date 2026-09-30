@@ -497,30 +497,113 @@ public struct PublicProviderOptions: Codable, Sendable, Equatable {
     }
 }
 
-public struct PublicModelLimit: Codable, Sendable, Equatable {
-    public var context: Int
-    public var output: Int
+/// Per-field user overrides of a model's rate limits.
+///
+/// Stored alongside `providers.json`, where an absent key means "not
+/// overridden" — the model keeps following the catalog. `resolved()` is what
+/// the runtime uses once the last-resort defaults are applied.
+public struct StoredRateLimitOverrides: Codable, Sendable, Equatable {
+    public var tpm: Int?
+    public var rpm: Int?
+    public var maxConcurrentRequests: Int?
+    public var retryPolicy: StoredRetryPolicyOverrides?
 
-    public init(context: Int, output: Int) {
-        self.context = context
-        self.output = output
+    public init(tpm: Int? = nil, rpm: Int? = nil, maxConcurrentRequests: Int? = nil,
+                retryPolicy: StoredRetryPolicyOverrides? = nil) {
+        self.tpm = tpm
+        self.rpm = rpm
+        self.maxConcurrentRequests = maxConcurrentRequests
+        self.retryPolicy = retryPolicy
+    }
+
+    public var isEmpty: Bool {
+        tpm == nil && rpm == nil && maxConcurrentRequests == nil && retryPolicy?.isEmpty != false
+    }
+
+    /// A legacy profile states every field concretely; those values become
+    /// explicit overrides when the old shape is read.
+    init(runtime: ProviderRateLimits) {
+        self.init(
+            tpm: runtime.tpm,
+            rpm: runtime.rpm,
+            maxConcurrentRequests: runtime.maxConcurrentRequests,
+            retryPolicy: StoredRetryPolicyOverrides(
+                maxRetries: runtime.retryPolicy.maxRetries,
+                initialDelayMilliseconds: runtime.retryPolicy.initialDelayMilliseconds,
+                maxDelayMilliseconds: runtime.retryPolicy.maxDelayMilliseconds,
+                jitterRatio: runtime.retryPolicy.jitterRatio)
+        )
+    }
+
+    public func resolved() -> ProviderRateLimits {
+        guard !isEmpty else { return ProviderRateLimits() }
+        return ProviderRateLimits(tpm: tpm, rpm: rpm, maxConcurrentRequests: maxConcurrentRequests,
+                                  retryPolicy: retryPolicy?.resolved() ?? ProviderRetryPolicy())
     }
 }
 
+/// Per-field user overrides of the retry policy; JSON keys match `ProviderRetryPolicy`.
+public struct StoredRetryPolicyOverrides: Codable, Sendable, Equatable {
+    public var maxRetries: Int?
+    public var initialDelayMilliseconds: Int?
+    public var maxDelayMilliseconds: Int?
+    public var jitterRatio: Double?
+
+    public init(maxRetries: Int? = nil, initialDelayMilliseconds: Int? = nil,
+                maxDelayMilliseconds: Int? = nil, jitterRatio: Double? = nil) {
+        self.maxRetries = maxRetries
+        self.initialDelayMilliseconds = initialDelayMilliseconds
+        self.maxDelayMilliseconds = maxDelayMilliseconds
+        self.jitterRatio = jitterRatio
+    }
+
+    public var isEmpty: Bool {
+        maxRetries == nil && initialDelayMilliseconds == nil && maxDelayMilliseconds == nil
+            && jitterRatio == nil
+    }
+
+    public func resolved() -> ProviderRetryPolicy {
+        let defaults = ProviderRetryPolicy()
+        return ProviderRetryPolicy(
+            maxRetries: maxRetries ?? defaults.maxRetries,
+            initialDelayMilliseconds: initialDelayMilliseconds ?? defaults.initialDelayMilliseconds,
+            maxDelayMilliseconds: maxDelayMilliseconds ?? defaults.maxDelayMilliseconds,
+            jitterRatio: jitterRatio ?? defaults.jitterRatio)
+    }
+}
+
+public struct PublicModelLimit: Codable, Sendable, Equatable {
+    public var context: Int?
+    public var output: Int?
+
+    public init(context: Int? = nil, output: Int? = nil) {
+        self.context = context
+        self.output = output
+    }
+
+    public var isEmpty: Bool { context == nil && output == nil }
+}
+
+/// A model entry of `providers.json`.
+///
+/// Each capability, limit and rate field is an *optional override*: `nil` means
+/// the user never touched that field and the key is absent from the file, so a
+/// later catalog update still reaches the model. `ConfigurationTypes` never
+/// bakes a catalog value in here.
 public struct PublicModelConfiguration: Codable, Sendable, Equatable {
     public var name: String
-    public var reasoning: Bool
-    public var limit: PublicModelLimit
-    public var toolCalling: Bool
-    public var parallelToolCalling: Bool
-    public var vision: Bool
-    public var structuredOutput: Bool
+    public var reasoning: Bool?
+    public var limit: PublicModelLimit?
+    public var toolCalling: Bool?
+    public var parallelToolCalling: Bool?
+    public var vision: Bool?
+    public var structuredOutput: Bool?
     public var economicThreshold: Int?
     public var context: ContextCacheConfiguration?
-    public var rateLimits: ProviderRateLimits
+    public var rateLimits: StoredRateLimitOverrides?
     public var reasoningCapability: ReasoningCapability?
 
-    public init(name: String, reasoning: Bool = false, limit: PublicModelLimit, toolCalling: Bool = true, parallelToolCalling: Bool = true, vision: Bool = false, structuredOutput: Bool = false, economicThreshold: Int? = nil, context: ContextCacheConfiguration? = nil, rateLimits: ProviderRateLimits = ProviderRateLimits(), reasoningCapability: ReasoningCapability? = nil) {
+    public init(name: String, reasoning: Bool? = nil, limit: PublicModelLimit? = nil, toolCalling: Bool? = nil, parallelToolCalling: Bool? = nil, vision: Bool? = nil, structuredOutput: Bool? = nil, economicThreshold: Int? = nil, context: ContextCacheConfiguration? = nil, rateLimits: StoredRateLimitOverrides? = nil, reasoningCapability: ReasoningCapability? = nil) {
         self.name = name
         self.reasoning = reasoning
         self.limit = limit
@@ -539,15 +622,15 @@ public struct PublicModelConfiguration: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         name = try values.decode(String.self, forKey: .name)
-        reasoning = try values.decodeIfPresent(Bool.self, forKey: .reasoning) ?? false
-        limit = try values.decode(PublicModelLimit.self, forKey: .limit)
-        toolCalling = try values.decodeIfPresent(Bool.self, forKey: .toolCalling) ?? true
-        parallelToolCalling = try values.decodeIfPresent(Bool.self, forKey: .parallelToolCalling) ?? true
-        vision = try values.decodeIfPresent(Bool.self, forKey: .vision) ?? false
-        structuredOutput = try values.decodeIfPresent(Bool.self, forKey: .structuredOutput) ?? false
+        reasoning = try values.decodeIfPresent(Bool.self, forKey: .reasoning)
+        limit = try values.decodeIfPresent(PublicModelLimit.self, forKey: .limit)
+        toolCalling = try values.decodeIfPresent(Bool.self, forKey: .toolCalling)
+        parallelToolCalling = try values.decodeIfPresent(Bool.self, forKey: .parallelToolCalling)
+        vision = try values.decodeIfPresent(Bool.self, forKey: .vision)
+        structuredOutput = try values.decodeIfPresent(Bool.self, forKey: .structuredOutput)
         economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold)
         context = try values.decodeIfPresent(ContextCacheConfiguration.self, forKey: .context)
-        rateLimits = try values.decodeIfPresent(ProviderRateLimits.self, forKey: .rateLimits) ?? ProviderRateLimits()
+        rateLimits = try values.decodeIfPresent(StoredRateLimitOverrides.self, forKey: .rateLimits)
         reasoningCapability = try values.decodeIfPresent(ReasoningCapability.self, forKey: .reasoningCapability)
     }
 }
@@ -868,10 +951,12 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(schema, forKey: .schema)
         try values.encode(version, forKey: .version)
-        let publicConfiguration = Self.makePublicConfiguration(customProviders: legacyCustomProviders, accounts: legacyAccounts, profiles: legacyModelProfiles)
         let selectedModel = Self.modelSelection(legacyDefaultSelection, accounts: legacyAccounts, profiles: legacyModelProfiles) ?? model
         try values.encodeIfPresent(selectedModel, forKey: .model)
-        try values.encode(publicConfiguration, forKey: .providers)
+        // `providers` is what the schema describes and what the settings form
+        // edits. Re-deriving it from the legacy profile arrays here would
+        // materialise every unset field and freeze it against catalog updates.
+        try values.encode(providers, forKey: .providers)
     }
 
     private mutating func rebuildPublicConfigurationFromLegacy() {
@@ -918,11 +1003,11 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
                     modelID: modelID,
                     displayName: definition.name,
                     wireProtocol: wire,
-                    contextWindow: definition.limit.context,
-                    maxOutputTokens: definition.limit.output,
-                    capabilities: ModelCapabilitiesConfiguration(toolCalling: definition.toolCalling, parallelToolCalling: definition.parallelToolCalling, reasoning: definition.reasoning, vision: definition.vision, structuredOutput: definition.structuredOutput, reasoningCapability: definition.reasoningCapability),
+                    contextWindow: definition.limit?.context ?? ProviderModelDefaults.contextWindow,
+                    maxOutputTokens: definition.limit?.output ?? ProviderModelDefaults.maxOutputTokens,
+                    capabilities: ModelCapabilitiesConfiguration(toolCalling: definition.toolCalling ?? ProviderModelDefaults.toolCalling, parallelToolCalling: definition.parallelToolCalling ?? ProviderModelDefaults.parallelToolCalling, reasoning: definition.reasoning ?? ProviderModelDefaults.reasoning, vision: definition.vision ?? ProviderModelDefaults.vision, structuredOutput: definition.structuredOutput ?? ProviderModelDefaults.structuredOutput, reasoningCapability: definition.reasoningCapability),
                     endpointID: nil,
-                    rateLimits: definition.rateLimits
+                    rateLimits: definition.rateLimits?.resolved() ?? ProviderRateLimits()
                 ))
             }
         }
@@ -953,7 +1038,7 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
                     parallelToolCalling: profile.capabilities.parallelToolCalling,
                     vision: profile.capabilities.vision,
                     structuredOutput: profile.capabilities.structuredOutput,
-                    rateLimits: profile.rateLimits
+                    rateLimits: StoredRateLimitOverrides(runtime: profile.rateLimits)
                 ))
             })
             result[custom.id] = PublicProviderConfiguration(
@@ -971,7 +1056,7 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
                 adapter: providerProfiles.first.map(adapterName) ?? "openai-compatible",
                 options: PublicProviderOptions(baseURL: baseURL, apiKey: credentialSource(account.credential), apiKeyHeader: account.headerName, headers: account.configOverrides),
                 models: Dictionary(uniqueKeysWithValues: providerProfiles.map { profile in
-                    (profile.modelID, PublicModelConfiguration(name: profile.displayName, reasoning: profile.capabilities.reasoning, limit: PublicModelLimit(context: profile.contextWindow, output: profile.maxOutputTokens ?? 4_096), toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput, rateLimits: profile.rateLimits))
+                    (profile.modelID, PublicModelConfiguration(name: profile.displayName, reasoning: profile.capabilities.reasoning, limit: PublicModelLimit(context: profile.contextWindow, output: profile.maxOutputTokens ?? 4_096), toolCalling: profile.capabilities.toolCalling, parallelToolCalling: profile.capabilities.parallelToolCalling, vision: profile.capabilities.vision, structuredOutput: profile.capabilities.structuredOutput, rateLimits: StoredRateLimitOverrides(runtime: profile.rateLimits)))
                 })
             )
         }
