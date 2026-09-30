@@ -236,7 +236,7 @@ public final class RuntimeFrontend: ObservableObject {
         let wanted = running && UserDefaults.standard.bool(forKey: LXPreferenceKey.preventSleepWhileRunning)
         if wanted, sleepActivity == nil {
             sleepActivity = ProcessInfo.processInfo.beginActivity(
-                options: [.idleSystemSleepDisabled, .userInitiated], reason: "LingXi agent run in progress")
+                options: [.idleSystemSleepDisabled, .userInitiated], reason: "LingXiAgent run in progress")
         } else if !wanted, let activity = sleepActivity {
             ProcessInfo.processInfo.endActivity(activity)
             sleepActivity = nil
@@ -761,7 +761,7 @@ public final class RuntimeFrontend: ObservableObject {
             ),
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-10),
-                kind: .assistant(content: "LingXiAgent 环境已就绪。系统双栏结构、任务控制条、Context Health 仪表与赛博时间线已全部接入。", isStreaming: false)
+                kind: .assistant(content: "LingXiAgent 已就绪。可以开始新任务。", isStreaming: false)
             ),
             TimelineItemPresentation(
                 timestamp: Date().addingTimeInterval(-5),

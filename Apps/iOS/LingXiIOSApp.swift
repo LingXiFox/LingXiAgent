@@ -26,7 +26,7 @@ public struct LingXiIOSApp: App {
                         runtime.finalizeTask(action: action)
                     }
                 )
-                .navigationTitle("LingXi Agent")
+                .navigationTitle("LingXiAgent")
                 .navigationBarTitleDisplayMode(.inline)
             }
             .accentColor(LingXiTheme.accentColor)

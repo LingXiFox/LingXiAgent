@@ -69,6 +69,27 @@ struct WallpaperStyleTests {
         }
     }
 
+    @Test("The main window fills the usable display without entering fullscreen or locking its size")
+    func mainWindowUsesVisibleFrame() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: Color.clear.background(WorkbenchWindowPlacement()))
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        let screen = try #require(window.screen ?? NSScreen.main)
+        #expect(window.frame == screen.visibleFrame)
+        #expect(!window.styleMask.contains(.fullScreen))
+
+        let resized = NSRect(x: screen.visibleFrame.minX, y: screen.visibleFrame.minY, width: 900, height: 600)
+        window.setFrame(resized, display: false)
+        host.layoutSubtreeIfNeeded()
+        #expect(window.frame == resized)
+    }
+
     @Test("Wallpaper decoding bounds texture size and rejects invalid images")
     func thumbnailIsBounded() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("wallpaper-\(UUID().uuidString).png")

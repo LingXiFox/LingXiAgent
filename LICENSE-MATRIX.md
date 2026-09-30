@@ -37,8 +37,8 @@ license row is a build failure, not a review note.
 | `LingXiTUI` | `Sources/LingXiTUI` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Reference terminal frontend. |
 | `LingXiTUIApp` | `Sources/LingXiTUIApp` | PolyForm Noncommercial 1.0.0 | Source: yes; official release binary only | Executable wrapper for the TUI. |
 | `LingXiWebUI` | `Sources/LingXiWebUI` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Browser frontend and the `serve` HTTP/SSE host that drives the shared frontend contract. |
-| `LingXiFrontendKit` | `Apps/LingXiApp/Shared` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | SwiftUI shared component library (Phase 0 gate). |
-| `LingXiMacApp` | `Apps/LingXiApp/macOS` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | macOS native executable entry point. |
+| `LingXiFrontendKit` | `Apps/macOS/FrontendKit` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | SwiftUI component library for the macOS GUI. Not platform-neutral: three DesignSystem files import AppKit ungated. |
+| `LingXiMacApp` | `Apps/macOS` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | macOS native executable entry point. |
 | `FoxPlugin` | `Plugins/FoxPlugin` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Demo plugin; a template for external plugin authors. |
 | `LingXiAgentTests` | `Tests/LingXiAgentTests` | Not shipped | n/a | Test target only. |
 | `LingXiWireContractTests` | `ContractTests/LingXiWireContractTests` | Not shipped | n/a | Contract test target only. |
@@ -61,8 +61,8 @@ the table above.
 | Path | License | Distribution | Notes |
 |---|---|---|---|
 | `Vendor/OpenTUI/` | Upstream (GPLv3 / Ghostty / MIT — see per-file headers) | Follow upstream | Vendored dynamic library and headers. |
-| `Apps/LingXiApp/macOS` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Xcode SwiftUI macOS app target. |
-| `Apps/LingXiApp/iOS` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Xcode SwiftUI iOS app target. Not an officially supported release surface. |
+| `Apps/macOS/LingXiMacApp.xcodeproj` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Xcode project that builds and previews the macOS GUI. Not an SPM path: it links `LingXiFrontendKit` as a package product instead of compiling the sources itself. |
+| `Apps/iOS/` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | iOS entry point source only. No build system currently compiles it, and `LingXiFrontendKit` is macOS-only, so it is not a supported release surface. |
 | `Sidecars/browser-host/` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Node.js browser host sidecar. |
 | `Server/agent-site/`, `Server/models-site/` | PolyForm Noncommercial 1.0.0 (public site content) | Source: yes; static hosting permitted with attribution | Official website static assets. |
 | `Server/lingxi-registry/`, `Server/registry/`, `Server/deploy/` | LCSAL-1.1 | No | Backend services (Go) and deployment configuration. |

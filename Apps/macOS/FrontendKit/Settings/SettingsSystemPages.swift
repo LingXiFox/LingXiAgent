@@ -451,7 +451,7 @@ import CoreGraphics
 // MARK: - Computer use & browser
 
 /// Real capability state only: system permissions this app holds (Core runs as
-/// its child, so macOS attributes them to LingXi) and what Core itself reports
+/// its child, so macOS attributes them to LingXiAgent) and what Core itself reports
 /// about its desktop and browser tools. No toggles, no verdicts of this window's
 /// own.
 struct ComputerUseSettingsPage: View {
@@ -460,7 +460,7 @@ struct ComputerUseSettingsPage: View {
     @State private var screenRecording = CGPreflightScreenCaptureAccess()
 
     var body: some View {
-        LXSettingsScrollPage(title: "Computer Use 与浏览器", subtitle: "LingXi 获得的系统权限，与 Core 中桌面、浏览器工具的当前状态。") {
+        LXSettingsScrollPage(title: "Computer Use 与浏览器", subtitle: "LingXiAgent 获得的系统权限，与 Core 中桌面、浏览器工具的当前状态。") {
             LXSettingsCard(title: LXSettingsSectionHeader("系统权限"), accessory: {
                 Button("重新检测") {
                     accessibility = AXIsProcessTrusted()
@@ -472,7 +472,7 @@ struct ComputerUseSettingsPage: View {
                 PermissionStatusRow(title: "屏幕录制", granted: screenRecording,
                                     settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
             } footer: {
-                Text("这是 LingXi 本身获得的系统授权；桌面操作工具仍由 Core 的权限策略逐次审批。")
+                Text("这是 LingXiAgent 本身获得的系统授权；桌面操作工具仍由 Core 的权限策略逐次审批。")
                     .font(LXType.meta)
                     .foregroundStyle(.secondary)
             }
@@ -579,7 +579,7 @@ struct AboutSettingsPage: View {
                 HStack(spacing: LingXiMetrics.Space.lg) {
                     LXAppIcon(side: 64)
                     VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
-                        Text("LingXi Agent")
+                        Text("LingXiAgent")
                             .font(LXType.display)
                             .foregroundStyle(.primary)
                         Text("LingXiAgent · 次世代智能体研发工作台")
@@ -596,11 +596,6 @@ struct AboutSettingsPage: View {
                                  value: store.runtimeInfo.map { "\($0.protocolVersion)" } ?? "未连接 Core 时不可知")
                         ValueRow(title: "本地架构", value: Self.nativeArchitecture)
                         ValueRow(title: "核心状态", value: store.client != nil ? "Core 已连接" : "Core 未连接")
-                    }
-
-                    LXSettingsCard("赛博契约") {
-                        ValueRow(title: "准则", value: "以认真查询为荣，以遵循规范为荣。")
-                        ValueRow(title: "专属标识", value: "Crafted for high-performance agentic engineering.")
                     }
                 }
             }

@@ -232,7 +232,7 @@ private struct EmptyWorkspaceStage: View {
             VStack(spacing: LingXiMetrics.Space.xl) {
                 VStack(spacing: LingXiMetrics.Space.md) {
                     LXAppIcon(side: 64)
-                    Text("今天想让灵犀做什么？")
+                    Text("今天想让 LingXiAgent 做什么？")
                         .font(LXType.display)
                         .multilineTextAlignment(.center)
                         .accessibilityAddTraits(.isHeader)
@@ -379,7 +379,7 @@ private struct WorkspaceGate: View {
         switch runtime.link {
         case .connecting(let path): return "工作区 \(URL(fileURLWithPath: path).lastPathComponent)"
         case .failed(let message): return message
-        default: return "灵犀会在所选目录启动 Core；会话、工具调用和改动都来自真实运行。"
+        default: return "LingXiAgent 会在所选目录启动 Core；会话、工具调用和改动都来自真实运行。"
         }
     }
 }

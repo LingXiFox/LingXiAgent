@@ -308,7 +308,7 @@ struct AppearanceSettingsPage: View {
                 } label: {
                     HStack(spacing: LingXiMetrics.Space.xs) {
                         Text("背景氛围")
-                        InfoHint("工作区舞台的灵犀靛 / 青氛围光强度：关闭 · 柔和 · 浓郁。静态绘制，不做动画。")
+                        InfoHint("工作区舞台的靛蓝 / 青色氛围光强度：关闭 · 柔和 · 浓郁。静态绘制，不做动画。")
                     }
                 }
                 .lxSettingsRow()

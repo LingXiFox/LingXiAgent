@@ -28,6 +28,7 @@ public struct LingXiWorkbenchScene: Scene {
         WindowGroup {
             WarmWorkbench(runtime: runtime, settings: settings, navigation: navigation)
             .modifier(WallpaperWindow())
+            .background(WorkbenchWindowPlacement())
             .environment(\.timelineDisclosureDefaults, settings.timelineDisclosureDefaults)
             .task {
                 settings.runtime = runtime
@@ -54,6 +55,27 @@ public struct LingXiWorkbenchScene: Scene {
     }
 }
 
+/// Fill the display's usable area once, preserving the menu bar and Dock.
+struct WorkbenchWindowPlacement: NSViewRepresentable {
+    func makeNSView(context: Context) -> PlacementView { PlacementView() }
+    func updateNSView(_ view: PlacementView, context: Context) {}
+
+    final class PlacementView: NSView {
+        private var hasPlacedWindow = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window, !hasPlacedWindow else { return }
+            hasPlacedWindow = true
+            // Apply after SwiftUI restores the initial window geometry.
+            DispatchQueue.main.async {
+                guard let screen = window.screen ?? NSScreen.main else { return }
+                window.setFrame(screen.visibleFrame, display: true)
+            }
+        }
+    }
+}
+
 /// macOS 标准主菜单命令集 (遵循规范第四章)
 public struct LingXiMenuCommands: Commands {
     @ObservedObject public var runtime: RuntimeFrontend
@@ -62,7 +84,7 @@ public struct LingXiMenuCommands: Commands {
 
     public var body: some Commands {
         CommandGroup(replacing: .appInfo) {
-            Button("关于 LingXi…") {
+            Button("关于 LingXiAgent…") {
                 navigation.showAbout()
             }
         }

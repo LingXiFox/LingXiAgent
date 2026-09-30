@@ -4,7 +4,7 @@ import Foundation
 //
 // Shared classification of a tool invocation into the product family the
 // front-end should present it under. This used to be GUI-only string sniffing
-// (Apps/LingXiApp/Shared/Components/TimelineViews.swift, DesignSystem/Components.swift).
+// (Apps/macOS/FrontendKit/Components/TimelineViews.swift, DesignSystem/Components.swift).
 // It is promoted here so every frontend (GUI, TUI, Web) groups tools identically.
 
 public enum ToolFamily: String, Codable, CaseIterable, Sendable {
