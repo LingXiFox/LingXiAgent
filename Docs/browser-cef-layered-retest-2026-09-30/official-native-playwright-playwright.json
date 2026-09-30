@@ -1,0 +1,15 @@
+{
+  "phase": "official-native-playwright",
+  "events": [],
+  "mainBefore": {
+    "documentId": "efc92871-06a8-49c3-a289-400cdd55d3c0",
+    "popupCount": 0
+  },
+  "mainAfter": {
+    "documentId": "efc92871-06a8-49c3-a289-400cdd55d3c0",
+    "popupCount": 0,
+    "trusted": true,
+    "result": "Playwright 同页测试"
+  },
+  "error": "locator.click: Timeout 6000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#popup')\u001b[22m\n\u001b[2m    - locator resolved to <button id=\"popup\">Open popup</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - performing click action\u001b[22m\n\n    at /private/tmp/lingxi-cef-layered-retest-20260930/playwright-check.mjs:20:31"
+}

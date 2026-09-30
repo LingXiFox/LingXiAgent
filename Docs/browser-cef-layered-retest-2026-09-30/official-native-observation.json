@@ -1,0 +1,11 @@
+{
+  "stockSource": true,
+  "driverAttached": false,
+  "mainVisible": true,
+  "popupTargetURL": "http://127.0.0.1:65383/popup",
+  "popupVisibleContent": false,
+  "cmdQWindowClosed": true,
+  "processExitWithin10s": false,
+  "forcedCleanup": "SIGTERM",
+  "profileFlagsIgnored": true
+}

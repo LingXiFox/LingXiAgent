@@ -1,0 +1,8 @@
+{
+  "driverAttached": false,
+  "mainVisible": true,
+  "popupVisible": true,
+  "mainSubmission": "SwiftUI \u672c\u5730\u8f93\u5165",
+  "popupSubmission": "SwiftUI popup pass",
+  "cmdQ": "Both DoClose, SwiftUI main content released; no OnBeforeClose; remained alive beyond10s"
+}

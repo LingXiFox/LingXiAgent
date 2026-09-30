@@ -1,0 +1,17 @@
+
+DevTools listening on ws://127.0.0.1:64428/devtools/browser/c920fb1d-bb09-4744-9da7-043aebcd31da
+NSAPP_CLASS BrowserApplication
+NATIVE_CONTAINER 1000 679 parent=0x10c016202c0 window=0x10c01613180 browser=0x10c01da8040 frame=1000 679
+CEF_BROWSER_CREATED id=1 popup=0
+CEF_LOADING 1 1
+CEF_LOADING 1 0
+2026-09-30 15:06:03.253 LingXiBrowserPOC[26401:8098476] TSM AdjustCapsLockLEDForKeyTransitionHandling - _ISSetPhysicalKeyboardCapsLockLED Inhibit
+NATIVE_CONTAINER 1920 1030 parent=0x10c016202c0 window=0x10c01613180 browser=0x10c02b80b40 frame=750 750
+CEF_BROWSER_CREATED id=2 popup=1
+CEF_LOADING 2 1
+CEF_LOADING 2 0
+APP_TERMINATE_REQUESTED browsers=2
+MAIN_WINDOW_WILL_CLOSE
+CEF_BROWSER_CLOSED id=1 remaining=1
+[27776:8104936:0930/150808.065030:ERROR:services/on_device_model/ml/gpu_blocklist.cc:120] Unable to get gpu adapter
+[27776:8104944:0930/150808.065434:ERROR:services/on_device_model/ml/gpu_blocklist.cc:120] Unable to get gpu adapter

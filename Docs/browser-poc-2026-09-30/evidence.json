@@ -1,0 +1,1682 @@
+{
+  "platform": {
+    "os": "macOS 27.2",
+    "architecture": "arm64",
+    "chrome": "153.0.8010.53",
+    "playwright": "1.63.0"
+  },
+  "scope": "Independent local-browser driver validation. No LingXiAgent GUI/TUI or CEF runtime integration was exercised.",
+  "cefManifest": {
+    "last_modified": "2026-09-29T04:18:46.553000Z",
+    "name": "cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client.tar.bz2",
+    "sha1": "01b99b317fb1e099a92449ca8aee41e0b6987d90",
+    "size": 132803997,
+    "type": "client"
+  },
+  "cefAudit": [
+    {
+      "path": "Contents/MacOS/cefclient",
+      "signatureExit": 1,
+      "signatureMessage": "/tmp/lingxi-browser-poc-20260930/cef/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client/Release/cefclient.app/Contents/MacOS/cefclient: code has no resources but signature indicates they must be present",
+      "dependencies": [
+        "\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2685.10.108)",
+        "\t/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 1957.0.0)",
+        "\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)",
+        "\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4040.1.255)",
+        "\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
+        "\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 4040.1.255)",
+        "\t/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 370.63.1)",
+        "\t/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore (compatibility version 1.2.0, current version 1193.18.35)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+      ]
+    },
+    {
+      "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework",
+      "signatureExit": 1,
+      "signatureMessage": "/tmp/lingxi-browser-poc-20260930/cef/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client/Release/cefclient.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework: code has no resources but signature indicates they must be present",
+      "dependencies": [
+        "\t@executable_path/../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework (compatibility version 1540.0.32, current version 1540.0.32)",
+        "\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4040.1.255)",
+        "\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
+        "\t/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 1957.0.0)",
+        "\t/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText (compatibility version 1.0.0, current version 876.0.0)",
+        "\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 4040.1.255)",
+        "\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61901.0.87)",
+        "\t/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices (compatibility version 1.0.0, current version 66.0.0)",
+        "\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)",
+        "\t/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork (compatibility version 1.0.0, current version 3860.100.1)",
+        "\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2685.10.108)",
+        "\t/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit (compatibility version 1.0.0, current version 275.0.0)",
+        "\t/System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/CryptoTokenKit.framework/Versions/A/CryptoTokenKit (compatibility version 0.0.0, current version 805.0.21)",
+        "\t/System/Library/Frameworks/LocalAuthentication.framework/Versions/A/LocalAuthentication (compatibility version 1.0.0, current version 2005.0.61)",
+        "\t/System/Library/Frameworks/Network.framework/Versions/A/Network (compatibility version 1.0.0, current version 5569.1.3)",
+        "\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1385.0.7)",
+        "\t/System/Library/Frameworks/UniformTypeIdentifiers.framework/Versions/A/UniformTypeIdentifiers (compatibility version 1.0.0, current version 709.0.0)",
+        "\t/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo (compatibility version 1.2.0, current version 706.46.5)",
+        "\t/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation (compatibility version 1.0.0, current version 2.0.0)",
+        "\t/System/Library/Frameworks/AVFAudio.framework/Versions/A/AVFAudio (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia (compatibility version 1.0.0, current version 3255.79.5)",
+        "\t/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore (compatibility version 1.2.0, current version 1193.18.35)",
+        "\t/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage (compatibility version 1.0.1, current version 7.0.0)",
+        "\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 370.63.1)",
+        "\t/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight (compatibility version 64.0.0, current version 600.0.0, weak)",
+        "\t/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox (compatibility version 1.0.0, current version 1000.0.0)",
+        "\t/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/AudioUnit.framework/Versions/A/AudioUnit (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit (compatibility version 1.0.0, current version 1.0.0, weak)",
+        "\t/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/Quartz.framework/Versions/A/Quartz (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa (compatibility version 1.0.0, current version 24.0.0)",
+        "\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)",
+        "\t/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon (compatibility version 2.0.0, current version 170.0.0)",
+        "\t/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox (compatibility version 1.0.0, current version 3255.79.5)",
+        "\t/System/Library/Frameworks/CoreMediaIO.framework/Versions/A/CoreMediaIO (compatibility version 0.0.0, current version 0.0.0)",
+        "\t/System/Library/Frameworks/Accessibility.framework/Versions/A/Accessibility (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/MetalKit.framework/Versions/A/MetalKit (compatibility version 1.0.0, current version 172.3.0)",
+        "\t/System/Library/Frameworks/CoreBluetooth.framework/Versions/A/CoreBluetooth (compatibility version 1.0.0, current version 190.51.0)",
+        "\t/System/Library/Frameworks/IOBluetooth.framework/Versions/A/IOBluetooth (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/CoreMIDI.framework/Versions/A/CoreMIDI (compatibility version 1.0.0, current version 69.0.0)",
+        "\t/System/Library/Frameworks/MediaAccessibility.framework/Versions/A/MediaAccessibility (compatibility version 1.0.0, current version 62.0.0)",
+        "\t/System/Library/Frameworks/SecurityInterface.framework/Versions/A/SecurityInterface (compatibility version 1.0.0, current version 55210.0.2)",
+        "\t/System/Library/Frameworks/MediaPlayer.framework/Versions/A/MediaPlayer (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/AuthenticationServices.framework/Versions/A/AuthenticationServices (compatibility version 1.0.0, current version 622.1.22)",
+        "\t/System/Library/Frameworks/CoreHaptics.framework/Versions/A/CoreHaptics (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/GameController.framework/Versions/A/GameController (compatibility version 1.0.0, current version 13.0.39)",
+        "\t/System/Library/Frameworks/ForceFeedback.framework/Versions/A/ForceFeedback (compatibility version 1.0.0, current version 1.0.2)",
+        "\t/System/Library/Frameworks/CoreWLAN.framework/Versions/A/CoreWLAN (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/CoreLocation.framework/Versions/A/CoreLocation (compatibility version 1.0.0, current version 3056.0.25)",
+        "\t/System/Library/Frameworks/Vision.framework/Versions/A/Vision (compatibility version 1.0.0, current version 9.0.34)",
+        "\t/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/ServiceManagement.framework/Versions/A/ServiceManagement (compatibility version 1.0.0, current version 3089.0.11)",
+        "\t/System/Library/Frameworks/SafariServices.framework/Versions/A/SafariServices (compatibility version 535.0.0, current version 622.1.22)",
+        "\t/System/Library/Frameworks/UserNotifications.framework/Versions/A/UserNotifications (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/System/Library/Frameworks/LocalAuthenticationEmbeddedUI.framework/Versions/A/LocalAuthenticationEmbeddedUI (compatibility version 1.0.0, current version 2005.0.61)",
+        "\t/usr/lib/libcups.2.dylib (compatibility version 2.0.0, current version 2.14.0)",
+        "\t/usr/lib/libbsm.0.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/usr/lib/libpmenergy.dylib (compatibility version 1.0.0, current version 2.0.0)",
+        "\t/usr/lib/libpmsample.dylib (compatibility version 1.0.0, current version 2.0.0)",
+        "\t/usr/lib/libresolv.9.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/usr/lib/libsandbox.1.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/usr/lib/libbz2.1.0.dylib (compatibility version 1.0.0, current version 1.0.8)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+      ]
+    },
+    {
+      "path": "Contents/Frameworks/cefclient Helper (GPU).app/Contents/MacOS/cefclient Helper (GPU)",
+      "signatureExit": 1,
+      "signatureMessage": "/tmp/lingxi-browser-poc-20260930/cef/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client/Release/cefclient.app/Contents/Frameworks/cefclient Helper (GPU).app/Contents/MacOS/cefclient Helper (GPU): code has no resources but signature indicates they must be present",
+      "dependencies": []
+    },
+    {
+      "path": "Contents/Frameworks/cefclient Helper (Alerts).app/Contents/MacOS/cefclient Helper (Alerts)",
+      "signatureExit": 1,
+      "signatureMessage": "/tmp/lingxi-browser-poc-20260930/cef/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client/Release/cefclient.app/Contents/Frameworks/cefclient Helper (Alerts).app/Contents/MacOS/cefclient Helper (Alerts): code has no resources but signature indicates they must be present",
+      "dependencies": []
+    },
+    {
+      "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Libraries/libvulkan.dylib",
+      "signatureExit": 0,
+      "signatureMessage": "",
+      "dependencies": [
+        "\t./libvulkan.dylib (compatibility version 0.0.0, current version 0.0.0)",
+        "\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4040.1.255)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+      ]
+    },
+    {
+      "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Libraries/libcef_sandbox.dylib",
+      "signatureExit": 0,
+      "signatureMessage": "",
+      "dependencies": [
+        "\t./libcef_sandbox.dylib (compatibility version 0.0.0, current version 0.0.0)",
+        "\t/usr/lib/libsandbox.1.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+      ]
+    },
+    {
+      "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Libraries/libvk_swiftshader.dylib",
+      "signatureExit": 0,
+      "signatureMessage": "",
+      "dependencies": [
+        "\t@rpath/libvk_swiftshader.dylib (compatibility version 0.0.0, current version 0.0.0)",
+        "\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 370.63.1, weak)",
+        "\t/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa (compatibility version 1.0.0, current version 24.0.0)",
+        "\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2685.10.108)",
+        "\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
+        "\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 4040.1.255)",
+        "\t/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore (compatibility version 1.2.0, current version 1193.18.35)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+      ]
+    },
+    {
+      "path": "Contents/Frameworks/cefclient Helper (Renderer).app/Contents/MacOS/cefclient Helper (Renderer)",
+      "signatureExit": 1,
+      "signatureMessage": "/tmp/lingxi-browser-poc-20260930/cef/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client/Release/cefclient.app/Contents/Frameworks/cefclient Helper (Renderer).app/Contents/MacOS/cefclient Helper (Renderer): code has no resources but signature indicates they must be present",
+      "dependencies": []
+    },
+    {
+      "path": "Contents/Frameworks/cefclient Helper.app/Contents/MacOS/cefclient Helper",
+      "signatureExit": 1,
+      "signatureMessage": "/tmp/lingxi-browser-poc-20260930/cef/cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_client/Release/cefclient.app/Contents/Frameworks/cefclient Helper.app/Contents/MacOS/cefclient Helper: code has no resources but signature indicates they must be present",
+      "dependencies": [
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+      ]
+    }
+  ],
+  "agentBrowser0332": {
+    "summary": {
+      "documentId": "29902658-b55b-4000-bd3b-5767bdac9fcc",
+      "completed": true,
+      "checks": [
+        {
+          "name": "semantic snapshot includes parent and iframe inputs",
+          "passed": true
+        },
+        {
+          "name": "Unicode fill and trusted click",
+          "passed": true
+        },
+        {
+          "name": "same document identity after automation",
+          "passed": true
+        },
+        {
+          "name": "macOS select-all and Unicode insert",
+          "passed": false
+        },
+        {
+          "name": "iframe semantic reference fill",
+          "passed": true
+        },
+        {
+          "name": "upload assignment and change event",
+          "passed": true
+        },
+        {
+          "name": "download content",
+          "passed": true
+        },
+        {
+          "name": "popup creates second tab",
+          "passed": true
+        }
+      ],
+      "operations": 18,
+      "medianCliMilliseconds": 5.300000000000001
+    },
+    "operations": [
+      {
+        "args": [
+          "eval",
+          "window.poc.documentId"
+        ],
+        "milliseconds": 5.5,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "29902658-b55b-4000-bd3b-5767bdac9fcc"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "snapshot",
+          "-i"
+        ],
+        "milliseconds": 6.6,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "refs": {
+              "e1": {
+                "name": "LingXiAgent Browser POC",
+                "role": "heading"
+              },
+              "e2": {
+                "name": "Message",
+                "role": "textbox"
+              },
+              "e3": {
+                "name": "Apply",
+                "role": "button"
+              },
+              "e4": {
+                "name": "Open second tab",
+                "role": "button"
+              },
+              "e5": {
+                "name": "Download fixture",
+                "role": "link"
+              },
+              "e6": {
+                "name": "Local frame",
+                "role": "Iframe"
+              },
+              "e7": {
+                "name": "Upload fixture",
+                "role": "button"
+              },
+              "e8": {
+                "name": "Frame input ",
+                "role": "textbox"
+              }
+            },
+            "snapshot": "- heading \"LingXiAgent Browser POC\" [level=1, ref=e1]\n- textbox \"Message\" [ref=e2]: 中文共享页面验证 LingXiAgent 🦊快捷键替换成功\n- button \"Apply\" [ref=e3]\n- button \"Open second tab\" [ref=e4]\n- button \"Upload fixture\" [ref=e7]: 未选择任何文件\n- link \"Download fixture\" [ref=e5]\n- Iframe \"Local frame\" [ref=e6]\n  - textbox \"Frame input \" [ref=e8]"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "fill",
+          "#message",
+          "中文共享页面验证 LingXiAgent 🦊"
+        ],
+        "milliseconds": 4.9,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "filled": "#message",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "click",
+          "#apply"
+        ],
+        "milliseconds": 14.8,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "clicked": "#apply",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "window.poc.lastValue"
+        ],
+        "milliseconds": 5.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "中文共享页面验证 LingXiAgent 🦊"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "window.poc.documentId"
+        ],
+        "milliseconds": 4.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "29902658-b55b-4000-bd3b-5767bdac9fcc"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "focus",
+          "#message"
+        ],
+        "milliseconds": 4.1,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "focused": "#message",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "press",
+          "Meta+a"
+        ],
+        "milliseconds": 5.5,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "pressed": "Meta+a"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "keyboard",
+          "inserttext",
+          "快捷键替换成功"
+        ],
+        "milliseconds": 5.1,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "inserted": true,
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "message.value"
+        ],
+        "milliseconds": 4.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "中文共享页面验证 LingXiAgent 🦊快捷键替换成功"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "snapshot",
+          "-i"
+        ],
+        "milliseconds": 6.1,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "refs": {
+              "e1": {
+                "name": "LingXiAgent Browser POC",
+                "role": "heading"
+              },
+              "e2": {
+                "name": "Message",
+                "role": "textbox"
+              },
+              "e3": {
+                "name": "Apply",
+                "role": "button"
+              },
+              "e4": {
+                "name": "Open second tab",
+                "role": "button"
+              },
+              "e5": {
+                "name": "Download fixture",
+                "role": "link"
+              },
+              "e6": {
+                "name": "Local frame",
+                "role": "Iframe"
+              },
+              "e7": {
+                "name": "Upload fixture",
+                "role": "button"
+              },
+              "e8": {
+                "name": "Frame input ",
+                "role": "textbox"
+              }
+            },
+            "snapshot": "- heading \"LingXiAgent Browser POC\" [level=1, ref=e1]\n- textbox \"Message\" [ref=e2]: 中文共享页面验证 LingXiAgent 🦊快捷键替换成功\n- button \"Apply\" [ref=e3]\n- button \"Open second tab\" [ref=e4]\n- button \"Upload fixture\" [ref=e7]: 未选择任何文件\n- link \"Download fixture\" [ref=e5]\n- Iframe \"Local frame\" [ref=e6]\n  - textbox \"Frame input \" [ref=e8]"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "fill",
+          "@e8",
+          "Frame verified"
+        ],
+        "milliseconds": 5.0,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "filled": "@e8",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "document.querySelector('iframe').contentDocument.querySelector('input').value"
+        ],
+        "milliseconds": 4.1,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "Frame verified"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "upload",
+          "#upload",
+          "/tmp/lingxi-browser-poc-20260930/upload-fixture.txt"
+        ],
+        "milliseconds": 7.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "selector": "#upload",
+            "uploaded": 1
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "filename.textContent"
+        ],
+        "milliseconds": 5.4,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "upload-fixture.txt"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "download",
+          "#download",
+          "/tmp/lingxi-browser-poc-20260930/download-fixture.txt"
+        ],
+        "milliseconds": 27.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "path": "/private/tmp/lingxi-browser-poc-20260930/download-fixture.txt"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "click",
+          "#newtab"
+        ],
+        "milliseconds": 53.7,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "clicked": "#newtab",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "tab",
+          "list"
+        ],
+        "milliseconds": 4.7,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 17182315349514308229
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "tabs": [
+              {
+                "active": false,
+                "label": null,
+                "tabId": "t1",
+                "title": "LingXiAgent Browser POC",
+                "type": "page",
+                "url": "http://127.0.0.1:62598/"
+              },
+              {
+                "active": true,
+                "label": null,
+                "tabId": "t2",
+                "title": "127.0.0.1:62598/popup",
+                "type": "page",
+                "url": "http://127.0.0.1:62598/popup"
+              }
+            ]
+          },
+          "error": null
+        }
+      }
+    ]
+  },
+  "agentBrowser0381": {
+    "summary": {
+      "documentId": "29902658-b55b-4000-bd3b-5767bdac9fcc",
+      "completed": true,
+      "checks": [
+        {
+          "name": "semantic snapshot includes parent and iframe inputs",
+          "passed": true
+        },
+        {
+          "name": "Unicode fill and trusted click",
+          "passed": true
+        },
+        {
+          "name": "same document identity after automation",
+          "passed": true
+        },
+        {
+          "name": "macOS select-all and Unicode insert",
+          "passed": false
+        },
+        {
+          "name": "iframe semantic reference fill",
+          "passed": true
+        },
+        {
+          "name": "upload assignment and change event",
+          "passed": true
+        },
+        {
+          "name": "download content",
+          "passed": true
+        },
+        {
+          "name": "popup creates second tab",
+          "passed": true
+        }
+      ],
+      "operations": 21,
+      "medianCliMilliseconds": 7.4
+    },
+    "operations": [
+      {
+        "args": [
+          "connect",
+          "62647"
+        ],
+        "milliseconds": 115.5,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "launched": true,
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": true,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": false,
+              "saveStatus": "not_attempted"
+            },
+            "relaunchedBrowser": false
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "stream",
+          "disable"
+        ],
+        "milliseconds": 7.7,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "disabled": true,
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": false,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "tab",
+          "t1"
+        ],
+        "milliseconds": 17.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "label": null,
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "tabId": "t1",
+            "targetId": "639820F03432639693CBB0524C4DE1F4",
+            "title": "LingXiAgent Browser POC",
+            "url": "http://127.0.0.1:62598/"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "window.poc.documentId"
+        ],
+        "milliseconds": 6.1,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "29902658-b55b-4000-bd3b-5767bdac9fcc"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "snapshot",
+          "-i"
+        ],
+        "milliseconds": 9.6,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "refs": {
+              "e1": {
+                "name": "LingXiAgent Browser POC",
+                "role": "heading"
+              },
+              "e2": {
+                "name": "Message",
+                "role": "textbox"
+              },
+              "e3": {
+                "name": "Apply",
+                "role": "button"
+              },
+              "e4": {
+                "name": "Open second tab",
+                "role": "button"
+              },
+              "e5": {
+                "name": "Download fixture",
+                "role": "link"
+              },
+              "e6": {
+                "name": "Local frame",
+                "role": "Iframe"
+              },
+              "e7": {
+                "name": "Upload fixture",
+                "role": "button"
+              },
+              "e8": {
+                "name": "Frame input ",
+                "role": "textbox"
+              }
+            },
+            "removedRefs": [],
+            "snapshot": "- heading \"LingXiAgent Browser POC\" [level=1, ref=e1]\n- textbox \"Message\" [ref=e2]: Round 9 中文\n- button \"Apply\" [ref=e3]\n- button \"Open second tab\" [ref=e4]\n- button \"Upload fixture\" [ref=e7]: upload-fixture.txt\n- link \"Download fixture\" [ref=e5]\n- Iframe \"Local frame\" [ref=e6]\n  - textbox \"Frame input \" [ref=e8]: Frame verified"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "fill",
+          "#message",
+          "中文共享页面验证 LingXiAgent 🦊"
+        ],
+        "milliseconds": 7.3,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "filled": "#message",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "click",
+          "#apply"
+        ],
+        "milliseconds": 15.6,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "clicked": "#apply",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "window.poc.lastValue"
+        ],
+        "milliseconds": 6.9,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "中文共享页面验证 LingXiAgent 🦊"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "window.poc.documentId"
+        ],
+        "milliseconds": 6.1,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "29902658-b55b-4000-bd3b-5767bdac9fcc"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "focus",
+          "#message"
+        ],
+        "milliseconds": 5.7,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "focused": "#message",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "press",
+          "Meta+a"
+        ],
+        "milliseconds": 16.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "pressed": "Meta+a"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "keyboard",
+          "inserttext",
+          "快捷键替换成功"
+        ],
+        "milliseconds": 7.4,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "inserted": true,
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "message.value"
+        ],
+        "milliseconds": 5.4,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "中文共享页面验证 LingXiAgent 🦊快捷键替换成功"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "snapshot",
+          "-i"
+        ],
+        "milliseconds": 9.6,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "refs": {
+              "e1": {
+                "name": "LingXiAgent Browser POC",
+                "role": "heading"
+              },
+              "e2": {
+                "name": "Message",
+                "role": "textbox"
+              },
+              "e3": {
+                "name": "Apply",
+                "role": "button"
+              },
+              "e4": {
+                "name": "Open second tab",
+                "role": "button"
+              },
+              "e5": {
+                "name": "Download fixture",
+                "role": "link"
+              },
+              "e6": {
+                "name": "Local frame",
+                "role": "Iframe"
+              },
+              "e7": {
+                "name": "Upload fixture",
+                "role": "button"
+              },
+              "e8": {
+                "name": "Frame input ",
+                "role": "textbox"
+              }
+            },
+            "removedRefs": [],
+            "snapshot": "- heading \"LingXiAgent Browser POC\" [level=1, ref=e1]\n- textbox \"Message\" [ref=e2]: 中文共享页面验证 LingXiAgent 🦊快捷键替换成功\n- button \"Apply\" [ref=e3]\n- button \"Open second tab\" [ref=e4]\n- button \"Upload fixture\" [ref=e7]: upload-fixture.txt\n- link \"Download fixture\" [ref=e5]\n- Iframe \"Local frame\" [ref=e6]\n  - textbox \"Frame input \" [ref=e8]: Frame verified"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "fill",
+          "@e8",
+          "Frame verified"
+        ],
+        "milliseconds": 6.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "filled": "@e8",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "document.querySelector('iframe').contentDocument.querySelector('input').value"
+        ],
+        "milliseconds": 5.0,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "Frame verified"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "upload",
+          "#upload",
+          "/tmp/lingxi-browser-poc-20260930/upload-fixture.txt"
+        ],
+        "milliseconds": 6.8,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "selector": "#upload",
+            "uploaded": 1
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "eval",
+          "filename.textContent"
+        ],
+        "milliseconds": 5.3,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "origin": "http://127.0.0.1:62598/",
+            "result": "upload-fixture.txt"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "download",
+          "#download",
+          "/tmp/lingxi-browser-poc-20260930/download-fixture.txt"
+        ],
+        "milliseconds": 31.0,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "path": "/private/tmp/lingxi-browser-poc-20260930/download-fixture.txt"
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "click",
+          "#newtab"
+        ],
+        "milliseconds": 58.2,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "clicked": "#newtab",
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            }
+          },
+          "error": null
+        }
+      },
+      {
+        "args": [
+          "tab",
+          "list"
+        ],
+        "milliseconds": 10.8,
+        "exit": 0,
+        "response": {
+          "success": true,
+          "data": {
+            "lifecycle": {
+              "effectiveLaunch": {
+                "browserLaunched": true,
+                "engine": "chrome",
+                "launchHash": 8482347241066412619
+              },
+              "launched": false,
+              "relaunchedBrowser": false,
+              "restartedBackground": false,
+              "restoreStatus": "not_configured",
+              "reused": true,
+              "saveStatus": "not_attempted"
+            },
+            "tabs": [
+              {
+                "active": false,
+                "label": null,
+                "tabId": "t1",
+                "targetId": "639820F03432639693CBB0524C4DE1F4",
+                "title": "LingXiAgent Browser POC",
+                "type": "page",
+                "url": "http://127.0.0.1:62598/"
+              },
+              {
+                "active": false,
+                "label": null,
+                "tabId": "t2",
+                "targetId": "C35C5D01E2092A711783DAA15A72C7EF",
+                "title": "POC second tab",
+                "type": "page",
+                "url": "http://127.0.0.1:62598/popup"
+              },
+              {
+                "active": true,
+                "label": null,
+                "tabId": "t3",
+                "targetId": "2BF5999D81C9B19805DC9AED48EFBC8A",
+                "title": "127.0.0.1:62598/popup",
+                "type": "page",
+                "url": "http://127.0.0.1:62598/popup"
+              }
+            ]
+          },
+          "error": null
+        }
+      }
+    ]
+  },
+  "playwright": {
+    "playwrightVersion": "1.63.0",
+    "sameDocument": true,
+    "documentId": "29902658-b55b-4000-bd3b-5767bdac9fcc",
+    "metaA": {
+      "passed": true,
+      "actual": "Playwright 中文替换成功"
+    },
+    "fillClickReadMilliseconds": [
+      32.25608299999999,
+      32.43154099999998,
+      33.974166,
+      32.498582999999996,
+      34.72612499999997,
+      34.789165999999966,
+      32.26766700000002,
+      32.56600000000003,
+      33.297833000000026,
+      33.06608300000005
+    ]
+  },
+  "performance": {
+    "scenario": "Static local fixture, 2 tabs, iframe, viewport streaming disabled; Chrome subprocess tree only",
+    "intervals": 15,
+    "samples": [
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.75,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.75,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.96,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.73,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.8,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.8,
+        "processCount": 7
+      },
+      {
+        "cpuPercentOneCore": 0.0,
+        "summedRSSMiB": 1121.8,
+        "processCount": 7
+      }
+    ],
+    "meanCPUPercentOneCore": 0.064,
+    "medianSummedRSSMiB": 1121.73,
+    "rssCaveat": "Summed RSS double counts shared memory; not unique footprint",
+    "GPU": "NOT RUN: powermetrics requires superuser"
+  },
+  "notRun": [
+    "CEF execution/CDP interoperability",
+    "SwiftUI native embedding",
+    "LingXiAgent GUI/TUI shared control",
+    "Chinese IME composition",
+    "native pasteboard/clipboard interoperability",
+    "login/profile persistence",
+    "Cua Driver desktop integration",
+    "GPU attribution"
+  ]
+}

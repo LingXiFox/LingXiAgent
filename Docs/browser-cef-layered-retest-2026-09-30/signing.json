@@ -1,0 +1,56 @@
+[
+  {
+    "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/libvulkan.dylib",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/libvulkan.dylib: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/libcef_sandbox.dylib",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/libcef_sandbox.dylib: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/libvk_swiftshader.dylib",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/libvk_swiftshader.dylib: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/Chromium Embedded Framework.framework",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/Chromium Embedded Framework.framework: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/cefsimple Helper.app",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/cefsimple Helper.app: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/cefsimple Helper (GPU).app",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/cefsimple Helper (GPU).app: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/cefsimple Helper (Alerts).app",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/cefsimple Helper (Alerts).app: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/cefsimple Helper (Renderer).app",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/cefsimple Helper (Renderer).app: replacing existing signature\n"
+  },
+  {
+    "path": "Contents/Frameworks/cefsimple Helper (Plugin).app",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/Frameworks/cefsimple Helper (Plugin).app: replacing existing signature\n"
+  },
+  {
+    "path": ".",
+    "returncode": 0,
+    "stderr": "/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app: replacing existing signature\n"
+  },
+  {
+    "verify": 0,
+    "stderr": ""
+  }
+]

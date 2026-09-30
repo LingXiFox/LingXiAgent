@@ -1,0 +1,2 @@
+AUTOMATION_ONLY http://127.0.0.1:50751
+{"tests":{"automaticPopupThreeCycles":"PASS","agentInput":"PASS","nativeTakeoverSameDocument":"NOT RUN: CUA resolves existing personal Chrome instance; no native actions performed","agentResumeSameDocument":"PASS","gracefulBrowserClose":"PASS"},"versions":{"playwright":"1.63.0","chrome":"153.0.8010.53"},"documentId":"16c352a9-65a4-4abb-94d7-480f4c0b78f0","nativeReady":{"url":"http://127.0.0.1:50751","title":"LingXiAgent Delivery Validation","expected":"Native takeover"}}

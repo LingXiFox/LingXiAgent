@@ -1,0 +1,12 @@
+{
+  "pid": 48182,
+  "argv": [
+    "/private/tmp/lingxi-cef-layered-retest-20260930/build/tests/cefsimple/Release/cefsimple.app/Contents/MacOS/cefsimple",
+    "--url=http://127.0.0.1:65383",
+    "--force-renderer-accessibility",
+    "--use-mock-keychain",
+    "--remote-debugging-port=0",
+    "--root-cache-path=/private/tmp/lingxi-cef-layered-retest-20260930/official-views-profile",
+    "--cache-path=/private/tmp/lingxi-cef-layered-retest-20260930/official-views-profile"
+  ]
+}

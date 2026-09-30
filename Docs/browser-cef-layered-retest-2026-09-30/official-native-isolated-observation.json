@@ -1,0 +1,7 @@
+{
+  "driverAttached": false,
+  "mainVisible": true,
+  "popupVisible": true,
+  "popupInputSubmission": "Official popup \u6d4b\u8bd5",
+  "cmdQ": "DoClose for main and popup, no OnBeforeClose; process remained alive after 10s"
+}

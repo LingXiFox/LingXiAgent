@@ -1,0 +1,1406 @@
+{
+  "environment": {
+    "cef": "154.0.32+g682c378+chromium-154.0.8037.58",
+    "playwright": "1.63.0",
+    "os": "macOS 27.2 (26B5091g)",
+    "architecture": "arm64",
+    "swift": "6.4",
+    "sdkManifest": {
+      "version": "154.0.32+g682c378+chromium-154.0.8037.58",
+      "file": {
+        "last_modified": "2026-09-29T04:18:56.935000Z",
+        "name": "cef_binary_154.0.32+g682c378+chromium-154.0.8037.58_macosarm64_minimal.tar.bz2",
+        "sha1": "2e9df1077c097e450d30f26804b7c4b1820da4e3",
+        "size": 132224904,
+        "type": "minimal"
+      }
+    },
+    "sdkSHA256": "0adf18dc3c4dadf0fecdb3ce2b9d558989fa264743cdcd46e89b1b3b118dd85f",
+    "developmentSignature": "ad hoc; codesign --verify --deep --strict passed; not Developer ID notarization",
+    "sandbox": "CEF_USE_SANDBOX enabled; helper initialization enabled; no --no-sandbox",
+    "testProfiles": "isolated temporary profiles; profile5 onwards --use-mock-keychain, no production/login data",
+    "viewport": [
+      1920,
+      1030
+    ]
+  },
+  "checks": [
+    {
+      "name": "native_input_and_same_document",
+      "status": "PASS",
+      "detail": {
+        "poc": {
+          "documentId": "a74330c6-47a9-49c8-a092-f60ba36dc9f3",
+          "clicks": 1,
+          "events": [
+            {
+              "type": "keydown",
+              "data": "v",
+              "trusted": true,
+              "value": ""
+            },
+            {
+              "type": "input",
+              "data": "原生中文输入 LingXiAgent 🦊",
+              "trusted": true,
+              "value": "原生中文输入 LingXiAgent 🦊"
+            },
+            {
+              "type": "keydown",
+              "data": "a",
+              "trusted": true,
+              "value": "原生中文输入 LingXiAgent 🦊"
+            },
+            {
+              "type": "keydown",
+              "data": "N",
+              "trusted": true,
+              "value": "原生中文输入 LingXiAgent 🦊"
+            },
+            {
+              "type": "input",
+              "data": "N",
+              "trusted": true,
+              "value": "N"
+            },
+            {
+              "type": "keydown",
+              "data": "a",
+              "trusted": true,
+              "value": "N"
+            },
+            {
+              "type": "input",
+              "data": "a",
+              "trusted": true,
+              "value": "Na"
+            },
+            {
+              "type": "keydown",
+              "data": "t",
+              "trusted": true,
+              "value": "Na"
+            },
+            {
+              "type": "input",
+              "data": "t",
+              "trusted": true,
+              "value": "Nat"
+            },
+            {
+              "type": "keydown",
+              "data": "i",
+              "trusted": true,
+              "value": "Nat"
+            },
+            {
+              "type": "input",
+              "data": "i",
+              "trusted": true,
+              "value": "Nati"
+            },
+            {
+              "type": "keydown",
+              "data": "v",
+              "trusted": true,
+              "value": "Nati"
+            },
+            {
+              "type": "input",
+              "data": "v",
+              "trusted": true,
+              "value": "Nativ"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Nativ"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native"
+            },
+            {
+              "type": "keydown",
+              "data": " ",
+              "trusted": true,
+              "value": "Native"
+            },
+            {
+              "type": "input",
+              "data": " ",
+              "trusted": true,
+              "value": "Native "
+            },
+            {
+              "type": "keydown",
+              "data": "r",
+              "trusted": true,
+              "value": "Native "
+            },
+            {
+              "type": "input",
+              "data": "r",
+              "trusted": true,
+              "value": "Native r"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Native r"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native re"
+            },
+            {
+              "type": "keydown",
+              "data": "p",
+              "trusted": true,
+              "value": "Native re"
+            },
+            {
+              "type": "input",
+              "data": "p",
+              "trusted": true,
+              "value": "Native rep"
+            },
+            {
+              "type": "keydown",
+              "data": "l",
+              "trusted": true,
+              "value": "Native rep"
+            },
+            {
+              "type": "input",
+              "data": "l",
+              "trusted": true,
+              "value": "Native repl"
+            },
+            {
+              "type": "keydown",
+              "data": "a",
+              "trusted": true,
+              "value": "Native repl"
+            },
+            {
+              "type": "input",
+              "data": "a",
+              "trusted": true,
+              "value": "Native repla"
+            },
+            {
+              "type": "keydown",
+              "data": "c",
+              "trusted": true,
+              "value": "Native repla"
+            },
+            {
+              "type": "input",
+              "data": "c",
+              "trusted": true,
+              "value": "Native replac"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replac"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replace"
+            },
+            {
+              "type": "keydown",
+              "data": "m",
+              "trusted": true,
+              "value": "Native replace"
+            },
+            {
+              "type": "input",
+              "data": "m",
+              "trusted": true,
+              "value": "Native replacem"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replacem"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replaceme"
+            },
+            {
+              "type": "keydown",
+              "data": "n",
+              "trusted": true,
+              "value": "Native replaceme"
+            },
+            {
+              "type": "input",
+              "data": "n",
+              "trusted": true,
+              "value": "Native replacemen"
+            },
+            {
+              "type": "keydown",
+              "data": "t",
+              "trusted": true,
+              "value": "Native replacemen"
+            },
+            {
+              "type": "input",
+              "data": "t",
+              "trusted": true,
+              "value": "Native replacement"
+            },
+            {
+              "type": "keydown",
+              "data": " ",
+              "trusted": true,
+              "value": "Native replacement"
+            },
+            {
+              "type": "input",
+              "data": " ",
+              "trusted": true,
+              "value": "Native replacement "
+            },
+            {
+              "type": "keydown",
+              "data": "P",
+              "trusted": true,
+              "value": "Native replacement "
+            },
+            {
+              "type": "input",
+              "data": "P",
+              "trusted": true,
+              "value": "Native replacement P"
+            },
+            {
+              "type": "keydown",
+              "data": "A",
+              "trusted": true,
+              "value": "Native replacement P"
+            },
+            {
+              "type": "input",
+              "data": "A",
+              "trusted": true,
+              "value": "Native replacement PA"
+            },
+            {
+              "type": "keydown",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PA"
+            },
+            {
+              "type": "input",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PAS"
+            },
+            {
+              "type": "keydown",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PAS"
+            },
+            {
+              "type": "input",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PASS"
+            }
+          ],
+          "lastClickTrusted": true
+        },
+        "message": "Native replacement PASS",
+        "result": "Native replacement PASS",
+        "viewport": [
+          1920,
+          1030
+        ]
+      }
+    },
+    {
+      "name": "semantic_snapshot",
+      "status": "PASS",
+      "detail": {
+        "characters": 1058
+      }
+    },
+    {
+      "name": "playwright_unicode_click",
+      "status": "PASS",
+      "detail": "Playwright 共享原生页面 🦊"
+    },
+    {
+      "name": "playwright_meta_a_replacement",
+      "status": "PASS",
+      "detail": "快捷键替换成功"
+    },
+    {
+      "name": "iframe_input",
+      "status": "PASS",
+      "detail": "同一浏览器 iframe"
+    },
+    {
+      "name": "file_upload_change",
+      "status": "PASS",
+      "detail": "poc-upload.txt"
+    },
+    {
+      "name": "download_contents",
+      "status": "PASS",
+      "detail": "LingXiAgent native download fixture\n"
+    },
+    {
+      "name": "ten_operation_cycles",
+      "status": "PASS",
+      "detail": {
+        "durationsMs": [
+          41.93462499999998,
+          51.08812499999999,
+          32.21041700000001,
+          32.97791699999999,
+          32.669583999999986,
+          33.67150000000004,
+          32.931166000000076,
+          50.558042,
+          32.975458,
+          32.95529099999999
+        ],
+        "medianMs": 32.9766875
+      }
+    }
+  ],
+  "documentId": "a74330c6-47a9-49c8-a092-f60ba36dc9f3",
+  "snapshot": "- heading \"LingXiAgent — Shared Native Browser\" [level=1]\n- paragraph: Document a74330c6-47a9-49c8-a092-f60ba36dc9f3\n- text: Message\n- textbox \"Message\": Native replacement PASS\n- button \"Submit\"\n- button \"Open popup\"\n- paragraph: Native replacement PASS\n- text: Upload fixture\n- button \"Upload fixture\"\n- paragraph\n- link \"Download fixture\":\n  - /url: /download\n- heading \"Nested iframe\" [level=3]\n- iframe\n- heading \"Input events\" [level=3]\n- text: \"[ { \\\"type\\\": \\\"keydown\\\", \\\"data\\\": \\\"A\\\", \\\"trusted\\\": true, \\\"value\\\": \\\"Native replacement P\\\" }, { \\\"type\\\": \\\"input\\\", \\\"data\\\": \\\"A\\\", \\\"trusted\\\": true, \\\"value\\\": \\\"Native replacement PA\\\" }, { \\\"type\\\": \\\"keydown\\\", \\\"data\\\": \\\"S\\\", \\\"trusted\\\": true, \\\"value\\\": \\\"Native replacement PA\\\" }, { \\\"type\\\": \\\"input\\\", \\\"data\\\": \\\"S\\\", \\\"trusted\\\": true, \\\"value\\\": \\\"Native replacement PAS\\\" }, { \\\"type\\\": \\\"keydown\\\", \\\"data\\\": \\\"S\\\", \\\"trusted\\\": true, \\\"value\\\": \\\"Native replacement PAS\\\" }, { \\\"type\\\": \\\"input\\\", \\\"data\\\": \\\"S\\\", \\\"trusted\\\": true, \\\"value\\\": \\\"Native replacement PASS\\\" } ]\"",
+  "performance": {
+    "cpuMeanOneCorePercent": 0.0017078004990352016,
+    "cpuPeakOneCorePercent": 0.007127021773440997,
+    "summedRSSMedianMiB": 766.890625,
+    "summedTaskFootprintMedianMiB": 305.64842987060547,
+    "processCounts": [
+      6
+    ],
+    "intervalCPUPercent": [
+      0.007127021773440997,
+      0.0034994008138141304,
+      9.095209069449158e-05,
+      0.0005255756197124205,
+      0.0034647182843859374,
+      9.482746702710096e-05,
+      0.0,
+      0.0,
+      0.0021647256729482056,
+      7.062531431048344e-05,
+      0.0028319138867980618,
+      0.001518379274974126,
+      0.003932416045593452,
+      6.149466328814482e-05,
+      0.0002349565785404737
+    ],
+    "samples": [
+      {
+        "time": 295869.547322916,
+        "processes": {
+          "26401": {
+            "cpuNs": 37271949,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10899145,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6367035,
+            "rssBytes": 93634560,
+            "footprintBytes": 26215600
+          },
+          "26406": {
+            "cpuNs": 884964,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1034047,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295870.589707833,
+        "processes": {
+          "26401": {
+            "cpuNs": 37305432,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10922247,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6378803,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 886688,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295871.626285291,
+        "processes": {
+          "26401": {
+            "cpuNs": 37305432,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10922247,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6415077,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 886688,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295872.652100083,
+        "processes": {
+          "26401": {
+            "cpuNs": 37305432,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10923180,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6415077,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 886688,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295873.693054,
+        "processes": {
+          "26401": {
+            "cpuNs": 37310539,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10923180,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6415441,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 886688,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295874.738045166,
+        "processes": {
+          "26401": {
+            "cpuNs": 37337537,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10926957,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6418668,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 888892,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295875.777828291,
+        "processes": {
+          "26401": {
+            "cpuNs": 37337537,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10927943,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6418668,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 888892,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295876.819211083,
+        "processes": {
+          "26401": {
+            "cpuNs": 37337537,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10927943,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6418668,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 888892,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295877.860749083,
+        "processes": {
+          "26401": {
+            "cpuNs": 37337537,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10927943,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6418668,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 888892,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1038261,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045258,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295878.899864583,
+        "processes": {
+          "26401": {
+            "cpuNs": 37346073,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10934579,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6421272,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 891883,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045956,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295879.940567916,
+        "processes": {
+          "26401": {
+            "cpuNs": 37346808,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10934579,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6421272,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 891883,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045956,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295880.984808708,
+        "processes": {
+          "26401": {
+            "cpuNs": 37362915,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10934579,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6434737,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 891883,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045956,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295882.023482,
+        "processes": {
+          "26401": {
+            "cpuNs": 37376036,
+            "rssBytes": 245301248,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10935606,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6436360,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 891883,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8045956,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295883.04956875,
+        "processes": {
+          "26401": {
+            "cpuNs": 37407659,
+            "rssBytes": 245317632,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10938527,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6436360,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 893537,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8050108,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295884.091935625,
+        "processes": {
+          "26401": {
+            "cpuNs": 37408300,
+            "rssBytes": 245317632,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10938527,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6436360,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 893537,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8050108,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      },
+      {
+        "time": 295885.135532708,
+        "processes": {
+          "26401": {
+            "cpuNs": 37408833,
+            "rssBytes": 245317632,
+            "footprintBytes": 76957304
+          },
+          "26403": {
+            "cpuNs": 10940446,
+            "rssBytes": 119750656,
+            "footprintBytes": 115295456
+          },
+          "26404": {
+            "cpuNs": 6436360,
+            "rssBytes": 93634560,
+            "footprintBytes": 26100912
+          },
+          "26406": {
+            "cpuNs": 893537,
+            "rssBytes": 74399744,
+            "footprintBytes": 20137016
+          },
+          "26410": {
+            "cpuNs": 1039290,
+            "rssBytes": 96288768,
+            "footprintBytes": 26871080
+          },
+          "26411": {
+            "cpuNs": 8050108,
+            "rssBytes": 174768128,
+            "footprintBytes": 55133840
+          }
+        }
+      }
+    ],
+    "method": "proc_pid_rusage RUSAGE_INFO_V0, entire host descendant tree; 15 intervals; per-task footprints aggregated, not a unique physical allocation measurement",
+    "configuration": "one visible SwiftUI native CEF page with one local iframe; driver disconnected; popups closed; no streaming",
+    "gpu": "NOT RUN: requires privileged measurement, no elevation attempted"
+  },
+  "earlierPrototypeChecks": [
+    {
+      "name": "native_input_and_same_document",
+      "status": "PASS",
+      "detail": {
+        "poc": {
+          "documentId": "b3f1de57-4b4a-4cfc-b289-260e9bbf5e2d",
+          "clicks": 1,
+          "events": [
+            {
+              "type": "keydown",
+              "data": "v",
+              "trusted": true,
+              "value": ""
+            },
+            {
+              "type": "input",
+              "data": "原生中文输入 LingXiAgent 🦊",
+              "trusted": true,
+              "value": "原生中文输入 LingXiAgent 🦊"
+            },
+            {
+              "type": "keydown",
+              "data": "a",
+              "trusted": true,
+              "value": "原生中文输入 LingXiAgent 🦊"
+            },
+            {
+              "type": "keydown",
+              "data": "N",
+              "trusted": true,
+              "value": "原生中文输入 LingXiAgent 🦊"
+            },
+            {
+              "type": "input",
+              "data": "N",
+              "trusted": true,
+              "value": "N"
+            },
+            {
+              "type": "keydown",
+              "data": "a",
+              "trusted": true,
+              "value": "N"
+            },
+            {
+              "type": "input",
+              "data": "a",
+              "trusted": true,
+              "value": "Na"
+            },
+            {
+              "type": "keydown",
+              "data": "t",
+              "trusted": true,
+              "value": "Na"
+            },
+            {
+              "type": "input",
+              "data": "t",
+              "trusted": true,
+              "value": "Nat"
+            },
+            {
+              "type": "keydown",
+              "data": "i",
+              "trusted": true,
+              "value": "Nat"
+            },
+            {
+              "type": "input",
+              "data": "i",
+              "trusted": true,
+              "value": "Nati"
+            },
+            {
+              "type": "keydown",
+              "data": "v",
+              "trusted": true,
+              "value": "Nati"
+            },
+            {
+              "type": "input",
+              "data": "v",
+              "trusted": true,
+              "value": "Nativ"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Nativ"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native"
+            },
+            {
+              "type": "keydown",
+              "data": " ",
+              "trusted": true,
+              "value": "Native"
+            },
+            {
+              "type": "input",
+              "data": " ",
+              "trusted": true,
+              "value": "Native "
+            },
+            {
+              "type": "keydown",
+              "data": "r",
+              "trusted": true,
+              "value": "Native "
+            },
+            {
+              "type": "input",
+              "data": "r",
+              "trusted": true,
+              "value": "Native r"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Native r"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native re"
+            },
+            {
+              "type": "keydown",
+              "data": "p",
+              "trusted": true,
+              "value": "Native re"
+            },
+            {
+              "type": "input",
+              "data": "p",
+              "trusted": true,
+              "value": "Native rep"
+            },
+            {
+              "type": "keydown",
+              "data": "l",
+              "trusted": true,
+              "value": "Native rep"
+            },
+            {
+              "type": "input",
+              "data": "l",
+              "trusted": true,
+              "value": "Native repl"
+            },
+            {
+              "type": "keydown",
+              "data": "a",
+              "trusted": true,
+              "value": "Native repl"
+            },
+            {
+              "type": "input",
+              "data": "a",
+              "trusted": true,
+              "value": "Native repla"
+            },
+            {
+              "type": "keydown",
+              "data": "c",
+              "trusted": true,
+              "value": "Native repla"
+            },
+            {
+              "type": "input",
+              "data": "c",
+              "trusted": true,
+              "value": "Native replac"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replac"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replace"
+            },
+            {
+              "type": "keydown",
+              "data": "m",
+              "trusted": true,
+              "value": "Native replace"
+            },
+            {
+              "type": "input",
+              "data": "m",
+              "trusted": true,
+              "value": "Native replacem"
+            },
+            {
+              "type": "keydown",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replacem"
+            },
+            {
+              "type": "input",
+              "data": "e",
+              "trusted": true,
+              "value": "Native replaceme"
+            },
+            {
+              "type": "keydown",
+              "data": "n",
+              "trusted": true,
+              "value": "Native replaceme"
+            },
+            {
+              "type": "input",
+              "data": "n",
+              "trusted": true,
+              "value": "Native replacemen"
+            },
+            {
+              "type": "keydown",
+              "data": "t",
+              "trusted": true,
+              "value": "Native replacemen"
+            },
+            {
+              "type": "input",
+              "data": "t",
+              "trusted": true,
+              "value": "Native replacement"
+            },
+            {
+              "type": "keydown",
+              "data": " ",
+              "trusted": true,
+              "value": "Native replacement"
+            },
+            {
+              "type": "input",
+              "data": " ",
+              "trusted": true,
+              "value": "Native replacement "
+            },
+            {
+              "type": "keydown",
+              "data": "P",
+              "trusted": true,
+              "value": "Native replacement "
+            },
+            {
+              "type": "input",
+              "data": "P",
+              "trusted": true,
+              "value": "Native replacement P"
+            },
+            {
+              "type": "keydown",
+              "data": "A",
+              "trusted": true,
+              "value": "Native replacement P"
+            },
+            {
+              "type": "input",
+              "data": "A",
+              "trusted": true,
+              "value": "Native replacement PA"
+            },
+            {
+              "type": "keydown",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PA"
+            },
+            {
+              "type": "input",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PAS"
+            },
+            {
+              "type": "keydown",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PAS"
+            },
+            {
+              "type": "input",
+              "data": "S",
+              "trusted": true,
+              "value": "Native replacement PASS"
+            }
+          ],
+          "lastClickTrusted": true
+        },
+        "message": "Native replacement PASS",
+        "result": "Native replacement PASS",
+        "viewport": [
+          1000,
+          679
+        ]
+      }
+    },
+    {
+      "name": "semantic_snapshot",
+      "status": "PASS",
+      "detail": {
+        "characters": 1058
+      }
+    },
+    {
+      "name": "playwright_unicode_click",
+      "status": "PASS",
+      "detail": "Playwright 共享原生页面 🦊"
+    },
+    {
+      "name": "playwright_meta_a_replacement",
+      "status": "PASS",
+      "detail": "快捷键替换成功"
+    },
+    {
+      "name": "iframe_input",
+      "status": "PASS",
+      "detail": "同一浏览器 iframe"
+    },
+    {
+      "name": "file_upload_change",
+      "status": "PASS",
+      "detail": "poc-upload.txt"
+    },
+    {
+      "name": "download_contents",
+      "status": "PASS",
+      "detail": "LingXiAgent native download fixture\n"
+    },
+    {
+      "name": "popup_shared_context_attempt1",
+      "status": "FAIL",
+      "detail": "CEF created popup id 2, page target URL empty; Playwright new-page wait timed out after 5000ms. Test runner terminated because waiter rejected before click finished. Popup explicitly closed using Target.closeTarget."
+    },
+    {
+      "name": "ten_operation_cycles",
+      "status": "PASS",
+      "detail": {
+        "durationsMs": [
+          56.242917000000006,
+          32.23083300000002,
+          33.002791,
+          34.285416,
+          32.25599999999997,
+          35.37225000000001,
+          31.76691599999998,
+          33.642083000000014,
+          34.40258400000005,
+          31.84862499999997
+        ],
+        "medianMs": 33.32243700000001
+      }
+    },
+    {
+      "name": "popup_shared_context_attempt2",
+      "status": "FAIL",
+      "error": "TimeoutError: browserContext.waitForEvent: Timeout 5000ms exceeded while waiting for event \"page\""
+    },
+    {
+      "name": "native_popup_then_reattach",
+      "status": "PASS",
+      "detail": {
+        "id": "90b1cd8b-4791-4dce-b22d-5fecd5214129",
+        "result": "Native popup PASS",
+        "trusted": true,
+        "pageCount": 2,
+        "method": "Driver disconnected before native click; native popup loaded and submitted; reconnect observed same popup document and operated it. Not automatic popup handling."
+      }
+    }
+  ],
+  "experimentalChromePopup": {
+    "configuration": "Alloy embedded main + Chrome runtime popup",
+    "operation": "FAIL",
+    "error": "Error: browserContext.waitForEvent: Target page, context or browser has been closed"
+  },
+  "lifecycle": {
+    "embeddedMainCloseAfterRelease": "OnBeforeClose id=1 observed in attempt5",
+    "alloyPopupClose": "OnBeforeClose popup missing, process remained in attempt4 and attempt5",
+    "manualPopupTeardown": "Attempt6 produced OnBeforeClose popup then SIGSEGV; rejected",
+    "mixedChromePopup": "Attempt7 crashed SIGSEGV during popup creation; rejected",
+    "fullGracefulShutdown": "FAIL; no CEF_SHUTDOWN_OK recorded",
+    "crashCause": "Unresolved; prototype integration errors cannot be attributed exclusively to CEF SDK"
+  },
+  "startup": {
+    "firstZeroViewport": "Observed innerWidth=0, innerHeight=0; fixed by waiting for attached nonzero SwiftUI container and resize propagation",
+    "laterBlankPage": "User reported Keychain password not yet entered; after authorization webpage visible; not treated as rendering incompatibility",
+    "canonicalPath": "Executable launched via resolved /private/tmp path; sandbox-extension warning from /tmp alias no longer appeared"
+  },
+  "notRun": [
+    "Native Chinese IME composition/candidate-window behavior",
+    "GPU utilization / GPU comparative attribution",
+    "GUI/TUI/Core integration and permission chain",
+    "Agent pause, user takeover, cancellation, isolation and crash recovery",
+    "Persistent login, real websites, cross-origin iframe",
+    "Desktop computer-use backend"
+  ],
+  "decision": "Native SwiftUI + CEF shared-document control proved; unified production replacement NOT READY because popup handling and complete graceful shutdown did not pass.",
+  "cleanup": {
+    "prototypeProcessesRemaining": [],
+    "temporarySDKAppProfilesAndScriptsRemoved": true,
+    "productCodeModified": false,
+    "secretScanFindings": 0
+  }
+}

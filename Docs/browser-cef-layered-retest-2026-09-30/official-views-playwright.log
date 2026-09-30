@@ -1,0 +1,10 @@
+
+DevTools listening on ws://127.0.0.1:50092/devtools/browser/03c04f04-ca67-439f-8cb9-1078e262829b
+OBS OnAfterCreated 1 popup=0
+[52145:8213199:0930/155712.738131:ERROR:base/mac/process_requirement.cc:159] Unable to derive validation category for current process. Signature validation of current process failed: Error Domain=NSOSStatusErrorDomain Code=-67030 "(null)" (-67030)
+OBS OnAfterCreated 2 popup=1
+2026-09-30 15:57:39.123 cefsimple[52145:8212830] Warning: Window move completed without beginning
+OBS OnBeforeClose 2 popup=1
+OBS OnBeforeClose 1 popup=0
+OBS CefShutdown begin
+OBS CefShutdown end

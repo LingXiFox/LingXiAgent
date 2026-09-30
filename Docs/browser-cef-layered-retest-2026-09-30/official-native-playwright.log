@@ -1,0 +1,5 @@
+
+DevTools listening on ws://127.0.0.1:50034/devtools/browser/9d343185-2290-4afe-88af-0d77063b5aaa
+OBS OnAfterCreated 1 popup=0
+[51831:8211066:0930/155632.876571:ERROR:base/mac/process_requirement.cc:159] Unable to derive validation category for current process. Signature validation of current process failed: Error Domain=NSOSStatusErrorDomain Code=-67030 "(null)" (-67030)
+OBS OnAfterCreated 2 popup=1

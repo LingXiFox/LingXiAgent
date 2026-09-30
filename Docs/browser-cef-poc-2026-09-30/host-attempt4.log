@@ -1,0 +1,21 @@
+
+DevTools listening on ws://127.0.0.1:63934/devtools/browser/9c06888e-4feb-4b17-8124-e8c25b595f11
+NSAPP_CLASS BrowserApplication
+NATIVE_CONTAINER 1000 679 parent=0x10c01620500 window=0x10c01613180 browser=0x10c01d67e00 frame=1000 679
+CEF_BROWSER_CREATED id=1 popup=0
+CEF_LOADING 1 1
+CEF_LOADING 1 0
+2026-09-30 14:51:51.446 LingXiBrowserPOC[20159:8066005] TSM AdjustCapsLockLEDForKeyTransitionHandling - _ISSetPhysicalKeyboardCapsLockLED Inhibit
+NATIVE_CONTAINER 1000 679 parent=0x10c01620500 window=0x10c01613180 browser=0x10c033d2ac0 frame=750 750
+CEF_BROWSER_CREATED id=2 popup=1
+[21536:8073087:0930/145412.008647:ERROR:services/on_device_model/ml/gpu_blocklist.cc:120] Unable to get gpu adapter
+[21536:8073095:0930/145412.009223:ERROR:services/on_device_model/ml/gpu_blocklist.cc:120] Unable to get gpu adapter
+CEF_BROWSER_CLOSED id=2 remaining=1
+NATIVE_CONTAINER 1000 679 parent=0x10c01620500 window=0x10c01613180 browser=0x10c033d2400 frame=750 750
+CEF_BROWSER_CREATED id=3 popup=1
+CEF_BROWSER_CLOSED id=3 remaining=1
+NATIVE_CONTAINER 1000 679 parent=0x10c01620500 window=0x10c01613180 browser=0x10c033d1b00 frame=750 750
+CEF_BROWSER_CREATED id=4 popup=1
+CEF_LOADING 4 1
+CEF_LOADING 4 0
+APP_TERMINATE_REQUESTED browsers=2
