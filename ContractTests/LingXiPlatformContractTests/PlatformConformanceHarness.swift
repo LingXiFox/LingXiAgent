@@ -118,13 +118,13 @@ struct PlatformConformanceHarness {
             .deletingLastPathComponent() // LingXiPlatformContractTests
             .deletingLastPathComponent() // ContractTests
             .deletingLastPathComponent() // Repo Root
-        let debtFile = repoRoot.appendingPathComponent("Docs/PLATFORM-DEBT.json")
-        #expect(FileManager.default.fileExists(atPath: debtFile.path), "Docs/PLATFORM-DEBT.json must exist")
+        let debtFile = repoRoot.appendingPathComponent("Docs/AC/PLATFORM-DEBT.json")
+        #expect(FileManager.default.fileExists(atPath: debtFile.path), "Docs/AC/PLATFORM-DEBT.json must exist")
 
         let data = try Data(contentsOf: debtFile)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let debts = json["debts"] as? [[String: Any]] else {
-            Issue.record("Failed to parse Docs/PLATFORM-DEBT.json as { debts: [...] }")
+            Issue.record("Failed to parse Docs/AC/PLATFORM-DEBT.json as { debts: [...] }")
             return
         }
 
