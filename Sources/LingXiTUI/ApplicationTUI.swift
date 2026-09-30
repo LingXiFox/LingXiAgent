@@ -31,7 +31,7 @@ public final class ApplicationTUI: Frontend {
         FrontendCommandItem(name: "expand", description: "Expand all collapsed thinking and tool outputs", category: "View"),
         FrontendCommandItem(name: "collapse", description: "Collapse all long thinking and tool outputs", category: "View"),
         FrontendCommandItem(name: "tasks", aliases: ["task", "bg"], description: "Manage background tasks modal", category: "System"),
-        FrontendCommandItem(name: "quit", aliases: ["exit"], description: "Exit LingXi TUI", category: "General")
+        FrontendCommandItem(name: "quit", aliases: ["exit"], description: "Exit LingXiAgent TUI", category: "General")
     ]
 
     private enum Overlay {
@@ -3326,7 +3326,7 @@ public final class ApplicationTUI: Frontend {
         var lines: [TUIStyledLine] = []
 
         // 1. Header
-        let titleLeft = title.hasPrefix("🦊") ? title : "🦊 \(title)"
+        let titleLeft = title
         let titleRight = "esc / q"
         let padSpaces = max(1, innerWidth - TUIDisplayWidth.width(of: titleLeft) - TUIDisplayWidth.width(of: titleRight))
         lines.append(TUIStyledLine(titleLeft + String(repeating: " ", count: padSpaces) + titleRight, style: .modalTitle))

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  🦊 LingXiAgent Alpha 1 Build & CLI Test Runner
+#  LingXiAgent Alpha 1 Build & CLI Test Runner
 #  Compiles Alpha release artifacts into dist/alpha-1/ and creates ./lingxiagent-alpha
 # ==============================================================================
 
@@ -62,7 +62,7 @@ EOF
 done
 
 echo "=================================================================="
-echo "🦊 LingXiAgent Build - Version $VERSION ($RELEASE_NAME)"
+echo "LingXiAgent Build - Version $VERSION ($RELEASE_NAME)"
 echo "   Configuration: $BUILD_CONFIG"
 echo "   Artifact Dir:  $ALPHA_DIR"
 echo "=================================================================="
@@ -179,7 +179,7 @@ if [ "$DO_TEST" -eq 1 ]; then
 fi
 
 echo "=================================================================="
-echo "🦊 Alpha 1 ready! You can now test CLI commands via:"
+echo "Alpha 1 ready! You can now test CLI commands via:"
 echo "   $ ./lingxiagent-alpha --version"
 echo "   $ ./lingxiagent-alpha doctor"
 echo "   $ ./lingxiagent-alpha auth matrix"

@@ -1,4 +1,4 @@
-# FoxPlugin — 灵犀官方参考插件
+# FoxPlugin — LingXiAgent官方参考插件
 
 > LingXiAgent 官方 Native Swift 插件范例，演示物理进程隔离、双核只读高维感知、弹出式 TUI 命令与模型自主工具扩展。
 
@@ -32,7 +32,7 @@ mkdir -p ~/.lingxiagent/plugins
 cp .build/release/FoxPlugin ~/.lingxiagent/plugins/fox-plugin
 chmod +x ~/.lingxiagent/plugins/fox-plugin
 
-# 3. 在终端中启动灵犀客户端体验
+# 3. 在终端中启动LingXiAgent客户端体验
 lingxi
 # 敲击 /plugins 查看插件状态，输入 /fox-info 查看弹出浮层
 ```

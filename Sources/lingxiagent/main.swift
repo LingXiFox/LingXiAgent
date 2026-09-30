@@ -51,7 +51,7 @@ case .version:
 
 case .auth, .mcp, .skills, .exec, .review, .doctor, .resume, .acp, .task, .smoke:
     let cmd = args.first ?? "subcommand"
-    print("🦊 [LingXiAgent] The '\(cmd)' operation is managed by the operations CLI.")
+    print("[LingXiAgent] The '\(cmd)' operation is managed by the operations CLI.")
     print("Please run: lingxiagent-ops \(args.joined(separator: " "))")
     exit(1)
 }

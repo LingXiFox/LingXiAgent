@@ -53,7 +53,7 @@ extension CoreHost {
             try await git(["add", "-A"], in: path)
             let message = envelope.payload.commitMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
             try await git(identityArguments(in: path) + ["commit", "-m",
-                          message?.isEmpty == false ? message! : "LingXi worktree \(worktree.id)"], in: path)
+                          message?.isEmpty == false ? message! : "LingXiAgent worktree \(worktree.id)"], in: path)
         }
         // Squash into the main worktree as staged changes, for the user to commit.
         try await git(["merge", "--squash", worktree.branch], in: repo.mainRoot)
@@ -133,7 +133,7 @@ extension CoreHost {
             throw CoreError(code: .toolArgumentInvalid, message: "Worktree \(id) 不存在")
         }
         guard worktree.branch.hasPrefix(Self.worktreeBranchPrefix) else {
-            throw CoreError(code: .toolArgumentInvalid, message: "Worktree \(id) 不在 LingXi 管理的分支上")
+            throw CoreError(code: .toolArgumentInvalid, message: "Worktree \(id) 不在 LingXiAgent 管理的分支上")
         }
         return worktree
     }
@@ -180,7 +180,7 @@ extension CoreHost {
     /// user has none configured, never overriding theirs.
     private func identityArguments(in directory: URL) async throws -> [String] {
         let email = (try? await git(["config", "user.email"], in: directory)) ?? ""
-        return email.isEmpty ? ["-c", "user.name=LingXi", "-c", "user.email=lingxi@localhost"] : []
+        return email.isEmpty ? ["-c", "user.name=LingXiAgent", "-c", "user.email=lingxi@localhost"] : []
     }
 
     @discardableResult

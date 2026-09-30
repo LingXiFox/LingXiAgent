@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  🦊 LingXiAgent Release Packager
+#  LingXiAgent Release Packager
 #  Packages release artifacts for macOS, Linux, or Windows.
 # ==============================================================================
 
@@ -40,7 +40,7 @@ case "$ARCH" in
         ;;
 esac
 
-echo "🦊 [1/3] Building Release binaries for $PLATFORM-$CPU_ARCH..."
+echo "[1/3] Building Release binaries for $PLATFORM-$CPU_ARCH..."
 cd "$ROOT_DIR"
 swift build -c release --product lingxiagent
 swift build -c release --product LingXiCoreHost

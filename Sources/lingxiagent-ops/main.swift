@@ -170,7 +170,7 @@ case .version:
     exit(0)
 
 case .smoke:
-    print("🦊 [LingXiAgent Smoke] Initializing CoreHost subsystem...")
+    print("[LingXiAgent Smoke] Initializing CoreHost subsystem...")
     do {
         let env = ProcessInfo.processInfo.environment
         let dataRoot = LingXiDataRootResolver.resolve(
@@ -181,7 +181,7 @@ case .smoke:
         _ = try await configurations.load()
         print("✓ CoreHost configuration & data store operational")
 
-        print("🦊 [LingXiAgent Smoke] Initializing TUI Terminal & Renderer...")
+        print("[LingXiAgent Smoke] Initializing TUI Terminal & Renderer...")
         let walkedTerminal = try ApplicationTUI.smokeCheck()
         print(walkedTerminal
             ? "✓ TUI renderer & fallback pipeline operational"

@@ -8,7 +8,7 @@ CONFIG="${1:-debug}"
 if [[ $# -gt 1 || ( "${CONFIG}" != debug && "${CONFIG}" != release ) ]]; then
     echo "Usage: $0 [debug|release]" >&2; exit 2
 fi
-APP_NAME="LingXi"
+APP_NAME="LingXiAgent"
 BIN_NAME="LingXiMacApp"
 OUT_DIR="${PACKAGE_ROOT}/.build/${CONFIG}"
 APP_BUNDLE="${OUT_DIR}/${APP_NAME}.app"
@@ -58,11 +58,11 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>              <string>LingXiMacApp</string>
   <!-- Keep the accepted GUI's identity so wallpaper and preferences survive promotion. -->
   <key>CFBundleIdentifier</key>              <string>com.lingxi.LingXiAppB</string>
-  <key>CFBundleName</key>                    <string>LingXi</string>
+  <key>CFBundleName</key>                    <string>LingXiAgent</string>
   <key>CFBundleIconFile</key>                <string>AppIcon</string>
   <key>CFBundleDevelopmentRegion</key>       <string>zh_CN</string>
   <key>CFBundleLocalizations</key>           <array><string>zh-Hans</string></array>
-  <key>CFBundleDisplayName</key>             <string>LingXi</string>
+  <key>CFBundleDisplayName</key>             <string>LingXiAgent</string>
   <key>CFBundlePackageType</key>             <string>APPL</string>
   <key>CFBundleShortVersionString</key>      <string>1.0.0</string>
   <key>CFBundleVersion</key>                 <string>1</string>
