@@ -742,7 +742,7 @@ public struct ToolRuntime: Sendable {
                 toolID: call.toolID,
                 capabilities: capabilities,
                 resource: resource,
-                description: "允许 \(call.toolID.rawValue) 访问 \(resource)"
+                description: "允许 \(call.toolID.rawValue) 访问 \(resource)" + (effectiveProfile == .workspace ? "；仅批准本次操作，不扩大 Workspace 范围，访问外部文件夹需先切换到 Ask/FullAccess" : "")
             )
             if capabilities.contains(.externalFilesystem) {
                 let externalRequest = PermissionRequest(

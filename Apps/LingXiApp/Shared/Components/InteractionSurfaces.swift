@@ -11,6 +11,7 @@ struct PermissionSurface: View {
     let card: InteractionCardPresentation
     let position: String
     let policy: String
+    var workspaceOnly: Bool = false
     let onResolve: (Bool) -> Void
 
     private var isElevated: Bool {
@@ -56,6 +57,13 @@ struct PermissionSurface: View {
             Text("当前策略：\(policy)")
                 .font(LXType.meta)
                 .foregroundStyle(.secondary)
+
+            if workspaceOnly {
+                Text("允许仅批准本次操作，不扩大工作区范围。访问外部文件夹需先切换到 Ask · 完全访问；系统文件夹权限仍由 macOS 管理。")
+                    .font(LXType.meta)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack(spacing: LingXiMetrics.Space.sm) {
                 Spacer(minLength: 0)

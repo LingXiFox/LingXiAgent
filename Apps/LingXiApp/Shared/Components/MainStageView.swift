@@ -123,6 +123,7 @@ private struct TimelineStage: View {
                     .padding(.bottom, LingXiMetrics.Space.md)
                 }
             }
+            .scrollIndicators(.never, axes: .vertical)
             .defaultScrollAnchor(.bottom)
             .modifier(BottomTracking(isAwayFromBottom: $isAwayFromBottom))
             .safeAreaInset(edge: .bottom, spacing: 0) {

@@ -5,11 +5,8 @@ import SwiftUI
 /// registers (the same set the TUI exposes as `/` commands). Low-frequency
 /// operations live here instead of as permanent buttons.
 ///
-/// Visual contract (§4 / §6): a temporary floating surface — untinted Liquid
-/// Glass, 1px separator ring, shadow-float, radius `surface` 20, padding 16.
-/// The suggestion list is part of that SAME glass layer inside one
-/// `LXGlassGroup`, so palette and list read as one surface and morph together
-/// instead of stacking a card inside a card.
+/// A static translucent surface with a 1px ring, floating shadow, radius 20
+/// and padding 16. Search and suggestions share the same surface.
 ///
 /// Rows follow the §7 menu geometry: 28pt tall, radius-sm 6, body 13/18, icons
 /// and kbd hints neutral, and the highlighted row takes the accent fill a macOS
@@ -22,7 +19,6 @@ struct CommandPalette: View {
     @State private var query = ""
     @State private var highlighted = 0
     @FocusState private var fieldFocused: Bool
-    @Namespace private var glassSpace
 
     /// §7 menu metrics. 14 is an icon side, not a spacing step; the 5×10
     /// separator margin and the 10pt row trailing inset are the menu values the
@@ -39,7 +35,7 @@ struct CommandPalette: View {
     }
 
     var body: some View {
-        LXGlassGroup(spacing: 0) {
+        Group {
             VStack(alignment: .leading, spacing: 0) {
                 searchField
                 headSeparator
@@ -47,7 +43,6 @@ struct CommandPalette: View {
             }
             .frame(width: LingXiMetrics.Column.palette)
             .lxFloating()
-            .lxGlassID("palette", in: glassSpace)
         }
         .onAppear { fieldFocused = true }
         .onChange(of: query) { highlighted = 0 }

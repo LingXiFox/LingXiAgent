@@ -42,11 +42,11 @@ public struct WarmWorkbench: View {
     @ObservedObject private var sidebar: SidebarPresentationModel
     @ObservedObject private var conversation: ConversationPresentationModel
     @ObservedObject private var inspector: RuntimeInspectorPresentationModel
-    @AppStorage(LXPreferenceKey.colorScheme) private var colorScheme = ColorSchemePreference.system
     @AppStorage("lingxi.toolPanelWidth") private var savedToolWidth = Double(LingXiMetrics.Size.toolPanel)
     @State private var dragStartWidth: CGFloat?
     @State private var showsCompactContext = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(runtime: RuntimeFrontend, settings: SettingsStore, navigation: WarmNavigation) {
         self.runtime = runtime
@@ -125,7 +125,7 @@ public struct WarmWorkbench: View {
                                 .padding(.horizontal, LingXiMetrics.Space.sm)
                                 .padding(.vertical, LingXiMetrics.Space.sm)
                         }
-                        .background(LXColor.window)
+                        .background(windowBackground)
                         .overlay { if runtime.isCommandPalettePresented { palette } }
                         .onChange(of: navigation.selectedTool) { _, selected in
                             if selected != nil && geometry.size.width < 1024 {
@@ -136,7 +136,7 @@ public struct WarmWorkbench: View {
                     .frame(width: window.size.width - (sidebar.isNavigatorVisible ? LingXiMetrics.Size.navigator : 0))
                 }
                 .frame(width: window.size.width, height: window.size.height)
-                .background(LXColor.window)
+                .background(windowBackground)
             }
         }
         .scrollIndicators(.hidden)
@@ -162,7 +162,7 @@ public struct WarmWorkbench: View {
         .frame(minWidth: navigation.selectedTool == nil ? LingXiMetrics.Size.windowMinWidth :
                LingXiMetrics.Size.windowWithToolMin,
                minHeight: LingXiMetrics.Size.windowMinHeight)
-        .preferredColorScheme(colorScheme.colorScheme)
+        .preferredColorScheme(.dark)
         .tint(LXColor.accent)
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: navigation.selectedTool)
         .onChange(of: runtime.isShowingSettings) { _, open in
@@ -174,7 +174,11 @@ public struct WarmWorkbench: View {
         }
     }
 
-    /// Preserve a full reading column before showing the docked context pane.
+    private var windowBackground: Color {
+        reduceTransparency ? LXColor.window : .clear
+    }
+
+    /// Preserve a readable column before showing the docked context pane.
     private func compactHUD(for width: CGFloat) -> Bool {
         !navigation.showsContext || !canFitContext(for: width)
     }
@@ -182,7 +186,7 @@ public struct WarmWorkbench: View {
     private func canFitContext(for width: CGFloat) -> Bool {
         let toolWidth = navigation.selectedTool == nil ? 0 : CGFloat(savedToolWidth) + LingXiMetrics.Space.sm
         let stage = width - LingXiMetrics.Size.toolRail - 2 * LingXiMetrics.Space.sm - toolWidth
-        return stage >= LingXiMetrics.Column.prose + 2 * LingXiMetrics.Column.gutter +
+        return stage >= LingXiMetrics.Column.dockedMinimum + 2 * LingXiMetrics.Column.gutter +
             LingXiMetrics.Size.statusHUD + LingXiMetrics.Space.sm
     }
 

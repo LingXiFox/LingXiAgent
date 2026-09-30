@@ -97,7 +97,6 @@ public struct SidebarView: View {
         }
         .lxPanel()
         .padding([.top, .leading, .bottom], LingXiMetrics.Space.sm)
-        .background(LXColor.window)
         .sheet(item: $renaming) { session in
             RenameSessionSheet(title: $renameDraft) {
                 runtime.renameSession(id: session.id, title: renameDraft)

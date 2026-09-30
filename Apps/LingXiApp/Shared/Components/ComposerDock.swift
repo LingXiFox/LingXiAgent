@@ -7,14 +7,12 @@ import LingXiApplication
 // MARK: - Dock
 
 /// The floating execution layer at the foot of the stage: pending human
-/// requests, `/` command suggestions and the composer, all in ONE glass group
-/// on the reading column so they sample one backdrop and morph together.
+/// requests, `/` command suggestions and the composer, sharing the reading column.
 struct ComposerDock: View {
     @ObservedObject var runtime: RuntimeFrontend
     @ObservedObject private var model: ComposerModel
     @ObservedObject private var conversation: ConversationPresentationModel
     @State private var activeIndex = 0
-    @Namespace private var glass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(runtime: RuntimeFrontend) {
@@ -24,13 +22,14 @@ struct ComposerDock: View {
     }
 
     var body: some View {
-        LXGlassGroup(spacing: LingXiMetrics.Space.md) {
+        Group {
             VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
                 if let card = current {
                     Group {
                         if card.kind == .permission {
                             PermissionSurface(card: card, position: position,
-                                              policy: model.permissionPreset.label) { approved in
+                                              policy: model.permissionPreset.label,
+                                              workspaceOnly: !model.permissionPreset.isElevated) { approved in
                                 runtime.resolveInteraction(interactionID: card.interactionID, approved: approved)
                                 advance()
                             }
@@ -45,18 +44,15 @@ struct ComposerDock: View {
                         }
                     }
                     .id(card.id)
-                    .lxGlassID("interaction", in: glass)
                     .transition(.opacity.combined(with: .offset(y: LingXiMetrics.Space.sm)))
                 }
 
                 if let suggestions, !suggestions.isEmpty {
                     CommandSuggestionList(commands: suggestions) { model.text = "/\($0.name) " }
-                        .lxGlassID("commands", in: glass)
                         .transition(.opacity)
                 }
 
                 ComposerSurface(runtime: runtime, model: model, isGenerating: conversation.isGenerating)
-                    .lxGlassID("composer", in: glass)
             }
         }
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: current?.id)

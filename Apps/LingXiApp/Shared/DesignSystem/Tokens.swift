@@ -261,10 +261,11 @@ public enum LingXiMetrics {
     }
 
     public enum Column {
-        /// measure-prose: message reading column.
-        public static let prose: CGFloat = 720
-        /// Wider controls leave a clear gap between the composer action groups.
+        /// Messages and composer share one measure and the same gutters.
         public static let composer: CGFloat = 920
+        public static let prose: CGFloat = composer
+        /// Minimum readable measure when the context pane is docked.
+        public static let dockedMinimum: CGFloat = 720
         /// measure-stage: diffs, tables and output blocks may use this width.
         public static let stage: CGFloat = 1080
         /// bubble-max.

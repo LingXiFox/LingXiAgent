@@ -5,6 +5,7 @@ import AppKit
 /// AppKit 原生 NSTextView 桥接
 /// 解决纯 SwiftUI TextEditor 针对中文输入法、智能引号干扰、快捷键拦截和代码展示的体验局限
 public struct MacNativeTextView: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     @Binding public var text: String
     public var isEditable: Bool
     public var isMonospace: Bool
@@ -84,10 +85,12 @@ public struct MacNativeTextView: NSViewRepresentable {
             textView.font = Self.bodyFont
         }
         textView.defaultParagraphStyle = Self.bodyParagraphStyle
+        textView.textColor = colorScheme == .dark ? .white : .textColor
+        textView.placeholderColor = colorScheme == .dark ? .white.withAlphaComponent(0.84) : .secondaryLabelColor
         textView.typingAttributes = [
             .font: textView.font ?? Self.bodyFont,
             .paragraphStyle: Self.bodyParagraphStyle,
-            .foregroundColor: NSColor.textColor
+            .foregroundColor: textView.textColor ?? NSColor.textColor
         ]
         // The composer layer owns the inset: no extra AppKit side padding, so the
         // first line lines up with the goal chip and the action bar below it.
@@ -109,6 +112,9 @@ public struct MacNativeTextView: NSViewRepresentable {
         if textView.string != text {
             textView.string = text
         }
+        textView.textColor = colorScheme == .dark ? .white : .textColor
+        textView.typingAttributes[.foregroundColor] = textView.textColor
+        textView.placeholderColor = colorScheme == .dark ? .white.withAlphaComponent(0.84) : .secondaryLabelColor
         textView.isEditable = isEditable
         textView.onSubmit = onSubmit
         textView.submitRequiresCommand = submitRequiresCommand
@@ -139,6 +145,7 @@ public struct MacNativeTextView: NSViewRepresentable {
 }
 
 public final class KeyInterceptingTextView: NSTextView {
+    var placeholderColor: NSColor = .secondaryLabelColor
     public var onSubmit: (() -> Void)?
     public var submitRequiresCommand = false
     public var placeholderString: String? {
@@ -176,7 +183,7 @@ public final class KeyInterceptingTextView: NSTextView {
             .font: font ?? MacNativeTextView.bodyFont,
             // Placeholder copy is readable text, so it sits on text-secondary
             // (`placeholderTextColor` reads below contrast on the glass layer).
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: placeholderColor,
             .paragraphStyle: style
         ]
         placeholder.draw(in: placeholderBounds, withAttributes: attributes)

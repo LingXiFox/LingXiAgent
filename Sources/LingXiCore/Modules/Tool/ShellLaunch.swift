@@ -16,6 +16,72 @@ import LingXiProtocol
 /// probe yields `stdout="out"`, `stderr="err"`, `exit=7`. The file is left in the temporary directory
 /// because cmd reads a batch file as it executes; deleting it early truncates the run.
 enum ShellLaunch {
+    /// ponytail: preflight literal operands, not shell evaluation; the OS sandbox still enforces dynamic paths.
+    static func literalFileOperands(executable: String, arguments: [String]) -> [String] {
+        let name = URL(fileURLWithPath: executable).lastPathComponent
+        if ["sh", "bash", "zsh"].contains(name), let index = arguments.firstIndex(of: "-c"), arguments.indices.contains(index + 1) {
+            return literalFileOperands(command: arguments[index + 1])
+        }
+        let fileCommands: Set<String> = ["ls", "cat", "head", "tail", "wc", "stat", "file", "readlink", "du", "cd", "cp", "mv", "rm", "mkdir", "touch", "chmod", "chown", "diff", "find"]
+        guard fileCommands.contains(name) else { return [] }
+        return arguments.filter { !$0.isEmpty && !$0.hasPrefix("-") && !$0.contains("$") && !$0.contains("`") }
+    }
+
+    static func literalFileOperands(command: String) -> [String] {
+        var words: [String] = []
+        var word = ""
+        var quote: Character?
+        var escaped = false
+        func flush() {
+            if !word.isEmpty { words.append(word); word = "" }
+        }
+        for character in command {
+            if escaped {
+                word.append(character)
+                escaped = false
+            } else if character == "\\" && quote != "'" {
+                escaped = true
+            } else if let currentQuote = quote {
+                if character == currentQuote { quote = nil }
+                else { word.append(character) }
+            } else if character == "'" || character == "\"" {
+                quote = character
+            } else if character == "\n" {
+                flush()
+                words.append(";")
+            } else if character.isWhitespace {
+                flush()
+            } else if ";|&<>".contains(character) {
+                flush()
+                words.append(String(character))
+            } else {
+                word.append(character)
+            }
+        }
+        guard quote == nil, !escaped else { return [] }
+        flush()
+        var paths: [String] = []
+        var segment: [String] = []
+        var redirect = false
+        for word in words + [";"] {
+            if [";", "|", "&"].contains(word) {
+                if let executable = segment.first {
+                    paths += literalFileOperands(executable: executable, arguments: Array(segment.dropFirst()))
+                }
+                segment.removeAll()
+                redirect = false
+            } else if word == "<" || word == ">" {
+                redirect = true
+            } else if redirect {
+                if !word.contains("$") && !word.contains("`") && word != "/dev/null" { paths.append(word) }
+                redirect = false
+            } else {
+                segment.append(word)
+            }
+        }
+        return paths
+    }
+
     static func invocation(for command: String) throws -> (executable: String, arguments: [String]) {
         #if os(Windows)
         let cmd = LingXiPlatform.process.resolveExecutable(named: "cmd.exe", customSearchPaths: ["C:\\Windows\\System32"])

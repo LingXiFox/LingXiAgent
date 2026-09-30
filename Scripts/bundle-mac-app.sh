@@ -5,12 +5,16 @@ set -euo pipefail
 
 PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-debug}"
-OUT_DIR="${PACKAGE_ROOT}/.build/${CONFIG}"
-APP_BUNDLE="${OUT_DIR}/LingXi.app"
+if [[ $# -gt 1 || ( "${CONFIG}" != debug && "${CONFIG}" != release ) ]]; then
+    echo "Usage: $0 [debug|release]" >&2; exit 2
+fi
+APP_NAME="LingXi"
 BIN_NAME="LingXiMacApp"
+OUT_DIR="${PACKAGE_ROOT}/.build/${CONFIG}"
+APP_BUNDLE="${OUT_DIR}/${APP_NAME}.app"
 
 cd "${PACKAGE_ROOT}"
-swift build -c "${CONFIG}" --product LingXiMacApp
+swift build -c "${CONFIG}" --product "${BIN_NAME}"
 # Core host ships beside the GUI binary: LingXiClient.resolveCorePath looks in
 # the bundle's MacOS directory first, so Settings can start a Core on demand.
 swift build -c "${CONFIG}" --product LingXiCoreHost
@@ -52,7 +56,8 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>              <string>LingXiMacApp</string>
-  <key>CFBundleIdentifier</key>              <string>com.lingxi.LingXiApp</string>
+  <!-- Keep the accepted GUI's identity so wallpaper and preferences survive promotion. -->
+  <key>CFBundleIdentifier</key>              <string>com.lingxi.LingXiAppB</string>
   <key>CFBundleName</key>                    <string>LingXi</string>
   <key>CFBundleIconFile</key>                <string>AppIcon</string>
   <key>CFBundleDevelopmentRegion</key>       <string>zh_CN</string>

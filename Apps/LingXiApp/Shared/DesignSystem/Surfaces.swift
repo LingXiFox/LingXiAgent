@@ -5,8 +5,8 @@ import SwiftUI
 // Three kinds of surface exist, and only three:
 // - Panel: sidebar / stage / inspector. bg-window or bg-content, radius-panel,
 //   1px separator ring, NO shadow.
-// - Floating surface: composer, permission, question, palette. Untinted Liquid
-//   Glass on macOS 26 (surface-elevated + ring + shadow-float before that).
+// - Floating surface: composer, permission, question, palette. Static translucent
+//   fill over the app wallpaper, separator ring, shadow-float.
 // - Content: messages, events, output. No card, no border, no shadow, no glass.
 
 public extension View {
@@ -21,34 +21,15 @@ public extension View {
 
     /// Panel: a filled rounded rect with a separator ring and no shadow.
     func lxPanel(_ fill: Color = LXColor.window, cornerRadius: CGFloat = LingXiMetrics.Radius.panel) -> some View {
-        background(fill, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        modifier(LXPanelBackground(fill: fill, cornerRadius: cornerRadius))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .lxRing(cornerRadius: cornerRadius)
     }
 
-    /// Floating surface chrome: untinted glass, ring, shadow-float.
+    /// Floating surface chrome: static translucent fill, ring, shadow-float.
     @ViewBuilder
     func lxFloating(cornerRadius: CGFloat = LingXiMetrics.Radius.surface) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: shape)
-                .lxRing(cornerRadius: cornerRadius)
-        } else {
-            self.background(LXColor.elevated, in: shape)
-                .lxRing(cornerRadius: cornerRadius)
-                .shadow(color: .black.opacity(0.06), radius: 1, y: 1)
-                .shadow(color: .black.opacity(0.10), radius: 12, y: 8)
-        }
-    }
-
-    /// Stable identity for glass shapes that morph inside one `LXGlassGroup`.
-    @ViewBuilder
-    func lxGlassID<ID: Hashable & Sendable>(_ id: ID, in namespace: Namespace.ID) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffectID(id, in: namespace)
-        } else {
-            self
-        }
+        modifier(LXFloatingChrome(cornerRadius: cornerRadius))
     }
 
     /// Read-only inset block: fill-quinary, radius-inset, 8 × 12 padding.
@@ -57,25 +38,6 @@ public extension View {
             .padding(.vertical, LingXiMetrics.Space.sm)
             .background(LXColor.fillQuinary,
                         in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
-    }
-}
-
-/// Neighbouring glass shapes sample one backdrop and morph into each other.
-public struct LXGlassGroup<Content: View>: View {
-    private let spacing: CGFloat
-    private let content: Content
-
-    public init(spacing: CGFloat = LingXiMetrics.Space.sm, @ViewBuilder content: () -> Content) {
-        self.spacing = spacing
-        self.content = content()
-    }
-
-    public var body: some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) { content }
-        } else {
-            content
-        }
     }
 }
 

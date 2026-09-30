@@ -23,7 +23,7 @@ let guiTargets: [Target] = [
     // macOS GUI executable entry. Wrapped into LingXi.app by Scripts/bundle-mac-app.sh.
     .executableTarget(
         name: "LingXiMacApp",
-        dependencies: ["LingXiFrontendKit", "LingXiClient", "LingXiProtocol"],
+        dependencies: ["LingXiFrontendKit"],
         path: "Apps/LingXiApp/macOS"
     ),
 ]

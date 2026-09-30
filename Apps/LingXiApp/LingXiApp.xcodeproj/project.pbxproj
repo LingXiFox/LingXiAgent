@@ -222,7 +222,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 LingXi. All rights reserved.";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.lingxi.LingXiApp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lingxi.LingXiAppB;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -244,7 +244,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 LingXi. All rights reserved.";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.lingxi.LingXiApp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lingxi.LingXiAppB;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";

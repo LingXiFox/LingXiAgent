@@ -16,7 +16,7 @@ public struct WorkspaceRoot: Sendable {
         self.sensitivePathPolicy = sensitivePathPolicy ?? SensitivePathPolicy(root: candidate)
     }
 
-    public func resolve(_ path: String, profile: ExecutionProfile = .workspace) throws -> URL {
+    public func resolve(_ path: String, profile: ExecutionProfile = .workspace, allowFuzzyResolution: Bool = true) throws -> URL {
         var cleanPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if (cleanPath.hasPrefix("\"") && cleanPath.hasSuffix("\"")) || (cleanPath.hasPrefix("'") && cleanPath.hasSuffix("'")), cleanPath.count >= 2 {
             cleanPath = String(cleanPath.dropFirst().dropLast())
@@ -38,7 +38,7 @@ public struct WorkspaceRoot: Sendable {
         var candidate = input.standardizedFileURL.resolvingSymlinksInPath()
 
         // Smart Fuzzy Resolution: if file doesn't exist directly, attempt workspace-scoped unique suffix/nesting resolution
-        if !FileManager.default.fileExists(atPath: candidate.path),
+        if allowFuzzyResolution, !FileManager.default.fileExists(atPath: candidate.path),
            let fuzzy = findFuzzyCandidate(for: candidate, originalPath: expandedPath) {
             candidate = fuzzy
         }
@@ -1245,10 +1245,21 @@ private func cwd(_ value: String?, workspace: WorkspaceRoot, profile: ExecutionP
     return url
 }
 
+private func shellPaths(command: String? = nil, executable: String? = nil, arguments: [String] = [], workspace: WorkspaceRoot, directory: URL, profile: ExecutionProfile) throws -> [URL] {
+    let operands = command.map { ShellLaunch.literalFileOperands(command: $0) }
+        ?? ShellLaunch.literalFileOperands(executable: executable ?? "", arguments: arguments)
+    return try operands.filter { $0 != "/dev/null" }.map { operand in
+        let path = operand.hasPrefix("~") || LingXiPlatform.path.isAbsolute(operand)
+            ? operand : directory.appendingPathComponent(operand).path
+        return try workspace.resolve(path, profile: profile, allowFuzzyResolution: false)
+    }
+}
+
 func processSetup(executable: String, arguments: [String], workspace: WorkspaceRoot, cwd: URL, profile: ExecutionProfile) throws -> (ToolProcessInvocation, [String: String]) {
     guard LingXiPlatform.path.isAbsolute(executable), FileManager.default.isExecutableFile(atPath: executable) else {
         throw CoreError(code: .toolArgumentInvalid, message: "executable 必须是可执行的绝对路径")
     }
+    _ = try shellPaths(executable: executable, arguments: arguments, workspace: workspace, directory: cwd, profile: profile)
     var environment = EnvironmentSanitizer.sanitized()
     let temporary = workspace.url.appendingPathComponent(".lingxi-tmp", isDirectory: true)
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
@@ -1296,7 +1307,7 @@ public struct ShellTool: ToolExecutor {
     public let definition = ToolDefinition(
         id: ToolID("shell"), description: "Run a synchronous foreground shell command. IMPORTANT: Never run long-running tasks, servers, watchers, sleep, or background requests here. For background tasks or commands that shouldn't block the conversation, use 'run_background_command' instead.",
         inputSchema: ToolInputSchema(properties: [
-            "command": ToolInputProperty(type: .string, description: "Shell command"),
+            "command": ToolInputProperty(type: .string, description: "Shell command. Workspace scope permits project files only; approval does not widen scope. External paths require the user to switch to Ask/FullAccess."),
             "executable": ToolInputProperty(type: .string, description: "Absolute executable path"),
             "arguments": ToolInputProperty(type: .array, description: "Executable argv"),
             "cwd": ToolInputProperty(type: .string, description: "Workspace-relative working directory"),
@@ -1305,17 +1316,24 @@ public struct ShellTool: ToolExecutor {
     )
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
         let input: ShellArguments = try decodeArguments(arguments)
-        _ = try cwd(input.cwd, workspace: workspace, profile: profile)
+        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        _ = try shellPaths(command: input.command, executable: input.executable, arguments: input.arguments ?? [], workspace: workspace, directory: directory, profile: profile)
         return input.command ?? ([input.executable ?? ""] + (input.arguments ?? [])).joined(separator: " ")
     }
     public func externalResource(for arguments: String, profile: ExecutionProfile) throws -> String? {
         let input: ShellArguments = try decodeArguments(arguments)
-        return try cwd(input.cwd, workspace: workspace, profile: profile).path
+        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        let paths = try shellPaths(command: input.command, executable: input.executable, arguments: input.arguments ?? [], workspace: workspace, directory: directory, profile: profile)
+        return paths.first { filesystemCapabilities($0, workspace: workspace, write: false).contains(.externalFilesystem) }?.path ?? directory.path
     }
     public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
         let input: ShellArguments = try decodeArguments(arguments)
         let isWrite = !isReadOnlyShellCommand(input.command ?? input.executable ?? "")
-        return Set([.processExecute]).union(filesystemCapabilities(try cwd(input.cwd, workspace: workspace, profile: profile), workspace: workspace, write: isWrite))
+        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        let paths = try shellPaths(command: input.command, executable: input.executable, arguments: input.arguments ?? [], workspace: workspace, directory: directory, profile: profile)
+        return ([directory] + paths).reduce(into: Set([ToolCapabilityKind.processExecute])) {
+            $0.formUnion(filesystemCapabilities($1, workspace: workspace, write: isWrite))
+        }
     }
     public static func isBackgroundShellCommand(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1472,7 +1490,7 @@ public struct ProcessTool: ToolExecutor {
         self.store = store
     }
     public let definition = ToolDefinition(
-        id: ToolID("process"), description: "Start, poll, provide input to, or stop a long-running process.",
+        id: ToolID("process"), description: "Start, poll, provide input to, or stop a long-running process. Workspace scope permits project files only; external paths require the user to switch to Ask/FullAccess.",
         inputSchema: ToolInputSchema(properties: [
             "action": ToolInputProperty(type: .string, description: "start, poll, input, or stop", enumValues: ["start", "poll", "input", "stop", "status", "terminate"]),
             "executable": ToolInputProperty(type: .string, description: "Absolute executable path for start"),
@@ -1486,7 +1504,11 @@ public struct ProcessTool: ToolExecutor {
     )
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
         let input: ProcessArguments = try decodeArguments(arguments)
-        return try cwd(input.cwd, workspace: workspace, profile: profile).path
+        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        if input.action == "start" {
+            _ = try shellPaths(executable: input.executable, arguments: input.arguments ?? [], workspace: workspace, directory: directory, profile: profile)
+        }
+        return directory.path
     }
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
         let input: ProcessArguments = try decodeArguments(arguments)
@@ -1522,7 +1544,7 @@ public struct RunBackgroundCommandTool: ToolExecutor {
         id: ToolID("run_background_command"),
         description: "Execute a non-conflicting shell command in the background, freeing the foreground to proceed. MANDATORY: `timeout_seconds` must be specified (e.g. 60-3600); commands without timeout will be strictly rejected. Note: After launching, do NOT poll repeatedly in the same turn; report task start to user immediately. The system proactively injects status updates when the task finishes.",
         inputSchema: ToolInputSchema(properties: [
-            "command": ToolInputProperty(type: .string, description: "Shell command to run in the background"),
+            "command": ToolInputProperty(type: .string, description: "Shell command to run in the background. Workspace scope permits project files only; external paths require the user to switch to Ask/FullAccess."),
             "timeout_seconds": ToolInputProperty(type: .integer, description: "Mandatory timeout in seconds (1 to 7200). Commands without timeout are rejected.", minimum: 1, maximum: 7200),
             "cwd": ToolInputProperty(type: .string, description: "Workspace-relative working directory"),
             "description": ToolInputProperty(type: .string, description: "Brief description of the background command purpose"),
@@ -1533,7 +1555,9 @@ public struct RunBackgroundCommandTool: ToolExecutor {
 
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
         let input: RunBackgroundCommandArguments = try decodeArguments(arguments)
-        return try cwd(input.cwd, workspace: workspace, profile: profile).path
+        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
+        _ = try shellPaths(command: input.command, workspace: workspace, directory: directory, profile: profile)
+        return directory.path
     }
 
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
