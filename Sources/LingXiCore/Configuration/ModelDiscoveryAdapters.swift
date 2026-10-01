@@ -375,7 +375,7 @@ public enum DiscoveryRequestBuilder {
         request.httpMethod = "GET"
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("LingXiAgent/2.0 (macOS; discovery)", forHTTPHeaderField: "User-Agent")
+        request.setValue("\(ProductVersion.userAgent) (macOS; discovery)", forHTTPHeaderField: "User-Agent")
 
         for (key, value) in profile.headers ?? [:] {
             request.setValue(value, forHTTPHeaderField: key)

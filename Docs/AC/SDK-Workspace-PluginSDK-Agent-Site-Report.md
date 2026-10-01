@@ -317,9 +317,12 @@ https://models.lingxifox.cn/publication.json
 2. **未重出 release**（主人指示）：本次修复的是安装脚本，v1.1.0 包里本来就含
    `lingxiagent-ops`；用旧脚本装过的人需要重跑安装脚本才会补上该命令。
 3. 远程 CI 仍按 §81 保持关闭，等主人下令开启。
-4. `lingxiagent --version` 打印 `1.0.0 / Stable`，与 release tag `v1.1.0` 不一致
-   （`Sources/LingXiTUI/CLIParser.swift:25-26` 的常量）。属产品版本注入策略问题，
-   本轮未动，记录备查。
+4. **产品版本已收敛为单一来源**（原 S4 已闭环）：新增 `Sources/LingXiProtocol/ProductVersion.swift`
+   作为唯一真源，CLI / Core / ACP / MCP / 四处 UA / macOS bundle / Sidecar 全部引用它，并由
+   `Scripts/version-consistency-check.sh` + `ProductVersionGateTests`（8 项）钉住
+   「tag 不允许领先常量」。机制与行为影响见
+   `Docs/Decisions/Product-Version-Single-Source-2026-10-01.md`。
+   负例已实测：把常量临时改成 `1.0.9` 时脚本 exit 1 并报 3 项 FAIL，gate 测试同样失败。
 5. 两站点仍通过 CDN 引 Tailwind 与字体且无 SRI（既有状态，本轮未扩大范围）。
 
 ### 本轮追加闭环：ops 安装缺口（主人 2026-10-01 授权修复）

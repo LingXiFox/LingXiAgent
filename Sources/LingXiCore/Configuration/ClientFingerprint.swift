@@ -123,7 +123,7 @@ public enum ClientFingerprint {
             return "xai-grok-workspace/\(grokCLIVersion())"
 
         default:
-            return "LingXiAgent/1.0 (\(platform.osName); \(platform.arch))"
+            return "\(ProductVersion.userAgent) (\(platform.osName); \(platform.arch))"
         }
     }
 

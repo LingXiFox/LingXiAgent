@@ -48,7 +48,7 @@ public actor LingXiACPServer {
             switch request.method {
             case "initialize":
                 let res = ACPInitializeResult(
-                    agentInfo: ACPAgentInfo(name: "LingXiAgent", version: "1.0.0"),
+                    agentInfo: ACPAgentInfo(name: "LingXiAgent", version: ProductVersion.current),
                     capabilities: ACPAgentCapabilities(modes: ["default", "architect", "code"], loadSession: true, streaming: true),
                     protocolVersion: ACPSpecRevision.modern
                 )

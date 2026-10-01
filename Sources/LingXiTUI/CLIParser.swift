@@ -21,8 +21,8 @@ public enum CLIRoute: Equatable, Sendable {
 }
 
 public struct CLIParser: Sendable {
-    public static let version = "1.0.0"
-    public static let releaseName = "Stable"
+    public static let version = ProductVersion.current
+    public static let releaseName = ProductVersion.releaseName
 
     private static let authCommands: Set<String> = [
         "auth", "login", "logout", "status", "matrix", "compat", "models"

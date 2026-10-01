@@ -39,7 +39,7 @@ enum ProviderConnectivityProbe {
         request.httpMethod = "GET"
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("LingXiAgent/2.0 (provider test)", forHTTPHeaderField: "User-Agent")
+        request.setValue("\(ProductVersion.userAgent) (provider test)", forHTTPHeaderField: "User-Agent")
         for (name, value) in headers where !name.isEmpty {
             request.setValue(value, forHTTPHeaderField: name)
         }

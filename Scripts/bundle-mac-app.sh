@@ -64,7 +64,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleLocalizations</key>           <array><string>zh-Hans</string></array>
   <key>CFBundleDisplayName</key>             <string>LingXiAgent</string>
   <key>CFBundlePackageType</key>             <string>APPL</string>
-  <key>CFBundleShortVersionString</key>      <string>1.0.0</string>
+  <key>CFBundleShortVersionString</key>      <string>__PRODUCT_VERSION__</string>
   <key>CFBundleVersion</key>                 <string>1</string>
   <key>LSMinimumSystemVersion</key>          <string>14.0</string>
   <key>NSHighResolutionCapable</key>         <true/>
@@ -73,6 +73,19 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+# The bundle's version comes from the same constant the CLI and Core report, so the
+# GUI's About box cannot disagree with `lingxiagent --version`.
+PRODUCT_VERSION="$(sed -nE 's/.*static let current = "([^"]+)".*/\1/p' \
+    "${PACKAGE_ROOT}/Sources/LingXiProtocol/ProductVersion.swift" | head -n1)"
+if [ -z "${PRODUCT_VERSION}" ]; then
+    echo "cannot read ProductVersion.current from Sources/LingXiProtocol/ProductVersion.swift" >&2
+    exit 1
+fi
+/usr/bin/sed -i '' "s/__PRODUCT_VERSION__/${PRODUCT_VERSION}/" "${APP_BUNDLE}/Contents/Info.plist"
+grep -q "<key>CFBundleShortVersionString</key>              <string>${PRODUCT_VERSION}</string>" \
+    "${APP_BUNDLE}/Contents/Info.plist" \
+    || { echo "Info.plist did not receive the product version" >&2; exit 1; }
 
 codesign --force --sign - --timestamp=none "${APP_BUNDLE}" >/dev/null 2>&1
 echo "${APP_BUNDLE}"

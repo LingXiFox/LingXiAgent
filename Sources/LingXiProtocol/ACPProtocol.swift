@@ -108,7 +108,7 @@ public struct ACPAgentInfo: Codable, Sendable, Equatable {
     public let name: String
     public let version: String
 
-    public init(name: String = "LingXiAgent", version: String = "1.0.0") {
+    public init(name: String = "LingXiAgent", version: String = ProductVersion.current) {
         self.name = name
         self.version = version
     }

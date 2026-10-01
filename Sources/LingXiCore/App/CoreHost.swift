@@ -68,7 +68,7 @@ extension CoreHost {
 
 /// LingXi Core 宿主：Core 的启动、状态、模块组装与对外契约实现。
 public actor CoreHost: CoreEndpoint, LingXiProtocolService {
-    public static let coreVersion = "1.0.0"
+    public static let coreVersion = ProductVersion.current
 
     public static func stdioInteractive(environment: [String: String]) -> Bool {
         environment["LINGXI_INTERACTIVE"] == "1"
@@ -1341,6 +1341,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                     }
                     result.append(ExtensionInfo(
                         id: server.id,
+                        // 扩展自身占位版本，不是 ProductVersion。
                         version: "1.0.0",
                         kind: .mcp,
                         scope: "global",
@@ -5238,6 +5239,7 @@ extension CoreHost {
         let watermark = await runtimeEventLog.currentWatermark()
         let info = ExtensionInfo(
             id: envelope.payload.name,
+            // 插件清单未携带版本时的一致性占位，不是 ProductVersion。
             version: "1.0.0",
             kind: .plugin,
             scope: "project",
@@ -5291,6 +5293,7 @@ extension CoreHost {
         let desc = await extensionPlatform.registry.descriptor(id: envelope.payload.id)
         let info = ExtensionInfo(
             id: envelope.payload.id,
+            // 回退到扩展自身占位版本，不是 ProductVersion。
             version: desc?.version ?? "1.0.0",
             kind: desc.flatMap { ExtensionKind(rawValue: $0.type.rawValue) } ?? .plugin,
             scope: desc?.scope.rawValue ?? "project",
@@ -5322,6 +5325,7 @@ extension CoreHost {
         let desc = await extensionPlatform.registry.descriptor(id: envelope.payload.id)
         let info = ExtensionInfo(
             id: envelope.payload.id,
+            // 回退到扩展自身占位版本，不是 ProductVersion。
             version: desc?.version ?? "1.0.0",
             kind: desc.flatMap { ExtensionKind(rawValue: $0.type.rawValue) } ?? .plugin,
             scope: desc?.scope.rawValue ?? "project",

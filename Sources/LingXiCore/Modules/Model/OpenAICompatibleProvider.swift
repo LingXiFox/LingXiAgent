@@ -119,7 +119,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         if let timeout = request.overallTimeoutSeconds { urlRequest.timeoutInterval = timeout }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        urlRequest.setValue("LingXiAgent/1.0", forHTTPHeaderField: "User-Agent")
+        urlRequest.setValue(ProductVersion.userAgent, forHTTPHeaderField: "User-Agent")
         switch config.authentication {
         case .none: break
         case let .bearer(secret): urlRequest.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")

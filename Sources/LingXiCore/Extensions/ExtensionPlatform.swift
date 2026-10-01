@@ -72,6 +72,7 @@ public struct ExtensionDescriptor: Codable, Sendable, Equatable {
 
     public init(
         id: String,
+        // 扩展自身版本的占位（清单未声明时），不是 ProductVersion。
         version: String = "1.0.0",
         type: ExtensionType,
         source: String,
@@ -525,6 +526,7 @@ public actor ExtensionPlatform {
     public func attachMCPRegistry(_ registry: MCPServerRegistry) { mcpRegistry = registry }
 
     public func registerMCP(_ configuration: MCPServerConfiguration, scope: ExtensionScope = .project) async throws {
+        // MCP 服务器清单里没有版本字段，这里填的是扩展自身占位版本，不是 ProductVersion。
         let descriptor = ExtensionDescriptor(id: configuration.serverID.rawValue, version: "1.0.0", type: .mcp, source: "mcp.json:\(configuration.serverID.rawValue)", scope: scope, enabled: configuration.enabled, capabilities: [.networkAccess, .externalService], lifecycleState: configuration.enabled ? .enabled : .disabled)
         try await registry.upsert(descriptor, coreVersion: coreVersion)
         await mcpRegistry?.register(configuration)

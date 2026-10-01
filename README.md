@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://agent.lingxifox.cn"><img src="https://img.shields.io/badge/Official%20Site-agent.lingxifox.cn-8b5cf6?style=flat-square&logo=safari" alt="Website"></a>
-  <a href="https://agent.lingxifox.cn/docs"><img src="https://img.shields.io/badge/Docs-官方文档中心-ec4899?style=flat-square&logo=bookstack" alt="Docs"></a>
+  <a href="https://agent.lingxifox.cn/docs.html"><img src="https://img.shields.io/badge/Docs-官方文档中心-ec4899?style=flat-square&logo=bookstack" alt="Docs"></a>
   <a href="https://models.lingxifox.cn"><img src="https://img.shields.io/badge/Models%20Hub-models.lingxifox.cn-10b981?style=flat-square&logo=speedtest" alt="Models"></a>
   <a href="https://github.com/LingXiFox/LingXiAgent/releases"><img src="https://img.shields.io/github/v/release/LingXiFox/LingXiAgent?style=flat-square&color=blue" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Tiered%20License-blueviolet?style=flat-square" alt="License"></a>
@@ -17,16 +17,16 @@
 ---
 
 > [!IMPORTANT]
-> **V1.0.0 平台支持口径 (Platform Support Matrix)**
+> **平台支持口径 (Platform Support Matrix)** — 正式 release 版本以 GitHub Releases 为准，产品版本常量在 `Sources/LingXiProtocol/ProductVersion.swift`
 > 
 > | 操作系统 | 支持级别 | 交付形态 | 预编译发布包 (Prebuilt) | 源码构建 (Source Build) | 平台专属能力边界说明 |
 > | :--- | :--- | :--- | :--- | :--- | :--- |
 > | **macOS** | Supported (release blocker) | CLI + TUI | `arm64` (Apple Silicon) | Apple Silicon / Intel | 全功能就绪：Seatbelt 原生沙箱、Browser Use、视觉桌面感知 (Computer Use) |
 > | **Linux** | Supported (release blocker) | CLI + TUI | `x86_64` (Ubuntu/Debian/Arch) | x86_64 / AArch64 | 核心就绪：Bubblewrap 沙箱、Browser Use；桌面视觉 Computer Use 暂不开放 |
-> | **Windows** | Experimental — 正式支持计划 V1.1.0 | CLI + TUI | 无（V1.0.0 不发布 Windows 预编译包） | x86_64 / ARM64，不保证可用 | 代码与平台抽象完整保留；CI 仅做依赖装配、编译与 smoke 检查，不作为发布门禁 |
+> | **Windows** | Supported (x86_64 预编译包已发布) | CLI + TUI | `x86_64` (`lingxiagent-windows-x86_64.zip`) | x86_64 / ARM64（ARM64 仅源码路径） | Win32 抽象完整：VT100 控制台、`%PATHEXT%`、`taskkill /T` 进程树；`sqlite3.dll` 随包发布。桌面视觉能力按宿主实际可用性如实申报 |
 > 
 > 表现层由纯受控客户端 `LingXiTUI` 驱动，系统底层由独立平台层 `LingXiPlatform` 与 `CSQLite` 提供跨平台强一致保障。
-> Windows 的遗留问题与复现路径记录在 `Docs/V1-Cross-Platform-Baseline-Audit.md` 的 V1.1.0 交接章节。
+> 历史遗留问题与复现路径记录在 `Docs/V1-Cross-Platform-Baseline-Audit.md` 的 V1.1.0 交接章节。
 
 ---
 
@@ -50,17 +50,23 @@ curl -fsSL https://agent.lingxifox.cn/install.sh | bash
 >   - Linux (Ubuntu/Debian): `sudo apt install ripgrep`
 >   - Linux (Arch): `sudo pacman -S ripgrep`
 
-### Windows (实验性 · V1.0.0 无发布包)
-V1.0.0 不发布 Windows 预编译包，也不对 Windows 可用性做支持承诺；`install.ps1` 依赖的
-`lingxiagent-windows-*.zip` 资产要等 V1.1.0 恢复 Windows 正式支持后才会重新出现。想在 Windows 上试用的
-话，可在已配置 Swift 环境的机器上克隆源码编译试用，并把问题记录为实验性反馈：
+### Windows (x86_64 预编译包已发布)
+自 v1.1.0 起 Windows 有正式预编译包：`lingxiagent-windows-x86_64.zip`（附同名 `.sha256`），
+解压后直接运行，`sqlite3.dll` 与资源包已随包放在同一目录。官方安装器：
+```powershell
+irm https://agent.lingxifox.cn/install.ps1 | iex
+```
+ARM64 Windows 与其余非 x86_64 架构走源码构建（需本机 Swift 工具链）：
 ```powershell
 swift build -c release --product lingxiagent
 swift build -c release --product LingXiCoreHost
 swift build -c release --product LingXiTUI
+swift build -c release --product lingxiagent-ops
 ```
 
-安装完成后，新开终端直接输入 `lingxiagent` 即可秒级开启会话。完整使用手册与高级配置，请参阅 **[LingXiAgent 官方技术文档中心](https://agent.lingxifox.cn/docs)**。
+安装完成后，新开终端直接输入 `lingxiagent` 开启会话。完整使用手册与高级配置见
+**[LingXiAgent 官方技术文档](https://agent.lingxifox.cn/docs.html)**；插件开发见
+**[LingXiPluginSDK 文档](https://agent.lingxifox.cn/sdk.html)**。
 
 ---
 
@@ -287,27 +293,27 @@ lingxiagent -C /path/to/project       # 指定工作目录启动
 lingxiagent -y "运行测试并修复报错"     # YOLO 自动放行模式运行
 
 # 2. 全系统健康诊断 (Doctor)
-lingxiagent doctor                    # 一键体检系统环境、沙箱能力、凭据与 MCP
+lingxiagent-ops doctor                    # 一键体检系统环境、沙箱能力、凭据与 MCP
 
 # 3. 官方订阅与提供商鉴权管理 (Auth)
-lingxiagent auth list                 # 查看所有 Provider 当前认证状态
-lingxiagent auth login openai-codex   # 登录 OpenAI ChatGPT Plus/Pro (Codex OAuth)
-lingxiagent auth login anthropic-claude-subscription # 登录 Claude Code 订阅
-lingxiagent auth set <KEY> [VALUE]    # 将自定义密钥安全存入本地加密保险箱
-lingxiagent auth matrix               # 查看模型兼容与上下文特性矩阵
+lingxiagent-ops auth list                 # 查看所有 Provider 当前认证状态
+lingxiagent-ops auth login openai-codex   # 登录 OpenAI ChatGPT Plus/Pro (Codex OAuth)
+lingxiagent-ops auth login anthropic-claude-subscription # 登录 Claude Code 订阅
+lingxiagent-ops auth set <KEY> [VALUE]    # 将自定义密钥安全存入本地加密保险箱
+lingxiagent-ops auth matrix               # 查看模型兼容与上下文特性矩阵
 
 # 4. MCP 服务运维与健康状态探测 (MCP)
-lingxiagent mcp list                  # 查看已配置的全部 MCP 状态
-lingxiagent mcp status                # 全量在线连通性与工具发现探测
-lingxiagent mcp login <name>          # 启动 RFC 9728 OAuth 2.1 浏览器全自动授权
-lingxiagent mcp enable / disable <name> # 快速启用或禁用指定服务
+lingxiagent-ops mcp list                  # 查看已配置的全部 MCP 状态
+lingxiagent-ops mcp status                # 全量在线连通性与工具发现探测
+lingxiagent-ops mcp login <name>          # 启动 RFC 9728 OAuth 2.1 浏览器全自动授权
+lingxiagent-ops mcp enable / disable <name> # 快速启用或禁用指定服务
 
 # 5. 会话管理与无头执行 (Exec & Resume)
-lingxiagent resume --last             # 恢复上一次未完成的会话
-git diff | lingxiagent exec "代码审查" # 通过管道输入进行无头自动化分析
+lingxiagent-ops resume --last             # 恢复上一次未完成的会话
+git diff | lingxiagent-ops exec "代码审查" # 通过管道输入进行无头自动化分析
 
 # 6. ACP 模式运行 (用于 Zed / JetBrains / IDE 集成)
-lingxiagent acp                       # 以 Agent Client Protocol 标准服务端启动 (Stdio JSON-RPC 2.0)
+lingxiagent-ops acp                       # 以 Agent Client Protocol 标准服务端启动 (Stdio JSON-RPC 2.0)
 ```
 
 #### 接入 Zed IDE (ACP 标准支持)
