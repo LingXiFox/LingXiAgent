@@ -21,6 +21,8 @@ test-results.xml
 
 # Stage 5 per-chunk reports staged for upload
 test-results-artifact/
+# Per-chunk regression diagnostics: rewritten by every Scripts/ci-integration-tests.sh run.
+test-results-chunk-*.json
 
 # Scratch probes and mined CI logs (AGENTS.md convention)
 .tmp/
