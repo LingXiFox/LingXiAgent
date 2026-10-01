@@ -3484,10 +3484,12 @@ extension CoreHost {
         let summary = SessionSummary(
             sessionID: session.id,
             title: session.title,
+            goal: await currentGoal(session.id),
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             turnCount: 0,
-            mode: .build, reasoningEffort: session.reasoningEffort
+            mode: .build,
+            reasoningEffort: session.reasoningEffort
         )
         return ResponseEnvelope(
             requestID: envelope.requestID,
@@ -3531,8 +3533,29 @@ extension CoreHost {
             }
         }
 
+        // The goal lives in `SessionGoalRegistry`, not in the stored session, so a summary that
+        // came from `loadAllGlobalSessions` above carries whatever goal was current when it was
+        // written — which after a set, a clear or a rename is the wrong answer. Overlay the live
+        // value on the way out instead of trusting either branch to remember it.
+        var authoritative: [SessionSummary] = []
+        authoritative.reserveCapacity(rawSummaries.count)
+        for summary in rawSummaries {
+            authoritative.append(SessionSummary(
+                sessionID: summary.sessionID,
+                title: summary.title,
+                goal: await currentGoal(summary.sessionID),
+                createdAt: summary.createdAt,
+                updatedAt: summary.updatedAt,
+                turnCount: summary.turnCount,
+                mode: summary.mode,
+                reasoningEffort: summary.reasoningEffort,
+                workingDirectory: summary.workingDirectory,
+                messageCount: summary.messageCount
+            ))
+        }
+
         // 严格按最新活跃/更新时间倒序排列，确保最新的会话置顶排在最前
-        let all = rawSummaries.sorted {
+        let all = authoritative.sorted {
             $0.updatedAt == $1.updatedAt ? $0.sessionID.rawValue < $1.sessionID.rawValue : $0.updatedAt > $1.updatedAt
         }
 

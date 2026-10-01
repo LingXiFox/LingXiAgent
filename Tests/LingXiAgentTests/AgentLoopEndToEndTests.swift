@@ -696,7 +696,7 @@ struct AgentLoopEndToEndTests {
     // be read, or a required cleanup does not happen. Each body runs inside `withKnownIssue`, so
     // the suite stays green today and the defect flips to a hard failure the moment it is fixed.
 
-    @Test("KNOWN DEFECT: client.session.get never reports the session's reasoning effort")
+    @Test("client.session.get reports the session's reasoning effort")
     func getSessionDropsReasoningEffort() async throws {
         let fixture = try await makeFixture(provider: ScriptedProvider(replying: "ok"))
         defer { Task { await fixture.shutdown() } }
@@ -705,30 +705,42 @@ struct AgentLoopEndToEndTests {
         // The write lands - SessionSnapshot proves it. Only the single-session read is blind:
         // CoreHost.swift:3467 builds SessionSummary without `reasoningEffort`.
         let getReadBack = try await fixture.client.session.get(sessionID: sessionID).reasoningEffort
-        try await withKnownIssue(
-            "CoreHost.getSession drops reasoningEffort; the read always comes back .auto") {
-            #expect(getReadBack == .medium)
-        }
+        #expect(getReadBack == .medium,
+                "CoreHost.getSession 又不再回报 reasoningEffort，读回来永远是 .auto")
         #expect(try await fixture.client.session.snapshot(sessionID: sessionID).info.reasoningEffort == .medium)
     }
 
-    @Test("KNOWN DEFECT: session.get and session.list drop SessionSummary.goal")
-    func sessionSummariesDropGoal() async throws {
+    /// §5: the goal is session state, so every summary the control plane publishes has to carry
+    /// it. Eight of the nine `SessionSummary` constructions used to omit the field, which meant
+    /// renaming a session, changing its reasoning effort, reverting a turn, listing sessions or
+    /// simply reading one back broadcast `goal: nil` — and the frontend's chip went blank while
+    /// Core still anchored the goal and kept injecting it into each turn.
+    @Test("Every session read carries the goal, not just the set receipt")
+    func sessionSummariesCarryGoal() async throws {
         let fixture = try await makeFixture(provider: ScriptedProvider(replying: "ok"))
         defer { Task { await fixture.shutdown() } }
         let sessionID = try await newSession(fixture)
         _ = try await fixture.client.session.setGoal(sessionID: sessionID, goal: "修掉所有 red")
         #expect(try await fixture.client.session.snapshot(sessionID: sessionID).goal?.text == "修掉所有 red")
-        // CoreHost.swift:3467 and :3500 build SessionSummary without `goal`, so the field the
-        // contract names as a Goal projection is populated only by the setSessionGoal receipt.
         let getGoal = try await fixture.client.session.get(sessionID: sessionID).goal
+        #expect(getGoal == "修掉所有 red", "session.get 又不再回报 goal")
         let listGoal = try await fixture.client.session.list()
             .items.first(where: { $0.sessionID == sessionID })?.goal
-        try await withKnownIssue(
-            "CoreHost.getSession / listSessions build SessionSummary without goal") {
-            #expect(getGoal == "修掉所有 red")
-            #expect(listGoal == "修掉所有 red")
-        }
+        #expect(listGoal == "修掉所有 red", "session.list 又不再回报 goal")
+
+        // The path that actually broke the UI: an unrelated write broadcasting a goal-less
+        // `.sessionUpdated`, which the reducer then applied.
+        _ = try await fixture.client.session.rename(sessionID: sessionID, title: "改名")
+        #expect(try await fixture.client.session.get(sessionID: sessionID).goal == "修掉所有 red",
+                "改名之后 goal 被抹掉了")
+        _ = try await fixture.client.session.setReasoningEffort(sessionID: sessionID, effort: .high)
+        #expect(try await fixture.client.session.get(sessionID: sessionID).goal == "修掉所有 red",
+                "调整思考等级之后 goal 被抹掉了")
+
+        // And clearing must be as authoritative as setting.
+        _ = try await fixture.client.session.setGoal(sessionID: sessionID, goal: nil)
+        #expect(try await fixture.client.session.get(sessionID: sessionID).goal == nil,
+                "清空 goal 之后读回来还在，说明清除没有落到权威处")
     }
 
     @Test("An attachment Core resolves is the text the model is actually asked about")
