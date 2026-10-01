@@ -87,30 +87,18 @@
             LingXiAgent
           </span>
         </a>
-        <span class="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-purple-950/80 text-purple-300 border border-purple-800/80">
-          <span id="version-pill">v1.1.0</span>&nbsp;· Native Swift
-        </span>
+        <a href="https://github.com/LingXiFox/LingXiAgent/releases" target="_blank" class="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-purple-950/80 text-purple-300 border border-purple-800/80 whitespace-nowrap hover:border-purple-600 transition-colors">
+          <span id="version-pill">v1.1.0</span>
+        </a>
       </div>
 
       <!-- Nav Links -->
-      <nav class="hidden md:flex items-center space-x-6 text-sm font-medium text-zinc-300">
-        <a href="#features" class="hover:text-white transition-colors">核心特性</a>
-        <a href="#architecture" class="hover:text-white transition-colors">上下文架构</a>
-        <a href="#release" class="hover:text-white transition-colors">Release</a>
-        <a href="#sdks" class="hover:text-white transition-colors">Developer SDKs</a>
-        <a href="#install" class="hover:text-white transition-colors">一键安装</a>
-        <a href="/docs.html" class="hover:text-purple-400 transition-colors flex items-center space-x-1">
-          <span>技术文档</span>
-          <span class="text-xs bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/30">Docs</span>
-        </a>
-        <a href="/sdk.html" class="hover:text-purple-400 transition-colors flex items-center space-x-1">
-          <span>Plugin SDK</span>
-          <span class="text-xs bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/30">Swift</span>
-        </a>
-        <a href="https://models.lingxifox.cn" target="_blank" class="hover:text-amber-300 transition-colors flex items-center space-x-1">
-          <span>模型库</span>
-          <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-        </a>
+      <nav class="hidden md:flex items-center gap-6 text-sm font-medium text-zinc-300 whitespace-nowrap">
+        <a href="#features" class="hover:text-white transition-colors">特性</a>
+        <a href="#architecture" class="hover:text-white transition-colors">架构</a>
+        <a href="#sdks" class="hover:text-white transition-colors">SDK</a>
+        <a href="/docs.html" class="hover:text-white transition-colors">文档</a>
+        <a href="https://models.lingxifox.cn" target="_blank" class="hover:text-amber-300 transition-colors">模型库 ↗</a>
       </nav>
 
       <!-- Action CTA -->
@@ -118,7 +106,7 @@
         <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 transition-colors border border-zinc-800" title="GitHub 源码仓库">
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
         </a>
-        <a href="#install" class="px-3.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-sm transition-all shadow-lg shadow-purple-600/20 flex items-center space-x-1.5">
+        <a href="#install" class="px-3.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-sm transition-all shadow-lg shadow-purple-600/20 flex items-center space-x-1.5 whitespace-nowrap">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
           <span>立即安装</span>
         </a>
@@ -135,25 +123,28 @@
 
     <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
       <!-- Release Pill -->
-      <div class="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 mb-8 hover:border-purple-500/50 transition-colors">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        <a href="https://github.com/LingXiFox/LingXiAgent/releases" target="_blank" class="font-medium text-zinc-200 hover:text-purple-300">Latest release <span id="hero-release-tag">v1.1.0</span> ↗</a>
-        <span class="text-zinc-500">|</span>
-        <span class="text-purple-400">macOS · Linux · Windows 预编译包 · 官方订阅直连 · 原生 Swift TUI</span>
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 mb-7 whitespace-nowrap">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+        <a href="https://github.com/LingXiFox/LingXiAgent/releases" target="_blank" class="text-zinc-200 hover:text-purple-300">Latest release <span id="hero-release-tag">v1.1.0</span> ↗</a>
       </div>
 
       <!-- Main Headline -->
-      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight text-white mb-6">
-        专为终端工程师打造的<br class="hidden sm:inline"/>
-        <span class="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">
-          原生双核 AI 编程智能体
-        </span>
+      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight text-white mb-5 leading-tight">
+        终端原生的<br class="hidden sm:inline"/>
+        <span class="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">AI 编程智能体</span>
       </h1>
 
-      <!-- Subtitle -->
-      <p class="max-w-3xl mx-auto text-base sm:text-xl text-zinc-400 mb-10 leading-relaxed">
-        纯 Swift 原生编译，不依赖 Node.js 或 Electron 运行时。上下文由 <strong class="text-zinc-200 font-semibold">P-Core（驻留在模型请求中的推理上下文）</strong> 与 <strong class="text-zinc-200 font-semibold">E-Core（上下文对象存储与召回）</strong> 分工承担，为 macOS arm64、Linux x86_64、Windows x86_64 发布预编译安装包，并支持官方订阅直连与自定义 Provider。模型清单以 <a href="https://models.lingxifox.cn" target="_blank" class="text-amber-300 hover:text-amber-200">Models Hub</a> 发布目录为准。
+      <!-- Subtitle: one line, details live below -->
+      <p class="max-w-2xl mx-auto text-base sm:text-lg text-zinc-400 mb-5">
+        纯 Swift 编译，不跑在 Node.js 或 Electron 上。
       </p>
+
+      <div class="flex flex-wrap items-center justify-center gap-2 text-[11px] font-mono text-zinc-400 mb-10">
+        <span class="px-2.5 py-1 rounded-full bg-zinc-900 border border-zinc-800 whitespace-nowrap">P-Core / E-Core 上下文分工</span>
+        <span class="px-2.5 py-1 rounded-full bg-zinc-900 border border-zinc-800 whitespace-nowrap">官方订阅 + 自定义 Provider</span>
+        <span class="px-2.5 py-1 rounded-full bg-zinc-900 border border-zinc-800 whitespace-nowrap">macOS · Linux · Windows</span>
+        <a href="https://models.lingxifox.cn" target="_blank" class="px-2.5 py-1 rounded-full bg-amber-950/40 border border-amber-800/50 text-amber-300 hover:bg-amber-900/40 transition-colors whitespace-nowrap">模型清单看 Models Hub ↗</a>
+      </div>
 
       <!-- The 1-Line Installer Box -->
       <div id="install" class="max-w-2xl mx-auto mb-16">
@@ -201,8 +192,8 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-zinc-500 mt-2.5 leading-relaxed">
-          官方安装器自动探测平台与 CPU 架构并配置环境变量。预编译包覆盖 <strong class="text-zinc-400">macOS arm64</strong>、<strong class="text-zinc-400">Linux x86_64</strong>、<strong class="text-zinc-400">Windows x86_64</strong>，每个资产附带同名 <code class="text-zinc-400">.sha256</code>；Intel Mac 与 AArch64 Linux 需从源码构建（<code class="text-purple-300">swift build -c release</code>）。安装完成后新开终端执行 <code class="text-purple-300 font-bold">lingxiagent</code>。
+        <p class="text-[11px] text-zinc-500 mt-2.5">
+          自动探测平台与架构 · 每个资产附 <code class="text-zinc-400">.sha256</code> · Intel Mac 与 ARM Linux 走源码构建
         </p>
       </div>
 
@@ -477,71 +468,67 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="text-center max-w-3xl mx-auto mb-14">
         <h2 class="text-xs uppercase tracking-widest text-emerald-400 font-bold mb-3">Context Architecture</h2>
-        <p class="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">P-Core 与 E-Core 的当前职责边界</p>
-        <p class="text-sm text-zinc-400 mt-4 leading-relaxed">
-          P-Core 决定<strong class="text-zinc-200">什么留在模型请求的上下文里</strong>；E-Core 保存<strong class="text-zinc-200">被 page-out 的完整对象</strong>并可随时精确还原。淘汰由 P 侧保留策略决定，E-Core heat 只用于召回排序与可观测性，<strong class="text-zinc-200">不驱动 P-Core eviction</strong>。
-        </p>
+        <p class="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">P-Core 与 E-Core</p>
+        <p class="text-sm text-zinc-400 mt-3">一个决定<strong class="text-zinc-200">什么留在请求里</strong>，一个保存<strong class="text-zinc-200">被换出的完整对象</strong>。</p>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-        <!-- Flow diagram -->
-        <div class="glass-card rounded-2xl p-6 border border-zinc-800">
-          <h3 class="text-sm font-bold text-zinc-300 mb-4 uppercase tracking-wider">Runtime 分层</h3>
-          <div class="space-y-1.5 text-xs font-mono">
-            <div class="rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-zinc-300">User / Frontend <span class="text-zinc-500">· LingXiTUI · WebUI · macOS GUI · IDE (ACP)</span></div>
-            <div class="text-zinc-600 text-center">↓</div>
-            <div class="rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-zinc-300">LingXiApplication / LingXiClient <span class="text-zinc-500">· 状态投影与传输</span></div>
-            <div class="text-zinc-600 text-center">↓</div>
-            <div class="rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-zinc-300">CoreHost <span class="text-zinc-500">· 唯一真值权威进程</span></div>
-            <div class="text-zinc-600 text-center">↓</div>
-            <div class="rounded-lg bg-purple-950/40 border border-purple-800/50 px-3 py-2 text-purple-200">Agent Loop</div>
-            <div class="pl-3 space-y-1.5">
-              <div class="rounded-lg bg-zinc-900/80 border border-emerald-800/40 px-3 py-2">
-                <div class="text-emerald-300 font-bold mb-1">P-Core</div>
-                <div class="text-zinc-400 space-y-0.5">
-                  <div>· Stable Prefix（稳定前缀）</div>
-                  <div>· Growing Context（递增上下文）</div>
-                  <div>· E-Core Index Projection（索引投影）</div>
-                </div>
-              </div>
-              <div class="rounded-lg bg-zinc-900/80 border border-blue-800/40 px-3 py-2">
-                <div class="text-blue-300 font-bold mb-1">E-Core Object Store</div>
-                <div class="text-zinc-400 space-y-0.5">
-                  <div>· Context Objects（完整对象）</div>
-                  <div>· Exact Restore（精确还原）</div>
-                  <div>· Semantic Recall（语义召回）</div>
-                </div>
-              </div>
-              <div class="rounded-lg bg-zinc-900/80 border border-zinc-800 px-3 py-2 text-zinc-400">
-                Tools · Browser · Terminal · Git · MCP · Plugins · Providers
-              </div>
-            </div>
+      <!-- Runtime band: one row, reads left to right -->
+      <div class="glass-card rounded-2xl p-5 border border-zinc-800 mb-6">
+        <div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-3">Runtime</div>
+        <div class="flex flex-col lg:flex-row lg:items-stretch gap-2 text-xs font-mono">
+          <div class="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2.5">
+            <div class="text-zinc-200 font-semibold">Frontend</div>
+            <div class="text-zinc-500 mt-0.5">TUI · WebUI · macOS GUI · IDE (ACP)</div>
+          </div>
+          <div class="hidden lg:flex items-center text-zinc-600">→</div>
+          <div class="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2.5">
+            <div class="text-zinc-200 font-semibold">Application / Client</div>
+            <div class="text-zinc-500 mt-0.5">状态投影与传输</div>
+          </div>
+          <div class="hidden lg:flex items-center text-zinc-600">→</div>
+          <div class="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2.5">
+            <div class="text-zinc-200 font-semibold">CoreHost</div>
+            <div class="text-zinc-500 mt-0.5">唯一真值权威进程</div>
+          </div>
+          <div class="hidden lg:flex items-center text-zinc-600">→</div>
+          <div class="flex-1 rounded-lg bg-purple-950/40 border border-purple-800/50 px-3 py-2.5">
+            <div class="text-purple-200 font-semibold">Agent Loop</div>
+            <div class="text-zinc-500 mt-0.5">P-Core 与 E-Core 在此分工</div>
+          </div>
+          <div class="hidden lg:flex items-center text-zinc-600">→</div>
+          <div class="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2.5">
+            <div class="text-zinc-200 font-semibold">能力层</div>
+            <div class="text-zinc-500 mt-0.5">Tools · Browser · Terminal · Git · MCP · Plugins · Providers</div>
           </div>
         </div>
+      </div>
 
-        <!-- P-Core card -->
-        <div class="glass-card rounded-2xl p-6 border border-zinc-800">
-          <h3 class="text-lg font-bold text-emerald-300 mb-2">P-Core</h3>
-          <p class="text-xs text-zinc-500 font-mono mb-4">PCoreContextEngine</p>
-          <p class="text-sm text-zinc-400 leading-relaxed mb-4">Prompt-resident reasoning context：组装真正发给模型的请求内容，并按 P 侧保留策略决定哪些片段留在窗口内。</p>
-          <ul class="text-xs text-zinc-400 space-y-2 font-mono">
-            <li><span class="text-emerald-400">▸</span> Stable Prefix：系统与前缀内容，命中上游 Prompt Cache</li>
-            <li><span class="text-emerald-400">▸</span> Growing Context：本轮会话增量与工具轨迹</li>
-            <li><span class="text-emerald-400">▸</span> E-Core Index Projection：仅投影引用与摘要，不含完整对象</li>
-            <li><span class="text-zinc-600">✕</span> 不由 E-Core heat 触发淘汰</li>
+      <!-- Two equal cards -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+        <div class="glass-card rounded-2xl p-6 border border-emerald-800/40 flex flex-col">
+          <div class="flex items-baseline justify-between gap-3 mb-1">
+            <h3 class="text-xl font-bold text-emerald-300">P-Core</h3>
+            <code class="text-[11px] text-zinc-500">PCoreContextEngine</code>
+          </div>
+          <p class="text-sm text-zinc-400 leading-relaxed mb-4">决定什么留在模型请求的上下文里，以及超预算时淘汰谁。</p>
+          <ul class="text-xs text-zinc-400 space-y-2 font-mono mt-auto">
+            <li><span class="text-emerald-400">▸</span> Stable Prefix · 稳定前缀，命中上游 Prompt Cache</li>
+            <li><span class="text-emerald-400">▸</span> Growing Context · 本轮增量与工具轨迹</li>
+            <li><span class="text-emerald-400">▸</span> E-Core Index Projection · 只投影引用与摘要</li>
+            <li><span class="text-zinc-600">✕</span> 淘汰只由 P 侧策略决定：E-Core heat 不驱动 P-Core eviction</li>
           </ul>
         </div>
-
-        <!-- E-Core card -->
-        <div class="glass-card rounded-2xl p-6 border border-zinc-800">
-          <h3 class="text-lg font-bold text-blue-300 mb-2">E-Core</h3>
-          <p class="text-xs text-zinc-500 font-mono mb-4">ECoreObjectStore · ECoreReference</p>
-          <p class="text-sm text-zinc-400 leading-relaxed mb-4">Context object store / recall：被 page-out 的完整对象在此持久化，模型按需通过 ID 精确取回或语义检索。</p>
-          <ul class="text-xs text-zinc-400 space-y-2 font-mono">
-            <li><span class="text-blue-400">▸</span> Offloaded full objects：完整工具输出与会话产物</li>
-            <li><span class="text-blue-400">▸</span> References / index：面向 P-Core 的紧凑投影</li>
-            <li><span class="text-blue-400">▸</span> Exact restore：按 ContextObjectID 原样还原</li>
-            <li><span class="text-blue-400">▸</span> Semantic recall：检索层按相关性与 heat 排序</li>
+        <div class="glass-card rounded-2xl p-6 border border-blue-800/40 flex flex-col">
+          <div class="flex items-baseline justify-between gap-3 mb-1">
+            <h3 class="text-xl font-bold text-blue-300">E-Core</h3>
+            <code class="text-[11px] text-zinc-500">ECoreObjectStore</code>
+          </div>
+          <p class="text-sm text-zinc-400 leading-relaxed mb-4">保存被 page-out 的完整对象，需要时原样取回或按语义召回。</p>
+          <ul class="text-xs text-zinc-400 space-y-2 font-mono mt-auto">
+            <li><span class="text-blue-400">▸</span> Context Objects · 完整工具输出与会话产物</li>
+            <li><span class="text-blue-400">▸</span> References / Index · 面向 P-Core 的紧凑投影</li>
+            <li><span class="text-blue-400">▸</span> Exact Restore · 按 ContextObjectID 原样还原</li>
+            <li><span class="text-blue-400">▸</span> Semantic Recall · 检索层按相关性与 heat 排序</li>
           </ul>
         </div>
       </div>
