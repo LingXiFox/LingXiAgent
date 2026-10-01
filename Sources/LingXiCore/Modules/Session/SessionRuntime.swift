@@ -321,17 +321,6 @@ public actor SessionRuntime {
                 userMessage = try await store.appendMessage(sessionID, role: .user, content: content)
             }
             let userEntry = ContextEntry(messageID: userMessage.id, role: .user, source: .userMessage, part: .text(content))
-            // Each attachment becomes its own entry so the budget planner can page one out
-            // without taking the user's sentence with it, and so `sourceCounts` shows where the
-            // characters came from.
-            let attachmentEntries = attachments.map { item in
-                ContextEntry(
-                    messageID: userMessage.id,
-                    role: .user,
-                    source: .attachment,
-                    part: .text("ATTACHED FILE \(item.filename) (\(item.mediaType)):\n\(item.text)")
-                )
-            }
             var updatedEntries = currentActiveEntries
             if updatedEntries.isEmpty {
                 if let snapshot = await contextEngine.latestSnapshot(for: sessionID) {
@@ -342,7 +331,7 @@ public actor SessionRuntime {
                 }
             }
             if !updatedEntries.contains(where: { $0.messageID == userMessage.id }) {
-                updatedEntries.append(contentsOf: [userEntry] + attachmentEntries)
+                updatedEntries.append(userEntry)
             }
             await syncL1ResidentAccounting(with: updatedEntries)
             guard modelBus.gateway.modelID != nil else {
@@ -377,7 +366,7 @@ public actor SessionRuntime {
             let turnTask = Task {
                 await AgentExecutionContext.$current.withValue(runID.map { (sessionID: sessionID, runID: $0, rootSessionID: rootSessionID, parentSessionID: parentSessionID) }) {
                     await AgentExecutionContext.$currentRunContext.withValue(effectiveRunContext) {
-                        await self.runTurn(handle: handle, sink: opened.sink, task: content, profiler: profiler, deadline: deadline, executionID: executionID, runExecutionContext: effectiveRunContext)
+                        await self.runTurn(handle: handle, sink: opened.sink, task: content, attachments: attachments, profiler: profiler, deadline: deadline, executionID: executionID, runExecutionContext: effectiveRunContext)
                     }
                 }
             }
@@ -394,6 +383,7 @@ public actor SessionRuntime {
         handle: TurnHandle,
         sink: AsyncThrowingStream<StreamChunk, Error>.Continuation,
         task: String,
+        attachments: [ResolvedAttachment] = [],
         profiler: TurnProfiler,
         deadline: ExecutionDeadline,
         executionID: UUID,
@@ -477,6 +467,21 @@ public actor SessionRuntime {
                 // Dynamic pages enter L1 ONLY via Cache Controller explicit retrieval.
                 let residentPages = await cacheController.residentPages(for: sessionID)
                 var allEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+                // This turn's attachments are not session messages, so nothing above contributes
+                // them: without this the bytes are uploaded, resolved and then dropped before the
+                // request. Each is its own entry so the budget planner can page one out without
+                // taking the user's sentence with it.
+                // Attributed to the message the user actually sent, which is the last user
+                // message Core has already committed for this turn.
+                let attachmentOwner = session.messages.last(where: { $0.role == .user })?.id
+                for item in attachments {
+                    allEntries.append(ContextEntry(
+                        messageID: attachmentOwner,
+                        role: .user,
+                        source: .attachment,
+                        part: .text("ATTACHED FILE \(item.filename) (\(item.mediaType)):\n\(item.text)")
+                    ))
+                }
 
                 // Proactive Background Command Inspection & Anti-Amnesia Notice:
                 if let bgNotice = await backgroundManager.generateSystemNotice(currentStep: currentStepNumber) {

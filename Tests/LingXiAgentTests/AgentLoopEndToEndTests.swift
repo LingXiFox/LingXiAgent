@@ -731,8 +731,8 @@ struct AgentLoopEndToEndTests {
         }
     }
 
-    @Test("KNOWN DEFECT: an attachment Core resolved is never handed to the model")
-    func attachmentNeverReachesTheModelRequest() async throws {
+    @Test("An attachment Core resolves is the text the model is actually asked about")
+    func attachmentReachesTheModelRequest() async throws {
         let provider = ScriptedProvider(replying: "ok")
         let fixture = try await makeFixture(provider: provider)
         defer { Task { await fixture.shutdown() } }
@@ -745,15 +745,11 @@ struct AgentLoopEndToEndTests {
             sessionID: sessionID, input: UserInput(text: "读一下附件", attachments: [ref]))
         let turnID = try #require(receipt.result?.turnID)
         try await waitUntil { try await turnStatus(fixture, session: sessionID, turn: turnID) == .completed }
-        // Core accepted the refs and `resolveAttachments` really read the bytes - an unreadable
-        // ref fails the Turn, which the contract test above proves. The text still never reaches
-        // the wire: SessionRuntime.swift:345 only appends `attachmentEntries` when the user
-        // message is absent from the entry list, and CoreHost.executeTurnRun commits that message
-        // to the session store before calling startTurn, so the guard is always true.
-        try await withKnownIssue(
-            "attachment text is dropped before the model request; \(String(provider.allText.prefix(400)))") {
-            #expect(provider.allText.contains("CLOSURE-MARKER-8f31"))
-        }
+        // The guard that used to gate this on "the user message is not already in the entry list"
+        // never fired: CoreHost commits the message to the session store before startTurn runs.
+        // Attachments are not session messages, so they are contributed separately.
+        #expect(provider.allText.contains("CLOSURE-MARKER-8f31"),
+                "附件被 Core 解析出来了，却没有进入模型请求：\(String(provider.allText.prefix(600)))")
     }
 
     @Test("KNOWN DEFECT: Stop lets the queued Turn it was meant to cancel start as a new root run")
