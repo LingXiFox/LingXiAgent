@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import ImageIO
-import UniformTypeIdentifiers
 
 struct WallpaperWindow: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -34,21 +33,48 @@ struct WallpaperScrim: View {
     }
 }
 
-/// A static texture inside an opaque window; no desktop sampling or live blur.
+/// The fixed product background.
+///
+/// It used to be a user preference: `lx.appearance.wallpaperPath` held an absolute path chosen
+/// through an NSOpenPanel, and the GUI loaded whatever file that pointed at. Every colour,
+/// opacity, material, scrim, shadow and separator in this app was tuned against one specific
+/// backdrop, so letting the backdrop be anything meant text legibility was a matter of luck. It
+/// is now a product visual asset shipped inside the bundle — no picker, no runtime substitution,
+/// no theme swapping it.
+///
+/// The legacy preference is deliberately not read. Old installs still carrying
+/// `lx.appearance.wallpaperPath` cannot change the GUI, and nothing writes the key any more (§5).
+///
+/// Reduce Transparency still hides the photograph and drops the scrim, exactly as it did before
+/// the asset was fixed. The background freeze §11 reads as "adjust the overlay, never swap the
+/// backdrop", which argues for keeping the photo and darkening the scrim instead; that variant was
+/// rendered and compared, and the Owner chose the original behaviour — the accessibility setting
+/// means "take the texture off", and the plain designed gradient is the more legible result. Do not
+/// "correct" this back to a heavier scrim: the decision is recorded in
+/// Docs/AC/GUI-Core-Closure-Report-1.2.0.md §D2 and asserted by FixedBackgroundAssetTests.
 struct WallpaperBackdrop: View {
-    static let pathKey = "lx.appearance.wallpaperPath"
-    @AppStorage(pathKey) private var path = ""
+    /// Bundle resource name, without extension. `Package.swift` copies the whole
+    /// `FrontendKit/Resources` directory, so the app never touches a workspace-relative path.
+    static let resourceName = "Background"
+    static let resourceExtension = "jpg"
+
     @State private var image: NSImage?
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         GeometryReader { geometry in
             ZStack {
+                // Retained as the stable fallback and as the base the photo sits on: if the asset
+                // cannot be decoded, this is what ships — never a random image, never a download,
+                // never the desktop wallpaper (§12).
                 LinearGradient(colors: [Color(red: 0.10, green: 0.13, blue: 0.22),
                                         Color(red: 0.08, green: 0.17, blue: 0.18),
                                         Color(red: 0.10, green: 0.11, blue: 0.15)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 if let image, !reduceTransparency {
+                    // Aspect fill, unchanged crop and alignment: the image keeps its ratio, the
+                    // window clips what overflows, and resizing reveals more or less of the same
+                    // picture rather than choosing another one.
                     Image(nsImage: image).resizable().scaledToFill()
                 }
             }
@@ -57,13 +83,25 @@ struct WallpaperBackdrop: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .task(id: path) {
-            guard !path.isEmpty else { image = nil; return }
-            let url = URL(fileURLWithPath: path)
-            let thumbnail = await Task.detached(priority: .utility) { Self.thumbnail(at: url) }.value
-            guard !Task.isCancelled else { return }
-            image = thumbnail.map { NSImage(cgImage: $0, size: .zero) }
+        .task {
+            if image == nil { image = Self.load() }
         }
+    }
+
+    /// Decodes the bundled asset off the main actor. A 3880×2320 JPEG decoded inline would be
+    /// paid for on every window the app opens, so it is thumbnailed to the same ceiling the
+    /// picker used, then cached.
+    static func load() -> NSImage? {
+        guard let url = Bundle.module.url(forResource: resourceName, withExtension: resourceExtension,
+                                          subdirectory: "Resources") else {
+            #if DEBUG
+            fatalError("LingXiFrontendKit/Resources/\(resourceName).\(resourceExtension) 不存在：固定背景是产品视觉资产，缺失必须报错而不是静默换图")
+            #else
+            return nil
+            #endif
+        }
+        guard let thumb = thumbnail(at: url) else { return nil }
+        return NSImage(cgImage: thumb, size: .zero)
     }
 
     nonisolated static func thumbnail(at url: URL) -> CGImage? {
@@ -74,24 +112,6 @@ struct WallpaperBackdrop: View {
             kCGImageSourceThumbnailMaxPixelSize: 2048,
             kCGImageSourceShouldCacheImmediately: true
         ] as CFDictionary)
-    }
-
-    @MainActor
-    static func chooseImage() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "设为背景"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard CGImageSourceCreateWithURL(url as CFURL, nil) != nil else {
-            let alert = NSAlert()
-            alert.messageText = "无法读取这张图片"
-            alert.informativeText = "请选择有效的 PNG、JPEG 或 HEIC 图片。"
-            alert.runModal()
-            return
-        }
-        UserDefaults.standard.set(url.path, forKey: pathKey)
     }
 }
 

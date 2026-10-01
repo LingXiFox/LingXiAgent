@@ -23,7 +23,7 @@ public extension ApplicationAction {
         case .listSessions:
             .listSessions
         case let .submitPrompt(text: text, attachments):
-            .submitPrompt(text: text, attachments: attachments)
+            .submitPrompt(text: text, attachments: attachments ?? [])
         case .stopCurrentRun:
             .stopCurrentRun
         case let .cancelRun(runID, reason):

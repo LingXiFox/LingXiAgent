@@ -169,12 +169,6 @@ public struct LingXiMenuCommands: Commands {
             .keyboardShortcut(.space, modifiers: .option)
 
             Divider()
-            Button("选择背景图片…") { WallpaperBackdrop.chooseImage() }
-            Button("恢复内置背景") {
-                UserDefaults.standard.removeObject(forKey: WallpaperBackdrop.pathKey)
-            }
-
-            Divider()
         }
 
         CommandMenu("Agent") {

@@ -122,7 +122,13 @@ public enum FrontendCommand: Codable, Sendable, Equatable {
     case listSessions
 
     // Prompt & execution
-    case submitPrompt(text: String, attachments: [ContentRef])
+    /// `attachments` is optional on the wire, and not because a turn may skip them:
+  /// `WebUIServer` decodes this enum straight out of an HTTP body, and the shipped browser client
+  /// sends `{ submitPrompt: { text: … } }`. Synthesized `Codable` requires every labelled
+  /// associated value, so a non-optional field would fail to decode every existing WebUI submit —
+  /// a regression introduced by wiring the Mac GUI. Absent means "no attachments", which is what
+  /// those clients mean.
+  case submitPrompt(text: String, attachments: [ContentRef]?)
     case stopCurrentRun
     case cancelRun(runID: RunID, reason: String?)
     case setMode(mode: AgentMode)

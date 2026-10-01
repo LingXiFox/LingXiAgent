@@ -21,6 +21,11 @@ test-results.xml
 
 # Stage 5 per-chunk reports staged for upload
 test-results-artifact/
+# The owner's asset drop zone. The packaged copy is the tracked one, at
+# Apps/macOS/FrontendKit/Resources/Background.jpg — keeping both in git would store the same
+# 2.4MB JPEG twice.
+Picture/
+
 # Per-chunk regression diagnostics: rewritten by every Scripts/ci-integration-tests.sh run.
 test-results-chunk-*.json
 

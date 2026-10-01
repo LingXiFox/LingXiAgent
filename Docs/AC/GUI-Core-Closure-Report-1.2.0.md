@@ -76,7 +76,44 @@ Core 内部两处自造数据：`getRunTrace` 对每个 run 返回固定 `["run.
 
 §22 零容忍项里有一类必须请主人定夺：**背景氛围**与**浮动面板材质**两个选择器把值写进 UserDefaults，但渲染层从不读它——`AtmosphereBackdrop` 画常量渐变、`LXFloatingChrome` 用固定 `LXColor.elevated`，选了不会有任何变化。本轮按 §22 移除（连同无控件无读取者的 `dockPanels`/`dockVisible`，以及只往输入框插一个 `@`/`#` 字符、Core 侧没有 mention 解析的两个「引用」菜单项）。**让它们真正生效属于改全局视觉层，§8 要求先经主人确认**，所以本狐没有擅自接上渲染。
 
+> 主人已确认：允许移除这两个无效控件及其配置入口，但不得借此重排 Settings 或改动主布局。实际删除后 Settings「外观」页只剩「主题」一张卡（配色模式），没有出现需要重排的连带结构；`LXSettingsCard("材质")` 整卡随控件一并删除，卡片间距由既有 `LXSettingsScrollPage` 处理，未改任何布局代码。
+
 闸口：`SettingsClosureTests`（9 项）。
+
+---
+
+## D2. 固定背景视觉资产（Owner 补充冻结）
+
+Owner 在本轮进行中追加了 `GUI 固定背景视觉资产补充冻结`，本节按其 14 条逐条落地。
+
+**资产**：`./Picture/` 下只有一个候选 `background.JPG`（3880×2320 JPEG），无歧义，未触发「停下来问用哪张」。已按 §2 放入正式资源目录：
+
+```
+Picture/background.JPG            （主人的源资产，未改动、未删除）
+        ↓ 字节一致复制（sha256 已核对）
+Apps/macOS/FrontendKit/Resources/Background.jpg
+        ↓ Package.swift 既有 .copy("Resources")
+Bundle.module  →  GUI 背景
+```
+
+`Picture/` 加入 `.gitignore`：把同一个 2.4MB JPEG 在 git 里存两份不是版本管理，是重复存储；**入库的唯一一份是打包用的 `Resources/Background.jpg`**。源目录留在磁盘上，主人换图时覆盖它，再由 `FixedBackgroundAssetTests.packagedCopyMatchesSource` 在本地比对两份是否同源（`Picture/` 不在时该检查自动跳过，不会在 CI 上误报）。
+
+**改动点（仅背景层与设置入口，未触布局）**：
+
+| 冻结条款 | 落地 |
+| :--- | :--- |
+| §2 运行时不读工作区路径 | `WallpaperBackdrop` 由 `Bundle.module.url(forResource:"Background", withExtension:"jpg", subdirectory:"Resources")` 解析；文件里已不存在 `URL(fileURLWithPath:` |
+| §3 显示行为冻结 | `.scaledToFill()` + `.clipped()` 原样保留（等比填满、resize 裁切），底层设计好的三段渐变保留为基色与兜底 |
+| §4 删除 Picker | 删掉菜单「选择背景图片…」「恢复内置背景」、`chooseImage()`、`NSOpenPanel` 与 `@AppStorage(pathKey)`；未留禁用态 Picker、未留「Coming Soon」、未留隐藏但写配置的假设置 |
+| §5 Legacy 兼容 | `lx.appearance.wallpaperPath` **不再被读取**（旧值因此无法再改变 GUI），也不再被写入；未在启动时加清理逻辑——不读不写即已满足「不恢复可配置能力」 |
+| §6 允许前景校准、禁止重设计 | **本狐没有改任何颜色/透明度数值**：这些参数是本轮之前针对同一套底色调好的，而本狐无法截图目视验证，盲调对比度等于用猜测替换已验证的状态。此项留待主人目视或提供截图后再做（见 J 节遗留） |
+| §7 运行上下文卡片冻结 | 一字未动，并新增断言专门盯这件事（§13 说固定背景常被当作改布局的借口） |
+| §8 最右 Tool Rail 不变 | Browser / Terminal / Git 三案与轨道结构未改，测试断言其存在 |
+| §10 Theme 与背景解耦 | 背景无条件加载，`WallpaperStyle.swift` 内不含 `colorScheme` 分支——主题只影响前景 token |
+| §11 Reduce Transparency | **按主人的裁定保留原行为**：降低透明度时照片与遮罩一起撤掉，只剩底层渐变。本狐曾按 §11 字面（「调整 overlay 而非换背景」）改成「照片常驻 + 遮罩加深到 0.72→0.95」，并把两种行为用同一批数值渲染成图交给主人对比；主人选定旧行为。该决定已写进 `WallpaperStyle.swift` 注释与 `FixedBackgroundAssetTests.reduceTransparencyKeepsOriginalBehaviour`，防止后人再「修正」回去 |
+| §12 缺失必须 Fail Loud | `#if DEBUG` 下资源缺失 `fatalError` 并指名路径；release 返回 nil 回落到稳定渐变；不存在随机图、网络下载或读桌面壁纸的路径 |
+
+闸口：`FixedBackgroundAssetTests`（10 项），覆盖「picker 不得复活」「不得读绝对路径」「不得由主题换图」「不得借背景改布局」。
 
 ---
 
