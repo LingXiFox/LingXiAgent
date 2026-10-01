@@ -121,9 +121,13 @@ public actor PluginProcessHost {
     public let scope: ExtensionScope
     private let permissions: PermissionEngine
     private let watchdogTimeout: Double
+    private let coreVersion: String
 
     private let state = PluginProcessState()
     private var isTerminated = false
+
+    /// Core 侧权威运行快照来源。未接入时插件读到的是 unavailable,而不是假数据。
+    private var snapshotProvider: (any PluginRuntimeSnapshotProviding)?
 
     public private(set) var handshakeResult: PluginHandshakeResult?
 
@@ -131,12 +135,19 @@ public actor PluginProcessHost {
         binaryURL: URL,
         scope: ExtensionScope = .project,
         permissions: PermissionEngine,
-        watchdogTimeout: Double = 3.0
+        watchdogTimeout: Double = 3.0,
+        coreVersion: String = CoreHost.coreVersion
     ) {
         self.binaryURL = binaryURL
         self.scope = scope
         self.permissions = permissions
         self.watchdogTimeout = watchdogTimeout
+        self.coreVersion = coreVersion
+    }
+
+    /// 接入 Core 的运行快照来源。晚于 start() 设置也有效:握手后的每次调用都会重新推送。
+    public func setSnapshotProvider(_ provider: (any PluginRuntimeSnapshotProviding)?) {
+        self.snapshotProvider = provider
     }
 
     deinit {
@@ -183,9 +194,26 @@ public actor PluginProcessHost {
         drainThread.name = "org.lingxi.plugin.stderrDrain"
         drainThread.start()
 
-        // 发起握手
-        let responseData = try await sendRawRequest(method: "plugin.initialize", params: nil)
+        // 握手前先推送权威快照:插件在 activate(context:) 里读 info 时也不能拿到默认值。
+        await pushSnapshot(sessionID: nil)
+
+        // 发起握手,并声明宿主协议版本,两端不兼容时在此明确失败。
+        let initializeParams = try JSONEncoder().encode(
+            PluginInitializeParams(coreVersion: coreVersion)
+        )
+        let responseData = try await sendRawRequest(
+            method: PluginIPC.Method.initialize.rawValue, params: initializeParams)
         let handshake = try JSONDecoder().decode(PluginHandshakeResult.self, from: responseData)
+
+        // 协议兼容按 ipcVersion 判定,不比较 Core 的版本字符串:版本不匹配的插件
+        // 必须在这里失败,而不是等到某次 command 解码不出来。
+        guard PluginIPC.isCompatible(handshake.ipcVersion) else {
+            await terminate()
+            throw CoreError(code: .commandFailed, message: """
+            Plugin '\(handshake.manifest.id)' speaks LingXi Plugin IPC v\(handshake.ipcVersion); \
+            this Core supports \(PluginIPC.supportedVersions.sorted()).
+            """)
+        }
 
         // 验证申请的能力是否允许（PermissionEngine 预审）
         for capability in handshake.manifest.capabilities {
@@ -225,9 +253,11 @@ public actor PluginProcessHost {
             throw CoreError(code: .toolNotFound, message: "Tool '\(name)' not found in plugin '\(handshake.manifest.id)'")
         }
 
+        // 每次调用前刷新,插件在工具里读到的运行时信息才不会是上一次会话的残留。
+        await pushSnapshot(sessionID: SessionID(sessionID))
         let params = PluginToolCallParams(toolName: name, arguments: arguments, sessionID: sessionID, toolCallID: toolCallID)
         let paramsData = try JSONEncoder().encode(params)
-        let resData = try await sendRawRequest(method: "tool.execute", params: paramsData)
+        let resData = try await sendRawRequest(method: PluginIPC.Method.toolExecute.rawValue, params: paramsData)
         return try JSONDecoder().decode(String.self, from: resData)
     }
 
@@ -240,18 +270,29 @@ public actor PluginProcessHost {
             throw CoreError(code: .unsupportedCommand, message: "Command '\(name)' not found in plugin '\(handshake.manifest.id)'")
         }
 
+        await pushSnapshot(sessionID: sessionID.map(SessionID.init))
         let params = PluginCommandCallParams(commandName: name, arguments: arguments, sessionID: sessionID)
         let paramsData = try JSONEncoder().encode(params)
-        let resData = try await sendRawRequest(method: "command.execute", params: paramsData)
+        let resData = try await sendRawRequest(method: PluginIPC.Method.commandExecute.rawValue, params: paramsData)
         return try JSONDecoder().decode(PluginCommandCallResult.self, from: resData)
     }
 
     /// 广播生命周期 Hook
     public func emitHook(_ payload: PluginHookPayload) async {
         guard handshakeResult != nil else { return }
+        await pushSnapshot(sessionID: payload.metadata["sessionID"].map(SessionID.init))
         if let paramsData = try? JSONEncoder().encode(payload) {
-            _ = try? await sendRawRequest(method: "hook.emit", params: paramsData)
+            _ = try? await sendRawRequest(method: PluginIPC.Method.hookEmit.rawValue, params: paramsData)
         }
+    }
+
+    /// Core → Plugin 的单向快照推送。推送失败不升级为调用失败:快照缺失由插件
+    /// 侧以 `PluginInfoUnavailable` 表现,而工具调用本身该不该成功是另一件事。
+    private func pushSnapshot(sessionID: SessionID?) async {
+        guard let snapshotProvider else { return }
+        let snapshot = await snapshotProvider.snapshot(sessionID: sessionID)
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        _ = try? await sendRawRequest(method: PluginIPC.Method.snapshot.rawValue, params: data)
     }
 
     /// 安全终止或熔断强杀

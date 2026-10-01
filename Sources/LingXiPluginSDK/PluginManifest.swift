@@ -1,7 +1,9 @@
 import Foundation
-import LingXiProtocol
 
 /// 插件安全能力声明。
+///
+/// 能力是权限申请,与协议兼容是两件事:后者由握手里的 `ipcVersion` 判定
+/// (见 `PluginIPC`),不要拿 `minimumCoreVersion` 字符串代替版本协商。
 public enum PluginCapability: String, Codable, Sendable, CaseIterable {
     case projectRead
     case projectWrite
@@ -17,6 +19,7 @@ public struct PluginManifest: Codable, Sendable, Equatable {
     public let description: String
     public let author: String?
     public let capabilities: Set<PluginCapability>
+    /// 人类可读的最低宿主版本提示。协议兼容不看它,看 `PluginHandshakeResult.ipcVersion`。
     public let minimumCoreVersion: String?
 
     public init(

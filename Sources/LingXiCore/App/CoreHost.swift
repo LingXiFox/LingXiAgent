@@ -534,6 +534,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
         )
         await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
+        // 快照来源必须先接到插件宿主层，再开始发现插件进程：否则第一批插件会在
+        // 没有 provider 的情况下握手，插件读到的运行时信息从此一直是 unavailable。
+        await installPluginSnapshotProvider()
         if startupPolicy.discoverSkills || startupPolicy.discoverCommands || startupPolicy.discoverBinaryPlugins {
             await extensionPlatform.restore()
             _ = await extensionPlatform.discover()

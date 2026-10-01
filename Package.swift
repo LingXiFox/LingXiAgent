@@ -66,7 +66,9 @@ let package = Package(
             exclude: ["README.md"]
         ),
         // 插件 SDK：供外部开发者开发 Swift 插件的标准库
-        .target(name: "LingXiPluginSDK", dependencies: ["LingXiProtocol"]),
+        // 插件 SDK：供外部开发者开发 LingXiAgent 插件的标准库。只依赖 Foundation ——
+        // 插件作者不该为了写一个插件而链接整个 Agent。
+        .target(name: "LingXiPluginSDK"),
         // 平台层：跨平台系统抽象（macOS / Linux / Windows）
         .target(name: "LingXiPlatform", dependencies: ["LingXiProtocol"]),
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
@@ -140,7 +142,7 @@ let package = Package(
             dependencies: [
                 "LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication",
                 "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK",
-                "LingXiModelSDK"
+                "LingXiModelSDK",
             ] + guiTestDependency,
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
@@ -180,6 +182,12 @@ let package = Package(
             name: "LingXiTraceContractTests",
             dependencies: ["LingXiProtocol"],
             path: "ContractTests/LingXiTraceContractTests"
+        ),
+        // 插件 SDK 测试：同样只依赖 SDK 自己，wire contract 与 README 示例都在这里编译。
+        .testTarget(
+            name: "LingXiPluginSDKTests",
+            dependencies: ["LingXiPluginSDK"],
+            path: "Tests/LingXiPluginSDKTests"
         ),
         // 模型目录 SDK 测试：依赖闭包里只有 SDK 自己。网页上展示的 Swift 示例必须
         // 在这里编译通过，示例与真实 API 一旦脱节就是 CI 失败，而不是一句警告。

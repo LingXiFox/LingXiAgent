@@ -38,6 +38,9 @@ public actor PluginHostSupervisor {
     private let permissions: PermissionEngine
     public var isEnabled: Bool
 
+    /// Core 权威运行快照来源,交给每个插件进程宿主。
+    private var snapshotProvider: (any PluginRuntimeSnapshotProviding)?
+
     private let state = PluginSupervisorState()
     private var hostsByPluginID: [String: PluginProcessHost] = [:]
     private var toolToPluginID: [String: String] = [:]
@@ -53,6 +56,12 @@ public actor PluginHostSupervisor {
         self.projectPluginsRoot = projectRoot.appendingPathComponent(".lingxi/plugins", isDirectory: true)
         self.permissions = permissions
         self.isEnabled = isEnabled
+    }
+
+    /// 接入快照 provider；已在跑的插件进程下一次调用即生效。
+    public func setSnapshotProvider(_ provider: (any PluginRuntimeSnapshotProviding)?) async {
+        snapshotProvider = provider
+        for host in hostsByPluginID.values { await host.setSnapshotProvider(provider) }
     }
 
     /// 更新工作区工程根路径并重置插件进程
@@ -106,7 +115,9 @@ public actor PluginHostSupervisor {
             for candidate in candidates {
                 let permissions = self.permissions
                 group.addTask {
-                    let host = PluginProcessHost(binaryURL: candidate.binaryURL, scope: candidate.scope, permissions: permissions)
+                    let host = PluginProcessHost(
+                binaryURL: candidate.binaryURL, scope: candidate.scope, permissions: permissions)
+            await host.setSnapshotProvider(self.snapshotProvider)
                     do {
                         let handshake = try await host.start()
                         return StartResult(priority: candidate.priority, host: host, handshake: handshake)

@@ -3,17 +3,20 @@
 
 Applicable to:
 Every target and path marked `MIT` in `LICENSE-MATRIX.md` at the repository
-root — today that is `LingXiModelSDK` (SPM target and library product) and
-nothing else. This file defines the license terms; the matrix defines the
-scope. `LicenseMatrixDriftTests` guards against the two drifting apart.
+root — today the two public developer SDKs, `LingXiModelSDK` and
+`LingXiPluginSDK`. Each is being extracted into its own repository, where the
+same MIT text becomes that repository's `LICENSE`; nothing else here changes
+license. This file defines the license terms; the matrix defines the scope, and
+`LicenseMatrixDriftTests` guards against the two drifting apart.
 
 The operative grant is the MIT text below. The Chinese block is a summary for
 readers and adds no term; where the two differ, the MIT text governs.
 
 中文摘要（授权条款以下方 MIT 原文为准，摘要本身不增设条件）：
-本 SDK 是公共模型目录 `models.lingxifox.cn/models.json` 的开发者接口，
-按 MIT 授权，允许商业使用、第三方 Agent 与 App 集成、修改、源码与二进制再分发，
-也允许在闭源产品中链接使用；唯一义务是保留版权声明与本许可文本。
+本文件覆盖两个面向第三方的公共 SDK —— 模型目录接口 `LingXiModelSDK` 与插件开发接口
+`LingXiPluginSDK`。两者均按 MIT 授权，允许商业使用、第三方 Agent 与 App 集成、修改、
+源码与二进制再分发，也允许在闭源产品或闭源插件中链接使用；唯一义务是保留版权声明与
+本许可文本。运行时核心（LCSAL-1.1）与表现层（PolyForm Noncommercial）不在此范围内。
 
 ---
 

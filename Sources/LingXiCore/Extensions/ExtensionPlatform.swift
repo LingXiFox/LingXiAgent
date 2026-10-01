@@ -290,6 +290,12 @@ public actor ExtensionPlatform {
         self.pluginSupervisor = PluginHostSupervisor(globalRoot: globalRoot, projectRoot: projectRoot, permissions: permissions, isEnabled: enablePlugins)
     }
 
+    /// 把 Core 的权威运行快照来源交给插件宿主层。没有它,插件读到的是 unavailable,
+    /// 而不是 SDK 端编出来的 idle / unknown / 0。
+    public func setPluginSnapshotProvider(_ provider: (any PluginRuntimeSnapshotProviding)?) async {
+        await pluginSupervisor.setSnapshotProvider(provider)
+    }
+
     /// 更新工作区项目根目录并重新扫描扩展
     @discardableResult
     public func updateProjectRoot(_ newURL: URL) async -> ExtensionDiscoveryResult {

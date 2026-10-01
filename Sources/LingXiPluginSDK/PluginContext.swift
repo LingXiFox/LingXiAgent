@@ -56,6 +56,13 @@ public final class PluginContext: @unchecked Sendable {
         return Array(registeredTools.values)
     }
 
+    /// 已注册 Hook 的事件集合,握手时上报给 Core。空数组表示插件不处理任何事件。
+    public var registeredHookEvents: [PluginHookEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return registeredHooks.keys.sorted { $0.rawValue < $1.rawValue }
+    }
+
     public var allCommands: [any PluginCommand] {
         lock.lock()
         defer { lock.unlock() }

@@ -38,23 +38,50 @@ struct FoxInfoCommand: PluginCommand {
     let category = "Plugin"
 
     func execute(args: [String], context: CommandExecutionContext) async throws -> PluginCommandResult {
-        let ws = try await context.info.getWorkspaceInfo()
-        let pe = try await context.info.getPECoreInfo()
-        let ctx = try await context.info.getContextState()
-        let perf = try await context.info.getPerformanceInfo()
+        // 每一段都可能缺席。Core 没推送的段落显示「宿主未发布」，而不是 0 / idle /
+        // unknown —— 那些值过去看起来像真数据，插件因此分不清「宿主闲着」和
+        // 「宿主没告诉我」。
+        func render(_ body: () async throws -> String) async -> String {
+            do { return try await body() }
+            catch is PluginInfoUnavailable { return "宿主未发布" }
+            catch { return "读取失败" }
+        }
+        let workspaceLine = await render {
+            let ws = try await context.info.getWorkspaceInfo()
+            let dirty = ws.dirtyFileCount.map { "\($0) 个" } ?? "非 Git 仓库"
+            return "\n  • 当前工作区   : \(ws.rootPath)\n"
+                + "  • Git 分支     : \(ws.currentGitBranch ?? "非 Git 仓库") (未提交变更: \(dirty))\n"
+                + "  • 核心版本     : \(ws.coreVersion)"
+        }
+        let contextLine = await render {
+            let ctx = try await context.info.getContextState()
+            var lines: [String] = []
+            lines.append("  • 活跃模型     : \(ctx.activeModelID ?? "宿主未发布")")
+            lines.append("  • 消息数       : \(ctx.messageCount.map(String.init) ?? "宿主未发布")")
+            lines.append("  • 窗口占比     : \(ctx.contextWindowPercentage.map { String(format: "%.1f%%", $0 * 100) } ?? "宿主未发布")")
+            return lines.joined(separator: "\n")
+        }
+        let peLine = await render {
+            let pe = try await context.info.getPECoreInfo()
+            return "  • P-Core       : \(pe.pCoreTokens.map { "\($0) tokens" } ?? "宿主未发布")\n"
+                + "  • E-Core       : 对象 \(pe.eCoreObjects.map(String.init) ?? "宿主未发布") 个 / 引用 \(pe.eCoreReferences.map(String.init) ?? "宿主未发布") 条\n"
+                + "  • 思考深度     : \(pe.reasoningEffort ?? "宿主未发布")"
+                + "\n  • 后台任务     : \(pe.backgroundTaskCount.map(String.init) ?? "宿主未发布")"
+        }
+        let performanceLine = await render {
+            let perf = try await context.info.getPerformanceInfo()
+            return "  • 首字延迟     : \(perf.timeToFirstTokenMs.map { String(format: "%.0f ms", $0) } ?? "宿主未发布")"
+        }
 
         let info = """
           • 插件 ID     : fox-plugin v1.0.0 (进程物理隔离运行)
-          • 当前工作区   : \(ws.rootPath)
-          • Git 分支     : \(ws.currentGitBranch ?? "非 Git 仓库") (未提交文件: \(ws.dirtyFileCount) 个)
-          • 核心版本     : \(ws.coreVersion)
-          • 双核分工     : P-Core=\(pe.pCoreRole) · E-Core=\(pe.eCoreRole)
-          • 思考深度     : \(pe.reasoningEffort) (双核耗时比: \(String(format: "%.2f", pe.pCoreToECoreTimeRatio)))
-          • 活跃模型     : \(ctx.activeModelID) (窗口占比: \(String(format: "%.1f%%", ctx.contextWindowPercentage * 100)))
-          • 首字延迟     : \(perf.timeToFirstTokenMs) ms
+        \(workspaceLine)
+        \(contextLine)
+        \(peLine)
+        \(performanceLine)
           • 附加参数     : \(args.isEmpty ? "无" : args.joined(separator: " "))
 
-        外部二进制插件已通过 IPC 沙箱连接 LingXiAgent。
+        外部二进制插件经 JSON Lines IPC 连接 LingXiAgent；上面每一行都来自 Core 推送的权威快照，缺席的段落是宿主确实没有发布。
         """
         return .message(info, presentation: .modal, title: "LingXiAgent 诊断插件 (/fox-info)")
     }

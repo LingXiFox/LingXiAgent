@@ -3,18 +3,45 @@ import Foundation
 /// 插件端 STDIO / IPC 驱动器。
 public actor PluginDriver {
     private let plugin: any LingXiPlugin
+    private let infoHub: DefaultPluginInfoHub
     private var context: PluginContext?
     private var isActivated = false
 
-    public init(plugin: any LingXiPlugin) {
+    public init(plugin: any LingXiPlugin, infoHub: DefaultPluginInfoHub = DefaultPluginInfoHub()) {
         self.plugin = plugin
+        self.infoHub = infoHub
     }
 
-    /// 执行单次 IPC 请求分发（供 STDIO 循环或进程内直接驱动使用）
+    /// 执行单次 IPC 请求分发(供 STDIO 循环或进程内直接驱动使用)
     public func handleRequest(_ request: PluginIPCRequest) async -> PluginIPCResponse {
         do {
             switch request.method {
-            case "plugin.initialize":
+            case PluginIPC.Method.snapshot.rawValue:
+                guard let paramsData = request.params else {
+                    return PluginIPCResponse(id: request.id, error: "host.snapshot requires a snapshot payload")
+                }
+                let snapshot = try JSONDecoder().decode(PluginRuntimeSnapshot.self, from: paramsData)
+                // 协议版本不兼容时明确拒绝:让插件带着说不通的快照跑下去,只会在
+                // 更远的地方以更难诊断的形式失败。
+                guard PluginIPC.isCompatible(snapshot.ipcVersion) else {
+                    return PluginIPCResponse(id: request.id, error: """
+                    Unsupported host IPC version \(snapshot.ipcVersion); \
+                    this plugin speaks \(PluginIPC.supportedVersions.sorted()).
+                    """)
+                }
+                await infoHub.apply(snapshot)
+                return PluginIPCResponse(id: request.id, result: Data())
+
+            case PluginIPC.Method.initialize.rawValue:
+                // Core 先声明协议版本;两端没有共同版本就在此失败。
+                if let paramsData = request.params,
+                   let params = try? JSONDecoder().decode(PluginInitializeParams.self, from: paramsData),
+                   !PluginIPC.isCompatible(params.hostIPCVersion) {
+                    return PluginIPCResponse(id: request.id, error: """
+                    Unsupported host IPC version \(params.hostIPCVersion); \
+                    plugin supports \(PluginIPC.supportedVersions.sorted()).
+                    """)
+                }
                 let ctx = try await getOrActivateContext()
                 let tools = ctx.allTools.map {
                     PluginToolDescriptor(name: $0.name, description: $0.description, inputSchema: $0.inputSchema)
@@ -22,11 +49,16 @@ public actor PluginDriver {
                 let commands = ctx.allCommands.map {
                     PluginCommandDescriptor(name: $0.name, aliases: $0.aliases, description: $0.description, category: $0.category, argumentHint: $0.argumentHint)
                 }
-                let result = PluginHandshakeResult(manifest: plugin.manifest, tools: tools, commands: commands)
+                let result = PluginHandshakeResult(
+                    manifest: plugin.manifest,
+                    tools: tools,
+                    commands: commands,
+                    supportedHooks: ctx.registeredHookEvents.map(\.rawValue)
+                )
                 let data = try JSONEncoder().encode(result)
                 return PluginIPCResponse(id: request.id, result: data)
 
-            case "tool.execute":
+            case PluginIPC.Method.toolExecute.rawValue:
                 guard let paramsData = request.params else {
                     return PluginIPCResponse(id: request.id, error: "Missing tool.execute parameters")
                 }
@@ -44,7 +76,7 @@ public actor PluginDriver {
                 let outputData = try JSONEncoder().encode(output)
                 return PluginIPCResponse(id: request.id, result: outputData)
 
-            case "command.execute":
+            case PluginIPC.Method.commandExecute.rawValue:
                 guard let paramsData = request.params else {
                     return PluginIPCResponse(id: request.id, error: "Missing command.execute parameters")
                 }
@@ -69,7 +101,7 @@ public actor PluginDriver {
                 let resData = try JSONEncoder().encode(callResult)
                 return PluginIPCResponse(id: request.id, result: resData)
 
-            case "hook.emit":
+            case PluginIPC.Method.hookEmit.rawValue:
                 guard let paramsData = request.params else {
                     return PluginIPCResponse(id: request.id, error: "Missing hook.emit payload")
                 }
@@ -124,7 +156,7 @@ public actor PluginDriver {
         }
         let ctx = context ?? PluginContext(
             pluginID: plugin.manifest.id,
-            info: DefaultPluginInfoHub(),
+            info: infoHub,
             storage: DefaultPluginStorage(pluginID: plugin.manifest.id),
             logger: PluginLogger(pluginID: plugin.manifest.id)
         )
@@ -138,7 +170,7 @@ public actor PluginDriver {
     }
 }
 
-/// 默认的私有存储实现（本地文件目录）
+/// 默认的私有存储实现(本地文件目录)
 public actor DefaultPluginStorage: PluginStorage {
     private let directory: URL
 
@@ -165,50 +197,45 @@ public actor DefaultPluginStorage: PluginStorage {
     }
 }
 
-/// 默认信息枢纽（支持后续跨进程反向查询或使用宿主注入）
+/// Core 权威快照的本地持有者。
+///
+/// 它不产生任何数据:没有收到 `host.snapshot` 之前,四个段落一律 `unavailable`。
+/// 曾经这里预置了 `activeModelID = "unknown"`、P/E `idle`、TTFT `0`、workspace
+/// 取当前目录 —— 插件因此无法区分「宿主停着」和「宿主没告诉我」。
 public actor DefaultPluginInfoHub: PluginInfoHub {
-    private var contextState: PluginContextStateInfo
-    private var peCore: PluginPECoreInfo
-    private var performance: PluginPerformanceInfo
-    private var workspace: PluginWorkspaceInfo
+    private var snapshot: PluginRuntimeSnapshot?
 
-    public init(
-        contextState: PluginContextStateInfo = PluginContextStateInfo(activeModelID: "unknown", totalTokenUsage: 0, contextWindowPercentage: 0.0, isCompacted: false, messageCount: 0),
-        peCore: PluginPECoreInfo = PluginPECoreInfo(pCoreRole: "idle", eCoreRole: "idle", reasoningEffort: "medium", pCoreToECoreTimeRatio: 1.0, cacheDebt: 0.0, backgroundTaskCount: 0),
-        performance: PluginPerformanceInfo = PluginPerformanceInfo(timeToFirstTokenMs: 0, reasoningDurationMs: 0, toolExecutionDurationMs: 0, providerLatencyAverageMs: 0, isRateLimited: false),
-        workspace: PluginWorkspaceInfo = PluginWorkspaceInfo(rootPath: FileManager.default.currentDirectoryPath, isGitRepository: false, currentGitBranch: nil, dirtyFileCount: 0, primaryLanguages: [], coreVersion: "1.0.0")
-    ) {
-        self.contextState = contextState
-        self.peCore = peCore
-        self.performance = performance
-        self.workspace = workspace
-    }
+    public init() {}
 
-    public func update(
-        contextState: PluginContextStateInfo? = nil,
-        peCore: PluginPECoreInfo? = nil,
-        performance: PluginPerformanceInfo? = nil,
-        workspace: PluginWorkspaceInfo? = nil
-    ) {
-        if let contextState { self.contextState = contextState }
-        if let peCore { self.peCore = peCore }
-        if let performance { self.performance = performance }
-        if let workspace { self.workspace = workspace }
+    /// 最近一次权威快照;`nil` 表示这条链路上还没有推送过。
+    public var latestSnapshot: PluginRuntimeSnapshot? { snapshot }
+
+    /// Core → Plugin 的快照落地点。较新的快照覆盖较旧的,乱序到达时保留更新的。
+    public func apply(_ next: PluginRuntimeSnapshot) {
+        if let existing = snapshot, existing.observedAt > next.observedAt { return }
+        snapshot = next
     }
 
     public func getContextState() async throws -> PluginContextStateInfo {
-        return contextState
+        try value(\PluginRuntimeSnapshot.contextState, field: .contextState)
     }
 
     public func getPECoreInfo() async throws -> PluginPECoreInfo {
-        return peCore
+        try value(\PluginRuntimeSnapshot.peCore, field: .peCore)
     }
 
     public func getPerformanceInfo() async throws -> PluginPerformanceInfo {
-        return performance
+        try value(\PluginRuntimeSnapshot.performance, field: .performance)
     }
 
     public func getWorkspaceInfo() async throws -> PluginWorkspaceInfo {
-        return workspace
+        try value(\PluginRuntimeSnapshot.workspace, field: .workspace)
+    }
+
+    private func value<T>(_ keyPath: KeyPath<PluginRuntimeSnapshot, T?>, field: PluginInfoField) throws -> T {
+        guard let section = snapshot?[keyPath: keyPath] else {
+            throw PluginInfoUnavailable(field: field, lastObservedAt: snapshot?.observedAt)
+        }
+        return section
     }
 }

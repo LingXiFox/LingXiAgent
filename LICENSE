@@ -19,7 +19,7 @@ The Chinese text of this multi-tiered licensing scheme prevails over any transla
 | :--- | :--- | :---: | :---: | :---: |
 | **Core & Infrastructure 底座与核心**<br/>（范围以 `LICENSE-MATRIX.md` 为准） | **LingXi Core Source-Available License 1.1 (LCSAL-1.1)**<br/>*(源码可用 · 个人自用 · 官方二进制转发例外 · 禁商用)* | ✅ **允许**<br/>(免费下载、本地编译自用) | ❌ **严禁**<br/>(仅允许官方 release 产物非商用原样转发；禁自编译分发) | ❌ **严禁**<br/>(禁商业化、收费代理、SaaS托管或企业生产部署) |
 | **Frontend & Clients 表现层与客户端**<br/>（范围以 `LICENSE-MATRIX.md` 为准） | **PolyForm Noncommercial License 1.0.0 + 附加条款**<br/>*(非商用许可 · 第三方改版仅限源码分发 · 禁商用)* | ✅ **允许** | ⚠️ **受限**<br/>(第三方改版仅限以源码形式分发；官方 Release 提供二进制) | ❌ **严禁**<br/>(严禁用于任何营利或收费商业服务) |
-| **Public Model Catalog SDK 公共模型目录 SDK**<br/>（`LingXiModelSDK`，范围以 `LICENSE-MATRIX.md` 为准） | **MIT License**<br/>*(最宽松轨 · 面向第三方与商业集成)* | ✅ **允许** | ✅ **允许**<br/>(源码与二进制均可再分发，含修改后版本) | ✅ **允许**<br/>(可用于商业产品与闭源软件，唯一义务为保留版权与许可声明) |
+| **Public Developer SDKs 公共开发者 SDK**<br/>（`LingXiModelSDK`、`LingXiPluginSDK`，范围以 `LICENSE-MATRIX.md` 为准） | **MIT License**<br/>*(最宽松轨 · 面向第三方与商业集成)* | ✅ **允许** | ✅ **允许**<br/>(源码与二进制均可再分发，含修改后版本) | ✅ **允许**<br/>(可用于商业产品与闭源软件，唯一义务为保留版权与许可声明) |
 | **Third-Party Vendors 第三方依赖**<br/>（`Vendor/OpenTUI/` 等） | 各自独立开源协议 (GPLv3 / Ghostty / MIT 等) | 遵照原上游许可 | 遵照原上游许可 | 遵照原上游许可 |
 
 ---
@@ -51,16 +51,17 @@ The Chinese text of this multi-tiered licensing scheme prevails over any transla
 
 ## Part 3: MIT License — Public Model Catalog SDK (公共模型目录 SDK)
 
-**适用范围**: 参见 [`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md) 中标明为 `MIT` 的 Target —— 即 `LingXiModelSDK`
-（SPM target 与 library product），不含其他任何模块。完整许可原文见 [`LICENSE-SDK`](./LICENSE-SDK)。
+**适用范围**: 参见 [`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md) 中标明为 `MIT` 的 Target —— 即两个公共开发者 SDK
+`LingXiModelSDK` 与 `LingXiPluginSDK`，不含其他任何模块。完整许可原文见 [`LICENSE-SDK`](./LICENSE-SDK)。
 
 ### 定位与边界
-1. **它是数据接口，不是 Agent**：`LingXiModelSDK` 只读 `https://models.lingxifox.cn/models.json`
+1. **它是接口，不是 Agent**：`LingXiModelSDK` 只读 `https://models.lingxifox.cn/models.json`
    并提供模型元数据查询（身份、上下文/输出上限、价格、能力、版本与新鲜度、过滤检索）；
-   不含 Agent Loop、Tool Runtime、P/E Core、Session、Permission、Computer Use、Workflow、Subagent，
-   也不依赖本仓库任何其他 target（由 `ModelSDKDependencyGateTests` 强制）。
+   `LingXiPluginSDK` 只提供插件作者侧的协议、DTO 与 IPC 驱动。两者都不含 Agent Loop、Tool Runtime、
+   P/E Core、Session、Permission、Computer Use、Workflow、Subagent，也不依赖本仓库任何其他 target
+   （由 `ModelSDKDependencyGateTests` 与 `PluginSDKDependencyGateTests` 强制）。
 2. **第三方接入的正式通道**：商业使用、第三方 Agent 与 App 集成、修改、源码与二进制再分发、
-   闭源产品链接使用，均在允许范围内；唯一义务是保留版权声明与许可文本。
+   闭源产品与闭源插件链接使用，均在允许范围内；唯一义务是保留版权声明与许可文本。
 3. **不因宽松许可而扩张范围**：本 MIT 轨只覆盖 SDK 源码本身。运行时核心仍为 LCSAL-1.1，
    表现层仍为 PolyForm Noncommercial 1.0.0；用 SDK 查询元数据不构成对 Core 的任何授权。
 4. **数据与接口分开的许可**：SDK 代码按 MIT 授权；`models.lingxifox.cn` 站点静态内容按
