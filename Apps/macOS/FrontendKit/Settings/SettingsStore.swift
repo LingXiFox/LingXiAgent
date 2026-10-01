@@ -69,7 +69,6 @@ public final class SettingsStore: ObservableObject {
     /// Set after an MCP write: connections change only when Core restarts.
     @Published var mcpNeedsRestart = false
     @Published private(set) var backgroundTasks: [BackgroundTaskSnapshot] = []
-    @Published private(set) var providerMetrics: ProviderMetricsInfo?
     @Published private(set) var isRefreshing = false
     @Published var notice: String?
 
@@ -214,12 +213,11 @@ public final class SettingsStore: ObservableObject {
         async let selection = try? client.model.getSelection()
         async let extensions = try? client.extensionDomain.list()
         async let policy = try? client.context.getPolicy()
-        async let workspace = try? client.workspace.summary()
+        async let workspace = try? client.workspace.get()
         async let languageServices = try? client.workspace.languageServices()
         async let toolStatus = try? client.workspace.toolStatus(Self.reportedToolIDs)
         async let worktrees = try? client.workspace.listWorktrees()
         async let tasks = try? client.diagnostics.getBackgroundTasks()
-        async let metrics = try? client.diagnostics.getProviderMetrics()
         async let mcpServers = try? client.extensionDomain.mcpServers()
 
         self.runtimeInfo = await info
@@ -237,7 +235,6 @@ public final class SettingsStore: ObservableObject {
         self.toolStatus = (await toolStatus).map { Dictionary(uniqueKeysWithValues: $0.map { ($0.toolID, $0) }) }
         self.worktrees = await worktrees ?? []
         self.backgroundTasks = await tasks ?? []
-        self.providerMetrics = await metrics
         self.mcpServers = await mcpServers ?? []
     }
 
@@ -249,7 +246,7 @@ public final class SettingsStore: ObservableObject {
         contextPolicy = nil; workspace = nil; worktrees = []
         languageServices = nil
         toolStatus = nil
-        backgroundTasks = []; providerMetrics = nil; mcpServers = []
+        backgroundTasks = []; mcpServers = []
     }
 
     // MARK: - Core commands

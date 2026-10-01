@@ -181,6 +181,12 @@ struct ComposerSurface: View {
         } message: {
             Text(runtime.worktreeError ?? "")
         }
+        .alert("操作未完成", isPresented: Binding(get: { runtime.actionError != nil },
+                                                 set: { if !$0 { runtime.actionError = nil } })) {
+            Button("好") { runtime.actionError = nil }
+        } message: {
+            Text(runtime.actionError ?? "")
+        }
     }
 
     // MARK: Layer 1 — where

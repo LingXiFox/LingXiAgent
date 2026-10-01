@@ -39,6 +39,9 @@ public final class RuntimeFrontend: ObservableObject {
     @Published public var commandOutput: CommandOutput?
     /// Failure of a worktree action, shown as an alert.
     @Published public var worktreeError: String?
+    /// Failure of any other user-initiated runtime action. §17 of the closure contract
+    /// forbids swallowing these: a click must end in a receipt or in something the user can read.
+    @Published public var actionError: String?
     @Published public private(set) var isSwitchingWorktree = false
     @Published public private(set) var availableCommands: [CommandDescriptor] = []
     /// Timeline tail notice for a live provider condition (rate limit, retry).
@@ -180,6 +183,13 @@ public final class RuntimeFrontend: ObservableObject {
         composerModel.reasoningEffort = ReasoningEffortLevel(protocolEffort: state.effectiveReasoningEffort)
         if let permission = state.activeTurnPermissionConfiguration.flatMap(PermissionPreset.init) {
             composerModel.permissionPreset = permission
+        }
+        // The goal is Core session state, so the chip shows what Core last reported and never
+        // what the composer happened to ask for. A set, a clear, a session switch and a
+        // reconnect all arrive through the same projected field.
+        if isLive {
+            let reportedGoal = session?.goal?.text
+            composerModel.goal = (reportedGoal?.isEmpty == false) ? reportedGoal : nil
         }
 
         inspectorModel.live = isLive ? inspectorSnapshot(state) : nil
@@ -578,12 +588,30 @@ public final class RuntimeFrontend: ObservableObject {
             .replacingOccurrences(of: "\r", with: "")
     }
 
-    /// Sets the goal through the existing `/goal` command and keeps it visible in the composer.
+    /// Sets, changes or clears the session goal.
+    ///
+    /// All three go through the same structured RPC. The composer chip is not written here —
+    /// `apply(_:)` renders whatever Core reports, so a clear cannot leave the old goal on
+    /// screen while Core still anchors it, and a reconnect restores the truth instead of the
+    /// last thing the user typed.
     public func setGoal(_ goal: String?) {
         let trimmed = goal?.trimmingCharacters(in: .whitespacesAndNewlines)
-        composerModel.goal = (trimmed?.isEmpty ?? true) ? nil : trimmed
-        guard let trimmed, !trimmed.isEmpty else { return }
-        runCommand("/goal \(trimmed)")
+        let next = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        guard let client else {
+            actionError = "未连接 Core，目标无法设置。"
+            return
+        }
+        guard let sessionID = lastState.activeSessionID else {
+            actionError = "没有活动会话，目标无法设置。"
+            return
+        }
+        Task {
+            do {
+                _ = try await client.session.setGoal(sessionID: sessionID, goal: next)
+            } catch {
+                actionError = (next == nil ? "清除目标失败：" : "设置目标失败：") + error.localizedDescription
+            }
+        }
     }
 
     public func runCommand(_ input: String) {

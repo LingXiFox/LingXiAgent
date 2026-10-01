@@ -344,10 +344,6 @@ struct DiagnosticsSettingsPage: View {
                     .lxSettingsRow()
                     ValueRow(title: "活动会话 / 运行", value: "\(health.activeSessions) / \(health.activeRuns)")
                 }
-                if let metrics = store.providerMetrics {
-                    ValueRow(title: "Provider 请求 / 错误",
-                             value: "\(metrics.requestCount) / \(metrics.errorCount) · 平均 \(Int(metrics.averageLatencyMs)) ms")
-                }
                 if let caps = store.capabilities {
                     ValueRow(title: "附件上限", value: ByteCountFormatter.string(fromByteCount: Int64(caps.maxAttachmentBytes), countStyle: .file))
                     ValueRow(title: "协议特性", value: caps.supportedFeatures.map(\.rawValue).joined(separator: ", "))

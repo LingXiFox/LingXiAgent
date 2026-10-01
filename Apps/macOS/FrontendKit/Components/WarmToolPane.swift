@@ -1,7 +1,6 @@
 #if os(macOS)
 import AppKit
 import SwiftUI
-import WebKit
 import Darwin
 import LingXiClient
 import LingXiProtocol
@@ -31,7 +30,7 @@ struct WarmToolPane: View {
             LXHairline()
             Group {
                 switch tool {
-                case .browser: WarmBrowserPane()
+                case .browser: WarmBrowserPane(runtime: runtime)
                 case .git: WarmGitPane(runtime: runtime)
                 case .terminal: WarmTerminalPane(runtime: runtime)
                 }
@@ -227,67 +226,221 @@ struct WarmTasksPane: View {
     }
 }
 
-@MainActor private final class WarmBrowserModel: ObservableObject {
-    @Published var address = ""
-    @Published var title = "浏览器"
-    @Published var hasNavigated = false
-    let webView = WKWebView()
+/// Agent Browser Monitor.
+///
+/// This panel does not browse. It shows the browser sessions the *Agent* owns, read back from
+/// Core over `browser.sessions` / `browser.capture`. An earlier version carried its own
+/// `WKWebView` with an address bar, so the product had two browser states: the one the Agent
+/// was driving and an unrelated one in the sidebar that looked like the agent's page. A
+/// right-hand surface that disagrees with the runtime is worse than an empty one (§4.1).
+@MainActor final class WarmBrowserModel: ObservableObject {
+    @Published var sessions: [BrowserSessionStatus] = []
+    @Published var selectedID: String?
+    @Published var capture: BrowserCapture?
+    @Published var error: String?
+    @Published var isLoading = false
 
-    func navigate() {
-        let input = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty else { return }
-        let value = input.contains("://") ? input : "https://\(input)"
-        guard let url = URL(string: value), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
-        address = value
-        hasNavigated = true
-        webView.load(URLRequest(url: url))
+    var selected: BrowserSessionStatus? {
+        sessions.first { $0.sessionID == selectedID } ?? sessions.first
+    }
+
+    func refresh(client: LingXiClientVNext?) async {
+        guard let client, !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let found = try await client.browser.sessions()
+            sessions = found
+            if selectedID == nil { selectedID = found.first?.sessionID }
+            if let keep = selectedID, !found.contains(where: { $0.sessionID == keep }) {
+                selectedID = found.first?.sessionID
+                capture = nil
+            }
+            error = nil
+        } catch {
+            // A failed read is reported, not shown as "no sessions" — those mean different things.
+            self.error = error.localizedDescription
+        }
+    }
+
+    func loadCapture(client: LingXiClientVNext?, for sessionID: String) async {
+        guard let client else { return }
+        do {
+            capture = try await client.browser.capture(sessionID: sessionID)
+            error = nil
+        } catch {
+            capture = nil
+            self.error = "读取最新页面截图失败：\(error.localizedDescription)"
+        }
     }
 }
 
-private struct WarmBrowserView: NSViewRepresentable {
-    let webView: WKWebView
-    func makeNSView(context: Context) -> WKWebView { webView }
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
-}
-
 private struct WarmBrowserPane: View {
+    @ObservedObject var runtime: RuntimeFrontend
     @StateObject private var browser = WarmBrowserModel()
+
+    init(runtime: RuntimeFrontend) {
+        self.runtime = runtime
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: LingXiMetrics.Space.sm) {
-                Button { browser.webView.goBack() } label: { Image(systemName: "chevron.left") }
-                    .disabled(!browser.webView.canGoBack)
-                Button { browser.webView.goForward() } label: { Image(systemName: "chevron.right") }
-                    .disabled(!browser.webView.canGoForward)
-                Button { browser.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
-                TextField("输入网址", text: $browser.address, onCommit: browser.navigate)
-                    .textFieldStyle(.roundedBorder)
-                    .font(LXType.body)
-                Button { browser.navigate() } label: { Image(systemName: "arrow.right") }
-            }
-            .buttonStyle(.plain)
-            .padding(LingXiMetrics.Space.sm)
-            if browser.hasNavigated {
-                WarmBrowserView(webView: browser.webView)
-            } else {
-                VStack(spacing: LingXiMetrics.Space.sm) {
-                    Image(systemName: "globe").font(.system(size: LXIcon.emptyState))
-                    Text("输入网址开始浏览。").font(LXType.callout)
+                Text("Agent 浏览器会话").font(LXType.headline)
+                if !browser.sessions.isEmpty {
+                    Text("\(browser.sessions.count)").font(LXType.meta)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
                 }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            HStack(spacing: LingXiMetrics.Space.xs) {
-                Text("独立浏览会话 · 尚未连接 Agent 的浏览器会话").foregroundStyle(.secondary)
                 Spacer()
+                Button {
+                    Task {
+                        await browser.refresh(client: runtime.client)
+                        if let id = browser.selected?.sessionID {
+                            await browser.loadCapture(client: runtime.client, for: id)
+                        }
+                    }
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .disabled(browser.isLoading || runtime.client == nil)
             }
-            .font(LXType.meta)
-            .padding(.horizontal, LingXiMetrics.Space.md)
-            .frame(height: LingXiMetrics.Size.rowList)
-            .overlay(alignment: .top) { LXHairline() }
+            .padding(LingXiMetrics.Space.sm)
+            .overlay(alignment: .bottom) { LXHairline() }
+
+            if let error = browser.error {
+                HStack(alignment: .top, spacing: LingXiMetrics.Space.xs) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(error).textSelection(.enabled)
+                    Spacer()
+                }
+                .font(LXType.callout)
+                .foregroundStyle(.red)
+                .padding(LingXiMetrics.Space.sm)
+                .overlay(alignment: .bottom) { LXHairline() }
+            }
+
+            if runtime.client == nil {
+                emptyState("未连接 Core", "连接后这里显示 Agent 正在驱动的浏览器会话。")
+            } else if browser.sessions.isEmpty {
+                emptyState("没有 Agent 浏览器会话",
+                           browser.isLoading ? "正在向 Core 查询…" : "Agent 调用 browser_navigate 之后，会话会出现在这里。")
+            } else {
+                sessionList
+            }
+        }
+        .onAppear { Task { await browser.refresh(client: runtime.client) } }
+        // A run is what creates and moves browser sessions, so the monitor follows it instead
+        // of requiring the user to poll by hand. It stops the moment the run does.
+        .task(id: runtime.conversationModel.isGenerating) {
+            guard runtime.conversationModel.isGenerating else { return }
+            while !Task.isCancelled, runtime.conversationModel.isGenerating {
+                await browser.refresh(client: runtime.client)
+                if let id = browser.selected?.sessionID {
+                    await browser.loadCapture(client: runtime.client, for: id)
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
     }
+
+    private func emptyState(_ title: String, _ detail: String) -> some View {
+        VStack(spacing: LingXiMetrics.Space.sm) {
+            Image(systemName: "desktopkit").font(.system(size: LXIcon.emptyState))
+            Text(title).font(LXType.callout)
+            Text(detail).font(LXType.meta).multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    @ViewBuilder private var sessionList: some View {
+        HStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: LingXiMetrics.Space.xs) {
+                    ForEach(browser.sessions) { session in
+                        Button {
+                            browser.selectedID = session.sessionID
+                            Task { await browser.loadCapture(client: runtime.client, for: session.sessionID) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.title.isEmpty ? session.url : session.title)
+                                    .font(LXType.body).lineLimit(1)
+                                Text(session.url)
+                                    .font(LXType.meta).foregroundStyle(.secondary).lineLimit(1)
+                                Text(detailLine(for: session))
+                                    .font(LXType.meta).foregroundStyle(.tertiary).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, LingXiMetrics.Space.sm)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(browser.selected?.sessionID == session.sessionID
+                                          ? Color.accentColor.opacity(0.16) : .clear)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(LingXiMetrics.Space.xs)
+            }
+            .frame(maxWidth: 260)
+            .overlay(alignment: .trailing) { LXHairline() }
+
+            captureSurface
+        }
+    }
+
+    @ViewBuilder private var captureSurface: some View {
+        VStack(spacing: LingXiMetrics.Space.xs) {
+            if let image = captureImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else if let path = browser.capture?.savedPath {
+                VStack(spacing: LingXiMetrics.Space.xs) {
+                    Image(systemName: "photo").font(.system(size: LXIcon.emptyState))
+                    Text("截图已保存到 \(path)").font(LXType.meta)
+                }
+                .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: LingXiMetrics.Space.xs) {
+                    Image(systemName: "camera").font(.system(size: LXIcon.emptyState))
+                    Text(browser.capture == nil ? "尚无截图，点「刷新」向 Agent 的会话取一张。" : "取图中…")
+                        .font(LXType.meta)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(LingXiMetrics.Space.sm)
+    }
+
+    private var captureImage: NSImage? {
+        guard let base64 = browser.capture?.base64JPEG, !base64.isEmpty,
+              let data = Data(base64Encoded: base64) else { return nil }
+        return NSImage(data: data)
+    }
+
+    private func detailLine(for session: BrowserSessionStatus) -> String {
+        var parts: [String] = []
+        if let tab = session.tabID { parts.append("tab \(tab)") }
+        if let version = session.observationVersion { parts.append("v\(version)") }
+        parts.append("\(session.observedElementCount) 元素")
+        if let at = session.observedAt { parts.append(Self.timeFormatter.string(from: at)) }
+        return parts.joined(separator: " · ")
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 }
 
 /// Git 面板的每一次读写都经 Core 的 Git RPC。
