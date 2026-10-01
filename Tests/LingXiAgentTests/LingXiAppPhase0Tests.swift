@@ -77,7 +77,13 @@ struct LingXiAppPhase0Tests {
         #expect(att.filename == "spec.pdf")
         #expect(att.mediaType == "application/pdf")
         #expect(att.formattedSize == "2.4 MB")
-        #expect(att.isUploaded)
+        // `isUploaded` is derived from the ContentRef Core handed back, not stored. A freshly
+        // picked file has not been uploaded, and a strip that claimed otherwise was the flag-with-
+        // no-fact behind §3's "只展示 AttachmentPresentation 但不上传".
+        #expect(!att.isUploaded, "还没上传就声称已上传，正是被禁止的伪状态")
+        var uploaded = att
+        uploaded.contentRef = ContentRef(id: ContentID("c-1"), mediaType: att.mediaType, byteCount: att.byteCount)
+        #expect(uploaded.isUploaded, "拿到引用之后应显示为已上传")
     }
 
     @Test("RuntimeFrontend Architecture: Session and task switching synchronizes stage state")
@@ -114,16 +120,25 @@ struct LingXiAppPhase0Tests {
         #expect(resolvedCard?.status == .approved)
     }
 
-    @Test("RuntimeFrontend Architecture: Task finalization transitions task state machine")
-    func testTaskFinalizationTransitions() async throws {
+    /// §7.1: state is Core's to report.
+    ///
+    /// This test used to assert the opposite — that `finalizeTask` moved
+    /// `conversationModel.activeTask.state` on its own — which is precisely the optimistic
+    /// mutation the closure contract removes: a finalize Core rejected still read as completed.
+    /// The state machine itself is covered against a real Core in `TaskRuntimeTests`; what
+    /// belongs here is the GUI's refusal to predict the answer.
+    @Test("Task finalization never rewrites GUI state ahead of Core")
+    func testTaskFinalizationIsCoreAuthoritative() async throws {
         let runtime = RuntimeFrontend.preview()
         #expect(runtime.conversationModel.activeTask?.state == "running")
 
         runtime.finalizeTask(action: .accept)
-        #expect(runtime.conversationModel.activeTask?.state == "completed")
+        #expect(runtime.conversationModel.activeTask?.state == "running",
+                "没有 Core 回执就把任务显示成已完成")
+        #expect(runtime.actionError != nil, "无法收尾时必须给出可见原因，而不是静默不动")
 
         runtime.finalizeTask(action: .discard)
-        #expect(runtime.conversationModel.activeTask?.state == "cancelled")
+        #expect(runtime.conversationModel.activeTask?.state == "running")
     }
 
     @Test("RuntimeFrontend Architecture: LingXiFrontendKit and Apps strictly do NOT import LingXiCore or LingXiPlatform")

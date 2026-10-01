@@ -220,7 +220,9 @@ struct GUICoreProjectionTests {
         }
 
         let actions = mock.dispatchedActions.map { "\($0)" }
-        #expect(actions.contains { $0.hasPrefix("submitPrompt(\"继续\")") })
+        // Matched loosely on the case name plus its payload: the reflected description of an enum
+        // case is not a contract, and this one grew an `attachments:` label with the §3 wiring.
+        #expect(actions.contains { $0.hasPrefix("submitPrompt(") && $0.contains("继续") })
         #expect(actions.contains { $0.hasPrefix("setMode(") && $0.contains("plan") })
         #expect(actions.contains { $0.hasPrefix("grantPermission(") && $0.contains("deny") })
     }

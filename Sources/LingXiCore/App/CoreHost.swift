@@ -2991,6 +2991,7 @@ extension CoreHost {
             let summary = SessionSummary(
                 sessionID: session.id,
                 title: session.title,
+                goal: await currentGoal(session.id),
                 createdAt: session.createdAt,
                 updatedAt: session.updatedAt,
                 turnCount: 0,
@@ -3068,6 +3069,7 @@ extension CoreHost {
         let summary = SessionSummary(
             sessionID: session.id,
             title: session.title,
+            goal: await currentGoal(session.id),
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             turnCount: 0,
@@ -3144,6 +3146,7 @@ extension CoreHost {
         let summary = SessionSummary(
             sessionID: session.id,
             title: session.title,
+            goal: await currentGoal(session.id),
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             turnCount: 0,
@@ -3253,6 +3256,7 @@ extension CoreHost {
                     let summary = SessionSummary(
                         sessionID: sessionID,
                         title: title,
+                        goal: await currentGoal(sessionID),
                         createdAt: fresh?.createdAt ?? Date(),
                         updatedAt: fresh?.updatedAt ?? Date(),
                         turnCount: remainingMessages.filter { $0.role == .user }.count,
@@ -3415,6 +3419,7 @@ extension CoreHost {
             let summary = SessionSummary(
                 sessionID: sessionID,
                 title: title,
+                goal: await currentGoal(sessionID),
                 createdAt: fresh?.createdAt ?? Date(),
                 updatedAt: fresh?.updatedAt ?? Date(),
                 turnCount: remainingMessages.filter { $0.role == .user }.count,
@@ -3461,6 +3466,18 @@ extension CoreHost {
         }
     }
 
+    /// The session's live goal, read from the one place that holds it.
+    ///
+    /// Eight of the nine `SessionSummary` constructions in this file left `goal:` out, so every
+    /// session RPC — create, rename, reasoning-effort change, revert, list, snapshot — published
+    /// `.sessionUpdated` carrying a nil goal, and the GUI's chip went blank while Core was still
+    /// anchoring the goal and injecting it into each turn. `setSessionGoal` was the only site that
+    /// remembered the field, which made "the snapshot is authoritative" true for one RPC and false
+    /// for the rest.
+    private func currentGoal(_ sessionID: SessionID) async -> String? {
+        await SessionGoalRegistry.shared.goal(sessionID)
+    }
+
     public func getSession(envelope: QueryEnvelope<GetSessionRequest>) async throws -> ResponseEnvelope<SessionSummary> {
         let session = try await sessionStore.session(envelope.payload.sessionID)
         let coord = try await coordinator(for: session.id)
@@ -3470,7 +3487,7 @@ extension CoreHost {
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             turnCount: 0,
-            mode: .build
+            mode: .build, reasoningEffort: session.reasoningEffort
         )
         return ResponseEnvelope(
             requestID: envelope.requestID,
@@ -3487,27 +3504,30 @@ extension CoreHost {
             rawSummaries = globals
         } else {
             let sessions = try await sessionStore.listSessions()
-            rawSummaries = sessions.map {
-                let msgCount = $0.messages.count
-                var t = $0.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // A loop rather than `map`: the goal lives in an actor, and a synchronous closure
+            // cannot await it — which is precisely how this site ended up reporting no goal.
+            for session in sessions {
+                let msgCount = session.messages.count
+                var t = session.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if t.isEmpty {
-                    if let firstMsg = $0.messages.first(where: { $0.role == .user })?.content {
+                    if let firstMsg = session.messages.first(where: { $0.role == .user })?.content {
                         let clean = firstMsg.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
                         t = clean.count > 50 ? String(clean.prefix(50)) + "..." : clean
                     }
                 }
                 if t.isEmpty { t = "未命名会话" }
-                return SessionSummary(
-                    sessionID: $0.id,
+                rawSummaries.append(SessionSummary(
+                    sessionID: session.id,
                     title: t,
-                    createdAt: $0.createdAt,
-                    updatedAt: $0.updatedAt,
+                    goal: await currentGoal(session.id),
+                    createdAt: session.createdAt,
+                    updatedAt: session.updatedAt,
                     turnCount: msgCount,
                     mode: .build,
-                    reasoningEffort: $0.reasoningEffort,
+                    reasoningEffort: session.reasoningEffort,
                     workingDirectory: currentCwd,
                     messageCount: msgCount
-                )
+                ))
             }
         }
 
@@ -3556,6 +3576,7 @@ extension CoreHost {
         let summary = SessionSummary(
             sessionID: session.id,
             title: title,
+            goal: await currentGoal(session.id),
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             turnCount: session.messages.filter { $0.role == .user }.count,

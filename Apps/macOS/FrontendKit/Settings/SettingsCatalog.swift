@@ -155,7 +155,6 @@ enum SettingsSearchIndex {
         .init(anchor: "shortcuts.list", page: .shortcuts, title: "快捷键列表", keywords: ["shortcut", "hotkey", "⌘"]),
 
         .init(anchor: "providers.list", page: .providers, title: "Provider 账户", keywords: ["api key", "账户", "endpoint"]),
-        .init(anchor: "providers.list", page: .providers, title: "重新发现 Provider", keywords: ["discovery", "catalog", "刷新"]),
         .init(anchor: "models.default", page: .agentDefaults, title: "默认模型", keywords: ["model", "selection", "模型"]),
 
         .init(anchor: ConfigKeys.behaviorProfile.id, page: .agentDefaults, title: "默认行为模式", keywords: ["build", "plan", "explore", "mode"]),
@@ -173,9 +172,8 @@ enum SettingsSearchIndex {
 
         .init(anchor: "context.budget", page: .context, title: "上下文预算", keywords: ["budget", "reserve", "token"]),
         .init(anchor: "context.pcore", page: .context, title: "P-Core 实时工作集", keywords: ["p-core", "target", "soft limit", "hard limit"]),
-        .init(anchor: "context.ecore", page: .context, title: "E-Core 存储与召回", keywords: ["e-core", "storage", "recall", "pressure"]),
+        .init(anchor: "context.ecore", page: .context, title: "E-Core 存储与召回", keywords: ["e-core", "storage", "recall", "pressure", "fabric", "heat", "热度", "对象化"]),
         .init(anchor: ConfigKeys.economicThreshold.id, page: .context, title: "经济阈值", keywords: ["economic", "threshold", "272k"]),
-        .init(anchor: "context.ecore", page: .context, title: "Context Fabric", keywords: ["e-core", "heat", "objectization"]),
         .init(anchor: "context.live", page: .context, title: "当前生效策略", keywords: ["policy", "snapshot"]),
 
         .init(anchor: ConfigKeys.foregroundShellSeconds.id, page: .execution, title: "前台命令超时", keywords: ["timeout", "shell", "命令"]),

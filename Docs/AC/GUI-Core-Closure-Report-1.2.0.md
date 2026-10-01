@@ -119,9 +119,15 @@ Bundle.module  →  GUI 背景
 
 ## E. Agent Loop 端到端路径
 
-（本节由 `AgentLoopEndToEndTests` 完成后定稿，见下节 H 的实测数字。）
+§18 要求从 GUI 真实入口逐条走到 Core。`AgentLoopEndToEndTests` 用脚本化 Provider 搭起真 CoreHost，16 项，每条都断言"权威落点"而不是"调用返回成功"。它抓出三个本狐先前判断错了的东西：
 
-§18.1 的权威落点核对结果：Mode/Permission/Model 进 `TurnExecutionIntent`；Reasoning 进 session 生效设置；Goal 进 Session Goal；Attachments 进 `UserInput.attachments` 并**被 Core 消费**；Worktree 走真 git RPC。§18.2 Stop 已覆盖 active root run / active turn / queued turns / background task / pending interaction。§18.3、§18.4 依赖 `getAgentTree` 与 `.goalChanged`/`userMessageCommitted` 投影，本轮已接通读取端。
+| 缺陷 | 症状 | 处理 |
+| :--- | :--- | :--- |
+| **附件根本没进模型请求** | 本狐把附件条目加在 `startTurn` 的 `updatedEntries` 上，而那是 L1 **记账**变量；请求实际由 `runTurn` 里的 `allEntries → projection → compactor → context.modelMessages()` 组装。更糟的是当时的守卫 `if !updatedEntries.contains(…userMessage.id…)` 永远为假——CoreHost 在 `startTurn` 之前就已把用户消息提交进 session store。结果：字节被上传、被解析、然后丢掉 | 已修：`runTurn` 显式接收 attachments，注入到真正组装请求的 `allEntries`。resume 路径不传（文件属于引入它的那一轮） |
+| **9 处 `SessionSummary` 构造里 8 处丢 `goal:`** | 除 `setSessionGoal` 外，create / rename / setReasoningEffort / revert / getSession / listSessions / getSnapshot 全都广播 `goal: nil` 的 `.sessionUpdated`。于是任何一次改名或回滚都会把 GUI 的 goal chip 抹掉，而 Core 那边锚点还在、还在往每轮注入。`getSession` 还额外丢 `reasoningEffort`，并把 `mode` 写死 `.build` | 已修：新增 `currentGoal(_:)` 从唯一持有者 `SessionGoalRegistry` 读，9 处全部补齐；`listSessions` 的 `map` 改成循环（同步闭包无法 `await`，这正是它漏掉 goal 的原因） |
+| **`Stop` 语义两处不完整** | ① 被排队的 Turn 在 Stop 之后作为新的 root run 起来；② Stop 之后 Core 侧 pending interaction 仍是权威 | **未修**，保留为 `withKnownIssue` 标注，见 J 节 |
+
+§18.1 权威落点核对结果：Mode / Permission / Model 只经 `TurnExecutionIntent`（有专门一条测试断言 wire 上除 intent 之外没有别处携带这三者）；Reasoning 是 session 设置而非 turn 字段；Goal 进 `SessionGoalRegistry` 并经 summary / snapshot / 事件三条路投影；Attachments 进 `UserInput.attachments` 并真的成为模型看到的文本；Worktree 走真 git。
 
 ---
 
