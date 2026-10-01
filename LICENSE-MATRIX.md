@@ -3,9 +3,9 @@
 
 Copyright (c) 2026 LingXiFox. This file is the **authoritative** list of SPM
 targets and non-SPM paths in this repository together with the license that
-governs each of them. `LICENSE`, `LICENSE-CORE`, and `LICENSE-FRONTEND` all
-reference this file for their scope; the license text itself lives in those
-three files.
+governs each of them. `LICENSE`, `LICENSE-CORE`, `LICENSE-FRONTEND`, and
+`LICENSE-SDK` all reference this file for their scope; the license text itself
+lives in those files.
 
 The Chinese text of any legal clause prevails over the English translation in
 case of conflict.
@@ -28,6 +28,7 @@ license row is a build failure, not a review note.
 | `LingXiCore` | `Sources/LingXiCore` | LCSAL-1.1 | Source: no; binary: no | Agent runtime authority: sessions, runs, tools, providers, MCP, plugins. |
 | `CSQLite` | `Sources/CSQLite` | LCSAL-1.1 (binding) | Source: no; binary: no | SQLite3 C shim; upstream sqlite3 is public domain. |
 | `LingXiPluginSDK` | `Sources/LingXiPluginSDK` | LCSAL-1.1 | Source: no; binary: no | Plugin authoring SDK. Plugin authors' own code is separately licensed. |
+| `LingXiModelSDK` | `Sources/LingXiModelSDK` | MIT (`LICENSE-SDK`) | Source: yes; binary: yes — including inside closed-source products | Public model-catalog SDK: the developer interface for `models.lingxifox.cn/models.json`. Depends on Foundation only, never on the Agent runtime. Commercial use, third-party agent/app integration, modification, source and binary redistribution, and closed-source linking are all permitted; the only obligation is keeping the copyright and license notice. |
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The only shipped process that reads `LINGXI_CREDENTIALS_PASSPHRASE`. |
 | `lingxiagent` | `Sources/lingxiagent` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Interactive terminal presentation frontend (strictly decoupled from Core). |
 
@@ -40,6 +41,7 @@ license row is a build failure, not a review note.
 | `LingXiFrontendKit` | `Apps/macOS/FrontendKit` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | SwiftUI component library for the macOS GUI. Not platform-neutral: three DesignSystem files import AppKit ungated. |
 | `LingXiMacApp` | `Apps/macOS` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | macOS native executable entry point. |
 | `FoxPlugin` | `Plugins/FoxPlugin` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Demo plugin; a template for external plugin authors. |
+| `LingXiModelSDKTests` | `Tests/LingXiModelSDKTests` | Not shipped | n/a | Test target only; its dependency closure is the SDK alone, which is what makes the web-example compile gate possible. |
 | `LingXiAgentTests` | `Tests/LingXiAgentTests` | Not shipped | n/a | Test target only. |
 | `LingXiWireContractTests` | `ContractTests/LingXiWireContractTests` | Not shipped | n/a | Contract test target only. |
 | `LingXiFrontendContractTests` | `ContractTests/LingXiFrontendContractTests` | Not shipped | n/a | Contract test target only. |
@@ -65,7 +67,7 @@ the table above.
 | `Apps/iOS/` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | iOS entry point source only. No build system currently compiles it, and `LingXiFrontendKit` is macOS-only, so it is not a supported release surface. |
 | `Sidecars/browser-host/` | PolyForm Noncommercial 1.0.0 | Source: yes; mods binary-restricted | Node.js browser host sidecar. |
 | `Server/agent-site/`, `Server/models-site/` | PolyForm Noncommercial 1.0.0 (public site content) | Source: yes; static hosting permitted with attribution | Official website static assets. |
-| `Server/lingxi-registry/`, `Server/registry/`, `Server/deploy/` | LCSAL-1.1 | No | Backend services (Go) and deployment configuration. |
+| `Server/deploy/` | LCSAL-1.1 | No | Deployment configuration (Caddy). The Go registry service and its data were retired with the unified model registry. |
 | `Scripts/`, `install.sh`, `install.ps1` | LCSAL-1.1 | No (build/install infrastructure) | Build, packaging, CI, and installer scripts. |
 | `Docs/` | CC-BY-4.0 unless a file says otherwise | Attribution required | Documentation, research notes, and ADRs. |
 | `Benchmarks/`, `Evals/Tasks/`, `Evals/Baselines/` | CC0 / public domain where possible | Freely reusable | Evaluation fixtures, task manifests, and baseline result sets. |
@@ -77,9 +79,11 @@ the table above.
 When a new SPM target is introduced:
 
 1. Add its row to the SPM-targets table above.
-2. Choose either LCSAL-1.1 (core infrastructure / runtime authority) or
-   PolyForm Noncommercial 1.0.0 (frontend, presentation, or plugin).
-3. If neither fits, add a note explaining the exception and open a discussion
-   with @LingXiFox before merging.
+2. Choose the track that fits: LCSAL-1.1 (core infrastructure / runtime
+   authority), PolyForm Noncommercial 1.0.0 (frontend, presentation, or plugin),
+   or MIT (`LICENSE-SDK`) for the public model-catalog SDK — the one surface
+   intended for third-party and commercial consumption.
+3. Anything else needs a note explaining the exception and a discussion with
+   @LingXiFox before merging.
 
 `LicenseMatrixDriftTests` will fail until the row is present.

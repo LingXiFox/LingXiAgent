@@ -299,7 +299,7 @@ import Testing
         let agyProduct = BuiltinProviderCatalog.registryProduct(id: "antigravity")!
         let resolved = ModelAvailabilityResolver.resolve(
             product: agyProduct,
-            registryModels: [],
+            catalogModels: [],
             accountModels: models,
             isConfigured: true
         )

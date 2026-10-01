@@ -212,7 +212,7 @@ public enum AntigravityRemoteModelDiscovery {
     }
 }
 
-/// Backend adapter for Antigravity authenticated discovery in the registry.
+/// Backend adapter for Antigravity authenticated discovery.
 public struct AntigravityAuthenticatedDiscoveryBackend: AuthenticatedDiscoveryBackend {
     public let backendID = "antigravityAuthenticatedCatalog"
 

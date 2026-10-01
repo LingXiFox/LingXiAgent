@@ -109,9 +109,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let diagnosticsEnabled: Bool
     private let configurationStore: ConfigurationStore?
     private let credentialStore: (any CredentialStore)?
-    /// Reader for the published `models.lingxifox.cn` index behind the provider
-    /// catalog. Injectable so the catalog can be exercised without network I/O.
-    let modelsCatalogClient: LingXiModelsCatalogClient
+    /// Reader for the public model catalog behind the provider catalog. Injectable
+    /// so the catalog can be exercised without network I/O.
+    let modelsCatalogClient: PublicModelCatalogClient
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private let diagnosticsStore: RuntimeDiagnosticsStore
@@ -241,7 +241,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
     public private(set) var startupPolicy: CoreHostStartupPolicy
     public let crashTestStage: String?
-    private var registryRefreshTask: Task<Void, Never>?
+    private var catalogWarmupTask: Task<Void, Never>?
     private var workspaceIndexTask: Task<Void, Never>?
     private var workspaceRevision: UInt64 = 1
 
@@ -267,7 +267,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         restoreScheduler: SessionRestoreScheduler? = nil,
         extensionPlatform: ExtensionPlatform? = nil,
         backgroundManager: BackgroundCommandManager? = nil,
-        modelsCatalogClient: LingXiModelsCatalogClient = .shared,
+        modelsCatalogClient: PublicModelCatalogClient = .shared,
         crashTestStage: String? = nil
     ) throws {
         let environment = ProcessInfo.processInfo.environment
@@ -544,8 +544,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             await self?.broadcast(request.originSessionID == request.rootSessionID ? .questionAsked(request) : .questionEscalated(request))
         }
         await bus.add(.ping) { _ in .pong }
-        if startupPolicy.refreshRegistry && startupPolicy.allowNetwork {
-            scheduleRegistryRefresh()
+        if startupPolicy.refreshModelCatalog && startupPolicy.allowNetwork {
+            scheduleCatalogWarmup()
         }
         // Phase 7: Do not eagerly warm up CodebaseGraph on startup to avoid 1GB RSS explosion.
         // Graph indexing is now lazy upon first codebase_graph usage.
@@ -861,8 +861,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         terminalSessions = nil
         lifecycle("cleanupCompleted", waitingOn: "processes")
         await providerActivityRegistry.reset()
-        registryRefreshTask?.cancel()
-        registryRefreshTask = nil
+        catalogWarmupTask?.cancel()
+        catalogWarmupTask = nil
         workspaceIndexTask?.cancel()
         workspaceIndexTask = nil
         agent = nil
@@ -874,7 +874,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     deinit {
-        registryRefreshTask?.cancel()
+        catalogWarmupTask?.cancel()
         workspaceIndexTask?.cancel()
         extensionPlatform.terminatePluginsSync()
         let b = self.browserSessionManager
@@ -1493,14 +1493,15 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         return accounts.filter { !runtimeProviderIDs.contains($0.productID) } + runtimeProviderAccounts.values.sorted { $0.id < $1.id }
     }
 
-    /// Refreshes the registry catalog in the background shortly after startup.
+    /// Brings the public model catalog up to date shortly after startup.
     ///
-    /// The first model listing must not wait on the network: the on-disk
-    /// catalog cache serves the initial render, and this brings it up to date.
-    private func scheduleRegistryRefresh(delaySeconds: Double = 5.0) {
-        guard startupPolicy.refreshRegistry && startupPolicy.allowNetwork else { return }
-        registryRefreshTask?.cancel()
-        registryRefreshTask = Task(priority: .background) {
+    /// The first model listing must not wait on the network: the on-disk cache
+    /// serves the initial render, and this brings it up to date. This is the
+    /// only catalog fetch Core performs on its own.
+    private func scheduleCatalogWarmup(delaySeconds: Double = 5.0) {
+        guard startupPolicy.refreshModelCatalog && startupPolicy.allowNetwork else { return }
+        catalogWarmupTask?.cancel()
+        catalogWarmupTask = Task(priority: .background) {
             if delaySeconds > 0 {
                 do {
                     try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
@@ -1509,21 +1510,22 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 }
             }
             guard !Task.isCancelled else { return }
-            _ = await ModelRegistryClient.shared.fetch()
-            await LingXiModelsCatalogClient.shared.warmup()
+            await modelsCatalogClient.warmup()
         }
     }
 
-    /// The model list offered to the user for every configured product, plus
-    /// the products the registry knows about but which are not yet configured.
+    /// The model list offered to the user for every configured product, plus the
+    /// products the runtime contract knows about but which are not yet configured.
     ///
     /// Three sources are combined per product, and they answer different
     /// questions:
     ///
-    ///   - the **registry catalog** supplies protocol, capabilities and status;
+    ///   - the **published model catalog** supplies roster, limits, price and
+    ///     capabilities;
     ///   - **account discovery** (run with the user's own credential, never
     ///     uploaded anywhere) decides what is actually reachable;
-    ///   - **runtime support** decides what LingXi can execute.
+    ///   - **the runtime provider contract** decides what LingXi can execute and
+    ///     over which protocol.
     ///
     /// No branch here inspects a provider or product name.
     private func providerModels() async throws -> [ProviderModelInfo] {
@@ -1532,8 +1534,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
         if let configurationStore {
             let snapshot = try await configurationStore.load()
-            let catalog = await ModelRegistryClient.shared.catalog()
-            let availableProducts: [RegistryProduct] = catalog?.products ?? BuiltinProviderCatalog.registryProducts
+            let availableProducts: [RegistryProduct] = BuiltinProviderCatalog.registryProducts
 
             // 1. Custom providers configured explicitly by the user in ~/.lingxiagent/providers.json.
             // User explicit configuration ALWAYS takes precedence over built-in catalog entries.
@@ -1546,7 +1547,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 }
             }
 
-            // 2. Built-in products from catalog (co-exist with custom providers; user-defined models take precedence on collision)
+            // 2. Built-in products from the runtime contract (co-exist with custom providers; user-defined models take precedence on collision)
             let runnableProducts = availableProducts.filter { $0.runtime.isRunnable }
             let discoveredProductModels: [[ProviderModelInfo]] = await withTaskGroup(of: [ProviderModelInfo].self) { group in
                 for product in runnableProducts {
@@ -1564,7 +1565,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
                         let outcome = ModelAvailabilityResolver.resolve(
                             product: product,
-                            registryModels: catalog?.models(productID: product.id) ?? [],
+                            catalogModels: await self.modelsCatalogClient.publishedRecords(forProduct: product.id),
                             accountModels: accountModels,
                             isConfigured: isConfigured
                         )
@@ -1589,20 +1590,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
         if let assembly = currentAssembly, !results.contains(where: { $0.modelID == assembly.modelID.rawValue || $0.id == assembly.modelID.rawValue }) {
             let modelID = assembly.modelID.rawValue
-            let cachedCatalog = await LingXiModelsCatalogClient.shared.loadCached()
-            var matchedEntry: LingXiModelsCatalogClient.ModelEntry? = nil
-            if let providers = cachedCatalog?.providers {
-                for (_, p) in providers {
-                    if let entry = p.models?[modelID] {
-                        matchedEntry = entry
-                        break
-                    }
-                }
-            }
+            let matchedEntry = await modelsCatalogClient.model(named: modelID)
 
-            let ctx = matchedEntry?.limit?.context ?? 0
-            let maxOut = matchedEntry?.limit?.output ?? 0
-            let reasoning = matchedEntry?.reasoning ?? false
+            let ctx = matchedEntry?.contextWindow ?? 0
+            let maxOut = matchedEntry?.maxOutputTokens ?? 0
+            let reasoning = matchedEntry?.capabilities.reasoning ?? false
             let incomplete = (matchedEntry == nil)
 
             results.append(ProviderModelInfo(
@@ -1618,8 +1610,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 canonicalModelID: modelID,
                 backendVariant: nil,
                 backendVariants: nil,
-                vision: matchedEntry?.attachment ?? false,
-                toolCalling: matchedEntry?.tool_call ?? true
+                vision: matchedEntry?.capabilities.vision ?? false,
+                toolCalling: matchedEntry?.capabilities.toolCalling ?? true
             ))
         }
 
@@ -2086,7 +2078,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private func connectPublishedProvider(envelope: CommandEnvelope<ConnectProviderRequest>,
                                           productID: String) async throws -> CommandReceipt<ProviderAccountInfo> {
         let request = envelope.payload
-        guard var plan = await ProviderCatalog.plan(entryID: productID, siteClient: modelsCatalogClient) else {
+        guard var plan = await ProviderCatalog.plan(entryID: productID, catalogClient: modelsCatalogClient) else {
             throw CoreError(code: .provider, message: "\(productID) 不在可连接的 Provider 目录中")
         }
         if let endpoint = request.endpoint?.trimmingCharacters(in: .whitespaces), !endpoint.isEmpty {

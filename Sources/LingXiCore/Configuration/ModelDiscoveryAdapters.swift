@@ -10,10 +10,10 @@ import LingXiProtocol
 ///
 /// Every provider-specific listing shape lives in this file. Nothing downstream
 /// of an adapter is allowed to branch on a provider or product name to decide
-/// what a model list looks like — the `kind` carried by the registry's
+/// what a model list looks like — the `kind` carried by the product's
 /// discovery profile selects the parser, and that is the whole mechanism.
 public protocol ModelListAdapter: Sendable {
-    /// The `kind` string this adapter handles, matching the registry value.
+    /// The `kind` string this adapter handles, matching the discovery profile value.
     var kind: String { get }
     /// Converts a response body into discovered models.
     func parse(_ data: Data) throws -> [DiscoveredRemoteModel]
@@ -36,7 +36,7 @@ public enum ModelDiscoveryError: Error, LocalizedError, Equatable {
 // MARK: - Registry
 
 public enum ModelListAdapters {
-    /// Adapter kinds understood by this client. The strings match the registry's
+    /// Adapter kinds understood by this client. The strings match the profile's
     /// `discoveryProfile.kind` values.
     public static let openAIModels = "openai-models"
     public static let openRouterModels = "openrouter-models"
@@ -200,7 +200,7 @@ public struct GeminiModelsAdapter: ModelListAdapter {
         return items.compactMap { dict in
             guard let raw = dict["name"] as? String, !raw.isEmpty else { return nil }
             // Gemini prefixes every model with the "models/" collection segment;
-            // bare ID is used for registry catalog mapping, while upstreamModelID
+            // bare ID is used for catalog mapping, while upstreamModelID
             // stores the verbatim upstream identifier ("models/...").
             let id = raw.hasPrefix("models/") ? String(raw.dropFirst("models/".count)) : raw
             guard !id.isEmpty else { return nil }

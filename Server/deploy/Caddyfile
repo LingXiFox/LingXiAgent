@@ -57,21 +57,9 @@ lingxifox.cn {
 }
 
 http://lingxiagent.lingxifox.cn {
-	# Unified Model Registry. The catalog service owns /v1/*; the static file
-	# root remains for the JSON schemas and for the deprecated /models/* files
-	# that are still served read-only during the client migration.
-	@static {
-		not path /v1/*
-	}
-
-	handle /v1/* {
-		reverse_proxy 127.0.0.1:8787 {
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Forwarded-Host {host}
-		}
-	}
-
+	# Static host: the JSON Schema documents other layers name as their $id,
+	# plus the legacy /models/* files kept readable for older checkouts.
+	# Public model data lives at models.lingxifox.cn/models.json — one source.
 	handle {
 		root * /var/www/lingxiagent
 
@@ -91,9 +79,7 @@ http://lingxiagent.lingxifox.cn {
 		-Server
 	}
 
-	# Static files keep the long TTL they had before. The catalog service sets
-	# its own, much shorter, Cache-Control and revalidates on ETag.
-	header @static Cache-Control "public, max-age=3600"
+	header Cache-Control "public, max-age=3600"
 }
 
 lingxiagent.lingxifox.cn {
@@ -104,18 +90,6 @@ lingxiagent.lingxifox.cn {
 			trust_pool file {
 				pem_file /etc/caddy/certs/lingxi-esa-origin-ca.pem
 			}
-		}
-	}
-
-	@static {
-		not path /v1/*
-	}
-
-	handle /v1/* {
-		reverse_proxy 127.0.0.1:8787 {
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Forwarded-Host {host}
 		}
 	}
 
@@ -140,7 +114,8 @@ lingxiagent.lingxifox.cn {
 		-Server
 	}
 
-	header @static Cache-Control "public, max-age=3600"
+	# Everything this host serves is static; a plain long TTL is enough.
+	header Cache-Control "public, max-age=3600"
 
 	log {
 		output file /var/log/caddy/lingxiagent-access.log
@@ -198,8 +173,12 @@ models.lingxifox.cn {
 		path / /index.html
 	}
 	header @html Cache-Control "public, max-age=60, must-revalidate"
+	# The one published model document. Revalidated by ETag, so a long TTL is
+	# cheap and a stale copy is still usable when the origin is busy.
 	header /models.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
-	header /summary.json Cache-Control "public, max-age=1800, stale-while-revalidate=86400"
+	# The publication marker states which revision is live; a deploy check reads it
+	# against the repository artifact, so it must not be cached long.
+	header /publication.json Cache-Control "public, max-age=60, must-revalidate"
 
 	log {
 		output file /var/log/caddy/models-access.log

@@ -53,6 +53,8 @@ let package = Package(
         .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
         .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
         .library(name: "LingXiPluginSDK", targets: ["LingXiPluginSDK"]),
+        // 公共模型目录 SDK：模型元数据的开发者接口，与 Agent Runtime 无关。
+        .library(name: "LingXiModelSDK", targets: ["LingXiModelSDK"]),
         .executable(name: "FoxPlugin", targets: ["FoxPlugin"]),
     ] + guiProducts,
     targets: [
@@ -69,6 +71,10 @@ let package = Package(
         .target(name: "LingXiPlatform", dependencies: ["LingXiProtocol"]),
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
+        // 模型目录 SDK：公共模型元数据的开发者接口。只依赖 Foundation —— 不得触达
+        // Core / Runtime / Session / Tool / GUI 任何一层，否则第三方为了查一个模型
+        // 上下文窗口就得装下整个 Agent。
+        .target(name: "LingXiModelSDK"),
         .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol", "LingXiPlatform"]),
         .systemLibrary(
             name: "CSQLite",
@@ -79,9 +85,10 @@ let package = Package(
             ]
         ),
         // Core：业务能力与状态权威。仅依赖 Protocol、Platform 与 PluginSDK 核心。
+        // 模型目录的 schema 只有 LingXiModelSDK 懂，Core 是它的消费者之一。
         .target(
             name: "LingXiCore",
-            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiPluginSDK", "CSQLite"],
+            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiPluginSDK", "LingXiModelSDK", "CSQLite"],
             resources: [
                 .copy("Resources/Configuration"),
                 .copy("Provider/Products"),
@@ -132,7 +139,8 @@ let package = Package(
             name: "LingXiAgentTests",
             dependencies: [
                 "LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication",
-                "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK"
+                "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK",
+                "LingXiModelSDK"
             ] + guiTestDependency,
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
@@ -172,6 +180,13 @@ let package = Package(
             name: "LingXiTraceContractTests",
             dependencies: ["LingXiProtocol"],
             path: "ContractTests/LingXiTraceContractTests"
+        ),
+        // 模型目录 SDK 测试：依赖闭包里只有 SDK 自己。网页上展示的 Swift 示例必须
+        // 在这里编译通过，示例与真实 API 一旦脱节就是 CI 失败，而不是一句警告。
+        .testTarget(
+            name: "LingXiModelSDKTests",
+            dependencies: ["LingXiModelSDK"],
+            path: "Tests/LingXiModelSDKTests"
         ),
         // Evaluation Runner target: independent decoupled benchmark executor
         .executableTarget(

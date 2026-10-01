@@ -7,12 +7,13 @@ import Testing
 @testable import LingXiProtocol
 @testable import LingXiClient
 
-/// Tests for the unified model registry: dynamic discovery, overlay semantics,
-/// the registry/account split, and the guarantees the previous design broke.
+/// How a selectable model list is assembled: the published catalog states what
+/// a model is, account discovery decides what this user can reach, and the
+/// runtime contract decides what LingXi can execute.
 ///
-/// The lettered names correspond to the acceptance list this refactor was
+/// The lettered names correspond to the acceptance list this behavior was
 /// specified against.
-struct UnifiedModelRegistryTests {
+struct ModelAvailabilityAndDiscoveryTests {
 
     // MARK: - Fixtures
 
@@ -82,7 +83,7 @@ struct UnifiedModelRegistryTests {
 
     @Test func testB_unknownUpstreamModelIsKeptAndFlagged() {
         // The overlay describes A and B only; the upstream listing adds C.
-        let registryModels = [
+        let catalogModels = [
             Self.record("model-a"),
             Self.record("model-b"),
             Self.record("model-c", incomplete: true)
@@ -90,7 +91,7 @@ struct UnifiedModelRegistryTests {
 
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: registryModels,
+            catalogModels: catalogModels,
             accountModels: [Self.discovered("model-a"), Self.discovered("model-b"), Self.discovered("model-c")],
             isConfigured: true
         )
@@ -110,7 +111,7 @@ struct UnifiedModelRegistryTests {
 
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: [],
+            catalogModels: [],
             accountModels: [Self.discovered(novelID)],
             isConfigured: true
         )
@@ -123,7 +124,7 @@ struct UnifiedModelRegistryTests {
 
     @Test func testC_accountAvailabilityNarrowsTheRegistry() {
         // Registry knows A B C D; this account can reach only A and C.
-        let registryModels = [
+        let catalogModels = [
             Self.record("model-a"), Self.record("model-b"),
             Self.record("model-c"), Self.record("model-d")
         ]
@@ -131,7 +132,7 @@ struct UnifiedModelRegistryTests {
 
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: registryModels,
+            catalogModels: catalogModels,
             accountModels: accountModels,
             isConfigured: true
         )
@@ -146,7 +147,7 @@ struct UnifiedModelRegistryTests {
         // The account can reach something the registry has never catalogued.
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: [Self.record("model-a")],
+            catalogModels: [Self.record("model-a")],
             accountModels: [Self.discovered("model-a"), Self.discovered("unlisted-model")],
             isConfigured: true
         )
@@ -159,7 +160,7 @@ struct UnifiedModelRegistryTests {
     @Test func testC3_withoutAccountViewTheRegistrySuppliesTheList() {
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: [Self.record("model-a"), Self.record("model-b")],
+            catalogModels: [Self.record("model-a"), Self.record("model-b")],
             accountModels: [],
             isConfigured: false
         )
@@ -176,13 +177,13 @@ struct UnifiedModelRegistryTests {
 
         let apiOutcome = ModelAvailabilityResolver.resolve(
             product: apiProduct,
-            registryModels: [Self.record("api-model", product: "vendor-api")],
+            catalogModels: [Self.record("api-model", product: "vendor-api")],
             accountModels: [Self.discovered("api-model")],
             isConfigured: true
         )
         let oauthOutcome = ModelAvailabilityResolver.resolve(
             product: oauthProduct,
-            registryModels: [Self.record("codex-model", product: "vendor-codex")],
+            catalogModels: [Self.record("codex-model", product: "vendor-codex")],
             accountModels: [],
             isConfigured: true
         )
@@ -198,7 +199,7 @@ struct UnifiedModelRegistryTests {
     // MARK: - E. Deprecated models stay out of default selection
 
     @Test func testE_deprecatedModelsAreWithheldByDefault() {
-        let registryModels = [
+        let catalogModels = [
             Self.record("model-old", status: .deprecated),
             Self.record("model-retired", status: .retired),
             Self.record("model-new", status: .active)
@@ -209,7 +210,7 @@ struct UnifiedModelRegistryTests {
 
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: registryModels,
+            catalogModels: catalogModels,
             accountModels: accountModels,
             isConfigured: true
         )
@@ -221,7 +222,7 @@ struct UnifiedModelRegistryTests {
     @Test func testE2_compatibilityModeRestoresDeprecatedModels() {
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: [Self.record("model-old", status: .deprecated), Self.record("model-new")],
+            catalogModels: [Self.record("model-old", status: .deprecated), Self.record("model-new")],
             accountModels: [Self.discovered("model-old"), Self.discovered("model-new")],
             isConfigured: true,
             compatibilityMode: true
@@ -236,7 +237,7 @@ struct UnifiedModelRegistryTests {
         // leave the user with nothing to select.
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: [Self.record("model-old", status: .deprecated)],
+            catalogModels: [Self.record("model-old", status: .deprecated)],
             accountModels: [Self.discovered("model-old")],
             isConfigured: true
         )
@@ -248,131 +249,11 @@ struct UnifiedModelRegistryTests {
     @Test func testE4_previewModelsRemainSelectable() {
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(),
-            registryModels: [Self.record("model-preview", status: .preview)],
+            catalogModels: [Self.record("model-preview", status: .preview)],
             accountModels: [Self.discovered("model-preview")],
             isConfigured: true
         )
         #expect(outcome.models.count == 1)
-    }
-
-    // MARK: - F. A failed refresh keeps the last known good list
-
-    @Test func testF_failedRefreshPreservesLastKnownGood() async throws {
-        let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: cacheDir) }
-
-        let cache = AccountScopedCatalogCache(baseCacheDirectory: cacheDir)
-        let good = [Self.discovered("model-a"), Self.discovered("model-b")]
-        _ = try await cache.save(productID: "test-api", accountRef: "acct", models: good)
-
-        // A refresh against an unreachable upstream.
-        let product = Self.product()
-        let failing = RegistryProduct(
-            id: product.id, vendorID: product.vendorID, displayName: product.displayName,
-            type: product.type, authStrategy: product.authStrategy, authMethods: product.authMethods,
-            protocolFamily: product.protocolFamily, discoveryStrategy: product.discoveryStrategy,
-            endpoint: product.endpoint, runtimeSupport: product.runtimeSupport,
-            modelIDs: [],
-            discoveryProfile: RegistryDiscoveryProfile(
-                id: "unreachable", kind: ModelListAdapters.openAIModels,
-                url: "https://127.0.0.1:1/models", auth: "none", isPublic: false
-            )
-        )
-
-        let result = await AccountModelDiscovery.refresh(
-            product: failing, accountRef: "acct", credential: "test-key", cache: cache
-        )
-        if case .success = result {
-            Issue.record("expected the refresh to fail")
-        }
-
-        // The cached list must survive the failure.
-        let reloaded = await cache.load(productID: "test-api", accountRef: "acct")
-        #expect(reloaded?.models.count == 2)
-        #expect(reloaded?.models.map(\.id) == ["model-a", "model-b"])
-    }
-
-    // MARK: - G. ETag revalidation avoids re-downloading the catalog
-
-    @Test func testG_matchingETagSkipsDownload() async throws {
-        let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: cacheDir) }
-
-        let client = ModelRegistryClient(
-            baseURL: URL(string: "https://registry.invalid")!,
-            cacheDirectory: cacheDir
-        )
-
-        let catalog = RegistryCatalog(
-            metadata: RegistryCatalogMetadata(
-                schemaVersion: 1, catalogRevision: "rev-1", generatedAt: "2026-09-11T00:00:00Z",
-                sourceRevision: "src-1", sha256: String(repeating: "a", count: 64)
-            ),
-            vendors: [], products: [Self.product()], models: [Self.record("model-a")]
-        )
-        let encoded = try JSONEncoder().encode(catalog)
-
-        // First fetch: 200 with an ETag.
-        let first = await client.fetch(maxAge: 0) { request in
-            let response = HTTPURLResponse(
-                url: request.url!, statusCode: 200, httpVersion: nil,
-                headerFields: ["ETag": "\"rev-1\""]
-            )!
-            return (encoded, response)
-        }
-        guard case .updated = first else {
-            Issue.record("expected the first fetch to update the cache")
-            return
-        }
-
-        // Second fetch: the server reports 304, and no body is transferred.
-        let second = await client.fetch(maxAge: 0) { request in
-            #expect(request.value(forHTTPHeaderField: "If-None-Match") == "\"rev-1\"")
-            let response = HTTPURLResponse(
-                url: request.url!, statusCode: 304, httpVersion: nil, headerFields: nil
-            )!
-            return (Data(), response)
-        }
-        guard case let .notModified(revalidated) = second else {
-            Issue.record("expected a 304 to be reported as notModified")
-            return
-        }
-        #expect(revalidated.models.count == 1)
-    }
-
-    @Test func testG2_unreachableRegistryFallsBackToCache() async throws {
-        let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: cacheDir) }
-
-        let client = ModelRegistryClient(
-            baseURL: URL(string: "https://registry.invalid")!,
-            cacheDirectory: cacheDir
-        )
-        let catalog = RegistryCatalog(
-            metadata: RegistryCatalogMetadata(
-                schemaVersion: 1, catalogRevision: "rev-1", generatedAt: "2026-09-11T00:00:00Z",
-                sourceRevision: "src-1", sha256: String(repeating: "b", count: 64)
-            ),
-            vendors: [], products: [], models: [Self.record("model-a")]
-        )
-        let encoded = try JSONEncoder().encode(catalog)
-        _ = await client.fetch(maxAge: 0) { _ in
-            let response = HTTPURLResponse(url: URL(string: "https://registry.invalid")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (encoded, response)
-        }
-
-        // Now the registry is unreachable and the cache is stale.
-        let outcome = await client.fetch(maxAge: 0) { _ in
-            throw URLError(.cannotConnectToHost)
-        }
-        guard case let .stale(fallback, _) = outcome else {
-            Issue.record("expected a stale fallback when the registry is unreachable")
-            return
-        }
-        #expect(fallback.models.count == 1)
     }
 
     // MARK: - H. Every wire format is absorbed in the adapter layer
@@ -421,7 +302,7 @@ struct UnifiedModelRegistryTests {
     @Test func testI_runtimeUnsupportedProductOffersNothing() {
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(runtime: .unsupported),
-            registryModels: [Self.record("model-a")],
+            catalogModels: [Self.record("model-a")],
             accountModels: [Self.discovered("model-a")],
             isConfigured: true
         )
@@ -433,7 +314,7 @@ struct UnifiedModelRegistryTests {
     @Test func testI2_partialRuntimeSupportIsStillRunnable() {
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(runtime: .partial),
-            registryModels: [Self.record("model-a")],
+            catalogModels: [Self.record("model-a")],
             accountModels: [Self.discovered("model-a")],
             isConfigured: true
         )
@@ -499,30 +380,6 @@ struct UnifiedModelRegistryTests {
         // A server that adds a status must not break older clients.
         #expect(RegistryModelStatus(lenient: "experimental") == .unknown)
         #expect(RegistryModelStatus(lenient: "active") == .active)
-    }
-
-    @Test func testCatalogDecodesPartialDocuments() throws {
-        // A catalog with no discoveryCache section must still decode.
-        let json = """
-        {
-          "metadata": {"schemaVersion":1,"catalogRevision":"r","generatedAt":"t","sourceRevision":"s","sha256":"x"},
-          "vendors": [{"id":"v","displayName":"V"}],
-          "products": [{
-            "id":"p","vendorID":"v","displayName":"P","authStrategy":"apiKey",
-            "protocolFamily":"openai_chat","discoveryStrategy":"apiModels",
-            "runtimeSupport":"implemented","modelIDs":["m"]
-          }],
-          "models": [{
-            "id":"m","productID":"p","displayName":"M","status":"active",
-            "capabilities":{},"metadataIncomplete":false,"source":"upstream-discovery"
-          }]
-        }
-        """
-        let catalog = try JSONDecoder().decode(RegistryCatalog.self, from: Data(json.utf8))
-        #expect(catalog.products.count == 1)
-        #expect(catalog.models.count == 1)
-        #expect(catalog.product(id: "p")?.runtime == .implemented)
-        #expect(catalog.models(productID: "p").map(\.id) == ["m"])
     }
 
     // MARK: - ChatGPT subscription backend
@@ -609,7 +466,7 @@ struct UnifiedModelRegistryTests {
         // 3. Resolving selectable models with empty account view & no LKG returns empty/unavailable
         let outcome = ModelAvailabilityResolver.resolve(
             product: Self.product(id: "openai-api", discovery: .authenticatedRemote),
-            registryModels: [],
+            catalogModels: [],
             accountModels: userAccountLoaded?.models ?? [],
             isConfigured: true
         )
@@ -654,45 +511,6 @@ struct UnifiedModelRegistryTests {
             displayNameSource: "overlay"
         )
         #expect(!staticRecord.listingVerified, "static metadata must have listingVerified=false")
-    }
-
-    @Test func testOAuthProductWithoutDiscoveryHasNoModelRecords() {
-        // An OAuth product lacking discovery implementation has no ModelRecords,
-        // but its RegistryProduct holds discoveryImplementation and product-level namingVerification.
-        let oauthProduct = RegistryProduct(
-            id: "anthropic-claude-subscription",
-            vendorID: "anthropic",
-            displayName: "Claude Subscription",
-            type: "subscription",
-            authStrategy: "oauth",
-            protocolFamily: "anthropic_messages",
-            discoveryStrategy: "authenticatedRemote",
-            runtimeSupport: "partial",
-            discoveryImplementation: DiscoveryImplementation(status: "missing", backend: "none"),
-            namingVerification: "unverified",
-            modelIDs: []
-        )
-
-        #expect(oauthProduct.discoveryImplementation?.status == "missing")
-        #expect(oauthProduct.namingVerification == "unverified")
-        #expect(oauthProduct.modelIDs.isEmpty, "OAuth product lacking discovery must have no modelIDs")
-
-        let catalog = RegistryCatalog(
-            metadata: RegistryCatalogMetadata(
-                schemaVersion: 1,
-                catalogRevision: "rev-1",
-                generatedAt: "2026-09-11T00:00:00Z",
-                sourceRevision: "src-1",
-                sha256: "abc"
-            ),
-            vendors: [RegistryVendor(id: "anthropic", displayName: "Anthropic")],
-            products: [oauthProduct],
-            models: [] // No ModelRecords for missing discovery OAuth product
-        )
-
-        #expect(catalog.models(productID: "anthropic-claude-subscription").isEmpty)
-        #expect(catalog.product(id: "anthropic-claude-subscription")?.discoveryImplementation?.status == "missing")
-        #expect(catalog.product(id: "anthropic-claude-subscription")?.namingVerification == "unverified")
     }
 
     @Test func testCoreHostDiscoversOAuthModelsWithoutRemoteCatalog() async throws {

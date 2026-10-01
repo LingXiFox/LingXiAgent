@@ -54,7 +54,7 @@ import Testing
     /// whatever the upstream listing stated. The matrix therefore describes
     /// products, and a model-level assertion here would re-introduce exactly the
     /// static roster this refactor removed. Model-level reasoning coverage lives
-    /// in `UnifiedModelRegistryTests`.
+    /// in `ModelAvailabilityAndDiscoveryTests`.
     @Test func reasoningIsNoLongerDeclaredPerModelStatically() {
         let matrix = ProviderCompatibilityMatrix.generateMatrix()
         #expect(!matrix.isEmpty)

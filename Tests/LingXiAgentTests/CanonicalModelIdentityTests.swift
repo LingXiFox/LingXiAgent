@@ -161,7 +161,7 @@ struct CanonicalModelIdentityTests {
         // When flat
         let flatOutcome = ModelAvailabilityResolver.resolve(
             product: product,
-            registryModels: [],
+            catalogModels: [],
             accountModels: accountModels,
             isConfigured: true,
             aggregateCanonicalModels: false
@@ -171,7 +171,7 @@ struct CanonicalModelIdentityTests {
         // When aggregated
         let aggregatedOutcome = ModelAvailabilityResolver.resolve(
             product: product,
-            registryModels: [],
+            catalogModels: [],
             accountModels: accountModels,
             isConfigured: true,
             aggregateCanonicalModels: true
@@ -348,7 +348,7 @@ struct CanonicalModelIdentityTests {
 
         let outcome = ModelAvailabilityResolver.resolve(
             product: product,
-            registryModels: [],
+            catalogModels: [],
             accountModels: modelsWithVisibility,
             isConfigured: true,
             aggregateCanonicalModels: true

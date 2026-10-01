@@ -67,7 +67,7 @@ public final class ModelDiscoveryEngine: Sendable {
             }
             // Strictly zero speculative network requests against unknown endpoints.
             // Only consult local disk/memory cached models catalog if present.
-            let offlineFallback = await LingXiModelsCatalogClient.shared.cachedModelsForProduct(productID: product.id)
+            let offlineFallback = await PublicModelCatalogClient.shared.discoveredModels(forProduct: product.id)
             if !offlineFallback.isEmpty {
                 return .success(offlineFallback)
             }

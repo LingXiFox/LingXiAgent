@@ -5,21 +5,22 @@ import LingXiProtocol
 ///
 /// The three questions are deliberately kept apart:
 ///
-///   1. **Registry catalog** — what exists upstream and what LingXi knows about
-///      it (protocol, capabilities, quirks, status). Account-independent.
+///   1. **Published model catalog** — what exists upstream and what its public
+///      metadata states (limits, price, capabilities, status). Account-independent.
 ///   2. **Account discovery** — what *this* account can actually reach with its
 ///      own credential. When present it is the sole authority on availability:
-///      a model the registry lists but the account cannot reach is not offered,
-///      and a model the account can reach but the registry has never seen is
+///      a model the catalog lists but the account cannot reach is not offered,
+///      and a model the account can reach but the catalog has never seen is
 ///      still offered.
 ///   3. **Runtime support** — what LingXi can execute. A product the runtime has
 ///      not implemented is never presented as runnable, however well described.
 ///
-/// Metadata resolution follows the same separation: the account decides
-/// *whether* a model appears, the registry decides *how much we know* about it.
+/// Metadata resolution follows the same separation: the account decides *whether*
+/// a model appears, the catalog decides *how much is known* about it, and the
+/// runtime contract decides *which protocol* it is reached over.
 public enum ModelAvailabilityResolver {
 
-    /// Fallback limits used only when neither the registry nor the upstream
+    /// Fallback limits used only when neither the catalog nor the upstream
     /// listing stated a value. They are a last resort for a UI that needs a
     /// number, not a claim about the model.
     public enum Fallback {
@@ -34,8 +35,8 @@ public enum ModelAvailabilityResolver {
         /// retired and compatibility mode is off. Retained so callers can
         /// explain the omission or offer an opt-in.
         public let withheldByStatus: [String]
-        /// True when the product is known to the registry but not implemented
-        /// by the runtime, so nothing is offered regardless of metadata.
+        /// True when the runtime contract knows the product but has not
+        /// implemented it, so nothing is offered regardless of metadata.
         public let runtimeUnsupported: Bool
         /// True when deprecated/retired models had to be shown because they are
         /// all the account can reach.
@@ -61,13 +62,13 @@ public enum ModelAvailabilityResolver {
     /// - Parameters:
     ///   - accountModels: Models discovered against the user's own account.
     ///     Empty when discovery has not run or the product is account-independent.
-    ///   - registryModels: Models published for this product in the registry
+    ///   - catalogModels: Models published for this product in the registry
     ///     catalog.
     ///   - compatibilityMode: When true, deprecated and retired models are
     ///     offered alongside current ones.
     public static func resolve(
         product: RegistryProduct,
-        registryModels: [RegistryModelRecord],
+        catalogModels: [RegistryModelRecord],
         accountModels: [DiscoveredRemoteModel],
         isConfigured: Bool,
         compatibilityMode: Bool = false,
@@ -80,7 +81,7 @@ public enum ModelAvailabilityResolver {
         }
 
         let registryIndex = Dictionary(
-            registryModels.map { ($0.id, $0) },
+            catalogModels.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
 
@@ -131,17 +132,17 @@ public enum ModelAvailabilityResolver {
                 }
             }
         } else {
-            // No account view: fall back to what the registry publishes. These
+            // No account view: fall back to what the catalog publishes. These
             // are advertised, not confirmed reachable, so they are marked
             // unconfigured when the product itself is not configured.
-            for record in registryModels {
+            for record in catalogModels {
                 candidates.append(Candidate(record: record, isConfigured: isConfigured))
             }
         }
 
         guard !candidates.isEmpty else { return .empty }
 
-        // Partition by registry status. A model the registry has never seen has
+        // Partition by published status. A model the catalog has never seen has
         // no status and is treated as new rather than as legacy: it stays
         // visible so an upstream addition needs no LingXi release to appear.
         var current: [Candidate] = []
@@ -239,7 +240,7 @@ public enum ModelAvailabilityResolver {
         let vision: Bool
         let toolCalling: Bool
 
-        /// From an account discovery result, optionally enriched by a registry
+        /// From an account discovery result, optionally enriched by the catalog's
         /// record for the same model.
         init(discovered: DiscoveredRemoteModel, record: RegistryModelRecord?, allVariants: [String]? = nil) {
             modelID = discovered.id
@@ -267,7 +268,7 @@ public enum ModelAvailabilityResolver {
             toolCalling = discovered.toolCalling || (record?.capabilities.toolCalling ?? true)
         }
 
-        /// From a registry record alone, with no account view.
+        /// From the catalog's record alone, with no account view.
         init(record: RegistryModelRecord, isConfigured: Bool) {
             modelID = record.id
             displayName = record.displayName

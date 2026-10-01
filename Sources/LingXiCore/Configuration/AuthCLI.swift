@@ -3,6 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 import LingXiPlatform
+import LingXiModelSDK
 import LingXiProtocol
 
 public enum AuthCLI {
@@ -81,7 +82,7 @@ public enum AuthCLI {
         case "models":
             if args.count > 1 && args[1] == "sync" {
                 let providerID = args.count > 2 ? args[2] : nil
-                return try await syncCloudCatalog(providerID: providerID)
+                return try await refreshModelCatalog(providerID: providerID)
             }
             // Machine-readable listing for shell completion: the model set is
             // discovered, so it cannot be baked into a completion script.
@@ -462,7 +463,7 @@ Enter the authorization callback URL or code (press Enter to cancel):
             guard let product = BuiltinProviderCatalog.registryProduct(id: productID) else { return [] }
             return ModelAvailabilityResolver.resolve(
                 product: product,
-                registryModels: [],
+                catalogModels: [],
                 accountModels: discoveredModels,
                 isConfigured: true
             ).models
@@ -609,152 +610,159 @@ Available models:
     /// deprecated entry the user cannot actually choose.
     private static func renderModelIDs() async -> String {
         var ids: Set<String> = []
-        if let catalog = await ModelRegistryClient.shared.catalog() {
-            for m in catalog.models where m.modelStatus.isSelectable {
-                ids.insert("\(m.productID)/\(m.id)")
+        for product in BuiltinProviderCatalog.registryProducts where product.runtime.isRunnable {
+            for record in await PublicModelCatalogClient.shared.publishedRecords(forProduct: product.id)
+            where record.modelStatus.isSelectable {
+                ids.insert("\(product.id)/\(record.id)")
             }
-        }
-        for product in BuiltinProviderCatalog.registryProducts {
             let accounts = await AccountScopedCatalogCache.shared.listAccounts(productID: product.id)
-            for acc in accounts {
-                if let record = await AccountScopedCatalogCache.shared.load(productID: product.id, accountRef: acc) {
-                    for m in record.models where m.visibility.lowercased() != "hide" && m.visibility.lowercased() != "disabled" {
-                        ids.insert("\(product.id)/\(m.id)")
-                    }
+            for account in accounts {
+                guard let cached = await AccountScopedCatalogCache.shared.load(
+                    productID: product.id, accountRef: account) else { continue }
+                for model in cached.models
+                where model.visibility.lowercased() != "hide" && model.visibility.lowercased() != "disabled" {
+                    ids.insert("\(product.id)/\(model.id)")
                 }
             }
         }
         return ids.sorted().joined(separator: "\n")
     }
 
-    /// Lists models as published by the registry catalog or cached accounts.
+    /// Lists models as the public catalog publishes them, or as the user's own
+    /// account reported them.
     private static func renderModels(providerID: String?) async -> String {
-        let catalog = await ModelRegistryClient.shared.catalog()
-        let products: [RegistryProduct]
-        if let catalog {
-            if let providerID {
-                guard let product = catalog.product(id: providerID) else {
-                    return "Error: Unknown provider '\(providerID)'"
-                }
-                products = [product]
-            } else {
-                products = catalog.products.filter { $0.runtime.isRunnable }
-            }
-        } else {
-            let builtins = BuiltinProviderCatalog.registryProducts.filter { $0.runtime.isRunnable }
-            if let providerID {
-                guard let product = builtins.first(where: { $0.id == providerID }) else {
-                    return "Error: Unknown provider '\(providerID)'"
-                }
-                products = [product]
-            } else {
-                products = builtins
-            }
-        }
-
         let headers = ["Product", "Model ID", "Display Name", "Status", "Context", "Output"]
         var rows: [[String]] = []
-        for product in products {
-            let foundModels = catalog?.models(productID: product.id) ?? []
-            for m in foundModels {
-                let ctx = m.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-"
-                let out = m.capabilities.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
-                rows.append([product.id, m.id, m.displayName, m.status, ctx, out])
-            }
-            if foundModels.isEmpty {
-                var seenModelIDs = Set<String>()
-                let accounts = await AccountScopedCatalogCache.shared.listAccounts(productID: product.id)
-                for acc in accounts {
-                    if let record = await AccountScopedCatalogCache.shared.load(productID: product.id, accountRef: acc) {
-                        for m in record.models {
-                            guard m.visibility.lowercased() != "hide" && m.visibility.lowercased() != "disabled" else { continue }
-                            if seenModelIDs.contains(m.id) { continue }
-                            seenModelIDs.insert(m.id)
-                            let ctx = m.contextWindow.map { "\($0 / 1000)k" } ?? "-"
-                            let out = m.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
-                            rows.append([product.id, m.id, m.displayName, "active", ctx, out])
-                        }
-                    }
+
+        let builtins = BuiltinProviderCatalog.registryProducts.filter { $0.runtime.isRunnable }
+        if let providerID {
+            if !builtins.contains(where: { $0.id == providerID }) {
+                // Not a curated product: it may still be a published provider.
+                guard let published = await PublicModelCatalogClient.shared.provider(providerID) else {
+                    return "Error: Unknown provider '\(providerID)'"
                 }
+                rows = publishedRows(published)
+                return rows.isEmpty ? "No models published for '\(providerID)'." : render(rows, headers)
             }
+            rows = await modelRows(forProduct: providerID)
+            return rows.isEmpty
+                ? "No runnable models published for '\(providerID)'. Run 'lingxiagent auth login \(providerID)' to discover the models your account can reach."
+                : render(rows, headers)
         }
 
-        if rows.isEmpty {
-            if catalog != nil {
-                return "No runnable models found in catalog."
-            } else {
-                return "No models available locally. Run 'lingxiagent auth login <product>' or configure custom providers in ~/.lingxiagent/providers.json."
-            }
+        for product in builtins {
+            rows.append(contentsOf: await modelRows(forProduct: product.id))
         }
-
-        let table = CLIFormatter.renderTable(headers: headers, rows: rows, borderStyle: .rounded)
-        return """
-=== Registered Models ===
-\(table)
-"""
+        guard !rows.isEmpty else {
+            return "No models available locally. Run 'lingxiagent auth login <product>' or configure custom providers in ~/.lingxiagent/providers.json."
+        }
+        return render(rows, headers)
     }
 
-    /// Refreshes the unified registry catalog, optionally reporting one
-    /// product's published models.
+    /// One product's models: what the public catalog states, and when the
+    /// catalog has nothing for it, what the user's account already reported.
+    private static func modelRows(forProduct productID: String) async -> [[String]] {
+        let published = await PublicModelCatalogClient.shared.publishedRecords(forProduct: productID)
+        if !published.isEmpty {
+            var rows: [[String]] = []
+            for record in published {
+                rows.append([
+                    productID,
+                    record.id,
+                    record.displayName,
+                    record.modelStatus.rawValue,
+                    record.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-",
+                    record.capabilities.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
+                ])
+            }
+            return rows
+        }
+        var seen: Set<String> = []
+        var rows: [[String]] = []
+        for account in await AccountScopedCatalogCache.shared.listAccounts(productID: productID) {
+            guard let cached = await AccountScopedCatalogCache.shared.load(productID: productID, accountRef: account) else { continue }
+            for model in cached.models {
+                guard model.visibility.lowercased() != "hide", model.visibility.lowercased() != "disabled",
+                      !seen.contains(model.id) else { continue }
+                seen.insert(model.id)
+                rows.append([
+                    productID,
+                    model.id,
+                    model.displayName,
+                    "active",
+                    model.contextWindow.map { "\($0 / 1000)k" } ?? "-",
+                    model.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
+                ])
+            }
+        }
+        return rows
+    }
+
+    private static func publishedRows(_ provider: CatalogProvider) -> [[String]] {
+        provider.models.map { model in
+            [
+                provider.id,
+                model.id,
+                model.name,
+                model.status.rawValue,
+                model.contextWindow.map { "\($0 / 1000)k" } ?? "-",
+                model.maxOutputTokens.map { "\($0 / 1000)k" } ?? "-"
+            ]
+        }
+    }
+
+    private static func render(_ rows: [[String]], _ headers: [String]) -> String {
+        """
+        === Registered Models ===
+        \(CLIFormatter.renderTable(headers: headers, rows: rows, borderStyle: .rounded))
+        """
+    }
+
+    /// Refreshes the public model catalog, optionally reporting one product's
+    /// published models.
     ///
     /// Account-scoped discovery is deliberately not run here: it needs the
     /// user's credential and belongs to the login flow and the runtime, not to
     /// a catalog refresh.
-    private static func syncCloudCatalog(providerID: String?) async throws -> String {
-        let outcome = await ModelRegistryClient.shared.fetch(maxAge: 0)
-
-        let catalog: RegistryCatalog
-        switch outcome {
-        case let .updated(fetched), let .notModified(fetched):
-            catalog = fetched
-        case let .stale(cached, reason):
-            catalog = cached
-            if providerID == nil {
-                return """
-                ⚠ Registry unreachable (\(reason))
-                  using cached revision \(cached.metadata.catalogRevision)
-                  products: \(cached.products.count)   models: \(cached.models.count)
-                """
-            }
-        case let .unavailable(reason):
-            throw CoreError(code: .provider, message: "Registry catalog unavailable: \(reason)")
+    private static func refreshModelCatalog(providerID: String?) async throws -> String {
+        guard let catalog = await PublicModelCatalogClient.shared.refresh(force: true) else {
+            throw CoreError(code: .provider, message: "公共模型目录不可用：网络请求失败，且本地没有任何缓存副本")
         }
-
+        let revision = catalog.revision
         guard let providerID else {
             return """
-            ✓ Registry catalog synchronized
-              revision: \(catalog.metadata.catalogRevision)
-              products: \(catalog.products.count)   models: \(catalog.models.count)   providers: \(catalog.vendors.count)
+            ✓ 公共模型目录已同步
+              revision: \(revision.catalogRevision)   schema: \(revision.schemaVersion)
+              source: \(revision.source ?? "-")   hash: \(revision.catalogHash ?? "-")
+              providers: \(revision.totalProviders)   models: \(revision.totalModels)
             """
         }
-
-        guard let product = catalog.product(id: providerID) else {
+        guard catalog.provider(providerID) != nil
+            || BuiltinProviderCatalog.registryProduct(id: providerID) != nil else {
             throw CoreError(code: .provider, message: "Unknown product '\(providerID)'")
         }
-        let models = catalog.models(productID: providerID)
+        let models = await PublicModelCatalogClient.shared.publishedRecords(forProduct: providerID)
         guard !models.isEmpty else {
+            let discovery = BuiltinProviderCatalog.registryProduct(id: providerID)?.discoveryStrategy ?? "account"
             return """
-            ✓ '\(providerID)' is in the catalog but publishes no models.
-              discovery: \(product.discoveryStrategy) — its model list is resolved against your account.
+            ✓ '\(providerID)' 在公共目录里没有模型列表。
+              discovery: \(discovery) — 它的模型清单按你的账号实际可达范围解析。
             """
         }
-
         let headers = ["Model ID", "Display Name", "Status", "Context", "Metadata"]
         var rows: [[String]] = []
         for model in models {
-            let context = model.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-"
             rows.append([
                 model.id,
                 model.displayName,
                 model.modelStatus.rawValue,
-                context,
+                model.capabilities.contextWindow.map { "\($0 / 1000)k" } ?? "-",
                 model.metadataIncomplete ? "incomplete" : "complete"
             ])
         }
-        let table = CLIFormatter.renderTable(headers: headers, rows: rows, borderStyle: .rounded)
         return """
-        ✓ '\(providerID)' — \(models.count) models from the registry catalog
-        \(table)
+        ✓ '\(providerID)' — 公共模型目录里的 \(models.count) 个模型
+        \(CLIFormatter.renderTable(headers: headers, rows: rows, borderStyle: .rounded))
         """
     }
 
@@ -768,8 +776,8 @@ Available models:
             ("auth import-env <name>", "从当前环境自动导入指定环境变量至加密保险箱"),
             ("auth logout <product>", "清除凭据并解绑 Provider 配置"),
             ("matrix", "展示所有 Provider 的协议、推理等级与特性兼容矩阵"),
-            ("models [provider]", "展示模型上下文窗口、输出上限及特性标志"),
-            ("models sync [provider]", "从云端权威端点拉取最新模型目录并更新本地缓存"),
+            ("models [provider]", "展示公共目录中的模型上下文窗口、输出上限与状态"),
+            ("models sync [provider]", "刷新公共模型目录（models.lingxifox.cn/models.json）并更新本地缓存"),
             ("help", "查看本帮助指南")
         ]
         let sections = [

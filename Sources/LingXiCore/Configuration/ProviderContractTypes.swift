@@ -1,9 +1,17 @@
 import Foundation
 import LingXiProtocol
 
+// LingXi's runtime provider contract: what a product is, how to authenticate to
+// it, how its model list is discovered, and what the runtime can execute.
+//
+// These types are filled in by `BuiltinProviderCatalog` and the user's own
+// provider configuration — never fetched from a remote catalog. Public model
+// metadata (roster, limits, price, capabilities) comes from the published model
+// catalog through `LingXiModelSDK`; the two answer different questions and the
+// `Registry*` names here predate that split.
 // MARK: - Model lifecycle
 
-/// Lifecycle state of a model in the registry.
+/// Lifecycle state of a model as the catalog publishes it.
 ///
 /// Only `active` and `preview` take part in default selection. The remaining
 /// states exist so that metadata about a superseded model stays available
@@ -101,34 +109,6 @@ public struct RegistryCapabilities: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Registry documents
-
-public struct RegistryCatalogMetadata: Codable, Sendable, Equatable {
-    public let schemaVersion: Int
-    public let catalogRevision: String
-    public let generatedAt: String
-    public let sourceRevision: String
-    public let sha256: String
-
-    public init(schemaVersion: Int, catalogRevision: String, generatedAt: String, sourceRevision: String, sha256: String) {
-        self.schemaVersion = schemaVersion
-        self.catalogRevision = catalogRevision
-        self.generatedAt = generatedAt
-        self.sourceRevision = sourceRevision
-        self.sha256 = sha256
-    }
-}
-
-public struct RegistryVendor: Codable, Sendable, Equatable, Identifiable {
-    public let id: String
-    public let displayName: String
-
-    public init(id: String, displayName: String) {
-        self.id = id
-        self.displayName = displayName
-    }
-}
-
 /// A model as published in the catalog.
 public struct RegistryModelRecord: Codable, Sendable, Equatable, Identifiable {
     public let id: String
@@ -221,8 +201,8 @@ public struct RegistryModelRecord: Codable, Sendable, Equatable, Identifiable {
 
 /// How to read a model list off an upstream endpoint.
 ///
-/// Published by the registry so a client can perform account discovery against
-/// the right URL and wire format without hardcoding either. The `kind` selects
+/// Declared by the runtime provider contract so discovery can run against the
+/// right URL and wire format without either being hardcoded by a caller. The `kind` selects
 /// the response parser; it is the only place a provider-specific listing shape
 /// is allowed to be known.
 public struct RegistryDiscoveryProfile: Codable, Sendable, Equatable {
@@ -371,92 +351,6 @@ public struct RegistryProduct: Codable, Sendable, Equatable, Identifiable {
 
     public var runtime: RuntimeSupport { RuntimeSupport(lenient: runtimeSupport) }
     public var discovery: ModelDiscoveryStrategy { ModelDiscoveryStrategy(lenient: discoveryStrategy) }
-}
-
-/// Per-product discovery freshness as published by the registry.
-public struct RegistryCacheSummary: Codable, Sendable, Equatable {
-    public let status: String
-    public let fetchedAt: String?
-    public let expiresAt: String?
-    public let source: String?
-    public let modelCount: Int
-    public let lastError: String?
-
-    public init(status: String, fetchedAt: String? = nil, expiresAt: String? = nil, source: String? = nil, modelCount: Int = 0, lastError: String? = nil) {
-        self.status = status
-        self.fetchedAt = fetchedAt
-        self.expiresAt = expiresAt
-        self.source = source
-        self.modelCount = modelCount
-        self.lastError = lastError
-    }
-}
-
-/// The canonical catalog document served at `/v1/catalog`.
-public struct RegistryCatalog: Codable, Sendable, Equatable {
-    public let metadata: RegistryCatalogMetadata
-    public let vendors: [RegistryVendor]
-    public let products: [RegistryProduct]
-    public let models: [RegistryModelRecord]
-    public let discoveryCache: [String: RegistryCacheSummary]?
-
-    public init(
-        metadata: RegistryCatalogMetadata,
-        vendors: [RegistryVendor],
-        products: [RegistryProduct],
-        models: [RegistryModelRecord],
-        discoveryCache: [String: RegistryCacheSummary]? = nil
-    ) {
-        self.metadata = metadata
-        self.vendors = vendors
-        self.products = products
-        self.models = models
-        self.discoveryCache = discoveryCache
-    }
-
-    public func product(id: String) -> RegistryProduct? {
-        products.first { $0.id == id }
-    }
-
-    public func models(productID: String) -> [RegistryModelRecord] {
-        models.filter { $0.productID == productID }
-    }
-
-    public func vendorName(_ id: String) -> String? {
-        vendors.first { $0.id == id }?.displayName
-    }
-}
-
-/// The `/v1/catalog/status` document: a cheap change detector.
-public struct RegistryCatalogStatus: Codable, Sendable, Equatable {
-    public let schemaVersion: Int
-    public let catalogRevision: String
-    public let generatedAt: String
-    public let sourceRevision: String?
-    public let providerCount: Int
-    public let productCount: Int
-    public let modelCount: Int
-    public let sha256: String
-
-    public init(
-        schemaVersion: Int,
-        catalogRevision: String,
-        generatedAt: String,
-        sourceRevision: String? = nil,
-        providerCount: Int,
-        productCount: Int,
-        modelCount: Int,
-        sha256: String
-    ) {
-        self.schemaVersion = schemaVersion
-        self.catalogRevision = catalogRevision
-        self.generatedAt = generatedAt
-        self.sourceRevision = sourceRevision
-        self.providerCount = providerCount
-        self.productCount = productCount
-        self.modelCount = modelCount
-        self.sha256 = sha256
-    }
 }
 
 // MARK: - Lenient discovery strategy decoding

@@ -1,0 +1,13 @@
+{
+  "bytes": 5294879,
+  "catalogHash": "sha256:78206746072103d1ab163a3891190fd5ac003174dd14e7969024204f84de6c30",
+  "catalogRevision": "782067460721",
+  "generatedAt": "2026-10-01T02:59:58Z",
+  "models": 8341,
+  "providers": 225,
+  "publishedAt": "2026-10-01T02:59:58Z",
+  "schemaVersion": "2.0",
+  "sha256": "eb5950529eb33b1d4d1aa548e92c0e4cecd179982044b082d5780e1e3e30270d",
+  "sourceFetchedAt": "2026-10-01T02:59:58Z",
+  "sourceHash": "sha256:fb66816ca87d408ccbb5f53896ebcc4d813ee550f083ee972791a087a15449b2"
+}

@@ -92,13 +92,13 @@ extension CoreHost {
     public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
         ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
                          payload: await ProviderCatalog.entries(refresh: envelope.payload.refresh,
-                                                                siteClient: modelsCatalogClient))
+                                                                catalogClient: modelsCatalogClient))
     }
 
     public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
         ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
                          payload: await ProviderCatalog.modelIDs(entryID: envelope.payload.entryID,
-                                                                 siteClient: modelsCatalogClient))
+                                                                 catalogClient: modelsCatalogClient))
     }
 
     public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {

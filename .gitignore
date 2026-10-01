@@ -24,3 +24,5 @@ test-results-artifact/
 
 # Scratch probes and mined CI logs (AGENTS.md convention)
 .tmp/
+# 同步管线的发布标记（上一次成功发布的记录，供漂移检查用），不入库
+Server/models-site/public/publication.json.prev

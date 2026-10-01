@@ -6,7 +6,7 @@ public struct CoreHostStartupPolicy: Sendable, Codable, Equatable {
     public var discoverSkills: Bool
     public var discoverCommands: Bool
     public var discoverBinaryPlugins: Bool
-    public var refreshRegistry: Bool
+    public var refreshModelCatalog: Bool
     public var startMCP: Bool
     public var allowNetwork: Bool
     public var allowExternalProcesses: Bool
@@ -15,7 +15,7 @@ public struct CoreHostStartupPolicy: Sendable, Codable, Equatable {
         discoverSkills: Bool,
         discoverCommands: Bool,
         discoverBinaryPlugins: Bool,
-        refreshRegistry: Bool,
+        refreshModelCatalog: Bool,
         startMCP: Bool,
         allowNetwork: Bool,
         allowExternalProcesses: Bool
@@ -23,7 +23,7 @@ public struct CoreHostStartupPolicy: Sendable, Codable, Equatable {
         self.discoverSkills = discoverSkills
         self.discoverCommands = discoverCommands
         self.discoverBinaryPlugins = discoverBinaryPlugins
-        self.refreshRegistry = refreshRegistry
+        self.refreshModelCatalog = refreshModelCatalog
         self.startMCP = startMCP
         self.allowNetwork = allowNetwork
         self.allowExternalProcesses = allowExternalProcesses
@@ -34,29 +34,29 @@ public struct CoreHostStartupPolicy: Sendable, Codable, Equatable {
         discoverSkills: true,
         discoverCommands: true,
         discoverBinaryPlugins: true,
-        refreshRegistry: true,
+        refreshModelCatalog: true,
         startMCP: true,
         allowNetwork: true,
         allowExternalProcesses: true
     )
 
-    /// 单元测试环境：无副作用纯净沙箱（不发现外部二进制插件、不触发网络刷新、不执行真实外部进程）
+    /// 单元测试环境：无副作用纯净沙箱（不发现外部二进制插件、不触发模型目录刷新、不执行真实外部进程）
     public static let unitTest = CoreHostStartupPolicy(
         discoverSkills: false,
         discoverCommands: false,
         discoverBinaryPlugins: false,
-        refreshRegistry: false,
+        refreshModelCatalog: false,
         startMCP: false,
         allowNetwork: false,
         allowExternalProcesses: false
     )
 
-    /// 集成测试环境：允许内置命令与受控外部进程，但禁用外部插件与公网 Registry 刷新
+    /// 集成测试环境：允许内置命令与受控外部进程，但禁用外部插件与公网模型目录刷新
     public static let integrationTest = CoreHostStartupPolicy(
         discoverSkills: true,
         discoverCommands: true,
         discoverBinaryPlugins: false,
-        refreshRegistry: false,
+        refreshModelCatalog: false,
         startMCP: false,
         allowNetwork: false,
         allowExternalProcesses: true

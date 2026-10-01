@@ -88,6 +88,13 @@ jobs:
           swift test --skip-build --filter IPCPeerRobustnessTests < /dev/null
           swift test --skip-build --filter LingXiIPCRobustnessContractTests < /dev/null
 
+      - name: Stage 4b - Model Catalog Pipeline Gate
+        # Contract §8/§9/§12/§21/§22 as an executable check: the publisher must
+        # validate, publish atomically, keep the last-known-good on any failure,
+        # refuse a silent shrink and order the same way every reader does.
+        timeout-minutes: 3
+        run: bash Scripts/catalog-pipeline-check.sh
+
       - name: Stage 5 - Controlled Full Integration Test Suite
         timeout-minutes: 35
         run: LINGXI_CI_XUNIT_DIR="$PWD/test-results" bash Scripts/ci-integration-tests.sh
@@ -446,6 +453,22 @@ jobs:
           echo "::group::serve smoke"
           bash Scripts/ci-serve-smoke.sh "$BIN_PATH" ".exe"
           echo "::endgroup::"
+
+  # ─────────────────────────────────────────────────────────────
+  # 部署漂移（契约 §23）：线上发布物必须来自当前仓库构建。
+  # 只读检查，不持锁、不部署，因此不阻塞三平台 gate。
+  # ─────────────────────────────────────────────────────────────
+  catalog-drift:
+    name: Model Catalog Drift Check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare live artifacts with this build
+        # Live comparison downloads the published catalog, so it runs when someone
+        # asks for it rather than on every push.
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        run: bash Scripts/catalog-drift-check.sh
 
   # ─────────────────────────────────────────────────────────────
   gate:

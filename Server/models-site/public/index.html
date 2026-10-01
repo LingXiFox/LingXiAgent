@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LingXi Models — Swift 原生 AI 模型索引与规格库</title>
-  <meta name="description" content="LingXiAgent 原生大模型索引库，每日自动同步 models.dev，提供 Swift 原生调用代码、全量模型上下文与能力规格字典。">
+  <title>LingXi Models — 公共模型目录与元数据浏览</title>
+  <meta name="description" content="LingXi 公共模型目录：同步 models.dev 的模型元数据，提供上下文窗口、输出上限、价格与能力规格，并由 LingXiModelSDK 作为官方数据源消费。">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -13,12 +13,7 @@
       theme: {
         extend: {
           colors: {
-            brand: {
-              50: '#f5f3ff',
-              500: '#8b5cf6',
-              600: '#7c3aed',
-              700: '#6d28d9',
-            }
+            brand: { 50: '#f5f3ff', 500: '#8b5cf6', 600: '#7c3aed', 700: '#6d28d9' }
           }
         }
       }
@@ -28,22 +23,10 @@
     @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
     code, pre { font-family: 'Fira Code', monospace; }
-    .glass {
-      background: rgba(18, 18, 20, 0.85);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-    }
-    .custom-scrollbar::-webkit-scrollbar {
-      width: 5px;
-      height: 5px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-      background: #3f3f46;
-      border-radius: 9999px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-      background: #52525b;
-    }
+    .glass { background: rgba(18, 18, 20, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 9999px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #52525b; }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col selection:bg-purple-500 selection:text-white">
@@ -55,7 +38,7 @@
         <span class="text-2xl">🦊</span>
         <div>
           <span class="font-bold text-lg bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">LingXi Models</span>
-          <span class="hidden sm:inline-block ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800 font-medium">Swift Edition</span>
+          <span class="hidden sm:inline-block ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800 font-medium">公共模型目录</span>
         </div>
       </div>
 
@@ -64,21 +47,18 @@
           <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
           <span class="font-mono text-xs">models.json</span>
         </a>
-        <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 transition-colors border border-zinc-800" title="GitHub Repository">
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        </a>
+        <button id="open-sdk-btn" class="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 transition-colors border border-zinc-800 text-xs">在 Swift 中使用</button>
       </div>
     </div>
   </header>
 
-  <!-- Two-Column Main Layout (Left: 厂商选择 | Right: 具体模型) -->
+  <!-- Two-Column Main Layout -->
   <div class="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full flex flex-col lg:flex-row gap-6">
 
-    <!-- Left Sidebar: 厂商选择 (Models.dev Style Provider Navigator) -->
+    <!-- Left Sidebar: Provider Navigator -->
     <aside class="w-full lg:w-72 xl:w-80 shrink-0">
       <div class="lg:sticky lg:top-20 bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-3.5 backdrop-blur flex flex-col lg:h-[calc(100vh-6.5rem)]">
-        
-        <!-- Sidebar Header -->
+
         <div class="px-2 py-1 flex items-center justify-between border-b border-zinc-800/80 pb-3 mb-3">
           <div class="flex items-center space-x-2">
             <span class="text-sm font-bold text-zinc-100 flex items-center gap-1.5">
@@ -90,254 +70,324 @@
           <button id="reset-provider-btn" class="text-xs text-zinc-400 hover:text-purple-300 transition-colors hidden">重置</button>
         </div>
 
-        <!-- Search Provider Filter -->
         <div class="relative mb-3 px-1">
           <div class="absolute inset-y-0 left-3 pl-0.5 flex items-center pointer-events-none text-zinc-500">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 9 9 0 0114 0z"/></svg>
           </div>
-          <input 
-            id="provider-search-input" 
-            type="text" 
-            placeholder="搜索厂商 (例如: openai, claude)..." 
-            class="w-full pl-8 pr-3 py-1.5 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors"
-          >
+          <input id="provider-search-input" type="text" placeholder="搜索厂商 (例如: deepseek, claude)…"
+                 class="w-full pl-8 pr-3 py-1.5 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors">
         </div>
 
-        <!-- "All Providers" Special Item -->
         <div class="px-1 mb-1.5">
-          <button 
-            id="btn-all-providers" 
-            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between transition-all bg-purple-600 text-white shadow-lg shadow-purple-950/40"
-          >
-            <span class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-white"></span>
-              全部厂商
-            </span>
+          <button id="btn-all-providers" class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between transition-all bg-purple-600 text-white shadow-lg shadow-purple-950/40">
+            <span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-white"></span>全部厂商</span>
             <span id="all-models-badge" class="px-2 py-0.5 rounded-full bg-purple-700/80 text-[11px] font-mono">-</span>
           </button>
         </div>
 
-        <!-- Vertical Scrollable Provider List -->
         <div id="provider-list" class="overflow-y-auto space-y-1 custom-scrollbar px-1 flex-1 pr-1.5">
-          <div class="py-8 text-center text-xs text-zinc-500">正在加载厂商列表...</div>
+          <div class="py-8 text-center text-xs text-zinc-500">正在加载厂商列表…</div>
         </div>
 
       </div>
     </aside>
 
-    <!-- Right Main Content: 具体模型 (Hero + Filters + Models Grid) -->
+    <!-- Right Main Content -->
     <main class="flex-1 min-w-0">
 
-      <!-- Hero Banner -->
+      <!-- Hero + catalog provenance -->
       <div class="rounded-2xl border border-zinc-800/80 bg-gradient-to-br from-purple-950/20 via-zinc-900/60 to-zinc-950 p-6 sm:p-7 mb-6 relative overflow-hidden">
         <div class="relative z-10">
           <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
               <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-                为 <span class="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">Swift 智能体生态</span> 打造的模型索引
+                公共模型<span class="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-amber-300">元数据目录</span>
               </h1>
               <p class="mt-2 text-xs sm:text-sm text-zinc-400 max-w-2xl leading-relaxed">
-                每日自动同步并提纯开源元数据。无论在 macOS、iOS 还是 Linux，一行 Swift 代码即插即用，零配置调度全球大模型。
+                同步 <code class="text-zinc-300">models.dev</code> 的公开模型资料：上下文窗口、输出上限、价格与能力规格。
+                本站只发布一份数据文档 <code class="text-zinc-300">/models.json</code>，页面与 SDK 读的是同一份内容。
               </p>
             </div>
 
-            <!-- Stats Badge Group -->
             <div id="stats-bar" class="flex flex-wrap items-center gap-2 sm:gap-3 text-xs shrink-0">
               <div class="px-3 py-1.5 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center">
                 <span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span>
-                <span>接入 <strong id="stat-providers" class="text-zinc-100 font-bold mx-1">-</strong> 家提供商</span>
+                <span><strong id="stat-providers" class="text-zinc-100 font-bold mx-1">-</strong> 家厂商</span>
               </div>
               <div class="px-3 py-1.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-zinc-300">
-                收录 <strong id="stat-models" class="text-zinc-100 font-bold mx-1">-</strong> 个模型
+                <strong id="stat-models" class="text-zinc-100 font-bold mx-1">-</strong> 个模型
               </div>
               <div class="px-3 py-1.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-zinc-400">
-                更新于 <span id="stat-updated" class="text-zinc-300 font-mono ml-1">-</span>
+                同步于 <span id="stat-updated" class="text-zinc-300 font-mono ml-1">-</span>
               </div>
             </div>
+          </div>
+
+          <div class="mt-4 pt-4 border-t border-zinc-800/60 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-zinc-500 font-mono">
+            <span>schema <span id="prov-schema" class="text-zinc-400">-</span></span>
+            <span>revision <span id="prov-revision" class="text-zinc-400">-</span></span>
+            <span>source <span id="prov-source" class="text-zinc-400">-</span></span>
+            <span>source hash <span id="prov-source-hash" class="text-zinc-400">-</span></span>
           </div>
         </div>
       </div>
 
       <!-- Search & Capability Filter Bar -->
       <div class="flex flex-col md:flex-row gap-3 mb-6 items-stretch md:items-center">
-        <!-- Search Input -->
         <div class="relative flex-1">
           <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 9 9 0 0114 0z"/></svg>
           </div>
-          <input 
-            id="search-input" 
-            type="text" 
-            placeholder="搜索模型名称、ID、厂商 (例如: deepseek-r1, claude, opencode, glm)..." 
-            class="w-full pl-10 pr-4 py-2.5 bg-zinc-900/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors"
-          >
+          <input id="search-input" type="text" placeholder="搜索模型名称、ID、厂商 (例如: deepseek-v4, claude, glm)…"
+                 class="w-full pl-10 pr-4 py-2.5 bg-zinc-900/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-purple-500 text-zinc-200 placeholder-zinc-500 transition-colors">
         </div>
 
-        <!-- Capability Filter Chips -->
         <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 text-xs shrink-0 custom-scrollbar">
           <button data-cap="all" class="cap-btn px-3 py-2 rounded-xl bg-purple-600 text-white font-medium whitespace-nowrap transition-all shadow-md shadow-purple-950/30">全部</button>
           <button data-cap="reasoning" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🧠 深度思考</button>
-          <button data-cap="attachment" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">👁 视觉多模态</button>
-          <button data-cap="toolCall" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🛠 工具调用</button>
+          <button data-cap="vision" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">👁 视觉输入</button>
+          <button data-cap="tools" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🛠 工具调用</button>
+          <button data-cap="structured" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">🧩 结构化输出</button>
           <button data-cap="largeContext" class="cap-btn px-3 py-2 rounded-xl bg-zinc-900/90 border border-zinc-800 text-zinc-400 hover:text-white whitespace-nowrap transition-colors">⚡️ ≥128k 窗口</button>
         </div>
       </div>
 
-      <!-- Current Selected Provider Hint Bar -->
-      <div id="active-provider-banner" class="hidden mb-4 px-4 py-2.5 rounded-xl bg-purple-950/30 border border-purple-800/40 flex items-center justify-between text-xs">
-        <div class="flex items-center gap-2">
-          <span class="text-zinc-400">当前厂商筛选：</span>
-          <span id="active-provider-name" class="font-semibold text-purple-300"></span>
-          <span id="active-provider-count" class="text-zinc-500 font-mono"></span>
+      <!-- Selected provider panel (§20) -->
+      <div id="active-provider-banner" class="hidden mb-4 rounded-xl bg-purple-950/30 border border-purple-800/40 text-xs">
+        <div class="px-4 py-2.5 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-zinc-400 shrink-0">当前厂商：</span>
+            <span id="active-provider-name" class="font-semibold text-purple-300 truncate"></span>
+            <span id="active-provider-count" class="text-zinc-500 font-mono shrink-0"></span>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <button id="toggle-provider-detail" class="text-purple-400 hover:text-purple-200 underline">厂商信息</button>
+            <button id="clear-provider-filter" class="text-purple-400 hover:text-purple-200 underline">查看全部厂商</button>
+          </div>
         </div>
-        <button id="clear-provider-filter" class="text-purple-400 hover:text-purple-200 underline">查看全部厂商</button>
+        <div id="provider-detail" class="hidden border-t border-purple-800/30 px-4 py-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-[11px]">
+          <div><span class="text-zinc-500">Provider ID：</span><span id="detail-id" class="font-mono text-zinc-300"></span></div>
+          <div><span class="text-zinc-500">模型数量：</span><span id="detail-count" class="font-mono text-zinc-300"></span></div>
+          <div class="sm:col-span-2"><span class="text-zinc-500">官方 API 端点：</span><span id="detail-endpoint" class="font-mono text-zinc-300 break-all"></span></div>
+          <div class="sm:col-span-2"><span class="text-zinc-500">环境变量：</span><span id="detail-env" class="font-mono text-zinc-300"></span></div>
+          <div><span class="text-zinc-500">官方文档：</span><span id="detail-docs"></span></div>
+          <div><span class="text-zinc-500">最后同步：</span><span id="detail-sync" class="font-mono text-zinc-300"></span></div>
+        </div>
       </div>
 
-      <!-- Specific Models Grid (具体模型) -->
+      <!-- Models Grid -->
       <div id="models-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         <div class="col-span-full py-20 text-center text-zinc-500">
           <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-zinc-700 border-t-purple-500 mb-3"></div>
-          <p>正在读取模型数据...</p>
+          <p>正在读取模型数据…</p>
         </div>
       </div>
 
-      <!-- Load More / Result Count -->
       <div class="mt-8 flex flex-col items-center justify-center gap-3">
         <div id="footer-count" class="text-xs text-zinc-500 font-mono"></div>
-        <button id="load-more-btn" class="hidden px-5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 font-medium transition-colors">
-          加载更多模型
-        </button>
+        <button id="load-more-btn" class="hidden px-5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 font-medium transition-colors">加载更多模型</button>
       </div>
 
     </main>
   </div>
 
-  <!-- Swift Code Modal -->
-  <div id="code-modal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden flex items-center justify-center p-4">
+  <!-- SDK usage modal -->
+  <div id="sdk-modal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden flex items-center justify-center p-4">
     <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative">
-      <div class="flex items-center justify-between pb-4 border-b border-zinc-800">
+      <div class="flex items-start justify-between pb-4 border-b border-zinc-800 gap-4">
         <div>
-          <h3 id="modal-title" class="text-base font-semibold text-zinc-100">Swift 调用代码</h3>
-          <p id="modal-subtitle" class="text-xs text-zinc-400 font-mono mt-0.5"></p>
+          <h3 class="text-base font-semibold text-zinc-100">用 LingXiModelSDK 读取本目录</h3>
+          <p class="text-xs text-zinc-400 mt-1 leading-relaxed">
+            模型目录是一个独立的数据协议；<code class="font-mono text-zinc-300">LingXiModelSDK</code> 是它的开发者接口。
+            查模型元数据不需要安装任何 Agent Runtime，也不需要私有中转端点。
+          </p>
         </div>
-        <button id="close-modal" class="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800">
+        <button id="close-sdk-modal" class="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 shrink-0">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
       </div>
 
       <div class="mt-4 relative">
-        <pre class="bg-zinc-950 p-4 rounded-xl border border-zinc-800 text-xs text-zinc-300 font-mono overflow-x-auto custom-scrollbar max-h-96 leading-relaxed"><code id="modal-code"></code></pre>
-        <button id="copy-btn" class="absolute top-3 right-3 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium flex items-center space-x-1.5 shadow-lg transition-colors">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-          <span id="copy-text">复制代码</span>
+        <pre class="bg-zinc-950 p-4 rounded-xl border border-zinc-800 text-xs text-zinc-300 font-mono overflow-x-auto custom-scrollbar leading-relaxed"><code id="sdk-example"></code></pre>
+        <button id="copy-sdk-btn" class="absolute top-3 right-3 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium flex items-center space-x-1.5 shadow-lg transition-colors">
+          <span id="copy-sdk-text">复制</span>
         </button>
       </div>
 
-      <div class="mt-4 flex items-center justify-between text-xs text-zinc-500">
-        <span>基于 LingXi 统一模型规范 (LingXiAgent Core)</span>
-        <button id="close-modal-bottom" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300 transition-colors">完成</button>
-      </div>
+      <dl class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-zinc-400">
+        <div><span class="text-zinc-500">数据源：</span><code class="font-mono">https://models.lingxifox.cn/models.json</code></div>
+        <div><span class="text-zinc-500">上游：</span><code class="font-mono">https://models.dev/api.json</code></div>
+        <div class="sm:col-span-2"><span class="text-zinc-500">Product：</span><code class="font-mono">LingXiModelSDK</code>（本仓库 <code class="font-mono">Package.swift</code> 已发布该 library product）</div>
+      </dl>
+
+      <p class="mt-3 text-[11px] text-zinc-500 leading-relaxed">
+        目录只描述模型本身：身份、上下文、输出上限、价格与能力。用什么协议调用、凭据怎么来、端点是否覆盖，
+        由调用方自己的 Runtime Provider 层决定，不来自这份目录。
+      </p>
     </div>
   </div>
 
-  <!-- Toast Notification -->
-  <div id="toast" class="fixed bottom-6 right-6 z-50 bg-zinc-800 text-white text-xs px-4 py-2.5 rounded-xl shadow-xl border border-zinc-700 transition-opacity duration-300 opacity-0 pointer-events-none">
-    已复制到剪贴板
-  </div>
+  <!-- Toast -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 bg-zinc-800 text-white text-xs px-4 py-2.5 rounded-xl shadow-xl border border-zinc-700 transition-opacity duration-300 opacity-0 pointer-events-none">已复制到剪贴板</div>
 
   <!-- Footer -->
   <footer class="border-t border-zinc-900 bg-zinc-950 py-8 text-center text-xs text-zinc-500">
     <div class="max-w-7xl mx-auto px-4 space-y-3">
-      <p>© 2026 LingXiFox. Powered by LingXiAgent & Open Models Ecosystem.</p>
+      <p>© 2026 LingXiFox · LingXi 公共模型目录 · 数据来自 models.dev</p>
       <div class="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-6 text-zinc-500 text-xs pt-1">
         <div class="inline-flex items-center gap-1">
           <span>ICP备案：</span>
-          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="hover:text-zinc-300 transition-colors">
-            苏ICP备2026055395号-1
-          </a>
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="hover:text-zinc-300 transition-colors">苏ICP备2026055395号-1</a>
         </div>
         <div class="inline-flex items-center gap-1.5">
           <img src="/beian-icon.png" alt="公安备案图标" class="w-4 h-4 inline-block align-middle shrink-0" />
-          <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32010202012360" target="_blank" rel="noreferrer" class="hover:text-zinc-300 transition-colors">
-            苏公网安备32010202012360号
-          </a>
+          <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32010202012360" target="_blank" rel="noreferrer" class="hover:text-zinc-300 transition-colors">苏公网安备32010202012360号</a>
         </div>
       </div>
     </div>
   </footer>
 
   <script>
-    let allModels = [];
-    let providerMap = new Map(); // providerId -> { id, name, count }
+    // ── 唯一数据源 ────────────────────────────────────────────────────────────
+    // 页面读的这份 models.json 与 SDK 读的是同一份发布物；不存在第二套模型投影。
+    const CATALOG_URL = '/models.json';
+
+    let providers = [];              // { id, name, baseURL, doc, env, models[] }
+    const providerIndex = new Map(); // id -> provider
+    let allModels = [];              // 按厂商分组顺序展平
+    let catalogMeta = {};
     let currentFilterCap = 'all';
     let currentFilterProv = 'all';
     let searchQuery = '';
     let providerSearchQuery = '';
     let renderLimit = 120;
 
-    const POPULAR_PROVIDERS = [
-      'opencode', 'openai', 'anthropic', 'google', 'deepseek', 
-      'zai', 'alibaba-coding-plan', 'cloudflare-ai-gateway', 'siliconflow-cn'
-    ];
+    // 排序是确定的：厂商按显示名（数字感知）再按 id；模型按发布时间倒序、
+    // 家族、名称、id。同一份 catalog 每次渲染顺序完全一致。
+    const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'accent' });
+
+    function compareProviders(a, b) {
+      const byName = collator.compare(a.name, b.name);
+      return byName !== 0 ? byName : a.id.localeCompare(b.id);
+    }
+
+    function compareModels(a, b) {
+      if (a.release !== b.release) {
+        if (!a.release) return 1;      // 没有日期的不排在有日期的前面
+        if (!b.release) return -1;
+        return b.release.localeCompare(a.release);   // DESC
+      }
+      const byFamily = collator.compare(a.family || '', b.family || '');
+      if (byFamily !== 0) return byFamily;
+      const byName = collator.compare(a.name, b.name);
+      if (byName !== 0) return byName;
+      return a.id.localeCompare(b.id);
+    }
+
+    function toModel(providerID, providerName, mid, m) {
+      const inputs = (m.modalities && m.modalities.input) || [];
+      return {
+        id: mid,
+        providerID,
+        providerName,
+        name: m.name || mid,
+        family: m.family || null,
+        description: m.description || null,
+        release: m.release_date || null,
+        updated: m.last_updated || null,
+        context: m.limit ? (m.limit.context ?? null) : null,
+        output: m.limit ? (m.limit.output ?? null) : null,
+        reasoning: !!m.reasoning,
+        tools: !!m.tool_call,
+        structured: typeof m.structured_output === 'boolean' ? m.structured_output : null,
+        vision: !!m.attachment || inputs.some(x => String(x).toLowerCase().startsWith('image')),
+        attachments: !!m.attachment,
+        openWeights: !!m.open_weights,
+        costInput: m.cost ? (m.cost.input ?? null) : null,
+        costOutput: m.cost ? (m.cost.output ?? null) : null,
+        status: m.status || null,
+      };
+    }
 
     async function init() {
       try {
-        const resp = await fetch('/summary.json');
+        const resp = await fetch(CATALOG_URL);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
+        if (!data || typeof data.providers !== 'object') throw new Error('catalog shape 不 recognisable');
 
-        allModels = data.models || [];
-        document.getElementById('stat-providers').textContent = data.totalProviders || '-';
-        document.getElementById('stat-provider-count').textContent = `${data.totalProviders || 0} 家`;
-        document.getElementById('stat-models').textContent = data.totalModels ? Number(data.totalModels).toLocaleString() : '-';
-        document.getElementById('all-models-badge').textContent = data.totalModels ? Number(data.totalModels).toLocaleString() : '-';
-        document.getElementById('stat-updated').textContent = (data.updatedAt || '').split('T')[0] || 'Today';
+        catalogMeta = {
+          schema: data.schemaVersion || data.version || '-',
+          revision: data.catalogRevision || '-',
+          source: data.source || '-',
+          sourceHash: data.sourceHash || '-',
+          generatedAt: data.generatedAt || data.updatedAt || null,
+        };
 
-        // Extract and aggregate providers
-        extractProviders();
+        providers = Object.keys(data.providers).map(pid => {
+          const p = data.providers[pid];
+          const models = Object.keys(p.models || {}).map(mid => toModel(pid, p.name || pid, mid, p.models[mid]));
+          models.sort(compareModels);
+          return {
+            id: pid,
+            name: p.name || pid,
+            baseURL: p.baseURL || null,
+            doc: p.doc || null,
+            env: Array.isArray(p.env) ? p.env : [],
+            models,
+          };
+        });
+        providers.sort(compareProviders);
+        providerIndex.clear();
+        providers.forEach(p => providerIndex.set(p.id, p));
+        allModels = providers.flatMap(p => p.models);
+
+        const totalProviders = data.totalProviders ?? providers.length;
+        const totalModels = data.totalModels ?? allModels.length;
+        document.getElementById('stat-providers').textContent = totalProviders.toLocaleString();
+        document.getElementById('stat-provider-count').textContent = `${totalProviders.toLocaleString()} 家`;
+        document.getElementById('stat-models').textContent = totalModels.toLocaleString();
+        document.getElementById('all-models-badge').textContent = totalModels.toLocaleString();
+        document.getElementById('stat-updated').textContent = dateOnly(catalogMeta.generatedAt);
+        document.getElementById('prov-schema').textContent = catalogMeta.schema;
+        document.getElementById('prov-revision').textContent = catalogMeta.revision;
+        document.getElementById('prov-source').textContent = catalogMeta.source;
+        document.getElementById('prov-source-hash').textContent = shortHash(catalogMeta.sourceHash);
+
         renderProviderList();
         renderModels();
       } catch (err) {
-        console.error('Failed to load summary.json', err);
+        console.error('Failed to load ' + CATALOG_URL, err);
         document.getElementById('models-list').innerHTML = `
           <div class="col-span-full py-16 text-center text-red-400">
-            <p>加载数据失败: ${err.message}</p>
-            <p class="text-xs text-zinc-500 mt-2">请检查 /summary.json 是否部署完成。</p>
-          </div>
-        `;
+            <p>加载数据失败: ${escapeHtml(err.message)}</p>
+            <p class="text-xs text-zinc-500 mt-2">请检查 ${escapeHtml(CATALOG_URL)} 是否部署完成。</p>
+          </div>`;
       }
     }
 
-    function extractProviders() {
-      providerMap.clear();
-      allModels.forEach(m => {
-        const pid = m.providerId;
-        const pname = m.providerName || pid;
-        if (!providerMap.has(pid)) {
-          providerMap.set(pid, { id: pid, name: pname, count: 0 });
-        }
-        providerMap.get(pid).count++;
-      });
+    function dateOnly(value) {
+      if (!value) return '-';
+      const parts = String(value).split('T');
+      return parts[0] || '-';
     }
 
+    function shortHash(value) {
+      if (!value) return '-';
+      const text = String(value).replace(/^sha256:/, '');
+      return text.slice(0, 12);
+    }
+
+    // ── 厂商侧栏 ─────────────────────────────────────────────────────────────
     function renderProviderList() {
       const container = document.getElementById('provider-list');
       const q = providerSearchQuery.toLowerCase().trim();
-      
-      let list = Array.from(providerMap.values());
+
+      let list = providers;
       if (q) {
         list = list.filter(p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
       }
-
-      // Sort popular first, then by count descending
-      list.sort((a, b) => {
-        const aPop = POPULAR_PROVIDERS.indexOf(a.id);
-        const bPop = POPULAR_PROVIDERS.indexOf(b.id);
-        if (aPop !== -1 && bPop !== -1) return aPop - bPop;
-        if (aPop !== -1) return -1;
-        if (bPop !== -1) return 1;
-        return b.count - a.count;
-      });
+      // 顺序已由 compareProviders 固定，这里不再重排。
 
       if (list.length === 0) {
         container.innerHTML = '<div class="py-6 text-center text-xs text-zinc-500">无匹配厂商</div>';
@@ -346,37 +396,28 @@
 
       container.innerHTML = list.map(p => {
         const isSelected = currentFilterProv === p.id;
-        const btnClass = isSelected 
-          ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-950/30' 
+        const btnClass = isSelected
+          ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-950/30'
           : 'bg-zinc-900/50 hover:bg-zinc-800 text-zinc-300 hover:text-white';
-        const badgeClass = isSelected 
-          ? 'bg-purple-700/80 text-white' 
-          : 'bg-zinc-800/80 text-zinc-400';
-
+        const badgeClass = isSelected ? 'bg-purple-700/80 text-white' : 'bg-zinc-800/80 text-zinc-400';
         return `
-          <button 
-            data-pid="${escapeAttr(p.id)}" 
-            class="sidebar-prov-btn w-full px-3 py-2 rounded-xl text-left text-xs flex items-center justify-between transition-all ${btnClass}"
-            title="${escapeAttr(p.name)} (${p.id})"
-          >
+          <button data-pid="${escapeAttr(p.id)}"
+                  class="sidebar-prov-btn w-full px-3 py-2 rounded-xl text-left text-xs flex items-center justify-between transition-all ${btnClass}"
+                  title="${escapeAttr(p.name)} (${escapeAttr(p.id)})">
             <span class="truncate pr-2">${escapeHtml(p.name)}</span>
-            <span class="px-2 py-0.5 rounded-full text-[10px] font-mono shrink-0 ${badgeClass}">${p.count}</span>
-          </button>
-        `;
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-mono shrink-0 ${badgeClass}">${p.models.length}</span>
+          </button>`;
       }).join('');
 
       container.querySelectorAll('.sidebar-prov-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          selectProvider(btn.dataset.pid);
-        });
+        btn.addEventListener('click', () => selectProvider(btn.dataset.pid));
       });
     }
 
     function selectProvider(pid) {
       currentFilterProv = pid;
-      renderLimit = 120; // reset pagination limit
+      renderLimit = 120;
 
-      // Update "All Providers" button state
       const allBtn = document.getElementById('btn-all-providers');
       const resetBtn = document.getElementById('reset-provider-btn');
       const banner = document.getElementById('active-provider-banner');
@@ -389,42 +430,60 @@
         allBtn.className = 'w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between transition-all bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200';
         resetBtn.classList.remove('hidden');
         banner.classList.remove('hidden');
-
-        const prov = providerMap.get(pid);
-        document.getElementById('active-provider-name').textContent = prov ? prov.name : pid;
-        document.getElementById('active-provider-count').textContent = prov ? `(${prov.count} 个模型)` : '';
+        renderProviderDetail(pid);
       }
 
       renderProviderList();
       renderModels();
     }
 
+    // §20：厂商信息只展示来源里明确有的东西。没有可信端点就说“由配置决定”，
+    // 不拿任何中转地址顶替；环境变量名同理，来源没给就不显示。
+    function renderProviderDetail(pid) {
+      const provider = providerIndex.get(pid);
+      document.getElementById('active-provider-name').textContent = provider ? provider.name : pid;
+      document.getElementById('active-provider-count').textContent = provider ? `(${provider.models.length} 个模型)` : '';
+      document.getElementById('detail-id').textContent = pid;
+      document.getElementById('detail-count').textContent = provider ? String(provider.models.length) : '-';
+      document.getElementById('detail-endpoint').textContent =
+        provider && provider.baseURL ? provider.baseURL : '由 Provider 配置决定（来源未发布端点）';
+      document.getElementById('detail-env').textContent =
+        provider && provider.env.length ? provider.env.join(', ') : '来源未提供环境变量名';
+      const docs = document.getElementById('detail-docs');
+      docs.innerHTML = provider && provider.doc
+        ? `<a class="text-purple-300 hover:text-purple-200 underline break-all" target="_blank" rel="noreferrer" href="${escapeAttr(provider.doc)}">官方文档</a>`
+        : '<span class="text-zinc-500">来源未提供文档链接</span>';
+      document.getElementById('detail-sync').textContent = dateOnly(catalogMeta.generatedAt);
+    }
+
+    // ── 模型列表 ─────────────────────────────────────────────────────────────
     function filterModels() {
       const q = searchQuery.toLowerCase().trim();
       return allModels.filter(m => {
-        if (currentFilterProv !== 'all' && m.providerId !== currentFilterProv) return false;
-
+        if (currentFilterProv !== 'all' && m.providerID !== currentFilterProv) return false;
         if (currentFilterCap === 'reasoning' && !m.reasoning) return false;
-        if (currentFilterCap === 'attachment' && !m.attachment) return false;
-        if (currentFilterCap === 'toolCall' && !m.toolCall) return false;
-        if (currentFilterCap === 'largeContext' && m.context < 128000) return false;
-
+        if (currentFilterCap === 'vision' && !m.vision) return false;
+        if (currentFilterCap === 'tools' && !m.tools) return false;
+        if (currentFilterCap === 'structured' && m.structured !== true) return false;
+        if (currentFilterCap === 'largeContext' && (m.context || 0) < 128000) return false;
         if (q) {
-          const matchName = (m.name || '').toLowerCase().includes(q);
-          const matchId = (m.modelId || '').toLowerCase().includes(q);
-          const matchProv = (m.providerName || '').toLowerCase().includes(q) || (m.providerId || '').toLowerCase().includes(q);
-          if (!matchName && !matchId && !matchProv) return false;
+          const haystacks = [m.name, m.id, m.providerName, m.providerID, m.family || ''];
+          if (!haystacks.some(h => String(h).toLowerCase().includes(q))) return false;
         }
-
         return true;
       });
     }
 
     function formatNumber(n) {
-      if (!n) return '0';
+      if (!n) return '-';
       if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 === 0 ? 0 : 1) + 'M';
       if (n >= 1000) return (n / 1000).toFixed(0) + 'k';
-      return n.toString();
+      return String(n);
+    }
+
+    function formatPrice(value) {
+      if (value === null || value === undefined) return null;
+      return '$' + Number(value).toFixed(Number(value) >= 10 ? 1 : 2);
     }
 
     function renderModels() {
@@ -433,7 +492,7 @@
       const footerCount = document.getElementById('footer-count');
       const loadMoreBtn = document.getElementById('load-more-btn');
 
-      footerCount.textContent = `共展示 ${Math.min(renderLimit, filtered.length).toLocaleString()} / ${filtered.length.toLocaleString()} 个模型 (总计 ${allModels.length.toLocaleString()})`;
+      footerCount.textContent = `共展示 ${Math.min(renderLimit, filtered.length).toLocaleString()} / ${filtered.length.toLocaleString()} 个模型 (全目录 ${allModels.length.toLocaleString()})`;
 
       if (filtered.length > renderLimit) {
         loadMoreBtn.classList.remove('hidden');
@@ -447,72 +506,76 @@
           <div class="col-span-full py-16 text-center text-zinc-500">
             <svg class="w-10 h-10 mx-auto mb-2 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             <p>未找到符合条件的具体模型</p>
-          </div>
-        `;
+          </div>`;
         return;
       }
 
-      const slice = filtered.slice(0, renderLimit);
-      container.innerHTML = slice.map((m) => {
+      container.innerHTML = filtered.slice(0, renderLimit).map(m => {
+        const priceIn = formatPrice(m.costInput);
+        const priceOut = formatPrice(m.costOutput);
+        const price = (priceIn || priceOut)
+          ? `${priceIn ?? '-'} / ${priceOut ?? '-'} <span class="text-zinc-600">/1M tokens</span>`
+          : '<span class="text-zinc-600">价格未发布</span>';
+        const dates = [
+          m.release ? `发布 ${escapeHtml(m.release)}` : '',
+          m.updated ? `更新 ${escapeHtml(m.updated)}` : ''
+        ].filter(Boolean).join(' · ');
+
         return `
           <div class="bg-zinc-900/80 border border-zinc-800/80 hover:border-purple-500/50 rounded-2xl p-5 flex flex-col justify-between transition-all hover:shadow-xl hover:shadow-purple-950/20 group">
             <div>
               <div class="flex items-start justify-between gap-2 mb-2">
-                <button 
-                  onclick="selectProvider('${escapeAttr(m.providerId)}')" 
-                  class="text-xs px-2.5 py-0.5 rounded-full bg-zinc-800 hover:bg-purple-900/50 text-zinc-300 hover:text-purple-200 font-medium border border-zinc-700/60 transition-colors"
-                  title="点击仅筛选此厂商"
-                >
-                  ${escapeHtml(m.providerName)}
-                </button>
-                <span class="text-[11px] text-zinc-500 font-mono">${escapeHtml(m.swiftDriver || 'openaiChat')}</span>
+                <button onclick="selectProvider('${escapeAttr(m.providerID)}')"
+                        class="text-xs px-2.5 py-0.5 rounded-full bg-zinc-800 hover:bg-purple-900/50 text-zinc-300 hover:text-purple-200 font-medium border border-zinc-700/60 transition-colors truncate max-w-[60%]"
+                        title="点击仅筛选此厂商">${escapeHtml(m.providerName)}</button>
+                ${m.status === 'deprecated' ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-red-950/60 text-red-300 border border-red-800/50 shrink-0">已停用</span>' : ''}
               </div>
-              <h3 class="font-bold text-base text-zinc-100 group-hover:text-purple-300 transition-colors line-clamp-1" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</h3>
+              <h3 class="font-bold text-base text-zinc-100 group-hover:text-purple-300 transition-colors line-clamp-1" title="${escapeAttr(m.name)}">${escapeHtml(m.name)}</h3>
               <div class="flex items-center gap-1.5 mt-0.5">
-                <p class="text-xs text-zinc-400 font-mono line-clamp-1 flex-1" title="${escapeHtml(m.modelId)}">${escapeHtml(m.modelId)}</p>
-                <button onclick="copyModelID('${escapeAttr(m.modelId)}')" class="text-zinc-500 hover:text-zinc-300 p-0.5 rounded" title="复制模型ID">
+                <p class="text-xs text-zinc-400 font-mono line-clamp-1 flex-1" title="${escapeAttr(m.providerID + '/' + m.id)}">${escapeHtml(m.id)}</p>
+                <button onclick="copyQualifiedID('${escapeAttr(m.providerID)}', '${escapeAttr(m.id)}')" class="text-zinc-500 hover:text-zinc-300 p-0.5 rounded" title="复制 provider/model">
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                 </button>
               </div>
-              
-              <div class="flex flex-wrap gap-1.5 mt-3 text-[11px]">
-                ${m.context ? `<span class="px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-300 border border-zinc-700/50">⚡️ ${formatNumber(m.context)} ctx</span>` : ''}
-                ${m.reasoning ? `<span class="px-2 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-800/50">🧠 Reasoning</span>` : ''}
-                ${m.attachment ? `<span class="px-2 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-800/50">👁 Vision</span>` : ''}
-                ${m.toolCall ? `<span class="px-2 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-800/50">🛠 Tools</span>` : ''}
+
+              <div class="grid grid-cols-2 gap-1.5 mt-3 text-[11px] font-mono">
+                <div class="px-2 py-1 rounded bg-zinc-800/70 border border-zinc-700/50 text-zinc-300">⚡️ 上下文 ${formatNumber(m.context)}</div>
+                <div class="px-2 py-1 rounded bg-zinc-800/70 border border-zinc-700/50 text-zinc-300">↗ 输出 ${formatNumber(m.output)}</div>
               </div>
+
+              <div class="flex flex-wrap gap-1.5 mt-3 text-[11px]">
+                ${m.reasoning ? '<span class="px-2 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-800/50">🧠 Reasoning</span>' : ''}
+                ${m.vision ? '<span class="px-2 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-800/50">👁 Vision</span>' : ''}
+                ${m.attachments && !m.vision ? '<span class="px-2 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-800/50">📎 Attachments</span>' : ''}
+                ${m.tools ? '<span class="px-2 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-800/50">🛠 Tools</span>' : ''}
+                ${m.structured === true ? '<span class="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800/50">🧩 Structured</span>' : ''}
+                ${m.openWeights ? '<span class="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700/60">Open weights</span>' : ''}
+              </div>
+
+              ${m.description ? `<p class="mt-3 text-[11px] text-zinc-500 leading-relaxed line-clamp-2" title="${escapeAttr(m.description)}">${escapeHtml(m.description)}</p>` : ''}
             </div>
 
-            <div class="mt-5 pt-4 border-t border-zinc-800/60 flex items-center justify-between text-xs">
-              <div class="text-zinc-400 font-mono text-[11px]">
-                ${m.costInput || m.costOutput ? `$${m.costInput || 0} / $${m.costOutput || 0} <span class="text-zinc-600">/1M</span>` : '<span class="text-zinc-600">-</span>'}
+            <div class="mt-4 pt-3 border-t border-zinc-800/60 flex items-end justify-between gap-2 text-xs">
+              <div class="text-zinc-400 font-mono text-[11px] leading-relaxed">
+                <div>${price}</div>
+                ${dates ? `<div class="text-zinc-600 mt-1">${dates}</div>` : ''}
               </div>
-              <button 
-                onclick="showSwiftCode('${escapeAttr(m.providerId)}', '${escapeAttr(m.modelId)}', '${escapeAttr(m.name)}', '${escapeAttr(m.baseURL)}')" 
-                class="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-purple-600 hover:text-white text-zinc-300 font-medium transition-colors flex items-center space-x-1"
-              >
-                <span>Swift 调用</span>
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-              </button>
             </div>
-          </div>
-        `;
+          </div>`;
       }).join('');
     }
 
     function escapeHtml(str) {
-      if (!str) return '';
+      if (str === null || str === undefined) return '';
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
     function escapeAttr(str) {
-      if (!str) return '';
+      if (str === null || str === undefined) return '';
       return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
     }
 
-    window.copyModelID = function(modelId) {
-      navigator.clipboard.writeText(modelId).then(() => {
-        showToast(`已复制模型ID: ${modelId}`);
-      });
+    window.copyQualifiedID = function(providerId, modelId) {
+      navigator.clipboard.writeText(`${providerId}/${modelId}`).then(() => showToast(`已复制 ${providerId}/${modelId}`));
     };
 
     function showToast(msg) {
@@ -520,81 +583,69 @@
       toast.textContent = msg;
       toast.classList.remove('opacity-0');
       toast.classList.add('opacity-100');
-      setTimeout(() => {
-        toast.classList.remove('opacity-100');
-        toast.classList.add('opacity-0');
-      }, 2000);
+      setTimeout(() => { toast.classList.remove('opacity-100'); toast.classList.add('opacity-0'); }, 2000);
     }
 
-    window.showSwiftCode = function(providerId, modelId, modelName, baseURL) {
-      const modal = document.getElementById('code-modal');
-      const title = document.getElementById('modal-title');
-      const subtitle = document.getElementById('modal-subtitle');
-      const code = document.getElementById('modal-code');
+    // ── SDK 示例：只有真实 Public API 才上图 ─────────────────────────────────
+    // 这段文本与 Tests/LingXiModelSDKTests/ModelSDKExampleCompileTests.swift 编译
+    // 通过的调用形式一致；改了这里就得改了 SDK，否则 CI 失败。
+    const SDK_EXAMPLE = `import LingXiModelSDK
 
-      title.textContent = `Swift 调用代码: ${modelName}`;
-      subtitle.textContent = `${providerId}/${modelId} • ${baseURL || 'OpenAI Compatible'}`;
+// 读取唯一发布物 https://models.lingxifox.cn/models.json
+let catalog = try await LingXiModelCatalog.load()
 
-      const envVar = providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY';
-      const snippet = `import LingXiAgent
+if let model = catalog.model(provider: "deepseek", id: "deepseek-v4-flash") {
+    print(model.name)                          // 显示名
+    print(model.contextWindow ?? 0)            // 上下文窗口（tokens）
+    print(model.maxOutputTokens ?? 0)          // 输出上限（tokens）
+    print(model.capabilities.reasoning)        // 是否推理模型
+    print(model.capabilities.toolCalling)      // 是否支持工具调用
+    print(model.pricing.input ?? 0.0)          // 输入单价（USD / 1M tokens）
+    print(model.pricing.output ?? 0.0)         // 输出单价（USD / 1M tokens）
+}
 
-// 1. One-line inference via LingXiAgent Registry
-let model = LingXiAgent.model("${providerId}/${modelId}", apiKey: processEnvironment["${envVar}"])
+// 按能力筛选
+let eligible = catalog.models(matching: ModelFilter(
+    vision: true,
+    minimumContextWindow: 200_000
+))
+print("\\(eligible.count) 个支持视觉、窗口 ≥ 200k 的模型")
 
-// 2. Or initialize via OpenAI-Compatible factory
-let provider = LingXiProvider.openAICompatible(
-    baseURL: URL(string: "${baseURL || 'https://api.lingxifox.cn/v1'}")!,
-    apiKey: processEnvironment["${envVar}"]
-)
-let session = provider.model("${modelId}")
+// 目录版本与新鲜度
+print(catalog.revision.catalogRevision)
+print(catalog.revision.generatedAt as Any)`;
 
-// 3. Stream responses with reasoning support
-for try await chunk in session.stream("Hello, LingXi!") {
-    if let reasoning = chunk.reasoning {
-        print("[Thinking] \\(reasoning)", terminator: "")
-    }
-    print(chunk.text, terminator: "")
-}`;
+    document.getElementById('sdk-example').textContent = SDK_EXAMPLE;
 
-      code.textContent = snippet;
-      modal.classList.remove('hidden');
-    };
-
-    // Modal Events
-    const closeModal = () => document.getElementById('code-modal').classList.add('hidden');
-    document.getElementById('close-modal').addEventListener('click', closeModal);
-    document.getElementById('close-modal-bottom').addEventListener('click', closeModal);
-    document.getElementById('code-modal').addEventListener('click', (e) => {
-      if (e.target === document.getElementById('code-modal')) closeModal();
+    document.getElementById('open-sdk-btn').addEventListener('click', () => {
+      document.getElementById('sdk-modal').classList.remove('hidden');
     });
-
-    document.getElementById('copy-btn').addEventListener('click', () => {
-      const text = document.getElementById('modal-code').textContent;
-      navigator.clipboard.writeText(text).then(() => {
-        const textSpan = document.getElementById('copy-text');
-        textSpan.textContent = '已复制！';
-        setTimeout(() => textSpan.textContent = '复制代码', 2000);
+    const closeSdk = () => document.getElementById('sdk-modal').classList.add('hidden');
+    document.getElementById('close-sdk-modal').addEventListener('click', closeSdk);
+    document.getElementById('sdk-modal').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('sdk-modal')) closeSdk();
+    });
+    document.getElementById('copy-sdk-btn').addEventListener('click', () => {
+      navigator.clipboard.writeText(document.getElementById('sdk-example').textContent).then(() => {
+        const label = document.getElementById('copy-sdk-text');
+        label.textContent = '已复制！';
+        setTimeout(() => { label.textContent = '复制'; }, 2000);
       });
     });
 
-    // Provider sidebar interaction
-    document.getElementById('btn-all-providers').addEventListener('click', () => {
-      selectProvider('all');
-    });
-    document.getElementById('reset-provider-btn').addEventListener('click', () => {
-      selectProvider('all');
-    });
-    document.getElementById('clear-provider-filter').addEventListener('click', () => {
-      selectProvider('all');
+    document.getElementById('toggle-provider-detail').addEventListener('click', () => {
+      document.getElementById('provider-detail').classList.toggle('hidden');
     });
 
-    // Provider search input
+    document.getElementById('btn-all-providers').addEventListener('click', () => selectProvider('all'));
+    document.getElementById('reset-provider-btn').addEventListener('click', () => selectProvider('all'));
+    document.getElementById('clear-provider-filter').addEventListener('click', () => selectProvider('all'));
+
     document.getElementById('provider-search-input').addEventListener('input', (e) => {
       providerSearchQuery = e.target.value;
       renderProviderList();
     });
 
-    // Model search input
     let debounceTimer;
     document.getElementById('search-input').addEventListener('input', (e) => {
       clearTimeout(debounceTimer);
@@ -605,7 +656,6 @@ for try await chunk in session.stream("Hello, LingXi!") {
       }, 150);
     });
 
-    // Capability filters
     document.querySelectorAll('.cap-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.cap-btn').forEach(b => {
@@ -618,7 +668,6 @@ for try await chunk in session.stream("Hello, LingXi!") {
       });
     });
 
-    // Load More Button
     document.getElementById('load-more-btn').addEventListener('click', () => {
       renderLimit += 120;
       renderModels();
