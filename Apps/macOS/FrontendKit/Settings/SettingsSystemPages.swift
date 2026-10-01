@@ -53,7 +53,7 @@ struct ExtensionsSettingsPage: View {
             }
             ForEach(Array(items.enumerated()), id: \.element.id) { index, ext in
                 if index > 0 { LXSettingsDivider() }
-                ExtensionRow(ext: ext) { enabled in
+                ExtensionRow(store: store, ext: ext) { enabled in
                     Task { await store.setExtension(ext.id, enabled: enabled) }
                 }
                 .settingsAnchor("extension.\(ext.id)")
@@ -114,8 +114,16 @@ struct ExtensionsSettingsPage: View {
 }
 
 private struct ExtensionRow: View {
+    @ObservedObject var store: SettingsStore
     let ext: ExtensionInfo
     var onToggle: (Bool) -> Void
+
+    @State private var isOpen = false
+    /// Core's answer for this one extension, re-read on open. Kept separate from `ext` so the
+    /// row can show what the list said and what Core says now, side by side, instead of quietly
+    /// overwriting one with the other.
+    @State private var live: ExtensionInfo?
+    @State private var isReading = false
 
     /// §1: colour lands on the 6pt dot only — the state text stays text-primary.
     var dotColor: Color { ExtensionState(ext: ext).tone }
@@ -167,6 +175,93 @@ private struct ExtensionRow: View {
                 .accessibilityLabel("\(ext.id) 启用状态")
         }
         .lxSettingsRow()
+        // Disclosure, not a new card: the row itself stays as the list laid it out.
+        .contextMenu {
+            Button(isOpen ? "收起详情" : "查看详情") { toggle() }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                toggle()
+            } label: {
+                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(isOpen ? "收起 \(ext.id) 详情" : "查看 \(ext.id) 详情")
+            .padding(.trailing, 2)
+            .padding(.bottom, 2)
+        }
+        if isOpen {
+            ExtensionDetailRow(store: store, listed: ext, live: live, isReading: isReading) {
+                Task { await read() }
+            }
+        }
+    }
+
+    private func toggle() {
+        isOpen.toggle()
+        if isOpen && live == nil { Task { await read() } }
+    }
+
+    private func read() async {
+        isReading = true
+        defer { isReading = false }
+        live = await store.extensionStatus(ext.id)
+    }
+}
+
+/// What §9 asks an extension detail to cover: state, version, scope, summary, and the enable
+/// switch. Install / uninstall / configure / executeCommand are deliberately not offered here —
+/// `ExtensionInfo` exposes no flag saying whether a given object can be uninstalled or has a
+/// configuration schema, and §9 forbids a button whose applicability the runtime cannot answer.
+/// Those verbs live in `lingxiagent-ops`, where the caller states the target explicitly.
+private struct ExtensionDetailRow: View {
+    @ObservedObject var store: SettingsStore
+    let listed: ExtensionInfo
+    let live: ExtensionInfo?
+    let isReading: Bool
+    let onRefresh: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+            LXSettingsDivider()
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                      alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                field("生命周期", shown?.lifecycleState ?? "—")
+                field("版本", shown?.version ?? "—")
+                field("作用域", shown?.scope ?? "—")
+                field("启用", shown?.enabled == true ? "已启用" : "已停用")
+            }
+            if let summary = shown?.summary, !summary.isEmpty {
+                Text(summary).font(LXType.meta).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if live == nil && !isReading {
+                Text("Core 没有回答这个扩展的当前状态，上面是列表里的值。")
+                    .font(LXType.meta).foregroundStyle(.orange)
+            }
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Button(isReading ? "读取中…" : "重新读取状态") { onRefresh() }
+                    .disabled(isReading || store.client == nil)
+                    .buttonStyle(LXButtonStyle(.secondary, size: .small))
+            }
+        }
+        .font(LXType.meta)
+        .padding(.horizontal, LingXiMetrics.Space.md)
+        .padding(.bottom, LingXiMetrics.Space.sm)
+    }
+
+    /// Live when we have it, listed otherwise — with the gap stated rather than papered over.
+    private var shown: ExtensionInfo? { live ?? listed }
+
+    private func field(_ label: String, _ value: String) -> some View {
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: LingXiMetrics.Space.sm)
+            Text(value).textSelection(.enabled)
+        }
     }
 }
 

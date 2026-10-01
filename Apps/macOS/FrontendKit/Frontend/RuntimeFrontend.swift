@@ -735,6 +735,66 @@ public final class RuntimeFrontend: ObservableObject {
         await refreshAgentTree()
     }
 
+    // MARK: - Context inspector (§8)
+
+    /// The session id the inspector queries. Read from Core's projected state rather than a
+    /// GUI-side notion of "current", so the inspector cannot search a session the user left.
+    private var activeSessionID: SessionID? { lastState.activeSessionID }
+
+    public func searchCurrentContext(_ query: String) async throws -> [ContextSearchResultItem] {
+        guard let client, let sessionID = activeSessionID else {
+            throw CoreError(code: .notReady, message: "未连接 Core 或没有活动会话，无法搜索上下文。")
+        }
+        return try await client.context.search(sessionID: sessionID, query: query)
+    }
+
+    public func contextEntry(uri: String) async throws -> ContextEntryItem {
+        guard let client, let sessionID = activeSessionID else {
+            throw CoreError(code: .notReady, message: "未连接 Core 或没有活动会话，无法打开上下文条目。")
+        }
+        return try await client.context.getEntry(sessionID: sessionID, uri: uri)
+    }
+
+    /// Re-reads what the inspector header shows. Failures are left alone rather than shown as
+    /// zero: an unread policy must look unknown, not empty.
+    public func refreshContextInspector() async {
+        guard let client else { return }
+        if let policy = try? await client.context.getPolicy() {
+            inspectorModel.effectivePolicy = policy
+        }
+    }
+
+    /// §10.1: the turn performance report Core actually produces. Reachable from the runtime
+    /// detail surface rather than a Settings page, because it is per session and Settings has no
+    /// session — the alternative was the global ProviderMetrics RPC, which answered hardcoded
+    /// zeros and is now unsupported.
+    public func loadPerformanceReport() async {
+        guard let client, let sessionID = activeSessionID else {
+            inspectorModel.performance = nil
+            return
+        }
+        do {
+            inspectorModel.performance = try await client.diagnostics.getPerformanceMetrics(sessionID: sessionID)
+        } catch {
+            inspectorModel.performance = nil
+            actionError = "读取性能报告失败：\(error.localizedDescription)"
+        }
+    }
+
+    public func compactCurrentContext() async {
+        guard let client, let sessionID = activeSessionID else {
+            actionError = "未连接 Core，无法压缩上下文。"
+            return
+        }
+        do {
+            _ = try await client.context.compact(sessionID: sessionID)
+        } catch {
+            actionError = "压缩上下文失败：\(error.localizedDescription)"
+            return
+        }
+        await refreshContextInspector()
+    }
+
     public func runCommand(_ input: String) {
         guard let backend else {
             commandOutput = CommandOutput(title: input, text: "未连接 Core，命令不可用。")

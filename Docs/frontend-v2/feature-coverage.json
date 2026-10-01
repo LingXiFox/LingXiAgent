@@ -218,16 +218,15 @@
       ],
       "client": "ContextDomainClient",
       "application": "SessionViewState.contextState / contextPolicy",
-      "guiSurface": "AgentStatusHUD contextCard (P-Core, E-Core, cache, budget)",
+      "guiSurface": "ContextInspectorView (window: 上下文检查器), AgentStatusHUD contextCard",
       "settings": "context.pcore, context.ecore",
       "capability": null,
       "tests": [
+        "ContextInspectorClosureTests",
         "ContextCompactionTests"
       ],
-      "status": [
-        "CORE_USER_FEATURE_HIDDEN"
-      ],
-      "note": "OPEN: searchContext and getContextEntry are implemented and transported but no GUI surface calls them, so §8's Context Inspector is unfinished. The 运行上下文 card itself is frozen by §30 and was left untouched.",
+      "status": [],
+      "note": "§8 closed: searchContext and getContextEntry are reachable from the runtime detail window. The 运行上下文 card itself is frozen by §30 and was not touched — the inspector is a separate window, opened from the menu like 运行轨迹.",
       "evidence": [
         {
           "file": "Sources/LingXiCore/App/CoreHost.swift",
@@ -236,6 +235,26 @@
         {
           "file": "Sources/LingXiCore/App/CoreHost.swift",
           "contains": "func getContextEntry(envelope:"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/LingXiWorkbenchScene.swift",
+          "contains": "WindowGroup(\"上下文检查器\", id: \"context-inspector\")"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
+          "contains": "client.context.search(sessionID:"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
+          "contains": "client.context.getEntry(sessionID:"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Components/ContextInspectorView.swift",
+          "contains": "runtime.searchCurrentContext("
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Components/ContextInspectorView.swift",
+          "contains": "runtime.contextEntry(uri:"
         }
       ]
     },
@@ -340,20 +359,26 @@
       ],
       "client": "ExtensionDomainClient",
       "application": "SettingsStore.setExtension",
-      "guiSurface": "SettingsSystemPages extensions",
+      "guiSurface": "SettingsSystemPages ExtensionRow + live status disclosure",
       "settings": "extensions.list, extensions.reload",
       "capability": null,
       "tests": [
         "PluginSDKTests"
       ],
-      "status": [
-        "CORE_USER_FEATURE_HIDDEN"
-      ],
-      "note": "OPEN: Settings covers list/enable/disable/reload. get, getStatus, install, uninstall, configure and executeCommand exist in Core with no user-facing surface; §9 requires each to be classified and the user-visible ones built. Not yet done.",
+      "status": [],
+      "note": "§9 closed for what the runtime can answer: each row can re-read getStatus(id:) and shows state/version/scope/summary from that read. install / uninstall / configure / executeCommand are classified internal-only — ExtensionInfo exposes no flag saying whether a given object is uninstallable or has a configuration schema, and §9 forbids a button whose applicability the runtime cannot answer. Those verbs live in lingxiagent-ops, where the caller names the target.",
       "evidence": [
         {
           "file": "Sources/LingXiClient/VNext/Domains/ExtensionDomainClient.swift",
           "contains": "func list("
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Settings/SettingsStore.swift",
+          "contains": "client.extensionDomain.getStatus(id:"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Settings/SettingsSystemPages.swift",
+          "contains": "ExtensionDetailRow(store: store"
         }
       ]
     },
@@ -366,19 +391,26 @@
       ],
       "client": "DiagnosticsDomainClient.getPerformanceMetrics",
       "application": "SettingsStore.refresh",
-      "guiSurface": "none yet",
+      "guiSurface": "ContextInspectorView performanceSection",
       "settings": "diagnostics.runtime",
       "capability": null,
-      "tests": [],
-      "status": [
-        "CORE_USER_FEATURE_HIDDEN",
-        "GUI_DEAD_CONTROL"
+      "tests": [
+        "ContextInspectorClosureTests"
       ],
-      "note": "OPEN: the report is real and reachable from the client but nothing renders it, while the fabricated global ProviderMetrics that used to be shown has been removed. §10.1 wants it reachable from the right-hand inspector.",
+      "status": [],
+      "note": "§10.1 closed: TurnProfiler data reaches a surface. The fabricated global ProviderMetrics that used to be displayed is removed and now throws unsupported; per-session performance is what is real.",
       "evidence": [
         {
           "file": "Sources/LingXiCore/App/CoreHost.swift",
           "contains": "func getPerformanceMetrics(envelope:"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Components/ContextInspectorView.swift",
+          "contains": "runtime.inspectorModel.performance"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
+          "contains": "client.diagnostics.getPerformanceMetrics(sessionID:"
         }
       ]
     },

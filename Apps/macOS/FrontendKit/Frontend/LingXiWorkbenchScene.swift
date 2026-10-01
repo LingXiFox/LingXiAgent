@@ -44,12 +44,21 @@ public struct LingXiWorkbenchScene: Scene {
         .commands {
             LingXiMenuCommands(runtime: runtime, navigation: navigation, onOpenTraceWindow: {
                 openWindow(id: "trace-window")
+            }, onOpenContextInspector: {
+                openWindow(id: "context-inspector")
             })
         }
 
         // 独立非模态运行轨迹窗口
         WindowGroup("运行轨迹", id: "trace-window") {
             TraceWindowView(model: runtime.inspectorModel) { await runtime.refreshTrace() }
+                .tint(LXColor.accent)
+        }
+
+        // §8: the session's P/E runtime inspector. A window rather than a sidebar block, because
+        // §30 freezes the 运行上下文 card and lists Context Search as a detail surface.
+        WindowGroup("上下文检查器", id: "context-inspector") {
+            ContextInspectorView(runtime: runtime)
                 .tint(LXColor.accent)
         }
     }
@@ -81,6 +90,7 @@ public struct LingXiMenuCommands: Commands {
     @ObservedObject public var runtime: RuntimeFrontend
     @ObservedObject public var navigation: WarmNavigation
     public var onOpenTraceWindow: () -> Void
+    public var onOpenContextInspector: () -> Void
 
     public var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -145,6 +155,11 @@ public struct LingXiMenuCommands: Commands {
                 onOpenTraceWindow()
             }
             .keyboardShortcut("l", modifiers: [.option, .command])
+
+            Button("上下文检查器…") {
+                onOpenContextInspector()
+            }
+            .keyboardShortcut("j", modifiers: [.option, .command])
 
             Button("快速侧问浮窗") {
                 QuickAskPanelController.shared.show(onSubmit: { question in

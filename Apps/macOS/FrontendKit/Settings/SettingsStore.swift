@@ -355,6 +355,21 @@ public final class SettingsStore: ObservableObject {
         await perform("切换模型") { _ = try await $0.model.select(model: modelID) }
     }
 
+    /// Live status for one extension. The list is a snapshot of everything; opening a row asks
+    /// Core about just that one, so a row cannot keep showing `ready` after it failed to reload.
+    func extensionStatus(_ id: String) async -> ExtensionInfo? {
+        guard let client else {
+            notice = "未连接 Core，读不到扩展状态。"
+            return nil
+        }
+        do {
+            return try await client.extensionDomain.getStatus(id: id)
+        } catch {
+            notice = "读取「\(id)」状态失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
     func setExtension(_ id: String, enabled: Bool) async {
         await perform(enabled ? "启用扩展" : "停用扩展") { client in
             _ = enabled ? try await client.extensionDomain.enable(id: id)

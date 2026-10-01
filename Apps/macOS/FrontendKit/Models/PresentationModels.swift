@@ -440,6 +440,14 @@ public final class RuntimeInspectorPresentationModel: ObservableObject {
     @Published public var live: InspectorSnapshot?
     @Published public var traceEvents: [RuntimeTraceEvent] = []
     @Published public var isPresented: Bool = true
+    /// The effective policy as last read from Core by the context inspector.
+    ///
+    /// Not folded into `live`: `InspectorSnapshot` is rebuilt from `ApplicationState` on every
+    /// projection, and writing a fresh read into that projection would put GUI-owned values in
+    /// the place where Core's state is supposed to be authoritative.
+    @Published public var effectivePolicy: ContextCachePolicySnapshot?
+    /// The last turn's performance report, as Core profiled it.
+    @Published public var performance: TurnPerformanceReport?
 
     public init() {}
 }
