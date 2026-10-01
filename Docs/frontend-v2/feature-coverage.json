@@ -1,0 +1,484 @@
+{
+  "version": 1,
+  "updated": "2026-10-01",
+  "source": "LingXiAgent-GUI-Core-Closure-Freeze §23",
+  "comment": [
+    "Machine-checked inventory. FeatureCoverageManifestTests reads this file and fails if any",
+    "declared evidence is missing from the sources, so the table cannot drift from the code.",
+    "classification is one of: user-facing | observability-facing | internal-only | unsupported | deprecated.",
+    "Only user-facing and observability-facing features require a GUI surface; the others must",
+    "NOT have one, and an unsupported feature must throw rather than answer with empty or applied=true.",
+    "status lists closure-contract defects still open. CI_GATE requires that no user-facing or",
+    "observability-facing feature carries one."
+  ],
+  "features": [
+    {
+      "feature": "attachments",
+      "classification": "user-facing",
+      "core": "CoreHost.resolveAttachments -> SessionRuntime startTurn context entries",
+      "protocol": [
+        "turn.submit",
+        "content.beginUpload",
+        "content.uploadChunk",
+        "content.commitUpload",
+        "content.abortUpload"
+      ],
+      "client": "ResourceDomainClient.upload",
+      "application": "ApplicationAction.submitPrompt(text:attachments:)",
+      "guiSurface": "ComposerDock pickFiles/AttachmentStrip, RuntimeFrontend.submitWithAttachments",
+      "settings": null,
+      "capability": "supportsContentUpload",
+      "tests": [
+        "AttachmentClosureTests"
+      ],
+      "status": [],
+      "evidence": [
+        {
+          "file": "Apps/macOS/FrontendKit/Components/ComposerDock.swift",
+          "contains": "model.attachments.append"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
+          "contains": "client.resource.upload"
+        },
+        {
+          "file": "Sources/LingXiApplication/ApplicationStore.swift",
+          "contains": "UserInput(text: prompt, attachments: attachments)"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "resolveAttachments(input.attachments)"
+        },
+        {
+          "file": "Sources/LingXiCore/Modules/Session/SessionRuntime.swift",
+          "contains": "source: .attachment"
+        },
+        {
+          "file": "Sources/LingXiProtocol/ProtocolService.swift",
+          "contains": "func submitTurn(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "browser-monitor",
+      "classification": "user-facing",
+      "core": "CoreHost.getBrowserSessions / getBrowserCapture (read-only projection)",
+      "protocol": [
+        "browser.sessions",
+        "browser.capture"
+      ],
+      "client": "BrowserDomainClient.sessions / capture",
+      "application": "not routed through Application — the panel reads the typed domain client directly",
+      "guiSurface": "WarmToolPane WarmBrowserPane",
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "AgentSiteContentGateTests",
+        "BrowserCorrectnessTests"
+      ],
+      "status": [],
+      "note": "Deliberately read-only: §4 froze this as an Agent Browser Monitor and forbids inventing navigation RPCs to keep an address bar. The panel must not own a second browser.",
+      "evidence": [
+        {
+          "file": "Apps/macOS/FrontendKit/Components/WarmToolPane.swift",
+          "contains": "client.browser.sessions()"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Components/WarmToolPane.swift",
+          "contains": "client.browser.capture(sessionID:"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "func getBrowserSessions(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "session-goal",
+      "classification": "user-facing",
+      "core": "SessionGoalRegistry via CoreHost.setSessionGoal",
+      "protocol": [
+        "session.setGoal"
+      ],
+      "client": "SessionDomainClient.setGoal",
+      "application": "SessionReducer.goalChanged -> SessionViewState.goal",
+      "guiSurface": "ComposerDock GoalChip, RuntimeFrontend.setGoal",
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "GoalProjectionTests"
+      ],
+      "status": [],
+      "evidence": [
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
+          "contains": "client.session.setGoal(sessionID:"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "func setSessionGoal(envelope:"
+        },
+        {
+          "file": "Sources/LingXiClient/VNext/Transport/InProcessTransport.swift",
+          "contains": "service.setSessionGoal(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "agent-tree",
+      "classification": "user-facing",
+      "core": "CoreHost.getAgentTree, cancelRun, resumeRun",
+      "protocol": [
+        "agent.tree",
+        "run.cancel",
+        "run.resume",
+        "run.get",
+        "run.list"
+      ],
+      "client": "RunDomainClient.getAgentTree / cancelRun / resumeRun",
+      "application": "SessionViewState.runs / subagents",
+      "guiSurface": "AgentTreeSheet, AgentStatusHUD subagentSection",
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "RuntimeSurfaceClosureTests"
+      ],
+      "status": [],
+      "note": "Resume is offered only for non-terminal runs: CoreHost.resumeRun now refuses terminal states instead of answering applied=true with an unchanged snapshot.",
+      "evidence": [
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
+          "contains": "client.run.getAgentTree(sessionID:"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Components/AgentTreeSheet.swift",
+          "contains": "Button(\"恢复\")"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "run.status.isTerminal"
+        }
+      ]
+    },
+    {
+      "feature": "task-lifecycle",
+      "classification": "user-facing",
+      "core": "CoreHost+TaskService: create/get/list/pause/resume/cancel/fork/updateCriteria/artifacts/report/finalize",
+      "protocol": [
+        "task.create",
+        "task.get",
+        "task.list",
+        "task.pause",
+        "task.resume",
+        "task.cancel",
+        "task.fork",
+        "task.criteria",
+        "task.artifacts",
+        "task.report",
+        "task.finalize"
+      ],
+      "client": "TaskDomainClient",
+      "application": "ApplicationStore task actions",
+      "guiSurface": "WarmTasksPane, AgentStatusHUD taskSection",
+      "settings": null,
+      "capability": "taskPause, taskResume, taskFork",
+      "tests": [
+        "TaskRuntimeTests",
+        "RuntimeSurfaceClosureTests"
+      ],
+      "status": [
+        "CORE_USER_FEATURE_HIDDEN"
+      ],
+      "note": "OPEN: getTaskReport has a real implementation but nothing in Core produces a TaskReport, so it always answers nil. An honest nil, not a fake — but the report feature is not user-visible yet. Either build report generation or classify it unsupported and drop the RPC.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost+TaskService.swift",
+          "contains": "func updateTaskCriteria(envelope:"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost+TaskService.swift",
+          "contains": "func listTaskArtifacts(envelope:"
+        },
+        {
+          "file": "Sources/LingXiClient/VNext/Transport/InProcessTransport.swift",
+          "contains": "service.finalizeTask(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "context-inspector",
+      "classification": "observability-facing",
+      "core": "CoreHost.getContextState/Policy, searchContext, getContextEntry, compactContext",
+      "protocol": [
+        "context.state",
+        "context.policy",
+        "context.search",
+        "context.entry",
+        "context.compact"
+      ],
+      "client": "ContextDomainClient",
+      "application": "SessionViewState.contextState / contextPolicy",
+      "guiSurface": "AgentStatusHUD contextCard (P-Core, E-Core, cache, budget)",
+      "settings": "context.pcore, context.ecore",
+      "capability": null,
+      "tests": [
+        "ContextCompactionTests"
+      ],
+      "status": [
+        "CORE_USER_FEATURE_HIDDEN"
+      ],
+      "note": "OPEN: searchContext and getContextEntry are implemented and transported but no GUI surface calls them, so §8's Context Inspector is unfinished. The 运行上下文 card itself is frozen by §30 and was left untouched.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "func searchContext(envelope:"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "func getContextEntry(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "git",
+      "classification": "user-facing",
+      "core": "CoreHost+GitRPC",
+      "protocol": [
+        "git.status",
+        "git.diff",
+        "git.log",
+        "git.show",
+        "git.branch",
+        "git.add",
+        "git.restore",
+        "git.checkout",
+        "git.switch",
+        "git.commit",
+        "git.fetch",
+        "git.pull",
+        "git.push"
+      ],
+      "client": "GitDomainClient",
+      "application": "WarmGitPane mutations",
+      "guiSurface": "WarmToolPane WarmGitPane",
+      "settings": null,
+      "capability": "git.rpc, git.remote.sync",
+      "tests": [
+        "GitRPCSurfaceTests"
+      ],
+      "status": [],
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost+GitRPC.swift",
+          "contains": "func gitStatus(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "terminal",
+      "classification": "user-facing",
+      "core": "CoreHost+Terminal",
+      "protocol": [
+        "terminal.list",
+        "terminal.spawn",
+        "terminal.read",
+        "terminal.write",
+        "terminal.interrupt",
+        "terminal.close"
+      ],
+      "client": "TerminalDomainClient",
+      "application": "RuntimeFrontend terminal actions",
+      "guiSurface": "WarmToolPane WarmTerminalPane",
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "TerminalSessionTests"
+      ],
+      "status": [],
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost+Terminal.swift",
+          "contains": "func spawnTerminalSession(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "permission-question-hitl",
+      "classification": "user-facing",
+      "core": "InteractionRuntime",
+      "protocol": [
+        "interaction.list",
+        "interaction.resolve"
+      ],
+      "client": "InteractionDomainClient",
+      "application": "ApplicationAction.respondInteraction",
+      "guiSurface": "ComposerDock interaction cards via InteractionSurfaces, runtime.resolveInteraction",
+      "settings": "permissions",
+      "capability": null,
+      "tests": [
+        "LingXiAppPhase0Tests",
+        "ProtocolVNextFrozenContractTests"
+      ],
+      "status": [],
+      "evidence": [
+        {
+          "file": "Apps/macOS/FrontendKit/Components/ComposerDock.swift",
+          "contains": "runtime.resolveInteraction(interactionID:"
+        }
+      ]
+    },
+    {
+      "feature": "extensions",
+      "classification": "user-facing",
+      "core": "ExtensionRuntime: list/get/getStatus/enable/disable/reload/install/uninstall/configure/executeCommand",
+      "protocol": [
+        "extension.list",
+        "extension.get",
+        "extension.status",
+        "extension.enable",
+        "extension.reload"
+      ],
+      "client": "ExtensionDomainClient",
+      "application": "SettingsStore.setExtension",
+      "guiSurface": "SettingsSystemPages extensions",
+      "settings": "extensions.list, extensions.reload",
+      "capability": null,
+      "tests": [
+        "PluginSDKTests"
+      ],
+      "status": [
+        "CORE_USER_FEATURE_HIDDEN"
+      ],
+      "note": "OPEN: Settings covers list/enable/disable/reload. get, getStatus, install, uninstall, configure and executeCommand exist in Core with no user-facing surface; §9 requires each to be classified and the user-visible ones built. Not yet done.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiClient/VNext/Domains/ExtensionDomainClient.swift",
+          "contains": "func list("
+        }
+      ]
+    },
+    {
+      "feature": "diagnostics-performance",
+      "classification": "observability-facing",
+      "core": "CoreHost.getPerformanceMetrics via TurnProfiler",
+      "protocol": [
+        "runtime.performance"
+      ],
+      "client": "DiagnosticsDomainClient.getPerformanceMetrics",
+      "application": "SettingsStore.refresh",
+      "guiSurface": "none yet",
+      "settings": "diagnostics.runtime",
+      "capability": null,
+      "tests": [],
+      "status": [
+        "CORE_USER_FEATURE_HIDDEN",
+        "GUI_DEAD_CONTROL"
+      ],
+      "note": "OPEN: the report is real and reachable from the client but nothing renders it, while the fabricated global ProviderMetrics that used to be shown has been removed. §10.1 wants it reachable from the right-hand inspector.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "func getPerformanceMetrics(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "run-trace",
+      "classification": "unsupported",
+      "core": "CoreHost.getRunTrace throws unsupportedCommand",
+      "protocol": [
+        "runtime.runTrace"
+      ],
+      "client": "DiagnosticsDomainClient.getRunTrace",
+      "application": null,
+      "guiSurface": null,
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "ProtocolVNextFrozenContractTests"
+      ],
+      "status": [],
+      "note": "Used to return a hard-coded ['run.start','run.finish'] for every run. A real trace needs a span store; until then it is unsupported, per §10.2. TraceWindowView is unaffected — it reads RuntimeTraceEvent from the diagnostics bundle, which is real.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "contains": "func getRunTrace(envelope:"
+        }
+      ]
+    },
+    {
+      "feature": "agent-presets-multirun",
+      "classification": "unsupported",
+      "core": "protocol extension throws unsupportedCommand for all three",
+      "protocol": [
+        "agent.presets",
+        "agent.runs",
+        "agent.compare"
+      ],
+      "client": null,
+      "application": null,
+      "guiSurface": null,
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "ProtocolSurfaceParityTests"
+      ],
+      "status": [],
+      "note": "The defaults used to invent three presets, return [] as if there were no runs, and answer applied=true with an empty comparison. §11.3.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiProtocol/ProtocolService.swift",
+          "contains": "该 Runtime 不提供 Agent Preset 目录。"
+        }
+      ]
+    },
+    {
+      "feature": "capability-gateway",
+      "classification": "internal-only",
+      "core": "CapabilityGateway actor",
+      "protocol": null,
+      "client": null,
+      "application": null,
+      "guiSurface": null,
+      "settings": null,
+      "capability": null,
+      "tests": [
+        "CapabilityGatewayWhiteBoxTests"
+      ],
+      "status": [],
+      "note": "§21 category C. It was broadcast as the protocol feature capability.gateway with no RPC behind it; the enum case is gone. Re-advertising it requires an RPC, a dispatch and an implementation.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/Modules/Capability/CapabilityGateway.swift",
+          "contains": "public actor CapabilityGateway"
+        }
+      ]
+    },
+    {
+      "feature": "multimodal-input",
+      "classification": "unsupported",
+      "core": "ModelContentPart has no image case",
+      "protocol": null,
+      "client": null,
+      "application": null,
+      "guiSurface": "attachment picker refuses non-text with a stated reason",
+      "settings": null,
+      "capability": "supportsContentUpload covers transport only, not inference",
+      "tests": [
+        "AttachmentClosureTests"
+      ],
+      "status": [],
+      "note": "Recorded explicitly because the freeze asks for image attachments. Upload works and is not the limitation; a turn cannot carry an image to a model. §3 was closed for text attachments and images are refused out loud rather than accepted and ignored. Adding it means a content part plus the OpenAI and Anthropic encodings.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiProtocol/AttachmentSupport.swift",
+          "contains": "maximumTurnCharacters"
+        },
+        {
+          "file": "Sources/LingXiCore/Modules/Model/ModelDomain.swift",
+          "contains": "public enum ModelContentPart"
+        }
+      ]
+    }
+  ]
+}
