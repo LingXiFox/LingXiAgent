@@ -1,0 +1,15 @@
+{
+  "chunk": 30,
+  "total_chunks": 100,
+  "suites": ["ReasoningEffortTests", "PlatformAbstractionAndDecouplingTests"],
+  "filter": "LingXiAgentTests\.ReasoningEffortTests/|LingXiAgentTests\.PlatformAbstractionAndDecouplingTests/",
+  "expected_tests": 22,
+  "executed_tests": 22,
+  "passed_tests": 22,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

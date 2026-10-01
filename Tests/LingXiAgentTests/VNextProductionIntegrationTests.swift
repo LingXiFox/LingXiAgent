@@ -235,7 +235,7 @@ struct VNextProductionIntegrationTests {
         let store = await ApplicationStore(client: client)
         await store.dispatch(.createSession())
         let sessionID = try #require(await store.state.activeSessionID)
-        await store.dispatch(.submitPrompt("Stop this turn"))
+        await store.dispatch(.submitPrompt(text: "Stop this turn"))
         await provider.waitStreams(1)
 
         await store.dispatch(.stopCurrentRun)
@@ -343,7 +343,7 @@ struct VNextProductionIntegrationTests {
         #expect(state2.nextTurnPermission == PermissionConfiguration.yoloFullAccess)
 
         // 3. Submit a prompt: ApplicationStore should capture the intent
-        await store.dispatch(.submitPrompt("Build something under YOLO"))
+        await store.dispatch(.submitPrompt(text: "Build something under YOLO"))
 
         // After submitPrompt, nextTurnMode and nextTurnPermission are consumed/reset
         let state3 = await store.state
@@ -448,7 +448,7 @@ struct VNextProductionIntegrationTests {
         let sessionID = try #require(sessionReceipt.result?.sessionID)
         await store.switchToSession(sessionID)
         await store.dispatch(.setPermissionConfiguration(.yoloFullAccess))
-        await store.dispatch(.submitPrompt("Use the tools, then answer."))
+        await store.dispatch(.submitPrompt(text: "Use the tools, then answer."))
 
         for _ in 0..<100 {
             if let session = await store.state.activeSessionState,
@@ -508,7 +508,7 @@ struct VNextProductionIntegrationTests {
         let session = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(session.result?.sessionID)
         await store.switchToSession(sessionID)
-        await store.dispatch(.submitPrompt("先确认再继续"))
+        await store.dispatch(.submitPrompt(text: "先确认再继续"))
 
         var permission: InteractionSnapshot?
         for _ in 0..<100 {
@@ -647,7 +647,7 @@ struct VNextProductionIntegrationTests {
         let session = try await client.session.create(workspace: tempDir.path)
         let sessionID = try #require(session.result?.sessionID)
         await store.switchToSession(sessionID)
-        await store.dispatch(.submitPrompt("写入桌面"))
+        await store.dispatch(.submitPrompt(text: "写入桌面"))
 
         for _ in 0..<100 {
             let state = await store.state.activeSessionState
@@ -669,7 +669,7 @@ struct VNextProductionIntegrationTests {
 
         let permissionResult = try await store.executeCommand("/permissions yolo")
         #expect(permissionResult.nextTurnPermission == .yoloFullAccess)
-        await store.dispatch(.submitPrompt("切换后写入桌面并回答"))
+        await store.dispatch(.submitPrompt(text: "切换后写入桌面并回答"))
 
         for _ in 0..<250 {
             let state = await store.state.activeSessionState

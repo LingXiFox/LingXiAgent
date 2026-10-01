@@ -14,7 +14,9 @@ public enum ApplicationAction: Sendable {
     case listSessions
 
     // MARK: - Prompt & 执行
-    case submitPrompt(String)
+    /// A turn submission. `attachments` are `ContentRef`s already uploaded to Core — the
+    /// frontend uploads before dispatching, so an action carrying refs means the bytes exist.
+    case submitPrompt(text: String, attachments: [ContentRef] = [])
     case cancelRun(RunID, reason: String? = nil)
     case stopCurrentRun
     case setMode(AgentMode)

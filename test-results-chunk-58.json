@@ -1,0 +1,15 @@
+{
+  "chunk": 58,
+  "total_chunks": 100,
+  "suites": ["PublicSDKConsumerGateTests", "PlatformConformanceHarness"],
+  "filter": "LingXiPlatformContractTests\.PublicSDKConsumerGateTests/|LingXiPlatformContractTests\.PlatformConformanceHarness/",
+  "expected_tests": 12,
+  "executed_tests": 12,
+  "passed_tests": 12,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

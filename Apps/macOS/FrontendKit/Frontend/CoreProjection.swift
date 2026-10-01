@@ -59,6 +59,23 @@ enum CoreProjection {
                          artifacts: capsule.artifacts)
     }
 
+    /// Rebuilds an attachment chip from what the snapshot actually carries.
+    ///
+    /// `ContentRef` names no file, so the label is the content id — the honest option. Showing
+    /// the real filename would mean Core persisted it into the message, which it does not; the
+    /// alternative of hiding restored attachments entirely is what made a reconnect look like the
+    /// files had gone away (§3.3).
+    static func projectedAttachment(_ ref: ContentRef) -> AttachmentPresentation {
+        let short = String(ref.id.rawValue.prefix(8))
+        return AttachmentPresentation(
+            filename: "附件 \(short)",
+            mediaType: ref.mediaType ?? "application/octet-stream",
+            byteCount: ref.byteCount ?? 0,
+            sourceURL: nil,
+            contentRef: ref
+        )
+    }
+
     // MARK: Timeline
 
     static func timeline(_ session: SessionViewState?) -> [TimelineItemPresentation] {
@@ -75,7 +92,11 @@ enum CoreProjection {
             switch message.role {
             case .user:
                 let matchedTurnID = session.turns.first(where: { $0.value.userMessage.messageID == message.messageID })?.key.rawValue
-                return .user(content: message.content, attachments: [], messageID: message.messageID.rawValue, turnID: matchedTurnID, sessionID: session.sessionID.rawValue)
+                return .user(content: message.content,
+                             attachments: message.citations.map(projectedAttachment),
+                             messageID: message.messageID.rawValue,
+                             turnID: matchedTurnID,
+                             sessionID: session.sessionID.rawValue)
             case .assistant:
                 guard !message.content.isEmpty || message.isStreaming else { return nil }
                 return .assistant(content: message.content, isStreaming: message.isStreaming)

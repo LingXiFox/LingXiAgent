@@ -19,7 +19,10 @@ extension ContextSource {
         switch self {
         case .system:
             return .stablePrefix
-        case .userMessage, .assistantMessage, .toolCall, .toolResult, .observation:
+        // An attachment travels with the turn that introduced it, so it is growing context —
+        // never the stable prefix, which is shared across turns and would keep a one-off file
+        // in every subsequent request.
+        case .userMessage, .assistantMessage, .toolCall, .toolResult, .observation, .attachment:
             return .growingContext
         case .projectPage, .derivedPage:
             return .eCoreIndex
@@ -34,6 +37,8 @@ public enum ContextSource: String, Sendable, Equatable, Hashable {
     case assistantMessage
     case toolCall
     case toolResult
+    /// Bytes the user attached to a turn, read out of the content store by Core.
+    case attachment
     case projectPage
     case derivedPage
     case observation

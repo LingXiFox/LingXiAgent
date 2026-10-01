@@ -287,7 +287,7 @@ struct FrontendWireCodableTests {
             .renameSession(sessionID: session, newTitle: "new"),
             .deleteSession(sessionID: session),
             .listSessions,
-            .submitPrompt(text: "hello"),
+            .submitPrompt(text: "hello", attachments: []),
             .stopCurrentRun,
             .cancelRun(runID: run, reason: nil),
             .setMode(mode: .plan),

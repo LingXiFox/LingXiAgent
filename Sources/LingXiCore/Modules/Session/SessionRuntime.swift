@@ -304,8 +304,9 @@ public actor SessionRuntime {
         await dataPlane.trackAgent(turnTask, streamID: opened.stream.id)
     }
 
+
     /// 启动一轮对话并立即返回 DMA 通道；同一 Session 只允许一个活动 turn。
-    public func startTurn(_ content: String, executionContext: RunExecutionContext? = nil) async throws -> OpenedStream {
+    public func startTurn(_ content: String, attachments: [ResolvedAttachment] = [], executionContext: RunExecutionContext? = nil) async throws -> OpenedStream {
         guard !shuttingDown, !turnRunning else {
             throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次")
         }
@@ -320,6 +321,17 @@ public actor SessionRuntime {
                 userMessage = try await store.appendMessage(sessionID, role: .user, content: content)
             }
             let userEntry = ContextEntry(messageID: userMessage.id, role: .user, source: .userMessage, part: .text(content))
+            // Each attachment becomes its own entry so the budget planner can page one out
+            // without taking the user's sentence with it, and so `sourceCounts` shows where the
+            // characters came from.
+            let attachmentEntries = attachments.map { item in
+                ContextEntry(
+                    messageID: userMessage.id,
+                    role: .user,
+                    source: .attachment,
+                    part: .text("ATTACHED FILE \(item.filename) (\(item.mediaType)):\n\(item.text)")
+                )
+            }
             var updatedEntries = currentActiveEntries
             if updatedEntries.isEmpty {
                 if let snapshot = await contextEngine.latestSnapshot(for: sessionID) {
@@ -330,7 +342,7 @@ public actor SessionRuntime {
                 }
             }
             if !updatedEntries.contains(where: { $0.messageID == userMessage.id }) {
-                updatedEntries.append(userEntry)
+                updatedEntries.append(contentsOf: [userEntry] + attachmentEntries)
             }
             await syncL1ResidentAccounting(with: updatedEntries)
             guard modelBus.gateway.modelID != nil else {
@@ -626,6 +638,14 @@ public actor SessionRuntime {
                         origin = entry.messageID?.rawValue ?? "history"
                         inclusionReason = "L1 historical assistant response"
                         cacheProvenance = "l1WorkingSet"
+                    case .attachment:
+                        // Attached with this turn's message, so it is current-turn content — it
+                        // shows up in the manifest as its own row rather than folded into the
+                        // user's sentence, which is what lets a budget decision page it out alone.
+                        sourceKind = "Current Turn"
+                        origin = entry.messageID?.rawValue ?? "attachment"
+                        inclusionReason = "File attached to the active turn"
+                        cacheProvenance = "currentTurn"
                     case .toolCall, .toolResult, .observation:
                         sourceKind = "L1"
                         origin = entry.messageID?.rawValue ?? "observation"

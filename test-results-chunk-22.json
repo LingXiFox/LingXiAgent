@@ -1,0 +1,15 @@
+{
+  "chunk": 22,
+  "total_chunks": 100,
+  "suites": ["OpenAIAdapterTests"],
+  "filter": "LingXiAgentTests\.OpenAIAdapterTests/",
+  "expected_tests": 13,
+  "executed_tests": 13,
+  "passed_tests": 13,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

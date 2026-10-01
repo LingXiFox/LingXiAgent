@@ -1,0 +1,15 @@
+{
+  "chunk": 68,
+  "total_chunks": 100,
+  "suites": ["EnumDecoderRobustnessTests", "WallpaperStyleTests", "SymbolIndexTests"],
+  "filter": "LingXiWireContractTests\.EnumDecoderRobustnessTests/|LingXiAgentTests\.WallpaperStyleTests/|LingXiAgentTests\.SymbolIndexTests/",
+  "expected_tests": 15,
+  "executed_tests": 15,
+  "passed_tests": 15,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

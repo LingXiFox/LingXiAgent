@@ -1,0 +1,15 @@
+{
+  "chunk": 96,
+  "total_chunks": 100,
+  "suites": ["CapabilityGatewayWhiteBoxTests", "UnifiedRetrievalPhaseR13Tests", "ShellWorkspaceBoundaryTests", "RuntimeDiagnosticsTests", "RewindPhase5Tests", "RewindPhase4Tests"],
+  "filter": "LingXiAgentTests\.CapabilityGatewayWhiteBoxTests/|LingXiAgentTests\.UnifiedRetrievalPhaseR13Tests/|LingXiAgentTests\.ShellWorkspaceBoundaryTests/|LingXiAgentTests\.RuntimeDiagnosticsTests/|LingXiAgentTests\.RewindPhase5Tests/|LingXiAgentTests\.RewindPhase4Tests/",
+  "expected_tests": 13,
+  "executed_tests": 13,
+  "passed_tests": 13,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

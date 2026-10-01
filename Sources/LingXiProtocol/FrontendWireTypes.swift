@@ -122,7 +122,7 @@ public enum FrontendCommand: Codable, Sendable, Equatable {
     case listSessions
 
     // Prompt & execution
-    case submitPrompt(text: String)
+    case submitPrompt(text: String, attachments: [ContentRef])
     case stopCurrentRun
     case cancelRun(runID: RunID, reason: String?)
     case setMode(mode: AgentMode)

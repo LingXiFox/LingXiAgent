@@ -1,0 +1,15 @@
+{
+  "chunk": 94,
+  "total_chunks": 100,
+  "suites": ["PluginSDKIntegrationTests", "NativeGUIVisualArchitectureTests", "ModelSelectionIdentityTests", "LingXiAgentPublicModelSDKIntegrationTests"],
+  "filter": "LingXiAgentTests\.PluginSDKIntegrationTests/|LingXiAgentTests\.NativeGUIVisualArchitectureTests/|LingXiAgentTests\.ModelSelectionIdentityTests/|LingXiAgentTests\.LingXiAgentPublicModelSDKIntegrationTests/",
+  "expected_tests": 12,
+  "executed_tests": 12,
+  "passed_tests": 12,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 10,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

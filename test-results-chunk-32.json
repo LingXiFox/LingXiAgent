@@ -1,0 +1,15 @@
+{
+  "chunk": 32,
+  "total_chunks": 100,
+  "suites": ["IPCPeerRobustnessTests", "DarwinDesktopBackendTests"],
+  "filter": "LingXiAgentTests\.IPCPeerRobustnessTests/|LingXiAgentTests\.DarwinDesktopBackendTests/",
+  "expected_tests": 22,
+  "executed_tests": 22,
+  "passed_tests": 22,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

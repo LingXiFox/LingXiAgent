@@ -113,7 +113,7 @@ public enum ExecCLI {
             await store.dispatch(.setReasoningEffort(effort))
         }
 
-        await store.dispatch(.submitPrompt(finalPrompt))
+        await store.dispatch(.submitPrompt(text: finalPrompt))
 
         var printedCharsCount = 0
         var reportedToolCalls = Set<ToolCallID>()

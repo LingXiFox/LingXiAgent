@@ -2535,6 +2535,9 @@ extension CoreHost {
         }
 
         do {
+            // Resolved inside the turn's own error path: a file the user attached that cannot be
+            // read must terminalize the run with a visible error, not abort a detached task.
+            let resolvedAttachments = try await resolveAttachments(input.attachments)
             var stream: OpenedStream?
             var retries = 5
             while true {
@@ -2542,6 +2545,7 @@ extension CoreHost {
                     stream = try await agent.sendMessage(
                         sessionID,
                         input.text,
+                        attachments: resolvedAttachments,
                         executionIntent: executionIntent,
                         explicitRunID: AgentRunID(runID.rawValue),
                         explicitModel: explicitModelSelection
@@ -2814,6 +2818,53 @@ extension CoreHost {
             eventCursor: await runtimeEventLog.currentCursor(),
             payload: caps
         )
+    }
+
+    /// Reads the bytes a turn references out of the content store, so the Agent Loop is handed
+    /// text rather than an address it cannot resolve.
+    ///
+    /// A ref that cannot be read or decoded fails the turn. The alternative — dropping that
+    /// attachment and proceeding — produces a turn the user believes carried a file, which is the
+    /// fake-success shape §3.2 of the closure contract rules out. The GUI filters by media type
+    /// first, so this is the trust boundary, not the user's first line of defence.
+    private func resolveAttachments(_ refs: [ContentRef]) async throws -> [ResolvedAttachment] {
+        guard !refs.isEmpty else { return [] }
+        let budget = AttachmentSupport.maximumTurnCharacters
+        var resolved: [ResolvedAttachment] = []
+        var carried = 0
+        for ref in refs {
+            let metadata = try? await contentStore.metadata(id: ref.id, authorization: .system)
+            let name = metadata?.filename ?? ref.id.rawValue
+            let mediaType = ref.mediaType ?? metadata?.ref.mediaType
+            guard AttachmentSupport.isText(mediaType: mediaType) else {
+                throw CoreError(code: .binaryFileUnsupported, message: """
+                附件「\(name)」是 \(mediaType ?? "未知类型")，本 Runtime 的模型请求只能携带文本。
+                """)
+            }
+            let data: Data
+            do {
+                data = try await contentStore.read(id: ref.id, authorization: .system)
+            } catch let error as CoreError {
+                throw error
+            } catch {
+                throw CoreError(code: .resourceNotFound,
+                                message: "附件「\(name)」的内容已不在存储中，无法用于本轮：\(error.localizedDescription)")
+            }
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CoreError(code: .binaryFileUnsupported,
+                                message: "附件「\(name)」不是 UTF-8 文本，无法交给模型。")
+            }
+            guard carried + text.count <= budget else {
+                throw CoreError(code: .contextBudgetExceeded, message: """
+                附件合计超过单轮 \(budget) 字符上限（「\(name)」自身 \(text.count) 字符）。\
+                请缩小文件或分轮发送。
+                """)
+            }
+            carried += text.count
+            resolved.append(ResolvedAttachment(
+                filename: name, mediaType: mediaType ?? "text/plain", text: text, ref: ref))
+        }
+        return resolved
     }
 
     // MARK: - Idempotency & In-Flight Concurrency Control

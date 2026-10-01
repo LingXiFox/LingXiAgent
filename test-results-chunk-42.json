@@ -1,0 +1,15 @@
+{
+  "chunk": 42,
+  "total_chunks": 100,
+  "suites": ["CacheBustFaultTests", "AgentSessionTests"],
+  "filter": "LingXiAgentTests\.CacheBustFaultTests/|LingXiAgentTests\.AgentSessionTests/",
+  "expected_tests": 18,
+  "executed_tests": 18,
+  "passed_tests": 18,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

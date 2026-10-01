@@ -97,7 +97,7 @@ public final class AppCompositionRoot: Sendable {
                 await store.dispatch(.setReasoningEffort(effort))
             }
             if let prompt = configuration.initialPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                await store.dispatch(.submitPrompt(prompt))
+                await store.dispatch(.submitPrompt(text: prompt))
             }
         }
 

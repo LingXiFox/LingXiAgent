@@ -222,8 +222,8 @@ public actor ApplicationStore {
     public func dispatch(_ action: ApplicationAction) async {
         switch action {
         // MARK: 1. Prompt & Turn 提交
-        case let .submitPrompt(prompt):
-            await handleSubmitPrompt(prompt)
+        case let .submitPrompt(text: prompt, attachments):
+            await handleSubmitPrompt(prompt, attachments: attachments)
 
         // MARK: 2. 会话管理
         case let .createSession(title, mode):
@@ -538,7 +538,7 @@ public actor ApplicationStore {
     }
 
     // MARK: - Prompt 处理
-    private func handleSubmitPrompt(_ prompt: String) async {
+    private func handleSubmitPrompt(_ prompt: String, attachments: [ContentRef] = []) async {
         debug("handleSubmitPrompt.begin prompt=\(prompt.prefix(20))")
         var sessionID = state.activeSessionID
         let nextMode = state.nextTurnMode ?? state.activeSessionState?.mode ?? .build
@@ -651,7 +651,7 @@ public actor ApplicationStore {
         }
         notifyStateChanged()
 
-        let input = UserInput(text: prompt)
+        let input = UserInput(text: prompt, attachments: attachments)
         // 乐观呈现用户消息气泡：消除回车后的等待空白，带来原生即时响应体验
         let optimisticMessageID = MessageID("opt:\(UUID().uuidString)")
         let optimisticNodeID = TimelineNodeID.message(optimisticMessageID)

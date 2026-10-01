@@ -1,0 +1,15 @@
+{
+  "chunk": 49,
+  "total_chunks": 100,
+  "suites": ["ContextValueEvictionTests", "ContextCachePolicyTests"],
+  "filter": "LingXiAgentTests\.ContextValueEvictionTests/|LingXiAgentTests\.ContextCachePolicyTests/",
+  "expected_tests": 16,
+  "executed_tests": 16,
+  "passed_tests": 16,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

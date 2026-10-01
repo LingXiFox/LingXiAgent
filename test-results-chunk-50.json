@@ -1,0 +1,15 @@
+{
+  "chunk": 50,
+  "total_chunks": 100,
+  "suites": ["CodingToolContractTests", "ProtocolVersionContractTests"],
+  "filter": "LingXiAgentTests\.CodingToolContractTests/|LingXiWireContractTests\.ProtocolVersionContractTests/",
+  "expected_tests": 15,
+  "executed_tests": 15,
+  "passed_tests": 15,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

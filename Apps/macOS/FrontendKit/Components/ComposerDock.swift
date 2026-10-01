@@ -135,8 +135,9 @@ struct ComposerSurface: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            insertFileReferences(urls)
-            return !urls.isEmpty
+            let files = urls.filter(\.isFileURL)
+            files.forEach(addAttachment(url:))
+            return !files.isEmpty
         } isTargeted: { isDropTargeted = $0 }
         .confirmationDialog("开启 YOLO 完全访问？", isPresented: $confirmYOLO) {
             Button("开启 YOLO", role: .destructive) {
@@ -175,14 +176,12 @@ struct ComposerSurface: View {
                  ? "改动会以「已暂存、未提交」的形式落到主工作区，由你审阅后提交；随后移除此 Worktree 并回到主工作区。"
                  : "Worktree 目录与分支 \(workspace.worktreeBranch ?? "") 会被删除，其中未应用的改动无法恢复。")
         }
-        .alert("Worktree", isPresented: Binding(get: { runtime.worktreeError != nil },
-                                                set: { if !$0 { runtime.worktreeError = nil } })) {
+        .alert("Worktree", isPresented: errorBinding(\RuntimeFrontend.worktreeError)) {
             Button("好") { runtime.worktreeError = nil }
         } message: {
             Text(runtime.worktreeError ?? "")
         }
-        .alert("操作未完成", isPresented: Binding(get: { runtime.actionError != nil },
-                                                 set: { if !$0 { runtime.actionError = nil } })) {
+        .alert("操作未完成", isPresented: errorBinding(\RuntimeFrontend.actionError)) {
             Button("好") { runtime.actionError = nil }
         } message: {
             Text(runtime.actionError ?? "")
@@ -516,23 +515,44 @@ struct ComposerSurface: View {
         runtime.sendMessage(text: model.text, mode: model.selectedMode, attachments: model.attachments)
     }
 
+    /// Presenting an optional message as an alert is the same four lines twice; inlined, the
+    /// surrounding modifier chain stops type-checking inside the compiler's budget.
+    private func errorBinding(_ path: ReferenceWritableKeyPath<RuntimeFrontend, String?>) -> Binding<Bool> {
+        Binding(
+            get: { runtime[keyPath: path] != nil },
+            set: { if !$0 { runtime[keyPath: path] = nil } }
+        )
+    }
+
     private func beginGoalEdit() {
         goalDraft = model.goal ?? ""
         isEditingGoal = true
     }
 
+    /// Attaches files the composer can actually hand to Core.
+    ///
+    /// This used to splice `@/abs/path` into the text field. That looked like an attachment and
+    /// was a sentence: nothing parsed it, and the file's contents never reached the model. The
+    /// strip below now holds real files, which `RuntimeFrontend` uploads before submitting.
     private func pickFiles() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = true
-        panel.prompt = "引用"
-        if panel.runModal() == .OK { insertFileReferences(panel.urls) }
+        // A directory has no bytes to attach; the agent reads directories through its own tools.
+        panel.canChooseDirectories = false
+        panel.prompt = "添加"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls where url.isFileURL { addAttachment(url: url) }
     }
 
-    private func insertFileReferences(_ urls: [URL]) {
-        let refs = urls.filter(\.isFileURL).map { "@" + $0.path }
-        guard !refs.isEmpty else { return }
-        model.text += separator + refs.joined(separator: " ") + " "
+    private func addAttachment(url: URL) {
+        guard !model.attachments.contains(where: { $0.sourceURL == url }) else { return }
+        guard let mediaType = AttachmentSupport.mediaType(for: url) else {
+            runtime.actionError = AttachmentSupport.unsupportedReason(for: url)
+            return
+        }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+        model.attachments.append(AttachmentPresentation(
+            filename: url.lastPathComponent, mediaType: mediaType, byteCount: size, sourceURL: url))
     }
 
     private func insertReference(_ marker: String) {

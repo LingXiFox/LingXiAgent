@@ -585,10 +585,15 @@ struct LingXiClientVNextTests {
         checkpoint("diagnostics")
         let diag = try await client.diagnostics.getBundle()
         #expect(!diag.runtimeVersion.isEmpty)
-        let provMetrics = try await client.diagnostics.getProviderMetrics()
-        #expect(provMetrics.requestCount >= 0)
-        let trace = try await client.diagnostics.getRunTrace(sessionID: sessionID, runID: RunID("r-trace"))
-        #expect(trace.runID == RunID("r-trace"))
+        // `requestCount >= 0` and an echoed runID both passed on hardcoded answers, so they
+        // proved the call returned rather than that it was true. These two RPCs are now
+        // explicitly unsupported; the point of the check is that unsupported is an error, not zero.
+        await #expect(throws: CoreError.self) {
+            _ = try await client.diagnostics.getProviderMetrics()
+        }
+        await #expect(throws: CoreError.self) {
+            _ = try await client.diagnostics.getRunTrace(sessionID: sessionID, runID: RunID("r-trace"))
+        }
 
         // 13. Credential
         checkpoint("credential")

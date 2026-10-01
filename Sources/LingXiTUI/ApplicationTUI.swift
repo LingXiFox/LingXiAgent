@@ -618,7 +618,7 @@ public final class ApplicationTUI: Frontend {
                 if prompt.hasPrefix("/") {
                     executeLocalOrApplicationCommand(prompt, store: store)
                 } else {
-                    enqueue { await store.dispatch(.submitPrompt(prompt)) }
+                    enqueue { await store.dispatch(.submitPrompt(text: prompt)) }
                 }
             case .changed, .ignored:
                 updateCompletion()

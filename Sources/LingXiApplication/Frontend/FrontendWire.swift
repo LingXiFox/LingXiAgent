@@ -22,8 +22,8 @@ public extension ApplicationAction {
             .deleteSession(sessionID)
         case .listSessions:
             .listSessions
-        case let .submitPrompt(text):
-            .submitPrompt(text)
+        case let .submitPrompt(text: text, attachments):
+            .submitPrompt(text: text, attachments: attachments)
         case .stopCurrentRun:
             .stopCurrentRun
         case let .cancelRun(runID, reason):

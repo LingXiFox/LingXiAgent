@@ -1,0 +1,15 @@
+{
+  "chunk": 4,
+  "total_chunks": 100,
+  "suites": ["LingXiClientVNextTests"],
+  "filter": "LingXiAgentTests\.LingXiClientVNextTests/",
+  "expected_tests": 26,
+  "executed_tests": 26,
+  "passed_tests": 25,
+  "failed_tests": 1,
+  "exit_code": 1,
+  "elapsed_seconds": 5,
+  "status": "failed",
+  "timed_out": false,
+  "lingered": false
+}

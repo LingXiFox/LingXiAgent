@@ -434,6 +434,7 @@ public actor AgentRuntime {
     public func sendMessage(
         _ sessionID: SessionID,
         _ content: String,
+        attachments: [ResolvedAttachment] = [],
         executionIntent: TurnExecutionIntent? = nil,
         explicitRunID: AgentRunID? = nil,
         explicitModel: ModelSelection? = nil
@@ -442,7 +443,7 @@ public actor AgentRuntime {
         // Preserve the established contract: an unavailable provider still records the user turn.
         if modelBus.gateway.modelID == nil,
            (try? await modelResolver.resolve(explicitModel)) == nil {
-            return try await runtime(for: sessionID).startTurn(content)
+            return try await runtime(for: sessionID).startTurn(content, attachments: attachments)
         }
         do {
             // Reserve before the first await so concurrent callers cannot create a second lane.
@@ -472,7 +473,7 @@ public actor AgentRuntime {
                 workspaceID: projectScanner.root.path,
                 workspaceRevision: workspaceRevision
             )
-            return try await runtime(for: sessionID, run: run).startTurn(content, executionContext: runContext)
+            return try await runtime(for: sessionID, run: run).startTurn(content, attachments: attachments, executionContext: runContext)
         } catch {
             activeSessions.remove(sessionID)
             throw error

@@ -1032,6 +1032,11 @@ public actor ContextCompactor {
                 switch entry.source {
                 case .system: priority = 90
                 case .userMessage: priority = 70
+                // Between the user's own sentence and the assistant history that follows it:
+                // the file they just handed us matters more than what the model said last turn,
+                // and evicting it is a decision the P-side retention score makes here — not
+                // something E-Core heat gets a vote on.
+                case .attachment: priority = 65
                 case .assistantMessage: priority = 60
                 case .projectPage, .derivedPage: priority = 40
                 case .toolCall, .toolResult: priority = 1

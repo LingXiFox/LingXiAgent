@@ -423,7 +423,7 @@ struct RealProviderSmokeTests {
         let store = await ApplicationStore(client: client, autoConnect: false)
         try await store.connect()
         await store.dispatch(.createSession(title: "test", mode: .build))
-        await store.dispatch(.submitPrompt(prompt))
+        await store.dispatch(.submitPrompt(text: prompt))
 
         print("[TEST] Prompt submitted. Waiting for response...")
         for i in 0..<60 {

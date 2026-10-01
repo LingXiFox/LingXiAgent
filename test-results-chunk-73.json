@@ -1,0 +1,15 @@
+{
+  "chunk": 73,
+  "total_chunks": 100,
+  "suites": ["PEConfigKeyCompatibilityTests", "NonProviderLatencyRepairTests", "ModularProviderRegistryTests"],
+  "filter": "LingXiAgentTests\.PEConfigKeyCompatibilityTests/|LingXiAgentTests\.NonProviderLatencyRepairTests/|LingXiAgentTests\.ModularProviderRegistryTests/",
+  "expected_tests": 15,
+  "executed_tests": 15,
+  "passed_tests": 15,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 5,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

@@ -334,7 +334,7 @@ struct UndoAndCompactSpacingTests {
         #expect(stateBefore.effectiveReasoningEffort == .high)
 
         // 提交一轮对话
-        await store.dispatch(.submitPrompt("Hello"))
+        await store.dispatch(.submitPrompt(text: "Hello"))
 
         // 执行 /undo 撤回
         let result = try await store.executeCommand("/undo")

@@ -7,13 +7,23 @@ import LingXiApplication
 
 // MARK: - Attachment Presentation
 
+/// One file the user attached in the composer.
+///
+/// `sourceURL` is what gets read and uploaded; `contentRef` is what Core gave back. `isUploaded`
+/// is derived from the ref rather than stored, so the strip cannot claim a file is on the server
+/// because something set a flag.
 public struct AttachmentPresentation: Identifiable, Sendable, Equatable {
     public let id: String
     public let filename: String
     public let mediaType: String
     public let byteCount: Int
     public let thumbnailSymbol: String
-    public let isUploaded: Bool
+    /// Where the bytes came from, when this is a still-pending composer item.
+    ///
+    /// Nil for an attachment projected from a snapshot: after a reconnect the file is Core's,
+    /// not on this side of the wire, and there is nothing left to upload.
+    public let sourceURL: URL?
+    public var contentRef: ContentRef?
 
     public init(
         id: String = UUID().uuidString,
@@ -21,15 +31,19 @@ public struct AttachmentPresentation: Identifiable, Sendable, Equatable {
         mediaType: String,
         byteCount: Int,
         thumbnailSymbol: String = "doc.text",
-        isUploaded: Bool = true
+        sourceURL: URL?,
+        contentRef: ContentRef? = nil
     ) {
         self.id = id
         self.filename = filename
         self.mediaType = mediaType
         self.byteCount = byteCount
         self.thumbnailSymbol = thumbnailSymbol
-        self.isUploaded = isUploaded
+        self.sourceURL = sourceURL
+        self.contentRef = contentRef
     }
+
+    public var isUploaded: Bool { contentRef != nil }
 
     public var formattedSize: String {
         let kb = Double(byteCount) / 1024.0

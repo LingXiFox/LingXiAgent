@@ -1,0 +1,15 @@
+{
+  "chunk": 51,
+  "total_chunks": 100,
+  "suites": ["TaskLifecycleContractTests", "UnifiedRetrievalPhaseR1HardBenchmarkTests"],
+  "filter": "LingXiTaskLifecycleContractTests\.TaskLifecycleContractTests/|LingXiAgentTests\.UnifiedRetrievalPhaseR1HardBenchmarkTests/",
+  "expected_tests": 14,
+  "executed_tests": 14,
+  "passed_tests": 14,
+  "failed_tests": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 6,
+  "status": "passed",
+  "timed_out": false,
+  "lingered": false
+}

@@ -341,19 +341,77 @@ public final class RuntimeFrontend: ObservableObject {
 
     public func sendMessage(text: String, mode: AgentRunMode = .build, attachments: [AttachmentPresentation] = []) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         if trimmed.hasPrefix("/") {
+            // A slash command is a command line, not a turn; there is nowhere for a file to go.
+            guard attachments.isEmpty else {
+                actionError = "斜杠命令不能带附件。请先移除附件，或把附件和说明分成两次发送。"
+                return
+            }
             composerModel.clear()
             runCommand(trimmed)
             return
         }
         if let backend {
-            composerModel.clear()
-            Task { await backend.dispatch(.submitPrompt(text)) }
+            guard !attachments.isEmpty else {
+                composerModel.clear()
+                Task { await backend.dispatch(.submitPrompt(text: text, attachments: [])) }
+                return
+            }
+            Task { await submitWithAttachments(text: trimmed, attachments: attachments) }
             return
         }
         guard isPreview else { return }
         sendPreviewMessage(text: text, mode: mode, attachments: attachments)
+    }
+
+    /// Uploads the composer's attachments and only then submits.
+    ///
+    /// The draft is cleared after every upload succeeded, because §3.2 requires that a failed
+    /// attachment never turn into a silently attachment-free turn. One failure aborts the
+    /// submission: refs already obtained are left in Core's content store, which is where they
+    /// belong — they are addressed by digest and cost nothing to re-reference.
+    private func submitWithAttachments(text: String, attachments: [AttachmentPresentation]) async {
+        guard let client, let backend else {
+            actionError = "未连接 Core，附件无法上传。"
+            return
+        }
+        let limit = lastState.runtimeCapabilities?.maxAttachmentBytes ?? 100 * 1024 * 1024
+        var refs: [ContentRef] = []
+        for item in attachments {
+            // A chip with no local file is one projected back from a snapshot — already Core's,
+            // never re-uploadable. Reaching here would mean the pending strip held something it
+            // should not, and dropping it quietly is the failure mode worth guarding against.
+            guard let url = item.sourceURL else {
+                actionError = "「\(item.filename)」不在本机，无法再次上传。"
+                return
+            }
+            guard AttachmentSupport.isText(mediaType: item.mediaType) else {
+                actionError = AttachmentSupport.unsupportedReason(for: url)
+                return
+            }
+            guard item.byteCount <= limit else {
+                actionError = "「\(item.filename)」有 \(item.formattedSize)，超过本 Core 声明的附件上限 "
+                    + "\(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .file))。"
+                return
+            }
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                actionError = "读取「\(item.filename)」失败：\(error.localizedDescription)"
+                return
+            }
+            do {
+                refs.append(try await client.resource.upload(
+                    data: data, filename: item.filename, mediaType: item.mediaType))
+            } catch {
+                actionError = "上传「\(item.filename)」失败，本轮未发送：\(error.localizedDescription)"
+                return
+            }
+        }
+        composerModel.clear()
+        await backend.dispatch(.submitPrompt(text: text, attachments: refs))
     }
 
     public func stopGenerating() {

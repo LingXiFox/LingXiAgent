@@ -20,7 +20,8 @@ struct LingXiAppPhase0Tests {
         runtime.sendMessage(
             text: "Hello Cyber Fox!",
             mode: .build,
-            attachments: [AttachmentPresentation(filename: "mock.png", mediaType: "image/png", byteCount: 1024)]
+            attachments: [AttachmentPresentation(filename: "mock.png", mediaType: "image/png", byteCount: 1024,
+                                       sourceURL: URL(fileURLWithPath: "/tmp/mock.png"))]
         )
 
         // 验证用户主目录未产生临时污染
@@ -69,7 +70,8 @@ struct LingXiAppPhase0Tests {
             filename: "spec.pdf",
             mediaType: "application/pdf",
             byteCount: 2_500_000,
-            thumbnailSymbol: "doc.richtext"
+            thumbnailSymbol: "doc.richtext",
+            sourceURL: URL(fileURLWithPath: "/tmp/mock.pdf")
         )
 
         #expect(att.filename == "spec.pdf")
