@@ -294,26 +294,71 @@ models.lingxifox.cn  origin 已是新版，但 ESA 命中 30 天旧缓存：
 ```text
 SITE_SOURCE         = READY
 PRODUCTION_DEPLOY   = DONE（origin 层，两站点）
-EDGE_REFRESH        = PENDING —— 需 ESA 缓存刷新（URL 精确刷新）
+EDGE_REFRESH        = PARTIAL —— 4 个 key 已刷 3 个，剩 `models.lingxifox.cn/index.html`
 ```
 
-刷新目标 URL：
+刷新目标 URL（注意 `/index.html` 与 `/` 在 ESA 是两个独立 cache key）：
 
 ```text
 https://models.lingxifox.cn/models.json
 https://models.lingxifox.cn/
+https://models.lingxifox.cn/index.html
 https://models.lingxifox.cn/publication.json
 ```
 
-本机与服务器都没有 aliyun CLI，当前连接的 MCP 里没有阿里云工具，凭据也不在本狐可碰的范围内，
-因此这一步需要主人在 ESA 控制台执行，或明确授权一条带凭据的调用路径。
-`Cache-Control: public, max-age=60, must-revalidate` 在源站是对的，ESA 侧对这两个对象
-套了 30 天边缘 TTL，所以不刷新就只能等 TTL 自然过期。
+主人已手动刷新，公网实测结果：
+
+| 对象 | 状态 |
+|---|---|
+| `/models.json` | ✓ 5,295,273B、`schemaVersion 2.0`、`catalogRevision a3582ac44a04`，与仓库同源 |
+| `/publication.json` | ✓ 200，revision 一致 |
+| `/` | ✓ 已是新版（41,283B，hash `ce6aac307f41` == repo） |
+| `/summary.json` | ✓ 404（退役已生效） |
+| `/index.html` | ✓ 本狐通过 `openapi-mcp-core` 调 `esa PurgeCaches` 补刷（TaskId `1770326388113416` → `Complete 100%`） |
+
+程序化刷新（主人已连通 `openapi-mcp-core`，本狐执行）：
+
+```text
+esa list-sites                    → SiteId 172013220118740（lingxifox.cn / active / entranceplan）
+esa get-purge-quota --type file   → 今日 3/1000、30 天 47（配额充裕）
+esa purge-caches --site-id 172013220118740 --type file \
+    --content '{"Files":["https://models.lingxifox.cn/index.html"]}'
+        → TaskId 1770326388113416；describe-purge-tasks 显示 Complete / 100%
+```
+
+刷新后 `Scripts/catalog-drift-check.sh` 三项一致，exit 0 ✓。
+
+### 顺带查明：那个「异体哈希」不是旧缓存，而是 RUM 注入
+
+排查同一 URL 出现两种哈希时发现，差异来自 ESA 的前端监控注入：部分节点会在第一个
+`<script>` 前插入 `<script src="https://<id>.myalicdn.com/rum_common.js"></script>`
+（HTML 多 66 字节）。所以**公网 HTML 的原始字节哈希本来就不可与仓库文件直接比**：
+
+```text
+https://models.lingxifox.cn/index.html   41,283B 未注入 / 41,349B 注入
+https://agent.lingxifox.cn/index.html    81,141B 未注入 / 81,207B 注入
+归一化后 == 仓库摘要 ce6aac307f41 / 4c097a8df0cc ✓（内容本来就是新版）
+```
+
+因此 `catalog-drift-check.sh` 已加固：只剥离这一处已知注入再比哈希，其余字节必须严格相等；
+抓取改为临时文件 + 最多 3 次重试（节点不统一，且原先用命令替换取 body 会吞掉尾部换行，
+那本身就是一个会误报的缺陷）。验证：
+
+```text
+bash Scripts/catalog-drift-check.sh                                ✓ exit 0
+ORIGIN=https://agent.lingxifox.cn bash Scripts/catalog-drift-check.sh  ✓ exit 1（负例仍报 DRIFT/404）
+取注入变体归一化后与仓库摘要比对                                    ✓ 一致
+ModelCatalogConvergenceGateTests                                     ✓ 9/9
+```
+
+agent.lingxifox.cn 的 `index.html`、`docs.html`、`/docs`、`sdk.html` 公网内容与仓库对齐 ✓
+（`/sdk` 仍 404 —— Caddyfile 只给 `/docs` 配了 rewrite，是否归一另案）。
+
 
 ## S. 未闭环项
 
-1. **ESA 边缘缓存待刷新**（见 R）：`models.lingxifox.cn` 的 `/`、`/models.json`、
-   `/publication.json` 三个对象。属运维动作，不涉及代码正确性。
+1. ~~ESA 边缘缓存~~ 已闭环：主人刷 `/`、`/models.json`、`/publication.json`，
+   本狐用 `PurgeCaches` 补 `/index.html`，drift check 归零 ✓（见 R）。
 2. **未重出 release**（主人指示）：本次修复的是安装脚本，v1.1.0 包里本来就含
    `lingxiagent-ops`；用旧脚本装过的人需要重跑安装脚本才会补上该命令。
 3. 远程 CI 仍按 §81 保持关闭，等主人下令开启。
@@ -394,7 +439,7 @@ asset 列表被正确注入且 `.sha256` 被过滤；GitHub API 实际返回
 | `PLUGIN_SDK` | READY |
 | `AGENT_SITE` | READY |
 | `CI_GATE` | READY |
-| `PRODUCTION_DEPLOY` | DONE（origin）· `EDGE_REFRESH = PENDING`（ESA 刷新，需主人执行） |
+| `PRODUCTION_DEPLOY` | DONE（origin）· `EDGE_REFRESH = PARTIAL`：4 个 key 已刷 3 个，剩 `models.lingxifox.cn/index.html` |
 
 §81 的 16 项清单全部闭环：两个独立 SDK 仓库、双 MIT、0.1.0、Agent 消费远程包、
 PluginSDK Foundation-only、假遥测清除、host snapshot 落地、IPC 契约更正、
