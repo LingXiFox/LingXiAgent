@@ -384,6 +384,10 @@ struct AgentDefaultsSettingsPage: View {
 
                 ConfigNumberField(title: "单轮最大步数", info: "一次回合内 Agent 循环的步数上限。",
                                   key: ConfigKeys.maxAgentLoopSteps, store: store)
+                ConfigOptionalNumberField(title: "首选活跃 Token 预算",
+                                          info: "覆盖 ContextBudgetPlanner 按模型窗口推导的活跃预算。"
+                                              + "关闭时由 Core 自行推导，不要填 0——0 是一个真实值，不是「未设置」。",
+                                          unit: "tokens", key: ConfigKeys.preferredActiveTokens, store: store)
             }
 
             LXSettingsCard("子 Agent") {
@@ -670,7 +674,17 @@ struct ContextSettingsPage: View {
                              key: ConfigKeys.eCorePersistence, store: store)
                 ConfigToggle(title: "观察投影 (Observation Projection)", info: "将大体积多模态或命令输出结构化为紧凑观察摘要。",
                              key: ConfigKeys.observationProjection, store: store)
-                ConfigToggle(title: "访问热度追踪", info: "按访问热度决定上下文淘汰与召回优先顺序。",
+                ConfigToggle(title: "E-Core 使用剩余预算",
+                             info: "允许外延存储吃掉窗口里尚未分配的余量。关闭后只使用显式声明的召回预算。",
+                             key: ConfigKeys.eCoreUseRemainingBudget, store: store)
+                ConfigFractionField(title: "E-Core 压力阈值",
+                                    info: "E-Core 占用达到该比例时触发外延与回收。必须大于 0 且不大于 1。",
+                                    key: ConfigKeys.eCorePressureThreshold, store: store)
+                // §14.3: heat ranks recall and cache, it does not decide eviction. The previous
+                // wording said it ordered 上下文淘汰, which is the unfrozen semantics.
+                ConfigToggle(title: "访问热度追踪",
+                             info: "记录对象访问热度，用于 E-Core 召回排序、热点索引与缓存优先级，以及可观测性。"
+                                 + "不参与 P-Core 淘汰决策——淘汰只由 P 侧 RetentionScore 决定。",
                              key: ConfigKeys.heatTracking, store: store)
             }
             .settingsAnchor("context.ecore")

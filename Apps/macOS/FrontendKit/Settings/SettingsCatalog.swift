@@ -58,13 +58,50 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// Pages whose content only exists while a Core is connected.
-    var needsCore: Bool {
+    /// Which live Core sections this page renders.
+    ///
+    /// The old flag was a single `needsCore` that answered `false` for Agent Defaults (model
+    /// list), Context (effective policy), Code Intelligence (index + LSP), Computer Use (tool
+    /// status), Diagnostics (health, background tasks) and General (link, runtime info) — all of
+    /// which display Core data. Declaring a domain, rather than a yes/no, is what lets a page
+    /// refresh exactly what it is about to show.
+    var needsCoreData: Set<SettingsStore.LiveDomain> {
         switch self {
-        case .providers, .mcp, .skills, .plugins, .hooks, .workspace: return true
+        case .providers:               return [.providers, .models]
+        case .mcp, .skills, .plugins, .hooks: return [.extensions]
+        case .workspace:               return [.workspace]
+        case .agentDefaults:           return [.models, .runtime]
+        case .context:                 return [.context]
+        case .codeIntelligence:        return [.workspace]
+        case .computerUse:             return [.workspace]
+        case .permissions:             return [.runtime]
+        case .diagnostics:             return [.runtime, .diagnostics, .providers]
+        case .general:                 return [.runtime]
+        default:                       return []
+        }
+    }
+
+    /// Pages that read or write config.json.
+    var needsConfigFile: Bool {
+        switch self {
+        case .agentDefaults, .execution, .context, .codeIntelligence, .computerUse, .permissions:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Pages whose switches are app preferences (UserDefaults), not Core configuration.
+    var needsPreferences: Bool {
+        switch self {
+        case .appearance, .conversation, .shortcuts: return true
         default: return false
         }
     }
+
+    /// Kept as the "show the not-connected banner" question it always answered, now derived from
+    /// the declaration above so the two cannot disagree.
+    var needsCore: Bool { !needsCoreData.isEmpty }
 
     enum Group: String, CaseIterable, Identifiable {
         case app = "应用", agent = "Agent", extensions = "扩展", workspace = "工作区", system = "系统"
@@ -110,8 +147,6 @@ enum SettingsSearchIndex {
         .init(anchor: "general.sleep", page: .general, title: "运行时阻止系统睡眠", keywords: ["sleep", "caffeinate", "睡眠"]),
 
         .init(anchor: "appearance.scheme", page: .appearance, title: "配色模式", keywords: ["dark", "light", "深色", "浅色", "theme"]),
-        .init(anchor: "appearance.atmosphere", page: .appearance, title: "背景氛围", keywords: ["background", "glow", "渐变"]),
-        .init(anchor: "appearance.panel", page: .appearance, title: "浮动面板材质", keywords: ["glass", "玻璃", "透明", "material"]),
 
         .init(anchor: "conversation.thinking", page: .conversation, title: "默认展开思考", keywords: ["thinking", "reasoning"]),
         .init(anchor: "conversation.tools", page: .conversation, title: "默认展开工具输出", keywords: ["tool", "output"]),
@@ -120,7 +155,7 @@ enum SettingsSearchIndex {
         .init(anchor: "shortcuts.list", page: .shortcuts, title: "快捷键列表", keywords: ["shortcut", "hotkey", "⌘"]),
 
         .init(anchor: "providers.list", page: .providers, title: "Provider 账户", keywords: ["api key", "账户", "endpoint"]),
-        .init(anchor: "providers.reload", page: .providers, title: "重新发现 Provider", keywords: ["discovery", "catalog", "刷新"]),
+        .init(anchor: "providers.list", page: .providers, title: "重新发现 Provider", keywords: ["discovery", "catalog", "刷新"]),
         .init(anchor: "models.default", page: .agentDefaults, title: "默认模型", keywords: ["model", "selection", "模型"]),
 
         .init(anchor: ConfigKeys.behaviorProfile.id, page: .agentDefaults, title: "默认行为模式", keywords: ["build", "plan", "explore", "mode"]),
@@ -140,17 +175,17 @@ enum SettingsSearchIndex {
         .init(anchor: "context.pcore", page: .context, title: "P-Core 实时工作集", keywords: ["p-core", "target", "soft limit", "hard limit"]),
         .init(anchor: "context.ecore", page: .context, title: "E-Core 存储与召回", keywords: ["e-core", "storage", "recall", "pressure"]),
         .init(anchor: ConfigKeys.economicThreshold.id, page: .context, title: "经济阈值", keywords: ["economic", "threshold", "272k"]),
-        .init(anchor: "context.fabric", page: .context, title: "Context Fabric", keywords: ["e-core", "heat", "objectization"]),
+        .init(anchor: "context.ecore", page: .context, title: "Context Fabric", keywords: ["e-core", "heat", "objectization"]),
         .init(anchor: "context.live", page: .context, title: "当前生效策略", keywords: ["policy", "snapshot"]),
 
         .init(anchor: ConfigKeys.foregroundShellSeconds.id, page: .execution, title: "前台命令超时", keywords: ["timeout", "shell", "命令"]),
         .init(anchor: "execution.budgets", page: .execution, title: "分类执行时限", keywords: ["build", "test", "mcp", "provider", "subagent"]),
 
-        .init(anchor: "mcp.list", page: .mcp, title: "MCP 服务器", keywords: ["mcp", "server", "tools"]),
-        .init(anchor: "mcp.reload", page: .mcp, title: "重新加载扩展", keywords: ["reload"]),
-        .init(anchor: "skills.list", page: .skills, title: "Skills 技能库", keywords: ["skill", "技能", "agent"]),
-        .init(anchor: "plugins.list", page: .plugins, title: "Plugins 插件", keywords: ["plugin", "插件", "extension"]),
-        .init(anchor: "hooks.list", page: .hooks, title: "Hooks 钩子", keywords: ["hook", "事件", "lifecycle"]),
+        .init(anchor: "extensions.list", page: .mcp, title: "MCP 服务器", keywords: ["mcp", "server", "tools"]),
+        .init(anchor: "extensions.reload", page: .mcp, title: "重新加载扩展", keywords: ["reload"]),
+        .init(anchor: "extensions.list", page: .skills, title: "Skills 技能库", keywords: ["skill", "技能", "agent"]),
+        .init(anchor: "extensions.list", page: .plugins, title: "Plugins 插件", keywords: ["plugin", "插件", "extension"]),
+        .init(anchor: "extensions.list", page: .hooks, title: "Hooks 钩子", keywords: ["hook", "事件", "lifecycle"]),
         .init(anchor: "computer.permissions", page: .computerUse, title: "屏幕录制与辅助功能权限", keywords: ["screen recording", "accessibility", "computer use", "browser"]),
 
         .init(anchor: "workspace.summary", page: .workspace, title: "当前工作区", keywords: ["git", "index", "索引"]),

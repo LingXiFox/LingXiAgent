@@ -280,12 +280,9 @@ struct GeneralSettingsPage: View {
 
 struct AppearanceSettingsPage: View {
     @AppStorage(LXPreferenceKey.colorScheme) private var scheme = ColorSchemePreference.system
-    @AppStorage(LXPreferenceKey.atmosphere) private var atmosphere = AtmospherePreference.subtle
-    @AppStorage(LXPreferenceKey.panelMaterial) private var panel = PanelMaterialPreference.clear
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        LXSettingsScrollPage(title: "外观", subtitle: "界面配色模式、背景氛围与浮动面板材质。") {
+        LXSettingsScrollPage(title: "外观", subtitle: "界面配色模式。") {
             LXSettingsCard("主题") {
                 LabeledContent("配色模式") {
                     Picker("配色模式", selection: $scheme) {
@@ -298,42 +295,13 @@ struct AppearanceSettingsPage: View {
                 .settingsAnchor("appearance.scheme")
             }
 
-            LXSettingsCard(title: LXSettingsSectionHeader("材质")) {
-                LabeledContent {
-                    Picker("背景氛围", selection: $atmosphere) {
-                        ForEach(AtmospherePreference.allCases) { Text($0.label).tag($0) }
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                } label: {
-                    HStack(spacing: LingXiMetrics.Space.xs) {
-                        Text("背景氛围")
-                        InfoHint("工作区舞台的靛蓝 / 青色氛围光强度：关闭 · 柔和 · 浓郁。静态绘制，不做动画。")
-                    }
-                }
-                .lxSettingsRow()
-                .settingsAnchor("appearance.atmosphere")
-
-                LabeledContent {
-                    Picker("浮动面板材质", selection: $panel) {
-                        ForEach(PanelMaterialPreference.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                } label: {
-                    HStack(spacing: LingXiMetrics.Space.xs) {
-                        Text("浮动面板材质")
-                        InfoHint("通透：更多透出背景；沉稳：加深着色，文字对比更高。")
-                    }
-                }
-                .lxSettingsRow()
-                .settingsAnchor("appearance.panel")
-            } footer: {
-                Text(reduceTransparency
-                     ? "系统已开启「降低透明度」，浮动面板改用不透明底色，材质选项暂不生效。"
-                     : "开启系统「降低透明度」时，浮动面板改用不透明底色，材质选项暂不生效。")
-            }
+            // 背景氛围与浮动面板材质两个选择器在这里被移除，而不是留着。
+            //
+            // 它们把值写进 UserDefaults，但渲染层从不读它：`AtmosphereBackdrop` 画的是常量渐变，
+            // `LXFloatingChrome` 用的是固定的 `LXColor.elevated`。也就是说选了没有任何东西会变——
+            // 这正是闭合契约第 22 条对成品控件的零容忍项。让它们真正生效要改全局视觉层，那属于
+            // 需要 Owner 先确认的布局/视觉改动，不在本轮范围内。恢复方式：先实现读取这两个偏好
+            // 的渲染分支，再把选择器加回来。
         }
     }
 }

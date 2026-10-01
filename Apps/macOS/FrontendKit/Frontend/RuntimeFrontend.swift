@@ -562,10 +562,20 @@ public final class RuntimeFrontend: ObservableObject {
         return tasks
     }
 
+    /// Stops a background task. The 停止 button in the tasks pane calls this, so a failure is
+    /// something the user clicked for and must be able to see; §17 lists Stop among the actions
+    /// `try?` is not allowed to swallow.
     public func terminateBackgroundTask(id: String) {
-        guard let backend else { return }
+        guard let backend else {
+            actionError = "未连接 Core，后台任务无法停止。"
+            return
+        }
         Task {
-            _ = try? await backend.terminateBackgroundTask(id: id)
+            do {
+                _ = try await backend.terminateBackgroundTask(id: id)
+            } catch {
+                actionError = "停止后台任务失败：\(error.localizedDescription)"
+            }
             await backend.dispatch(.refreshDiagnostics)
         }
     }

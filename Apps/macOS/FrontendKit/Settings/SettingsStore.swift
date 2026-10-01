@@ -113,13 +113,57 @@ public final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Writes or removes an override for a whole key, legacy spellings included.
+    /// `nil` removes it, which is how "Core decides" is expressed in config.json.
+    func writeOverride<Value>(_ key: ConfigKey<Value>, _ value: Value?) {
+        for path in key.clearPaths { writeConfig(value, at: path) }
+    }
+
+    /// How a written setting becomes effective. §16 requires every control to declare one of
+    /// these, because a banner that only says "reload required" and offers no way to do it —
+    /// while the real reload button sits buried on the Diagnostics page — is a half-truth.
+    public enum ConfigApply: Sendable {
+        case instant, reloadConfiguration, restartCore, nextSession, nextTurn
+    }
+
+    /// The action the notice bar should offer for the last write. `.instant` means nothing to do.
+    @Published public var pendingApply: ConfigApply = .instant
+
     private func writeConfig(_ value: Any?, at path: [String]) {
         do {
             try configFile.set(value, at: path)
             configRevision += 1
-            notice = client == nil ? nil : "已写入 config.json，Core 重新加载配置后生效。"
+            guard client != nil else {
+                pendingApply = .instant
+                notice = nil
+                return
+            }
+            pendingApply = Self.applySemantics(for: path.joined(separator: "."))
+            notice = switch pendingApply {
+            case .instant: nil
+            case .reloadConfiguration: "已写入 config.json，点击「重新加载 Core」生效。"
+            case .restartCore: "已写入 config.json，需要重启 Core 才能生效。"
+            case .nextSession: "已写入 config.json，下一个会话生效。"
+            case .nextTurn: "已写入 config.json，下一轮对话生效。"
+            }
         } catch {
+            pendingApply = .instant
             notice = error.localizedDescription
+        }
+    }
+
+    /// Almost everything in config.json is read when Core builds a runtime, so the honest default
+    /// is "reload". The exceptions are listed rather than inferred from a prefix, because a
+    /// wrong claim here is worse than a conservative one: telling a user a change is instant when
+    /// it needs a reload is how settings appear to be ignored.
+    static func applySemantics(for key: String) -> ConfigApply {
+        switch key {
+        case _ where key.hasPrefix("appearance.") || key.hasPrefix("conversation."):
+            return .instant            // app-side preferences, no Core round trip
+        case ConfigKeys.eCorePersistence.id:
+            return .restartCore        // the store's own lifetime, not a per-turn parameter
+        default:
+            return .reloadConfiguration
         }
     }
 
@@ -193,49 +237,78 @@ public final class SettingsStore: ObservableObject {
         clearLiveState()
     }
 
+    /// Which live sections a page actually reads.
+    ///
+    /// `refresh()` used to be all-or-nothing and `needsCore` used to say which pages wanted it at
+    /// all — six pages that render provider lists, effective policy, workspace indexes, tool
+    /// status, health and background tasks answered `false`, so opening them showed whatever the
+    /// last unrelated page had left behind and printed no "not connected" banner. §15 asks each
+    /// page to declare what it needs; this is the vocabulary it declares in.
+    enum LiveDomain: Hashable {
+        case runtime, providers, models, context, workspace, diagnostics, extensions
+    }
+
     /// Re-reads every live section. Endpoints are independent: one failing
     /// (e.g. an unimplemented domain) leaves that section empty, not the page.
     func refresh() async {
+        await refresh(domains: [.runtime, .providers, .models, .context, .workspace,
+                                .diagnostics, .extensions])
+    }
+
+    func refresh(domains: Set<LiveDomain>) async {
         configFile.reload()
         configRevision += 1
         preferences = preferencesStore.load()
-        guard let client else { return }
+        guard let client, !domains.isEmpty else { return }
         isRefreshing = true
         defer { isRefreshing = false }
 
-        async let info = try? client.runtime.getInfo()
-        async let health = try? client.runtime.getHealth()
-        async let caps = try? client.runtime.getCapabilities()
-        async let providers = try? client.provider.list()
-        async let catalog = try? client.provider.catalog()
-        async let status = try? client.provider.status()
-        async let models = try? client.model.list()
-        async let selection = try? client.model.getSelection()
-        async let extensions = try? client.extensionDomain.list()
-        async let policy = try? client.context.getPolicy()
-        async let workspace = try? client.workspace.get()
-        async let languageServices = try? client.workspace.languageServices()
-        async let toolStatus = try? client.workspace.toolStatus(Self.reportedToolIDs)
-        async let worktrees = try? client.workspace.listWorktrees()
-        async let tasks = try? client.diagnostics.getBackgroundTasks()
-        async let mcpServers = try? client.extensionDomain.mcpServers()
-
-        self.runtimeInfo = await info
-        self.health = await health
-        self.capabilities = await caps
-        self.providers = await providers ?? []
-        self.providerCatalog = await catalog ?? []
-        self.providerStatus = await status
-        self.models = await models ?? []
-        self.modelSelection = await selection
-        self.extensions = await extensions ?? []
-        self.contextPolicy = await policy
-        self.workspace = await workspace
-        self.languageServices = await languageServices
-        self.toolStatus = (await toolStatus).map { Dictionary(uniqueKeysWithValues: $0.map { ($0.toolID, $0) }) }
-        self.worktrees = await worktrees ?? []
-        self.backgroundTasks = await tasks ?? []
-        self.mcpServers = await mcpServers ?? []
+        // Each group is awaited as a unit so a page that wants one domain does not pay for
+        // fifteen round trips.
+        if domains.contains(.runtime) {
+            async let info = try? client.runtime.getInfo()
+            async let health = try? client.runtime.getHealth()
+            async let caps = try? client.runtime.getCapabilities()
+            self.runtimeInfo = await info
+            self.health = await health
+            self.capabilities = await caps
+        }
+        if domains.contains(.providers) {
+            async let providers = try? client.provider.list()
+            async let catalog = try? client.provider.catalog()
+            async let status = try? client.provider.status()
+            self.providers = await providers ?? []
+            self.providerCatalog = await catalog ?? []
+            self.providerStatus = await status
+        }
+        if domains.contains(.models) {
+            async let models = try? client.model.list()
+            async let selection = try? client.model.getSelection()
+            self.models = await models ?? []
+            self.modelSelection = await selection
+        }
+        if domains.contains(.extensions) {
+            async let extensions = try? client.extensionDomain.list()
+            async let mcpServers = try? client.extensionDomain.mcpServers()
+            self.extensions = await extensions ?? []
+            self.mcpServers = await mcpServers ?? []
+        }
+        if domains.contains(.context) {
+            self.contextPolicy = try? await client.context.getPolicy()
+        }
+        if domains.contains(.workspace) {
+            async let workspace = try? client.workspace.get()
+            async let languageServices = try? client.workspace.languageServices()
+            async let toolStatus = try? client.workspace.toolStatus(Self.reportedToolIDs)
+            async let worktrees = try? client.workspace.listWorktrees()
+            self.workspace = await workspace
+            self.languageServices = await languageServices
+            self.toolStatus = (await toolStatus).map { Dictionary(uniqueKeysWithValues: $0.map { ($0.toolID, $0) }) }
+            self.worktrees = await worktrees ?? []
+        }
+        if domains.contains(.diagnostics) {
+            self.backgroundTasks = (try? await client.diagnostics.getBackgroundTasks()) ?? []
+        }
     }
 
     private func clearLiveState() {
@@ -372,10 +445,25 @@ public final class SettingsStore: ObservableObject {
 
     /// Writes an unsaved key into Core's vault once and returns its reference, so
     /// the plaintext never travels inside a provider test or save request.
+    /// Stores a secret and returns its reference. A nil always means "it did not save", and the
+    /// user is told why: this used to swallow the error, so a failed write left the form showing
+    /// nothing more than an unsaved field.
     func stageSecret(_ secret: String) async -> CredentialRef? {
-        guard let client else { notice = "未连接 Core。"; return nil }
-        let receipt = try? await client.credential.store(secret: secret)
-        return receipt?.result?.reference
+        guard let client else {
+            notice = "未连接 Core，凭据无法保存。"
+            return nil
+        }
+        do {
+            let receipt = try await client.credential.store(secret: secret)
+            guard let reference = receipt.result?.reference else {
+                notice = "Core 接受了写入但没有返回凭据引用，不能当作已保存。"
+                return nil
+            }
+            return reference
+        } catch {
+            notice = "保存凭据失败：\(error.localizedDescription)"
+            return nil
+        }
     }
 
     func discardStagedSecret(_ reference: CredentialRef) async {

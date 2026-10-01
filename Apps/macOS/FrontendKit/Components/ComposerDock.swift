@@ -367,8 +367,9 @@ struct ComposerSurface: View {
             HStack(spacing: LingXiMetrics.Space.sm) {
                 LXChipMenu("添加", symbol: "plus.circle", help: "添加文件或引用", iconOnly: compact) {
                     Button("文件或图片…", systemImage: "paperclip", action: pickFiles)
-                    Button("引用文件 @", systemImage: "at") { insertReference("@") }
-                    Button("引用符号 #", systemImage: "number") { insertReference("#") }
+                    // 「引用文件 @」「引用符号 #」两项已移除：它们只在输入框里插入一个字符，
+                    // Core 与 Application 侧都没有 @-mention 或符号解析，插入的 `@` 没有任何含义。
+                    // 引用真实文件现在走上面的附件项，会真的上传并进入本轮上下文。
                 }
                 Button(action: beginGoalEdit) {
                     Group {
@@ -555,9 +556,6 @@ struct ComposerSurface: View {
             filename: url.lastPathComponent, mediaType: mediaType, byteCount: size, sourceURL: url))
     }
 
-    private func insertReference(_ marker: String) {
-        model.text += separator + marker
-    }
 
     private var separator: String {
         model.text.isEmpty || model.text.hasSuffix(" ") || model.text.hasSuffix("\n") ? "" : " "

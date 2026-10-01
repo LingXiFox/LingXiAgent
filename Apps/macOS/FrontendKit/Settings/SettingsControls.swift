@@ -221,6 +221,103 @@ struct ConfigPicker: View {
 
 /// Numeric field committed on Return / focus loss; the Core default shows as
 /// the placeholder value until overridden.
+/// A number that Core treats as an override rather than a value with a default.
+///
+/// Switching it off removes the key entirely, which is what makes Core fall back to deriving the
+/// budget from the model window. Writing `0` would not do that — zero is a real value to the
+/// planner — so an ordinary `ConfigNumberField` could not express this setting honestly.
+struct ConfigOptionalNumberField: View {
+    let title: String
+    var info: String?
+    var unit: String?
+    let key: ConfigKey<Int>
+    var min: Int = 1
+    @ObservedObject var store: SettingsStore
+
+    @State private var enabled = false
+    @State private var value = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+            Toggle(isOn: $enabled) {
+                ConfigLabel(title: title, info: info, key: key, store: store)
+            }
+            .toggleStyle(.switch)
+            if enabled {
+                HStack(spacing: LingXiMetrics.Space.xs) {
+                    TextField(title, value: $value, format: .number)
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 110)
+                    if let unit {
+                        Text(unit).font(LXType.meta).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                Text("未覆盖：由 Core 按模型窗口推导。")
+                    .font(LXType.meta).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear(perform: load)
+        .onChange(of: enabled) { _, on in apply(on) }
+        .onChange(of: value) { _, next in if enabled { commit(next) } }
+        .lxSettingsRow()
+    }
+
+    private func load() {
+        let stored = store.config(key)
+        enabled = stored > 0
+        value = stored > 0 ? stored : key.fallback
+    }
+
+    private func apply(_ on: Bool) {
+        if on { commit(max(min, value == 0 ? key.fallback : value)) } else { clear() }
+    }
+
+    private func commit(_ next: Int) {
+        let clamped = max(min, next)
+        if clamped != next { value = clamped }
+        store.writeOverride(key, clamped)
+    }
+
+    private func clear() {
+        store.writeOverride(key, nil)
+    }
+}
+
+/// A ratio setting in (0, 1]. `ConfigNumberField` is Int-only, and Core's schema bounds this
+/// key numerically, so the clamp lives here rather than in a description of what is valid.
+struct ConfigFractionField: View {
+    let title: String
+    var info: String?
+    let key: ConfigKey<Double>
+    var lowerExclusive: Double = 0
+    var upper: Double = 1
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        LabeledContent {
+            VStack(alignment: .trailing, spacing: 2) {
+                Slider(value: binding(key.fallback), in: (lowerExclusive + 0.01)...upper, step: 0.01)
+                    .frame(width: 140)
+                Text(binding(key.fallback).wrappedValue.formatted(.number.precision(.fractionLength(2))))
+                    .font(LXType.meta).foregroundStyle(.secondary).monospacedDigit()
+            }
+        } label: {
+            ConfigLabel(title: title, info: info, key: key, store: store)
+        }
+        .lxSettingsRow()
+    }
+
+    private func binding(_ fallback: Double) -> Binding<Double> {
+        Binding(
+            get: { store.config(key) },
+            set: { store.writeOverride(key, min(upper, max(lowerExclusive + 0.001, $0))) }
+        )
+    }
+}
+
 struct ConfigNumberField: View {
     let title: String
     var info: String?
@@ -337,6 +434,32 @@ struct SettingsNotice: View {
                 HStack(alignment: .firstTextBaseline, spacing: LingXiMetrics.Space.md) {
                     LXStatusText(notice, systemImage: "info.circle")
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    // The action that makes the notice true. `reloadConfiguration` and
+                    // `restartCore` both already existed, reachable only from the Diagnostics
+                    // page — a banner whose whole message is "reload required" with a single
+                    // 关闭 button asked the user to go find the button themselves.
+                    switch store.pendingApply {
+                    case .reloadConfiguration:
+                        Button("重新加载 Core") {
+                            Task {
+                                await store.reloadConfiguration()
+                                store.notice = nil
+                                store.pendingApply = .instant
+                            }
+                        }
+                        .buttonStyle(.borderless).controlSize(.small)
+                    case .restartCore:
+                        Button("重启 Core") {
+                            Task {
+                                await store.restartCore()
+                                store.notice = nil
+                                store.pendingApply = .instant
+                            }
+                        }
+                        .buttonStyle(.borderless).controlSize(.small)
+                    case .instant, .nextSession, .nextTurn:
+                        EmptyView()
+                    }
                     Button("关闭") { store.notice = nil }
                         .buttonStyle(.borderless)
                         .controlSize(.small)

@@ -62,7 +62,7 @@ struct SettingsWorkbench: View {
         .onChange(of: page) { _, next in
             selection = nil
             highlight = nil
-            if next.needsCore { Task { await store.refresh() } }
+            if !next.needsCoreData.isEmpty { Task { await store.refresh(domains: next.needsCoreData) } }
         }
     }
 

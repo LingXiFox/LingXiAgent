@@ -66,6 +66,10 @@ enum ConfigKeys {
     static let maxSubagentDepth = ConfigKey("agent.maxSubagentDepth", 3)
     static let maxTotalRuns = ConfigKey("agent.maxTotalRunsPerRootRun", 32)
     static let maxAgentLoopSteps = ConfigKey("agent.maxAgentLoopSteps", 32)
+    /// An override, not a setting with a default. Core reads this as `Int?` and derives the
+    /// active-token budget from the model window when the key is absent — so the control that
+    /// writes it has to be able to *not* write it, which is why it is not a plain number field.
+    static let preferredActiveTokens = ConfigKey("agent.preferredActiveTokens", 0)
     static let pCoreProjectMaxCharacters = ConfigKey("agent.pCoreProjectMaxCharacters", 32_768, legacy: "agent.l1ProjectMaxCharacters")
     static let eCoreRecallMaxCharacters = ConfigKey("agent.eCoreRecallMaxCharacters", 262_144, legacy: "agent.l2MaxCharacters")
 
@@ -99,7 +103,9 @@ enum ConfigKeys {
     static let l1SoftLimit = pCoreSoftLimit
     static let l1HardLimit = pCoreHardLimit
     static let l2Max = eCoreRecallBudget
-    static let l3UseRemaining = ConfigKey("context.eCore.useRemainingBudget", true)
+    /// `context.eCore.useRemainingBudget` — Core reads it, so Settings has to offer it. Named for
+    /// what it does rather than the retired L3 layer it came from.
+    static let eCoreUseRemainingBudget = ConfigKey("context.eCore.useRemainingBudget", true)
 
     static let eCorePersistence = ConfigKey("context.fabric.eCorePersistenceEnabled", true, legacy: "context.fabric.ecoreStorageEnabled")
     static let observationProjection = ConfigKey("context.fabric.observationProjectionEnabled", true)
@@ -117,6 +123,7 @@ enum ConfigKeys {
             (maxSubagentDepth.id, maxSubagentDepth.fallback),
             (maxTotalRuns.id, maxTotalRuns.fallback),
             (maxAgentLoopSteps.id, maxAgentLoopSteps.fallback),
+            (preferredActiveTokens.id, preferredActiveTokens.fallback),
             (pCoreProjectMaxCharacters.id, pCoreProjectMaxCharacters.fallback),
             (eCoreRecallMaxCharacters.id, eCoreRecallMaxCharacters.fallback),
             (quickFilesystemSeconds.id, quickFilesystemSeconds.fallback),

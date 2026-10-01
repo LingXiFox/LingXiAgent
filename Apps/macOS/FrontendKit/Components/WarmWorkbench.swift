@@ -170,7 +170,9 @@ public struct WarmWorkbench: View {
         }
         .onChange(of: navigation.showsSettings) { _, open in
             runtime.isShowingSettings = open
-            if open, navigation.settingsPage.needsCore { Task { await settings.refresh() } }
+            if open, !navigation.settingsPage.needsCoreData.isEmpty {
+                    Task { await settings.refresh(domains: navigation.settingsPage.needsCoreData) }
+                }
         }
     }
 
