@@ -320,22 +320,6 @@ public struct SessionFolderPresentation: Identifiable, Sendable, Equatable {
 
 
 
-public enum InspectorTab: String, CaseIterable, Identifiable {
-    case overview = "Overview"
-    case changes = "Changes"
-    case context = "Context"
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .overview: return "概览"
-        case .changes: return "变更"
-        case .context: return "上下文"
-        }
-    }
-}
-
 // MARK: - Domain Presentation Models (ObservableObject)
 
 @MainActor
@@ -435,11 +419,9 @@ public final class ConversationPresentationModel: ObservableObject {
 
 @MainActor
 public final class RuntimeInspectorPresentationModel: ObservableObject {
-    @Published public var selectedTab: InspectorTab = .overview
     /// Live runtime state; nil while no Core is connected (the inspector says so).
     @Published public var live: InspectorSnapshot?
     @Published public var traceEvents: [RuntimeTraceEvent] = []
-    @Published public var isPresented: Bool = true
     /// The effective policy as last read from Core by the context inspector.
     ///
     /// Not folded into `live`: `InspectorSnapshot` is rebuilt from `ApplicationState` on every
