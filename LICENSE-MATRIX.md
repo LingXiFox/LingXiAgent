@@ -3,9 +3,10 @@
 
 Copyright (c) 2026 LingXiFox. This file is the **authoritative** list of SPM
 targets and non-SPM paths in this repository together with the license that
-governs each of them. `LICENSE`, `LICENSE-CORE`, `LICENSE-FRONTEND`, and
-`LICENSE-SDK` all reference this file for their scope; the license text itself
-lives in those files.
+governs each of them. `LICENSE`, `LICENSE-CORE` and `LICENSE-FRONTEND` reference this file for their
+scope; the license text itself lives in those files. The two public SDKs that
+used to be listed here are separate repositories now and ship their own MIT
+`LICENSE`.
 
 The Chinese text of any legal clause prevails over the English translation in
 case of conflict.
@@ -27,8 +28,6 @@ license row is a build failure, not a review note.
 | `LingXiClient` | `Sources/LingXiClient` | LCSAL-1.1 | Source: no; binary: no | VNext and stdio clients every frontend uses to reach CoreHost. |
 | `LingXiCore` | `Sources/LingXiCore` | LCSAL-1.1 | Source: no; binary: no | Agent runtime authority: sessions, runs, tools, providers, MCP, plugins. |
 | `CSQLite` | `Sources/CSQLite` | LCSAL-1.1 (binding) | Source: no; binary: no | SQLite3 C shim; upstream sqlite3 is public domain. |
-| `LingXiPluginSDK` | `Sources/LingXiPluginSDK` | MIT (`LICENSE-SDK`) | Source: yes; binary: yes — including inside closed-source plugins | Plugin authoring SDK. Foundation-only by gate (`PluginSDKDependencyGateTests`); it carries no Core, Session, Permission or P/E implementation. Plugin authors' own code is separately licensed. |
-| `LingXiModelSDK` | `Sources/LingXiModelSDK` | MIT (`LICENSE-SDK`) | Source: yes; binary: yes — including inside closed-source products | Public model-catalog SDK: the developer interface for `models.lingxifox.cn/models.json`. Depends on Foundation only, never on the Agent runtime. Commercial use, third-party agent/app integration, modification, source and binary redistribution, and closed-source linking are all permitted; the only obligation is keeping the copyright and license notice. |
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The only shipped process that reads `LINGXI_CREDENTIALS_PASSPHRASE`. |
 | `lingxiagent` | `Sources/lingxiagent` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Interactive terminal presentation frontend (strictly decoupled from Core). |
 
@@ -41,8 +40,6 @@ license row is a build failure, not a review note.
 | `LingXiFrontendKit` | `Apps/macOS/FrontendKit` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | SwiftUI component library for the macOS GUI. Not platform-neutral: three DesignSystem files import AppKit ungated. |
 | `LingXiMacApp` | `Apps/macOS` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | macOS native executable entry point. |
 | `FoxPlugin` | `Plugins/FoxPlugin` | PolyForm Noncommercial 1.0.0 | Source: yes; binary: no (mods are source-only) | Demo plugin; a template for external plugin authors. |
-| `LingXiModelSDKTests` | `Tests/LingXiModelSDKTests` | Not shipped | n/a | Test target only; its dependency closure is the SDK alone, which is what makes the web-example compile gate possible. |
-| `LingXiPluginSDKTests` | `Tests/LingXiPluginSDKTests` | Not shipped | n/a | Plugin SDK contract, snapshot and documentation-example gates; its dependency closure is the SDK alone. |
 | `LingXiAgentTests` | `Tests/LingXiAgentTests` | Not shipped | n/a | Test target only. |
 | `LingXiWireContractTests` | `ContractTests/LingXiWireContractTests` | Not shipped | n/a | Contract test target only. |
 | `LingXiFrontendContractTests` | `ContractTests/LingXiFrontendContractTests` | Not shipped | n/a | Contract test target only. |
@@ -82,8 +79,9 @@ When a new SPM target is introduced:
 1. Add its row to the SPM-targets table above.
 2. Choose the track that fits: LCSAL-1.1 (core infrastructure / runtime
    authority), PolyForm Noncommercial 1.0.0 (frontend, presentation, or plugin),
-   or MIT (`LICENSE-SDK`) for the public developer SDKs — the surfaces intended
-   for third-party and commercial consumption (`LingXiModelSDK`, `LingXiPluginSDK`).
+   or MIT — but MIT no longer applies to anything in this repository: the two
+   public developer SDKs (`LingXiModelSDK`, `LingXiPluginSDK`) live in their own
+   repositories and carry their own `LICENSE`.
 3. Anything else needs a note explaining the exception and a discussion with
    @LingXiFox before merging.
 

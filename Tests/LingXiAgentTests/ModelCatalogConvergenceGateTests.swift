@@ -106,59 +106,48 @@ struct ModelCatalogConvergenceGateTests {
         #expect(page.contains("由 Provider 配置决定"))
     }
 
-    /// §33 的另一半：网页示例里写出来的 SDK 成员，必须是 SDK 真实声明过的名字。
-    @Test("every symbol the web example uses exists in the SDK")
-    func webExampleMatchesRealSDK() throws {
+    /// §28 拆分后的分工：SDK 仓库证明「这些调用编译得过」
+    /// （`ModelSDKExampleCompileTests`），本仓库证明「网页展示的就是那一份调用」。
+    /// 两处合起来才等于原来的保证：网站既不会写着不存在的 API，也不会悄悄落后于 SDK。
+    @Test("the web example is the frozen public API surface, verbatim")
+    func webExampleMatchesTheFrozenPublicAPI() throws {
         let page = try text("Server/models-site/public/index.html")
-        guard let start = page.range(of: "const SDK_EXAMPLE = `") else {
-            Issue.record("网页没有 SDK 示例块"); return
-        }
-        let body = String(page[start.upperBound...]).components(separatedBy: "`")[0]
-        let sdk = try Self.swiftSources(in: ["Sources/LingXiModelSDK"]).map(\.text).joined(separator: "\n")
-
-        let declared = Self.declaredNames(in: sdk)
-        // 整条调用链上的名字都要存在。
-        for entry in ["LingXiModelCatalog", "load", "model", "models", "ModelFilter",
-                      "catalogRevision", "generatedAt", "capabilities", "pricing",
-                      "contextWindow", "maxOutputTokens", "toolCalling", "reasoning",
-                      "input", "output", "revision", "name"] {
-            #expect(declared.contains(entry), "SDK 缺少网页示例用到的 \(entry)")
-        }
-
-        // 示例里出现的每个 `catalog.` / `model.` 成员都必须在 SDK 里声明。
-        var index = body.startIndex
-        var used: [String] = []
-        for receiver in ["catalog.", "model."] {
-            index = body.startIndex
-            while let hit = body.range(of: receiver, range: index..<body.endIndex) {
-                let tail = body[hit.upperBound...]
-                var name = ""
-                for character in tail {
-                    if character.isLetter || character.isNumber || character == "_" { name.append(character) }
-                    else { break }
-                }
-                if !name.isEmpty { used.append(name) }
-                index = hit.upperBound
+        let snippets = [Self.embeddedBlock(named: "SDK_EXAMPLE", in: page),
+                        Self.embeddedBlock(named: "INSTALL_EXAMPLE", in: page)]
+        for block in snippets where !block.isEmpty {
+            #expect(!block.contains("import LingXiAgent"), "网页示例不得再出现 import LingXiAgent")
+            for forbidden in ["LingXiAgent.model(", "LingXiProvider.openAICompatible",
+                              "processEnvironment", "api.lingxifox"] {
+                #expect(!block.contains(forbidden), "网页示例仍包含 \(forbidden)")
             }
         }
-        #expect(used.count > 8, "示例应被扫描出足量成员访问，否则这条门禁是空的")
-        for name in Set(used) where name != "count" {
-            #expect(declared.contains(name), "网页示例调用了 SDK 中不存在的成员 \(name)")
+
+        let api = snippets[0]
+        #expect(!api.isEmpty, "网页没有 SDK 示例块")
+        // 与 SDK 仓库 ModelSDKExampleCompileTests 中逐行编译的形态一致。
+        for frozen in ["import LingXiModelSDK",
+                       "try await LingXiModelCatalog.load()",
+                       "catalog.model(provider: \"deepseek\", id: \"deepseek-v4-flash\")",
+                       "model.name", "model.contextWindow", "model.maxOutputTokens",
+                       "model.capabilities.reasoning", "model.capabilities.toolCalling",
+                       "model.pricing.input", "model.pricing.output",
+                       "catalog.models(matching: ModelFilter(",
+                       "catalog.revision.catalogRevision", "catalog.revision.generatedAt"] {
+            #expect(api.contains(frozen), "网页示例缺少已冻结的公共 API 形态：\(frozen)")
         }
-        #expect(body.contains("import LingXiModelSDK"))
-        #expect(!body.contains("import LingXiAgent"))
+
+        let install = snippets[1]
+        #expect(!install.isEmpty, "网页没有安装块")
+        for frozen in ["dependencies: [", ".package(", "url: \"https://github.com/LingXiFox/LingXiModelSDK.git\"",
+                       "from: \"0.1.0\"", ".product(", "name: \"LingXiModelSDK\""] {
+            #expect(install.contains(frozen), "安装块缺少必要形态：\(frozen)")
+        }
     }
 
-    /// Every identifier the SDK declares: property, method, type or enum case.
-    private static func declaredNames(in source: String) -> Set<String> {
-        var names: Set<String> = []
-        let pattern = #"(?:let|var|func|struct|enum|case|init)\s+([A-Za-z_][A-Za-z0-9_]*)"#
-        for match in try! NSRegularExpression(pattern: pattern)
-            .matches(in: source, range: NSRange(source.startIndex..., in: source)) {
-            guard let r = Range(match.range(at: 1), in: source) else { continue }
-            names.insert(String(source[r]))
-        }
-        return names
+    /// 取出 `const NAME = `…`` 模板字符串的内容。
+    private static func embeddedBlock(named constant: String, in text: String) -> String {
+        guard let start = text.range(of: "const \(constant) = `") else { return "" }
+        return String(text[start.upperBound...]).components(separatedBy: "`")[0]
     }
 
 
@@ -167,7 +156,7 @@ struct ModelCatalogConvergenceGateTests {
     /// `JSONSerialization` hands back a dictionary and discards exactly the thing
     /// this gate is about, so the published order is read from the bytes instead.
     private static func orderedObjectKeys(in text: String, atKey key: String) -> [String] {
-        guard let marker = text.range(of: "\"\(key)\":") else { return [] }
+        guard let marker = text.range(of: "\"" + key + "\":") else { return [] }
         var index = text[marker.upperBound...].drop(while: { $0 == " " }).startIndex
         guard text[index] == "{" else { return [] }
         text.formIndex(after: &index)

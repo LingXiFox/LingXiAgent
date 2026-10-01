@@ -26,3 +26,7 @@ test-results-artifact/
 .tmp/
 # 同步管线的发布标记（上一次成功发布的记录，供漂移检查用），不入库
 Server/models-site/public/publication.json.prev
+
+# 公共 SDK 的本地联合开发副本：各自是独立 Git 仓库，不随主仓库提交
+/SDKs/LingXiModelSDK/
+/SDKs/LingXiPluginSDK/

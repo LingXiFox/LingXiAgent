@@ -13,8 +13,9 @@ import LingXiModelSDK
 /// them — so they stay nil and only a user override or Core's default decides.
 enum ModelCatalogDefaults {
 
-    static func resolve(providerID: String, modelID: String) async -> ProviderModelCatalogDefaults {
-        let client = PublicModelCatalogClient.shared
+    static func resolve(providerID: String, modelID: String,
+                            catalogClient: PublicModelCatalogClient = .shared) async -> ProviderModelCatalogDefaults {
+        let client = catalogClient
         // The provider the user configured first; a catalog-wide match covers a
         // model published under a different vendor id than the one configured.
         var found = await client.model(providerID: providerID, modelID: modelID)

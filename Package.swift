@@ -44,39 +44,33 @@ let guiTargets: [Target] = []
 let guiTestDependency: [Target.Dependency] = []
 #endif
 
-let package = Package(
-    name: "LingXiAgent",
-    platforms: [.macOS(.v14)],
-    products: [
-        .executable(name: "lingxiagent", targets: ["lingxiagent"]),
-        .executable(name: "lingxiagent-ops", targets: ["lingxiagent-ops"]),
-        .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
-        .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
-        .library(name: "LingXiPluginSDK", targets: ["LingXiPluginSDK"]),
-        // 公共模型目录 SDK：模型元数据的开发者接口，与 Agent Runtime 无关。
-        .library(name: "LingXiModelSDK", targets: ["LingXiModelSDK"]),
-        .executable(name: "FoxPlugin", targets: ["FoxPlugin"]),
-    ] + guiProducts,
-    targets: [
+// 两个公共 SDK 住在各自的仓库里，通过公开 SwiftPM 分发接入 —— LingXiAgent 是它们的
+// 普通消费者，与第三方拿到的完全同一份构件。没有 path 依赖，也没有仓库内副本：
+// 这里一旦解析失败，就说明它们还不具备对第三方发布的条件。
+//
+// 单独成句而不是内联：整个 Package(...) 字面量已经大到 SwiftPM 无法在合理时间内
+// 完成类型推断，拆开是必需的，不是风格问题。
+let publicSDKDependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/LingXiFox/LingXiModelSDK.git", from: "0.1.0"),
+    .package(url: "https://github.com/LingXiFox/LingXiPluginSDK.git", from: "0.1.0"),
+]
+
+// 目标清单单独成句。Package(...) 这一个字面量在本仓库已经长到 SwiftPM 无法在合理
+// 时间内完成类型推断（“the compiler is unable to type-check this expression in
+// reasonable time”），加上显式类型的数组绑定是解法，不是排版偏好。
+let packageTargets: [Target] = [
         // 演示与参考插件：FoxPlugin
         .executableTarget(
             name: "FoxPlugin",
-            dependencies: ["LingXiPluginSDK"],
+            dependencies: [.product(name: "LingXiPluginSDK", package: "LingXiPluginSDK")],
             path: "Plugins/FoxPlugin",
             exclude: ["README.md"]
         ),
         // 插件 SDK：供外部开发者开发 Swift 插件的标准库
-        // 插件 SDK：供外部开发者开发 LingXiAgent 插件的标准库。只依赖 Foundation ——
-        // 插件作者不该为了写一个插件而链接整个 Agent。
-        .target(name: "LingXiPluginSDK"),
         // 平台层：跨平台系统抽象（macOS / Linux / Windows）
         .target(name: "LingXiPlatform", dependencies: ["LingXiProtocol"]),
         // 协议层：所有 Client 与 Core 共享的数据类型与契约。
         .target(name: "LingXiProtocol"),
-        // 模型目录 SDK：公共模型元数据的开发者接口。只依赖 Foundation —— 不得触达
-        // Core / Runtime / Session / Tool / GUI 任何一层，否则第三方为了查一个模型
-        // 上下文窗口就得装下整个 Agent。
-        .target(name: "LingXiModelSDK"),
         .target(name: "LingXiApplication", dependencies: ["LingXiClient", "LingXiProtocol", "LingXiPlatform"]),
         .systemLibrary(
             name: "CSQLite",
@@ -86,11 +80,15 @@ let package = Package(
                 .brew(["sqlite3"])
             ]
         ),
-        // Core：业务能力与状态权威。仅依赖 Protocol、Platform 与 PluginSDK 核心。
-        // 模型目录的 schema 只有 LingXiModelSDK 懂，Core 是它的消费者之一。
+        // Core：业务能力与状态权威。两个公共 SDK 都以 SwiftPM 外部产品的形态接入 ——
+        // 与第三方拿到的是同一份构件，没有仓库内的特殊通道。
         .target(
             name: "LingXiCore",
-            dependencies: ["LingXiProtocol", "LingXiPlatform", "LingXiPluginSDK", "LingXiModelSDK", "CSQLite"],
+            dependencies: [
+                "LingXiProtocol", "LingXiPlatform", "CSQLite",
+                .product(name: "LingXiModelSDK", package: "LingXiModelSDK"),
+                .product(name: "LingXiPluginSDK", package: "LingXiPluginSDK"),
+            ],
             resources: [
                 .copy("Resources/Configuration"),
                 .copy("Provider/Products"),
@@ -141,8 +139,9 @@ let package = Package(
             name: "LingXiAgentTests",
             dependencies: [
                 "LingXiProtocol", "LingXiCore", "LingXiClient", "LingXiApplication",
-                "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform", "LingXiPluginSDK",
-                "LingXiModelSDK",
+                "LingXiTUIComponents", "LingXiTUI", "LingXiPlatform",
+                .product(name: "LingXiModelSDK", package: "LingXiModelSDK"),
+                .product(name: "LingXiPluginSDK", package: "LingXiPluginSDK"),
             ] + guiTestDependency,
             exclude: ["VCR/README.md"],
             resources: [.copy("VCR/Fixtures"), .copy("VCR/Cassettes")]
@@ -183,25 +182,25 @@ let package = Package(
             dependencies: ["LingXiProtocol"],
             path: "ContractTests/LingXiTraceContractTests"
         ),
-        // 插件 SDK 测试：同样只依赖 SDK 自己，wire contract 与 README 示例都在这里编译。
-        .testTarget(
-            name: "LingXiPluginSDKTests",
-            dependencies: ["LingXiPluginSDK"],
-            path: "Tests/LingXiPluginSDKTests"
-        ),
-        // 模型目录 SDK 测试：依赖闭包里只有 SDK 自己。网页上展示的 Swift 示例必须
-        // 在这里编译通过，示例与真实 API 一旦脱节就是 CI 失败，而不是一句警告。
-        .testTarget(
-            name: "LingXiModelSDKTests",
-            dependencies: ["LingXiModelSDK"],
-            path: "Tests/LingXiModelSDKTests"
-        ),
         // Evaluation Runner target: independent decoupled benchmark executor
         .executableTarget(
             name: "LingXiEvalRunner",
             dependencies: ["LingXiClient", "LingXiProtocol"],
             path: "Evals/Runner"
         ),
-    ] + guiTargets,
+]
+
+let package = Package(
+    name: "LingXiAgent",
+    platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "lingxiagent", targets: ["lingxiagent"]),
+        .executable(name: "lingxiagent-ops", targets: ["lingxiagent-ops"]),
+        .executable(name: "LingXiCoreHost", targets: ["LingXiCoreHost"]),
+        .executable(name: "LingXiTUI", targets: ["LingXiTUIApp"]),
+        .executable(name: "FoxPlugin", targets: ["FoxPlugin"]),
+    ] + guiProducts,
+    dependencies: publicSDKDependencies,
+    targets: packageTargets + guiTargets,
     swiftLanguageModes: [.v5]
 )
