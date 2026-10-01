@@ -4,8 +4,8 @@
 #  Repo: https://github.com/LingXiFox/LingXiAgent
 # ==============================================================================
 
-# Windows packages are not published for V1.0.0 (formal Windows support returns in V1.1.0), so the
-# release asset this script downloads does not exist yet. Kept intact for that release.
+# Windows x86_64 release assets have been published since v1.1.0, so this script downloads
+# lingxiagent-windows-x86_64.zip from the latest GitHub release and falls back to a source build.
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -81,10 +81,12 @@ if ((Test-Path "Package.swift") -and (Select-String -Path "Package.swift" -Patte
         swift build -c release --product lingxiagent
         swift build -c release --product LingXiCoreHost
         swift build -c release --product LingXiTUI
+        swift build -c release --product lingxiagent-ops
         $BinPath = (swift build -c release --show-bin-path).Trim()
         $BuiltAgent = Join-Path $BinPath "lingxiagent.exe"
         $BuiltCore = Join-Path $BinPath "LingXiCoreHost.exe"
         $BuiltTUI = Join-Path $BinPath "LingXiTUI.exe"
+        $BuiltOps = Join-Path $BinPath "lingxiagent-ops.exe"
         if (Test-Path $BuiltAgent) {
             Copy-Item -Force $BuiltAgent $TargetBin
             if (Test-Path $BuiltCore) {
@@ -92,6 +94,9 @@ if ((Test-Path "Package.swift") -and (Select-String -Path "Package.swift" -Patte
             }
             if (Test-Path $BuiltTUI) {
                 Copy-Item -Force $BuiltTUI (Join-Path $BinDir "LingXiTUI.exe")
+            }
+            if (Test-Path $BuiltOps) {
+                Copy-Item -Force $BuiltOps (Join-Path $BinDir "lingxiagent-ops.exe")
             }
             Install-Sidecars-And-Bundles $BinPath $BinDir $InstallRoot
             if (Test-Path "Sidecars\browser-host") {
@@ -139,6 +144,13 @@ if (-not $Installed) {
                 if (Test-Path $CandidateTUI) {
                     Copy-Item -Force $CandidateTUI (Join-Path $BinDir "LingXiTUI.exe")
                 }
+                # auth / mcp / skills / exec / review / doctor / resume / acp live in the ops
+                # binary; `lingxiagent` only points at it, so installing without it leaves users
+                # with a suggestion to run a command that is not installed.
+                $CandidateOps = Join-Path $TempExtract "lingxiagent-ops.exe"
+                if (Test-Path $CandidateOps) {
+                    Copy-Item -Force $CandidateOps (Join-Path $BinDir "lingxiagent-ops.exe")
+                }
                 Install-Sidecars-And-Bundles $TempExtract $BinDir $InstallRoot
                 $Installed = $true
                 Write-Host "[✓] 预编译二进制安装成功!" -ForegroundColor Green
@@ -148,7 +160,7 @@ if (-not $Installed) {
             Remove-Item -Force -ErrorAction SilentlyContinue $TempZip
         }
     } else {
-        Write-Host "[i] 提示：当前 V1.0.0 暂未提供 Windows 预编译安装包（计划于 V1.1.0 支持），尝试源码编译..." -ForegroundColor Cyan
+        Write-Host "[i] 提示：未在 GitHub Releases 找到匹配的 Windows 预编译包，尝试源码编译..." -ForegroundColor Cyan
     }
 }
 
@@ -163,10 +175,12 @@ if (-not $Installed) {
             swift build -c release --product lingxiagent
             swift build -c release --product LingXiCoreHost
             swift build -c release --product LingXiTUI
+            swift build -c release --product lingxiagent-ops
             $BinPath = (swift build -c release --show-bin-path).Trim()
             $BuiltAgent = Join-Path $BinPath "lingxiagent.exe"
             $BuiltCore = Join-Path $BinPath "LingXiCoreHost.exe"
             $BuiltTUI = Join-Path $BinPath "LingXiTUI.exe"
+            $BuiltOps = Join-Path $BinPath "lingxiagent-ops.exe"
             if (Test-Path $BuiltAgent) {
                 Copy-Item -Force $BuiltAgent $TargetBin
                 if (Test-Path $BuiltCore) {
@@ -174,6 +188,9 @@ if (-not $Installed) {
                 }
                 if (Test-Path $BuiltTUI) {
                     Copy-Item -Force $BuiltTUI (Join-Path $BinDir "LingXiTUI.exe")
+                }
+                if (Test-Path $BuiltOps) {
+                    Copy-Item -Force $BuiltOps (Join-Path $BinDir "lingxiagent-ops.exe")
                 }
                 Install-Sidecars-And-Bundles $BinPath $BinDir $InstallRoot
                 Install-Sidecars-And-Bundles "." $BinDir $InstallRoot

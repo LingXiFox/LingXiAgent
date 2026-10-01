@@ -44,6 +44,11 @@ echo "[1/3] Building Release binaries for $PLATFORM-$CPU_ARCH..."
 cd "$ROOT_DIR"
 swift build -c release --product lingxiagent
 swift build -c release --product LingXiCoreHost
+# Same four entry points the release workflow stages. Building fewer here produced a
+# local package that was not the artifact CI publishes, which is how a shipped binary
+# can go missing without anyone noticing.
+swift build -c release --product LingXiTUI || true
+swift build -c release --product lingxiagent-ops || true
 
 BIN_DIR="$(swift build -c release --show-bin-path)"
 VERSION="${1:-$(grep 'public static let version = "' Sources/LingXiTUI/CLIParser.swift 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "1.0.0-rc1")}"
@@ -60,6 +65,12 @@ if [ "$PLATFORM" = "windows" ]; then
     if [ -f "$BIN_DIR/LingXiCoreHost.exe" ]; then
         cp -f "$BIN_DIR/LingXiCoreHost.exe" "$STAGING_DIR/"
     fi
+    if [ -f "$BIN_DIR/LingXiTUI.exe" ]; then
+        cp -f "$BIN_DIR/LingXiTUI.exe" "$STAGING_DIR/"
+    fi
+    if [ -f "$BIN_DIR/lingxiagent-ops.exe" ]; then
+        cp -f "$BIN_DIR/lingxiagent-ops.exe" "$STAGING_DIR/"
+    fi
     ARCHIVE_NAME="lingxiagent-windows-$CPU_ARCH.zip"
     (
         cd "$STAGING_DIR"
@@ -69,6 +80,12 @@ else
     cp -f "$BIN_DIR/lingxiagent" "$STAGING_DIR/"
     if [ -f "$BIN_DIR/LingXiCoreHost" ]; then
         cp -f "$BIN_DIR/LingXiCoreHost" "$STAGING_DIR/"
+    fi
+    if [ -f "$BIN_DIR/LingXiTUI" ]; then
+        cp -f "$BIN_DIR/LingXiTUI" "$STAGING_DIR/"
+    fi
+    if [ -f "$BIN_DIR/lingxiagent-ops" ]; then
+        cp -f "$BIN_DIR/lingxiagent-ops" "$STAGING_DIR/"
     fi
     if [ -d "$BIN_DIR/LingXiAgent_LingXiCore.bundle" ]; then
         cp -R "$BIN_DIR/LingXiAgent_LingXiCore.bundle" "$STAGING_DIR/"

@@ -65,24 +65,24 @@ fi
 BIN="$ROOT/lingxiagent$EXE"
 
 echo "== entry points present and runnable =="
-# The package ships three user-facing entry points; lingxiagent-ops is an internal helper and is
-# not in every archive, so its absence is reported rather than failed.
-for name in lingxiagent LingXiCoreHost LingXiTUI; do
+# lingxiagent routes auth / mcp / skills / exec / review / doctor / resume / acp / task to
+# lingxiagent-ops and exits, so an archive without it ships a command users cannot run.
+# It is a required member, not a note: this is exactly the gap the installers used to hide.
+for name in lingxiagent LingXiCoreHost LingXiTUI lingxiagent-ops; do
   if [ ! -e "$ROOT/$name$EXE" ]; then
     echo "FAIL $name$EXE is missing from the artifact"
     failures=$((failures + 1))
   fi
 done
-[ -e "$ROOT/lingxiagent-ops$EXE" ] || echo "note: lingxiagent-ops$EXE is not in this artifact"
 check "lingxiagent --version"     "$BIN" --version
 check "lingxiagent --help"        "$BIN" --help
 [ -e "$ROOT/LingXiTUI$EXE" ] && check "LingXiTUI --help" "$ROOT/LingXiTUI$EXE" --help
-[ -e "$ROOT/lingxiagent-ops$EXE" ] && check "lingxiagent-ops --smoke" "$ROOT/lingxiagent-ops$EXE" --smoke
+check "lingxiagent-ops --smoke" "$ROOT/lingxiagent-ops$EXE" --smoke
 
 if [ "${OS-}" != "Windows_NT" ]; then
   # An archive built on a filesystem without the exec bit, or a `tar` that dropped it,
   # installs a product that cannot start. The Windows zip carries no mode at all.
-  for name in lingxiagent LingXiCoreHost LingXiTUI; do
+  for name in lingxiagent LingXiCoreHost LingXiTUI lingxiagent-ops; do
     if [ -e "$ROOT/$name$EXE" ] && [ ! -x "$ROOT/$name$EXE" ]; then
       echo "FAIL $name$EXE lost its executable bit"
       failures=$((failures + 1))
