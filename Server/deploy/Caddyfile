@@ -126,6 +126,13 @@ lingxiagent.lingxifox.cn {
 http://models.lingxifox.cn {
 	handle {
 		root * /var/www/models.lingxifox.cn
+
+		# Same rule as the agent site: /index.html is an alias, not a second page.
+		@index_html {
+			path /index.html
+		}
+		redir @index_html / 301
+
 		encode zstd gzip
 		file_server
 	}
@@ -156,6 +163,13 @@ models.lingxifox.cn {
 
 	handle {
 		root * /var/www/models.lingxifox.cn
+
+		# Same rule as the agent site: /index.html is an alias, not a second page.
+		@index_html {
+			path /index.html
+		}
+		redir @index_html / 301
+
 		encode zstd gzip
 		file_server
 	}
@@ -190,10 +204,24 @@ http://agent.lingxifox.cn {
 	handle {
 		root * /var/www/agent.lingxifox.cn
 
-		@docs {
+		# One document, one cache key. Clean paths are aliases that redirect to the
+		# canonical .html form; /index.html folds into /. A rewrite would keep two
+		# URLs serving identical bytes, and each is a separate ESA cache entry that
+		# has to be purged by hand — which is exactly how a stale copy survives.
+		@docs_alias {
 			path /docs /docs/
 		}
-		rewrite @docs /docs.html
+		redir @docs_alias /docs.html 301
+
+		@sdk_alias {
+			path /sdk /sdk/
+		}
+		redir @sdk_alias /sdk.html 301
+
+		@index_html {
+			path /index.html
+		}
+		redir @index_html / 301
 
 		encode zstd gzip
 		file_server
@@ -232,10 +260,24 @@ agent.lingxifox.cn {
 	handle {
 		root * /var/www/agent.lingxifox.cn
 
-		@docs {
+		# One document, one cache key. Clean paths are aliases that redirect to the
+		# canonical .html form; /index.html folds into /. A rewrite would keep two
+		# URLs serving identical bytes, and each is a separate ESA cache entry that
+		# has to be purged by hand — which is exactly how a stale copy survives.
+		@docs_alias {
 			path /docs /docs/
 		}
-		rewrite @docs /docs.html
+		redir @docs_alias /docs.html 301
+
+		@sdk_alias {
+			path /sdk /sdk/
+		}
+		redir @sdk_alias /sdk.html 301
+
+		@index_html {
+			path /index.html
+		}
+		redir @index_html / 301
 
 		encode zstd gzip
 		file_server

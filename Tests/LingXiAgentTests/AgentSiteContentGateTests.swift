@@ -171,6 +171,23 @@ struct AgentSiteContentGateTests {
         }
     }
 
+    /// 链接归一之外，Origin 也必须归一：rewrite 会让 `/docs` 与 `/docs.html`
+    /// 各自成为一个 ESA cache key，于是「同一份文档两个真相」又回来了，
+    /// 而且每次发版都要人多刷一条 URL。
+    @Test("the origin canonicalizes alias URLs with redirects, not rewrites")
+    func originRedirectsAliases() throws {
+        let caddy = try String(
+            contentsOf: Self.root.appendingPathComponent("Server/deploy/Caddyfile"), encoding: .utf8)
+        #expect(!caddy.contains("rewrite @docs /docs.html"),
+                "别名应当 301 到 canonical，rewrite 会留下第二个可缓存的 key")
+        for rule in ["redir @docs_alias /docs.html 301",
+                     "redir @sdk_alias /sdk.html 301",
+                     "redir @index_html / 301"] {
+            // agent 的 http/https 两个块 + models 的两个块，至少各出现两次。
+            #expect(caddy.components(separatedBy: rule).count - 1 >= 2, "Caddyfile 缺少 \(rule)")
+        }
+    }
+
     @Test("every in-page and cross-page anchor resolves to a real id")
     func anchorsResolve() throws {
         var bodies: [String: String] = [:]

@@ -355,6 +355,42 @@ agent.lingxifox.cn 的 `index.html`、`docs.html`、`/docs`、`sdk.html` 公网�
 （`/sdk` 仍 404 —— Caddyfile 只给 `/docs` 配了 rewrite，是否归一另案）。
 
 
+### 根治：Origin 侧把别名 URL 归一（主人批准「可以修补」）
+
+先确认覆盖是安全的：仓库 `Server/deploy/Caddyfile` 比线上 `/etc/caddy/Caddyfile` 领先
+（线上还残留在已退役的 `summary.json` 缓存头，且缺 `publication.json` 头），且服务器上没有
+任何仓库外的手工改动，因此这次部署同时补上那处配置漂移。
+
+改动是给两个站点的 http/https 四个块加上 canonical 归一，**用 301 而不是 rewrite**：
+
+```text
+/index.html            → 301 → /
+/docs 与 /docs/        → 301 → /docs.html     （原先是 rewrite：两个 URL 同一份字节 = 两个缓存 key）
+/sdk 与 /sdk/          → 301 → /sdk.html      （原先直接 404，只有 /sdk.html 能用）
+```
+
+部署走 `Server/deploy/deploy-caddy.sh`：先 `caddy validate`，备份
+`/etc/caddy/backups/Caddyfile.20261001T082150Z`，热重载（不 restart），健康探针失败自动回滚。
+
+源站验证（`Host` 头直连 127.0.0.1）：
+
+```text
+agent  /index.html → 301 /          agent  /docs   → 301 /docs.html
+agent  /docs/      → 301 /docs.html agent  /sdk    → 301 /sdk.html
+agent  /docs.html  → 200            agent  /        → 200
+models /index.html → 301 /          models /        → 200   models /models.json → 200
+lingxiagent /schema/config.json → 200（未被本次改动影响）
+跟随重定向：1 跳落到 200，无环
+```
+
+随后用 `esa purge-caches` 一次性刷掉 5 个别名 key（TaskId `1770327925325832`，`Complete 100%`），
+公网复验同样是 301，正式页 200 ✓。`Scripts/catalog-drift-check.sh` 归零，且这一轮实际走了
+「已忽略边缘注入的监控脚本」那条归一化分支 ✓。
+
+再加一条门禁把这个决定钉住（`AgentSiteContentGateTests`，现 17 项）：Caddyfile 里不得再出现
+`rewrite @docs /docs.html`，三条 `redir … 301` 必须各出现至少两次（http + https）。
+以后谁把它改回 rewrite，测试会红，而不是等某次发版后再靠人记得多刷一条 URL。
+
 ## S. 未闭环项
 
 1. ~~ESA 边缘缓存~~ 已闭环：主人刷 `/`、`/models.json`、`/publication.json`，
