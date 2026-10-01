@@ -72,19 +72,19 @@ swift build -c release --product lingxiagent-ops
 
 ## 🌟 核心特性概览
 
-* **⚡ 极致原生性能与轻量占用**：全系统基于 Swift 6 现代并发（Concurrency & Actors）构建，冷启动仅需 ~10ms，运行期内存低至 ~35MB，告别高昂的 Node.js/Electron 运行时开销。
-* **🧠 P-Core / E-Core 异构双核架构**：
-  * **P-Core (Prompt-Driven 推理总线)**：守护纯净高密的推理工作集，严格控制上下文预算，保持模型 100% 的注意力聚焦与超高的服务端 Prompt Cache 命中率；
-  * **E-Core (Execution Storage 执行存储)**：承载大规模工具执行产物。当测试日志、代码块或分析结果大于 10KB 时，**自动旁路沉淀**入专用对象池，仅向推理层提交紧凑语义引用，彻底根治 Token 爆炸与遗忘。
+* **⚡ 原生编译，无脚本运行时**：全系统基于 Swift 6 现代并发（Concurrency & Actors）构建，交付的是原生二进制，不依赖 Node.js / Bun / Electron 运行时。启动耗时与常驻内存随终端模拟器与宿主环境变化，本项目不发布未经复现的 benchmark 数字。
+* **🧠 P-Core / E-Core 上下文双核分工**：
+  * **P-Core（Prompt-resident reasoning context，`PCoreContextEngine`）**：决定什么留在模型请求的上下文里——稳定前缀、递增上下文与 E-Core 索引投影；淘汰由 P 侧保留策略决定，并配合上游 Prompt Cache；
+  * **E-Core（Context object store / recall，`ECoreObjectStore`）**：保存被 page-out 的完整对象，提供引用索引、按 `ContextObjectID` 精确还原与语义召回。工具输出超过 `context.fabric.objectizationThreshold`（默认 32,768 字节）即对象化，P-Core 只持有引用与摘要。
 * **🖥️ 表现层与核心彻底解耦 (Frontend 契约)**：
   * TUI 全面降维为纯受控客户端，遵循 `@MainActor Frontend` 协议，不私自启动或管理核心；
   * 核心生命周期、Stdio IPC 与 Store 装配统一由 `AppCompositionRoot` 统一接管，CLI / TUI / WebUI 三个正式前端共用同一套契约，GUI 与远端 RPC 沿用同一入口。
-* **🛡️ 动态宿主感知与反封锁伪装**：
-  * 动态识别底层网络协议栈与平台指纹，让 TLS JA4/TCP 握手特征与应用层 User-Agent 保持 100% 原生一致；
-  * 完整注入官方 Companion Headers，杜绝上游风控封锁与人机验证。
+* **🛡️ 宿主感知的客户端请求画像（`ClientFingerprint`）**：
+  * 按渠道动态生成出站 `User-Agent` 与伴随请求头，其中操作系统与架构字段取自真实宿主（`ClientFingerprint.currentPlatform()`），不硬编码其它平台的字符串；
+  * 只影响应用层 HTTP 头部：它不改变传输层 TLS/TCP 栈，因此不存在也不宣称「TLS/JA3/JA4 指纹伪装」，更不承诺任何「绕过风控」的效果——上游如何判定由其自身策略决定。
 * **🔑 官方订阅与通用 API 物理隔离双轨制**：
   * 支持 ChatGPT Plus/Pro (Codex OAuth)、Claude Code 官方订阅免 API 费用直连；
-  * 无缝兼容 75+ 通用商业与开源大模型（OpenAI、DeepSeek、Anthropic、Qwen、SenseNova 等）。
+  * 通用模型清单以 [Models Hub](https://models.lingxifox.cn) 发布的 `models.json` 为准（Provider 与模型数量随上游变化，仓库与文档不写死计数）；实际可选用哪些还取决于本机运行时契约与账号可用性。
 * **🔌 全功能 MCP (Model Context Protocol) 运行时与 Skills 体系**：
   * 原生支持 `stdio` 与现代 `streamableHTTP` 双通道；
   * 内置 RFC 9728 & RFC 8414 OAuth 2.1 浏览器本地回送授权；
@@ -114,9 +114,9 @@ swift build -c release --product lingxiagent-ops
   * 支持 `architecture`：自动提取高层架构分层（api / core / infra / test）、模块依赖拓扑及核心高扇入热点符号（Hotspots）；
   * 支持 `trace`：沿着 `calls` 关系进行双向 BFS 拓扑遍历（`inbound` 追查调用方，`outbound` 追查被调用方，支持 1-5 级深度追溯）；
   * 支持 `search` 拓扑符号检索与增量时间戳轻量本地持久化缓存。
-* **🔒 本地加密保险箱 (Vault)**：
-  * 采用 AES-256-GCM 高强度加密，凭据安全落盘于本地保险箱；
-  * 支持 `本地加密保险箱` ⇄ `当前进程环境变量` 双重自动回退。
+* **🔒 本地加密凭据保险箱**：
+  * 凭据统一存放在数据目录的 `credentials.vault`：AES-256-GCM 认证加密，密钥来自口令派生（PBKDF2-HMAC-SHA256，≥100,000 轮）或机器绑定的保护性密钥，文件权限收紧到 `0600`；macOS Keychain 只做一次性迁移读取；
+  * 配置文件里不允许出现明文凭据：`providers.json` / `mcp.json` 的凭据字段只接受 `{env:VAR}` 与 `{vault:...}` 引用形式。
 * **🎨 现代交互式 TUI 体系与 24-bit TrueColor 主题引擎**：
   * 内置 6 套高保真配色主题（LingXiAgent Dark、LingXiAgent Light、Catppuccin Mocha、Nord Aurora、Dracula、Monochrome Minimal），支持 24-bit RGB TrueColor 与 ANSI 动态回退；
   * 全局快捷键 `Ctrl+T` 或 `/theme` 呼出弹出式**主题选择器 (Theme Picker)**，支持按键即时搜索过滤、光标上下切换与免重启即时热重载；
@@ -133,7 +133,7 @@ swift build -c release --product lingxiagent-ops
 ```mermaid
 flowchart TD
     subgraph UI_Layer["🖥️ 表现层与客户端 (Frontend Layer - Fully Decoupled)"]
-        TUI["LingXiTUI (60FPS OpenTUI / ANSI Fallback)"]
+        TUI["LingXiTUI (OpenTUI C ABI / ANSI 回退)"]
         CLI["lingxiagent CLI (统一运维与无头执行)"]
         WebClient["LingXiWebUI (lingxiagent serve · 快照 + 增量 SSE)"]
     end
@@ -151,15 +151,16 @@ flowchart TD
     end
 
     subgraph Core_Engines["🧠 异构双核业务引擎 (LingXiCore)"]
-        subgraph P_Core["🔥 P-Core: 推理对话总线 (Prompt-Driven)"]
+        subgraph P_Core["🔥 P-Core: 驻留在模型请求中的推理上下文"]
             ReasoningLoop["Agent Decision & Tool Loop"]
-            ContextCtrl["三级上下文流控 (L1 Hot / L2 Warm / L3 Cold)"]
-            Compactor["ContextCompactor (高水位智能摘要)"]
+            StablePrefix["Stable Prefix（稳定前缀 · 命中 Prompt Cache）"]
+            GrowingCtx["Growing Context（本轮增量与工具轨迹）"]
+            IndexProj["E-Core Index Projection（只投影引用与摘要）"]
         end
 
-        subgraph E_Core["⚡ E-Core: 执行存储对象池 (Execution-Driven)"]
+        subgraph E_Core["⚡ E-Core: 上下文对象存储与召回"]
             ToolRuntime["Tool Engine & Sandbox Watchdog"]
-            ObjectStore["Bypass Object Store (大工具产物旁路隔离)"]
+            ObjectStore["ECoreObjectStore（完整对象 · 精确还原 · 语义召回）"]
             StateDB["SQLite Store (catalog.sqlite / state.sqlite)"]
         end
 
@@ -191,41 +192,37 @@ flowchart TD
 | **`LingXiApplication`**| 应用层业务聚合与表现层契约，定义 `Frontend` 协议与 `AppCompositionRoot` | `LingXiClient`, `LingXiProtocol`, `LingXiPlatform` |
 | **`LingXiTUI`** | 纯表现层受控终端，遵循 `Frontend` 契约，支持双栏渲染与富文本流式交互 | `LingXiApplication`, `LingXiTUIComponents`, `LingXiPlatform` |
 | **`LingXiCoreHost`** | 独立 Core 后台服务执行体，提供标准 Stdio JSON Lines 协议管道 | `LingXiCore`, `LingXiProtocol`, `LingXiPlatform` |
-| **`lingxiagent`** | 统一综合命令行入口（运行 TUI、doctor 体检、mcp 诊断、auth 鉴权管理） | 整合各层入口 |
+| **`lingxiagent`** | 用户前端入口：无参数进入 TUI，`serve` 起 WebUI | 整合各层入口 |
+| **`lingxiagent-ops`** | 运维与批处理入口：`auth` / `models` / `mcp` / `skills` / `exec` / `review` / `doctor` / `resume` / `acp` / `task` / `completion`（`lingxiagent` 遇这些动词只转介到这里） | 链接 Core 做后端管理 |
+
+此外两个**独立仓库、独立 MIT、独立 SemVer** 的公共 Swift Package 不属于本仓库的 target：`LingXiModelSDK`（模型目录消费者）与 `LingXiPluginSDK`（插件作者），本仓库自己也通过公开 SwiftPM 入口消费它们。
 
 ---
 
-## 🔄 深度解析：P-Core 与 E-Core 双核异构与分级流控
+## 🔄 深度解析：P-Core 与 E-Core 的上下文分工
 
-在复杂编程工程与多轮长会话中，传统 Agent 将成千上万行代码重构记录、测试输出与报错日志无脑堆入对话上下文，导致模型推理显存被垃圾数据淹没，引发高昂费用与“注意力迷航”。LingXiAgent 设计了严格的**异构双核旁路总线**：
+一次工具调用就可能返回上万行测试日志或整份文件。如果它们全部留在模型请求里，上下文窗口会被低价值数据填满，既推高成本也稀释注意力。LingXiAgent 因此把「留在请求里的内容」与「完整内容的存放与取回」拆成两个核心：
 
 ```mermaid
 flowchart LR
-    ToolExec["工具执行产生结果 (Tool Execution)"] --> SizeCheck{"结果体积是否 > 10KB ?"}
-    
-    SizeCheck -- "是 (大产物)" --> Bypass["⚡ 写入 E-Core 旁路对象池"]
-    Bypass --> Digest["提炼紧凑语义摘要 + 分配 Object ID"]
-    Digest --> PCore["🔥 提交至 P-Core 推理上下文"]
-
-    SizeCheck -- "否 (精炼结果)" --> PCore
-    
-    subgraph Context_Flow["P-Core 三级上下文温度分级"]
-        L1["L1 Hot Working Set (单次物理推理工作集)"]
-        L2["L2 Warm Cache (内存未压缩待命池)"]
-        L3["L3 Cold Store (SQLite 持久化与历史压缩归档)"]
-        L1 <--> L2
-        L1 <--> L3
-    end
-
-    PCore --> Context_Flow
+    ToolExec["工具执行产生结果"] --> SizeCheck{"超过 context.fabric.objectizationThreshold？（默认 32KB）"}
+    SizeCheck -- "是" --> Objectize["写入 E-Core 对象存储，得到稳定 ContextObjectID"]
+    Objectize --> Projection["向 P-Core 只提交引用 + 占位摘录（默认 1KB）"]
+    Projection --> PCore["P-Core 驻留上下文"]
+    SizeCheck -- "否" --> PCore
+    PCore --> Retention{"超过 pCore.target / softLimit / hardLimit？"}
+    Retention -- "是" --> Evict["P 侧保留策略决定淘汰"]
+    Evict --> Recall["需要时按 ID exact restore 或语义召回<br/>（单次上限 recallMaxBytes / recallMaxLines）"]
 ```
 
-### 1. 双核协同机制
-1. **执行大结果旁路隔离**：当执行 `shell` 产出几十 KB 编译日志或大型文件读取时，E-Core 拦截原始数据并存入本地对象存储池，仅向 P-Core 注入结构化证据摘要（`[Tool output archived to E-Core ID: obj_xxx]`），上下文净省 85% 以上空间。
-2. **三级上下文温度流转**：
-   - **🔥 L1 (Hot Working Set)**：直接参与大模型推理的高热活跃工作集，受上下文预算（Context Budget）与动态 SoftLimit 严格防爆守护；
-   - **⚡ L2 (Warm Cache)**：内存未压缩页面池，L1 超载时按 LRU 与相关度加权淘汰降级至 L2；再次命中时秒级提拔（Promote）回 L1；
-   - **❄️ L3 (Cold Store)**：当历史长会话逼近高水位（High-Water Mark）时，`ContextCompactor` 执行语义提炼归档，释放工作集空间。
+### 协同规则
+
+1. **对象化而非截断**：超阈值的大输出写入 E-Core 得到稳定 `ContextObjectID`，P-Core 只持有引用与占位摘录；原文没有被丢弃，可按 ID 精确还原或经 `context_recall` 语义召回。
+2. **淘汰由 P 侧决定**：`context.pCore` 的 `target / softLimit / hardLimit` 是驻留预算，超限时的取舍是 P 侧保留策略的职责。
+3. **E-Core heat 不参与淘汰**：heat（含 `heatDecayHalfLifeSeconds` 衰减）只服务召回排序、缓存与可观测性。
+4. **配置键即事实**：上述阈值全部来自 `config.json` 的 `context` 分段，语义以 `Sources/LingXiCore/Configuration/ConfigurationTypes.swift` 为准，详见 [/docs.html#arch-context](https://agent.lingxifox.cn/docs.html#arch-context)。
+
+> 历史文档中的「三级缓存 L1 / L2 / L3」与 `ContextCompactor` 冷热分级语义**已废弃**；当前架构只有 P-Core 与 E-Core 两个核心。`config.json` 里残留的 `l1/l2/l3`、`ecoreStorageEnabled` 等旧键只用于向后兼容读取，写入只落新的 P/E 键。
 
 ---
 
@@ -235,7 +232,7 @@ flowchart LR
 
 ```text
 ┌─ 🦊 LingXiAgent ──────────────────────────┬─ Conversation ────────────────────────────────┐
-│ 🧠 Context Budget (L1/L2/L3):             │ Assistant                                     │
+│ 🧠 P-Core Context Budget:                 │ Assistant                                     │
 │   [████████████░░░░░░░░] 62.4k / 200k     │ 我已使用 edit_file 完成了底层协议解耦。       │
 │                                           │ 代码修改已通过本地沙箱单元测试回归验证。      │
 │ ⚡ Prompt Cache Efficiency:                │                                               │
@@ -246,13 +243,15 @@ flowchart LR
 └───────────────────────────────────────────┴───────────────────────────────────────────────┘
 ```
 
-* **双栏监控看板**：左侧实时展示三级缓存水位、大模型服务端真实 Prompt Cache 命中率、活跃 MCP 服务状态与子代理树；
+> 上面的界面是**布局示意（演示数据）**，其中的数字不代表实测指标。
+
+* **双栏监控看板**：左侧实时展示 P-Core 上下文预算、上游真实 Prompt Cache 命中、活跃 MCP 服务状态与子代理树；
 * **精准性能注脚**：每轮问答末尾自动输出暗调遥测参数：`⚡️ <model> · 耗时 <dur> · 首字 <latency> · <tokens/s> · <timestamp>`；
 * **跨工作区 `/resume` 会话恢复**：全盘智能扫描会话并按工作目录层级聚合，当前目录自动置顶；跨目录切换时**自动 `cd` 并从 SQLite 完整水合恢复历史时间线**；
 * **快捷按键与全套弹出式交互 (Pickers & Modals)**：
   * `Ctrl + T` 或 `/theme`：呼出**主题选择器**，24-bit TrueColor 即选即换；
   * `Esc`：关闭当前模态浮层 / 全局熔断中断，杀死后台所有活动进程树；
-  * `Tab / Shift+Tab`：在 Normal / Plan / Boost 模式间快速切换；
+  * `Tab / Shift+Tab`：在 `AgentRunMode` 的 Build / Plan / Explore 之间循环切换（`ApplicationStore` 的 `next` 顺序）；
   * `← / → / Home / End`：输入框内字符精准游走定位；
   * `/mode`：无参弹出 **Agent 模式选择器**（Build / Plan / Explore 上下键直选）；
   * `/permissions`：无参弹出 **安全与权限策略选择器**（Ask / Auto / YOLO 直选）；
@@ -261,7 +260,7 @@ flowchart LR
   * `/diff`：弹出 **工作区 Git 变更审查器**（支持长篇 diff 平滑滚动）；
   * `/tasks`：弹出 **后台任务监控面板**，支持状态轮询与定向强杀；
   * `/status` / `/context` / `/perf` / `/mcp` / `/skills`：居中模态卡片查阅，告别行内刷屏；
-  * `/new`：秒级开辟全新对话流，自动重置视口与输入焦点。
+  * `/new`：立即开辟全新对话流，自动重置视口与输入焦点。
 
 ---
 
@@ -342,7 +341,7 @@ lingxiagent-ops acp                       # 以 Agent Client Protocol 标准服�
 
 LingXiAgent 严格恪守核心纪律准则：
 1. **凭据绝对不可碰**：原始密钥仅在内存中短暂用于建连，绝不进入 Session、上下文、工具归档、协议报文或日志。
-2. **破坏先备份**：任何针对配置文件、数据库与重要代码的破坏性操作前，均自动于工作区进行备份隔离。
+2. **改文件可回溯**：每次文件写入记录进 mutation journal（含改前/改后哈希与内容、所属会话与轮次），配合 `/undo` 与按轮次回滚；Git 工作区仍是主要防线，Agent 不替代版本控制。
 3. **平台安全防护**：
    - **macOS (Darwin)**：POSIX 独立进程组隔离、Seatbelt 沙箱 profile、`SecRandomCopyBytes` 密码级强随机数；
    - **Linux**：集成 Bubblewrap (`bwrap`) 容器命名空间沙箱与只读挂载隔离，`/dev/urandom` 强随机数源；
@@ -372,8 +371,9 @@ LingXiAgent 采用清晰严密的 **多轨分层许可体系（Multi-Tiered Lice
 
 | 组件层级 (Layer) | 覆盖目录 (Directories) | 授权协议 (License) | 本地构建/体验 | 二次分发/镜像/上架 | 商业化/SaaS/代售 |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **底座核心 (Core)** | 以 [`LICENSE-MATRIX.md`](LICENSE-MATRIX.md) 的逐 target 清单为准：`LingXiCore`、`LingXiPlatform`、`LingXiProtocol`、`LingXiClient`、`CSQLite` | **[LCSAL-1.0](LICENSE-CORE)**<br/>*(源码可用 / 个人自用)* | ✅ **允许** | ❌ **严禁二次上架或镜像** | ❌ **严禁商业化** |
-| **表现层客户端 (Frontend)** | `LingXiTUI`、`LingXiWebUI`、`LingXiApplication`、`lingxiagent` 入口；`LingXiFrontendKit` / `LingXiMacApp` (GUI，超出当前发布范围) | **[PolyForm Noncommercial 1.0.0](LICENSE-FRONTEND)**<br/>*(源码开放 / 自由分发)* | ✅ **允许** | ✅ **允许自由分发二次上架**<br/>*(须保留署名与非商业声明)* | ❌ **严禁商业化** |
+| **底座核心 (Core)** | 以 [`LICENSE-MATRIX.md`](LICENSE-MATRIX.md) 的逐 target 清单为准：`LingXiCore`、`LingXiCoreHost`、`LingXiPlatform`、`LingXiProtocol`、`LingXiApplication`、`LingXiClient`、`CSQLite` | **[LCSAL-1.1](LICENSE-CORE)**<br/>*(源码可用 / 个人自用 / 禁商用)* | ✅ **允许本地编译自用** | ❌ **严禁**（仅官方 release 产物可非商用原样转发） | ❌ **严禁** |
+| **表现层客户端 (Frontend)** | `LingXiTUI` / `LingXiTUIApp` / `LingXiTUIComponents`、`LingXiWebUI`、`LingXiFrontendKit`、`LingXiMacApp`（逐 target 以矩阵为准） | **[PolyForm Noncommercial 1.0.0](LICENSE-FRONTEND)**<br/>+ 附加条款 | ✅ **允许** | ⚠️ **受限**：第三方改版只能以**源码**形式分发；二进制只有官方 release 一份 | ❌ **严禁商业化** |
+| **公共开发者 SDK** | 不在本仓库：[`LingXiModelSDK`](https://github.com/LingXiFox/LingXiModelSDK)、[`LingXiPluginSDK`](https://github.com/LingXiFox/LingXiPluginSDK)，各自独立仓库与独立 SemVer | **MIT** | ✅ **允许** | ✅ **允许**（源码与二进制均可，含修改后版本） | ✅ **允许**（含闭源产品链接引用；唯一义务是保留版权与许可声明） |
 | **第三方库 (Vendor)** | `Vendor/OpenTUI/` | 各自上游原始开源许可 (GPLv3 等) | 遵循原协议 | 遵循原协议 | 遵循原协议 |
 
 * **个人开发者自用**：欢迎任何人克隆至本地，研究、学习、构建并作为个人开发助手单机体验；

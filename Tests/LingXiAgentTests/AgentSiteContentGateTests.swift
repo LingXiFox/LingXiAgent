@@ -20,6 +20,11 @@ struct AgentSiteContentGateTests {
         try String(contentsOf: Self.root.appendingPathComponent("Server/agent-site/public/\(name)"), encoding: .utf8)
     }
 
+    /// 仓库根相对路径（README、Configuration 等站点之外的文件）。
+    private func repoText(_ relative: String) throws -> String {
+        try String(contentsOf: Self.root.appendingPathComponent(relative), encoding: .utf8)
+    }
+
     /// 旧词只允许活在否定句里。
     private func assertOnlyDenied(_ haystack: String, needles: [String], page: String) {
         let denials = ["不", "没有", "废弃", "禁止", "never", "not ", "No ", "而非"]
@@ -174,6 +179,39 @@ struct AgentSiteContentGateTests {
     /// 链接归一之外，Origin 也必须归一：rewrite 会让 `/docs` 与 `/docs.html`
     /// 各自成为一个 ESA cache key，于是「同一份文档两个真相」又回来了，
     /// 而且每次发版都要人多刷一条 URL。
+    /// README 是第四个真相面：它曾写着 ~10ms/35MB、L1/L2/L3 冷热分级、"反封锁伪装"、
+    /// 75+ 模型、LCSAL-1.0，还完全没提两个公共 SDK。同一把尺子量它。
+    @Test("README carries the same facts as the site and the license matrix")
+    func READMEAgreesWithReality() throws {
+        let readme = try repoText("README.md")
+
+        assertOnlyDenied(readme, needles: [
+            "~10ms", "35MB", "60FPS", "60 FPS", "85% 以上", "反封锁", "反检测", "JA3", "JA4",
+            "三级上下文", "三级缓存水位", "75+", "Normal / Plan / Boost", "LCSAL-1.0",
+        ], page: "README.md")
+        #expect(!readme.contains("ContextCompactor") || readme.contains("已废弃"),
+                "README 不得把 ContextCompactor 冷热分级当作现行架构")
+        #expect(readme.contains("LCSAL-1.1"), "README 的 Core 许可版本要与 LICENSE 一致")
+
+        // 两个公共 SDK 必须在 README 出现，且是独立 MIT 仓库。
+        for url in ["https://github.com/LingXiFox/LingXiModelSDK",
+                    "https://github.com/LingXiFox/LingXiPluginSDK"] {
+            #expect(readme.contains(url), "README 未提及公共 SDK \(url)")
+        }
+        #expect(readme.contains("MIT"))
+
+        // E-Core 阈值以代码为准，README 只能引用同一数字。
+        let config = try repoText("Sources/LingXiCore/Configuration/ConfigurationTypes.swift")
+        #expect(config.contains("objectizationThreshold: Int = 32_768"),
+                "objectizationThreshold 默认值变了，README 需同步")
+        #expect(readme.contains("32,768") || readme.contains("32768"),
+                "README 的 E-Core 对象化阈值与 ConfigurationTypes 不一致")
+
+        // 链接同样只允许一套 canonical 写法。
+        #expect(!readme.contains("agent.lingxifox.cn/docs\"") && !readme.contains("agent.lingxifox.cn/docs)"),
+                "README 混用了 /docs 与 /docs.html")
+    }
+
     @Test("the origin canonicalizes alias URLs with redirects, not rewrites")
     func originRedirectsAliases() throws {
         let caddy = try String(
