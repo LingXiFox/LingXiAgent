@@ -44,6 +44,13 @@ public final class RuntimeFrontend: ObservableObject {
     @Published public var actionError: String?
     @Published public private(set) var isSwitchingWorktree = false
     @Published public private(set) var availableCommands: [CommandDescriptor] = []
+    /// The Agent tree as Core reports it, not as the timeline happened to mention.
+    ///
+    /// `session.subagents` gives the composer a flat list of rows; the parent/root relationships
+    /// and terminal reasons that make a tree a tree only exist on the Core side, so this is read
+    /// from `getAgentTree` rather than reconstructed locally.
+    @Published public private(set) var agentTree: AgentTreeNode?
+    @Published public var isAgentTreePresented = false
     /// Timeline tail notice for a live provider condition (rate limit, retry).
     @Published public private(set) var providerNotice: NoticePresentation?
     @Published public private(set) var providerStatus: ProviderStatus?
@@ -672,6 +679,52 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
+    /// Re-reads the Agent tree from Core. Called when the panel opens, after a cancel or a
+    /// resume, and never used to guess the shape locally.
+    public func refreshAgentTree() async {
+        guard let client, let sessionID = lastState.activeSessionID else {
+            agentTree = nil
+            return
+        }
+        do {
+            agentTree = try await client.run.getAgentTree(sessionID: sessionID)
+        } catch {
+            actionError = "无法读取 Agent 树：\(error.localizedDescription)"
+        }
+    }
+
+    /// Cancels a run by its real RPC and reloads the tree from the answer, so the row that
+    /// disappears is Core's decision and not the GUI having moved a node on its own board.
+    public func cancelAgentRun(_ runID: RunID, title: String?) async {
+        guard let client, let sessionID = lastState.activeSessionID else {
+            actionError = "未连接 Core，无法取消。"
+            return
+        }
+        do {
+            _ = try await client.run.cancelRun(sessionID: sessionID, runID: runID, reason: "用户从 Agent 树取消")
+        } catch {
+            actionError = "取消「\(title ?? runID.rawValue)」失败：\(error.localizedDescription)"
+            return
+        }
+        await refreshAgentTree()
+    }
+
+    /// Resumes only what Core says is resumable. A terminal run answers with an error now
+    /// instead of `applied: true` and an unchanged snapshot, so the button cannot lie.
+    public func resumeAgentRun(_ runID: RunID, title: String?) async {
+        guard let client, let sessionID = lastState.activeSessionID else {
+            actionError = "未连接 Core，无法恢复。"
+            return
+        }
+        do {
+            _ = try await client.run.resumeRun(sessionID: sessionID, runID: runID)
+        } catch {
+            actionError = "恢复「\(title ?? runID.rawValue)」失败：\(error.localizedDescription)"
+            return
+        }
+        await refreshAgentTree()
+    }
+
     public func runCommand(_ input: String) {
         guard let backend else {
             commandOutput = CommandOutput(title: input, text: "未连接 Core，命令不可用。")
@@ -700,12 +753,75 @@ public final class RuntimeFrontend: ObservableObject {
         composerModel.text = content
     }
 
+    /// Finalizes the active task.
+    ///
+    /// This used to write `task.state = "completed"` into the GUI first and then fire the RPC with
+    /// `try?`, so a rejected finalize left the panel showing a completed task that Core had never
+    /// accepted. §7.1 requires the opposite order: send the command, take the receipt, then
+    /// re-read Core's snapshot and let that change what is displayed.
     public func finalizeTask(action: TaskFinalizeAction) {
-        guard var task = conversationModel.activeTask else { return }
-        task.state = action == .discard ? "cancelled" : "completed"
-        conversationModel.activeTask = task
-        if let client {
-            Task { _ = try? await client.task.finalize(taskID: TaskID(task.taskID), action: action) }
+        guard let task = conversationModel.activeTask else { return }
+        guard let client else {
+            actionError = "未连接 Core，任务无法收尾。"
+            return
+        }
+        Task {
+            do {
+                _ = try await client.task.finalize(taskID: TaskID(task.taskID), action: action)
+            } catch {
+                actionError = "任务收尾失败：\(error.localizedDescription)"
+                return
+            }
+            await reloadTasks(after: "任务已收尾，但刷新列表失败")
+        }
+    }
+
+    /// Re-reads the task list after a mutation that Core accepted. A failure here is not the
+    /// mutation failing — it is the panel being stale — so it says which, instead of surfacing an
+    /// error that would make the user retry a finalize that already worked.
+    private func reloadTasks(after successPhrase: String) async {
+        do {
+            _ = try await refreshTasks()
+        } catch {
+            actionError = "\(successPhrase)：\(error.localizedDescription)"
+        }
+    }
+
+    /// Replaces a task's success criteria. Same rule as finalize: the write is confirmed by Core
+    /// and read back, never predicted.
+    public func updateTaskCriteria(taskID: String, criteria: [SuccessCriterion]) async {
+        guard let client else {
+            actionError = "未连接 Core，验收标准无法修改。"
+            return
+        }
+        do {
+            _ = try await client.task.updateCriteria(taskID: TaskID(taskID), criteria: criteria)
+        } catch {
+            actionError = "修改验收标准失败：\(error.localizedDescription)"
+            return
+        }
+        await reloadTasks(after: "验收标准已提交，但刷新列表失败")
+    }
+
+    /// Artifacts and report are read on demand rather than cached in the GUI, so what Task Detail
+    /// shows is whatever Core currently holds.
+    public func taskArtifacts(taskID: String) async -> [TaskArtifact] {
+        guard let client else { return [] }
+        do {
+            return try await client.task.listArtifacts(taskID: TaskID(taskID))
+        } catch {
+            actionError = "读取任务产物失败：\(error.localizedDescription)"
+            return []
+        }
+    }
+
+    public func taskReport(taskID: String) async -> TaskReport? {
+        guard let client else { return nil }
+        do {
+            return try await client.task.getReport(taskID: TaskID(taskID))
+        } catch {
+            actionError = "读取任务报告失败：\(error.localizedDescription)"
+            return nil
         }
     }
 

@@ -7,6 +7,9 @@ struct AgentStatusHUD: View {
     @ObservedObject private var inspector: RuntimeInspectorPresentationModel
     @ObservedObject private var conversation: ConversationPresentationModel
     @ObservedObject private var composer: ComposerModel
+    /// The tree, its refresh and its cancel/resume actions are runtime operations; the view
+    /// models above carry only what is projected for display.
+    @ObservedObject private var runtime: RuntimeFrontend
     let compact: Bool
     let onToggle: () -> Void
 
@@ -14,6 +17,7 @@ struct AgentStatusHUD: View {
         self.inspector = runtime.inspectorModel
         self.conversation = runtime.conversationModel
         self.composer = runtime.composerModel
+        self.runtime = runtime
         self.compact = compact
         self.onToggle = onToggle
     }
@@ -37,13 +41,47 @@ struct AgentStatusHUD: View {
             summaryMetric(isEmptySession ? "预置上下文" : "上下文", value: percent(contextUsage), progress: contextUsage)
             summaryMetric("P-Core", value: percent(pCoreUsage), progress: pCoreUsage)
             summaryMetric("E-Core", value: eCoreCount, progress: nil)
+            // The collapsed HUD keeps the context lines exactly as they were and adds two
+            // counters under them (§7 of the layout addendum). Full tree and task detail stay
+            // out of the small window by design.
+            if !subagents.isEmpty {
+                countLine("子代理", "\(subagents.filter { isActive($0.status) }.count) 运行中")
+            }
+            if !(live?.todos ?? []).isEmpty {
+                let todos = live?.todos ?? []
+                countLine("Task", "\(todos.filter { $0.status == "completed" }.count) / \(todos.count)")
+            }
         }
         .padding(LingXiMetrics.Space.md)
         .frame(width: LingXiMetrics.Size.statusHUD)
         .lxFloating(cornerRadius: LingXiMetrics.Radius.surface)
     }
 
+    /// The persistent right-hand column.
+    ///
+    /// §30 of the closure contract freezes the 运行上下文 card — its layout, order, rings and
+    /// bars stay exactly as they were — and allows only appending below it. So this is a scroll
+    /// column holding the unchanged card plus two compact sections, not a redesigned sidebar:
+    /// running out of height scrolls, it never squeezes the context card.
     private var contextPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                contextCard
+                LXHairline()
+                subagentSection
+                LXHairline()
+                taskSection
+            }
+        }
+        .frame(width: LingXiMetrics.Size.statusHUD)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .lxPanel()
+        .sheet(isPresented: $runtime.isAgentTreePresented, onDismiss: nil) {
+            AgentTreeSheet(runtime: runtime)
+        }
+    }
+
+    private var contextCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: LingXiMetrics.Space.sm) {
                 Text("运行上下文")
@@ -90,9 +128,110 @@ struct AgentStatusHUD: View {
         }
         .padding(.horizontal, LingXiMetrics.Space.lg)
         .padding(.vertical, LingXiMetrics.Space.xxl)
-        .frame(width: LingXiMetrics.Size.statusHUD)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .lxPanel()
+    }
+
+    /// Compact live subagents. Names, state, and nothing else — runIDs, full trees, terminal
+    /// reasons and timestamps belong to the detail surface this row opens, per §3 of the layout
+    /// addendum. An empty state is shown rather than hiding the section, so "no subagents"
+    /// reads as a fact about the run rather than as a broken panel.
+    @ViewBuilder private var subagentSection: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Text("子代理").font(LXType.headline)
+                if !subagents.isEmpty {
+                    Text("\(subagents.count)").font(LXType.meta).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityAddTraits(.isHeader)
+
+            if subagents.isEmpty {
+                Text("暂无活跃子代理").font(LXType.meta).foregroundStyle(.secondary)
+            } else {
+                ForEach(subagents.prefix(6)) { row in
+                    HStack(spacing: LingXiMetrics.Space.xs) {
+                        Image(systemName: glyph(for: row.status)).foregroundStyle(tint(for: row.status))
+                        Text(row.model.flatMap { $0.isEmpty ? nil : $0 } ?? "子代理")
+                            .font(LXType.meta).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text(row.status).font(LXType.meta).foregroundStyle(.secondary)
+                    }
+                }
+                Button("查看完整 Agent 树") {
+                    Task { await runtime.refreshAgentTree() }
+                    runtime.isAgentTreePresented = true
+                }
+                    .buttonStyle(.plain)
+                    .font(LXType.meta)
+                    .padding(.top, LingXiMetrics.Space.xs)
+            }
+        }
+        .padding(.horizontal, LingXiMetrics.Space.lg)
+        .padding(.vertical, LingXiMetrics.Space.xl)
+    }
+
+    /// The turn's to-do list, compact. Criteria, artifacts, reports and the lifecycle actions
+    /// stay in Task Detail (§4 of the addendum).
+    @ViewBuilder private var taskSection: some View {
+        let todos = live?.todos ?? []
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Text("Task").font(LXType.headline)
+                Spacer(minLength: 0)
+                if !todos.isEmpty {
+                    Text("\(todos.filter { $0.status == "completed" }.count) / \(todos.count)")
+                        .font(LXType.meta).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+            .accessibilityAddTraits(.isHeader)
+
+            if todos.isEmpty {
+                Text("本轮没有待办").font(LXType.meta).foregroundStyle(.secondary)
+            } else {
+                ForEach(todos.prefix(8), id: \.id) { todo in
+                    HStack(spacing: LingXiMetrics.Space.xs) {
+                        Image(systemName: glyph(for: todo.status)).foregroundStyle(tint(for: todo.status))
+                        Text(todo.title).font(LXType.meta).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, LingXiMetrics.Space.lg)
+        .padding(.vertical, LingXiMetrics.Space.xl)
+    }
+
+    private func countLine(_ label: String, _ value: String) -> some View {
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Text(value).monospacedDigit()
+        }
+        .font(LXType.meta)
+    }
+
+    private func isActive(_ status: String) -> Bool {
+        ["running", "in_progress", "starting", "queued", "waitingForTool", "waitingForUser"].contains(status)
+    }
+
+    private var subagents: [SubagentRowPresentation] { live?.subagents ?? [] }
+
+    private func glyph(for status: String) -> String {
+        switch status {
+        case "completed", "done", "succeeded": return "checkmark.circle.fill"
+        case "in_progress", "running", "starting": return "circle.fill"
+        case "failed", "cancelled", "timedOut", "timed_out": return "xmark.circle.fill"
+        default: return "circle"
+        }
+    }
+
+    private func tint(for status: String) -> Color {
+        switch status {
+        case "completed", "done", "succeeded": return .green
+        case "in_progress", "running", "starting": return .accentColor
+        case "failed", "cancelled", "timedOut", "timed_out": return .red
+        default: return .secondary
+        }
     }
 
     private var contextChart: some View {

@@ -3885,14 +3885,26 @@ extension CoreHost {
         guard let run = await coord.getRun(runID: envelope.payload.runID) else {
             throw RuntimeError(category: .validation, code: "runNotFound", message: "Run \(envelope.payload.runID.rawValue) 不存在", retryability: .none, source: .client)
         }
-        _ = try? await agent?.resumeAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+        // A finished run has nothing to resume. Answering `applied: true` here made the caller's
+        // "Resume" click succeed while the run stayed exactly as it was.
+        guard !run.status.isTerminal else {
+            throw CoreError(code: .invalidTaskTransition,
+                            message: "Run \(run.runID.rawValue) 已经是 \(run.status.rawValue)，没有可恢复的执行。")
+        }
+        // Errors propagate. This used to be `try?` followed by an unconditional success carrying
+        // the *pre-resume* snapshot, so a failed resume was indistinguishable from a working one.
+        guard let agent else {
+            throw CoreError(code: .notReady, message: "Agent Runtime 未就绪，无法恢复 Run")
+        }
+        _ = try await agent.resumeAgentRun(AgentRunID(envelope.payload.runID.rawValue))
+        let resumed = await coord.getRun(runID: envelope.payload.runID) ?? run
         let watermark = await coord.eventLog.currentWatermark()
         let receipt = CommandReceipt<RunSnapshot>(
             commandID: envelope.commandID,
             applied: true,
             revision: nextRevision(),
             observedThrough: [watermark],
-            result: run
+            result: resumed
         )
         try await recordIdempotency(envelope: envelope, commandName: "resumeRun", receipt: receipt)
         return receipt

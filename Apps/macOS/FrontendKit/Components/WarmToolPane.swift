@@ -48,6 +48,10 @@ struct WarmTasksPane: View {
     @State private var goalDraft = ""
     @State private var tasks: [TaskSnapshot] = []
     @State private var taskError: String?
+    /// Artifacts and report are read from Core on demand; they are not part of the capsule the
+    /// list already carries, and caching them here would show a stale view of a finished task.
+    @State private var artifacts: [TaskArtifact] = []
+    @State private var loadedReport: TaskReport?
 
     init(runtime: RuntimeFrontend) {
         self.runtime = runtime
@@ -115,19 +119,82 @@ struct WarmTasksPane: View {
                         .foregroundStyle(.secondary)
                 }
                 if let task = conversation.activeTask {
+                    // §7: the capsule alone left four Core task RPCs unreachable from the GUI.
+                    // Objective, criteria, state, plan, artifacts and report are all shown from
+                    // Core's data, and every action below is command → receipt → reload; none of
+                    // them edit `conversation.activeTask` locally.
                     VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
-                        Text("最近的任务胶囊").font(LXType.sectionHead)
+                        Text("任务详情").font(LXType.sectionHead)
                         Text(task.objective).font(LXType.body).textSelection(.enabled)
                         Text(task.state).font(LXType.meta).foregroundStyle(Color.secondary)
+
+                        if !task.criteria.isEmpty {
+                            Text("验收标准").font(LXType.meta).foregroundStyle(.secondary)
+                            ForEach(task.criteria, id: \.criterionID) { criterion in
+                                HStack(alignment: .top, spacing: LingXiMetrics.Space.xs) {
+                                    Image(systemName: criterion.isSatisfied
+                                                  ? "checkmark.circle" : "circle.dashed")
+                                        .foregroundStyle(criterion.isSatisfied ? Color.green : Color.secondary)
+                                    Text(criterion.description).font(LXType.meta).textSelection(.enabled)
+                                    Spacer(minLength: 0)
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+
                         if let plan = task.plan {
+                            Text("阶段").font(LXType.meta).foregroundStyle(.secondary)
                             ForEach(plan.phases) { phase in
                                 Text(phase.name).font(LXType.meta).textSelection(.enabled)
                             }
                         }
-                        if let report = task.report {
+
+                        Text("产物").font(LXType.meta).foregroundStyle(.secondary)
+                        if artifacts.isEmpty {
+                            Text("该任务目前没有登记产物。").font(LXType.meta).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(artifacts, id: \.ordinal) { artifact in
+                                HStack(spacing: LingXiMetrics.Space.xs) {
+                                    Image(systemName: "doc.badge.ellipsis")
+                                    // `kind` is the label and `ref` addresses the content; there is
+                                    // no filename on an artifact, so the ref tail is shown rather
+                                    // than invented.
+                                    Text(artifact.kind).font(LXType.meta)
+                                    Text(String(artifact.ref.prefix(10)))
+                                        .font(LXType.meta).foregroundStyle(.tertiary)
+                                    Spacer(minLength: 0)
+                                    Text("v\(artifact.version)").font(LXType.meta).foregroundStyle(.secondary)
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+
+                        if let report = loadedReport {
+                            Text("报告").font(LXType.meta).foregroundStyle(.secondary)
                             Text(report.summary).font(LXType.meta).textSelection(.enabled)
                         }
+
+                        HStack(spacing: LingXiMetrics.Space.sm) {
+                            // Only actions Core actually supports are offered; nothing here is a
+                            // button that changes a local field and calls it done.
+                            if !terminalTaskStates.contains(task.state) {
+                                // Core maps finalize to exactly one of two transitions — discard
+                                // cancels, anything else completes — so `accept` and `finish` are
+                                // not different outcomes and are not offered as two buttons.
+                                Button("标记完成") {
+                                    taskAction { try await $0.finalize(taskID: TaskID(task.taskID),
+                                                                       action: .finish) }
+                                }
+                                Button("放弃任务") {
+                                    taskAction { try await $0.finalize(taskID: TaskID(task.taskID),
+                                                                       action: .discard) }
+                                }
+                            }
+                            Button("重新读取") { Task { await loadTaskSurface(taskID: task.taskID) } }
+                        }
+                        .font(LXType.meta)
                     }
+                    .task(id: task.taskID) { await loadTaskSurface(taskID: task.taskID) }
                 }
                 if let live = inspector.live {
                     if !live.todos.isEmpty {
@@ -210,6 +277,27 @@ struct WarmTasksPane: View {
             } catch {
                 taskError = error.localizedDescription
             }
+        }
+    }
+
+    /// `TaskPresentation.state` is the display string the capsule was projected into, so
+    /// finalizability is judged on that rather than reaching back for the enum.
+    private var terminalTaskStates: Set<String> { ["completed", "failed", "cancelled", "discarded"] }
+
+    private func loadTaskSurface(taskID: String) async {
+        guard let client = runtime.client else { return }
+        let id = TaskID(taskID)
+        do {
+            artifacts = try await client.task.listArtifacts(taskID: id)
+        } catch {
+            artifacts = []
+            taskError = "读取任务产物失败：\(error.localizedDescription)"
+        }
+        do {
+            loadedReport = try await client.task.getReport(taskID: id)
+        } catch {
+            loadedReport = nil
+            taskError = "读取任务报告失败：\(error.localizedDescription)"
         }
     }
 
