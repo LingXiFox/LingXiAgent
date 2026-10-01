@@ -1,13 +1,13 @@
 {
-  "bytes": 5294879,
-  "catalogHash": "sha256:78206746072103d1ab163a3891190fd5ac003174dd14e7969024204f84de6c30",
-  "catalogRevision": "782067460721",
-  "generatedAt": "2026-10-01T02:59:58Z",
+  "bytes": 5295273,
+  "catalogHash": "sha256:a3582ac44a04e5691c5ecee4ab4a12d956b6449c3989e166be1380cadd453491",
+  "catalogRevision": "a3582ac44a04",
+  "generatedAt": "2026-10-01T07:16:37Z",
   "models": 8341,
   "providers": 225,
-  "publishedAt": "2026-10-01T02:59:58Z",
+  "publishedAt": "2026-10-01T07:16:37Z",
   "schemaVersion": "2.0",
-  "sha256": "eb5950529eb33b1d4d1aa548e92c0e4cecd179982044b082d5780e1e3e30270d",
-  "sourceFetchedAt": "2026-10-01T02:59:58Z",
-  "sourceHash": "sha256:fb66816ca87d408ccbb5f53896ebcc4d813ee550f083ee972791a087a15449b2"
+  "sha256": "6a6608a412c3e1cec51273a6464ec137acb8d4ab537e301d689c8f75f27a9f61",
+  "sourceFetchedAt": "2026-10-01T07:16:36Z",
+  "sourceHash": "sha256:c6fdd95f2618e152f85636ef1e79cd7fa1fd7672ff1679716e77ba15a79ca6ce"
 }

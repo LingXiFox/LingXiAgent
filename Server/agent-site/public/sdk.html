@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LingXiPluginSDK | Apple Developer Documentation 风格官方指南</title>
-  <meta name="description" content="LingXiAgent 官方 LingXiPluginSDK 权威开发者文档：原生 Swift 插件接口规范、进程级安全沙箱、只读 INFO 高维感知、自定义 Tools、Slash Commands 与生命周期 Hooks 开发指南。">
+  <title>LingXiPluginSDK 0.1.0 · LingXiAgent Plugin Authoring SDK 官方文档</title>
+  <meta name="description" content="LingXiPluginSDK 是独立 MIT Swift Package（版本 0.1.0，仅依赖 Foundation）：编写 LingXiAgent 的进程外插件，声明自定义 Tools、Slash Commands 与生命周期 Hooks，通过 JSON Lines IPC 与宿主通信，并只读消费 Core 推送的运行时快照。含兼容性表、安全模型与故障排查。">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
   
   <!-- Tailwind CSS -->
@@ -182,7 +182,7 @@
         <!-- Language Pill (Apple Style) -->
         <div class="hidden sm:flex items-center bg-black/50 border border-white/10 rounded-full p-0.5 text-[11px] font-medium">
           <button id="langSwiftBtn" onclick="switchLanguage('swift')" class="px-2.5 py-0.5 rounded-full bg-apple-blue text-white shadow-sm transition-all">Swift 6.0</button>
-          <button id="langJsonRpcBtn" onclick="switchLanguage('jsonrpc')" class="px-2.5 py-0.5 rounded-full text-zinc-400 hover:text-white transition-all">JSON-RPC</button>
+          <button id="langJsonRpcBtn" onclick="switchLanguage('jsonrpc')" class="px-2.5 py-0.5 rounded-full text-zinc-400 hover:text-white transition-all">JSON Lines</button>
         </div>
 
         <a href="/docs.html" class="px-2.5 py-1 text-apple-grayText hover:text-white transition-colors hidden sm:block">系统架构</a>
@@ -237,15 +237,23 @@
             </a>
             <a href="#security-sandboxing" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
               <span class="text-zinc-500">🛡️</span>
-              <span>Security & Sandboxing</span>
+              <span>Security Model</span>
             </a>
             <a href="#delivery" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
               <span class="text-zinc-500">📦</span>
               <span>Packaging & Delivery</span>
             </a>
-            <a href="#jsonrpc-spec" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+            <a href="#ipc-spec" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
               <span class="text-zinc-500">🔌</span>
-              <span>JSON-RPC IPC Specification</span>
+              <span>JSON Lines IPC Specification</span>
+            </a>
+            <a href="#compatibility" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">🧩</span>
+              <span>Compatibility &amp; Versioning</span>
+            </a>
+            <a href="#troubleshooting" class="nav-item flex items-center space-x-2 px-2 py-1 rounded-md text-zinc-300 hover:bg-white/5 transition-colors">
+              <span class="text-zinc-500">🩺</span>
+              <span>Troubleshooting</span>
             </a>
           </div>
 
@@ -347,6 +355,15 @@
           <span class="text-xs font-semibold uppercase tracking-wider text-apple-purple bg-apple-purple/10 border border-apple-purple/20 px-2.5 py-0.5 rounded-full">
             Framework
           </span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-0.5 rounded-full font-mono">
+            Version 0.1.0
+          </span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-zinc-300 bg-white/5 border border-white/10 px-2.5 py-0.5 rounded-full font-mono">
+            MIT
+          </span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-zinc-300 bg-white/5 border border-white/10 px-2.5 py-0.5 rounded-full font-mono">
+            Independent Repository
+          </span>
         </div>
 
         <h1 class="text-4xl sm:text-5xl font-bold tracking-tight text-white">
@@ -354,15 +371,22 @@
         </h1>
 
         <p class="text-lg sm:text-xl text-apple-grayText leading-relaxed max-w-4xl">
-          为 LingXiAgent 打造物理进程隔离的高性能原生 Swift 扩展。声明交互式 Slash 命令、扩展模型自主 Tools、感知双核能效与上下文高维指标，在极致安全边界下扩展 Agent 核心能力。
+          为 LingXiAgent 编写进程外（out-of-process）原生插件的官方 Swift Package。声明交互式 Slash 命令、扩展模型可调用的 Tool、订阅生命周期 Hook，并只读观察宿主推送的运行时快照。SDK 不含 Core：插件是独立可执行文件，通过 stdin/stdout 上的 JSON Lines IPC 与运行中的 LingXiAgent 通信。
         </p>
+
+        <div class="flex flex-wrap gap-3 text-xs pt-1">
+          <a href="https://github.com/LingXiFox/LingXiPluginSDK" target="_blank" class="px-3 py-1.5 rounded-lg bg-apple-blue/15 border border-apple-blue/30 text-apple-blue hover:bg-apple-blue/25 transition-colors font-mono">GitHub · LingXiPluginSDK ↗</a>
+          <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10 transition-colors font-mono">GitHub · LingXiAgent ↗</a>
+          <a href="https://github.com/LingXiFox/LingXiPluginSDK/releases" target="_blank" class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10 transition-colors font-mono">Releases ↗</a>
+        </div>
 
         <!-- Apple Availability Bar -->
         <div class="pt-4 border-t border-white/10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-apple-grayText font-mono">
-          <div><span class="text-zinc-400">macOS:</span> 14.0+</div>
-          <div><span class="text-zinc-400">Linux:</span> glibc 2.34+ (x86_64 / aarch64)</div>
-          <div><span class="text-zinc-400">Swift:</span> 6.0+</div>
-          <div><span class="text-zinc-400">Xcode:</span> 16.0+</div>
+          <div><span class="text-zinc-400">macOS:</span> 13.0+</div>
+          <div><span class="text-zinc-400">Linux:</span> Swift 6.0 toolchain (x86_64 / aarch64)</div>
+          <div><span class="text-zinc-400">Windows:</span> 可构建（Swift 6 工具链），非官方日常验证平台</div>
+          <div><span class="text-zinc-400">Swift:</span> 6.0+ tools version</div>
+          <div><span class="text-zinc-400">依赖:</span> Foundation only</div>
         </div>
       </section>
 
@@ -383,17 +407,26 @@
         
         <div class="space-y-4 text-sm sm:text-base text-apple-lightGray leading-relaxed max-w-4xl">
           <p>
-            <code class="text-apple-purple font-mono">LingXiPluginSDK</code> 是 LingXiAgent 系统的官方扩展开发套件。与简单的提示词包装或脚本解释器不同，LingXiPluginSDK 允许开发者直接使用现代 Swift 编写经由类型安全检查的原生可执行二进制。
+            <code class="text-apple-purple font-mono">LingXiPluginSDK</code> 是 LingXiAgent 的官方扩展开发套件。它不是提示词包装器，也不是脚本解释器：你用现代 Swift 写一个独立可执行文件，类型安全，进程独立。SDK 里只有协议、DTO 与 IPC 驱动——没有会话存储、没有权限引擎、没有 Provider 运行时，因此插件返回值再离谱也不会弄坏用户正在进行的会话：你在另一个进程里。
           </p>
 
           <p>
-            在架构设计上，SDK 遵循两大不可动摇的黄金原则：
+            设计上遵循两条边界：
           </p>
 
           <ul class="space-y-2 list-disc list-inside text-sm text-zinc-300">
-            <li><strong class="text-white">进程级物理隔离沙箱 (Process Sandboxing)</strong>：插件以独立子进程运行，Core 与 Plugin 之间通过标准 IPC（JSON-RPC 载荷）在标准输入输出中通信，绝不使用 <code class="text-apple-purple font-mono">dlopen</code> 动态共享内存，彻底封死 API Key 与内存凭据被窃取的通道；</li>
-            <li><strong class="text-white">“多开放 INFO 感知，少开放执行控制”</strong>：插件拥有高维的只读系统感知能力（会话 Token 水位、P-Core / E-Core 双核负载、耗时指标），但严禁篡改 Agent 核心调度机制与会话状态，避免插件凌驾于主驾驶员（Client / TUI）之上。</li>
+            <li><strong class="text-white">进程隔离，而非动态注入</strong>：插件以独立子进程运行，Core 与插件之间用 stdin/stdout 上的换行分隔 JSON（<strong class="text-white">JSON Lines IPC</strong>）通信，不使用 <code class="text-apple-purple font-mono">dlopen</code>，因此插件不在 Core 的地址空间里读它的内存；</li>
+            <li><strong class="text-white">只读感知，不接管调度</strong>：插件可以读取宿主推送的运行时快照（会话 Token 水位、P-Core / E-Core 计数、耗时指标、工作区状态），但不能改写 Agent 的调度与会话状态——主驾驶员始终是 Client / TUI。</li>
           </ul>
+
+          <!-- Lifecycle -->
+          <h3 class="text-sm font-bold uppercase tracking-wider text-apple-grayText pt-2">Plugin Lifecycle</h3>
+          <div class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar">Core spawns the plugin process
+  ↓  host.snapshot        Core 推送权威运行时快照
+  ↓  plugin.initialize    握手：manifest / ipcVersion / tools / commands
+  ↓  activate(context:)   你的注册对宿主可见
+  …  tool.execute · command.execute · hook.emit（每次调用前先刷新快照）
+  ↓  stdin 关闭 (EOF)     deactivate()，进程退出</div>
 
           <!-- Apple Note Callout -->
           <div class="apple-callout apple-callout-note space-y-1 text-xs sm:text-sm">
@@ -401,7 +434,7 @@
               <span>Note</span>
             </div>
             <div class="text-zinc-300 leading-relaxed">
-              外部二进制插件编译后只需直接放入工作区 <code class="text-zinc-200 font-mono">.lingxi/plugins/</code> 或用户全局目录 <code class="text-zinc-200 font-mono">~/.lingxiagent/plugins/</code>，LingXiAgent 即可自动感知、校验清单并在沙箱中按需激活。
+              编译后的插件二进制放入全局 <code class="text-zinc-200 font-mono">~/.lingxiagent/plugins/</code>，或项目级 <code class="text-zinc-200 font-mono">&lt;project&gt;/.lingxi/plugins/</code>，LingXiAgent 启动时自动发现并校验清单。它必须是当前平台可执行的二进制：macOS / Linux 直接用文件名，Windows 复制 <code class="text-zinc-200 font-mono">my-plugin.exe</code>。
             </div>
           </div>
         </div>
@@ -418,28 +451,32 @@
           <div class="space-y-2">
             <h3 class="text-sm font-bold text-white flex items-center gap-2">
               <span class="w-5 h-5 rounded-full bg-apple-blue text-white flex items-center justify-center text-xs">1</span>
-              <span>创建 Swift Package 并引入 LingXiAgent 依赖</span>
+              <span>创建 Swift Package 并声明 LingXiPluginSDK 依赖</span>
             </h3>
             <div class="relative group">
-              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-comment">// swift-tools-version:6.0</span>
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code id="qs-package"><span class="token-comment">// swift-tools-version:6.0</span>
 <span class="token-keyword">import</span> <span class="token-type">PackageDescription</span>
 
 <span class="token-keyword">let</span> package = <span class="token-type">Package</span>(
     name: <span class="token-string">"MyFirstPlugin"</span>,
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v13)],
     dependencies: [
-        .package(url: <span class="token-string">"https://github.com/LingXiFox/LingXiAgent.git"</span>, branch: <span class="token-string">"main"</span>)
+        .package(url: <span class="token-string">"https://github.com/LingXiFox/LingXiPluginSDK.git"</span>, from: <span class="token-string">"0.1.0"</span>)
     ],
     targets: [
         .executableTarget(
             name: <span class="token-string">"my-plugin"</span>,
             dependencies: [
-                .product(name: <span class="token-string">"LingXiPluginSDK"</span>, package: <span class="token-string">"LingXiAgent"</span>)
+                .product(name: <span class="token-string">"LingXiPluginSDK"</span>, package: <span class="token-string">"LingXiPluginSDK"</span>)
             ]
         )
     ]
 )</code></pre>
+              <button onclick="copyCodeNode(this, 'qs-package')" class="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs text-zinc-300 transition-colors opacity-0 group-hover:opacity-100 flex items-center gap-1">
+                <span>Copy</span>
+              </button>
             </div>
+            <p class="text-xs text-apple-grayText leading-relaxed">LingXiPluginSDK 是独立仓库与独立 SemVer 的 MIT Swift Package，<strong class="text-zinc-300">不需要</strong>拉取 LingXiAgent 仓库即可编译插件。</p>
           </div>
 
           <!-- Step 2 -->
@@ -449,47 +486,60 @@
               <span>编写 main.swift：实现 LingXiPlugin 协议</span>
             </h3>
             <div class="relative group">
-              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-keyword">import</span> <span class="token-type">LingXiPluginSDK</span>
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code id="qs-main"><span class="token-keyword">import</span> <span class="token-type">Foundation</span>
+<span class="token-keyword">import</span> <span class="token-type">LingXiPluginSDK</span>
 
 <span class="token-attr">@main</span>
 <span class="token-keyword">struct</span> <span class="token-type">MyFirstPlugin</span>: <span class="token-type">LingXiPlugin</span> {
+    <span class="token-keyword">init</span>() {}
+
     <span class="token-keyword">var</span> manifest: <span class="token-type">PluginManifest</span> {
         <span class="token-type">PluginManifest</span>(
-            id: <span class="token-string">"my-first-plugin"</span>,
-            name: <span class="token-string">"LingXiAgent 诊断插件"</span>,
-            version: <span class="token-string">"1.0.0"</span>,
-            description: <span class="token-string">"演示高维系统状态感知与弹出式 TUI 命令"</span>,
+            id: <span class="token-string">"com.example.my-plugin"</span>,
+            name: <span class="token-string">"My Plugin"</span>,
+            version: <span class="token-string">"0.1.0"</span>,
+            description: <span class="token-string">"演示命令注册与宿主运行时快照读取"</span>,
             capabilities: [.projectRead]
         )
     }
 
     <span class="token-keyword">func</span> <span class="token-func">activate</span>(context: <span class="token-type">PluginContext</span>) <span class="token-keyword">async</span> <span class="token-keyword">throws</span> {
-        <span class="token-comment">// 注册 Slash 命令: /fox-status</span>
-        context.registerCommand(<span class="token-type">FoxStatusCommand</span>())
+        context.registerTool(<span class="token-type">EchoTool</span>())
+        context.registerCommand(<span class="token-type">StatusCommand</span>())
+        context.on(.sessionStart) { payload <span class="token-keyword">in</span>
+            context.logger.info(<span class="token-string">"session started: \(payload.subjectID)"</span>)
+        }
     }
 }
 
-<span class="token-keyword">struct</span> <span class="token-type">FoxStatusCommand</span>: <span class="token-type">PluginCommand</span> {
-    <span class="token-keyword">let</span> name = <span class="token-string">"fox-status"</span>
-    <span class="token-keyword">let</span> description = <span class="token-string">"弹出查看双核运行负载与会话指标"</span>
+<span class="token-keyword">struct</span> <span class="token-type">EchoTool</span>: <span class="token-type">PluginTool</span> {
+    <span class="token-keyword">var</span> name: <span class="token-type">String</span> { <span class="token-string">"echo"</span> }
+    <span class="token-keyword">var</span> description: <span class="token-type">String</span> { <span class="token-string">"Echoes its argument back."</span> }
+    <span class="token-keyword">func</span> <span class="token-func">execute</span>(arguments: <span class="token-type">String</span>, context: <span class="token-type">ToolExecutionContext</span>) <span class="token-keyword">async</span> <span class="token-keyword">throws</span> -&gt; <span class="token-type">String</span> {
+        arguments
+    }
+}
 
-    <span class="token-keyword">func</span> <span class="token-func">execute</span>(args: [<span class="token-type">String</span>], context: <span class="token-type">CommandExecutionContext</span>) <span class="token-keyword">async</span> <span class="token-keyword">throws</span> -> <span class="token-type">PluginCommandResult</span> {
-        <span class="token-keyword">let</span> pe = <span class="token-keyword">try</span> <span class="token-keyword">await</span> context.info.getPECoreInfo()
-        <span class="token-keyword">let</span> ws = <span class="token-keyword">try</span> <span class="token-keyword">await</span> context.info.getWorkspaceInfo()
+<span class="token-keyword">struct</span> <span class="token-type">StatusCommand</span>: <span class="token-type">PluginCommand</span> {
+    <span class="token-keyword">var</span> name: <span class="token-type">String</span> { <span class="token-string">"status"</span> }
+    <span class="token-keyword">var</span> description: <span class="token-type">String</span> { <span class="token-string">"Reports what the host published."</span> }
 
-        <span class="token-keyword">let</span> card = <span class="token-string">"""
-        • 工作区路径: \(ws.rootPath)
-        • Git 当前分支: \(ws.currentGitBranch ?? "无")
-        • P-Core 状态: \(pe.pCoreRole)
-        • E-Core 状态: \(pe.eCoreRole)
-        • 思考深度等级: \(pe.reasoningEffort)
-        """</span>
-
-        <span class="token-comment">// 开发者可选择 .modal 弹出式浮层展示，或 .inline 行内展示</span>
-        <span class="token-keyword">return</span> .message(card, presentation: .modal, title: <span class="token-string">"双核健康体检"</span>)
+    <span class="token-keyword">func</span> <span class="token-func">execute</span>(args: [<span class="token-type">String</span>], context: <span class="token-type">CommandExecutionContext</span>) <span class="token-keyword">async</span> <span class="token-keyword">throws</span> -&gt; <span class="token-type">PluginCommandResult</span> {
+        <span class="token-keyword">guard let</span> workspace = <span class="token-keyword">try?</span> <span class="token-keyword">await</span> context.info.getWorkspaceInfo() <span class="token-keyword">else</span> {
+            <span class="token-keyword">return</span> .message(<span class="token-string">"宿主尚未推送运行时快照"</span>, presentation: .inline)
+        }
+        <span class="token-keyword">return</span> .message(<span class="token-string">"工作区 \(workspace.rootPath)（\(workspace.currentGitBranch ?? "非 Git")）"</span>,
+                        presentation: .modal,
+                        title: <span class="token-string">"Workspace"</span>)
     }
 }</code></pre>
+              <button onclick="copyCodeNode(this, 'qs-main')" class="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs text-zinc-300 transition-colors opacity-0 group-hover:opacity-100 flex items-center gap-1">
+                <span>Copy</span>
+              </button>
             </div>
+            <p class="text-xs text-apple-grayText leading-relaxed">
+              这份示例与 SDK 仓库里的 <code class="font-mono">DocumentationExampleCompileTests</code> 同源：文档片段是<strong class="text-zinc-300">被编译验证过的</strong>，不是设想出来的 API。
+            </p>
           </div>
 
           <!-- Step 3 -->
@@ -499,15 +549,21 @@
               <span>编译并一键投递二进制到插件目录</span>
             </h3>
             <div class="relative group">
-              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code><span class="token-comment"># 编译 Release 二进制</span>
+              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-200 leading-relaxed custom-scrollbar"><code id="qs-build"><span class="token-comment"># 编译 Release 二进制</span>
 swift build -c release
 
-<span class="token-comment"># 投递到 LingXiAgent 全局插件目录（或当前项目 .lingxi/plugins/）</span>
+<span class="token-comment"># 投递到 LingXiAgent 全局插件目录（或项目级 .lingxi/plugins/）</span>
 mkdir -p ~/.lingxiagent/plugins
 cp .build/release/my-plugin ~/.lingxiagent/plugins/
 
-<span class="token-comment"># 在 TUI 终端中输入 /plugins 查看加载状态，敲击 /fox-status 体验居中弹出窗口！</span></code></pre>
+<span class="token-comment"># 在 TUI 中输入 /plugins 查看加载状态，敲击 /status 体验居中弹出窗口</span></code></pre>
+              <button onclick="copyCodeNode(this, 'qs-build')" class="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs text-zinc-300 transition-colors opacity-0 group-hover:opacity-100 flex items-center gap-1">
+                <span>Copy</span>
+              </button>
             </div>
+            <p class="text-xs text-apple-grayText leading-relaxed">
+              平台差异：macOS 与 Linux 拷贝 <code class="font-mono">.build/release/my-plugin</code>；Windows 使用 <code class="font-mono">swift build -c release</code> 产出的 <code class="font-mono">my-plugin.exe</code>。插件必须是宿主进程能直接 exec 的原生二进制，不能是脚本包装。
+            </p>
           </div>
 
         </div>
@@ -542,8 +598,9 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
                   <span class="symbol-badge badge-s">S</span>
                   <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct PluginManifest</span>
                 </div>
+                <p class="text-xs text-apple-grayText font-mono">id · name · version · description · author? · capabilities · minimumCoreVersion?</p>
                 <p class="text-xs text-apple-grayText">
-                  包含插件 ID、显示名称、语义化版本号、作者以及申请的权限能力列表。
+                  包含插件 ID、显示名称、语义化版本号、作者以及申请的权限能力列表。<strong class="text-zinc-300">能力声明与协议兼容是两件事</strong>：兼容性由握手里的 <code class="font-mono">ipcVersion</code> 判定，<code class="font-mono">minimumCoreVersion</code> 只是给人看的提示，从不参与线上校验。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -626,7 +683,7 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
                   <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct PluginInfoHub</span>
                 </div>
                 <p class="text-xs text-apple-grayText">
-                  系统的全局只读高维感知中枢。通过 <code class="font-mono">context.info</code> 访问，严密受权限系统保护，只读不写。
+                  只读信息枢纽，经 <code class="font-mono">context.info</code> 访问。四个段落全部来自 <strong class="text-zinc-300">LingXiAgent Core 推送的 runtime snapshot</strong>（<code class="font-mono">host.snapshot</code>）：SDK 自己不测量、不估算、不设默认值。宿主未推送该段落时抛 <code class="font-mono">PluginInfoUnavailable(field:)</code>，而不是返回 <code class="font-mono">idle</code> / <code class="font-mono">unknown</code> / <code class="font-mono">0</code>。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -636,10 +693,10 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
               <div class="space-y-1">
                 <div class="flex items-center space-x-2">
                   <span class="symbol-badge badge-m">M</span>
-                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getPECoreInfo() async throws -> PECoreInfo</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getPECoreInfo() async throws -&gt; PluginPECoreInfo</span>
                 </div>
                 <p class="text-xs text-apple-grayText">
-                  获取 P-Core（决策核）与 E-Core（执行核）的双核协同分工状态、思考等级、双核耗时比与后台任务水位。
+                  读取宿主推送的 P-Core / E-Core 计数：P 侧驻留 Token、E-Core 对象数与引用数、最近一次淘汰触发原因、思考等级、后台任务数。P-Core 的淘汰由 P 侧保留策略决定；E-Core heat 只服务召回与观测，不驱动 P eviction。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -649,10 +706,10 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
               <div class="space-y-1">
                 <div class="flex items-center space-x-2">
                   <span class="symbol-badge badge-m">M</span>
-                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getContextState() async throws -> ContextStateInfo</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getContextState() async throws -&gt; PluginContextStateInfo</span>
                 </div>
                 <p class="text-xs text-apple-grayText">
-                  感知当前会话的模型 ID、Token 累计消耗、上下文窗口使用率、轮次数及是否触发过滑动窗口压缩。
+                  读取会话级状态：活跃模型 ID、累计 Token、上下文窗口占比、消息数、是否压缩过、近期轮次摘要。字段可为空——空值表示宿主该刻没有此项，不是 0。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -662,10 +719,10 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
               <div class="space-y-1">
                 <div class="flex items-center space-x-2">
                   <span class="symbol-badge badge-m">M</span>
-                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getPerformanceInfo() async throws -> PerformanceMetricsInfo</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getPerformanceInfo() async throws -&gt; PluginPerformanceInfo</span>
                 </div>
                 <p class="text-xs text-apple-grayText">
-                  获取首字延迟 (TTFT)、思考耗时、工具执行总耗时及 Provider 接口平均延迟指标。
+                  读取性能指标：首字延迟 (TTFT)、思考耗时、工具执行耗时、Provider 平均延迟与是否被限流。Core 未发布的段落会抛 PluginInfoUnavailable，SDK 不会用 0 填充。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -675,10 +732,10 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
               <div class="space-y-1">
                 <div class="flex items-center space-x-2">
                   <span class="symbol-badge badge-m">M</span>
-                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getWorkspaceInfo() async throws -> WorkspaceSnapshotInfo</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">func getWorkspaceInfo() async throws -&gt; PluginWorkspaceInfo</span>
                 </div>
                 <p class="text-xs text-apple-grayText">
-                  获取当前工程工作区根路径、当前 Git 分支名、未暂存脏文件计数与 Core 内核版本号。
+                  读取工作区快照：根路径、是否为 Git 仓库、当前分支、脏文件计数、主要语言分布与 Core 版本号。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -712,8 +769,23 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
                   <span class="symbol-badge badge-s">S</span>
                   <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct ToolExecutionContext</span>
                 </div>
+                <p class="text-xs text-apple-grayText font-mono">sessionID: String · toolCallID: String · logger: PluginLogger</p>
                 <p class="text-xs text-apple-grayText">
-                  工具调用的执行上下文，携带调用 ID、会话 ID、InfoHub 访问句柄及结构化 Logger。
+                  工具调用的执行上下文。注意它<strong class="text-zinc-300">不带 info 句柄</strong>：Tool 只做输入→输出，需要读宿主状态请写在 PluginCommand 里（见 CommandExecutionContext）。
+                </p>
+              </div>
+              <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
+            </a>
+
+            <a href="#struct-commandexecutioncontext" id="struct-commandexecutioncontext" class="topic-card p-3.5 rounded-xl flex items-start justify-between group">
+              <div class="space-y-1">
+                <div class="flex items-center space-x-2">
+                  <span class="symbol-badge badge-s">S</span>
+                  <span class="text-sm font-bold text-apple-blue group-hover:underline font-mono">struct CommandExecutionContext</span>
+                </div>
+                <p class="text-xs text-apple-grayText font-mono">sessionID: String? · info: PluginInfoHub · logger: PluginLogger</p>
+                <p class="text-xs text-apple-grayText">
+                  斜杠命令的执行上下文，是插件读取 <code class="font-mono">context.info</code> 宿主快照的入口。<code class="font-mono">sessionID</code> 可空：命令可能在无会话状态下被调用，此时宿主只推送工作区段落。
                 </p>
               </div>
               <span class="text-zinc-600 group-hover:text-zinc-300 transition-colors pt-1">›</span>
@@ -726,41 +798,53 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
 
       <!-- Security Sandboxing Section -->
       <section id="security-sandboxing" class="space-y-6 pt-4 border-t border-white/10">
-        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Security & Sandboxing</h2>
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Security Model</h2>
         
         <div class="space-y-4 text-sm text-apple-lightGray leading-relaxed max-w-4xl">
           <p>
-            为杜绝恶意插件或第三方依赖危害开发者的工作站安全，LingXiAgent 在内核层筑牢了四大安全防线：
+            下面这张表只写<strong class="text-white">当前代码确实实现并由测试覆盖</strong>的层。把「进程隔离」写成「操作系统沙箱」是对使用者的误导，因此本页同时列出这套机制<strong class="text-white">不提供</strong>的东西。
           </p>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
-              <div class="text-xs font-bold text-apple-orange uppercase tracking-wide">防线一 · 物理地址空间隔离</div>
-              <p class="text-xs text-apple-grayText leading-relaxed">
-                插件以独立子进程运行，杜绝使用 <code class="text-zinc-300 font-mono">dlopen</code> 加载未知动态库。插件无法读取主进程堆栈与环境变量中的任何 API Key。
-              </p>
-            </div>
+          <div class="overflow-x-auto custom-scrollbar">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="border-b border-white/10 text-apple-grayText uppercase tracking-wide">
+                  <th class="p-2.5">安全层</th>
+                  <th class="p-2.5">当前实现</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-white/5 text-apple-grayText">
+                <tr>
+                  <td class="p-2.5 text-zinc-200 font-semibold">Process isolation</td>
+                  <td class="p-2.5">插件是独立 <code class="font-mono">Process</code>，不是被注入的代码；不存在 <code class="font-mono">dlopen</code> 同址共享。</td>
+                </tr>
+                <tr>
+                  <td class="p-2.5 text-zinc-200 font-semibold">Credential environment isolation</td>
+                  <td class="p-2.5">子进程得到<strong class="text-zinc-300">净化后的环境变量</strong>：Provider key 与 <code class="font-mono">LINGXI_CREDENTIALS_PASSPHRASE</code> 不会继承。</td>
+                </tr>
+                <tr>
+                  <td class="p-2.5 text-zinc-200 font-semibold">Manifest capability admission</td>
+                  <td class="p-2.5">握手时逐项送 <code class="font-mono">PermissionEngine</code> 预审；被判 deny 立即终止插件进程。</td>
+                </tr>
+                <tr>
+                  <td class="p-2.5 text-zinc-200 font-semibold">Typed IPC boundary</td>
+                  <td class="p-2.5">换行分隔的类型化请求/响应；未知方法、缺参、畸形载荷都转成失败调用，不会打挂插件循环。</td>
+                </tr>
+                <tr>
+                  <td class="p-2.5 text-zinc-200 font-semibold">Watchdog &amp; termination</td>
+                  <td class="p-2.5">单次调用超时（默认 <code class="font-mono">3.0s</code>）即终止；关闭 stdin 让插件按 EOF 正常退出，必要时级联强杀进程树。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
-            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
-              <div class="text-xs font-bold text-apple-blue uppercase tracking-wide">防线二 · 零信任清单声明</div>
-              <p class="text-xs text-apple-grayText leading-relaxed">
-                插件必须在 Manifest 中显式声明所需 Capabilities。未申请的敏感操作直接被内核权限仲裁器（PermissionEngine）即时拦截。
-              </p>
-            </div>
-
-            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
-              <div class="text-xs font-bold text-apple-green uppercase tracking-wide">防线三 · IPC 强类型契约</div>
-              <p class="text-xs text-apple-grayText leading-relaxed">
-                Core 与 Plugin 仅通过标准输入输出传输符合 Swift Codable 契约的数据包。单次调用超时（默认 10s）自动截断，防止子进程卡死。
-              </p>
-            </div>
-
-            <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
-              <div class="text-xs font-bold text-apple-purple uppercase tracking-wide">防线四 · 权力边界与纯读原则</div>
-              <p class="text-xs text-apple-grayText leading-relaxed">
-                SDK 严格遵循“重 INFO，轻 Control”。插件无法随意操纵主循环状态机，确保 Client 前端始终拥有唯一最高驾驶权。
-              </p>
-            </div>
+          <div class="p-4 rounded-xl bg-black/50 border border-apple-orange/25 space-y-2">
+            <div class="text-xs font-bold text-apple-orange uppercase tracking-wide">这套机制不提供什么</div>
+            <ul class="text-xs text-apple-grayText space-y-1.5 list-disc list-inside leading-relaxed">
+              <li>没有 OS 级 syscall / 文件系统沙箱：插件进程仍以运行 LingXiAgent 的用户权限执行，可以直接调用 <code class="font-mono">FileManager</code> 或发起网络连接。</li>
+              <li>Capability 是<strong class="text-zinc-300">宿主侧的准入策略</strong>，不是内核边界：它约束宿主愿意与这个插件协作的范围，不拦截插件自己发起的 syscall。</li>
+              <li>因此本页不写「任何越界访问一定会被拦截」这类断言；需要硬隔离时，请把插件跑在容器或独立用户下，这属于部署层职责。</li>
+            </ul>
           </div>
 
           <!-- Apple Important Callout -->
@@ -769,139 +853,210 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
               <span>Important</span>
             </div>
             <div class="text-zinc-300 leading-relaxed">
-              严禁在插件中尝试读取 <code class="text-zinc-200 font-mono">~/.ssh</code>、<code class="text-zinc-200 font-mono">~/.aws</code> 或未声明的项目外部路径。任何违反 Capability 声明的越界访问都将被 LingXiAgent 记入安全审计日志并立即停用该插件。
+              插件二进制来自第三方仓库时，它拥有的就是你授予 LingXiAgent 的那个用户权限。安装前请审查来源与代码，并把 <code class="text-zinc-200 font-mono">capabilities</code> 声明视为「这个插件打算做什么」的线索，而不是运行时的强制上限。
             </div>
           </div>
         </div>
       </section>
 
-      <!-- JSON-RPC IPC Protocol Specification Section (Any Language) -->
-      <section id="jsonrpc-spec" class="space-y-6 pt-4 border-t border-white/10">
+      <!-- LingXi Plugin IPC (JSON Lines) Specification Section -->
+      <section id="ipc-spec" class="space-y-6 pt-4 border-t border-white/10">
         <div class="flex items-center gap-2">
           <span class="text-xs font-semibold uppercase tracking-wider text-apple-green bg-apple-green/10 border border-apple-green/20 px-2.5 py-0.5 rounded-full">
             Language-Agnostic IPC
           </span>
+          <span class="text-xs font-mono text-apple-grayText">Plugin IPC version <span class="text-zinc-200">1</span></span>
         </div>
 
-        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">JSON-RPC IPC 跨语言底层通信协议规范</h2>
-        
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">LingXi Plugin IPC · JSON Lines 协议规范</h2>
+
         <p class="text-sm text-apple-grayText leading-relaxed max-w-4xl">
-          虽然官方提供了基于 Swift 6.0 的强类型 SDK，但 LingXiAgent 的插件内核基于标准进程隔离设计。这意味着开发者<strong>可以使用 Rust、Go、Python、C++ 或任意语言编写独立二进制插件</strong>，只要遵循以下标准输入输出（stdio）JSON-RPC 契约即可无缝接入。
+          官方 SDK 用 Swift，但插件协议本身与语言无关：任何能读写 stdin/stdout 的语言都可以实现插件二进制，只要遵守下面的帧格式与方法名。
+          方法名的唯一权威来源是 SDK 里的 <code class="font-mono text-zinc-200">PluginIPC.Method</code>，文档不能自创名字。
         </p>
 
-        <div class="space-y-6 max-w-4xl">
+        <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-3">
+          <h3 class="text-xs font-bold uppercase tracking-wide text-apple-blue">1. 帧格式与方向</h3>
+          <ul class="text-xs text-apple-lightGray space-y-2 list-disc list-inside leading-relaxed">
+            <li><strong>载体通道</strong>：Core 与插件通过子进程的 <code class="text-zinc-200 font-mono">stdin / stdout</code> 通信，不开网络端口；</li>
+            <li><strong>分帧</strong>：一行一个 JSON 对象，以 <code class="text-zinc-200 font-mono">\\n</code> 定界（JSON Lines / newline-delimited JSON）；</li>
+            <li><strong>请求</strong>：<code class="text-apple-purple font-mono">{"id": "...", "method": "...", "params": ...}</code>；<strong>响应</strong>：<code class="text-apple-purple font-mono">{"id": "...", "result": ..., "error": null}</code>；</li>
+            <li><strong>不是 JSON-RPC 2.0</strong>：线上报文没有 <code class="text-zinc-200 font-mono">"jsonrpc": "2.0"</code> 字段，也没有批量与 notification 语义。所有调用都是 Core → Plugin 的单向请求/响应，运行时信息通过 <code class="text-zinc-200 font-mono">host.snapshot</code> 由宿主推送，插件不反向发起 RPC。</li>
+          </ul>
+        </div>
 
-          <!-- IPC Model -->
-          <div class="p-4 rounded-xl bg-black/50 border border-white/10 space-y-3">
-            <h3 class="text-xs font-bold uppercase tracking-wide text-apple-blue">1. 通信机制与生命周期</h3>
-            <ul class="text-xs text-apple-lightGray space-y-2 list-disc list-inside leading-relaxed">
-              <li><strong>载体通道</strong>：Core 主进程通过标准管道（<code class="text-zinc-200 font-mono">stdin / stdout</code>）与插件进程通信，无须开启网络端口；</li>
-              <li><strong>报文分帧</strong>：单次 RPC 交互传输标准 JSON 对象，以换行符（<code class="text-zinc-200 font-mono">\n</code>）为分包定界符；</li>
-              <li><strong>请求结构</strong>：<code class="text-apple-purple font-mono">{"id": "...", "method": "...", "params": {...}}</code></li>
-              <li><strong>响应结构</strong>：<code class="text-apple-purple font-mono">{"id": "...", "result": {...}, "error": null}</code></li>
+        <div class="overflow-x-auto custom-scrollbar">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-white/10 text-apple-grayText uppercase tracking-wide">
+                <th class="p-2.5">Method</th>
+                <th class="p-2.5">方向</th>
+                <th class="p-2.5">参数类型</th>
+                <th class="p-2.5">结果类型</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-white/5 font-mono text-apple-grayText">
+              <tr><td class="p-2.5 text-zinc-200">host.snapshot</td><td class="p-2.5">Core → Plugin</td><td class="p-2.5">PluginRuntimeSnapshot</td><td class="p-2.5">empty</td></tr>
+              <tr><td class="p-2.5 text-zinc-200">plugin.initialize</td><td class="p-2.5">Core → Plugin</td><td class="p-2.5">PluginInitializeParams</td><td class="p-2.5">PluginHandshakeResult</td></tr>
+              <tr><td class="p-2.5 text-zinc-200">tool.execute</td><td class="p-2.5">Core → Plugin</td><td class="p-2.5">PluginToolCallParams</td><td class="p-2.5">String</td></tr>
+              <tr><td class="p-2.5 text-zinc-200">command.execute</td><td class="p-2.5">Core → Plugin</td><td class="p-2.5">PluginCommandCallParams</td><td class="p-2.5">PluginCommandCallResult</td></tr>
+              <tr><td class="p-2.5 text-zinc-200">hook.emit</td><td class="p-2.5">Core → Plugin</td><td class="p-2.5">PluginHookPayload</td><td class="p-2.5">empty</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs text-apple-grayText">调用顺序固定为 <code class="font-mono">spawn → host.snapshot → plugin.initialize → activate(context:)</code>；此后每次 <code class="font-mono">tool.execute</code> / <code class="font-mono">command.execute</code> / <code class="font-mono">hook.emit</code> 之前都会先刷新一次快照。</p>
+
+        <div class="space-y-4">
+          <h3 class="text-xs font-bold uppercase tracking-wide text-apple-blue">2. 报文样例（与真实 Codable DTO 一致）</h3>
+
+          <div class="space-y-2">
+            <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded bg-apple-green/20 text-apple-green text-[10px]">Push</span>
+              <span>host.snapshot（宿主推送权威运行时状态）</span>
+            </div>
+            <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code id="ipc-snapshot">{"id":"snap-1","method":"host.snapshot","params":{
+  "observedAt":"2026-10-01T08:00:00Z",
+  "ipcVersion":1,
+  "workspace":{"rootPath":"/work/demo","isGitRepository":true,"currentGitBranch":"main","dirtyFileCount":2,"primaryLanguages":["Swift"],"coreVersion":"1.1.0"},
+  "peCore":{"pCoreTokens":18420,"eCoreObjects":37,"eCoreReferences":52,"lastEvictionTrigger":"pCoreSoftLimit","reasoningEffort":"high","backgroundTaskCount":1},
+  "contextState":{"activeModelID":"gpt-5.6-luna","totalTokenUsage":15400,"contextWindowPercentage":0.12,"isCompacted":false,"messageCount":8},
+  "performance":null
+}}</code></pre>
+            <p class="text-xs text-apple-grayText leading-relaxed">段落缺省或为 <code class="font-mono">null</code> 就代表宿主此刻没有这项事实：读取它会抛 <code class="font-mono">PluginInfoUnavailable</code>，SDK 不会填 <code class="font-mono">idle</code> / <code class="font-mono">0</code>。上面的 <code class="font-mono">performance:null</code> 就是这种情况。</p>
+          </div>
+
+          <div class="space-y-2">
+            <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
+              <span>plugin.initialize（握手：宣告清单与贡献项）</span>
+            </div>
+            <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code id="ipc-init">// 1. Core 发起握手（带上宿主自己的 IPC 版本）
+{"id":"init-1","method":"plugin.initialize","params":{"hostIPCVersion":1,"coreVersion":"1.1.0"}}
+
+// 2. 插件回包：manifest + 自己支持的 ipcVersion + tools + commands
+{"id":"init-1","result":{
+  "ipcVersion":1,
+  "manifest":{
+    "id":"com.example.rust-plugin",
+    "name":"Rust 诊断扩展",
+    "version":"1.0.0",
+    "description":"调用本地分析引擎做安全体检",
+    "author":"example",
+    "capabilities":["projectRead"],
+    "minimumCoreVersion":"1.1.0"
+  },
+  "tools":[{"name":"rust_audit","description":"Scan a path and report issues.","inputSchema":"{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"}],
+  "commands":[{"name":"rust-info","aliases":["ri"],"description":"Show Rust plugin status.","category":"Diagnostics","argumentHint":""}]
+},"error":null}</code></pre>
+            <p class="text-xs text-apple-grayText leading-relaxed">兼容性由 <code class="font-mono">ipcVersion</code> 协商：双方没有共同支持版本时，握手阶段直接失败并终止进程，而不是等到某个 command 解码时才炸。<code class="font-mono">minimumCoreVersion</code> 只是人类可读提示，从不参与线上判定。</p>
+          </div>
+
+          <div class="space-y-2">
+            <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
+              <span>tool.execute（模型自主调度工具）</span>
+            </div>
+            <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code id="ipc-tool">// 1. 模型在推理循环里调用插件工具；arguments 是原始 JSON 字符串，由插件自己解释 inputSchema
+{"id":"tool-88","method":"tool.execute","params":{
+  "toolName":"rust_audit",
+  "arguments":"{\"path\":\"Sources/\"}",
+  "sessionID":"sess-abc-123",
+  "toolCallID":"call_9901"
+}}
+
+// 2. 插件返回纯文本（或文本化的 JSON 结论）
+{"id":"tool-88","result":"{\"issues\":0,\"scannedFiles\":42,\"status\":\"clean\"}","error":null}</code></pre>
+          </div>
+
+          <div class="space-y-2">
+            <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
+              <span>command.execute（用户敲斜杠命令）</span>
+            </div>
+            <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code id="ipc-cmd">// 1. 用户输入 /rust-info --verbose
+{"id":"cmd-42","method":"command.execute","params":{
+  "commandName":"rust-info",
+  "arguments":["--verbose"],
+  "sessionID":"sess-abc-123"
+}}
+
+// 2. presentation 取 "modal" 或 "inline"；isPrompt=true 时文本作为提示词展开
+{"id":"cmd-42","result":{
+  "isPrompt":false,
+  "text":"• scanned files: 42\n• issues: 0",
+  "presentation":"modal",
+  "title":"Rust 审计诊断报告"
+},"error":null}</code></pre>
+          </div>
+
+          <div class="space-y-2">
+            <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded bg-apple-purple/20 text-apple-purple text-[10px]">Method</span>
+              <span>hook.emit（生命周期事件广播）</span>
+            </div>
+            <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code id="ipc-hook">// 事件取值：sessionStart · sessionEnd · agentTurnStart · agentTurnEnd · toolBefore · toolAfter
+{"id":"hook-7","method":"hook.emit","params":{"event":"sessionStart","subjectID":"sess-abc-123","metadata":{"workspace":"/work/demo"}}}
+
+{"id":"hook-7","result":null,"error":null}</code></pre>
+          </div>
+
+          <div class="space-y-2">
+            <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded bg-apple-orange/20 text-apple-orange text-[10px]">Errors</span>
+              <span>错误与边界语义</span>
+            </div>
+            <ul class="text-xs text-apple-grayText space-y-1.5 list-disc list-inside leading-relaxed">
+              <li>失败以响应形式返回：<code class="font-mono">{"id":"...","result":null,"error":"message"}</code>；宿主把它转成一次失败的调用，不影响会话存续。</li>
+              <li>未知方法、缺少 params、载荷畸形都会得到错误响应，插件主循环本身不应崩溃。</li>
+              <li>stdin 关闭（EOF）是唯一的正常退出信号：插件应在此调用 <code class="font-mono">deactivate()</code> 后退出。</li>
+              <li>超时默认 <code class="font-mono">3.0s</code>；长任务请挪到后台执行，请求路径只返回一个任务句柄，不要占住这次调用。</li>
             </ul>
           </div>
+        </div>
+      </section>
 
-          <!-- RPC Methods -->
-          <div class="space-y-4">
-            <h3 class="text-xs font-bold uppercase tracking-wide text-apple-blue">2. 核心 RPC 方法与数据载荷</h3>
+      <!-- Compatibility & Troubleshooting -->
+      <section id="compatibility" class="space-y-6 pt-4 border-t border-white/10">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Compatibility &amp; Versioning</h2>
+        <div class="overflow-x-auto custom-scrollbar max-w-4xl">
+          <table class="w-full text-left border-collapse text-xs">
+            <tbody class="divide-y divide-white/5">
+              <tr><td class="p-2.5 text-apple-grayText">This SDK</td><td class="p-2.5 font-mono text-zinc-200">0.1.0</td></tr>
+              <tr><td class="p-2.5 text-apple-grayText">Plugin IPC version</td><td class="p-2.5 font-mono text-zinc-200">1（PluginIPC.currentVersion；supportedVersions = [1]）</td></tr>
+              <tr><td class="p-2.5 text-apple-grayText">Swift tools version</td><td class="p-2.5 font-mono text-zinc-200">6.0</td></tr>
+              <tr><td class="p-2.5 text-apple-grayText">Minimum LingXiAgent（tools / commands / hooks）</td><td class="p-2.5 font-mono text-zinc-200">1.1.0</td></tr>
+              <tr><td class="p-2.5 text-apple-grayText">Minimum LingXiAgent（context.info 有数据）</td><td class="p-2.5 font-mono text-zinc-200">会推送 host.snapshot 的构建（1.1.0 之后）</td></tr>
+              <tr><td class="p-2.5 text-apple-grayText">许可证</td><td class="p-2.5 font-mono text-zinc-200">MIT（与 LingXiAgent 的 LCSAL-1.1 / PolyForm 轨道无关）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs text-apple-grayText leading-relaxed max-w-4xl">
+          对不推送快照的旧宿主：tools 与 commands 照常工作，<code class="font-mono">context.info</code> 抛 <code class="font-mono">PluginInfoUnavailable</code>——不会出现编造的指标。SDK、Agent、Model Catalog 三者版本各自独立演进，不做同步锁版。
+        </p>
+      </section>
 
-            <!-- plugin.initialize -->
-            <div class="space-y-2">
-              <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
-                <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
-                <span>plugin.initialize (进程启动握手)</span>
-              </div>
-              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code><span class="token-comment">// 1. Core 发送初始化握手请求</span>
-{"id": "init-1", "method": "plugin.initialize"}
-
-<span class="token-comment">// 2. 插件子进程回包宣告清单与贡献项</span>
-{
-  "id": "init-1",
-  "result": {
-    "manifest": {
-      "id": "my-rust-plugin",
-      "name": "Rust 诊断扩展",
-      "version": "1.0.0",
-      "capabilities": ["projectRead"]
-    },
-    "tools": [
-      {
-        "name": "rust_audit",
-        "description": "调用 Rust 本地分析引擎进行安全体检",
-        "inputSchema": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"
-      }
-    ],
-    "commands": [
-      {
-        "name": "rust-info",
-        "description": "弹出查看 Rust 插件运行状态",
-        "category": "Diagnostics"
-      }
-    ]
-  },
-  "error": null
-}</code></pre>
-            </div>
-
-            <!-- command.execute -->
-            <div class="space-y-2">
-              <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
-                <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
-                <span>command.execute (执行斜杠命令)</span>
-              </div>
-              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code><span class="token-comment">// 1. 用户在终端输入 /rust-info --verbose</span>
-{
-  "id": "cmd-42",
-  "method": "command.execute",
-  "params": {
-    "commandName": "rust-info",
-    "arguments": ["--verbose"],
-    "sessionID": "sess-abc-123"
-  }
-}
-
-<span class="token-comment">// 2. 插件返回展示模式（支持 "modal" 居中弹出浮层 或 "inline" 行内卡片）</span>
-{
-  "id": "cmd-42",
-  "result": {
-    "isPrompt": false,
-    "text": "• 引擎版本: v1.82 (Rust native)\n• 内存常驻: 4.2 MB\n• 安全评分: 98/100",
-    "presentation": "modal",
-    "title": "Rust 审计诊断报告"
-  },
-  "error": null
-}</code></pre>
-            </div>
-
-            <!-- tool.call -->
-            <div class="space-y-2">
-              <div class="text-xs font-bold text-white font-mono flex items-center gap-2">
-                <span class="px-1.5 py-0.5 rounded bg-apple-blue/20 text-apple-blue text-[10px]">Method</span>
-                <span>tool.call (模型自主调度工具)</span>
-              </div>
-              <pre class="bg-black/70 border border-white/10 rounded-xl p-4 text-xs font-mono overflow-x-auto text-zinc-300 custom-scrollbar"><code><span class="token-comment">// 1. 大模型在 ReAct 循环中自主调用插件工具</span>
-{
-  "id": "tool-88",
-  "method": "tool.call",
-  "params": {
-    "toolName": "rust_audit",
-    "arguments": "{\"path\":\"Sources/\"}",
-    "sessionID": "sess-abc-123",
-    "toolCallID": "call_9901"
-  }
-}
-
-<span class="token-comment">// 2. 插件子进程执行本地逻辑并返回纯文本或 JSON 结论</span>
-{
-  "id": "tool-88",
-  "result": "{\"issues\": 0, \"scannedFiles\": 42, \"status\": \"clean\"}",
-  "error": null
-}</code></pre>
-            </div>
-
-          </div>
-
+      <section id="troubleshooting" class="space-y-6 pt-4 border-t border-white/10">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Troubleshooting</h2>
+        <div class="overflow-x-auto custom-scrollbar">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-white/10 text-apple-grayText uppercase tracking-wide">
+                <th class="p-2.5">现象 / 报错</th>
+                <th class="p-2.5">实际发生了什么</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-white/5 text-apple-grayText">
+              <tr><td class="p-2.5 text-zinc-200 font-mono">插件从未出现</td><td class="p-2.5">二进制不在 <code class="font-mono">~/.lingxiagent/plugins</code>（或 <code class="font-mono">.lingxi/plugins</code>），或没有可执行权限。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Plugin initialization capability request: … denied</td><td class="p-2.5">宿主的权限策略拒绝了清单里声明的某项 capability，握手阶段即终止进程。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Unsupported host IPC version N</td><td class="p-2.5">双方没有共同的 <code class="font-mono">PluginIPC.supportedVersions</code>：用当前 SDK 重新构建插件，或升级宿主。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Plugin 'x' speaks LingXi Plugin IPC vN</td><td class="p-2.5">同一类不匹配，只是由宿主侧在加载时检出。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Tool 'x' not found in plugin</td><td class="p-2.5">路由的名字与握手时宣告的 tools 不一致；工具名是精确匹配。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Command 'x' not found in plugin</td><td class="p-2.5">同上，针对命令（别名同样参与匹配）。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Plugin IPC call timed out after 3.0s</td><td class="p-2.5">处理器没在超时内应答，宿主终止进程：把长耗时工作移出请求路径。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Plugin process is not running</td><td class="p-2.5">进程已退出或被终止：检查 stderr 与 <code class="font-mono">deactivate()</code> 路径。</td></tr>
+              <tr><td class="p-2.5 text-zinc-200 font-mono">Plugin runtime info unavailable: peCore (no snapshot received)</td><td class="p-2.5">宿主从未推送快照：宿主过旧，或在 <code class="font-mono">host.snapshot</code> 之前就读了 info。</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -913,8 +1068,16 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
             <span class="text-apple-blue group-hover:underline">LingXiAgent 系统架构设计与双核机制</span>
             <span class="text-zinc-500">›</span>
           </a>
+          <a href="https://github.com/LingXiFox/LingXiPluginSDK" target="_blank" class="flex items-center justify-between p-3 rounded-lg border border-white/5 hover:border-white/15 bg-white/5 hover:bg-white/10 transition-colors group">
+            <span class="text-apple-blue group-hover:underline">LingXiPluginSDK 独立仓库（README、契约测试、MIT 许可）</span>
+            <span class="text-zinc-500">↗</span>
+          </a>
           <a href="https://github.com/LingXiFox/LingXiAgent/tree/main/Plugins/FoxPlugin" target="_blank" class="flex items-center justify-between p-3 rounded-lg border border-white/5 hover:border-white/15 bg-white/5 hover:bg-white/10 transition-colors group">
             <span class="text-apple-blue group-hover:underline">FoxPlugin 官方参考插件完整实现源码</span>
+            <span class="text-zinc-500">↗</span>
+          </a>
+          <a href="/docs.html#public-sdks" class="flex items-center justify-between p-3 rounded-lg border border-white/5 hover:border-white/15 bg-white/5 hover:bg-white/10 transition-colors group">
+            <span class="text-apple-blue group-hover:underline">两个公共 SDK 的职责区分与安装方式</span>
             <span class="text-zinc-500">›</span>
           </a>
         </div>
@@ -934,9 +1097,11 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
           <a href="#protocol-plugincommand" class="block py-1 text-apple-grayText hover:text-white transition-colors">Slash Commands</a>
           <a href="#struct-plugininfohub" class="block py-1 text-apple-grayText hover:text-white transition-colors">Context Sensing</a>
           <a href="#protocol-plugintool" class="block py-1 text-apple-grayText hover:text-white transition-colors">Model Tools</a>
-          <a href="#security-sandboxing" class="block py-1 text-apple-grayText hover:text-white transition-colors">Security & Sandboxing</a>
+          <a href="#security-sandboxing" class="block py-1 text-apple-grayText hover:text-white transition-colors">Security Model</a>
           <a href="#delivery" class="block py-1 text-apple-grayText hover:text-white transition-colors">Packaging & Delivery</a>
-          <a href="#jsonrpc-spec" class="block py-1 text-apple-grayText hover:text-white transition-colors">JSON-RPC IPC</a>
+          <a href="#ipc-spec" class="block py-1 text-apple-grayText hover:text-white transition-colors">JSON Lines IPC</a>
+          <a href="#compatibility" class="block py-1 text-apple-grayText hover:text-white transition-colors">Compatibility</a>
+          <a href="#troubleshooting" class="block py-1 text-apple-grayText hover:text-white transition-colors">Troubleshooting</a>
         </nav>
 
         <div class="pt-6 border-t border-white/10 space-y-2">
@@ -1049,6 +1214,18 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
       observer.observe(section);
     });
 
+    // Copy the plain text of a code block
+    function copyCodeNode(btn, elementId) {
+      const node = document.getElementById(elementId);
+      if (!node) return;
+      navigator.clipboard.writeText(node.textContent).then(() => {
+        const label = btn.querySelector('span') || btn;
+        const original = label.textContent;
+        label.textContent = 'Copied!';
+        setTimeout(() => { label.textContent = original; }, 2000);
+      });
+    }
+
     // Language Selector Switcher
     function switchLanguage(lang) {
       const swiftBtn = document.getElementById('langSwiftBtn');
@@ -1060,7 +1237,7 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
         if (swiftBtn) {
           swiftBtn.className = 'px-2.5 py-0.5 rounded-full text-zinc-400 hover:text-white transition-all';
         }
-        const target = document.getElementById('jsonrpc-spec');
+        const target = document.getElementById('ipc-spec');
         if (target) target.scrollIntoView({ behavior: 'smooth' });
       } else {
         if (swiftBtn) {
@@ -1074,7 +1251,7 @@ cp .build/release/my-plugin ~/.lingxiagent/plugins/
       }
     }
 
-    if (window.location.hash === '#jsonrpc-spec') {
+    if (window.location.hash === '#ipc-spec') {
       switchLanguage('jsonrpc');
     }
   </script>

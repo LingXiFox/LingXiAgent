@@ -200,9 +200,19 @@ v2 是正式 envelope，未知 `schemaVersion` 主版本直接拒绝而不是半
 `api.lingxifox.cn/v1`（在**页面**的旧示例里）。而 `import LingXiAgent` 的污染范围比契约写的更大——
 不止网页示例，也在线上 `models.json` 的每条模型里。
 
-本狐**没有**部署：发布与重启站点属于影响线上服务的动作，按约定要先取得主人许可。
-现状是仓库已收敛，线上下一次同步（跑 `sync-models.py` 并 rsync 发布物 + 停用 `lingxi-registry.service`）才会对齐；
-在那之前 `catalog-drift-check.sh` 会持续报 DRIFT，这正是它该做的事。
+本狐当时**没有**部署：发布与重启站点属于影响线上服务的动作，按约定要先取得主人许可。
+当时现状是仓库已收敛，线上下一次同步（跑 `sync-models.py` 并 rsync 发布物 + 停用
+`lingxi-registry.service`）才会对齐；在那之前 `catalog-drift-check.sh` 会持续报 DRIFT，这正是它该做的事。
+
+> **2026-10-01 更新（主人授权上线）**：`/srv/lingxi-models-sync/sync-models.py` 已换成事务式 v2
+> 发布器（旧文件留 `.v1.bak`，cron 命令行不变），当场以 cron 同权限发布成功：
+> 8341 models / 225 providers、skipped 0、warnings 0、`catalogRevision a3582ac44a04`。
+> 新 `index.html`（读 `/models.json`）已部署，`summary.json` 退役为 404（文件移入备份目录，未删除）。
+> 服务器上 `lingxi-registry.service` 已为 `inactive`。仓库内 `Server/models-site/public/`
+> 已回收与线上完全同源的发布物。唯一剩项是 ESA 边缘缓存刷新：
+> `models.lingxifox.cn` 的 `/`、`/models.json`、`/publication.json` 仍命中 30 天旧缓存
+> （源站已是新版，加查询串绕过缓存即拿到 v2），需主人在控制台刷新。
+> 详见 `Docs/AC/SDK-Workspace-PluginSDK-Agent-Site-Report.md` 的 R 节。
 
 ## 9. 回归测试结果
 
@@ -270,11 +280,11 @@ v2 是正式 envelope，未知 `schemaVersion` 主版本直接拒绝而不是半
    「用 SDK 查元数据」不构成对运行时的任何授权。`Scripts/license-matrix.zsh` 与
    `LicenseMatrixDriftTests` 共同保证矩阵与 `Package.swift` 不再脱钩。
 
-1. **未部署（主人指示：先本地验证，暂不发布）**：仓库已收敛，线上仍是旧发布物。发布（跑 `sync-models.py` + rsync）与停用
-   `lingxi-registry.service` 是影响线上服务的动作，等主人验收后再做。在那之前
-   `catalog-drift-check.sh` 会持续报 DRIFT——这是它应有的行为，不是回归。
-   另外旧 daemon 下线后，`lingxiagent.lingxifox.cn/v1/*` 会返回 404；已安装的旧客户端读不到 catalog
-   时按既有逻辑降级到本地缓存 / 内置契约，不会崩，但这是线上可见变化。
+1. **已部署（2026-10-01 主人授权）**：线上发布物改由事务式 v2 发布器产出，`summary.json` 退役、
+   旧 `lingxi-registry.service` 处于 `inactive`。剩余的 `catalog-drift-check.sh` DRIFT 只来自
+   ESA 边缘仍缓存旧 `/` 与 `/models.json` —— 刷新缓存后即归零；在此之前该脚本报 DRIFT 是正确行为，
+   不是回归。`lingxiagent.lingxifox.cn/v1/*` 返回 404 已生效：已安装的旧客户端读不到 catalog 时
+   按既有逻辑降级到本地缓存 / 内置契约，不会崩。
 2. **类型名残留**：`RegistryProduct` / `RegistryModelRecord` / `RegistryCapabilities` 仍带 `Registry` 前缀。
    它们属于 §4 保留的运行时 provider 契约，文件头已写明；改名会波及约 40 处调用点，本轮按最小化原则没做。
 3. **缓存文件名换了**：`~/.lingxiagent/cache/models-site/lingxi-models-catalog.json` → 同目录下的

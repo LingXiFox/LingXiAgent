@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LingXiAgent 官方技术文档中心 — 架构、配置、工具链与跨平台手册 (macOS / Linux · Windows 实验性)</title>
-  <meta name="description" content="LingXiAgent 完整官方技术文档，涵盖 P-Core/E-Core 双核架构、内置工具链规范、config.json 配置、MCP 生态、TUI 快捷键与 macOS/Linux 官方支持（Windows 实验性）指南。">
+  <title>LingXiAgent 官方技术文档中心 — 架构、配置、工具链与跨平台手册 (macOS · Linux · Windows)</title>
+  <meta name="description" content="LingXiAgent 官方技术文档：P-Core / E-Core 上下文架构、内置工具链规范、config.json 配置、凭据保险箱、MCP / Skills / ACP 生态、TUI 快捷键与 CLI 子命令，以及 macOS arm64、Linux x86_64、Windows x86_64 安装说明。">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -115,18 +115,17 @@
           <nav class="space-y-0.5 text-xs">
             <a href="#config-spec" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">配置文件规范 (config.json)</a>
             <a href="#permissions" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">权限模型 (Allow / Ask / Deny)</a>
-            <a href="#rules-ignore" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">规则与忽略 (.lingxiignore)</a>
-            <a href="#vault-spec" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">凭据保险箱与双重回退</a>
+            <a href="#vault-spec" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">凭据保险箱与迁移回退</a>
           </nav>
         </div>
 
-        <!-- Category: 系统总线与双核架构 -->
+        <!-- Category: 上下文架构 -->
         <div>
-          <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">🧠 双核架构与流控</div>
+          <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">🧠 上下文架构</div>
           <nav class="space-y-0.5 text-xs">
-            <a href="#arch-dual-core" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">P-Core 与 E-Core 双核异构</a>
-            <a href="#arch-decoupling" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">TUI 与 Core 解耦 (Frontend 契约)</a>
-            <a href="#arch-context" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">三级上下文 (L1/L2/L3) 与流控</a>
+            <a href="#arch-dual-core" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">P-Core 与 E-Core 职责</a>
+            <a href="#arch-context" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">上下文预算、page-out 与召回</a>
+            <a href="#arch-decoupling" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">Frontend 契约：多前端共用 Core 投影</a>
           </nav>
         </div>
 
@@ -175,12 +174,21 @@
           </nav>
         </div>
 
-        <!-- Category: 跨平台与安全指纹 -->
+        <!-- Category: 跨平台与客户端形态 -->
         <div>
           <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">🛡️ 跨平台与安全</div>
           <nav class="space-y-0.5 text-xs">
             <a href="#cross-platform" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">macOS · Linux · Windows 适配</a>
-            <a href="#anti-detection" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">反封锁 TLS JA4 指纹真实性</a>
+            <a href="#client-fingerprint" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">客户端请求画像 (Client Fingerprint)</a>
+          </nav>
+        </div>
+
+        <!-- Category: 开发者 SDK -->
+        <div>
+          <div class="px-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-2">📦 公共 SDK</div>
+          <nav class="space-y-0.5 text-xs">
+            <a href="#public-sdks" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">LingXiModelSDK 与 LingXiPluginSDK</a>
+            <a href="/sdk.html" class="nav-item block px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors">Plugin SDK 完整文档 ↗</a>
           </nav>
         </div>
 
@@ -196,26 +204,26 @@
           <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Overview</span>
           <h1 class="text-3xl sm:text-4xl font-extrabold text-white mt-2">LingXiAgent 核心技术概览</h1>
           <p class="text-zinc-400 text-sm mt-3 leading-relaxed">
-            LingXiAgent 是一套基于纯 Swift 6 原生构建的新一代终端 AI 编程智能体。采用创新型异构双核（P-Core 推理总线与 E-Core 执行存储）架构，全面原生适配 macOS 与 Linux 生产环境（Windows 处于实验性支持，计划于 V1.1.0 恢复），兼具毫秒级冷启动、极致内存优化与严密代码安全防护。
+            LingXiAgent 是一套纯 Swift 原生构建的终端 AI 编程智能体。上下文由 P-Core（驻留在模型请求中的推理上下文）与 E-Core（上下文对象存储与召回）分工承担，原生适配 macOS、Linux 与 Windows，并为 macOS arm64、Linux x86_64、Windows x86_64 发布预编译安装包。凭据与会话保存在本机数据目录，推理请求直连你所配置的 Provider 端点。
           </p>
         </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
           <div class="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800">
-            <div class="text-purple-400 font-bold text-sm mb-1">⚡ 毫秒冷启动与低内存占用</div>
-            <div class="text-xs text-zinc-400">纯系统原生编译 + OpenTUI C ABI，启动耗时仅 ~10ms，运行期驻留内存通常仅 ~35MB，告别高昂的 Node.js/Electron 开销。</div>
+            <div class="text-purple-400 font-bold text-sm mb-1">⚡ 原生编译，无脚本运行时</div>
+            <div class="text-xs text-zinc-400">Swift 原生二进制 + <code class="text-zinc-300">Vendor/OpenTUI</code> C ABI 终端渲染，不依赖 Node.js / Electron。启动耗时与内存占用随终端与宿主环境变化，本文档不给出未经复现的数值。</div>
           </div>
           <div class="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800">
-            <div class="text-emerald-400 font-bold text-sm mb-1">🧠 P-Core / E-Core 双核异构总线</div>
-            <div class="text-xs text-zinc-400">P-Core 守护推理对话上下文，E-Core 旁路沉淀超大规模工具产物与代码状态，配合 L1/L2/L3 智能流控，彻底防御 Token 爆炸。</div>
+            <div class="text-emerald-400 font-bold text-sm mb-1">🧠 P-Core / E-Core 上下文分工</div>
+            <div class="text-xs text-zinc-400">P-Core 决定什么留在模型请求上下文里，E-Core 保存被 page-out 的完整对象并可精确还原或语义召回。淘汰由 P 侧保留策略决定，E-Core heat 不参与 eviction。</div>
           </div>
           <div class="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800">
-            <div class="text-pink-400 font-bold text-sm mb-1">🛡️ 真实宿主指纹与反封锁</div>
-            <div class="text-xs text-zinc-400">动态感知 Darwin/Linux/Windows 网络栈与 TLS JA4 握手特征，应用层请求与底层系统调用 100% 吻合，官方订阅使用零风险。</div>
+            <div class="text-pink-400 font-bold text-sm mb-1">🛡️ 宿主感知的请求画像</div>
+            <div class="text-xs text-zinc-400">官方订阅渠道的 User-Agent 与伴随 Header 按真实宿主的 OS / 架构动态生成，见<a href="#client-fingerprint" class="text-purple-300 underline">客户端请求画像</a>。文档不承诺任何“绕过风控”的效果。</div>
           </div>
           <div class="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800">
-            <div class="text-amber-400 font-bold text-sm mb-1">🔌 全生态 MCP 与 Skills 体系</div>
-            <div class="text-xs text-zinc-400">原生支持 stdio 与 streamableHTTP 双通道，内置 OAuth 2.1 浏览器本地回送服务器，即插即用无限工具集。</div>
+            <div class="text-amber-400 font-bold text-sm mb-1">🔌 MCP · Skills · ACP 扩展生态</div>
+            <div class="text-xs text-zinc-400">MCP 支持 stdio 与 streamableHTTP 双通道，OAuth 授权走 PKCE；Skills 以 <code class="text-zinc-300">SKILL.md</code> 目录形式发现；ACP 供 Zed 等编辑器接入。</div>
           </div>
         </div>
       </article>
@@ -227,7 +235,7 @@
           <h2 class="text-2xl font-bold text-white mt-1">全平台一键原生安装</h2>
         </div>
         <p class="text-sm text-zinc-300 mb-4 leading-relaxed">
-          官方安装脚本会自动探测系统类型与 CPU 架构，下载对应预编译发布包（macOS Apple Silicon <code>arm64</code>、Linux <code>x86_64</code>）并配置环境变量。Intel Mac 或 AArch64 Linux 系统在具备 Swift 环境时将自动极速编译安装。
+          官方安装脚本会自动探测系统类型与 CPU 架构，从最新 GitHub Release 下载对应预编译包（macOS <code>arm64</code>、Linux <code>x86_64</code>、Windows <code>x86_64</code>）并配置环境变量。每个发布资产附带同名 <code>.sha256</code>。Intel Mac 与 AArch64 Linux 没有预编译包，在具备 Swift 工具链时脚本会自动浅克隆源码极速编译。
         </p>
 
         <!-- macOS / Linux Block -->
@@ -247,7 +255,7 @@
         <!-- Windows Block -->
         <div class="mb-6">
           <div class="flex items-center justify-between text-xs text-zinc-400 mb-1 px-1">
-            <span class="font-semibold text-zinc-200">Windows (PowerShell · 实验性/需 Swift 环境源码编译)</span>
+            <span class="font-semibold text-zinc-200">Windows (PowerShell)</span>
             <span class="font-mono text-zinc-500">install.ps1</span>
           </div>
           <div class="relative bg-zinc-900/90 rounded-xl p-3.5 border border-zinc-800 font-mono text-xs text-zinc-300 flex items-center justify-between">
@@ -291,7 +299,7 @@
             <div class="pt-2"><span class="text-zinc-500"># 2. 携带初始提示词秒级开启任务</span></div>
             <div><span class="text-purple-400">$ </span>lingxiagent "帮我审查当前 Git 仓库的未提交修改并给出优化建议"</div>
             <div class="pt-2"><span class="text-zinc-500"># 3. 恢复历史会话 (交互式弹窗或恢复上一次)</span></div>
-            <div><span class="text-purple-400">$ </span>lingxiagent resume --last</div>
+            <div><span class="text-purple-400">$ </span>lingxiagent-ops resume --last</div>
           </div>
         </div>
       </article>
@@ -303,33 +311,61 @@
           <h2 class="text-2xl font-bold text-white mt-1">配置文件规范 (config.json)</h2>
         </div>
         <p class="text-xs text-zinc-300 leading-relaxed mb-4">
-          LingXiAgent 的全局配置位于 <code class="text-purple-300 font-mono">~/.lingxiagent/config.json</code>，同时支持项目目录下的局部覆盖配置。采用严谨的 JSON Schema 校验：
+          LingXiAgent 的全局配置位于数据目录 <code class="text-purple-300 font-mono">~/.lingxiagent/</code>，按职责分成四个文档，各自带 JSON Schema（<code class="text-zinc-300">$schema</code> 指向 <code class="text-zinc-300">lingxiagent.lingxifox.cn/schema/*.json</code>）：<code class="text-purple-300">config.json</code>（行为与预算）、<code class="text-purple-300">providers.json</code>（自定义 Provider）、<code class="text-purple-300">mcp.json</code>（MCP 服务器）、<code class="text-purple-300">plugins.json</code>（插件）。四个文档均由单一数据根解析，不存在按项目目录覆盖的同名配置文件。
         </p>
 
-        <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono text-xs text-zinc-300 mb-6 overflow-x-auto">
-          <div class="text-zinc-500 mb-2">// ~/.lingxiagent/config.json</div>
+        <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono text-xs text-zinc-300 mb-4 overflow-x-auto">
+          <div class="text-zinc-500 mb-2">// ~/.lingxiagent/config.json（节选自随包默认值）</div>
 <pre>{
-  <span class="text-purple-300">"version"</span>: <span class="text-emerald-400">"2.0"</span>,
-  <span class="text-purple-300">"defaultModel"</span>: <span class="text-emerald-400">"deepseek-chat"</span>,
-  <span class="text-purple-300">"effort"</span>: <span class="text-emerald-400">"medium"</span>,
-  <span class="text-purple-300">"permission"</span>: {
-    <span class="text-purple-300">"mode"</span>: <span class="text-emerald-400">"ask"</span>,
-    <span class="text-purple-300">"rules"</span>: {
-      <span class="text-purple-300">"read_file"</span>: <span class="text-emerald-400">"allow"</span>,
-      <span class="text-purple-300">"list_dir"</span>: <span class="text-emerald-400">"allow"</span>,
-      <span class="text-purple-300">"grep_search"</span>: <span class="text-emerald-400">"allow"</span>,
-      <span class="text-purple-300">"shell"</span>: <span class="text-emerald-400">"ask"</span>,
-      <span class="text-purple-300">"write_file"</span>: <span class="text-emerald-400">"ask"</span>,
-      <span class="text-purple-300">"edit_file"</span>: <span class="text-emerald-400">"ask"</span>,
-      <span class="text-purple-300">"mcp_*"</span>: <span class="text-emerald-400">"ask"</span>
+  "$schema": "https://lingxiagent.lingxifox.cn/schema/config.json",
+  "version": 1,
+  "core": { "locale": "system", "logLevel": "info" },
+  "agent": {
+    "executionProfile": "workspace",
+    "permissionPolicy": "ask",
+    "codeIntelligenceEnabled": false,
+    "pCoreProjectMaxCharacters": 32768,
+    "eCoreRecallMaxCharacters": 262144,
+    "maxConcurrentSubagents": 4,
+    "maxSubagentDepth": 3,
+    "maxTotalRunsPerRootRun": 32
+  },
+  "runtime": {
+    "commandTimeoutSeconds": 60,
+    "interactive": false,
+    "execution": {
+      "foregroundShellSeconds": 60,
+      "agentRunSeconds": 1800,
+      "providerSeconds": 120,
+      "maximumSeconds": 3600
     }
   },
-  <span class="text-purple-300">"contextBudget"</span>: {
-    <span class="text-purple-300">"l1MaxTokens"</span>: <span class="text-amber-300">220000</span>,
-    <span class="text-purple-300">"compactionThreshold"</span>: <span class="text-amber-300">0.85</span>
+  "context": {
+    "addressableBudget": 1048576,
+    "reserve": 22000,
+    "economicThreshold": 272000,
+    "pCore": { "target": 220000, "softLimit": 235000, "hardLimit": 250000 },
+    "eCore": {
+      "storageBudget": 456576,
+      "recallBudget": 350000,
+      "pressureThreshold": 0.85,
+      "useRemainingBudget": true
+    },
+    "fabric": {
+      "objectizationThreshold": 32768,
+      "fullSendCount": 4,
+      "placeholderExcerpt": 1024,
+      "recallMaxBytes": 16384,
+      "recallMaxLines": 400,
+      "heatTrackingEnabled": true,
+      "heatDecayHalfLifeSeconds": 3600
+    }
   }
 }</pre>
         </div>
+        <p class="text-[11px] text-zinc-500 leading-relaxed mb-2">
+          旧键 <code class="text-zinc-300">l1ProjectMaxCharacters</code> / <code class="text-zinc-300">l2MaxCharacters</code> 与 <code class="text-zinc-300">context.l1/l2/l3</code>、<code class="text-zinc-300">ecoreStorageEnabled</code> 仍可读，用于向后兼容；读取优先级为「新 P/E 键 → 旧键 → 默认值」，写入只落新键。这些旧名不代表三级缓存架构，当前架构只有 P-Core 与 E-Core。
+        </p>
       </article>
 
       <!-- Section: 权限控制体系 -->
@@ -364,32 +400,117 @@
         </div>
       </article>
 
-      <!-- Section: P-Core 与 E-Core 双核异构架构 -->
+      <!-- Section: 凭据保险箱 -->
+      <article id="vault-spec" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Credentials</span>
+          <h2 class="text-2xl font-bold text-white mt-1">凭据保险箱 (credentials.vault)</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          所有 Provider 凭据、MCP 环境变量与 OAuth token 统一存放在数据目录下的 <code class="text-zinc-300">credentials.vault</code>，由 <code class="text-zinc-300">UniversalCredentialStore</code> 读写。配置文件里<strong class="text-zinc-100">不允许出现明文凭据</strong>：<code class="text-zinc-300">providers.json</code> 与 <code class="text-zinc-300">mcp.json</code> 的凭据字段只接受 <code class="text-zinc-300">{env:VAR_NAME}</code> 或 <code class="text-zinc-300">{vault:...}</code> 引用，Schema 用正则强制。
+        </p>
+        <div class="space-y-3 text-xs">
+          <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
+            <div class="text-emerald-300 font-bold mb-1">加密与完整性</div>
+            <p class="text-zinc-400">AES-256-GCM 认证加密，AAD 绑定 <code class="text-zinc-300">"LingXiAgent credentials.vault v2"</code>；密文结构自带版本号，版本不符直接拒绝读取而不是猜。</p>
+          </div>
+          <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
+            <div class="text-sky-300 font-bold mb-1">两级密钥来源</div>
+            <p class="text-zinc-400"><strong class="text-zinc-200">Tier 1</strong>：提供口令（<code class="text-zinc-300">LINGXI_CREDENTIALS_PASSPHRASE</code>）时用 PBKDF2-HMAC-SHA256 派生，迭代次数不低于 100,000。<br/><strong class="text-zinc-200">Tier 2</strong>：无口令时使用机器绑定的保护性密钥——本机生成的 32 字节随机熵，经 HKDF 派生，密钥文件每次读取都重新收紧为 <code class="text-zinc-300">0600</code>。</p>
+          </div>
+          <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
+            <div class="text-amber-300 font-bold mb-1">Keychain 迁移回退</div>
+            <p class="text-zinc-400">macOS 系统 Keychain 中的历史条目只做一次<strong class="text-zinc-200">只读迁移</strong>：命中后立刻写入保险箱，之后不再查询 Keychain。写入 Keychain 的旧路径已停用。这解释了「保险箱 + Keychain 回退」的双重读取顺序。</p>
+          </div>
+        </div>
+      </article>
+
+      <!-- Section: P-Core 与 E-Core 上下文架构 -->
       <article id="arch-dual-core" class="scroll-mt-20">
         <div class="border-b border-zinc-800 pb-4 mb-6">
           <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Architecture</span>
-          <h2 class="text-2xl font-bold text-white mt-1">P-Core 与 E-Core 异构双核总线架构</h2>
+          <h2 class="text-2xl font-bold text-white mt-1">P-Core 与 E-Core：上下文双核职责</h2>
         </div>
 
         <p class="text-xs text-zinc-300 leading-relaxed mb-4">
-          传统 AI Agent 将所有工具执行产生的成千上万行代码、编译错误日志与目录遍历无脑拼接在会话上下文中，导致物理显存（Context Window）迅速被垃圾数据填满，引发高昂 Token 账单与灾难性的“注意力迷航（Lost in the Middle）”。
+          一次工具调用可能返回上万行测试日志或整份文件。如果这些内容全部留在模型请求里，上下文窗口会被低价值数据填满，既推高成本，也让模型注意力被稀释。LingXiAgent 因此把「留在请求里的内容」与「完整内容的存放与取回」拆成两个核心。
         </p>
 
         <div class="p-5 rounded-2xl bg-zinc-900/70 border border-zinc-800 mb-6 space-y-4">
           <div class="flex items-center gap-3">
-            <span class="px-2.5 py-1 rounded bg-purple-950 text-purple-300 border border-purple-800 font-bold text-xs font-mono">P-Core (Prompt-Driven Reasoning Core)</span>
+            <span class="px-2.5 py-1 rounded bg-purple-950 text-purple-300 border border-purple-800 font-bold text-xs font-mono">P-Core · Prompt-resident reasoning context</span>
+            <span class="text-[11px] text-zinc-500 font-mono">PCoreContextEngine</span>
           </div>
           <p class="text-xs text-zinc-400 leading-relaxed">
-            专注纯净高密度的语义推理、多轮指令意图识别与决策树推导。上下文空间完全由预算控制器保护，严控在活跃推理区间，保障大模型永远拥有 100% 的精准注意力和极高的服务端 Prompt Cache 命中率。
+            组装真正发给模型的请求内容，并决定什么可以留在窗口内。<br class="mb-1"/>组成：<strong class="text-zinc-300">Stable Prefix</strong>（稳定前缀，配合上游 Prompt Cache）、<strong class="text-zinc-300">Growing Context</strong>（本轮增量与会话轨迹）、<strong class="text-zinc-300">E-Core Index Projection</strong>（只投影引用与摘要，不含完整对象）。
           </p>
 
           <div class="flex items-center gap-3 pt-2">
-            <span class="px-2.5 py-1 rounded bg-blue-950 text-blue-300 border border-blue-800 font-bold text-xs font-mono">E-Core (Execution Storage Core)</span>
+            <span class="px-2.5 py-1 rounded bg-blue-950 text-blue-300 border border-blue-800 font-bold text-xs font-mono">E-Core · Context object store / recall</span>
+            <span class="text-[11px] text-zinc-500 font-mono">ECoreObjectStore · ECoreReference</span>
           </div>
           <p class="text-xs text-zinc-400 leading-relaxed">
-            独立承接高吞吐量的执行操作。当工具执行返回 >10KB 的大规模文本（如大型测试日志或完整文件内容）时，E-Core 自动将其<strong>旁路写入专用本地对象池</strong>并生成不可篡改的 Object ID 与语义紧凑摘要，仅向 P-Core 提交证据引用，使对话上下文瘦身达 85% 以上。
+            保存被 page-out 的<strong class="text-zinc-300">完整对象</strong>：写入时得到稳定的 <code class="text-zinc-300">ContextObjectID</code>，向 P-Core 只提交引用与摘要；需要时按 ID <strong class="text-zinc-300">exact restore</strong>，或经检索层做 <strong class="text-zinc-300">semantic recall</strong>。
           </p>
         </div>
+
+        <div class="p-4 rounded-xl bg-amber-950/20 border border-amber-800/40 text-xs text-zinc-300 leading-relaxed">
+          <strong class="text-amber-300">职责边界（易被误解处）：</strong>P-Core 的淘汰由 <strong>P 侧保留策略</strong>决定；E-Core heat 只服务于召回排序、缓存与可观测性，<strong class="text-zinc-200">不驱动 P-Core eviction</strong>。历史文档中的「三级缓存 L1/L2/L3」语义已废弃，当前架构只有上述两个核心。
+        </div>
+      </article>
+
+      <!-- Section: 上下文预算、page-out 与召回 -->
+      <article id="arch-context" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Context Flow</span>
+          <h2 class="text-2xl font-bold text-white mt-1">上下文预算、page-out 与召回</h2>
+        </div>
+
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          下列阈值均为 <code class="text-zinc-300">config.json</code> 中 <code class="text-zinc-300">context</code> 分段（<code class="text-zinc-300">ContextCacheConfiguration</code>）的默认值，可按模型窗口调整；表内键名相对 <code class="text-zinc-300">context</code> 书写，语义以 <code class="text-zinc-300">Sources/LingXiCore/Configuration/ConfigurationTypes.swift</code> 为准。
+        </p>
+
+        <div class="overflow-x-auto custom-scrollbar mb-5">
+          <table class="w-full text-left border-collapse text-xs font-mono">
+            <thead>
+              <tr class="border-b border-zinc-800 bg-zinc-900/60 text-zinc-400">
+                <th class="p-2.5">配置键</th>
+                <th class="p-2.5">默认值</th>
+                <th class="p-2.5">作用</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-zinc-800/40 text-zinc-300">
+              <tr><td class="p-2.5 text-purple-300">fabric.objectizationThreshold</td><td class="p-2.5">32768</td><td class="p-2.5 text-zinc-400">工具输出超过该字节数即对象化写入 E-Core</td></tr>
+              <tr><td class="p-2.5 text-purple-300">fabric.fullSendCount</td><td class="p-2.5">4</td><td class="p-2.5 text-zinc-400">同一对象前 N 次仍可完整送回上下文</td></tr>
+              <tr><td class="p-2.5 text-purple-300">fabric.placeholderExcerpt</td><td class="p-2.5">1024</td><td class="p-2.5 text-zinc-400">留在 P-Core 的占位摘录长度</td></tr>
+              <tr><td class="p-2.5 text-purple-300">fabric.recallMaxBytes / recallMaxLines</td><td class="p-2.5">16384 / 400</td><td class="p-2.5 text-zinc-400">单次召回返回的上限</td></tr>
+              <tr><td class="p-2.5 text-purple-300">pCore.target / softLimit / hardLimit</td><td class="p-2.5">220000 / 235000 / 250000</td><td class="p-2.5 text-zinc-400">P-Core 驻留预算；超限时按 P 侧保留策略淘汰</td></tr>
+              <tr><td class="p-2.5 text-purple-300">eCore.recallBudget / storageBudget</td><td class="p-2.5">350000 / 456576</td><td class="p-2.5 text-zinc-400">召回窗口与对象存储预算</td></tr>
+              <tr><td class="p-2.5 text-purple-300">eCore.pressureThreshold</td><td class="p-2.5">0.85</td><td class="p-2.5 text-zinc-400">存储压力水位（观测与治理阈值）</td></tr>
+              <tr><td class="p-2.5 text-purple-300">fabric.heatDecayHalfLifeSeconds</td><td class="p-2.5">3600</td><td class="p-2.5 text-zinc-400">heat 衰减半衰期，仅用于召回排序与观测</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 text-xs text-zinc-300 leading-relaxed">
+          <strong class="text-zinc-100">读写路径：</strong>工具输出 → 超阈值则 objectize（得到稳定 ID）→ P-Core 仅持有引用与摘要 → 模型需要时按 ID exact restore，或经 <code class="text-zinc-300">context_recall</code> 语义召回 → 取回内容仍受 recall 上限约束。E-Core 是 P/E 架构的必选逻辑核心，不存在「关掉 E-Core 还能正常 compaction」的状态；<code class="text-zinc-300">eCorePersistenceEnabled</code> 切换的是载荷是否持久化。
+        </div>
+      </article>
+
+      <!-- Section: Frontend 契约 -->
+      <article id="arch-decoupling" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Frontend Contract</span>
+          <h2 class="text-2xl font-bold text-white mt-1">多前端共用同一套 Core 投影</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          <code class="text-zinc-300">LingXiTUI</code>、<code class="text-zinc-300">LingXiWebUI</code>、macOS GUI 与 ACP 接入的编辑器都不自行维护真值。它们通过 <code class="text-zinc-300">LingXiClient</code> 连接 <code class="text-zinc-300">CoreHost</code>，由 <code class="text-zinc-300">LingXiApplication</code> 做状态投影与 reducer：Goal、Todo、分支预测、P/E 上下文、Subagent 生命周期、Permission / Question 交互、Git 与 Workspace 状态全部来自 Core 的同一份投影。
+        </p>
+        <ul class="text-xs text-zinc-400 space-y-1.5 font-mono">
+          <li><span class="text-purple-400">▸</span> 传输：Stdio IPC（TUI / CLI）与 HTTP + SSE（<code class="text-zinc-300">lingxiagent serve</code>）</li>
+          <li><span class="text-purple-400">▸</span> 契约：Wire 协议与前端契约由 <code class="text-zinc-300">ContractTests</code> 跨平台校验</li>
+          <li><span class="text-purple-400">▸</span> 后果：新增前端不需要重复实现会话、权限或上下文逻辑</li>
+        </ul>
       </article>
 
       <!-- Section: 内置工具链详述 (对应 OpenCode 截图全部项) -->
@@ -765,13 +886,51 @@
 
           <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono space-y-2">
             <div><span class="text-zinc-500"># 登录 OpenAI ChatGPT Plus/Pro (Codex OAuth 浏览器授权)</span></div>
-            <div><span class="text-purple-400">$ </span>lingxiagent auth login openai-codex</div>
+            <div><span class="text-purple-400">$ </span>lingxiagent-ops auth login openai-codex</div>
             <div class="pt-2"><span class="text-zinc-500"># 登录 Anthropic Claude Code 官方订阅</span></div>
-            <div><span class="text-purple-400">$ </span>lingxiagent auth login anthropic-claude-subscription</div>
+            <div><span class="text-purple-400">$ </span>lingxiagent-ops auth login anthropic-claude-subscription</div>
             <div class="pt-2"><span class="text-zinc-500"># 查看当前所有提供商状态与配额</span></div>
-            <div><span class="text-purple-400">$ </span>lingxiagent auth status</div>
+            <div><span class="text-purple-400">$ </span>lingxiagent-ops auth status</div>
           </div>
         </div>
+      </article>
+
+      <!-- Section: 通用模型接入与 Prompt Cache -->
+      <article id="models-universal" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Custom Providers</span>
+          <h2 class="text-2xl font-bold text-white mt-1">通用模型接入与 Prompt Cache</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          自定义渠道写在 <code class="text-zinc-300">~/.lingxiagent/providers.json</code>（Schema：<code class="text-zinc-300">lingxiagent.lingxifox.cn/schema/providers.json</code>）。<code class="text-zinc-300">providers</code> 是以渠道 id 为键的对象；<code class="text-zinc-300">adapter</code> 只接受三种协议契约：<code class="text-zinc-300">openai-compatible</code>、<code class="text-zinc-300">openai-responses</code>、<code class="text-zinc-300">anthropic-messages</code>；<code class="text-zinc-300">options.baseURL</code> 必填，<code class="text-zinc-300">apiKey</code> 若出现则必须是引用形式。
+        </p>
+        <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono text-xs text-zinc-300 mb-4 overflow-x-auto">
+          <div class="text-zinc-500 mb-2">// ~/.lingxiagent/providers.json</div>
+<pre>{
+  "$schema": "https://lingxiagent.lingxifox.cn/schema/providers.json",
+  "version": 1,
+  "providers": {
+    "deepseek": {
+      "name": "DeepSeek 官方",
+      "adapter": "openai-compatible",
+      "options": {
+        "baseURL": "https://api.deepseek.com/v1",
+        "apiKey": "{env:DEEPSEEK_API_KEY}"
+      },
+      "models": {
+        "deepseek-chat": { "name": "DeepSeek V3" },
+        "deepseek-reasoner": { "name": "DeepSeek R1" }
+      }
+    }
+  }
+}</pre>
+        </div>
+        <ul class="text-xs text-zinc-400 space-y-2 leading-relaxed">
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">凭据不可写死</strong>：<code class="text-zinc-300">apiKey</code> 的 Schema 正则只接受 <code class="text-zinc-300">{env:VAR}</code> 与 <code class="text-zinc-300">{vault:...}</code>，明文 key 会被校验拒绝。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">目录与运行时分离</strong>：模型元数据来自 <a href="https://models.lingxifox.cn" target="_blank" class="text-amber-300 underline">models.lingxifox.cn/models.json</a>；能否选用还取决于本机运行时契约与账号可用性，两者取交集。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">Prompt Cache</strong>：Anthropic 渠道使用 <code class="text-zinc-300">cache_control</code> 断点，OpenAI 兼容渠道读取 <code class="text-zinc-300">prompt_cache_hit_tokens</code> 等回传字段计入观测；P-Core 的稳定前缀就是为命中缓存设计的。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">命令入口</strong>：<code class="text-zinc-300">lingxiagent-ops auth status &lt;product&gt;</code>、<code class="text-zinc-300">lingxiagent-ops models sync &lt;product&gt;</code>；TUI 内用 <code class="text-zinc-300">/providers</code>、<code class="text-zinc-300">/connect</code>、<code class="text-zinc-300">/model</code>。</li>
+        </ul>
       </article>
 
       <!-- Section: ACP 协议与编辑器集成 -->
@@ -789,7 +948,7 @@
           <h3 class="text-sm font-semibold text-zinc-100 pt-2">启动 ACP 服务端模式</h3>
           <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono space-y-2">
             <div><span class="text-zinc-500"># 启动标准 ACP 服务端（基于 Stdio 的 JSON-RPC 2.0 双工通信）</span></div>
-            <div><span class="text-purple-400">$ </span>lingxiagent acp</div>
+            <div><span class="text-purple-400">$ </span>lingxiagent-ops acp</div>
           </div>
 
           <h3 class="text-sm font-semibold text-zinc-100 pt-2">在 Zed IDE 中配置 LingXiAgent</h3>
@@ -806,7 +965,7 @@
     },
     <span class="text-purple-300">"providers"</span>: {
       <span class="text-purple-300">"acp"</span>: {
-        <span class="text-purple-300">"command"</span>: <span class="text-emerald-400">"lingxiagent"</span>,
+        <span class="text-purple-300">"command"</span>: <span class="text-emerald-400">"lingxiagent-ops"</span>,
         <span class="text-purple-300">"args"</span>: [<span class="text-emerald-400">"acp"</span>]
       }
     }
@@ -822,6 +981,67 @@
             <li><code class="text-purple-300">session/cancel</code>：响应用户取消操作，秒级中断正在执行的模型推理与底层进程树。</li>
           </ul>
         </div>
+      </article>
+
+      <!-- Section: MCP 运行时 -->
+      <article id="mcp-ecosystem" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Extensions</span>
+          <h2 class="text-2xl font-bold text-white mt-1">MCP 运行时 (stdio / streamableHTTP)</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          MCP 服务器写在 <code class="text-zinc-300">~/.lingxiagent/mcp.json</code> 的 <code class="text-zinc-300">servers</code> 数组里（Schema 同名路径）。两种传输：<code class="text-zinc-300">stdio</code> 用 <code class="text-zinc-300">command</code> + <code class="text-zinc-300">arguments</code> 拉起子进程；<code class="text-zinc-300">streamableHTTP</code> 用 <code class="text-zinc-300">endpoint</code> 连接远端。凭据同样只能是引用形式，配置文件里不出现 token。
+        </p>
+        <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono text-xs text-zinc-300 mb-4 overflow-x-auto">
+          <div class="text-zinc-500 mb-2">// ~/.lingxiagent/mcp.json</div>
+<pre>{
+  "$schema": "https://lingxiagent.lingxifox.cn/schema/mcp.json",
+  "version": 1,
+  "servers": [
+    {
+      "id": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "arguments": ["-y", "@modelcontextprotocol/server-filesystem", "/absolute/path"],
+      "enabled": true,
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "remote-example",
+      "transport": "streamableHTTP",
+      "endpoint": "https://example.com/mcp",
+      "protocolPreference": "auto",
+      "enabled": true,
+      "authentication": { "kind": "bearer", "credential": "{env:EXAMPLE_MCP_TOKEN}" },
+      "environment": [ { "name": "EXAMPLE_MCP_TOKEN", "credential": "{env:EXAMPLE_MCP_TOKEN}" } ]
+    }
+  ]
+}</pre>
+        </div>
+        <ul class="text-xs text-zinc-400 space-y-2 leading-relaxed">
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">命令入口</strong>：<code class="text-zinc-300">lingxiagent-ops mcp list | status | enable | disable | add | login | auth | remove</code>；TUI 内 <code class="text-zinc-300">/mcp</code> 打开状态面板。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">授权</strong>：远端服务器支持 OAuth 授权码流程 + PKCE，本地回环端口接收回调（实现见 <code class="text-zinc-300">MCPOAuthClient</code> 与 <code class="text-zinc-300">MCPCLI</code> 的 <code class="text-zinc-300">login</code> / <code class="text-zinc-300">auth</code> 子命令）。mcp.json 的凭据字段写引用，不写明文。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">超时</strong>：<code class="text-zinc-300">timeoutSeconds</code> 覆盖默认值；Runtime 侧 MCP 类调用默认预算为 60 秒（<code class="text-zinc-300">config.json</code> 的 <code class="text-zinc-300">runtime.execution.mcpSeconds</code>）。</li>
+        </ul>
+      </article>
+
+      <!-- Section: Skills 技能体系 -->
+      <article id="skills-ecosystem" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Extensions</span>
+          <h2 class="text-2xl font-bold text-white mt-1">Skills 技能体系 (SKILL.md)</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          Skill 是「一个目录 + 一份 <code class="text-zinc-300">SKILL.md</code>」的提示词包，被当作可发现扩展注入 Agent，而不是插件二进制。发现路径固定为三处：
+        </p>
+        <ul class="text-xs text-zinc-400 space-y-2 mb-4 font-mono">
+          <li><span class="text-emerald-400">▸</span> ~/.lingxiagent/skills/&lt;name&gt;/SKILL.md</li>
+          <li><span class="text-emerald-400">▸</span> ~/.lingxiagent/.lingxi/skills/&lt;name&gt;/SKILL.md</li>
+          <li><span class="text-emerald-400">▸</span> &lt;project&gt;/.lingxi/skills/&lt;name&gt;/SKILL.md</li>
+        </ul>
+        <p class="text-xs text-zinc-400 leading-relaxed">
+          命令入口：<code class="text-zinc-300">lingxiagent-ops skills list | info | enable | disable</code>；TUI 内 <code class="text-zinc-300">/skills</code> 查看与切换。技能内容属于提示词层：它改变模型的行为倾向，不改变权限判定——写操作仍要过 Permission Engine。
+        </p>
       </article>
 
       <!-- Section: TUI 快捷键速查表 -->
@@ -897,6 +1117,103 @@
         </div>
       </article>
 
+      <!-- Section: 斜杠命令大全 -->
+      <article id="slash-commands" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">TUI</span>
+          <h2 class="text-2xl font-bold text-white mt-1">斜杠命令大全</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          以下清单来自 <code class="text-zinc-300">LingXiTUI</code> 的命令描述符与前端命令表，不是设想稿。输入 <code class="text-zinc-300">/help</code> 可在运行时看到同一份列表。
+        </p>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs font-mono mb-4">
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/model</span> <span class="text-zinc-500">切换模型</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/providers</span> <span class="text-zinc-500">渠道列表</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/connect</span> <span class="text-zinc-500">登录渠道</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/mode</span> <span class="text-zinc-500">运行模式</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/permissions</span> <span class="text-zinc-500">权限档</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/reasoning</span> <span class="text-zinc-500">思考等级</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/status</span> <span class="text-zinc-500">会话状态</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/context</span> <span class="text-zinc-500">上下文占用</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/compact</span> <span class="text-zinc-500">主动压缩</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/perf</span> <span class="text-zinc-500">性能指标</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/diff</span> <span class="text-zinc-500">工作区 diff</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/tasks · /ps</span> <span class="text-zinc-500">后台任务</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/stop</span> <span class="text-zinc-500">终止任务</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/subagents</span> <span class="text-zinc-500">子代理树</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/mcp</span> <span class="text-zinc-500">MCP 状态</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/skills</span> <span class="text-zinc-500">技能列表</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/plugins</span> <span class="text-zinc-500">插件列表</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/hooks</span> <span class="text-zinc-500">钩子</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/resume</span> <span class="text-zinc-500">恢复会话</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/history</span> <span class="text-zinc-500">历史</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/new</span> <span class="text-zinc-500">新会话</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/rename</span> <span class="text-zinc-500">重命名</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/undo</span> <span class="text-zinc-500">撤销</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/clear</span> <span class="text-zinc-500">清屏</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/theme</span> <span class="text-zinc-500">主题</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/keybindings</span> <span class="text-zinc-500">快捷键</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/help</span> <span class="text-zinc-500">命令表</span></div>
+          <div class="p-2 rounded-lg bg-zinc-900 border border-zinc-800"><span class="text-purple-400">/quit</span> <span class="text-zinc-500">退出</span></div>
+        </div>
+        <p class="text-[11px] text-zinc-500 leading-relaxed">
+          别名：<code class="text-zinc-300">/theme</code> ⇄ <code class="text-zinc-300">/themes</code>，<code class="text-zinc-300">/keybindings</code> ⇄ <code class="text-zinc-300">/keys</code> ⇄ <code class="text-zinc-300">/shortcuts</code>。自定义命令与插件命令会合并进同一张表（见 <a href="/sdk.html" class="text-purple-300 underline">Plugin SDK 文档</a>）。
+        </p>
+      </article>
+
+      <!-- Section: CLI 子命令手册 -->
+      <article id="cli-manual" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">CLI</span>
+          <h2 class="text-2xl font-bold text-white mt-1">CLI 子命令与两个可执行入口</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          安装包内有两个不同职责的可执行入口（同源 SwiftPM products）：
+        </p>
+        <div class="overflow-x-auto custom-scrollbar mb-4">
+          <table class="w-full text-left border-collapse text-xs font-mono">
+            <thead>
+              <tr class="border-b border-zinc-800 bg-zinc-900/60 text-zinc-400">
+                <th class="p-2.5">入口</th>
+                <th class="p-2.5">职责</th>
+                <th class="p-2.5">子命令</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-zinc-800/40 text-zinc-300">
+              <tr>
+                <td class="p-2.5 text-emerald-300">lingxiagent</td>
+                <td class="p-2.5 text-zinc-400">面向用户的前端进程：无参数即进入 TUI</td>
+                <td class="p-2.5 text-zinc-400">(默认 TUI) · <code>serve</code> · <code>help</code> · <code>version</code></td>
+              </tr>
+              <tr>
+                <td class="p-2.5 text-amber-300">lingxiagent-ops</td>
+                <td class="p-2.5 text-zinc-400">运维与批处理入口（链接 Core 做后端管理）</td>
+                <td class="p-2.5 text-zinc-400"><code>auth</code> · <code>models</code> · <code>mcp</code> · <code>skills</code> · <code>exec</code> · <code>review</code> · <code>doctor</code> · <code>resume</code> · <code>acp</code> · <code>task</code> · <code>completion</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="bg-zinc-900/90 rounded-xl p-4 border border-zinc-800 font-mono text-xs text-zinc-300 mb-4 overflow-x-auto">
+<pre># 交互与 WebUI
+lingxiagent                          <span class="text-zinc-500"># 进入 TUI</span>
+lingxiagent serve --port 8080        <span class="text-zinc-500"># HTTP + SSE 前端</span>
+
+# 渠道与模型
+lingxiagent-ops auth login openai-codex
+lingxiagent-ops auth status
+lingxiagent-ops models sync openai-codex
+
+# 批量与诊断
+lingxiagent-ops review
+lingxiagent-ops doctor
+git diff | lingxiagent-ops exec "为本批变更写英文 commit message"
+lingxiagent-ops resume --last</pre>
+        </div>
+        <div class="p-4 rounded-xl bg-amber-950/20 border border-amber-800/40 text-xs text-zinc-300 leading-relaxed">
+          <strong class="text-amber-300">入口分工与历史坑（如实说明）：</strong><code class="text-zinc-300">lingxiagent</code> 不实现 ops 动词：直接执行 <code class="text-zinc-300">auth</code> / <code class="text-zinc-300">review</code> 等时，它只打印指向 <code class="text-zinc-300">lingxiagent-ops</code> 的提示并以状态码 1 退出。发布压缩包一直包含 <code class="text-zinc-300">lingxiagent-ops</code>，但早期版本的官方安装脚本没有把它从压缩包里拷进 <code class="text-zinc-300">~/.lingxiagent/bin</code>，于是装完的用户看不到这个命令。安装脚本已修复；若你用的是修复前装的版本，重新执行一次安装脚本（或从解压目录手工拷贝该二进制）即可补齐。
+        </div>
+      </article>
+
       <!-- Section: 跨平台适配体系 (macOS / Linux / Windows) -->
       <article id="cross-platform" class="scroll-mt-20">
         <div class="border-b border-zinc-800 pb-4 mb-6">
@@ -918,15 +1235,93 @@
             <p class="text-zinc-400">通过 <code class="text-zinc-300">/proc/self/exe</code> 解析自身路径，集成 Bubblewrap (<code class="text-zinc-300">bwrap</code>) 容器命名空间沙箱，自动对接 Wayland/X11 剪贴板工具与 XDG 目录标准。</p>
           </div>
           <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
-            <div class="text-amber-300 font-bold mb-1">🪟 Windows (实验性 · 正式支持计划 V1.1.0)</div>
-            <p class="text-zinc-400">保留完整 Win32 平台抽象：调用 <code class="text-zinc-300">GetModuleFileNameW</code> 定位模块，通过 <code class="text-zinc-300">SetConsoleMode</code> 开启控制台 VT100 虚拟终端支持，<code class="text-zinc-300">taskkill /F /T</code> 级联深度杀灭进程树，原生解析 <code class="text-zinc-300">%PATHEXT%</code>。V1.0.0 仅开放源码编译体验，不发布预编译包。</p>
+            <div class="text-amber-300 font-bold mb-1">🪟 Windows (x86_64 预编译包已发布)</div>
+            <p class="text-zinc-400">完整 Win32 平台抽象：<code class="text-zinc-300">GetModuleFileNameW</code> 定位模块，<code class="text-zinc-300">SetConsoleMode</code> 开启控制台 VT100 虚拟终端，<code class="text-zinc-300">taskkill /T</code>（必要时加 <code class="text-zinc-300">/F</code>）级联终止进程树，原生解析 <code class="text-zinc-300">%PATHEXT%</code>。自 v1.1.0 起发布 <code class="text-zinc-300">lingxiagent-windows-x86_64.zip</code>，包内附带 <code class="text-zinc-300">sqlite3.dll</code> 与资源目录。</p>
           </div>
+        </div>
+
+        <div class="mt-5 p-4 rounded-xl bg-purple-950/20 border border-purple-800/40 text-xs text-zinc-300 leading-relaxed">
+          <strong class="text-purple-300">发布形态与能力差异（不要混为一谈）：</strong>
+          <ul class="list-disc list-inside mt-1.5 space-y-1 text-zinc-400">
+            <li><strong class="text-zinc-200">预编译发布</strong>：macOS <code>arm64</code>、Linux <code>x86_64</code>、Windows <code>x86_64</code>；版本与资产清单以 GitHub Releases 为准。</li>
+            <li><strong class="text-zinc-200">源码构建</strong>：Intel Mac、AArch64 Linux 及其它平台需要本机 Swift 工具链，官方不出二进制。</li>
+            <li><strong class="text-zinc-200">能力差异</strong>：Linux 不开放桌面视觉 Computer Use（缺少辅助功能/截屏后端，能力按不可用如实申报）；<code>grep</code> / <code>glob</code> 依赖外部 <code>ripgrep</code>；macOS 原生 GUI 仅面向 Apple Silicon。存在二进制不等于三端功能完全一致。</li>
+          </ul>
         </div>
       </article>
 
+      <!-- Section: 客户端请求画像 -->
+      <article id="client-fingerprint" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">Client Identity</span>
+          <h2 class="text-2xl font-bold text-white mt-1">客户端请求画像 (Client Fingerprint)</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          官方订阅端点期望看到与自身生态一致的客户端标识。<code class="text-zinc-300">ClientFingerprint</code>（<code class="text-zinc-300">Sources/LingXiCore/Configuration/ClientFingerprint.swift</code>）负责按渠道生成出站 <code class="text-zinc-300">User-Agent</code> 与伴随 Header。其中平台字段来自 <code class="text-zinc-300">currentPlatform()</code> 对真实宿主的读取：<code class="text-zinc-300">osName</code>（darwin / linux / windows）、<code class="text-zinc-300">arch</code>（arm64 / x86_64）、<code class="text-zinc-300">TERM</code>。
+        </p>
+        <div class="overflow-x-auto custom-scrollbar mb-4">
+          <table class="w-full text-left border-collapse text-xs font-mono">
+            <thead>
+              <tr class="border-b border-zinc-800 bg-zinc-900/60 text-zinc-400">
+                <th class="p-2.5">渠道 productID</th>
+                <th class="p-2.5">User-Agent 形态</th>
+                <th class="p-2.5">伴随请求头</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-zinc-800/40 text-zinc-300">
+              <tr><td class="p-2.5 text-purple-300">openai-codex</td><td class="p-2.5">codex-cli/&lt;ver&gt; (&lt;os&gt;; &lt;arch&gt;)</td><td class="p-2.5 text-zinc-400">originator · OpenAI-Beta: responses=v1 · chatgpt-account-id（从 token 解析）</td></tr>
+              <tr><td class="p-2.5 text-purple-300">anthropic-claude-subscription</td><td class="p-2.5">claude-cli/&lt;ver&gt; (external, cli)</td><td class="p-2.5 text-zinc-400">anthropic-version · anthropic-beta · anthropic-client</td></tr>
+              <tr><td class="p-2.5 text-purple-300">antigravity</td><td class="p-2.5">antigravity/&lt;ver&gt; &lt;os&gt;/&lt;arch&gt;</td><td class="p-2.5 text-zinc-400">X-Goog-Api-Client</td></tr>
+              <tr><td class="p-2.5 text-purple-300">gemini-code-assist</td><td class="p-2.5">GeminiCLI/&lt;ver&gt; (&lt;OS&gt;; &lt;arch&gt;)</td><td class="p-2.5 text-zinc-400">X-Goog-Api-Client: gl-swift/5.x gccl/&lt;ver&gt;</td></tr>
+              <tr><td class="p-2.5 text-purple-300">xai-grok-subscription</td><td class="p-2.5">xai-grok-workspace/&lt;ver&gt;</td><td class="p-2.5 text-zinc-400">按渠道 profile 注入</td></tr>
+              <tr><td class="p-2.5 text-zinc-400">其它（自定义 API）</td><td class="p-2.5 text-zinc-400">LingXiAgent/1.0 (&lt;os&gt;; &lt;arch&gt;)</td><td class="p-2.5 text-zinc-400">标准 Authorization / API Key 头，不冒充他方 CLI</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="text-xs text-zinc-400 space-y-2 leading-relaxed">
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">版本默认值与覆盖</strong>：<code class="text-zinc-300">0.154.0</code> / <code class="text-zinc-300">2.1.258</code> / <code class="text-zinc-300">2.9.1</code> / <code class="text-zinc-300">0.1.5</code> / <code class="text-zinc-300">0.2.120</code>，分别可用 <code class="text-zinc-300">CODEX_CLI_VERSION</code>、<code class="text-zinc-300">CLAUDE_CLI_VERSION</code>、<code class="text-zinc-300">ANTIGRAVITY_VERSION</code>、<code class="text-zinc-300">GEMINI_CLI_VERSION</code>、<code class="text-zinc-300">XAI_GROK_CLI_VERSION</code> 覆盖；Codex 还支持 <code class="text-zinc-300">CODEX_CLIENT_FLAVOR</code>（codex-cli / codex-tui）。平台字段不可覆盖，始终实测。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">能力边界</strong>：本机制只影响应用层 HTTP 头部。它不改变传输层 TLS/TCP 栈，因此不存在、也不宣称「TLS/JA3/JA4 指纹伪装」；同理不承诺任何「免封」「反检测」效果——上游如何判定由其自身策略决定。</li>
+          <li><span class="text-purple-400">▸</span> <strong class="text-zinc-200">用途定位</strong>：让官方 CLI 生态的渠道识别、灰度与故障归因落到正确客户端上，同时保证本地排障时看到的 OS/架构与真实宿主一致。</li>
+        </ul>
+      </article>
+
+      <!-- Section: 公共 SDK -->
+      <article id="public-sdks" class="scroll-mt-20">
+        <div class="border-b border-zinc-800 pb-4 mb-6">
+          <span class="text-xs uppercase tracking-wider text-purple-400 font-bold font-mono">SDKs</span>
+          <h2 class="text-2xl font-bold text-white mt-1">LingXiModelSDK 与 LingXiPluginSDK</h2>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed mb-4">
+          两个公共 SDK 是<strong class="text-zinc-100">独立 GitHub 仓库、独立 MIT 许可、独立 SemVer</strong> 的 Swift Package，与 LingXiAgent 的版本号互不绑定；LingXiAgent 自己也通过公开 SwiftPM 入口消费它们，与第三方拿到的是同一份产物。
+        </p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4 text-xs">
+          <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
+            <div class="text-emerald-300 font-bold mb-1">LingXiModelSDK</div>
+            <p class="text-zinc-400 mb-2">模型目录消费者：解码、缓存、检索 <code class="text-zinc-300">models.lingxifox.cn/models.json</code>。仅 Foundation 依赖，不含推理能力。</p>
+            <div class="bg-black/60 rounded-lg p-2.5 font-mono text-[11px] overflow-x-auto">.package(url: "https://github.com/LingXiFox/LingXiModelSDK.git", from: "0.1.0")</div>
+          </div>
+          <div class="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
+            <div class="text-emerald-300 font-bold mb-1">LingXiPluginSDK</div>
+            <p class="text-zinc-400 mb-2">插件作者：Tool / Command / Hook 与 stdio JSON Lines IPC。仅 Foundation 依赖。</p>
+            <div class="bg-black/60 rounded-lg p-2.5 font-mono text-[11px] overflow-x-auto">.package(url: "https://github.com/LingXiFox/LingXiPluginSDK.git", from: "0.1.0")</div>
+          </div>
+        </div>
+        <p class="text-xs text-zinc-400 leading-relaxed">
+          职责区分：<strong class="text-zinc-200">ModelSDK</strong> 面向模型目录消费者，<strong class="text-zinc-200">PluginSDK</strong> 面向插件作者，<strong class="text-zinc-200">LingXiAgent</strong> 是 Agent 产品与运行时（LCSAL-1.1 / PolyForm Noncommercial，见仓库 LICENSE-MATRIX）。完整插件文档在 <a href="/sdk.html" class="text-purple-300 underline">/sdk.html</a>，模型数据在 <a href="https://models.lingxifox.cn" target="_blank" class="text-amber-300 underline">Models Hub</a>。
+        </p>
+      </article>
+
       <!-- Footer with Beian Info -->
-      <footer class="mt-20 pt-8 border-t border-zinc-900 text-center text-xs text-zinc-500 space-y-3">
-        <p>© 2026 LingXiFox. Crafted for effortless coding with LingXiAgent.</p>
+      <footer class="mt-20 pt-8 border-t border-zinc-900 text-xs text-zinc-500 space-y-3 text-center">
+        <p>© 2026 LingXiFox · LingXiAgent：Core 采用 LCSAL-1.1、Frontend 采用 PolyForm Noncommercial（见仓库 LICENSE-MATRIX）；LingXiModelSDK 与 LingXiPluginSDK 独立仓库采用 MIT。</p>
+        <div class="flex flex-wrap items-center justify-center gap-2 sm:gap-6">
+          <a href="/" class="hover:text-zinc-300">首页</a>
+          <a href="/docs.html" class="hover:text-zinc-300">技术文档</a>
+          <a href="/sdk.html" class="hover:text-zinc-300">Plugin SDK</a>
+          <a href="https://models.lingxifox.cn" target="_blank" class="hover:text-zinc-300">Models Hub</a>
+          <a href="https://github.com/LingXiFox/LingXiAgent/releases" target="_blank" class="hover:text-zinc-300">Releases</a>
+          <a href="https://github.com/LingXiFox/LingXiAgent" target="_blank" class="hover:text-zinc-300">GitHub</a>
+        </div>
         <div class="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-6 text-zinc-500 text-xs">
           <div class="inline-flex items-center gap-1">
             <span>ICP备案：</span>
