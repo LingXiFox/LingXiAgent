@@ -21,15 +21,15 @@ struct ContextCompactionTests {
     }
 
     private var compactionBudget: ContextBudget {
-        ContextBudget(hardInputLimit: 300, preferredActiveTokens: 60, highWaterTokens: 60, lowWaterTokens: 30, reservedOutputTokens: 0, fixedOverheadTokens: 0, safetyMarginTokens: 0)
+        ContextBudget(hardInputLimit: 300, preferredActiveTokens: 60, highWaterTokens: 60, lowWaterTokens: 30, reservedOutputTokens: 0, protocolOverheadTokens: 0, toolSchemaTokens: 0, safetyMarginTokens: 0)
     }
 
     @Test func budgetPlannerReservesTheLargestRequestedOutputAndToolSchema() {
         let planner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredRatio: 0.5, defaultActiveCeiling: 1_000, safetyMarginTokens: 50, fixedOverheadTokens: 100))
         let profile = ModelContextProfile(contextWindowTokens: 1_000, maxOutputTokens: 200, recommendedOutputReserveTokens: 300)
 
-        let recommended = planner.plan(profile: profile, toolTokens: 100)
-        let requested = planner.plan(profile: profile, requestedMaxOutputTokens: 400, toolTokens: 100)
+        let recommended = planner.plan(profile: profile, toolSchemaTokens: 100)
+        let requested = planner.plan(profile: profile, requestedMaxOutputTokens: 400, toolSchemaTokens: 100)
 
         #expect(recommended.reservedOutputTokens == 300)
         #expect(recommended.hardInputLimit == 450)
@@ -72,11 +72,13 @@ struct ContextCompactionTests {
         let compacted = try await compactor.compact(sessionID: sessionID, entries: compactableEntries(), budget: compactionBudget)
         let rehydrated = await compactor.pageIn(sessionID: sessionID, query: "alpha", remainingTokens: 10_000)
         let session = Session(id: sessionID, createdAt: Date())
-        let snapshot = await L1ContextEngine().snapshot(for: session, activeEntries: compacted.entries + rehydrated, estimatedTokens: compacted.afterTokens + estimator.estimate(entries: rehydrated))
+        // 索引投影本身就是一条 derivedPage，因此驻留页数量 = 召回条目 + 1。
+        let snapshot = await PCoreContextEngine().snapshot(for: session, activeEntries: compacted.entries + rehydrated, estimatedTokens: compacted.afterTokens + estimator.estimate(entries: rehydrated))
 
         #expect(compacted.pagedOut > 0)
-        #expect(snapshot.metrics.derivedPageCount == rehydrated.count)
-        #expect(snapshot.modelMessages().contains { $0.content.contains("[Session context]") })
+        #expect(snapshot.metrics.derivedPageCount == rehydrated.count + 1)
+        #expect(snapshot.modelMessages().contains { $0.content.contains("[E-Core index]") })
+        #expect(snapshot.modelMessages().contains { $0.content.contains("[Restored session context]") })
     }
 
     @Test func historicalUserTurnsRemainEligibleAndRehydrateWithoutChangingCanonicalHistory() async throws {
@@ -93,7 +95,7 @@ struct ContextCompactionTests {
             entry("project", role: .system, source: .projectPage, content: String(repeating: "reconstructible project context ", count: 20)),
             entry("current", role: .user, source: .userMessage, content: "current question"),
         ]
-        let budget = ContextBudget(hardInputLimit: 2_000, preferredActiveTokens: 300, highWaterTokens: 300, lowWaterTokens: 300, reservedOutputTokens: 0, fixedOverheadTokens: 0, safetyMarginTokens: 0)
+        let budget = ContextBudget(hardInputLimit: 2_000, preferredActiveTokens: 300, highWaterTokens: 300, lowWaterTokens: 300, reservedOutputTokens: 0, protocolOverheadTokens: 0, toolSchemaTokens: 0, safetyMarginTokens: 0)
 
         let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: budget, trigger: .manual)
         let states = await compactor.unitStates(sessionID: sessionID)
@@ -106,18 +108,64 @@ struct ContextCompactionTests {
         #expect(!result.entries.contains { $0.messageID == oldUser.messageID })
         #expect(!result.entries.contains { $0.messageID == MessageID("project") })
         #expect(oldState.residency == .derived)
-        #expect(oldState.derivedPageID != nil)
+        // 移出记录指向 E-Core 引用，不再是 DerivedContextStore 页面 id。
+        let referenceID = try #require(oldState.derivedPageID)
+        #expect(referenceID.hasPrefix("ref_"))
 
-        let exactPage = await compactor.derivedStore.search(sessionID: sessionID, query: "What is Anchor-01?", limit: 1)
+        let references = await compactor.ecoreStore.references(sessionID: sessionID)
+        #expect(references.contains { $0.referenceID == referenceID && $0.summary.contains("Anchor-01") })
+
         let rehydrated = await compactor.pageIn(sessionID: sessionID, query: "Anchor-01", remainingTokens: 10_000)
-        let snapshot = await L1ContextEngine().snapshot(for: Session(id: sessionID, createdAt: .now), activeEntries: result.entries + rehydrated, estimatedTokens: result.afterTokens + estimator.estimate(entries: rehydrated))
-        let metrics = await compactor.cacheMetrics(sessionID: sessionID)
+        let snapshot = await PCoreContextEngine().snapshot(for: Session(id: sessionID, createdAt: .now), activeEntries: result.entries + rehydrated, estimatedTokens: result.afterTokens + estimator.estimate(entries: rehydrated))
 
-        #expect(exactPage.first?.content.contains("Anchor-01") == true)
         #expect(rehydrated.contains { ContextCompactor.content(of: $0.part).contains("Anchor-01") })
         #expect(snapshot.entries.contains { $0.source == .derivedPage && ContextCompactor.content(of: $0.part).contains("Anchor-01") })
-        #expect(metrics.l3Hits > 0)
-        #expect(metrics.l2Promotions > 0)
+        // Exact Restore：不经过检索，直接按 referenceID 取回同一份完整载荷。
+        let exact = await compactor.pageIn(sessionID: sessionID, referenceID: referenceID, remainingTokens: 10_000)
+        #expect(exact.count == 1)
+        #expect(ContextCompactor.content(of: try #require(exact.first).part).contains(String(repeating: "Anchor-01 archived session fact ", count: 20)))
+        // 新的 page-out 不写 DerivedContextStore（契约第八节：禁止两套 store 并行写入）。
+        #expect(await compactor.derivedStore.pages(sessionID: sessionID).isEmpty)
+    }
+
+    /// P-Core 只留轻量索引：referenceID + summary，绝不内联已 page-out 的完整载荷（契约第一节）。
+    @Test func eCoreIndexProjectionCarriesReferenceButNotPayload() async throws {
+        let sessionID = SessionID("index-projection")
+        let compactor = ContextCompactor()
+        let payload = String(repeating: "delta archived payload ", count: 24)
+        let entries = [
+            entry("old", role: .assistant, source: .assistantMessage, content: payload),
+            entry("current", role: .user, source: .userMessage, content: "current question"),
+        ]
+
+        let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: compactionBudget, trigger: .manual)
+        let projection = try #require(result.entries.first { $0.messageID == ContextCompactor.eCoreIndexMessageID })
+        let text = ContextCompactor.content(of: projection.part)
+        let reference = try #require(await compactor.ecoreStore.references(sessionID: sessionID).first)
+
+        #expect(!result.entries.contains { $0.messageID == MessageID("old") })
+        #expect(text.contains(reference.referenceID))
+        #expect(text.contains("delta"))
+        #expect(!text.contains(payload))
+
+        // 连续两轮压缩不会让索引投影累积成两份：投影每轮整体重建。
+        let second = try await compactor.compact(sessionID: sessionID, entries: result.entries, budget: compactionBudget, trigger: .manual, evictionEpoch: 1)
+        #expect(second.entries.count { $0.messageID == ContextCompactor.eCoreIndexMessageID } == 1)
+    }
+
+    /// Legacy Read Fallback：迁移前落在 DerivedContextStore 的旧页面仍可召回，只是不再承接新写入。
+    @Test func legacyDerivedPagesStayReadableAfterConvergence() async throws {
+        let sessionID = SessionID("legacy-fallback")
+        let compactor = ContextCompactor()
+        let legacyContent = "legacy migrated page about quasars"
+        await seedLegacyPage(compactor.derivedStore, sessionID: sessionID, content: legacyContent)
+
+        let rehydrated = await compactor.pageIn(sessionID: sessionID, query: "quasars", remainingTokens: 10_000)
+        #expect(rehydrated.contains { ContextCompactor.content(of: $0.part).contains(legacyContent) })
+    }
+
+    private func seedLegacyPage(_ store: DerivedContextStore, sessionID: SessionID, content: String) async {
+        try? await store.insertLegacyPage(DerivedContextPage(sessionID: sessionID, sourceKind: .user, content: content, messageID: nil, tokenEstimate: 10))
     }
 
     @Test func projectBackedToolResultDoesNotCreateDerivedCopy() async throws {
@@ -225,17 +273,20 @@ struct ContextCompactionTests {
         let compactedContext = try #require(await client.context(sessionID))
         let marker = compactedContext.units.first { $0.messageID == markerMessageID }
         #expect(marker?.residency == .derived)
-        #expect(marker?.derivedPageID != nil)
-        let cacheBefore = try await client.projectCache()
+        // P → E 收敛后，移出记录指向 E-Core 引用而不是 DerivedContextStore 页面 id。
+        #expect(marker?.derivedPageID?.hasPrefix("ref_") == true)
         let stream = try await client.sendMessage(sessionID: sessionID, content: "What is FoxAnchor-A?")
         for try await _ in stream {}
         let context = try #require(await client.context(sessionID))
         #expect(context.sourceCounts["derivedPage", default: 0] > 0)
-        let cache = try await client.projectCache()
-        #expect(cache.derivedL3Pages > 0)
-        #expect(cache.derivedL3Hits > cacheBefore.derivedL3Hits)
-        #expect(cache.sessionL2DerivedPromotions > cacheBefore.sessionL2DerivedPromotions)
-        #expect(cache.derivedPageInCount > cacheBefore.derivedPageInCount)
+        // 召回命中 E-Core page-out 引用并 Exact Restore 取回载荷，才会出现这一段；
+        // 旧的 L2/L3 计数器不再承接新写入，因此不能用它们证明召回发生。
+        let reloaded = try await client.session(sessionID)
+        let recalled = reloaded.messages.flatMap { message in
+            message.parts.compactMap { part in if case let .toolResult(result) = part { result.content } else { nil } }
+        }.joined(separator: "\n")
+        #expect(recalled.contains("E-Core Paged-Out Context"))
+        #expect(recalled.contains("FoxAnchor-A"))
         await host.shutdown()
     }
 
@@ -288,8 +339,11 @@ struct ContextCompactionTests {
         #expect(toolMessages.count < counts.count)
         #expect(toolMessages.count == callMessages.count)
         #expect((try await client.session(sessionID)).messages.count == 16)
-        let cache = try await client.projectCache()
-        #expect(cache.historicalToolEvidencePages > 0)
+        // 批次证据整体移出 P-Core：模型可见的只剩 E-Core 索引里的 reference，完整载荷不再内联。
+        let prompt = lastRequest.messages.map(\.content).joined(separator: "\n")
+        #expect(prompt.contains("[E-Core index]"))
+        #expect(prompt.contains("origin=toolCall"))
+        #expect(!prompt.contains("[Historical tool evidence]"))
         await host.shutdown()
     }
 }

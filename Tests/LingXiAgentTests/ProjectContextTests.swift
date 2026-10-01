@@ -90,7 +90,7 @@ struct ProjectContextTests {
         let a = ContextPage(projectRoot: root, path: "A", startLine: 1, endLine: 1, content: "aaaa")
         let b = ContextPage(projectRoot: root, path: "B", startLine: 1, endLine: 1, content: "bbbb")
         let c = ContextPage(projectRoot: root, path: "C", startLine: 1, endLine: 1, content: "cccc")
-        let workingSet = L2WorkingSet(characterBudget: 8)
+        let workingSet = RecallWorkingSet(characterBudget: 8)
 
         _ = await workingSet.promote([a, b, a])
         await workingSet.touch([a.id])
@@ -99,7 +99,7 @@ struct ProjectContextTests {
 
         #expect(promotion.evicted == [b])
         #expect(await workingSet.page(id: b.id) == nil)
-        #expect(await workingSet.metrics() == L2WorkingSetMetrics(pageCount: 1, characterCount: 4))
+        #expect(await workingSet.metrics() == WorkingSetMetrics(pageCount: 1, characterCount: 4))
     }
 
     @Test func pagerDeduplicatesWithinProjectBudgetAndRecordsCacheFaults() async throws {
@@ -110,7 +110,7 @@ struct ProjectContextTests {
         try write("needle C\n", to: root, path: "C.swift")
         let pager = ContextPager(
             store: ProjectPageStore(),
-            workingSet: L2WorkingSet(characterBudget: 32),
+            workingSet: RecallWorkingSet(characterBudget: 32),
             projectCharacterBudget: 10
         )
 
@@ -225,7 +225,7 @@ struct ProjectContextTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try write("struct PermissionEngine {}", to: root, path: "Sources/PermissionEngine.swift")
         try write("PermissionEngine reference", to: root, path: "Docs/opencode-extraction/permission.md")
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 1_000)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 1_000)
 
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
         let result = await pager.query(projectRoot: root, query: ContextQuery(currentTask: "PermissionEngine"))
@@ -242,7 +242,7 @@ struct ProjectContextTests {
         let root = try makeProject()
         defer { try? FileManager.default.removeItem(at: root) }
         try write("struct PermissionEngine {\n    func request() {}\n}\n", to: root, path: "Sources/PermissionEngine.swift")
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 1_000)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 1_000)
 
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
         let result = await pager.query(projectRoot: root, query: ContextQuery(currentTask: "PermissionEngine.evaluate"))
@@ -257,7 +257,7 @@ struct ProjectContextTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try write("PermissionEngine legacy note", to: root, path: "Docs/Legacy.md")
         try write("struct PermissionEngine {}", to: root, path: "Sources/PermissionEngine.swift")
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(characterBudget: 64), projectCharacterBudget: 1_000)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(characterBudget: 64), projectCharacterBudget: 1_000)
 
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
         _ = await pager.query(projectRoot: root, query: "legacy")
@@ -272,7 +272,7 @@ struct ProjectContextTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try write("needle 1111111111", to: root, path: "A.swift")
         try write("needle 2222222222", to: root, path: "B.swift")
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(characterBudget: 1_000), projectCharacterBudget: 18)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(characterBudget: 1_000), projectCharacterBudget: 18)
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
         let result = await pager.query(projectRoot: root, query: "needle")
         #expect(result.candidatePageCount == 2)
@@ -288,7 +288,7 @@ struct ProjectContextTests {
         try write("Tool Runtime execution chain", to: firstRoot, path: "Sources/ToolRuntime.swift")
         try write("Provider configuration", to: firstRoot, path: "Sources/Provider.swift")
         try write("Tool Runtime execution chain", to: secondRoot, path: "Sources/ToolRuntime.swift")
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(characterBudget: 1_000), projectCharacterBudget: 1_000)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(characterBudget: 1_000), projectCharacterBudget: 1_000)
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: firstRoot))
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: secondRoot))
         _ = await pager.query(projectRoot: firstRoot, query: "Tool Runtime")

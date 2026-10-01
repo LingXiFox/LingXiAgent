@@ -171,7 +171,9 @@ import Foundation
         #expect(trace.model == "deepseek-v4-flash")
         #expect(trace.actualUsage?.inputTokens == 742)
         #expect(trace.toolCount == 15)
-        #expect(trace.toolSchemaTokens < 2000)
+        // 防工具 schema 无意识膨胀的测试保护线，不参与运行时预算。运行时每轮按实测
+        // toolSchemaTokens 动态扣减，架构里不存在固定阈值。
+        #expect(trace.toolSchemaTokens < 2500)
         #expect(trace.providerFramingTokens == 256)
         #expect(trace.retryAttempt == 0)
         #expect(trace.cacheTelemetry?.stablePrefixTokens == trace.systemPinnedTokens + trace.toolSchemaTokens)

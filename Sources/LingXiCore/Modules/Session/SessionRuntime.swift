@@ -47,7 +47,7 @@ public actor SessionRuntime {
     private let sessionID: SessionID
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
-    private let contextEngine: L1ContextEngine
+    private let contextEngine: PCoreContextEngine
     private let toolRuntime: ToolRuntime
     private let questions: QuestionRuntime
     private let permissions: PermissionEngine
@@ -183,7 +183,7 @@ public actor SessionRuntime {
         sessionID: SessionID,
         modelBus: ModelBus,
         dataPlane: DataPlane,
-        contextEngine: L1ContextEngine,
+        contextEngine: PCoreContextEngine,
         toolRuntime: ToolRuntime,
         questions: QuestionRuntime,
         permissions: PermissionEngine,
@@ -457,7 +457,7 @@ public actor SessionRuntime {
                 let contextProfile = ModelContextProfile(contextWindowTokens: min(endpointProfile.contextWindowTokens, requestedWindow ?? endpointProfile.contextWindowTokens), maxOutputTokens: endpointProfile.maxOutputTokens, recommendedOutputReserveTokens: endpointProfile.recommendedOutputReserveTokens, source: endpointProfile.source)
                 let preferred = executionProfile?.budgetProfile.flatMap(Int.init)
                 let planner = preferred.map { budgetPlanner.with(preferredActiveTokens: $0) } ?? budgetPlanner
-                let budget = planner.plan(profile: contextProfile, toolTokens: toolTokens)
+                let budget = planner.plan(profile: contextProfile, toolSchemaTokens: toolTokens)
                 profiler.recordBudget(budget, modelWindow: contextProfile.contextWindowTokens)
 
                 // Cache Controller Scheduling Invariant:
@@ -522,6 +522,8 @@ public actor SessionRuntime {
                     remainingHorizon: remainingHorizon
                 )
 
+                // 主任务文本：/goal 模式下是目标，否则由 compactor 退回最近一条用户指令。
+                let activeTaskText = await SessionGoalRegistry.shared.goal(sessionID) ?? ""
                 let compacted: CompactionResult
                 switch decision {
                 case .skip:
@@ -547,7 +549,10 @@ public actor SessionRuntime {
                         entries: projectedEntries,
                         budget: budget,
                         batches: toolBatches,
-                        projectBackedContents: Set(residentPages.map(\.content))
+                        projectBackedContents: Set(residentPages.map(\.content)),
+                        evictionEpoch: compactionGeneration,
+                        currentTurn: step + 1,
+                        activeTask: activeTaskText
                     )
                     if compacted.triggered {
                         await cacheController.scheduler.recordCompactionOccurred(sessionID: sessionID, step: step + 1)
@@ -559,7 +564,10 @@ public actor SessionRuntime {
                         budget: budget,
                         batches: toolBatches,
                         projectBackedContents: Set(residentPages.map(\.content)),
-                        trigger: .automaticHighWater
+                        trigger: .automaticHighWater,
+                        evictionEpoch: compactionGeneration,
+                        currentTurn: step + 1,
+                        activeTask: activeTaskText
                     )
                     if compacted.triggered {
                         await cacheController.scheduler.recordCompactionOccurred(sessionID: sessionID, step: step + 1)
@@ -576,7 +584,7 @@ public actor SessionRuntime {
                 var finalEntries = compacted.entries + residentDerivedEntries
                 var finalTokens = ConservativeTokenEstimator().estimate(entries: finalEntries)
                 if finalTokens > budget.hardInputLimit {
-                    let emergency = try await compactor.compact(sessionID: sessionID, entries: finalEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)), trigger: .emergencyHardLimit)
+                    let emergency = try await compactor.compact(sessionID: sessionID, entries: finalEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)), trigger: .emergencyHardLimit, evictionEpoch: compactionGeneration, currentTurn: step + 1, activeTask: activeTaskText)
                     profiler.recordCompaction(emergency, budget: budget)
                     finalEntries = emergency.entries
                     finalTokens = emergency.afterTokens
@@ -1446,9 +1454,9 @@ public actor SessionRuntime {
         let session = try await store.session(sessionID)
         let residentPages = await cacheController.residentPages(for: sessionID)
         let toolTokens = ConservativeTokenEstimator().estimate(tools: await toolRuntime.availableDefinitions())
-        let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolTokens: toolTokens)
+        let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolSchemaTokens: toolTokens)
         let entries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
-        let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)), trigger: .manual)
+        let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)), trigger: .manual, evictionEpoch: compactionGeneration, activeTask: await SessionGoalRegistry.shared.goal(sessionID) ?? "")
         if result.triggered { compactionGeneration += 1 }
         await syncL1ResidentAccounting(with: result.entries)
         let response = CompactSessionResponse(triggerSource: result.triggerSource.rawValue, beforeEstimatedTokens: result.beforeTokens, afterEstimatedTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims, compactionGeneration: compactionGeneration, noEligibleReduction: result.noEligibleReduction)

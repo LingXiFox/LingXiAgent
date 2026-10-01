@@ -1,5 +1,7 @@
 import Foundation
 import LingXiPlatform
+import LingXiClient
+import LingXiProtocol
 
 public enum ReviewCLI {
 
@@ -55,32 +57,35 @@ public enum ReviewCLI {
             exit(1)
         }
 
-        // 2. Extract git diff
-        let diffArgs: [String]
-        if let commit {
-            diffArgs = ["diff", "\(commit)^!"]
-        } else if let base = baseBranch {
-            diffArgs = ["diff", "\(base)...HEAD"]
-        } else {
-            diffArgs = ["diff", "HEAD"]
-        }
-
-        let gitExe = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) ?? "/usr/bin/git"
-        var diffContent = runProcess(gitExe, arguments: diffArgs) ?? ""
-
-        // If git diff HEAD is empty, check unstaged or untracked changes
-        if diffContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let status = runProcess(gitExe, arguments: ["status", "-s"]) ?? ""
-            if status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                print("✓ No uncommitted changes detected in working tree. Nothing to review.")
-                return
+        // 2. Extract git diff —— CLI 是前端：它经 Core 的结构化 Git RPC 取内容，
+        // 不自己启动 git 进程、不自己拼 argv（契约第十、十一节）。
+        // Core 侧 argv 与执行只有一份（GitRunner），CLI 与 GUI / Agent 因此语义一致。
+        let workingDirectory = URL(fileURLWithPath: LingXiPlatform.process.currentWorkingDirectory())
+        let client = try await LingXiClientVNext.stdioCore(interactive: false, workingDirectory: workingDirectory)
+        var diffContent = ""
+        var dirtyPathCount = 0
+        do {
+            let requested = GitDiffRequest(scope: .head, baseReference: baseBranch, commitReference: commit, includeFileStats: false)
+            diffContent = try await client.git.diff(requested).patch ?? ""
+            // diff 为空时再看工作区：未跟踪改动也算待审查内容，但不一定出现在 diff 里。
+            if diffContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                dirtyPathCount = try await client.git.status().dirtyPathCount
+                if dirtyPathCount > 0 {
+                    diffContent = try await client.git.diff(GitDiffRequest(scope: .worktree, includeFileStats: false)).patch ?? ""
+                }
             }
-            // Try regular git diff
-            diffContent = runProcess(gitExe, arguments: ["diff"]) ?? ""
+        } catch {
+            FileHandle.standardError.write(Data("Error: 无法通过 Core 读取 Git 差异：\(error)\n".utf8))
+        }
+        await client.disconnect()
+
+        if diffContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && dirtyPathCount == 0 {
+            print("\u{2713} No uncommitted changes detected in working tree. Nothing to review.")
+            return
         }
 
         if diffContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            print("✓ Working tree clean. Nothing to review.")
+            print("\u{2713} Working tree clean. Nothing to review.")
             return
         }
 
@@ -127,23 +132,6 @@ public enum ReviewCLI {
         return false
     }
 
-    private static func runProcess(_ executable: String, arguments: [String]) -> String? {
-        guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
-        } catch {
-            return nil
-        }
-    }
 
     public static func renderHelp() -> String {
         """

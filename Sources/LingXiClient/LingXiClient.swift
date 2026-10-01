@@ -81,6 +81,13 @@ public struct LingXiClient: Sendable {
         return values
     }
 
+    public func workspaceSummary() async throws -> WorkspaceSummary {
+        guard case let .workspaceSummary(summary) = try await send(.getWorkspaceSummary) else {
+            throw CoreError(code: .transport, message: "getWorkspaceSummary 收到非预期响应")
+        }
+        return summary
+    }
+
     public func workspaceDiff() async throws -> String {
         guard case let .workspaceDiff(diff) = try await send(.getWorkspaceDiff) else { throw CoreError(code: .transport, message: "getWorkspaceDiff 收到非预期响应") }
         return diff

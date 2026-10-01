@@ -50,8 +50,8 @@ public enum PermissionPreset: String, CaseIterable, Identifiable, Sendable {
 // MARK: - Projection
 
 /// Pure mapping from the Application layer's authoritative state to the GUI's
-/// presentation values. No I/O except `gitBranch(at:)`, no invented data: a
-/// value Core does not provide stays nil and the view says so.
+/// presentation values. No I/O, no invented data: a value Core does not provide
+/// stays nil and the view says so.
 enum CoreProjection {
     static func task(_ capsule: TaskCapsule) -> TaskPresentation {
         TaskPresentation(taskID: capsule.taskID.rawValue, objective: capsule.objective,
@@ -263,7 +263,10 @@ enum CoreProjection {
 
     static func workspace(_ state: ApplicationState, root: URL?) -> WorkspaceSummaryPresentation {
         let path = state.currentWorkspace?.rootPath ?? root?.path
-        let branch = path.flatMap { gitBranch(at: URL(fileURLWithPath: $0)) }
+        // Core projects the branch; the GUI reads it. `nil` means "not known yet", never "none" —
+        // deriving it locally instead would both contradict WorkspaceSummary's contract comment and
+        // put a second git reader beside Core's.
+        let branch = state.currentWorkspace?.gitBranch
         // A LingXi-managed isolated worktree: linked checkout on a `lingxi/` branch.
         let isManagedWorktree = state.currentWorkspace?.isLinkedWorktree == true
             && branch?.hasPrefix(managedWorktreeBranchPrefix) == true
@@ -279,22 +282,12 @@ enum CoreProjection {
     /// Branch prefix Core gives the worktrees it manages.
     static let managedWorktreeBranchPrefix = "lingxi/"
 
-    /// Reads `.git/HEAD` directly (worktrees point `.git` at their gitdir) — no process spawn.
-    static func gitBranch(at root: URL) -> String? {
-        var gitDir = root.appendingPathComponent(".git")
-        if let pointer = try? String(contentsOf: gitDir, encoding: .utf8), pointer.hasPrefix("gitdir:") {
-            gitDir = URL(fileURLWithPath: pointer.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespacesAndNewlines),
-                         relativeTo: root)
-        }
-        guard let head = try? String(contentsOf: gitDir.appendingPathComponent("HEAD"), encoding: .utf8) else { return nil }
-        let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("ref: refs/heads/") { return String(trimmed.dropFirst("ref: refs/heads/".count)) }
-        return String(trimmed.prefix(8))
-    }
-
     // MARK: Changes
 
-    /// Parses a unified `git diff` into per-file Git-style entries.
+    /// Splits a unified `git diff` into per-file entries: which files changed, how each changed,
+    /// and the patch body to show for it. Deliberately no line counting -- `ProtocolService` forbids
+    /// the front end from deriving `+`/`-` itself, and these entries never displayed those numbers
+    /// anyway; `WorkspaceDiffSummary.addedLines`/`deletedLines` are Core's authoritative answer.
     static func fileChanges(fromUnifiedDiff diff: String) -> [FileChangePresentation] {
         var files: [FileChangePresentation] = []
         var current: FileChangePresentation?
@@ -321,8 +314,6 @@ enum CoreProjection {
             if line.hasPrefix("new file mode") { current?.change = .added }
             else if line.hasPrefix("deleted file mode") { current?.change = .deleted }
             else if line.hasPrefix("rename from ") { current?.change = .renamed; current?.oldPath = String(line.dropFirst("rename from ".count)) }
-            else if line.hasPrefix("+"), !line.hasPrefix("+++") { current?.additions += 1 }
-            else if line.hasPrefix("-"), !line.hasPrefix("---") { current?.deletions += 1 }
         }
         flush()
         return files
@@ -352,8 +343,6 @@ public struct FileChangePresentation: Identifiable, Sendable, Equatable {
     public let path: String
     public var change: Change
     public var oldPath: String?
-    public var additions = 0
-    public var deletions = 0
     public var patch = ""
 
     public init(path: String, change: Change) {

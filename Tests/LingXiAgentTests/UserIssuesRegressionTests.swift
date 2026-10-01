@@ -276,7 +276,7 @@ struct UserIssuesRegressionTests {
     // MARK: - 7. 撤回操作建立合成冷启动基线 (coldNewEpoch)
     @Test func revertEstablishesColdNewEpochBaseline() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
         let sessionID = SessionID("revert-baseline-sess")

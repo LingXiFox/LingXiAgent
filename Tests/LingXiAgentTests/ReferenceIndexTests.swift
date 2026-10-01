@@ -76,7 +76,7 @@ struct ReferenceIndexTests {
         try write("struct PermissionEngine {}\n", root, "Sources/PermissionEngine.swift")
         try write("struct ToolRuntime { func execute(_ engine: PermissionEngine) {} }\n", root, "Sources/ToolRuntime.swift")
         try write("ToolRuntime PermissionEngine unrelated lexical note\n", root, "Docs/Note.md")
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 2_000)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 2_000)
         _ = try await pager.rebuildStaleFiles(using: ProjectScanner(root: root))
         let result = await pager.query(projectRoot: root, query: ContextQuery(currentTask: "ToolRuntime 和 PermissionEngine 如何关联？"))
         #expect(result.turnMetrics.directReferenceHits >= 1)

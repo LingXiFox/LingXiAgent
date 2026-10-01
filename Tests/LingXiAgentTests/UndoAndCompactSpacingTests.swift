@@ -52,7 +52,7 @@ struct UndoAndCompactSpacingTests {
     @Test func ecoreStorePrunesOrphanedObjectsAfterRevert() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             objectizationThreshold: 10
         )
         let store = ECoreObjectStore(baseDirectory: tempDir, configuration: config)
@@ -87,7 +87,7 @@ struct UndoAndCompactSpacingTests {
 
     @Test func contextCacheControllerReconcilesAfterRevert() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
         let sessionID = SessionID("sess-cache-reconcile")

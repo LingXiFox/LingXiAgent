@@ -102,6 +102,70 @@ struct CoreDependencyGraphGateTests {
         return visited
     }
 
+    /// A forbidden target reached from `root` is excused only when the root itself declares the
+    /// exception. Without this the allow-list is decoration: an entry can exist, be validated for
+    /// a reason string, and still never be consulted.
+    private static func excuse(forbidden: String, from root: String) -> ArchitectureException? {
+        allowList.first { $0.fromTarget == root && $0.toTarget == forbidden }
+    }
+
+    /// Removes the excused targets from a violation set and reports which excuses were consumed.
+    private static func filterViolations(_ reached: Set<String>, forbidden: Set<String>, root: String) -> Set<String> {
+        var violations = reached.intersection(forbidden)
+        violations = violations.filter { excuse(forbidden: $0, from: root) == nil }
+        return violations
+    }
+
+    @Test("every declared exception corresponds to a real dependency edge")
+    func declaredExceptionsAreRealEdges() throws {
+        // An exception whose edge no longer exists is worse than no exception: it claims to govern
+        // a breach that has already been removed, and the next reader trusts a dead allowance.
+        let graph = try Self.parseDependencyGraph()
+        for exc in Self.allowList {
+            let deps = graph[exc.fromTarget]
+            #expect(deps != nil, "Exception declares unknown target \(exc.fromTarget)")
+            #expect(deps?.contains(exc.toTarget) == true,
+                    "Stale exception: \(exc.fromTarget) no longer depends directly on \(exc.toTarget)")
+        }
+    }
+
+    @Test("the macOS frontend never reaches Core or another frontend")
+    func frontendNeverReachesCoreOrAnotherFrontend() throws {
+        // The boundary that actually matters for the GUI is that business state arrives through the
+        // client contract, not by linking the engine. `LingXiFrontendKit` is declared only under
+        // `#if os(macOS)` in Package.swift, so a missing target here would silently skip the gate.
+        let graph = try Self.parseDependencyGraph()
+        guard graph["LingXiFrontendKit"] != nil else {
+            Issue.record("Target LingXiFrontendKit not found in dependency graph; the GUI would be outside this gate")
+            return
+        }
+        let forbidden: Set<String> = [
+            "LingXiCore",
+            "LingXiTUI",
+            "LingXiTUIApp",
+            "LingXiTUIComponents",
+            "LingXiWebUI"
+        ]
+        let closure = Self.computeClosure(from: "LingXiFrontendKit", graph: graph)
+        let violated = Self.filterViolations(closure, forbidden: forbidden, root: "LingXiFrontendKit")
+        #expect(violated.isEmpty,
+                "Architecture violation: LingXiFrontendKit transitively reaches \(violated.sorted()); GUI state must come from the client contract")
+    }
+
+    @Test("the macOS frontend does not reach for the platform layer itself")
+    func frontendDoesNotDependOnPlatformDirectly() throws {
+        // LingXiFrontendKit -> LingXiApplication -> LingXiPlatform is the accepted shape: the
+        // assembly layer legitimately needs host services and the GUI inherits the link without
+        // using a single platform symbol. What must stay forbidden is the GUI depending on the
+        // platform layer directly, which would let view code call host APIs around the contract.
+        let graph = try Self.parseDependencyGraph()
+        let direct = graph["LingXiFrontendKit"] ?? []
+        #expect(!direct.contains("LingXiPlatform"),
+                "Architecture violation: LingXiFrontendKit depends on LingXiPlatform directly; host services belong to LingXiApplication")
+        #expect(!direct.contains("LingXiCore"),
+                "Architecture violation: LingXiFrontendKit depends on LingXiCore directly")
+    }
+
     @Test("Core and infrastructure layers never reach frontend UI targets")
     func coreNeverReachesFrontendKit() throws {
         let graph = try Self.parseDependencyGraph()
@@ -121,7 +185,7 @@ struct CoreDependencyGraphGateTests {
                 continue
             }
             let closure = Self.computeClosure(from: root, graph: graph)
-            let violated = closure.intersection(forbiddenTargets)
+            let violated = Self.filterViolations(closure, forbidden: forbiddenTargets, root: root)
             #expect(violated.isEmpty, "Architecture violation: \(root) transitively reaches UI target(s): \(violated.sorted())")
         }
     }
@@ -134,9 +198,9 @@ struct CoreDependencyGraphGateTests {
             return
         }
         let closure = Self.computeClosure(from: "LingXiWebUI", graph: graph)
-        #expect(!closure.contains("LingXiCore"),
+        #expect(Self.filterViolations(closure, forbidden: ["LingXiCore"], root: "LingXiWebUI").isEmpty,
                 "Architecture violation: LingXiWebUI transitively reaches LingXiCore instead of the Application contract")
-        #expect(!closure.contains("LingXiTUI") && !closure.contains("LingXiFrontendKit"),
+        #expect(Self.filterViolations(closure, forbidden: ["LingXiTUI", "LingXiFrontendKit"], root: "LingXiWebUI").isEmpty,
                 "Architecture violation: a front end must not depend on another front end: \(closure.sorted())")
     }
 
@@ -144,7 +208,8 @@ struct CoreDependencyGraphGateTests {
     func tuiNeverDependsOnCore() throws {
         let graph = try Self.parseDependencyGraph()
         let closure = Self.computeClosure(from: "LingXiTUI", graph: graph)
-        #expect(!closure.contains("LingXiCore"), "Architecture violation: LingXiTUI must not depend on LingXiCore; communication must happen exclusively via LingXiClient / IPC")
+        #expect(Self.filterViolations(closure, forbidden: ["LingXiCore"], root: "LingXiTUI").isEmpty,
+                "Architecture violation: LingXiTUI must not depend on LingXiCore; communication must happen exclusively via LingXiClient / IPC")
     }
 
     @Test("LingXiApplication never transitively depends on LingXiCore")

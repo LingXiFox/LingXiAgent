@@ -94,11 +94,11 @@ public final class SettingsStore: ObservableObject {
 
     func config<Value>(_ key: ConfigKey<Value>) -> Value {
         _ = configRevision
-        return (configFile.value(at: key.path) as? Value) ?? key.fallback
+        return key.resolve(in: configFile)
     }
 
     func isOverridden<Value>(_ key: ConfigKey<Value>) -> Bool {
-        configFile.value(at: key.path) != nil
+        key.isOverridden(in: configFile)
     }
 
     func binding<Value>(_ key: ConfigKey<Value>) -> Binding<Value> {
@@ -109,7 +109,9 @@ public final class SettingsStore: ObservableObject {
     }
 
     func resetConfig<Value>(_ key: ConfigKey<Value>) {
-        writeConfig(nil, at: key.path)
+        for path in key.clearPaths {
+            writeConfig(nil, at: path)
+        }
     }
 
     private func writeConfig(_ value: Any?, at path: [String]) {

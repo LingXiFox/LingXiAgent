@@ -70,7 +70,7 @@ struct RewindPhase5Tests {
             tokenEstimate: 20,
             createdAt: .now
         )
-        try await compactor.derivedStore.pageOut(page)
+        try await compactor.derivedStore.insertLegacyPage(page)
 
         let pagesBefore = await compactor.derivedStore.pages(sessionID: sessionID)
         #expect(pagesBefore.count == 1)

@@ -232,7 +232,8 @@ final class RetainedTUI: @unchecked Sendable {
             runtimeState = status.configured ? "Ready" : "Disconnected"
             workingPhase = status.configured ? .ready : .disconnected
             activeModel = status.model ?? activeModel
-            gitBranchName = detectGitBranch()
+            // 分支标题来自 Core 的 workspace summary（Core 由 porcelain records 计算）：TUI 不再起 git。
+            gitBranchName = ((try? await client.workspaceSummary())?.gitBranch ?? nil) ?? "-" 
             permissionConfiguration = try await client.permissionConfiguration()
             behaviorProfile = try await client.agentBehaviorProfile()
             sessionID = try await client.createSession()
@@ -1141,19 +1142,6 @@ final class RetainedTUI: @unchecked Sendable {
             await routeCommand("/\(candidates[commandSelection].name)")
         default: break
         }
-    }
-    private func detectGitBranch() -> String {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["rev-parse", "--abbrev-ref", "HEAD"]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).ifEmpty("-") ?? "-"
-        } catch { return "-" }
     }
 }
 

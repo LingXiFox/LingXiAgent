@@ -36,6 +36,7 @@ public enum CoreResponse: Sendable, Equatable {
     case providerDisconnected(ProviderDisconnectResult)
     case extensions([ExtensionInfo])
     case workspaceDiff(String)
+    case workspaceSummary(WorkspaceSummary)
     case error(CoreError)
 }
 
@@ -119,6 +120,9 @@ public struct CoreError: Sendable, Equatable, Error {
         case processNotRunning
         case editTargetNotFound
         case gitError
+        /// `git pull --ff-only` 遇到本地/远端分叉。结构化错误，让调用方自己决定 merge 还是 rebase，
+        /// Core 不代替用户合并、不自动 stash、不 force。
+        case gitNonFastForward
         case questionUnavailable
         case toolCancelled
         case agentStepLimitReached

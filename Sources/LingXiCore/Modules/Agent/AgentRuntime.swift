@@ -8,7 +8,7 @@ import LingXiProtocol
 /// 本类型不解析任何 Provider JSON。
 public actor AgentRuntime {
     private let store: any SessionStore
-    private let contextEngine: L1ContextEngine
+    private let contextEngine: PCoreContextEngine
     private let modelBus: ModelBus
     private let dataPlane: DataPlane
     private var toolRuntime: ToolRuntime
@@ -50,7 +50,7 @@ public actor AgentRuntime {
 
     init(
         store: any SessionStore,
-        contextEngine: L1ContextEngine,
+        contextEngine: PCoreContextEngine,
         modelBus: ModelBus,
         dataPlane: DataPlane,
         toolRuntime: ToolRuntime,
@@ -351,11 +351,11 @@ public actor AgentRuntime {
         try await modelResolver.setDefaultSelection(selection, assembly: assembly)
     }
 
-    public func contextSnapshot(_ id: SessionID) async -> L1ContextSnapshot? {
+    public func contextSnapshot(_ id: SessionID) async -> PCoreSnapshot? {
         await contextEngine.latestSnapshot(for: id)
     }
 
-    public func ensureContextSnapshot(_ id: SessionID) async throws -> L1ContextSnapshot {
+    public func ensureContextSnapshot(_ id: SessionID) async throws -> PCoreSnapshot {
         if let snapshot = await contextEngine.latestSnapshot(for: id) { return snapshot }
         let session = try await store.session(id)
         let entries = await contextEngine.entries(for: session)
@@ -506,7 +506,7 @@ public actor AgentRuntime {
         let toolTokens = estimator.estimate(tools: childTools)
         let preferred = normalizedProfile?.budgetProfile.flatMap(Int.init)
         let planner = preferred.map { budgetPlanner.with(preferredActiveTokens: $0) } ?? budgetPlanner
-        let prospectiveBudget = planner.plan(profile: prospectiveProfile, toolTokens: toolTokens)
+        let prospectiveBudget = planner.plan(profile: prospectiveProfile, toolSchemaTokens: toolTokens)
         let initialMandatoryTokens = await contextEngine.initialMandatoryTokens(task: task, estimator: estimator)
 
         guard prospectiveBudget.hardInputLimit >= initialMandatoryTokens, prospectiveBudget.hardInputLimit > 0 else {

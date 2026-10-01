@@ -84,7 +84,7 @@ struct CodeIntelligenceTests {
         try write("struct Existing {}\n", root, "Sources/Existing.swift")
         let workspace = try WorkspaceRoot(path: root.path)
         let scanner = ProjectScanner(root: root)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 32_768)
         let intelligence = CodeIntelligence(workspace: workspace, scanner: scanner, pager: pager, lsp: LSPClient(transport: nil))
         let registry = ToolRegistry.builtin(workspace: workspace, contextPager: pager, scanner: scanner, codeIntelligence: intelligence)
         let loadContextCall = ToolCall(callID: ToolCallID("load-context"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"code_intelligence"}"#)
@@ -115,7 +115,7 @@ struct CodeIntelligenceTests {
     private func makeIntelligence(_ root: URL, lsp: LSPClient) throws -> CodeIntelligence {
         let workspace = try WorkspaceRoot(path: root.path)
         let scanner = ProjectScanner(root: root, minimumPageBytes: 32, maximumPageBytes: 64)
-        return CodeIntelligence(workspace: workspace, scanner: scanner, pager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768), lsp: lsp)
+        return CodeIntelligence(workspace: workspace, scanner: scanner, pager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 32_768), lsp: lsp)
     }
     private func project() throws -> URL { let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root }
     private func write(_ content: String, _ root: URL, _ path: String) throws { let url = root.appending(path: path); try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true); try Data(content.utf8).write(to: url) }

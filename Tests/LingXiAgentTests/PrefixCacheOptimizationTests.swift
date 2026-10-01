@@ -96,7 +96,7 @@ import LingXiProtocol
 
     @Test func prefixFingerprintDiagnosticsIdentifiesChangedSegment() async {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
         let sID = SessionID("diag-session")
@@ -151,7 +151,7 @@ import LingXiProtocol
 
     @Test func sessionCacheRecordTelemetryWithWriteTokensAndDelta() async {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
         let sID = SessionID("telemetry-session")
@@ -255,7 +255,7 @@ import LingXiProtocol
 
     @Test func cacheControllerDoesNotBustOnUnavailableOrUpstreamVariance() async {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
         let sID = SessionID("s_bust_test")

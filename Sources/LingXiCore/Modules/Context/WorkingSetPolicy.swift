@@ -1,6 +1,6 @@
 import Foundation
 
-public struct L2WorkingSetEntry: Sendable {
+public struct WorkingSetEntry: Sendable {
     public var page: ContextPage
     public var lastUsed: UInt64
     public var useCount: UInt64
@@ -10,7 +10,7 @@ public struct L2WorkingSetEntry: Sendable {
 }
 
 /// L2 的淘汰决策独立于存储；第一版只接收确定性本地信号。
-public struct L2WorkingSetPolicy: Sendable {
+public struct WorkingSetPolicy: Sendable {
     public struct Weights: Sendable {
         public let recentUse: Double
         public let frequency: Double
@@ -30,7 +30,7 @@ public struct L2WorkingSetPolicy: Sendable {
     public let weights: Weights
     public init(weights: Weights = Weights()) { self.weights = weights }
 
-    public func evictionCandidate(in entries: [String: L2WorkingSetEntry], clock: UInt64) -> String? {
+    public func evictionCandidate(in entries: [String: WorkingSetEntry], clock: UInt64) -> String? {
         entries.min { lhs, rhs in
             let left = score(lhs.value, clock: clock)
             let right = score(rhs.value, clock: clock)
@@ -38,7 +38,7 @@ public struct L2WorkingSetPolicy: Sendable {
         }?.key
     }
 
-    public func score(_ entry: L2WorkingSetEntry, clock: UInt64) -> Double {
+    public func score(_ entry: WorkingSetEntry, clock: UInt64) -> Double {
         Double(entry.lastUsed) / Double(max(1, clock)) * weights.recentUse
             + Double(entry.useCount) * weights.frequency
             + entry.queryRelevance * weights.queryRelevance

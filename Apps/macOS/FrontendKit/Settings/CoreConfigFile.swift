@@ -21,14 +21,34 @@ public enum LingXiDataRoot {
 /// the user has not overridden the key.
 struct ConfigKey<Value>: Sendable where Value: Sendable {
     let path: [String]
+    /// 旧键路径。读取顺序固定为 新键 → 旧键 → Core 默认值（契约第十一节）；
+    /// 写入与重置都只作用于新键，GUI 不再展示旧术语。
+    let legacyPaths: [[String]]
     let fallback: Value
 
-    init(_ path: String, _ fallback: Value) {
+    init(_ path: String, _ fallback: Value, legacy: String...) {
         self.path = path.split(separator: ".").map(String.init)
+        self.legacyPaths = legacy.map { $0.split(separator: ".").map(String.init) }
         self.fallback = fallback
     }
 
     var id: String { path.joined(separator: ".") }
+
+    /// 新键 → 旧键 → Core 默认值。放在类型上而不是 store 里，让读取顺序只有一份定义。
+    func resolve(in file: CoreConfigFile) -> Value {
+        if let explicit = file.value(at: path) as? Value { return explicit }
+        for legacy in legacyPaths {
+            if let legacyValue = file.value(at: legacy) as? Value { return legacyValue }
+        }
+        return fallback
+    }
+
+    func isOverridden(in file: CoreConfigFile) -> Bool {
+        file.value(at: path) != nil || legacyPaths.contains { file.value(at: $0) != nil }
+    }
+
+    /// 重置必须连旧键一起清掉，否则旧值会作为 fallback 复活。
+    var clearPaths: [[String]] { [path] + legacyPaths }
 }
 
 /// Global Core defaults read from `config.json` (schema: `config.schema.json`).
@@ -46,11 +66,8 @@ enum ConfigKeys {
     static let maxSubagentDepth = ConfigKey("agent.maxSubagentDepth", 3)
     static let maxTotalRuns = ConfigKey("agent.maxTotalRunsPerRootRun", 32)
     static let maxAgentLoopSteps = ConfigKey("agent.maxAgentLoopSteps", 32)
-    static let l1ProjectMaxCharacters = ConfigKey("agent.l1ProjectMaxCharacters", 32_768)
-    static let l2MaxCharacters = ConfigKey("agent.l2MaxCharacters", 262_144)
-    // Dual-core conceptual aliases
-    static let projectInstructionBudget = l1ProjectMaxCharacters
-    static let eCoreWorkingSetMaxCharacters = l2MaxCharacters
+    static let pCoreProjectMaxCharacters = ConfigKey("agent.pCoreProjectMaxCharacters", 32_768, legacy: "agent.l1ProjectMaxCharacters")
+    static let eCoreRecallMaxCharacters = ConfigKey("agent.eCoreRecallMaxCharacters", 262_144, legacy: "agent.l2MaxCharacters")
 
     static let quickFilesystemSeconds = ConfigKey("runtime.execution.quickFilesystemSeconds", 10.0)
     static let searchSeconds = ConfigKey("runtime.execution.searchSeconds", 30.0)
@@ -84,7 +101,7 @@ enum ConfigKeys {
     static let l2Max = eCoreRecallBudget
     static let l3UseRemaining = ConfigKey("context.eCore.useRemainingBudget", true)
 
-    static let ecoreStorage = ConfigKey("context.fabric.ecoreStorageEnabled", true)
+    static let eCorePersistence = ConfigKey("context.fabric.eCorePersistenceEnabled", true, legacy: "context.fabric.ecoreStorageEnabled")
     static let observationProjection = ConfigKey("context.fabric.observationProjectionEnabled", true)
     static let heatTracking = ConfigKey("context.fabric.heatTrackingEnabled", true)
 
@@ -100,8 +117,8 @@ enum ConfigKeys {
             (maxSubagentDepth.id, maxSubagentDepth.fallback),
             (maxTotalRuns.id, maxTotalRuns.fallback),
             (maxAgentLoopSteps.id, maxAgentLoopSteps.fallback),
-            (l1ProjectMaxCharacters.id, l1ProjectMaxCharacters.fallback),
-            (l2MaxCharacters.id, l2MaxCharacters.fallback),
+            (pCoreProjectMaxCharacters.id, pCoreProjectMaxCharacters.fallback),
+            (eCoreRecallMaxCharacters.id, eCoreRecallMaxCharacters.fallback),
             (quickFilesystemSeconds.id, quickFilesystemSeconds.fallback),
             (searchSeconds.id, searchSeconds.fallback),
             (foregroundShellSeconds.id, foregroundShellSeconds.fallback),
@@ -121,7 +138,7 @@ enum ConfigKeys {
             (eCoreStorageBudget.id, eCoreStorageBudget.fallback),
             (eCoreRecallBudget.id, eCoreRecallBudget.fallback),
             (eCorePressureThreshold.id, eCorePressureThreshold.fallback),
-            (ecoreStorage.id, ecoreStorage.fallback),
+            (eCorePersistence.id, eCorePersistence.fallback),
             (observationProjection.id, observationProjection.fallback),
             (heatTracking.id, heatTracking.fallback),
         ]

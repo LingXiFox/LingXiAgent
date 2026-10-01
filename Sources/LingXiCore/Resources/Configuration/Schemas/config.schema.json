@@ -71,13 +71,25 @@
         "systemContext": {
           "type": ["string", "null"]
         },
+        "eCoreRecallMaxCharacters": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "E-Core 召回工作集字符上限。"
+        },
+        "pCoreProjectMaxCharacters": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "P-Core 内项目页驻留字符上限。"
+        },
         "l2MaxCharacters": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "[Deprecated] 旧 L2 命名键，等价于 eCoreRecallMaxCharacters；仍可读，至少保留一个兼容周期。"
         },
         "l1ProjectMaxCharacters": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "[Deprecated] 旧 L1 命名键，等价于 pCoreProjectMaxCharacters；仍可读，至少保留一个兼容周期。"
         },
         "preferredActiveTokens": {
           "type": ["integer", "null"],
@@ -180,7 +192,8 @@
         "fabric": {
           "type": "object",
           "properties": {
-            "ecoreStorageEnabled": { "type": "boolean" },
+            "eCorePersistenceEnabled": { "type": "boolean", "description": "是否把 E-Core 载荷持久化到磁盘。E-Core 本身是必选逻辑核心，此开关只切换持久化后端。" },
+            "ecoreStorageEnabled": { "type": "boolean", "description": "[Deprecated] 旧名，语义写错（切换的是持久化，不是 E-Core 开关），等价于 eCorePersistenceEnabled。" },
             "observationProjectionEnabled": { "type": "boolean" },
             "contextRecallEnabled": { "type": "boolean" },
             "objectizationThreshold": { "type": "integer", "minimum": 1 },

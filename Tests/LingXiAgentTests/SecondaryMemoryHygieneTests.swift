@@ -13,7 +13,7 @@ struct SecondaryMemoryHygieneTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         var config = ContextObjectFabricConfiguration()
-        config.ecoreStorageEnabled = true
+        config.eCorePersistenceEnabled = true
         config.heatTrackingEnabled = true
         config.objectizationThreshold = 10
 
@@ -69,7 +69,7 @@ struct SecondaryMemoryHygieneTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let pageStore = ProjectPageStore()
-        let workingSet = L2WorkingSet()
+        let workingSet = RecallWorkingSet()
         let pager = ContextPager(store: pageStore, workingSet: workingSet)
         let scanner = ProjectScanner(root: tempDir)
         let controller = ContextCacheController(

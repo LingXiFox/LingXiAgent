@@ -44,7 +44,7 @@ struct LSPCoordinatorTests {
 
         let workspace = try WorkspaceRoot(path: tmpDir.path)
         let scanner = ProjectScanner(root: tmpDir, minimumPageBytes: 32, maximumPageBytes: 64)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 32_768)
         let coordinator = LSPCoordinator(workspaceURL: tmpDir)
         await coordinator.registerLanguage(LSPLanguageConfig(
             languageID: "swift", extensions: ["swift"], binaryNames: []
@@ -98,7 +98,7 @@ struct LSPCoordinatorTests {
 
         let workspace = try WorkspaceRoot(path: tmpDir.path)
         let scanner = ProjectScanner(root: tmpDir, minimumPageBytes: 32, maximumPageBytes: 64)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet(), projectCharacterBudget: 32_768)
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet(), projectCharacterBudget: 32_768)
         let intelligence = CodeIntelligence(
             workspace: workspace, scanner: scanner, pager: pager,
             lsp: LSPClient(transport: nil), coordinator: LSPCoordinator(workspaceURL: tmpDir)

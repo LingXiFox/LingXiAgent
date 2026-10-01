@@ -537,9 +537,17 @@ public struct WorkspaceSummary: Codable, Sendable, Equatable {
     public var worktreeRoot: String?
     /// `.git` 是文件而非目录：当前 checkout 是一个 linked worktree。
     public var isLinkedWorktree: Bool
-    /// `git status` 报告的已改动与未跟踪文件数；nil = 还没测出来，0 = 干净。
+    /// [Deprecated] 兼容周期内等于 `dirtyPathCount`，两者不得具有不同用户语义（契约第二十二节）。
+    /// GUI 从本轮起只读 `dirtyPathCount`。
     public var changedFileCount: Int?
     public var isDirty: Bool?
+    /// 存在 Git 工作区变化的唯一文件路径数：tracked 变更 + 未跟踪文件 + 冲突，含 staged 与 unstaged 去重，不含 ignored。
+    public var dirtyPathCount: Int?
+    /// porcelain records 解析出的 tracked 变更路径数。
+    public var trackedChangeCount: Int?
+    /// `-uall` 展开后的未跟踪文件数，不是目录数。
+    public var untrackedFileCount: Int?
+    public var conflictedFileCount: Int?
 
     public init(
         rootPath: String,
@@ -551,7 +559,11 @@ public struct WorkspaceSummary: Codable, Sendable, Equatable {
         worktreeRoot: String? = nil,
         isLinkedWorktree: Bool = false,
         changedFileCount: Int? = nil,
-        isDirty: Bool? = nil
+        isDirty: Bool? = nil,
+        dirtyPathCount: Int? = nil,
+        trackedChangeCount: Int? = nil,
+        untrackedFileCount: Int? = nil,
+        conflictedFileCount: Int? = nil
     ) {
         self.rootPath = rootPath
         self.isGitRepository = isGitRepository
@@ -563,6 +575,311 @@ public struct WorkspaceSummary: Codable, Sendable, Equatable {
         self.isLinkedWorktree = isLinkedWorktree
         self.changedFileCount = changedFileCount
         self.isDirty = isDirty
+        self.dirtyPathCount = dirtyPathCount
+        self.trackedChangeCount = trackedChangeCount
+        self.untrackedFileCount = untrackedFileCount
+        self.conflictedFileCount = conflictedFileCount
+    }
+}
+
+/// Git RPC 的结构化读参数。契约第十四节：RPC 只接受结构化参数，
+/// 由 Core handler 转成现有 `GitAction` argv；不存在 `git.exec(rawArguments)`，
+/// 也不接受 `-C` / `--git-dir` / `--work-tree`。
+public struct GitQueryRequest: Codable, Sendable, Equatable {
+    public var paths: [String]
+    public var reference: String?
+    public var limit: Int?
+    /// 工作区内相对目录；只在仓库内部生效。
+    public var workingDirectory: String?
+
+    public init(paths: [String] = [], reference: String? = nil, limit: Int? = nil, workingDirectory: String? = nil) {
+        self.paths = paths
+        self.reference = reference
+        self.limit = limit
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// Git RPC 的结构化写参数，并携带契约第十六节要求的调用身份。
+public struct GitMutationRequest: Codable, Sendable, Equatable {
+    /// 发起方 Session。Agent 发起时是真实 Session；GUI 发起时是当前 GUI Session（可为 nil）。
+    public var sessionID: SessionID?
+    /// Agent 发起时是真实 Tool Call ID；GUI 主动点击必须使用 `"gui:" + UUID`，不得复用 Agent 的 ID。
+    public var toolCallID: String
+    public var paths: [String]
+    public var reference: String?
+    public var branch: String?
+    public var message: String?
+    /// 远程同步目标。fetch/pull 缺省退回当前 upstream 的 remote（再退回 origin）；
+    /// push 不退回 —— 没有 upstream 时必须显式给出 remote 与 branch（契约第四节）。
+    public var remote: String?
+    /// `fetch --prune`：只由结构化开关控制。
+    public var prune: Bool
+    /// `push -u`：建立 upstream。第一版 push 只有安全形态。
+    public var setUpstream: Bool
+    /// `switch -c` / `checkout -b` / `branch -d -f` 之类的显式变体，仍然是结构化开关而非裸 flag。
+    public var createBranch: Bool
+    /// 高风险覆盖（restore 丢弃、checkout/switch 覆盖、branch 强删）。GUI 需额外确认。
+    public var force: Bool
+    /// 只撤销暂存区（`restore --staged`），不丢弃工作区内容。
+    public var stagedOnly: Bool
+    /// `add -A`：暂存整个工作区。
+    public var all: Bool
+    public var workingDirectory: String?
+
+    public init(
+        sessionID: SessionID? = nil,
+        toolCallID: String,
+        paths: [String] = [],
+        reference: String? = nil,
+        branch: String? = nil,
+        message: String? = nil,
+        remote: String? = nil,
+        prune: Bool = false,
+        setUpstream: Bool = false,
+        createBranch: Bool = false,
+        force: Bool = false,
+        stagedOnly: Bool = false,
+        all: Bool = false,
+        workingDirectory: String? = nil
+    ) {
+        self.sessionID = sessionID
+        self.toolCallID = toolCallID
+        self.paths = paths
+        self.reference = reference
+        self.branch = branch
+        self.message = message
+        self.remote = remote
+        self.prune = prune
+        self.setUpstream = setUpstream
+        self.createBranch = createBranch
+        self.force = force
+        self.stagedOnly = stagedOnly
+        self.all = all
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// diff 的比较范围。三个都是 git 的原生范围概念，不是 shell 参数形状。
+/// 定义在协议层：Core 的 argv 构造与前端请求共用同一个枚举，不允许两边各写一份。
+public enum GitDiffScope: String, Codable, Sendable, Equatable, CaseIterable {
+    /// 工作区 vs 索引（未暂存改动）。
+    case worktree
+    /// 索引 vs HEAD（已暂存改动）。
+    case staged
+    /// 工作区+索引 vs HEAD（全部未提交改动）。
+    case head
+
+    /// 未跟踪文件属于工作区状态，因此只有工作区口径的 diff 才带它们；已暂存口径不带。
+    public var includesUntrackedFiles: Bool { self != .staged }
+}
+
+/// 单个文件的 Git 状态与行变化。
+///
+/// status 与 diff 共用这一个形状：契约第九节要求行数由 `git.diff` 的结构化响应给出，
+/// 不再另开一个按 shell 命令形状暴露的 `git.numstat`。
+public struct GitFileChange: Codable, Sendable, Equatable {
+    public var path: String
+    /// 重命名/复制时的原路径。
+    public var oldPath: String?
+    /// 索引位（porcelain v2 的 X）；未跟踪为 "?"。
+    public var indexStatus: String
+    /// 工作区位（porcelain v2 的 Y）。
+    public var worktreeStatus: String
+    public var isUntracked: Bool
+    public var isConflicted: Bool
+    /// name-status 的状态字母：M/A/D/R/C/T/U/?。
+    public var status: String?
+    /// --numstat 的行数；二进制为 nil（binary == true）。
+    public var additions: Int?
+    public var deletions: Int?
+    public var binary: Bool
+
+    public init(
+        path: String,
+        oldPath: String? = nil,
+        indexStatus: String = " ",
+        worktreeStatus: String = " ",
+        isUntracked: Bool = false,
+        isConflicted: Bool = false,
+        status: String? = nil,
+        additions: Int? = nil,
+        deletions: Int? = nil,
+        binary: Bool = false
+    ) {
+        self.path = path
+        self.oldPath = oldPath
+        self.indexStatus = indexStatus
+        self.worktreeStatus = worktreeStatus
+        self.isUntracked = isUntracked
+        self.isConflicted = isConflicted
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.binary = binary
+    }
+}
+
+/// 远程同步的结构化参数（契约第二至四节）。仍然没有裸 argv：
+/// 只有 remote / branch / prune / setUpstream 四个可控开关，禁止 force、refspec、镜像与全量 tag 推送。
+public struct GitRemoteRequest: Codable, Sendable, Equatable {
+    public var sessionID: SessionID?
+    /// Agent 发起时为真实 Tool Call ID；GUI 点击使用 `"gui:" + UUID`。
+    public var toolCallID: String
+    public var remote: String?
+    public var branch: String?
+    public var reference: String?
+    public var prune: Bool
+    public var setUpstream: Bool
+    public var workingDirectory: String?
+
+    public init(
+        sessionID: SessionID? = nil,
+        toolCallID: String,
+        remote: String? = nil,
+        branch: String? = nil,
+        reference: String? = nil,
+        prune: Bool = false,
+        setUpstream: Bool = false,
+        workingDirectory: String? = nil
+    ) {
+        self.sessionID = sessionID
+        self.toolCallID = toolCallID
+        self.remote = remote
+        self.branch = branch
+        self.reference = reference
+        self.prune = prune
+        self.setUpstream = setUpstream
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// `git.status` 的返回值：计数一律来自 Core 解析后的 porcelain records（契约第二十二节），
+/// 分支/upstream/ahead-behind 同一次调用给出，前端不再自己跑 git（契约第八节）。
+public struct GitStatusResult: Codable, Sendable, Equatable {
+    public var branchName: String?
+    /// HEAD 的 commit SHA；未born 仓库为 "(unborn)" 原文或 nil。
+    public var headSHA: String?
+    public var upstreamRemote: String?
+    public var upstreamBranch: String?
+    /// 领先 upstream 的提交数；无 upstream 为 nil，不表示 0。
+    public var ahead: Int?
+    public var behind: Int?
+    public var dirtyPathCount: Int
+    public var trackedChangeCount: Int
+    public var untrackedFileCount: Int
+    public var conflictedFileCount: Int
+    public var isDirty: Bool
+    /// 逐文件明细：路径 + 索引位 + 工作区位 + 未跟踪/冲突标记。
+    public var files: [GitFileChange]
+    /// main checkout root，由 `--git-common-dir` 推导（契约第十九节）。
+    public var mainCheckoutRoot: String?
+
+    public init(
+        branchName: String? = nil,
+        headSHA: String? = nil,
+        upstreamRemote: String? = nil,
+        upstreamBranch: String? = nil,
+        ahead: Int? = nil,
+        behind: Int? = nil,
+        dirtyPathCount: Int = 0,
+        trackedChangeCount: Int = 0,
+        untrackedFileCount: Int = 0,
+        conflictedFileCount: Int = 0,
+        isDirty: Bool = false,
+        files: [GitFileChange] = [],
+        mainCheckoutRoot: String? = nil
+    ) {
+        self.branchName = branchName
+        self.headSHA = headSHA
+        self.upstreamRemote = upstreamRemote
+        self.upstreamBranch = upstreamBranch
+        self.ahead = ahead
+        self.behind = behind
+        self.dirtyPathCount = dirtyPathCount
+        self.trackedChangeCount = trackedChangeCount
+        self.untrackedFileCount = untrackedFileCount
+        self.conflictedFileCount = conflictedFileCount
+        self.isDirty = isDirty
+        self.files = files
+        self.mainCheckoutRoot = mainCheckoutRoot
+    }
+}
+
+/// `git.diff` 的请求。范围与输出形态都是结构化字段。
+public struct GitDiffRequest: Codable, Sendable, Equatable {
+    public var paths: [String]
+    public var scope: GitDiffScope
+    /// 比较基点（`<base>...HEAD`）。给定时 scope 不再参与范围选择。
+    public var baseReference: String?
+    /// 单个提交的改动（`<commit>^!`）。
+    public var commitReference: String?
+    public var includePatch: Bool
+    public var includeFileStats: Bool
+    /// patch 上下文行数；nil 用 Core 默认。
+    public var contextLines: Int?
+    public var workingDirectory: String?
+
+    public init(
+        paths: [String] = [],
+        scope: GitDiffScope = .worktree,
+        baseReference: String? = nil,
+        commitReference: String? = nil,
+        includePatch: Bool = true,
+        includeFileStats: Bool = true,
+        contextLines: Int? = nil,
+        workingDirectory: String? = nil
+    ) {
+        self.paths = paths
+        self.scope = scope
+        self.baseReference = baseReference
+        self.commitReference = commitReference
+        self.includePatch = includePatch
+        self.includeFileStats = includeFileStats
+        self.contextLines = contextLines
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// `git.diff` 的返回值。只要统计时可以不要 patch。
+public struct GitDiffResult: Codable, Sendable, Equatable {
+    public var patch: String?
+    public var files: [GitFileChange]
+    /// Core 为本次结果实际执行的 argv 前缀，供 Debug / Inspector 核对。
+    public var argv: [String]
+
+    public init(patch: String? = nil, files: [GitFileChange] = [], argv: [String] = []) {
+        self.patch = patch
+        self.files = files
+        self.argv = argv
+    }
+}
+
+/// 文本型 Git 读结果（diff / log / show / branch 共用一个形状，不各造一个类型）。
+public struct GitTextResult: Codable, Sendable, Equatable {
+    public var text: String
+    /// Core 实际执行的 argv，供 Debug / Inspector 核对参数是否被结构化转换正确。
+    public var argv: [String]
+
+    public init(text: String, argv: [String] = []) {
+        self.text = text
+        self.argv = argv
+    }
+}
+
+/// Git 写操作结果。写操作都是 command，因此随 `CommandReceipt` 返回。
+public struct GitMutationResult: Codable, Sendable, Equatable {
+    public var action: String
+    public var output: String
+    public var risk: String
+    /// mutation coordinator 的修订号：证明这次写确实经过了统一串行化路径。
+    public var mutationRevision: UInt64
+
+    public init(action: String, output: String, risk: String, mutationRevision: UInt64 = 0) {
+        self.action = action
+        self.output = output
+        self.risk = risk
+        self.mutationRevision = mutationRevision
     }
 }
 
@@ -777,6 +1094,24 @@ public protocol LingXiProtocolService: Sendable {
     func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary>
     func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary>
     func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary>
+
+    // MARK: - 10b. Git RPC（契约第十四至十七节）
+    //
+    // 这 10 个方法都是必选项，不给默认实现：默认实现会让 InProcess 编译通过却在其它 transport 上
+    // 静默绕过 transport 层，正是契约第十八节点名的缺口。
+    func gitStatus(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitStatusResult>
+    func gitDiff(envelope: QueryEnvelope<GitDiffRequest>) async throws -> ResponseEnvelope<GitDiffResult>
+    func gitLog(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult>
+    func gitShow(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult>
+    func gitBranch(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult>
+    func gitAdd(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitRestore(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitCheckout(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitSwitch(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitCommit(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitFetch(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitPull(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult>
+    func gitPush(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult>
     func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]>
 
     /// What Core really knows about named tools: whether they are registered,

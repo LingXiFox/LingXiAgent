@@ -112,7 +112,7 @@ import LingXiProtocol
     @Test func providerA_ImplicitPrefixCacheWithReadTokens() async {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let controller = ContextCacheController(
-            contextPager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet()),
+            contextPager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet()),
             scanner: ProjectScanner(root: root),
             maxL1ResidentCharacters: 16000
         )
@@ -151,7 +151,7 @@ import LingXiProtocol
     @Test func providerC_NoCacheTelemetryStillValidatesClientHealthAndDetectsBust() async {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let controller = ContextCacheController(
-            contextPager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet()),
+            contextPager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet()),
             scanner: ProjectScanner(root: root),
             maxL1ResidentCharacters: 16000
         )
@@ -303,7 +303,7 @@ import LingXiProtocol
 
     private func makeTestController() -> ContextCacheController {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         return ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
     }

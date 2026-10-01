@@ -111,7 +111,7 @@ final class TurnProfiler: @unchecked Sendable {
 
     var recordedProviderCalls: [ProviderCallTrace] { providerCalls }
 
-    func recordContext(_ snapshot: L1ContextSnapshot, build: Duration) {
+    func recordContext(_ snapshot: PCoreSnapshot, build: Duration) {
         guard enabled else { return }
         context = ContextDebugSnapshot(
             sessionID: snapshot.sessionID,
@@ -183,7 +183,7 @@ final class TurnProfiler: @unchecked Sendable {
 
     func recordBudget(_ budget: ContextBudget, modelWindow: Int) {
         guard enabled else { return }
-        self.budget = ContextBudgetDebug(modelWindow: modelWindow, outputReserve: budget.reservedOutputTokens, fixedOverhead: budget.fixedOverheadTokens, safetyMargin: budget.safetyMarginTokens, hardInputLimit: budget.hardInputLimit, preferredActive: budget.preferredActiveTokens, highWater: budget.highWaterTokens, lowWater: budget.lowWaterTokens)
+        self.budget = ContextBudgetDebug(modelWindow: modelWindow, outputReserve: budget.reservedOutputTokens, fixedOverhead: budget.protocolOverheadTokens + budget.toolSchemaTokens, safetyMargin: budget.safetyMarginTokens, hardInputLimit: budget.hardInputLimit, preferredActive: budget.preferredActiveTokens, highWater: budget.highWaterTokens, lowWater: budget.lowWaterTokens)
     }
 
     func recordCompaction(_ result: CompactionResult, budget: ContextBudget) {

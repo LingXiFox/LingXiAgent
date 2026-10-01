@@ -89,6 +89,8 @@ public enum ToolCapabilityKind: String, Sendable, Equatable, Hashable, Codable {
     case processExecute
     case repositoryRead
     case repositoryWrite
+    /// 修改外部 remote 仓库。与本地 repositoryWrite 分开，是为了让"本地已授权"不能自动继承成"远程可写"。
+    case repositoryRemoteWrite
     case externalFilesystem
     case networkAccess
     case destructive
@@ -108,7 +110,8 @@ public struct ToolCapability: Sendable, Equatable, Codable {
     }
 
     public var readOnly: Bool {
-        !kinds.contains(.projectWrite) && !kinds.contains(.repositoryWrite) && !kinds.contains(.processExecute) && !kinds.contains(.destructive)
+        !kinds.contains(.projectWrite) && !kinds.contains(.repositoryWrite)
+            && !kinds.contains(.repositoryRemoteWrite) && !kinds.contains(.processExecute) && !kinds.contains(.destructive)
     }
 }
 

@@ -79,7 +79,7 @@ import Foundation
         let file2 = root.appending(path: "FileB.swift")
         try "func beta() { print(\"beta\") }".write(to: file2, atomically: false, encoding: .utf8)
 
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let policy = EffectiveContextPolicy(
             addressableBudget: 100_000,
@@ -126,7 +126,7 @@ import Foundation
         let file = root.appending(path: "Isolated.swift")
         try "struct SecretFact { let x = 42 }".write(to: file, atomically: false, encoding: .utf8)
 
-        let pager = ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet())
+        let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
         let controller = ContextCacheController(
             contextPager: pager,
@@ -161,7 +161,7 @@ import Foundation
             tokenEstimate: 50,
             provenanceIDs: []
         )
-        try? await store.pageOut(page)
+        try? await store.insertLegacyPage(page)
 
         // Query with Chinese greeting that doesn't match any tokens
         let results = await store.search(sessionID: sessionID, query: "你好呀", limit: 3)
@@ -240,7 +240,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: root) }
 
         let controller = ContextCacheController(
-            contextPager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet()),
+            contextPager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet()),
             scanner: ProjectScanner(root: root),
             policy: EffectiveContextPolicy(
                 addressableBudget: 100_000,
@@ -309,7 +309,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: root) }
 
         let controller = ContextCacheController(
-            contextPager: ContextPager(store: ProjectPageStore(), workingSet: L2WorkingSet()),
+            contextPager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet()),
             scanner: ProjectScanner(root: root),
             policy: EffectiveContextPolicy(
                 addressableBudget: 100_000,

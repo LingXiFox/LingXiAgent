@@ -290,148 +290,128 @@ private struct WarmBrowserPane: View {
     }
 }
 
+/// Git 面板的每一次读写都经 Core 的 Git RPC。
+///
+/// 前端不再启动 git：状态、分支、upstream、ahead/behind 来自 `git.status`，
+/// 逐文件行数与 patch 来自同一个 `git.diff`，暂存/提交/远程同步来自结构化 mutation RPC
+/// （契约第八、九、十一节）。这里没有任何 raw git 兜底路径。
 @MainActor final class WarmGitModel: ObservableObject {
-    @Published var status = ""
+    /// Core 解析 porcelain records 后的逐文件明细。
+    @Published var files: [GitFileChange] = []
     @Published var diff = ""
-    @Published var fileStats: [String: (additions: Int, deletions: Int)] = [:]
+    /// 路径 → 行变化。来自 `git.diff` 的 files[]，不是另跑一次 numstat。
+    @Published var fileStats: [String: GitFileChange] = [:]
     @Published var log = ""
     @Published var branch = ""
-    @Published var aheadBehind: String?
+    @Published var ahead: Int?
+    @Published var behind: Int?
+    /// 用户可见的工作区变化徽标唯一来源：去重后的变化路径数（契约第二十节）。
+    @Published var dirtyPathCount: Int?
     @Published var error: String?
     @Published var isBusy = false
-    /// False until git has answered once: an unloaded panel must not claim the
-    /// workspace is clean.
+    /// Core 未回答过一次之前，面板不得声称工作区是干净的。
     @Published private(set) var hasLoaded = false
     @Published private(set) var isDiffLoading = false
 
-    func refresh(at workspace: URL?) {
-        guard let workspace else { return }
-        isBusy = true
-        let path = workspace.path
-        Task {
-            // Four independent git calls, run at once: the panel used to read as
-            // "no changes" while they were still being serialised one by one.
-            async let status = Task.detached { Self.run(["-C", path, "status", "--short", "--branch", "--untracked-files=all"]) }.value
-            async let numstat = Task.detached { Self.run(["-C", path, "diff", "--numstat", "HEAD", "--no-ext-diff"]) }.value
-            async let log = Task.detached { Self.run(["-C", path, "log", "-8", "--format=%h%x09%s"]) }.value
-            async let tracking = Task.detached { Self.run(["-C", path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) }.value
-            async let untracked = Self.untrackedStats(at: path)
+    private var client: LingXiClientVNext?
+    private var workspacePath: String?
 
-            let statusResult = await status
-            let numstatResult = await numstat
-            let logResult = await log
-            let trackingResult = await tracking
-            let untrackedCounts = await untracked
+    var aheadBehind: String? {
+        guard let ahead, let behind else { return nil }
+        return "\u{2191}\(ahead) \u{2193}\(behind)"
+    }
 
-            guard !Task.isCancelled else { return }
-            self.status = statusResult.output
-            self.log = logResult.output
-            var counts = [String: (additions: Int, deletions: Int)](uniqueKeysWithValues:
-                numstatResult.output.split(separator: "\n").compactMap { line -> (String, (additions: Int, deletions: Int))? in
-                    let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-                    guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
-                    return (String(parts[2]), (additions: add, deletions: del))
-                })
-            counts.merge(untrackedCounts) { _, latest in latest }
-            fileStats = counts
-            // "## main...origin/main [ahead 1]" → "main"
-            let head = String((statusResult.output.components(separatedBy: "\n").first ?? "").dropFirst(3))
-            branch = head.components(separatedBy: "...").first?.components(separatedBy: " ").first ?? head
-            if trackingResult.code == 0 {
-                let deltas = trackingResult.output.split(whereSeparator: \.isWhitespace)
-                aheadBehind = deltas.count == 2 ? "↑\(deltas[0]) ↓\(deltas[1])" : nil
-            } else {
-                aheadBehind = nil
-            }
-            error = statusResult.code == 0 ? nil : statusResult.output
-            hasLoaded = true
+    func refresh(at workspace: URL?, client: LingXiClientVNext?) {
+        self.workspacePath = workspace?.path
+        self.client = client
+        guard let client else {
             isBusy = false
+            return
+        }
+        isBusy = true
+        Task {
+            let statusResult = try? await client.git.status()
+            let logResult = try? await client.git.log(limit: 8)
+            guard !Task.isCancelled else { return }
+            if let statusResult {
+                self.files = statusResult.files
+                self.branch = statusResult.branchName ?? ""
+                self.ahead = statusResult.ahead
+                self.behind = statusResult.behind
+                self.dirtyPathCount = statusResult.dirtyPathCount
+                self.error = nil
+                self.hasLoaded = true
+            } else {
+                self.error = "Core 未能读取 Git 状态"
+            }
+            if let logResult { self.log = logResult.text }
+            self.isBusy = false
         }
     }
 
-    /// Patch text is only built when the diff is actually on screen: it costs one
-    /// git process per untracked file.
-    func loadDiff(at workspace: URL?) async {
-        guard let workspace, !isDiffLoading else { return }
+    /// patch 与行数来自同一次 `git.diff`：范围一致，数字描述的正是屏幕上这段 patch。
+    /// 未跟踪文件的行数同样由 Core 算好放进 `git.diff` 的 files[]：前端不读文件、不数行。
+    func loadDiff() async {
+        guard let client, !isDiffLoading else { return }
         isDiffLoading = true
         defer { isDiffLoading = false }
-        let path = workspace.path
-        let tracked = await Task.detached { Self.run(["-C", path, "diff", "HEAD", "--no-ext-diff"]) }.value
-        let patches = await Task.detached { Self.untrackedPatches(at: path) }.value
+        guard let result = try? await client.git.diff(scope: .head) else {
+            error = "Core 未能读取差异"
+            return
+        }
         guard !Task.isCancelled else { return }
-        diff = [tracked.output, patches].filter { !$0.isEmpty }.joined(separator: "\n")
+        diff = result.patch ?? ""
+        fileStats = Dictionary(uniqueKeysWithValues: result.files.map { ($0.path, $0) })
     }
 
-    func action(_ args: [String], at workspace: URL?, onSuccess: (() -> Void)? = nil) {
-        guard let workspace else { return }
+    // MARK: - 写操作
+
+    func stageAll() {
+        mutate("暂存") { _ = try await $0.git.add(all: true) }
+    }
+
+    func unstageAll() {
+        mutate("取消暂存") { _ = try await $0.git.restore(paths: ["."], stagedOnly: true) }
+    }
+
+    func commit(message: String, onSuccess: @escaping () -> Void) {
+        mutate("提交", onSuccess: onSuccess) { _ = try await $0.git.commit(message: message) }
+    }
+
+    func fetch() {
+        mutate("获取") { _ = try await $0.git.fetch() }
+    }
+
+    func pull() {
+        mutate("拉取") { _ = try await $0.git.pull() }
+    }
+
+    func push() {
+        mutate("推送") { _ = try await $0.git.push() }
+    }
+
+    private func mutate(_ label: String, onSuccess: (() -> Void)? = nil, _ operation: @escaping (LingXiClientVNext) async throws -> Void) {
+        guard let client else {
+            error = "尚未连接 Core"
+            return
+        }
         isBusy = true
         Task {
-            let result = await Task.detached { Self.run(["-C", workspace.path] + args) }.value
-            error = result.code == 0 ? nil : result.output
-            if result.code == 0 { onSuccess?() }
-            refresh(at: workspace)
-        }
-    }
-
-    /// Line counts for untracked files, eight at a time: a workspace with
-    /// hundreds of them used to block the whole panel, and firing one git process
-    /// per file at once would only move the stall somewhere worse.
-    nonisolated static func untrackedStats(at workspace: String) async -> [String: (additions: Int, deletions: Int)] {
-        let listing = run(["-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
-        guard listing.code == 0 else { return [:] }
-        let files = listing.output.split(separator: "\0").prefix(400).map(String.init)
-        var collected: [String: (additions: Int, deletions: Int)] = [:]
-        var index = 0
-        while index < files.count {
-            let batch = Array(files[index..<min(index + 8, files.count)])
-            index += batch.count
-            await withTaskGroup(of: (String, (additions: Int, deletions: Int))?.self) { group in
-                for file in batch {
-                    group.addTask {
-                        let stat = run(["-C", workspace, "diff", "--no-index", "--numstat", "--", "/dev/null", file])
-                        let parts = stat.output.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-                        guard parts.count == 3, let add = Int(parts[0]), let del = Int(parts[1]) else { return nil }
-                        return (file, (additions: add, deletions: del))
-                    }
-                }
-                for await entry in group {
-                    if let (path, counts) = entry { collected[path] = counts }
-                }
+            do {
+                _ = try await operation(client)
+                error = nil
+                onSuccess?()
+            } catch let failure as CoreError {
+                // 分叉是预期分支，不是故障：给出可决策的措辞，不掩盖成"命令失败"。
+                error = failure.code == .gitNonFastForward
+                    ? "本地与远端已分叉，无法 fast-forward。请选择 merge 或 rebase 后再拉取。"
+                    : "\(label)失败：\(failure.message)"
+            } catch {
+                self.error = "\(label)失败：\(error.localizedDescription)"
             }
-        }
-        return collected
-    }
-
-    nonisolated static func untrackedPatches(at workspace: String) -> String {
-        let listing = run(["-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
-        guard listing.code == 0 else { return "" }
-        var patches: [String] = []
-        for file in listing.output.split(separator: "\0").prefix(200) {
-            let path = String(file)
-            let patch = run(["-C", workspace, "diff", "--no-index", "--", "/dev/null", path])
-            if patch.code == 1 { patches.append(patch.output) }
-        }
-        return patches.joined(separator: "\n")
-    }
-
-    nonisolated static func run(_ args: [String]) -> (output: String, code: Int32) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = args
-        process.environment = ProcessInfo.processInfo.environment.merging(["GIT_TERMINAL_PROMPT": "0"]) { _, new in new }
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return (String(decoding: data, as: UTF8.self), process.terminationStatus)
-        } catch {
-            return (error.localizedDescription, -1)
+            self.refresh(at: workspacePath.map(URL.init(fileURLWithPath:)), client: client)
         }
     }
-
 }
 
 private struct WarmGitPane: View {
@@ -448,22 +428,20 @@ private struct WarmGitPane: View {
         self.conversation = runtime.conversationModel
     }
     private var workspace: URL? { runtime.workspaceURL }
-    private var changedFiles: [(code: String, path: String)] {
-        git.status.split(separator: "\n").dropFirst().compactMap { line in
-            guard line.count >= 4 else { return nil }
-            return (String(line.prefix(2)), String(line.dropFirst(3)))
-        }
+    /// 行列表直接来自 Core 解析后的 `git.status` files[]：
+    /// 前端不再从 `--short` 文本里切列，也不再自己数脏文件。
+    private var staged: [GitFileChange] {
+        git.files.filter { !$0.isUntracked && !$0.isConflicted && $0.indexStatus != " " }
     }
-    private var staged: [(code: String, path: String)] {
-        changedFiles.filter { $0.code.first != " " && $0.code != "??" }
+    private var unstaged: [GitFileChange] {
+        git.files.filter { $0.isUntracked || $0.isConflicted || $0.worktreeStatus != " " }
     }
-    private var unstaged: [(code: String, path: String)] {
-        changedFiles.filter { $0.code.last != " " || $0.code == "??" }
-    }
+    private var changedFiles: [GitFileChange] { git.files }
 
+    /// Core 的 `git.log` 是 `--oneline`：hash 与 subject 以空格分隔。
     private var commits: [(hash: String, subject: String)] {
-        git.log.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: "\t", maxSplits: 1)
+        git.log.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
+            let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
             guard parts.count == 2 else { return nil }
             return (String(parts[0]), String(parts[1]))
         }
@@ -478,15 +456,28 @@ private struct WarmGitPane: View {
                 Spacer(minLength: LingXiMetrics.Space.sm)
                 if git.isBusy { ProgressView().controlSize(.mini) }
                 if let tracking = git.aheadBehind { Text(tracking).monospacedDigit() }
+                // 徽标只认 Core 的 dirtyPathCount：同一路径 staged + unstaged 只算一个，
+                // 未跟踪目录已按 -uall 展开，ignored 不计（契约第二十节）。
+                if let dirty = git.dirtyPathCount, dirty > 0 {
+                    Text("\(dirty)")
+                        .font(LXType.meta.monospacedDigit())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(LXColor.content, in: Capsule())
+                        .help("\(dirty) 个文件路径存在工作区变化")
+                        .accessibilityLabel("\(dirty) 个工作区变化")
+                }
                 Menu {
-                    Button("刷新") { git.refresh(at: workspace) }
+                    Button("刷新") { git.refresh(at: workspace, client: runtime.client) }
                     Divider()
-                    Button("暂存全部") { git.action(["add", "-A"], at: workspace) }
-                    Button("取消暂存全部") { git.action(["restore", "--staged", "."], at: workspace) }
+                    Button("暂存全部") { git.stageAll() }
+                    Button("取消暂存全部") { git.unstageAll() }
                     Divider()
-                    Button("获取") { git.action(["fetch"], at: workspace) }
-                    Button("拉取") { git.action(["pull", "--ff-only"], at: workspace) }
-                    Button("推送") { git.action(["push"], at: workspace) }
+                    // 远程同步同样是结构化 RPC：fetch 更新远端引用，pull 只允许 fast-forward，
+                    // push 需要 upstream 或显式目标。Core 不 force、不猜目标。
+                    Button("获取") { git.fetch() }
+                    Button("拉取") { git.pull() }
+                    Button("推送") { git.push() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: LXIcon.status))
@@ -523,7 +514,7 @@ private struct WarmGitPane: View {
                     .buttonStyle(LXButtonStyle(.secondary, size: .small))
                     .disabled(staged.isEmpty || waitingForAgentReply || conversation.isGenerating)
                     Button("提交 \(staged.count) 个文件") {
-                        git.action(["commit", "-m", message], at: workspace) { message = "" }
+                        git.commit(message: message) { message = "" }
                     }
                     .buttonStyle(LXButtonStyle(.primary, size: .small))
                     .disabled(staged.isEmpty || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -576,7 +567,7 @@ private struct WarmGitPane: View {
                     }
                     Button(showsDiff ? "收起差异" : "查看差异") {
                         showsDiff.toggle()
-                        if showsDiff { Task { await git.loadDiff(at: workspace) } }
+                        if showsDiff { Task { await git.loadDiff() } }
                     }
                     .buttonStyle(LXButtonStyle(.plain, size: .small))
                     .padding(.vertical, LingXiMetrics.Space.sm)
@@ -586,8 +577,8 @@ private struct WarmGitPane: View {
                 .padding(.horizontal, LingXiMetrics.Space.panelInset)
             }
         }
-        .onAppear { git.refresh(at: workspace) }
-        .onChange(of: workspace) { _, new in git.refresh(at: new) }
+        .onAppear { git.refresh(at: workspace, client: runtime.client) }
+        .onChange(of: workspace) { _, new in git.refresh(at: new, client: runtime.client) }
         .onChange(of: conversation.items) { _, items in
             guard waitingForAgentReply, items.count > replyStartCount else { return }
             guard let reply = items.dropFirst(replyStartCount).compactMap({ item -> String? in
@@ -602,7 +593,7 @@ private struct WarmGitPane: View {
     }
 
     /// Status letter · mono path · `+a −d` counts. No per-type colours.
-    private func fileSection(_ title: String, files: [(code: String, path: String)]) -> some View {
+    private func fileSection(_ title: String, files: [GitFileChange]) -> some View {
         LXSection(title, separated: title != "已暂存") {
             Text("\(files.count)")
         } content: {
@@ -612,8 +603,7 @@ private struct WarmGitPane: View {
             ForEach(files.indices, id: \.self) { index in
                 let file = files[index]
                 HStack(spacing: LingXiMetrics.Space.sm) {
-                    Text(file.code.trimmingCharacters(in: .whitespaces) == "??" ? "?" :
-                            String(title == "已暂存" ? file.code.prefix(1) : file.code.suffix(1)))
+                    Text(file.isUntracked ? "?" : String(title == "已暂存" ? file.indexStatus : file.worktreeStatus))
                         .font(LXType.monoSmall)
                         .foregroundStyle(.secondary)
                         .frame(width: 12, alignment: .leading)
@@ -622,8 +612,9 @@ private struct WarmGitPane: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: LingXiMetrics.Space.sm)
-                    if let counts = git.fileStats[file.path] {
-                        LXDiffCount(additions: counts.additions, deletions: counts.deletions)
+                    // stats 为 nil 表示 Core 判定不了（超大 / 读不到 / 编码不可靠），留空而不是猜 0。
+                    if let stats = git.fileStats[file.path], let additions = stats.additions, let deletions = stats.deletions {
+                        LXDiffCount(additions: additions, deletions: deletions)
                             .font(LXType.meta)
                     }
                 }

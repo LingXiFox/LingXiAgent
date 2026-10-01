@@ -23,6 +23,8 @@ public final class LingXiClientVNext: Sendable {
     public let context: ContextDomainClient
     public let extensionDomain: ExtensionDomainClient
     public let workspace: WorkspaceDomainClient
+    /// Git 只能通过这个 RPC 面操作：结构化参数、统一 mutation 串行化、统一权限身份（契约第十四至十七节）。
+    public let git: GitDomainClient
     public let browser: BrowserDomainClient
     public let terminal: TerminalDomainClient
     public let resource: ResourceDomainClient
@@ -53,6 +55,7 @@ public final class LingXiClientVNext: Sendable {
         self.context = ContextDomainClient(transport: transport)
         self.extensionDomain = ExtensionDomainClient(transport: transport)
         self.workspace = WorkspaceDomainClient(transport: transport)
+        self.git = GitDomainClient(transport: transport)
         self.browser = BrowserDomainClient(transport: transport)
         self.terminal = TerminalDomainClient(transport: transport)
         self.resource = ResourceDomainClient(transport: transport)
@@ -100,9 +103,10 @@ public final class LingXiClientVNext: Sendable {
     public static func stdioCore(
         corePath: String? = nil,
         interactive: Bool = true,
-        handshakeImmediately: Bool = true
+        handshakeImmediately: Bool = true,
+        workingDirectory: URL? = nil
     ) async throws -> LingXiClientVNext {
-        let transport = try VNextStdioTransport(corePath: corePath, interactive: interactive)
+        let transport = try VNextStdioTransport(corePath: corePath, interactive: interactive, workingDirectory: workingDirectory)
         return try await LingXiClientVNext(transport: transport, handshakeImmediately: handshakeImmediately)
     }
 

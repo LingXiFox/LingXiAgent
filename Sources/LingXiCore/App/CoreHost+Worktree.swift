@@ -90,11 +90,12 @@ extension CoreHost {
     }
 
     private func worktreeRepository() async throws -> WorktreeRepository {
-        let listing = try await git(["worktree", "list", "--porcelain"], in: workspaceURL)
-        guard let first = Self.parseWorktreeListing(listing).first else {
+        // 契约第十九节：main checkout root 由 `--git-common-dir` 推导，不能用 `--show-toplevel`
+        // ——后者在 linked worktree 里返回的是当前 worktree，会把管理目录放错地方。
+        guard try await git(["rev-parse", "--is-inside-work-tree"], in: workspaceURL) == "true" else {
             throw CoreError(code: .toolArgumentInvalid, message: "当前工作区不是 Git 仓库，无法使用独立 Worktree")
         }
-        let mainRoot = URL(fileURLWithPath: first.path).standardizedFileURL
+        let mainRoot = try await gitRunner.mainCheckoutRoot()
         let dataRoot = try requireConfigurationStore().dataRoot
         let folder = "\(mainRoot.lastPathComponent)-\(Self.stableHash(mainRoot.path))"
         return WorktreeRepository(mainRoot: mainRoot,
@@ -183,23 +184,9 @@ extension CoreHost {
         return email.isEmpty ? ["-c", "user.name=LingXiAgent", "-c", "user.email=lingxi@localhost"] : []
     }
 
+    /// Worktree 管理不另起 git 执行器：它调用 CoreHost 上唯一的 `GitRunner`（契约第十三节）。
     @discardableResult
     private func git(_ arguments: [String], in directory: URL) async throws -> String {
-        guard let executable = LingXiPlatform.process.resolveExecutable(
-            named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"]) else {
-            throw CoreError(code: .toolNotFound, message: "找不到 git")
-        }
-        var environment = EnvironmentSanitizer.sanitized()
-        environment["GIT_TERMINAL_PROMPT"] = "0"
-        let result = try await runToolProcess(
-            invocation: ToolProcessInvocation(executable: executable, arguments: arguments),
-            cwd: directory, environment: environment, timeoutMilliseconds: 60_000)
-        guard result.exitCode == 0 else {
-            let detail = [result.stderr, result.stdout]
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .first { !$0.isEmpty } ?? "exit \(result.exitCode)"
-            throw CoreError(code: .commandFailed, message: "git \(arguments.first ?? "") 失败：\(detail)")
-        }
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await gitRunner.execute(arguments, in: directory).trimmedStdout
     }
 }

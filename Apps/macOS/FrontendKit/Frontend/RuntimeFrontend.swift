@@ -80,15 +80,14 @@ public final class RuntimeFrontend: ObservableObject {
 
     // MARK: - Connection
 
-    /// Starts a Core for `workspace` (the Core inherits this process's working
-    /// directory as its workspace) and attaches the shared Application store.
+    /// Starts a Core for `workspace`, handing it the directory at spawn time, and attaches the
+    /// shared Application store.
     public func openWorkspace(_ workspace: URL) async {
         await closeWorkspace()
         link = .connecting(workspace: workspace.path)
         workspaceURL = workspace
         do {
-            FileManager.default.changeCurrentDirectoryPath(workspace.path)
-            let client = try await LingXiClientVNext.stdioCore(interactive: true, handshakeImmediately: false)
+            let client = try await LingXiClientVNext.stdioCore(interactive: true, handshakeImmediately: false, workingDirectory: workspace)
             let store = await ApplicationStore(client: client, autoConnect: true)
             self.client = client
             attach(store)
@@ -227,7 +226,7 @@ public final class RuntimeFrontend: ObservableObject {
             subagents: subagents,
             changes: (refreshedDiff ?? state.workspaceDiff).map { CoreProjection.fileChanges(fromUnifiedDiff: $0.diff) } ?? [],
             diffLoaded: (refreshedDiff ?? state.workspaceDiff) != nil,
-            branch: root.flatMap { CoreProjection.gitBranch(at: URL(fileURLWithPath: $0)) },
+            branch: state.currentWorkspace?.gitBranch,
             workspaceRoot: root)
     }
 
@@ -312,10 +311,13 @@ public final class RuntimeFrontend: ObservableObject {
         guard let client, let current = workspaceURL, !isSwitchingWorktree else { return }
         isSwitchingWorktree = true
         defer { isSwitchingWorktree = false }
-        guard let main = Self.mainWorktreeRoot(of: current) else {
+        // main checkout root 由 Core 用 `--git-common-dir` 推导（契约第十九节）；
+        // 前端不再自己跑 `git worktree list`，也不再往 git 传 -C。
+        guard let path = try? await client.git.status().mainCheckoutRoot, !path.isEmpty else {
             worktreeError = "找不到主工作区。"
             return
         }
+        let main = URL(fileURLWithPath: path)
         do {
             try await action?(client, current.lastPathComponent)
             await openWorkspace(main)
@@ -324,22 +326,6 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
-    /// First entry of `git worktree list`: the repository's main checkout.
-    nonisolated static func mainWorktreeRoot(of directory: URL) -> URL? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", directory.path, "worktree", "list", "--porcelain"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0,
-              let line = String(decoding: data, as: UTF8.self).split(separator: "\n").first,
-              line.hasPrefix("worktree ") else { return nil }
-        return URL(fileURLWithPath: String(line.dropFirst("worktree ".count)))
-    }
 
     // MARK: - Actions
 

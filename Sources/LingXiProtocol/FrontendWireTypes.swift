@@ -98,7 +98,7 @@ public extension ToolFamily {
         case .projectWrite: return .fileEdit
         case .externalFilesystem: return .fileEdit
         case .processExecute: return .shell
-        case .repositoryRead, .repositoryWrite: return .git
+        case .repositoryRead, .repositoryWrite, .repositoryRemoteWrite: return .git
         case .networkAccess: return .network
         case .destructive, .userInteraction, .externalService: return nil
         }

@@ -2,9 +2,33 @@ import Foundation
 import Testing
 import LingXiProtocol
 @testable import LingXiCore
+import LingXiClient
 
 @Suite("Branch Prediction Runtime Feed Tests")
 struct BranchPredictionRuntimeTests {
+
+    /// 契约第七节：Branch Prediction 不进 eviction 公式，但 per-session state 的生命周期必须收口，
+    /// 否则长驻进程的预测状态随 Session 数量单调增长。
+    @Test("Session end releases the per-session prediction state")
+    func sessionEndReleasesPredictionState() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = ScriptedFakeProvider(script: [[.textDelta("ok"), .completed(.stop)]])
+        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake")), workspaceRoot: try WorkspaceRoot(path: root.path))
+        await host.start()
+        defer { Task { await host.shutdown() } }
+        let client = LingXiClient.inProcess(endpoint: host)
+        let sessionID = try await client.createSession()
+        let stream = try await client.sendMessage(sessionID: sessionID, content: "small")
+        for try await _ in stream {}
+
+        _ = await BranchPredictionRuntime.shared.record(sessionID: sessionID, action: .directAnswer)
+        #expect(await BranchPredictionRuntime.shared.snapshot(sessionID) != nil)
+
+        _ = try await host.deleteSession(envelope: CommandEnvelope(payload: DeleteSessionRequest(sessionID: sessionID)))
+        #expect(await BranchPredictionRuntime.shared.snapshot(sessionID) == nil, "deleteSession 必须释放 shared runtime 里该 session 的状态")
+    }
 
     @Test("A repeated action produces a hint, and the next identical action scores as a hit")
     func repeatedActionForecastsAndScores() async {

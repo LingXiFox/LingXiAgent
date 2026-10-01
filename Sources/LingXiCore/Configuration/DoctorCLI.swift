@@ -77,11 +77,11 @@ public enum DoctorCLI {
         var gitStatus = "Non-git directory: \(projectRoot.path)"
         let gitDir = projectRoot.appendingPathComponent(".git")
         if FileManager.default.fileExists(atPath: gitDir.path) {
-            let gitExe = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) ?? "/usr/bin/git"
-            let branch = runQuickProcess(executable: gitExe, arguments: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: projectRoot) ?? "unknown"
-            let dirty = runQuickProcess(executable: gitExe, arguments: ["status", "-s"], cwd: projectRoot) ?? ""
-            let dirtyCount = dirty.split(separator: "\n").count
-            gitStatus = "Git repo (branch: \(branch), uncommitted: \(dirtyCount) files)"
+            // 同一执行器 + 同一计数口径：脏文件数是去重后的路径数，不是 `status -s` 的行数（契约第二十节）。
+            if let workspace = try? WorkspaceRoot(path: projectRoot.path),
+               let status = try? await GitRunner(workspace: workspace).status(in: projectRoot) {
+                gitStatus = "Git repo (branch: \(status.branch ?? "unknown"), uncommitted: \(status.dirtyPathCount) paths)"
+            }
         }
 
         // 3. Storage

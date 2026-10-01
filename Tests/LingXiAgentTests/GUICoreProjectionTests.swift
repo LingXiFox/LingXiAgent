@@ -4,6 +4,7 @@ import Testing
 @testable import LingXiApplication
 @testable import LingXiProtocol
 @testable import LingXiFrontendKit
+@testable import LingXiCore
 
 @Suite("GUI: ApplicationState projection and live backend", .serialized)
 struct GUICoreProjectionTests {
@@ -116,8 +117,11 @@ struct GUICoreProjectionTests {
         let files = CoreProjection.fileChanges(fromUnifiedDiff: diff)
         #expect(files.map(\.path) == ["A.swift", "New.swift", "Old.swift"])
         #expect(files.map(\.change) == [.modified, .added, .deleted])
-        #expect(files[0].additions == 2 && files[0].deletions == 1)
-        #expect(files[1].additions == 1 && files[2].deletions == 1)
+        // Each entry owns exactly its own hunk block: the splitter's real job. Line totals are
+        // Core's `--numstat` answer on WorkspaceDiffSummary, never derived from this text here.
+        #expect(files[0].patch.hasPrefix("diff --git a/A.swift b/A.swift"))
+        #expect(!files[0].patch.contains("New.swift"))
+        #expect(files[2].patch.contains("-bye"))
     }
 
     @Test("Permission presets round-trip Core's frozen configurations")
@@ -139,17 +143,24 @@ struct GUICoreProjectionTests {
         #expect(view.state == "paused")
     }
 
-    @Test("Git pane counts and diffs untracked files, including paths with spaces")
-    func untrackedGitDiff() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-git-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        #expect(WarmGitModel.run(["-C", root.path, "init", "-q"]).code == 0)
-        try "hello\n".write(to: root.appendingPathComponent("new file.txt"), atomically: true, encoding: .utf8)
-
-        let counts = await WarmGitModel.untrackedStats(at: root.path)
-        #expect(counts["new file.txt"]?.additions == 1)
-        #expect(WarmGitModel.untrackedPatches(at: root.path).contains("+hello"))
+    /// 未跟踪文件的展开与含空格路径属于 Core 的 porcelain 解析，不再由前端起 git 处理。
+    /// 迁移前这条测试跑的是 `WarmGitModel.untrackedStats`；现在它验证同一份语义所在的正确层。
+    @Test("Core's porcelain parsing expands untracked files, including paths with spaces")
+    func untrackedParsingLivesInCore() {
+        let parsed = GitStatusParse.workingTree([
+            "# branch.oid abc123",
+            "# branch.head main",
+            "? new file.txt",
+            "? dir/another file.txt",
+        ].joined(separator: "\n"))
+        #expect(parsed.untrackedFileCount == 2)
+        #expect(parsed.dirtyPathCount == 2)
+        let paths = Set(parsed.files.map { (file: GitFileChange) in file.path })
+        #expect(paths.contains("new file.txt"), "含空格路径必须完整保留，不能被按空格切错")
+        #expect(paths.contains("dir/another file.txt"))
+        #expect(parsed.files.allSatisfy { $0.isUntracked && $0.indexStatus == "?" })
+        #expect(parsed.headSHA == "abc123")
+        #expect(parsed.branch == "main")
     }
 
     @Test("Runtime diagnostics populate the trace window and export valid JSONL")

@@ -717,7 +717,8 @@ public struct ToolRuntime: Sendable {
                    let q = json["query"] as? String {
                     query = q
                 }
-                let content = try await cacheController.handleSearch(sessionID: sessionID, query: query, activeTask: "", activeFiles: [], limit: 5)
+                let activeTask = await SessionGoalRegistry.shared.goal(sessionID) ?? ""
+                let content = try await cacheController.handleSearch(sessionID: sessionID, query: query, activeTask: activeTask, limit: 5)
                 return ExecutionOutcome(result: ToolResult(callID: call.callID, success: true, content: content, toolName: call.toolID.rawValue), permissionWait: .zero, permissionAsked: false, execution: .zero, toolName: call.toolID.rawValue, resource: query)
             }
             if registry.tool(for: call.toolID) == nil, let mcpPager {
@@ -787,7 +788,8 @@ public struct ToolRuntime: Sendable {
                 let executionStart = clock.now
                 executionStartedAt = executionStart
                 queueDuration = admissionStart.duration(to: executionStart)
-            let mutates = capabilities.contains(.projectWrite) || capabilities.contains(.repositoryWrite) || capabilities.contains(.destructive)
+            let mutates = capabilities.contains(.projectWrite) || capabilities.contains(.repositoryWrite)
+                || capabilities.contains(.repositoryRemoteWrite) || capabilities.contains(.destructive)
             await observer?.executionClaimed(ToolExecutionClaim(mutatesProject: mutates))
             lifecycleTrace?.record(.executorStart)
             let boundRunID = currentRunID.map { RunID($0) }

@@ -1,4 +1,5 @@
 import Foundation
+import LingXiPlatform
 import LingXiProtocol
 
 /// 强类型上下文对象唯一标识符
@@ -46,9 +47,105 @@ public struct ContextObjectID: Sendable, Equatable, Hashable, Codable, CustomStr
         let hashStr = String(format: "%08llx", hash)
         return ContextObjectID(unchecked: "obj_\(cleanTool)_\(cleanCall)_\(hashStr)")
     }
+
+    /// 内容的身份：纯内容寻址，与后端、来源、turn、page-out 次数无关。
+    ///
+    /// 冻结语义（契约「补充冻结：ECoreObjectID 身份」）：
+    /// - 相同 payload + 不同 backend → 相同 ID；
+    /// - 相同 payload + 不同 turn / 不同 occurrence → 允许同一 ID（这是 payload 去重，不是生命周期合并）；
+    /// - sessionID / toolCallID / origin / turn / 保留度等一律不属于对象身份，见 `ECoreReference`。
+    ///
+    /// 采用抗碰撞的 SHA256 而非 FNV-1a：ObjectID 同时承担 payload identity、内容去重与
+    /// Exact Restore 定位，碰撞意味着把错误的 payload 当成正确对象恢复回来，
+    /// 不属于可容忍的普通哈希冲突。摘要件复用平台层权威实现
+    /// （`PlatformCrypto.sha256Hex`：Darwin 走 CryptoKit，其余平台走零依赖的 CompactSHA256），
+    /// 不另写第二套内容哈希。
+    ///
+    /// 权威语义（契约「补充冻结：ECoreObjectID 身份」）：
+    ///
+    ///     ECoreObjectID = SHA256(canonicalPayloadBytes)
+    ///
+    /// 相同 canonical payload → 相同 ID；backend、session、tool/origin/occurrence 一律不影响 ID。
+    public static func identify(content: String) -> ContextObjectID {
+        ContextObjectID(unchecked: "obj_\(PlatformCrypto.sha256Hex(content))")
+    }
+
+    /// 仅供解析改动前落盘的遗留对象（文件名即 ID）。不得用于新写入。
+    public static func legacyToolScoped(toolName: String, callID: ToolCallID, content: String) -> ContextObjectID {
+        generate(toolName: toolName, callID: callID, content: content)
+    }
 }
 
 /// 外部权威观测对象元数据（E-Core Context Object Metadata）
+/// E-Core 对象的来源。见 `Docs/Decisions/PE-Core-Git-Semantics-Freeze-2026-09-30.md` 第八、九节：
+/// E-Core 保存的是「从 P-Core 移出的完整 Context Object」，不限于工具产物，因此身份不能绑死 toolCallID。
+public enum ECoreObjectOrigin: String, Sendable, Equatable, Codable {
+    case toolCall
+    case message
+    case page
+}
+
+/// 一次具体的 P-Core → E-Core 引用关系。
+///
+/// 冻结语义：`ECoreObjectID` 只是内容身份；sessionID、toolCallID、origin、turn、保留度元数据、
+/// page-out 原因、索引摘要统统属于「某一次引用」，因此必须与对象分离。允许多个引用指向同一
+/// objectID（payload 去重），但**不得**因去重而合并、覆盖或跨 session 串用引用的元数据。
+public struct ECoreReference: Sendable, Equatable, Codable {
+    public let referenceID: String
+    public let objectID: ContextObjectID
+    public let sessionID: SessionID
+    public let origin: ECoreObjectOrigin
+    /// 仅工具来源携带；非工具引用不得伪造一个 toolCallID。
+    public let toolCallID: ToolCallID?
+    public let toolName: String?
+    /// 进入 P-Core Index 的轻量摘要。禁止携带完整 payload（契约第一节）。
+    public let summary: String
+    /// 哪一次 Context occurrence 被移出。必须是 occurrence 级标识，不能是 source 级：
+    /// 同一份内容在 Turn 15 与 Turn 40 各被移出一次，是两条引用、一个对象。
+    public let contextOccurrenceID: String
+    /// 第几轮淘汰事件。同一次 page-out 因 I/O 重试必须复用同一 epoch，从而得到同一 referenceID。
+    public let evictionEpoch: Int
+    public let createdTurn: Int?
+    public let pageOutReason: String?
+    public let createdAt: Date
+
+    public init(
+        objectID: ContextObjectID,
+        sessionID: SessionID,
+        origin: ECoreObjectOrigin,
+        contextOccurrenceID: String,
+        evictionEpoch: Int,
+        summary: String,
+        toolCallID: ToolCallID? = nil,
+        toolName: String? = nil,
+        createdTurn: Int? = nil,
+        pageOutReason: String? = nil,
+        createdAt: Date = .now
+    ) {
+        self.objectID = objectID
+        self.sessionID = sessionID
+        self.origin = origin
+        self.contextOccurrenceID = contextOccurrenceID
+        self.evictionEpoch = evictionEpoch
+        self.summary = summary
+        self.toolCallID = toolCallID
+        self.toolName = toolName
+        self.createdTurn = createdTurn
+        self.pageOutReason = pageOutReason
+        self.createdAt = createdAt
+        self.referenceID = ECoreReference.makeReferenceID(
+            sessionID: sessionID, contextOccurrenceID: contextOccurrenceID, evictionEpoch: evictionEpoch
+        )
+    }
+
+    /// 引用身份由 occurrence 决定，不由 payload 身份决定：
+    /// 用 objectID 参与派生会让「同一 occurrence 的内容变化」连带改变引用身份，
+    /// 而同一 occurrence 的重复 page-out（重试）必须幂等地落回同一条引用。
+    public static func makeReferenceID(sessionID: SessionID, contextOccurrenceID: String, evictionEpoch: Int) -> String {
+        "ref_\(PlatformCrypto.sha256Hex("\(sessionID.rawValue)\u{1f}\(contextOccurrenceID)\u{1f}\(evictionEpoch)"))"
+    }
+}
+
 public struct ObservationMetadata: Sendable, Equatable, Codable {
     public let objectID: ContextObjectID
     public let toolCallID: ToolCallID
@@ -58,6 +155,8 @@ public struct ObservationMetadata: Sendable, Equatable, Codable {
     public let totalBytes: Int
     public let createdAt: Date
     public let contentHash: String
+    /// nil 表示写入方未声明来源，按 `.toolCall` 解释（兼容既有对象与磁盘元数据）。
+    public let origin: ECoreObjectOrigin?
 
     public init(
         objectID: ContextObjectID,
@@ -67,7 +166,8 @@ public struct ObservationMetadata: Sendable, Equatable, Codable {
         totalLines: Int,
         totalBytes: Int,
         createdAt: Date = .now,
-        contentHash: String
+        contentHash: String,
+        origin: ECoreObjectOrigin? = nil
     ) {
         self.objectID = objectID
         self.toolCallID = toolCallID
@@ -77,7 +177,11 @@ public struct ObservationMetadata: Sendable, Equatable, Codable {
         self.totalBytes = totalBytes
         self.createdAt = createdAt
         self.contentHash = contentHash
+        self.origin = origin
     }
+
+    /// 是否随 toolCallID 生死。rewind 裁剪只能作用于工具产物。
+    public var isToolArtifact: Bool { origin == nil || origin == .toolCall }
 }
 
 /// 召回切片数据传输对象
@@ -136,6 +240,9 @@ public actor ECoreObjectStore {
     public let configuration: ContextObjectFabricConfiguration
     public let telemetryLogger: ECoreTelemetryLogger
     private var metadataCache: [SessionID: [ContextObjectID: ObservationMetadata]] = [:]
+    /// `eCorePersistenceEnabled == false` 时的 session-scoped 载荷后端。E-Core 是必选逻辑核心，
+    /// 关闭持久化只表示载荷随会话结束消失，不表示 page-out 可以被拒绝或改投他处。
+    private var memoryPayloads: [SessionID: [ContextObjectID: String]] = [:]
     private var heatStates: [SessionID: [ContextObjectID: ECoreHeatState]] = [:]
     private var projectionCounts: [SessionID: [ContextObjectID: Int]] = [:]
     private var cachedMetrics: [SessionID: SessionStorageMetrics] = [:]
@@ -187,7 +294,217 @@ public actor ECoreObjectStore {
             .appendingPathComponent("objects", isDirectory: true)
     }
 
-    /// 旁路存储对象：如果超过阈值且开启了 ecoreStorageEnabled，则持久化到磁盘
+    /// 载荷后端。开关的权威语义是「是否持久化」，不是「是否允许 E-Core」：
+    /// true 走磁盘，false 走 session-scoped 内存。两种情况下 store() 都返回稳定 ECoreObjectID，
+    /// page-out → E-Core → Exact Restore 的生命周期不因该开关改变。
+    private var persistsPayloads: Bool { configuration.eCorePersistenceEnabled }
+
+    private func payloadURL(sessionID: SessionID, objectID: ContextObjectID) -> URL {
+        sessionObjectsDirectory(sessionID: sessionID)
+            .appendingPathComponent("\(objectID.rawValue).txt", isDirectory: false)
+    }
+
+    private func metadataURL(sessionID: SessionID, objectID: ContextObjectID) -> URL {
+        sessionObjectsDirectory(sessionID: sessionID)
+            .appendingPathComponent("\(objectID.rawValue).meta.json", isDirectory: false)
+    }
+
+    /// 调用方必须处于 Fail-Open 保护下：持久化后端的磁盘异常沿现有路径降级。
+    private func writePayload(sessionID: SessionID, objectID: ContextObjectID, content: String, metadata: ObservationMetadata) throws {        guard persistsPayloads else {
+            memoryPayloads[sessionID, default: [:]][objectID] = content
+            return
+        }
+        let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
+        try FileManager.default.createDirectory(at: objectsDir, withIntermediateDirectories: true)
+        let targetURL = payloadURL(sessionID: sessionID, objectID: objectID)
+        if !FileManager.default.fileExists(atPath: targetURL.path) {
+            try content.write(to: targetURL, atomically: false, encoding: .utf8)
+        }
+        try JSONEncoder().encode(metadata).write(to: metadataURL(sessionID: sessionID, objectID: objectID), options: [])
+    }
+
+    private func removePayload(sessionID: SessionID, objectID: ContextObjectID) {
+        memoryPayloads[sessionID]?.removeValue(forKey: objectID)
+        guard persistsPayloads else { return }
+        try? FileManager.default.removeItem(at: payloadURL(sessionID: sessionID, objectID: objectID))
+        try? FileManager.default.removeItem(at: metadataURL(sessionID: sessionID, objectID: objectID))
+    }
+
+    // MARK: - Page-out 引用层（契约「补充冻结：ECoreObjectID 身份」）
+
+    /// 内容级对象记录：只描述 payload 本身。
+    /// sessionID / origin / toolCallID / turn / 摘要 / page-out 原因一律在 `ECoreReference` 上，
+    /// 不得回填到这里 —— 否则内容去重会把不同 occurrence 的生命周期元数据串在一起。
+    private struct ECoreObjectRecord: Codable, Equatable {
+        let objectID: ContextObjectID
+        let totalBytes: Int
+        let totalLines: Int
+        let contentHash: String
+    }
+
+    private var pageOutObjects: [SessionID: [ContextObjectID: ECoreObjectRecord]] = [:]
+    private var pageOutReferences: [SessionID: [String: ECoreReference]] = [:]
+
+    private func referencesDirectory(sessionID: SessionID) -> URL {
+        let safe = sessionID.rawValue.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+        return baseDirectory
+            .appendingPathComponent(safe, isDirectory: true)
+            .appendingPathComponent("references", isDirectory: true)
+    }
+
+    private func referenceURL(sessionID: SessionID, referenceID: String) -> URL {
+        referencesDirectory(sessionID: sessionID)
+            .appendingPathComponent("\(referenceID).json", isDirectory: false)
+    }
+
+    /// P-Core → E-Core 的唯一 page-out 入口：写 payload（内容寻址，天然去重）→ 登记引用 → 返回引用。
+    /// 调用方把返回的 `referenceID` 与 `summary` 留在 P-Core Index 里，不留 payload（契约第一节）。
+    ///
+    /// `contextOccurrenceID` + `evictionEpoch` 是 occurrence 身份：同一内容第二次被移出（不同 epoch）
+    /// 得到新引用，但对象不变；同一次 page-out 重试必须传同一组值以幂等落回同一条引用。
+    public func pageOut(
+        sessionID: SessionID,
+        content: String,
+        origin: ECoreObjectOrigin,
+        contextOccurrenceID: String,
+        evictionEpoch: Int,
+        summary: String,
+        toolCallID: ToolCallID? = nil,
+        toolName: String? = nil,
+        createdTurn: Int? = nil,
+        pageOutReason: String? = nil
+    ) async -> ECoreReference {
+        let objectID = ContextObjectID.identify(content: content)
+        let reference = ECoreReference(
+            objectID: objectID,
+            sessionID: sessionID,
+            origin: origin,
+            contextOccurrenceID: contextOccurrenceID,
+            evictionEpoch: evictionEpoch,
+            summary: summary,
+            toolCallID: toolCallID,
+            toolName: toolName,
+            createdTurn: createdTurn,
+            pageOutReason: pageOutReason
+        )
+
+        let bytes = content.utf8.count
+        let lines = max(1, content.split(separator: "\n", omittingEmptySubsequences: false).count)
+        let record = ECoreObjectRecord(
+            objectID: objectID, totalBytes: bytes, totalLines: lines, contentHash: PlatformCrypto.sha256Hex(content)
+        )
+
+        // Fail-Open：与既有工具产物路径同一口径，磁盘异常降级为内存态，不打断 Agent Loop。
+        if persistsPayloads {
+            do {
+                let dir = referencesDirectory(sessionID: sessionID)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try JSONEncoder().encode(reference).write(to: referenceURL(sessionID: sessionID, referenceID: reference.referenceID), options: [])
+            } catch {
+                FileHandle.standardError.write(Data("[E-CORE WARNING] page-out reference write failed: \(error)\n".utf8))
+            }
+        }
+
+        if pageOutObjects[sessionID]?[objectID] == nil {
+            do {
+                try writePageOutPayload(sessionID: sessionID, objectID: objectID, content: content)
+            } catch {
+                FileHandle.standardError.write(Data("[E-CORE WARNING] page-out payload write failed: \(error)\n".utf8))
+            }
+        }
+        pageOutObjects[sessionID, default: [:]][objectID] = record
+        pageOutReferences[sessionID, default: [:]][reference.referenceID] = reference
+        notifyMutation()
+        return reference
+    }
+
+    /// payload 只在同一 session 内按内容去重存放；跨 session 不共享文件，避免越会话可见。
+    private func writePageOutPayload(sessionID: SessionID, objectID: ContextObjectID, content: String) throws {
+        guard persistsPayloads else {
+            memoryPayloads[sessionID, default: [:]][objectID] = content
+            return
+        }
+        let url = payloadURL(sessionID: sessionID, objectID: objectID)
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        let dir = sessionObjectsDirectory(sessionID: sessionID)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try content.write(to: url, atomically: false, encoding: .utf8)
+    }
+
+    /// Exact Restore 的第一跳：referenceID → 引用。不靠词法或语义检索猜对象是什么（契约第九节）。
+    public func reference(sessionID: SessionID, referenceID: String) async -> ECoreReference? {
+        if let cached = pageOutReferences[sessionID]?[referenceID] {
+            return cached
+        }
+        guard persistsPayloads else { return nil }
+        let url = referenceURL(sessionID: sessionID, referenceID: referenceID)
+        guard let data = try? Data(contentsOf: url),
+              let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data) else { return nil }
+        pageOutReferences[sessionID, default: [:]][referenceID] = loaded
+        return loaded    }
+
+    /// Exact Restore：referenceID → ECoreReference → objectID → 完整不可变 payload。
+    public func restore(sessionID: SessionID, referenceID: String) async throws -> String? {
+        guard let ref = await reference(sessionID: sessionID, referenceID: referenceID) else { return nil }
+        return try await fetch(sessionID: sessionID, objectID: ref.objectID)
+    }
+
+    /// 丢弃引用。只有当该 session 内再无引用指向该 payload 时才回收，
+    /// 这是内容去重之后必须付的代价：删对象不能再由单次引用决定。
+    public func dropReference(sessionID: SessionID, referenceID: String) async {
+        guard let ref = pageOutReferences[sessionID]?[referenceID] else { return }
+        pageOutReferences[sessionID]?.removeValue(forKey: referenceID)
+        if persistsPayloads {
+            try? FileManager.default.removeItem(at: referenceURL(sessionID: sessionID, referenceID: referenceID))
+        }
+        let stillReferenced = pageOutReferences[sessionID]?.values.contains { $0.objectID == ref.objectID } ?? false
+        if !stillReferenced {
+            pageOutObjects[sessionID]?.removeValue(forKey: ref.objectID)
+            memoryPayloads[sessionID]?.removeValue(forKey: ref.objectID)
+            if persistsPayloads {
+                try? FileManager.default.removeItem(at: payloadURL(sessionID: sessionID, objectID: ref.objectID))
+            }
+        }
+        notifyMutation()
+    }
+
+    /// rewind 之后，批次证据这类工具来源的 page-out 引用必须跟着 call 一起消失，
+    /// 否则模型会召回一份已经没有对应 Tool Call 的历史证据。非工具来源（Message / page）不属于
+    /// 任何 tool call，一律留下，否则 §9 的 Exact Restore 会在一次 rewind 之后静默失效。
+    private func dropToolReferences(sessionID: SessionID, keepingToolCallIDs: Set<ToolCallID>) async {
+        for ref in await references(sessionID: sessionID) {
+            guard ref.origin == .toolCall, let callID = ref.toolCallID else { continue }
+            guard !keepingToolCallIDs.contains(callID) else { continue }
+            await dropReference(sessionID: sessionID, referenceID: ref.referenceID)
+        }
+    }
+
+    /// 该 session 的全部引用。重启后内存表是空的，而 P-Core Index 每轮都要从引用重建，
+    /// 所以持久化后端必须能按目录补齐 —— 否则冷启动后 Index 会凭空消失。
+    public func references(sessionID: SessionID) async -> [ECoreReference] {
+        if persistsPayloads {
+            let dir = referencesDirectory(sessionID: sessionID)
+            if let files = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ) {
+                for url in files where url.lastPathComponent.hasSuffix(".json") {
+                    let referenceID = url.deletingPathExtension().lastPathComponent
+                    if pageOutReferences[sessionID]?[referenceID] != nil { continue }
+                    guard let data = try? Data(contentsOf: url),
+                          let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data) else { continue }
+                    pageOutReferences[sessionID, default: [:]][referenceID] = loaded
+                }
+            }
+        }
+        return Array((pageOutReferences[sessionID] ?? [:]).values.sorted {
+            if $0.evictionEpoch != $1.evictionEpoch { return $0.evictionEpoch > $1.evictionEpoch }
+            if $0.createdTurn != $1.createdTurn { return ($0.createdTurn ?? 0) > ($1.createdTurn ?? 0) }
+            return $0.referenceID < $1.referenceID
+        })
+    }
+
+    /// 旁路存储对象：超过阈值（或 force）则写入 E-Core 后端。
+    /// 注意这里不存在「E-Core 被关闭」的状态 —— `eCorePersistenceEnabled` 只切换持久化后端。
     @discardableResult
     public func store(
         sessionID: SessionID,
@@ -197,7 +514,6 @@ public actor ECoreObjectStore {
         contentType: String = "text/plain",
         force: Bool = false
     ) async -> ObservationMetadata? {
-        guard configuration.ecoreStorageEnabled else { return nil }
         let byteCount = content.utf8.count
         guard force || byteCount >= configuration.objectizationThreshold else {
             return nil
@@ -234,20 +550,9 @@ public actor ECoreObjectStore {
             contentHash: contentHash
         )
 
-        // Fail-Open 磁盘写入
+        // Fail-Open 写入：后端由持久化开关选择，两种后端都在这个 do 的降级保护之内
         do {
-            let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
-            try FileManager.default.createDirectory(at: objectsDir, withIntermediateDirectories: true)
-
-            let targetURL = objectsDir.appendingPathComponent("\(objectID.rawValue).txt", isDirectory: false)
-            let metaURL = objectsDir.appendingPathComponent("\(objectID.rawValue).meta.json", isDirectory: false)
-
-            if !FileManager.default.fileExists(atPath: targetURL.path) {
-                try content.write(to: targetURL, atomically: false, encoding: .utf8)
-            }
-
-            let metaData = try JSONEncoder().encode(metadata)
-            try metaData.write(to: metaURL, options: [])
+            try writePayload(sessionID: sessionID, objectID: objectID, content: content, metadata: metadata)
 
             if metadataCache[sessionID] == nil {
                 metadataCache[sessionID] = [:]
@@ -371,8 +676,11 @@ public actor ECoreObjectStore {
 
     /// 获取完整对象内容
     public func fetch(sessionID: SessionID, objectID: ContextObjectID) async throws -> String? {
-        let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
-        let fileURL = objectsDir.appendingPathComponent("\(objectID.rawValue).txt", isDirectory: false)
+        if let inMemory = memoryPayloads[sessionID]?[objectID] {
+            return inMemory
+        }
+        guard persistsPayloads else { return nil }
+        let fileURL = payloadURL(sessionID: sessionID, objectID: objectID)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return nil
         }
@@ -555,9 +863,9 @@ public actor ECoreObjectStore {
 
     /// 检查对象是否存在
     public func hasObject(sessionID: SessionID, objectID: ContextObjectID) async -> Bool {
-        let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
-        let fileURL = objectsDir.appendingPathComponent("\(objectID.rawValue).txt", isDirectory: false)
-        return FileManager.default.fileExists(atPath: fileURL.path)
+        if memoryPayloads[sessionID]?[objectID] != nil { return true }
+        guard persistsPayloads else { return false }
+        return FileManager.default.fileExists(atPath: payloadURL(sessionID: sessionID, objectID: objectID).path)
     }
 
     /// 列出指定会话下所有沉淀的 E-Core 观测对象元数据
@@ -622,10 +930,40 @@ public actor ECoreObjectStore {
         return Array(matches.prefix(limit).map(\.meta))
     }
 
+    /// 语义召回：query → page-out 引用的 summary（与 P-Core Index 同一份 metadata）。
+    /// 命中后由调用方按 referenceID 走 Exact Restore 取载荷，这里不返回 payload。
+    public func searchReferences(sessionID: SessionID, query: String, limit: Int) async -> [ECoreReference] {
+        let terms = query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard !terms.isEmpty else { return [] }
+        let scored = await references(sessionID: sessionID).compactMap { reference -> (ECoreReference, Int)? in
+            let haystack = (reference.summary + " " + (reference.toolName ?? "") + " " + reference.objectID.rawValue).lowercased()
+            let hits = terms.reduce(0) { $0 + (haystack.contains($1) ? 1 : 0) }
+            return hits > 0 ? (reference, hits) : nil
+        }
+        return scored.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            return lhs.0.referenceID < rhs.0.referenceID
+        }.prefix(max(0, limit)).map(\.0)
+    }
+
     /// 依据保留的 ToolCallIDs 裁剪废弃的观测对象文件与缓存（用于撤回或会话状态协同）
     public func prune(sessionID: SessionID, keepingToolCallIDs: Set<ToolCallID>) async {
         if keepingToolCallIDs.isEmpty {
             await cleanSession(sessionID: sessionID)
+            return
+        }
+        await dropToolReferences(sessionID: sessionID, keepingToolCallIDs: keepingToolCallIDs)
+        let pageOutObjectIDs = Set(await references(sessionID: sessionID).map(\.objectID))
+        // 内存后端没有可枚举的目录，改按元数据缓存裁剪；规则一致：只裁工具产物。
+        guard persistsPayloads else {
+            for (objID, meta) in (metadataCache[sessionID] ?? [:])
+            where meta.isToolArtifact && !keepingToolCallIDs.contains(meta.toolCallID) && !pageOutObjectIDs.contains(objID) {
+                removePayload(sessionID: sessionID, objectID: objID)
+                metadataCache[sessionID]?.removeValue(forKey: objID)
+                heatStates[sessionID]?.removeValue(forKey: objID)
+                projectionCounts[sessionID]?.removeValue(forKey: objID)
+            }
+            notifyMutation()
             return
         }
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
@@ -639,7 +977,12 @@ public actor ECoreObjectStore {
             let baseName = url.deletingPathExtension().deletingPathExtension().lastPathComponent
             guard let objID = try? ContextObjectID(baseName),
                   let meta = await metadata(sessionID: sessionID, objectID: objID) else { continue }
-            if !keepingToolCallIDs.contains(meta.toolCallID) {
+            // 只有工具产物随 toolCallID 生死。P-Core page-out 的历史 Message / page 不属于任何
+            // tool call，若一并裁剪，§9 要求的 Exact Restore 会在一次 rewind 之后静默失效。
+            // 内容寻址让工具产物可能与某条 page-out 引用共享同一个 payload 文件，此时文件必须留下。
+            if meta.isToolArtifact,
+               !keepingToolCallIDs.contains(meta.toolCallID),
+               !pageOutObjectIDs.contains(objID) {
                 metadataCache[sessionID]?.removeValue(forKey: objID)
                 heatStates[sessionID]?.removeValue(forKey: objID)
                 projectionCounts[sessionID]?.removeValue(forKey: objID)
@@ -668,8 +1011,12 @@ public actor ECoreObjectStore {
         heatStates.removeValue(forKey: sessionID)
         projectionCounts.removeValue(forKey: sessionID)
         cachedMetrics.removeValue(forKey: sessionID)
+        memoryPayloads.removeValue(forKey: sessionID)
+        pageOutObjects.removeValue(forKey: sessionID)
+        pageOutReferences.removeValue(forKey: sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
         try? FileManager.default.removeItem(at: objectsDir)
+        try? FileManager.default.removeItem(at: referencesDirectory(sessionID: sessionID))
         notifyMutation()
     }
 

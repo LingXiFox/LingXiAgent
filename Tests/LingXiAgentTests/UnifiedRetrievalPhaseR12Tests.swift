@@ -266,7 +266,7 @@ struct UnifiedRetrievalPhaseR12Tests {
                 indexableText: """
                 public actor ECoreObjectStore {
                     public func store(sessionID: SessionID, toolCallID: ToolCallID, toolName: String, content: String) async -> ObservationMetadata? {
-                        // 旁路存储对象：如果超过阈值且开启了 ecoreStorageEnabled，则持久化大工具执行输出到磁盘
+                        // 旁路存储对象：如果超过阈值且开启了 eCorePersistenceEnabled，则持久化大工具执行输出到磁盘
                         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
                         try? data.write(to: targetFile)
                     }

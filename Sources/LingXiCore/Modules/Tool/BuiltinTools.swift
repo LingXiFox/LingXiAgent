@@ -1374,38 +1374,45 @@ public struct ShellTool: ToolExecutor {
     }
 }
 
-public enum GitAction: String, Codable, Sendable, CaseIterable {
-    case status, diff, log, show, branch, add, restore, checkout, `switch`, commit
-}
+/// Agent 侧 git 入口。argv 构造、风险分类与进程执行全部复用 `GitRunner`（契约第十三节：
+/// Git 不建立第二套执行引擎），本类型只负责把 Tool 参数映射成结构化 `GitRequest`。
+struct GitToolCallArguments: Decodable {
+    let action: GitAction?
+    let arguments: [String]?
+    let cwd: String?
+    let paths: [String]?
+    let reference: String?
+    let branch: String?
+    let message: String?
+    let limit: Int?
 
-private func gitCommand(_ input: GitArguments) throws -> (GitAction, [String]) {
-    if let action = input.action {
-        switch action {
-        case .status: return (action, ["status", "--short"])
-        case .diff: return (action, ["diff", "--"] + (input.paths ?? []))
-        case .log: return (action, ["log", "--oneline", "-n", String(min(max(input.limit ?? 10, 1), 100))])
-        case .show: return (action, ["show", input.reference ?? "HEAD"])
-        case .branch: return (action, input.branch.map { ["branch", $0] } ?? ["branch"])
-        case .add: return (action, ["add", "--"] + (input.paths ?? []))
-        case .restore: return (action, ["restore", "--"] + (input.paths ?? []))
-        case .checkout: guard let reference = input.reference else { throw CoreError(code: .toolArgumentInvalid, message: "checkout 需要 reference") }; return (action, ["checkout", reference])
-        case .switch: guard let branch = input.branch else { throw CoreError(code: .toolArgumentInvalid, message: "switch 需要 branch") }; return (action, ["switch", branch])
-        case .commit: guard let message = input.message, !message.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "commit 需要 message") }; return (action, ["commit", "-m", message])
+    /// 结构化 action 是权威入口；legacy `arguments` 只兼容只读调用，且不接受仓库定位参数。
+    func toRequest() throws -> GitRequest {
+        if let action {
+            return GitRequest(
+                action: action,
+                paths: paths ?? [],
+                reference: reference,
+                branch: branch,
+                message: message,
+                limit: limit,
+                workingDirectory: cwd
+            )
         }
+        guard let legacy = arguments, let command = legacy.first, let action = GitAction(rawValue: command) else {
+            throw CoreError(code: .toolArgumentInvalid, message: "git 需要受支持的 action")
+        }
+        guard [.status, .diff, .log, .show, .branch].contains(action),
+              !legacy.contains(where: { GitRequest.forbiddenArguments.contains($0) }) else {
+            throw CoreError(code: .toolArgumentInvalid, message: "git 仅支持结构化 action")
+        }
+        return GitRequest(action: action, paths: Array(legacy.dropFirst()), workingDirectory: cwd)
     }
-    guard let legacy = input.arguments, let command = legacy.first, let action = GitAction(rawValue: command) else {
-        throw CoreError(code: .toolArgumentInvalid, message: "git 需要受支持的 action")
-    }
-    // Compatibility is intentionally limited to read-only legacy invocations.
-    guard [.status, .diff, .log, .show].contains(action), !legacy.dropFirst().contains(where: { $0 == "-C" || $0 == "--git-dir" || $0 == "--work-tree" }) else {
-        throw CoreError(code: .toolArgumentInvalid, message: "git 仅支持结构化 action")
-    }
-    return (action, legacy)
 }
 
 public struct GitTool: ToolExecutor {
-    private let workspace: WorkspaceRoot
-    public init(workspace: WorkspaceRoot) { self.workspace = workspace }
+    private let runner: GitRunner
+    public init(workspace: WorkspaceRoot) { self.runner = GitRunner(workspace: workspace) }
     public let definition = ToolDefinition(
         id: ToolID("git"), description: "Run an allow-listed structured git action in the workspace.",
         inputSchema: ToolInputSchema(properties: [
@@ -1420,28 +1427,29 @@ public struct GitTool: ToolExecutor {
         ], required: []), capability: ToolCapability([.repositoryRead])
     )
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
-        let input: GitArguments = try decodeArguments(arguments)
-        return try cwd(input.cwd, workspace: workspace, profile: profile).path
+        let input: GitToolCallArguments = try decodeArguments(arguments)
+        return try runner.directory(for: input.cwd, profile: profile).path
     }
     public func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> {
-        let input: GitArguments = try decodeArguments(arguments)
-        let (action, _) = try gitCommand(input)
-        var result: Set<ToolCapabilityKind> = [.status, .diff, .log, .show].contains(action) || action == .branch && input.branch == nil ? [.repositoryRead] : [.repositoryWrite]
-        if action == .restore || action == .checkout || action == .switch { result.insert(.destructive) }
-        return result
+        let input: GitToolCallArguments = try decodeArguments(arguments)
+        let request = try input.toRequest()
+        // 能力由 GitRiskPolicy 单点决定；Agent 侧不得自己映射一套（契约第十六节）。
+        return GitRiskPolicy.capabilities(for: request)
     }
     public func execute(arguments: String, profile: ExecutionProfile) async throws -> String {
-        let input: GitArguments = try decodeArguments(arguments)
-        _ = try capabilities(for: arguments, profile: profile)
-        let (_, command) = try gitCommand(input)
-        let directory = try cwd(input.cwd, workspace: workspace, profile: profile)
-        guard let gitExecutable = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/Library/Developer/CommandLineTools/usr/bin", "/usr/bin", "/usr/local/bin"]) else {
-            throw CoreError(code: .gitError, message: "未找到可执行的 git 命令")
+        let input: GitToolCallArguments = try decodeArguments(arguments)
+        let request = try input.toRequest()
+        // legacy argv 已经在 toRequest 里限定为只读白名单，这里直接按原 argv 执行。
+        let argv: [String]
+        if input.action == nil, let legacy = input.arguments {
+            argv = Array(legacy.dropFirst())
+        } else {
+            argv = try request.argv()
         }
-        let setup = try processSetup(executable: gitExecutable, arguments: command, workspace: workspace, cwd: directory, profile: profile)
-        let result = try await runToolProcess(invocation: setup.0, cwd: directory, environment: setup.1, timeoutMilliseconds: 60_000, lifecycleTrace: ToolExecutionContext.lifecycleTrace)
-        guard result.exitCode == 0 else { throw CoreError(code: .gitError, message: try json(result)) }
-        return try json(result)
+        let result = try await runner.execute(argv, in: try runner.directory(for: request.workingDirectory, profile: profile))
+        // 输出形状与迁移前的 CommandResult 编码保持一致，模型侧与测试无需同时改。
+        struct Output: Encodable { let exitCode: Int; let stderr: String; let stdout: String }
+        return try json(Output(exitCode: Int(result.exitCode), stderr: result.stderr, stdout: result.stdout))
     }
 }
 
@@ -1845,8 +1853,7 @@ package struct ContextRetrieveTool: ToolExecutor {
         return try await cacheController.handleSearch(
             sessionID: sessionID,
             query: input.query,
-            activeTask: "",
-            activeFiles: [],
+            activeTask: await SessionGoalRegistry.shared.goal(sessionID) ?? "",
             limit: limit
         )
     }

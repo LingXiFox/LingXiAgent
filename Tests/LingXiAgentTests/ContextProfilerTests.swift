@@ -14,7 +14,7 @@ struct ContextProfilerTests {
         session.append(message("u", .user, [.text("hello")]))
         session.append(message("a", .assistant, [.toolCall(call)]))
         session.append(message("t", .tool, [.toolResult(ToolResult(callID: call.callID, success: true, content: "LingXiAgent"))]))
-        let engine = L1ContextEngine(policy: L1ContextPolicy(systemContext: "system"))
+        let engine = PCoreContextEngine(policy: PCorePolicy(systemContext: "system"))
         let first = await engine.snapshot(for: session)
         session.append(message("final", .assistant, [.text("answer")]))
         let second = await engine.snapshot(for: session)
@@ -31,7 +31,7 @@ struct ContextProfilerTests {
     }
 
     @Test func l1RevisionsAreSessionIsolated() async {
-        let engine = L1ContextEngine()
+        let engine = PCoreContextEngine()
         let a = Session(id: SessionID("a"), createdAt: Date())
         let b = Session(id: SessionID("b"), createdAt: Date())
         #expect(await engine.snapshot(for: a).revision == 1)
@@ -54,7 +54,7 @@ struct ContextProfilerTests {
         session.append(message("t", .tool, [.toolResult(ToolResult(callID: ToolCallID("c"), success: true, content: "already read"))]))
         let page = ContextPage(projectRoot: "/project", path: "Sources/Tool.swift", startLine: 1, endLine: 1, content: "project context")
         let duplicate = ContextPage(projectRoot: "/project", path: "README.md", startLine: 1, endLine: 1, content: "already read")
-        let snapshot = await L1ContextEngine().snapshot(for: session, projectPages: [page, page, duplicate])
+        let snapshot = await PCoreContextEngine().snapshot(for: session, projectPages: [page, page, duplicate])
         #expect(snapshot.metrics.projectPageCount == 1)
         #expect(snapshot.metrics.projectCharacterCount == page.characterCount)
         #expect(snapshot.entries.last?.source == .projectPage)

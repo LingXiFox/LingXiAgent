@@ -11,7 +11,7 @@ import LingXiProtocol
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             objectizationThreshold: 1000,
             heatTrackingEnabled: false
         )
@@ -64,7 +64,7 @@ import LingXiProtocol
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             objectizationThreshold: 1000,
             heatTrackingEnabled: false
         )
@@ -116,7 +116,7 @@ import LingXiProtocol
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             objectizationThreshold: 1000,
             heatTrackingEnabled: false
         )
@@ -270,7 +270,7 @@ import LingXiProtocol
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             observationProjectionEnabled: true,
             objectizationThreshold: 100,
             heatTrackingEnabled: false

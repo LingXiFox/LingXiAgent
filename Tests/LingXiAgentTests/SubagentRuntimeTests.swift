@@ -651,9 +651,9 @@ struct SubagentRuntimeTests {
     @Test func budgetProfileOverrideDoesNotAlterPhysicalHardLimit() {
         let planner = ContextBudgetPlanner()
         let profile = ModelContextProfile(contextWindowTokens: 128_000, maxOutputTokens: 4_096, recommendedOutputReserveTokens: 4_096)
-        let originalBudget = planner.plan(profile: profile, toolTokens: 1_000)
+        let originalBudget = planner.plan(profile: profile, toolSchemaTokens: 1_000)
         let overriddenPlanner = planner.with(preferredActiveTokens: 500)
-        let overriddenBudget = overriddenPlanner.plan(profile: profile, toolTokens: 1_000)
+        let overriddenBudget = overriddenPlanner.plan(profile: profile, toolSchemaTokens: 1_000)
 
         #expect(overriddenBudget.hardInputLimit == originalBudget.hardInputLimit)
         #expect(overriddenBudget.preferredActiveTokens == 500)

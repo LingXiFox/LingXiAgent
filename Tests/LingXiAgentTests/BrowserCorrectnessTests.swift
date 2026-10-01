@@ -208,10 +208,11 @@ struct BrowserCorrectnessTests {
         let snap = try await client.snapshot(sessionID: sessionID, includeScreenshot: false)
         #expect(snap.screenshotBlobRef == nil)
 
-        // 按需 capture：正常调用
+        // 按需 capture：mock 宿主没有真实页面，因此"无图像"才是诚实结果。
+        // 真模式下同样的 (nil, nil) 已被 BrowserHostClient.capture 拒绝为成功，只能抛错。
         let (path, base64) = try await client.capture(sessionID: sessionID)
         #expect(path == nil)
-        #expect(base64 == nil || base64 != nil)
+        #expect(base64 == nil, "a mock host has no page to screenshot; an empty capture is honest only in mock mode")
 
         try await client.closeSession(sessionID: sessionID)
     }

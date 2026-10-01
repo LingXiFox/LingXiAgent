@@ -2,17 +2,17 @@ import Foundation
 import LingXiProtocol
 
 /// L2 是有字符上限的 LRU 工作集，页面超出上限时只保留在 L3。
-public actor L2WorkingSet {
+public actor RecallWorkingSet {
     private let characterBudget: Int
-    private let policy: L2WorkingSetPolicy
+    private let policy: WorkingSetPolicy
     private let rankingPolicy: ContextPageRankingPolicy
-    private var entries: [String: L2WorkingSetEntry] = [:]
+    private var entries: [String: WorkingSetEntry] = [:]
     private var characterCount = 0
     private var clock: UInt64 = 0
 
     public init(
         characterBudget: Int = 48 * 1024,
-        policy: L2WorkingSetPolicy = L2WorkingSetPolicy(),
+        policy: WorkingSetPolicy = WorkingSetPolicy(),
         rankingPolicy: ContextPageRankingPolicy = ContextPageRankingPolicy()
     ) {
         self.characterBudget = max(0, characterBudget)
@@ -44,7 +44,7 @@ public actor L2WorkingSet {
     }
 
     @discardableResult
-    public func promote(_ pages: [ContextPage], queryRelevance: Double = 0, taskAffinity: Double = 0, explicitPin: Bool = false) -> L2PromotionResult {
+    public func promote(_ pages: [ContextPage], queryRelevance: Double = 0, taskAffinity: Double = 0, explicitPin: Bool = false) -> WorkingSetPromotionResult {
         var admitted: [ContextPage] = []
         var evicted: [ContextPage] = []
         var seen = Set<String>()
@@ -57,11 +57,11 @@ public actor L2WorkingSet {
                 characterCount -= victim.page.characterCount
                 evicted.append(victim.page)
             }
-            entries[page.id] = L2WorkingSetEntry(page: page, lastUsed: nextClock(), useCount: 1, queryRelevance: queryRelevance, taskAffinity: taskAffinity, explicitPin: explicitPin)
+            entries[page.id] = WorkingSetEntry(page: page, lastUsed: nextClock(), useCount: 1, queryRelevance: queryRelevance, taskAffinity: taskAffinity, explicitPin: explicitPin)
             characterCount += page.characterCount
             admitted.append(page)
         }
-        return L2PromotionResult(admitted: admitted, evicted: evicted)
+        return WorkingSetPromotionResult(admitted: admitted, evicted: evicted)
     }
 
     public func touch(_ pageIDs: [String]) {
@@ -88,8 +88,8 @@ public actor L2WorkingSet {
         invalidate(entries.values.filter { $0.page.projectRoot == projectID }.map { $0.page.id })
     }
 
-    public func metrics() -> L2WorkingSetMetrics {
-        L2WorkingSetMetrics(pageCount: entries.count, characterCount: characterCount)
+    public func metrics() -> WorkingSetMetrics {
+        WorkingSetMetrics(pageCount: entries.count, characterCount: characterCount)
     }
 
     private func nextClock() -> UInt64 {
@@ -102,7 +102,7 @@ public actor L2WorkingSet {
 /// 将确定性 L3 查询结果按项目预算装配为模型可用上下文，并维护 L2 命中统计。
 public actor ContextPager {
     private let store: ProjectPageStore
-    private let workingSet: L2WorkingSet
+    private let workingSet: RecallWorkingSet
     private let projectCharacterBudget: Int
     private var hits = 0
     private var misses = 0
@@ -152,7 +152,7 @@ public actor ContextPager {
     private var referenceResolutionMilliseconds = 0.0
     private var referenceExpansionMilliseconds = 0.0
 
-    public init(store: ProjectPageStore, workingSet: L2WorkingSet, projectCharacterBudget: Int = 48 * 1024) {
+    public init(store: ProjectPageStore, workingSet: RecallWorkingSet, projectCharacterBudget: Int = 48 * 1024) {
         self.store = store
         self.workingSet = workingSet
         self.projectCharacterBudget = max(0, projectCharacterBudget)

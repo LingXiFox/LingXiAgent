@@ -187,6 +187,18 @@ public final class BrowserHostClient: @unchecked Sendable {
 
         let handshake = try JSONDecoder().decode(BrowserHostHandshakeResult.self, from: resData)
 
+        // The host reports which mode it actually started in. Without this check a host that came
+        // up as `mock` would satisfy a `real` client as long as its Playwright flag happened to be
+        // stale or absent, and every later call would be served by the fake page.
+        if let reported = handshake.mode, reported != expectedMode.rawValue {
+            throw InteractionError.capability(
+                .featureUnsupported(
+                    feature: "BrowserHost",
+                    reason: "Sidecar handshake reported mode '\(reported)' but this client requires '\(expectedMode.rawValue)'"
+                )
+            )
+        }
+
         if expectedMode == .real && !handshake.playwrightAvailable {
             throw InteractionError.capability(
                 .featureUnsupported(
@@ -329,6 +341,19 @@ public final class BrowserHostClient: @unchecked Sendable {
         }
         let path = obj["path"] as? String
         let base64 = obj["screenshotBase64"] as? String
+        // BrowserCapture's contract says exactly one side carries the image. In real mode a host
+        // that answers with neither did not "have nothing to show" -- it produced no capture and
+        // reported it as success, and returning (nil, nil) here let CoreHost assemble an envelope
+        // the front end renders as a completed screenshot. Mock mode is the honest exception: there
+        // is no page, so there is no image, and the mode has already been declared and verified.
+        if expectedMode == .real, path == nil, base64 == nil {
+            throw InteractionError.capability(
+                .featureUnsupported(
+                    feature: "BrowserHost.capture",
+                    reason: "Host reported a successful capture with neither a file path nor image bytes"
+                )
+            )
+        }
         return (path, base64)
     }
 

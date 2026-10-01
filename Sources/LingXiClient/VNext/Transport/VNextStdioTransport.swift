@@ -98,14 +98,18 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     private var parentWriteEndsClosed = false
     public let authorizationContext: ContentAuthorizationContext = .anonymous
 
-    public init(corePath: String? = nil, interactive: Bool = true, timeoutSeconds: Int? = nil) throws {
+    public init(corePath: String? = nil, interactive: Bool = true, timeoutSeconds: Int? = nil, workingDirectory: URL? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: Self.resolveCorePath(corePath))
         process.arguments = ["--vnext"]
+        // The child's working directory is set where the child is created. A caller that instead
+        // calls FileManager.changeCurrentDirectoryPath before spawning mutates the whole host
+        // process -- including the GUI that owns it -- and leaves it changed if the spawn fails.
+        process.currentDirectoryURL = workingDirectory
         if interactive {
             process.environment = ProcessInfo.processInfo.environment.merging(["LINGXI_INTERACTIVE": "1"]) { _, new in new }
         }
-        Self.trace("process.run.begin path=\(process.executableURL?.path ?? "")")
+        Self.trace("process.run.begin path=\(process.executableURL?.path ?? "") cwd=\(workingDirectory?.path ?? "<inherited>")")
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         process.standardInput = inputPipe
@@ -165,9 +169,18 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
         debug("connect.begin")
         updateState(.connecting)
         updateState(.handshaking)
-        _ = try decoder.decode(ResponseEnvelope<RuntimeInfo>.self, from: try await send(method: "runtime.info", payload: try encoder.encode(VoidResult())))
-        updateState(.connected(version: .current, capabilities: RuntimeCapabilities()))
-        debug("connect.end")
+        let info = try decoder.decode(ResponseEnvelope<RuntimeInfo>.self, from: try await send(method: "runtime.info", payload: try encoder.encode(VoidResult()))).payload
+        // 能力必须由连上的那个 Core 宣告。此前这里直接 `RuntimeCapabilities()`（本进程的编译期默认值），
+        // 于是 stdio 客户端会宣称支持 Core 其实没有的 feature —— 契约第十七节禁止的这种"半声明"。
+        let capabilities: RuntimeCapabilities
+        do {
+            capabilities = try decoder.decode(ResponseEnvelope<RuntimeCapabilities>.self, from: try await send(method: "runtime.capabilities", payload: try encoder.encode(VoidResult()))).payload
+        } catch {
+            debug("connect.capabilities.unavailable: \(error)")
+            throw CoreError(code: .transport, message: "Core 未提供能力声明，无法确定可用 feature 集合: \(error)")
+        }
+        updateState(.connected(version: info.protocolVersion, capabilities: capabilities))
+        debug("connect.end features=\(capabilities.supportedFeatures.count)")
     }
 
     public func disconnect() async {
@@ -307,6 +320,21 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> { try await response("workspace.get", envelope) }
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> { try await response("workspace.diff", envelope) }
     public func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> { try await response("workspace.languageServices", envelope) }
+
+    // Git RPC 走真实 transport：契约第十八节禁止靠 protocol 默认实现绕过 transport。
+    public func gitStatus(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitStatusResult> { try await response("git.status", envelope) }
+    public func gitDiff(envelope: QueryEnvelope<GitDiffRequest>) async throws -> ResponseEnvelope<GitDiffResult> { try await response("git.diff", envelope) }
+    public func gitLog(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> { try await response("git.log", envelope) }
+    public func gitShow(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> { try await response("git.show", envelope) }
+    public func gitBranch(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> { try await response("git.branch", envelope) }
+    public func gitAdd(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.add", envelope) }
+    public func gitRestore(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.restore", envelope) }
+    public func gitCheckout(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.checkout", envelope) }
+    public func gitSwitch(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.switch", envelope) }
+    public func gitCommit(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.commit", envelope) }
+    public func gitFetch(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.fetch", envelope) }
+    public func gitPull(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.pull", envelope) }
+    public func gitPush(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> { try await command("git.push", envelope) }
     public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> { try await response("workspace.toolStatus", envelope) }
     public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> { try await response("browser.sessions", envelope) }
     public func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> { try await response("browser.capture", envelope) }

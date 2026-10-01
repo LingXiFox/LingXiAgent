@@ -387,6 +387,46 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
         try await underlying.getWorkspaceDiffSummary(envelope: envelope)
     }
+
+    public func gitStatus(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitStatusResult> {
+        try await underlying.gitStatus(envelope: envelope)
+    }
+    public func gitDiff(envelope: QueryEnvelope<GitDiffRequest>) async throws -> ResponseEnvelope<GitDiffResult> {
+        try await underlying.gitDiff(envelope: envelope)
+    }
+    public func gitLog(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> {
+        try await underlying.gitLog(envelope: envelope)
+    }
+    public func gitShow(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> {
+        try await underlying.gitShow(envelope: envelope)
+    }
+    public func gitBranch(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> {
+        try await underlying.gitBranch(envelope: envelope)
+    }
+    public func gitAdd(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        return try await underlying.gitAdd(envelope: envelope)
+    }
+    public func gitRestore(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        return try await underlying.gitRestore(envelope: envelope)
+    }
+    public func gitCheckout(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        return try await underlying.gitCheckout(envelope: envelope)
+    }
+    public func gitSwitch(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        return try await underlying.gitSwitch(envelope: envelope)
+    }
+    public func gitCommit(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        return try await underlying.gitCommit(envelope: envelope)
+    }
+    public func gitFetch(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await underlying.gitFetch(envelope: envelope)
+    }
+    public func gitPull(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await underlying.gitPull(envelope: envelope)
+    }
+    public func gitPush(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await underlying.gitPush(envelope: envelope)
+    }
     public func beginContentUpload(envelope: CommandEnvelope<BeginContentUploadRequest>) async throws -> CommandReceipt<BeginContentUploadResponse> {
         try await underlying.beginContentUpload(envelope: envelope)
     }

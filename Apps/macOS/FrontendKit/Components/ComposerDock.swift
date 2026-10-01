@@ -278,28 +278,31 @@ struct ComposerSurface: View {
 
     private var workspace: WorkspaceSummaryPresentation { runtime.sidebarModel.workspace }
 
+    /// 分支列表来自 Core 的 `git.branch`：前端不再跑 git，也不再自己解析仓库状态。
     private func loadBranches() async {
-        guard let workspace = runtime.workspaceURL else { localBranches = []; return }
-        let path = workspace.path
-        let result = await Task.detached {
-            WarmGitModel.run(["-C", path, "branch", "--format=%(refname:short)"])
-        }.value
-        localBranches = result.code == 0 ? result.output.split(separator: "\n").map(String.init) : []
+        guard let client = runtime.client else { localBranches = []; return }
+        guard let result = try? await client.git.branch() else { localBranches = []; return }
+        localBranches = result.text
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { String($0).replacingOccurrences(of: "* ", with: "").trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
+    /// 切分支是 Git mutation：走 RPC 进 ToolMutationCoordinator 与 PermissionEngine，
+    /// 与 Agent 的写操作共用同一条串行化路径（契约第十五、十六节）。
     private func changeBranch(_ branch: String, create: Bool = false) {
-        guard let workspace = runtime.workspaceURL, !isGenerating else { return }
+        guard let client = runtime.client, !isGenerating else { return }
         let name = branch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.hasPrefix("-") else { return }
         Task {
-            let path = workspace.path
-            let args = ["-C", path, "switch"] + (create ? ["-c"] : []) + [name]
-            let result = await Task.detached { WarmGitModel.run(args) }.value
-            if result.code == 0 {
+            do {
+                _ = try await client.git.switch(branch: name, createBranch: create)
                 await loadBranches()
                 runtime.refreshRuntimeDetails()
-            } else {
-                branchError = result.output
+            } catch let failure as CoreError {
+                branchError = failure.message
+            } catch {
+                branchError = error.localizedDescription
             }
         }
     }

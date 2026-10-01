@@ -32,7 +32,7 @@ public struct CachePriorityWeights: Sendable {
     }
 }
 
-public struct L1ResidentPage: Sendable, Equatable {
+public struct PCoreResidentPage: Sendable, Equatable {
     public let page: ContextPage
     public let tokens: Int
     public var lastUsed: UInt64
@@ -60,7 +60,7 @@ public struct L1ResidentPage: Sendable, Equatable {
     }
 }
 
-public struct WarmL2Entry: Sendable, Equatable {
+public struct WarmRecallEntry: Sendable, Equatable {
     public let id: String
     public let page: ContextPage?
     public let derivedPage: DerivedContextPage?
@@ -136,7 +136,7 @@ public actor ContextCacheController {
     private var clock: UInt64 = 0
 
     // Per-session L1 resident dynamic pages
-    private var residentPagesBySession: [SessionID: [String: L1ResidentPage]] = [:]
+    private var residentPagesBySession: [SessionID: [String: PCoreResidentPage]] = [:]
     // Per-session session-level base L1 tokens (messages + system prompt)
     private var sessionL1BaseTokens: [SessionID: Int] = [:]
     private var sessionL1BaseCount: [SessionID: Int] = [:]
@@ -145,7 +145,7 @@ public actor ContextCacheController {
     // Last Provider prompt cache hit (cachedTokens, promptTokens)
     private var lastPromptCacheHitBySession: [SessionID: (cachedTokens: Int, promptTokens: Int)] = [:]
     // Per-session L2 warm cache entries
-    private var warmL2EntriesBySession: [SessionID: [String: WarmL2Entry]] = [:]
+    private var warmL2EntriesBySession: [SessionID: [String: WarmRecallEntry]] = [:]
     // Per-session paged-in derived pages
     private var residentDerivedPagesBySession: [SessionID: [String: DerivedContextPage]] = [:]
 
@@ -674,12 +674,15 @@ public actor ContextCacheController {
     }
 
     /// 执行明确检索并将高权重条目调度到当前 Session 的 L1 Working Set
-    public func handleSearch(sessionID: SessionID, query: String, activeTask: String = "", activeFiles: [String] = [], limit: Int = 5) async throws -> String {
+    /// `activeFiles` 不再是调用方参数：此前所有调用点都传 `[]`，activeFileAffinity 因此恒为 0。
+    /// 现在由 eviction 同一份真实工作集推导（契约 4.9）。
+    public func handleSearch(sessionID: SessionID, query: String, activeTask: String = "", limit: Int = 5) async throws -> String {
         clock &+= 1
         let currentClock = clock
+        let activeFiles = await compactor?.activeFilePaths(sessionID: sessionID) ?? []
 
         // 1. Search L2 Warm Cache
-        var l2Candidates: [(WarmL2Entry, Double)] = []
+        var l2Candidates: [(WarmRecallEntry, Double)] = []
         if let l2Entries = warmL2EntriesBySession[sessionID] {
             let normalizedQuery = query.lowercased()
             for entry in l2Entries.values {
@@ -755,8 +758,17 @@ public actor ContextCacheController {
             ecoreResults.append((meta, snippet))
         }
 
+        // 4b. Search E-Core page-out references：ContextCompaction 移出的历史对象。
+        // 召回按 summary 命中，载荷一律按 referenceID 走 Exact Restore 取，不靠检索内容猜。
+        var pagedOutResults: [(ECoreReference, String)] = []
+        for reference in await ecoreStore.searchReferences(sessionID: sessionID, query: query, limit: limit) {
+            guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: reference.referenceID) else { continue }
+            let snippet = payload.count > 500 ? String(payload.prefix(500)) + "..." : payload
+            pagedOutResults.append((reference, snippet))
+        }
+
         // Check if anything matched across all sources
-        guard !l2Candidates.isEmpty || !l3Candidates.isEmpty || !codebaseCandidates.isEmpty || !ecoreResults.isEmpty else {
+        guard !l2Candidates.isEmpty || !l3Candidates.isEmpty || !codebaseCandidates.isEmpty || !ecoreResults.isEmpty || !pagedOutResults.isEmpty else {
             return "No matching context found for query: \"\(query)\"."
         }
 
@@ -772,7 +784,7 @@ public actor ContextCacheController {
             pageInsBySession[sessionID, default: 0] += 1
 
             if let page = l2Entry.page {
-                currentL1[page.id] = L1ResidentPage(
+                currentL1[page.id] = PCoreResidentPage(
                     page: page,
                     tokens: l2Entry.tokens,
                     lastUsed: currentClock,
@@ -797,7 +809,7 @@ public actor ContextCacheController {
         // Admit Codebase entries
         codebaseCandidates.sort { $0.1 > $1.1 }
         for (page, _, reason) in codebaseCandidates.prefix(limit) {
-            currentL1[page.id] = L1ResidentPage(
+            currentL1[page.id] = PCoreResidentPage(
                 page: page,
                 tokens: max(1, page.characterCount / 3),
                 lastUsed: currentClock,
@@ -850,7 +862,7 @@ public actor ContextCacheController {
             dynamicTokens -= victim.tokens
 
             // Move to L2 warm cache
-            currentL2[victim.page.id] = WarmL2Entry(
+            currentL2[victim.page.id] = WarmRecallEntry(
                 id: victim.page.id,
                 page: victim.page,
                 tokens: victim.tokens,
@@ -880,6 +892,13 @@ public actor ContextCacheController {
                 "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
             }.joined(separator: "\n")
             outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
+        }
+
+        if !pagedOutResults.isEmpty {
+            let formatted = pagedOutResults.map { reference, snippet in
+                "- [\(reference.origin.rawValue)] reference=\(reference.referenceID) object=\(reference.objectID.rawValue):\n```\n\(snippet)\n```"
+            }.joined(separator: "\n")
+            outputSections.append("## E-Core Paged-Out Context (\(pagedOutResults.count) objects restored by reference)\n" + formatted)
         }
 
         if !pagedInCodebasePages.isEmpty {
@@ -941,7 +960,7 @@ public actor ContextCacheController {
     }
 
     /// L1 常驻详细状态
-    public func residentEntries(for sessionID: SessionID) -> [L1ResidentPage] {
+    public func residentEntries(for sessionID: SessionID) -> [PCoreResidentPage] {
         guard let pages = residentPagesBySession[sessionID] else { return [] }
         return Array(pages.values)
     }

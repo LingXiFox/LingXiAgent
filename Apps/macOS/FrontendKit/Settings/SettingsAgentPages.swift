@@ -394,9 +394,10 @@ struct AgentDefaultsSettingsPage: View {
             .settingsAnchor("agent.subagents")
 
             LXSettingsCard("项目指令") {
-                ConfigNumberField(title: "L1 项目指令上限", info: "AGENTS.md 等项目级指令进入常驻上下文的字符上限。",
-                                  unit: "字符", key: ConfigKeys.l1ProjectMaxCharacters, store: store)
-                ConfigNumberField(title: "L2 文档上限", unit: "字符", key: ConfigKeys.l2MaxCharacters, store: store)
+                ConfigNumberField(title: "P-Core 项目指令上限", info: "AGENTS.md 等项目级指令进入常驻核心上下文的字符上限。",
+                                  unit: "字符", key: ConfigKeys.pCoreProjectMaxCharacters, store: store)
+                ConfigNumberField(title: "E-Core 召回上限", info: "从外延存储召回注入的字符上限。",
+                                  unit: "字符", key: ConfigKeys.eCoreRecallMaxCharacters, store: store)
             }
 
             SystemContextEditor(store: store)
@@ -665,8 +666,8 @@ struct ContextSettingsPage: View {
                                   unit: "tokens", key: ConfigKeys.eCoreStorageBudget, store: store)
                 ConfigNumberField(title: "E-Core 召回预算", info: "单次回合中自外延存储召回注入的最大 token 数。",
                                   unit: "tokens", key: ConfigKeys.eCoreRecallBudget, store: store)
-                ConfigToggle(title: "E-Core 对象存储", info: "把大体积工具结果对象化存储，时间线只保留占位并按需召回。",
-                             key: ConfigKeys.ecoreStorage, store: store)
+                ConfigToggle(title: "E-Core 载荷持久化", info: "把大体积工具结果与移出核心上下文的内容对象化落盘；关闭后仍保存在内存，只失去跨进程存活。",
+                             key: ConfigKeys.eCorePersistence, store: store)
                 ConfigToggle(title: "观察投影 (Observation Projection)", info: "将大体积多模态或命令输出结构化为紧凑观察摘要。",
                              key: ConfigKeys.observationProjection, store: store)
                 ConfigToggle(title: "访问热度追踪", info: "按访问热度决定上下文淘汰与召回优先顺序。",

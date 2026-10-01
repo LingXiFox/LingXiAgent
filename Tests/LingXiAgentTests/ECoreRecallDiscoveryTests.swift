@@ -10,7 +10,7 @@ import LingXiProtocol
         let store = ECoreObjectStore(
             baseDirectory: dir,
             configuration: ContextObjectFabricConfiguration(
-                ecoreStorageEnabled: true,
+                eCorePersistenceEnabled: true,
                 objectizationThreshold: 100
             )
         )

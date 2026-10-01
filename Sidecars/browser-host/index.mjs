@@ -2,6 +2,15 @@ import readline from "node:readline";
 import fs from "node:fs";
 
 const HOST_MODE = process.env.LINGXI_BROWSER_HOST_MODE || "real"; // "real" | "mock"
+// Anything else must fail loudly. Every other branch in this file compares against "real"
+// exactly, so an unrecognised value -- a typo, a stray case -- skipped every real-mode guard and
+// still answered navigate/snapshot/act with success-shaped results from a page that did not exist.
+if (HOST_MODE !== "real" && HOST_MODE !== "mock") {
+  process.stderr.write(
+    `lingxi-browser-host refused to start: LINGXI_BROWSER_HOST_MODE="${HOST_MODE}" is neither "real" nor "mock".\n`
+  );
+  process.exit(1);
+}
 const DISABLE_SANDBOX = process.env.LINGXI_BROWSER_DISABLE_SANDBOX === "1";
 
 let playwright = null;

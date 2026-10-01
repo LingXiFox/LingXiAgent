@@ -3,8 +3,8 @@
   "agent": {
     "executionProfile": "workspace",
     "codeIntelligenceEnabled": false,
-    "l1ProjectMaxCharacters": 32768,
-    "l2MaxCharacters": 262144,
+    "pCoreProjectMaxCharacters": 32768,
+    "eCoreRecallMaxCharacters": 262144,
     "maxConcurrentSubagents": 4,
     "maxSubagentDepth": 3,
     "maxTotalRunsPerRootRun": 32,

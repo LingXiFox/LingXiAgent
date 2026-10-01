@@ -395,6 +395,59 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.setWorkspace(envelope: envelope)
     }
 
+    // MARK: - LingXiProtocolService: 10b. Git RPC
+    public func gitStatus(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitStatusResult> {
+        try await service.gitStatus(envelope: envelope)
+    }
+
+    public func gitDiff(envelope: QueryEnvelope<GitDiffRequest>) async throws -> ResponseEnvelope<GitDiffResult> {
+        try await service.gitDiff(envelope: envelope)
+    }
+
+    public func gitLog(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> {
+        try await service.gitLog(envelope: envelope)
+    }
+
+    public func gitShow(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> {
+        try await service.gitShow(envelope: envelope)
+    }
+
+    public func gitBranch(envelope: QueryEnvelope<GitQueryRequest>) async throws -> ResponseEnvelope<GitTextResult> {
+        try await service.gitBranch(envelope: envelope)
+    }
+
+    public func gitAdd(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitAdd(envelope: envelope)
+    }
+
+    public func gitRestore(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitRestore(envelope: envelope)
+    }
+
+    public func gitCheckout(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitCheckout(envelope: envelope)
+    }
+
+    public func gitSwitch(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitSwitch(envelope: envelope)
+    }
+
+    public func gitCommit(envelope: CommandEnvelope<GitMutationRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitCommit(envelope: envelope)
+    }
+
+    public func gitFetch(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitFetch(envelope: envelope)
+    }
+
+    public func gitPull(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitPull(envelope: envelope)
+    }
+
+    public func gitPush(envelope: CommandEnvelope<GitRemoteRequest>) async throws -> CommandReceipt<GitMutationResult> {
+        try await service.gitPush(envelope: envelope)
+    }
+
     public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
         try await service.getWorkspaceSummary(envelope: envelope)
     }

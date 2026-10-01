@@ -118,6 +118,7 @@ extension ClientCommand: Codable {
         case .listExtensions:
             self = .listExtensions(kind: try container.decodeIfPresent(ExtensionKind.self, forKey: .extensionKind))
         case .getWorkspaceDiff: self = .getWorkspaceDiff
+        case .getWorkspaceSummary: self = .getWorkspaceSummary
         case .replyPermission:
             self = .replyPermission(try container.decode(PermissionReply.self, forKey: .permissionReply))
         case .replyQuestion:
@@ -184,12 +185,12 @@ extension ClientCommand: Codable {
 
 extension CoreResponse: Codable {
     private enum TypeKey: String, Codable {
-        case pong, info, state, streamOpened, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff
+        case pong, info, state, streamOpened, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff, workspaceSummary
         case sessionCreated, sessionList, sessionDetail, sessionRenamed, permissionReplyAccepted, questionReplyAccepted, context, contextProjection, performance, permissionConfiguration, agentBehaviorProfile, projectCache, compactSession, childSessionList, agentRunList, agentRun, agentTree, subagentResult, agentRunCancelled, error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, info, state, streamID, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff, session, sessions, permissionID, questionID, context, contextProjection, performance, permissionConfiguration, behaviorProfile, projectCache, compactSession, agentRuns, agentRun, agentTree, subagentResult, runID, title, error
+        case type, info, state, streamID, providerStatus, diagnostics, providerProducts, providerAccounts, providerModels, providerModelSelected, providerAccount, providerCredential, providerDisconnected, extensions, workspaceDiff, workspaceSummary, session, sessions, permissionID, questionID, context, contextProjection, performance, permissionConfiguration, behaviorProfile, projectCache, compactSession, agentRuns, agentRun, agentTree, subagentResult, runID, title, error
     }
 
     public init(from decoder: Decoder) throws {
@@ -225,6 +226,8 @@ extension CoreResponse: Codable {
             self = .extensions(try container.decode([ExtensionInfo].self, forKey: .extensions))
         case .workspaceDiff:
             self = .workspaceDiff(try container.decode(String.self, forKey: .workspaceDiff))
+        case .workspaceSummary:
+            self = .workspaceSummary(try container.decode(WorkspaceSummary.self, forKey: .workspaceSummary))
         case .sessionCreated:
             self = .sessionCreated(try container.decode(SessionInfo.self, forKey: .session))
         case .sessionList:
@@ -293,6 +296,7 @@ extension CoreResponse: Codable {
         case let .providerDisconnected(result): try container.encode(result, forKey: .providerDisconnected)
         case let .extensions(values): try container.encode(values, forKey: .extensions)
         case let .workspaceDiff(diff): try container.encode(diff, forKey: .workspaceDiff)
+        case let .workspaceSummary(summary): try container.encode(summary, forKey: .workspaceSummary)
         case let .sessionCreated(info):
             try container.encode(info, forKey: .session)
         case let .sessionList(infos):
@@ -353,6 +357,7 @@ extension CoreResponse: Codable {
         case .providerDisconnected: .providerDisconnected
         case .extensions: .extensions
         case .workspaceDiff: .workspaceDiff
+        case .workspaceSummary: .workspaceSummary
         case .sessionCreated: .sessionCreated
         case .sessionList: .sessionList
         case .sessionDetail: .sessionDetail

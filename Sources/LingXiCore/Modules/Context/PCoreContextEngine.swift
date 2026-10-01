@@ -1,6 +1,32 @@
 import Foundation
 import LingXiProtocol
 
+/// P-Core 的三分区。这是冻结的架构语义，L1/L2/L3 不再具有架构含义。
+///
+/// - `stablePrefix`: 当前 Session 中长期稳定的内容（system / 约束 / 核心目标 / 稳定工作状态）。
+/// - `growingContext`: 正在增长、当前阶段被模型直接需要的内容（消息、Tool Call/Result、观察）。
+///   ContextCompaction 只从这里移出对象。
+/// - `eCoreIndex`: E-Core 索引投影 —— 已 page-out 对象的轻量 metadata / object reference。
+///   按定义不得携带完整 payload；今天仍内联内容的条目由 store 收敛那一步改造。
+public enum PCoreRegion: String, Sendable, Equatable, Hashable, CaseIterable {
+    case stablePrefix
+    case growingContext
+    case eCoreIndex
+}
+
+extension ContextSource {
+    public var pCoreRegion: PCoreRegion {
+        switch self {
+        case .system:
+            return .stablePrefix
+        case .userMessage, .assistantMessage, .toolCall, .toolResult, .observation:
+            return .growingContext
+        case .projectPage, .derivedPage:
+            return .eCoreIndex
+        }
+    }
+}
+
 /// L1 来源描述的是模型工作集的语义，不是任何 Provider 的角色类型。
 public enum ContextSource: String, Sendable, Equatable, Hashable {
     case system
@@ -52,10 +78,19 @@ public struct ContextMetrics: Sendable, Equatable {
     public let derivedTokens: Int
     public let liveToolBatchCount: Int
     public let compactionGeneration: Int
+
+    /// P-Core 三分区各自的 token 占用。`projectTokens`/`derivedTokens` 是收敛前的历史口径，
+    /// 分区口径以这三个字段为准。
+    public let stablePrefixTokens: Int
+    public let growingContextTokens: Int
+    public let eCoreIndexTokens: Int
+
+    /// 水位比较用的量：当前 P-Core 实际占用（三分区之和的度量口径即 estimatedTokens）。
+    public var currentPCoreTokens: Int { estimatedTokens }
 }
 
 /// 一次 inference 实际可见的不可变 L1 工作集。
-public struct L1ContextSnapshot: Sendable, Equatable {
+public struct PCoreSnapshot: Sendable, Equatable {
     public let sessionID: SessionID
     public let revision: UInt64
     public let entries: [ContextEntry]
@@ -122,7 +157,7 @@ public struct L1ContextSnapshot: Sendable, Equatable {
 }
 
 /// L1 初始策略：保留已完成 Session 的有序结构化历史，明确排除 reasoning 与 transient stream。
-public struct L1ContextPolicy: Sendable {
+public struct PCorePolicy: Sendable {
     public let systemContext: String?
 
     public init(systemContext: String? = nil) {
@@ -131,16 +166,16 @@ public struct L1ContextPolicy: Sendable {
 }
 
 /// Context Engine 是 Session history 与当前模型工作集之间的正式边界。
-public actor L1ContextEngine {
-    private let policy: L1ContextPolicy
+public actor PCoreContextEngine {
+    private let policy: PCorePolicy
     private var revisions: [SessionID: UInt64] = [:]
-    private var latest: [SessionID: L1ContextSnapshot] = [:]
+    private var latest: [SessionID: PCoreSnapshot] = [:]
 
-    public init(policy: L1ContextPolicy = L1ContextPolicy()) {
+    public init(policy: PCorePolicy = PCorePolicy()) {
         self.policy = policy
     }
 
-    public func snapshot(for session: Session, projectPages: [ContextPage] = [], activeEntries: [ContextEntry]? = nil, systemContext: String? = nil, estimatedTokens: Int = 0, mandatoryTokens: Int = 0, liveToolBatchCount: Int = 0, compactionGeneration: Int = 0) -> L1ContextSnapshot {
+    public func snapshot(for session: Session, projectPages: [ContextPage] = [], activeEntries: [ContextEntry]? = nil, systemContext: String? = nil, estimatedTokens: Int = 0, mandatoryTokens: Int = 0, liveToolBatchCount: Int = 0, compactionGeneration: Int = 0) -> PCoreSnapshot {
         let revision = (revisions[session.id] ?? 0) + 1
         revisions[session.id] = revision
         var entries = activeEntries ?? []
@@ -173,7 +208,7 @@ public actor L1ContextEngine {
         for page in projectPages where seenPages.insert("\(page.path)|\(page.hash)").inserted && !toolContents.contains(page.content) {
             entries.append(ContextEntry(messageID: MessageID("project:\(page.id)"), role: .system, source: .projectPage, part: .text("[Project context: \(page.path):\(page.startLine)-\(page.endLine)]\n\(page.content)"), page: page))
         }
-        let snapshot = L1ContextSnapshot(
+        let snapshot = PCoreSnapshot(
             sessionID: session.id,
             revision: revision,
             entries: entries,
@@ -183,7 +218,7 @@ public actor L1ContextEngine {
         return snapshot
     }
 
-    public func latestSnapshot(for sessionID: SessionID) -> L1ContextSnapshot? {
+    public func latestSnapshot(for sessionID: SessionID) -> PCoreSnapshot? {
         latest[sessionID]
     }
 
@@ -248,6 +283,7 @@ public actor L1ContextEngine {
 
     private func metrics(_ entries: [ContextEntry], estimatedTokens: Int, mandatoryTokens: Int, liveToolBatchCount: Int, compactionGeneration: Int, hasSystemContext: Bool) -> ContextMetrics {
         var sourceCounts: [ContextSource: Int] = [:]
+        var regionCharacters: [PCoreRegion: Int] = [:]
         var ids = Set<MessageID>()
         var characters = 0
         var sessionCharacters = 0
@@ -271,12 +307,16 @@ public actor L1ContextEngine {
             case let .observation(id): count = id.description.count
             }
             if entry.source == .projectPage { projectCharacters += count } else { sessionCharacters += count }
+            regionCharacters[entry.source.pCoreRegion, default: 0] += count
         }
         let projectTokens = max(0, (projectCharacters + 2) / 3)
         let derivedCharacters = entries.filter { $0.source == .derivedPage }.reduce(0) { $0 + Self.characterCount(of: $1.part) }
         let derivedTokens = max(0, (derivedCharacters + 2) / 3)
         let effectiveTokens = estimatedTokens > 0 ? estimatedTokens : ConservativeTokenEstimator().estimate(entries: entries)
-        return ContextMetrics(messageCount: ids.count + (hasSystemContext ? 1 : 0), partCount: entries.count, characterCount: characters, sourceCounts: sourceCounts, sessionCharacterCount: sessionCharacters, projectCharacterCount: projectCharacters, projectPageCount: sourceCounts[.projectPage, default: 0], estimatedTokens: effectiveTokens, derivedPageCount: sourceCounts[.derivedPage, default: 0], mandatoryTokens: mandatoryTokens, recentSessionTokens: max(0, effectiveTokens - projectTokens - derivedTokens - mandatoryTokens), projectTokens: projectTokens, derivedTokens: derivedTokens, liveToolBatchCount: liveToolBatchCount, compactionGeneration: compactionGeneration)
+        return ContextMetrics(messageCount: ids.count + (hasSystemContext ? 1 : 0), partCount: entries.count, characterCount: characters, sourceCounts: sourceCounts, sessionCharacterCount: sessionCharacters, projectCharacterCount: projectCharacters, projectPageCount: sourceCounts[.projectPage, default: 0], estimatedTokens: effectiveTokens, derivedPageCount: sourceCounts[.derivedPage, default: 0], mandatoryTokens: mandatoryTokens, recentSessionTokens: max(0, effectiveTokens - projectTokens - derivedTokens - mandatoryTokens), projectTokens: projectTokens, derivedTokens: derivedTokens, liveToolBatchCount: liveToolBatchCount, compactionGeneration: compactionGeneration,
+            stablePrefixTokens: max(0, (regionCharacters[.stablePrefix, default: 0] + 2) / 3),
+            growingContextTokens: max(0, (regionCharacters[.growingContext, default: 0] + 2) / 3),
+            eCoreIndexTokens: max(0, (regionCharacters[.eCoreIndex, default: 0] + 2) / 3))
     }
 
     private static func characterCount(of part: SessionMessagePart) -> Int {

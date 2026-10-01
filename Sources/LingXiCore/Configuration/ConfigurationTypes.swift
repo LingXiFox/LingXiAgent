@@ -36,13 +36,27 @@ public struct AgentSettings: Codable, Sendable, Equatable {
     public var executionProfile: ExecutionProfile
     public var behaviorProfile: AgentBehaviorProfile?
     public var systemContext: String?
-    public var l2MaxCharacters: Int
-    public var l1ProjectMaxCharacters: Int
+    public var eCoreRecallMaxCharacters: Int
+    public var pCoreProjectMaxCharacters: Int
     public var preferredActiveTokens: Int?
     public var codeIntelligenceEnabled: Bool
     public var maxAgentLoopSteps: Int
 
-    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, l2MaxCharacters: Int = 256 * 1024, l1ProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false, maxAgentLoopSteps: Int = 32) {
+    /// [Legacy Compatibility] 旧 L1/L2 命名。契约第十一节：旧配置键至少保留一个正式兼容周期，
+    /// 读取优先级 新 P/E 键 → 旧 L 键 → 默认值；写入只落新键。
+    @available(*, deprecated, renamed: "pCoreProjectMaxCharacters")
+    public var l1ProjectMaxCharacters: Int {
+        get { pCoreProjectMaxCharacters }
+        set { pCoreProjectMaxCharacters = newValue }
+    }
+
+    @available(*, deprecated, renamed: "eCoreRecallMaxCharacters")
+    public var l2MaxCharacters: Int {
+        get { eCoreRecallMaxCharacters }
+        set { eCoreRecallMaxCharacters = newValue }
+    }
+
+    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, eCoreRecallMaxCharacters: Int = 256 * 1024, pCoreProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false, maxAgentLoopSteps: Int = 32) {
         self.maxConcurrentSubagents = maxConcurrentSubagents
         self.maxSubagentDepth = maxSubagentDepth
         self.maxTotalRunsPerRootRun = maxTotalRunsPerRootRun
@@ -50,14 +64,17 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         self.executionProfile = executionProfile
         self.behaviorProfile = behaviorProfile
         self.systemContext = systemContext
-        self.l2MaxCharacters = l2MaxCharacters
-        self.l1ProjectMaxCharacters = l1ProjectMaxCharacters
+        self.eCoreRecallMaxCharacters = eCoreRecallMaxCharacters
+        self.pCoreProjectMaxCharacters = pCoreProjectMaxCharacters
         self.preferredActiveTokens = preferredActiveTokens
         self.codeIntelligenceEnabled = codeIntelligenceEnabled
         self.maxAgentLoopSteps = maxAgentLoopSteps
     }
 
-    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, l2MaxCharacters, l1ProjectMaxCharacters, preferredActiveTokens, codeIntelligenceEnabled, maxAgentLoopSteps }
+    private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, eCoreRecallMaxCharacters, pCoreProjectMaxCharacters, preferredActiveTokens, codeIntelligenceEnabled, maxAgentLoopSteps }
+
+    /// 只用于读取旧配置；写入只落新的 P/E 键，所以旧键不能出现在 CodingKeys 里（否则 Encodable 合成会失败）。
+    private enum LegacyCodingKeys: String, CodingKey { case l2MaxCharacters, l1ProjectMaxCharacters }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -68,8 +85,11 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         executionProfile = try values.decodeIfPresent(ExecutionProfile.self, forKey: .executionProfile) ?? .workspace
         behaviorProfile = try values.decodeIfPresent(AgentBehaviorProfile.self, forKey: .behaviorProfile)
         systemContext = try values.decodeIfPresent(String.self, forKey: .systemContext)
-        l2MaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l2MaxCharacters) ?? 256 * 1024
-        l1ProjectMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .l1ProjectMaxCharacters) ?? 32 * 1024
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        eCoreRecallMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .eCoreRecallMaxCharacters)
+            ?? legacy.decodeIfPresent(Int.self, forKey: .l2MaxCharacters) ?? 256 * 1024
+        pCoreProjectMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .pCoreProjectMaxCharacters)
+            ?? legacy.decodeIfPresent(Int.self, forKey: .l1ProjectMaxCharacters) ?? 32 * 1024
         preferredActiveTokens = try values.decodeIfPresent(Int.self, forKey: .preferredActiveTokens)
         codeIntelligenceEnabled = try values.decodeIfPresent(Bool.self, forKey: .codeIntelligenceEnabled) ?? false
         maxAgentLoopSteps = try values.decodeIfPresent(Int.self, forKey: .maxAgentLoopSteps) ?? 32
@@ -168,7 +188,9 @@ public struct ECoreHeatWeightPolicy: Codable, Sendable, Equatable {
 }
 
 public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
-    public var ecoreStorageEnabled: Bool
+    /// 权威语义是「是否持久化 E-Core 载荷」，不是「是否允许 E-Core」：E-Core 是 P/E 架构的必选
+    /// 逻辑核心，不存在关掉之后还能正常 compaction 的状态。两种取值下 page-out 都返回稳定 ID。
+    public var eCorePersistenceEnabled: Bool
     public var observationProjectionEnabled: Bool
     public var contextRecallEnabled: Bool
     public var objectizationThreshold: Int
@@ -181,8 +203,15 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
     public var heatDecayHalfLifeSeconds: Double
     public var heatWeightPolicy: ECoreHeatWeightPolicy
 
+    /// [Legacy Compatibility] 旧键名，语义写错过（它切换的是持久化后端，不是 E-Core 开关）。
+    @available(*, deprecated, renamed: "eCorePersistenceEnabled")
+    public var ecoreStorageEnabled: Bool {
+        get { eCorePersistenceEnabled }
+        set { eCorePersistenceEnabled = newValue }
+    }
+
     public init(
-        ecoreStorageEnabled: Bool = true,
+        eCorePersistenceEnabled: Bool = true,
         observationProjectionEnabled: Bool = true,
         contextRecallEnabled: Bool = true,
         objectizationThreshold: Int = 32_768, // 32KB
@@ -194,7 +223,7 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
         heatDecayHalfLifeSeconds: Double = 3600.0,
         heatWeightPolicy: ECoreHeatWeightPolicy = ECoreHeatWeightPolicy()
     ) {
-        self.ecoreStorageEnabled = ecoreStorageEnabled
+        self.eCorePersistenceEnabled = eCorePersistenceEnabled
         self.observationProjectionEnabled = observationProjectionEnabled
         self.contextRecallEnabled = contextRecallEnabled
         self.objectizationThreshold = objectizationThreshold
@@ -208,14 +237,20 @@ public struct ContextObjectFabricConfiguration: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case ecoreStorageEnabled, observationProjectionEnabled, contextRecallEnabled,
+        case eCorePersistenceEnabled, observationProjectionEnabled, contextRecallEnabled,
              objectizationThreshold, fullSendCount, placeholderExcerpt, recallMaxBytes, recallMaxLines,
              heatTrackingEnabled, heatDecayHalfLifeSeconds, heatWeightPolicy
     }
 
+    /// 只用于读取旧键；写入只落 `eCorePersistenceEnabled`。
+    private enum LegacyCodingKeys: String, CodingKey { case ecoreStorageEnabled }
+
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        ecoreStorageEnabled = try values.decodeIfPresent(Bool.self, forKey: .ecoreStorageEnabled) ?? true
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        // 新 P/E 键 → 旧键 → 默认（契约第十一节的读取优先级）。
+        eCorePersistenceEnabled = try values.decodeIfPresent(Bool.self, forKey: .eCorePersistenceEnabled)
+            ?? legacy.decodeIfPresent(Bool.self, forKey: .ecoreStorageEnabled) ?? true
         observationProjectionEnabled = try values.decodeIfPresent(Bool.self, forKey: .observationProjectionEnabled) ?? true
         contextRecallEnabled = try values.decodeIfPresent(Bool.self, forKey: .contextRecallEnabled) ?? true
         objectizationThreshold = try values.decodeIfPresent(Int.self, forKey: .objectizationThreshold) ?? 32_768

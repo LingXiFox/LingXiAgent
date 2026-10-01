@@ -39,6 +39,12 @@ public enum ProtocolFeature: String, Codable, Sendable, CaseIterable {
     case capabilityGateway = "capability.gateway"
     case traceStream = "trace.stream"
     case traceQuery = "trace.query"
+    /// Git RPC namespace：`git.status/diff/log/show/branch` + `git.add/restore/checkout/switch/commit`。
+    /// 契约第十七节要求 RPC 存在与 feature 广播必须同时成立，不允许只声明一半。
+    case gitRPC = "git.rpc"
+    /// 远程同步 RPC：`git.fetch` / `git.pull` / `git.push`。
+    /// 单独一个 feature 是因为远程写需要 `repositoryRemoteWrite`，本地已授权不代表远程可写。
+    case gitRemoteSync = "git.remote.sync"
     case unknown = "unknown"
 
     public init(from decoder: Decoder) throws {

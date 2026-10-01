@@ -155,7 +155,7 @@ public struct ProjectPageStoreUpdate: Sendable, Equatable {
     }
 }
 
-public struct L2PromotionResult: Sendable, Equatable {
+public struct WorkingSetPromotionResult: Sendable, Equatable {
     public let admitted: [ContextPage]
     public let evicted: [ContextPage]
 
@@ -165,7 +165,7 @@ public struct L2PromotionResult: Sendable, Equatable {
     }
 }
 
-public struct L2WorkingSetMetrics: Sendable, Equatable {
+public struct WorkingSetMetrics: Sendable, Equatable {
     public let pageCount: Int
     public let characterCount: Int
 

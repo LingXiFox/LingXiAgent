@@ -62,7 +62,7 @@ struct Round4SystemHardeningTests {
 
         let pager = ContextPager(
             store: ProjectPageStore(persistence: nil),
-            workingSet: L2WorkingSet(characterBudget: 5000),
+            workingSet: RecallWorkingSet(characterBudget: 5000),
             projectCharacterBudget: 5000
         )
         let scanner = ProjectScanner(root: tempDir, sensitivePathPolicy: SensitivePathPolicy(root: tempDir))

@@ -30,6 +30,8 @@ public enum ClientCommand: Sendable, Equatable {
     case resumeAgentRun(runID: AgentRunID)
     case listExtensions(kind: ExtensionKind?)
     case getWorkspaceDiff
+    /// 工作区状态（含 Core 计算的分支与 dirtyPathCount）：TUI / CLI 不需要自己跑 git。
+    case getWorkspaceSummary
     /// 数据面命令：在 Session 中发起一轮对话。
     case sendMessage(sessionID: SessionID, content: String)
     case listProviderProducts
@@ -75,6 +77,7 @@ extension ClientCommand {
         case resumeAgentRun
         case listExtensions
         case getWorkspaceDiff
+        case getWorkspaceSummary
         case sendMessage
         case listProviderProducts, listProviderAccounts, listProviderModels, selectProviderModel, storeProviderCredential, createProviderAccount, deleteProviderAccount, deleteProviderCredential
     }
@@ -111,6 +114,7 @@ extension ClientCommand {
         case .resumeAgentRun: .resumeAgentRun
         case .listExtensions: .listExtensions
         case .getWorkspaceDiff: .getWorkspaceDiff
+        case .getWorkspaceSummary: .getWorkspaceSummary
         case .sendMessage: .sendMessage
         case .listProviderProducts: .listProviderProducts
         case .listProviderAccounts: .listProviderAccounts

@@ -32,7 +32,7 @@ import LingXiProtocol
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             objectizationThreshold: 10_240 // 10KB
         )
         let store = ECoreObjectStore(baseDirectory: tempDir, configuration: config)
@@ -85,7 +85,7 @@ import LingXiProtocol
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let config = ContextObjectFabricConfiguration(
-            ecoreStorageEnabled: true,
+            eCorePersistenceEnabled: true,
             objectizationThreshold: 1024,
             recallMaxBytes: 4096,
             recallMaxLines: 100
@@ -134,7 +134,7 @@ import LingXiProtocol
         let tempDir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let config = ContextObjectFabricConfiguration(ecoreStorageEnabled: false)
+        let config = ContextObjectFabricConfiguration(eCorePersistenceEnabled: false)
         let store = ECoreObjectStore(baseDirectory: tempDir, configuration: config)
         let sID = SessionID("s-disabled")
 

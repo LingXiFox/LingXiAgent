@@ -1,7 +1,8 @@
 import Foundation
 import LingXiProtocol
 
-private actor InFlightMutationLock {
+/// internal：Git RPC 与其余 CoreHost 扩展共用同一 commandID 串行化锁。
+actor InFlightMutationLock {
     private var activeCommandIDs: Set<CommandID> = []
     private var waiters: [CommandID: [CheckedContinuation<Void, Never>]] = [:]
 
@@ -86,14 +87,19 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let persistence: SQLitePersistenceStore?
     public let storageLayout: CoreStorageLayout
     public private(set) var workspaceURL: URL
+    /// Git 的唯一执行入口：Agent Tool、Git RPC、Worktree 管理都走它（契约第十三节）。
+    public let gitRunner: GitRunner
+    /// 结构化 Git service：RPC handler 与同进程 CLI 共用（契约第十节）。
+    public let gitService: GitService
     public let extensionPlatform: ExtensionPlatform
     private let gateway: ModelGateway
     private let modelResolver: SubagentModelResolver
     private let subagentService: SubagentToolService
-    private let permissionEngine: PermissionEngine
+    /// internal：Git RPC 与其它 CoreHost+*.swift 扩展共用同一权限与串行化路径（契约第十五、十六节）。
+    let permissionEngine: PermissionEngine
     private var toolRuntime: ToolRuntime
-    private var mutationCoordinator: ToolMutationCoordinator
-    private let contextEngine: L1ContextEngine
+    var mutationCoordinator: ToolMutationCoordinator
+    private let contextEngine: PCoreContextEngine
     private let performanceStore: PerformanceStore
     private let contextPager: ContextPager
     private var projectScanner: ProjectScanner
@@ -214,7 +220,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let runtimeEventLog: RuntimeEventLog
     private var sessionCoordinators: [SessionID: SessionTurnCoordinator] = [:]
     private let idempotencyJournal: IdempotencyJournal
-    private let inFlightLock = InFlightMutationLock()
+    let inFlightLock = InFlightMutationLock()
     public let commandWAL: DurableCommandWAL
     public let contentStore: ContentStore
     public let sessionMutationLock: SessionMutationLock
@@ -397,11 +403,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             deadlinePolicy: executionDeadlinePolicy,
             enablePlugins: effectivePolicy.discoverBinaryPlugins
         )
-        let l2Budget = agentSettings.l2MaxCharacters
-        let l1ProjectBudget = agentSettings.l1ProjectMaxCharacters
-        l2CharacterCapacity = l2Budget
-        l1ProjectCharacterCapacity = l1ProjectBudget
-        let pager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: L2WorkingSet(characterBudget: l2Budget), projectCharacterBudget: l1ProjectBudget)
+        let eCoreRecallBudget = agentSettings.eCoreRecallMaxCharacters
+        let pCoreProjectBudget = agentSettings.pCoreProjectMaxCharacters
+        l2CharacterCapacity = eCoreRecallBudget
+        l1ProjectCharacterCapacity = pCoreProjectBudget
+        let pager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: RecallWorkingSet(characterBudget: eCoreRecallBudget), projectCharacterBudget: pCoreProjectBudget)
         let scanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let effective = providerAssembly ?? .unavailable
         self.currentAssembly = (providerAssembly != nil && !effective.modelID.rawValue.isEmpty) ? providerAssembly : nil
@@ -430,12 +436,17 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 l3Capacity: 456_576
             )
         }
+        self.gitRunner = GitRunner(workspace: workspace)
+        self.gitService = GitService(runner: gitRunner)
         self.effectiveContextPolicy = resolvedPolicy
 
-        compactor = ContextCompactor(derivedStore: DerivedContextStore(persistence: persistent))
         let ecoreStore = ECoreObjectStore(
             baseDirectory: layout.ecore,
             configuration: configuration?.context.fabric ?? ContextObjectFabricConfiguration()
+        )
+        compactor = ContextCompactor(
+            derivedStore: DerivedContextStore(persistence: persistent),
+            ecoreStore: ecoreStore
         )
         let cacheController = ContextCacheController(
             contextPager: pager,
@@ -480,7 +491,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.cacheController = cacheController
         self.toolRuntime = effectiveToolRuntime
         self.mutationCoordinator = mutationCoordinator
-        contextEngine = L1ContextEngine(policy: L1ContextPolicy(
+        contextEngine = PCoreContextEngine(policy: PCorePolicy(
             systemContext: systemContext
         ))
         diagnosticsEnabled = environment["LINGXI_PERF_DEBUG"] == "1"
@@ -735,6 +746,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
         await bus.add(.getWorkspaceDiff) { [self] _ in
             .workspaceDiff(try await workspaceDiff())
+        }
+        // 分支与工作区状态由 Core 计算：TUI 标题栏直接读这里，不再本地起 git。
+        await bus.add(.getWorkspaceSummary) { [self] _ in
+            .workspaceSummary(await getWorkspaceSummary())
         }
         // .openTestStream / .sendMessage 属于数据面，不在控制面路由表中。
 
@@ -1368,16 +1383,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func workspaceDiff() async throws -> String {
-        let gitExe = LingXiPlatform.process.resolveExecutable(named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) ?? "/usr/bin/git"
-        let result = try await runToolProcess(
-            invocation: ToolProcessInvocation(executable: gitExe, arguments: ["diff", "--no-ext-diff", "--no-textconv", "--"]),
-            cwd: extensionPlatform.projectRoot,
-            environment: EnvironmentSanitizer.sanitized(),
+        // 与 GitTool / Git RPC 同一个执行器：Core 内部也不再各留一份 git 调用路径（契约第十三节）。
+        let result = try await gitRunner.execute(
+            ["diff", "--no-ext-diff", "--no-textconv", "--"],
+            in: extensionPlatform.projectRoot,
             timeoutMilliseconds: 5_000
         )
-        guard result.exitCode == 0 else {
-            throw CoreError(code: .gitError, message: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
         return String(result.stdout.prefix(20_000))
     }
 
@@ -2805,7 +2816,7 @@ extension CoreHost {
     }
 
     // MARK: - Idempotency & In-Flight Concurrency Control
-    private func checkIdempotency<R: Codable & Sendable, P: Encodable>(
+    func checkIdempotency<R: Codable & Sendable, P: Encodable>(
         envelope: CommandEnvelope<P>,
         commandName: String,
         as type: R.Type
@@ -2852,7 +2863,7 @@ extension CoreHost {
         }
     }
 
-    private func recordIdempotency<R: Codable & Sendable, P: Encodable>(
+    func recordIdempotency<R: Codable & Sendable, P: Encodable>(
         envelope: CommandEnvelope<P>,
         commandName: String,
         receipt: CommandReceipt<R>
@@ -3111,6 +3122,9 @@ extension CoreHost {
         }
         try await sessionStore.deleteSession(envelope.payload.sessionID)
         sessionCoordinators.removeValue(forKey: envelope.payload.sessionID)
+        // 长驻进程里每个结束 Session 必须释放自己的状态，否则预测状态随 Session 数单调增长。
+        await BranchPredictionRuntime.shared.clear(envelope.payload.sessionID)
+        await compactor.reset(sessionID: envelope.payload.sessionID)
         _ = try? await runtimeEventLog.append(payload: .sessionDeleted(envelope.payload.sessionID))
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
@@ -3160,6 +3174,8 @@ extension CoreHost {
                     await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
                     await compactor.reset(sessionID: sessionID)
                     await contextEngine.reset(for: sessionID)
+                    // 历史被截断后，n-gram 的既有轨迹不再代表真实因果链，必须一并作废。
+                    await BranchPredictionRuntime.shared.clear(sessionID)
 
                     var authoritativeSnapshot: SessionSnapshot?
                     let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
@@ -3322,6 +3338,7 @@ extension CoreHost {
             await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
             await compactor.reset(sessionID: sessionID)
             await contextEngine.reset(for: sessionID)
+            await BranchPredictionRuntime.shared.clear(sessionID)
 
             let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
             let causal = CausalContext(sessionID: sessionID)
@@ -4632,14 +4649,10 @@ extension CoreHost {
     /// One `git` invocation's stdout, or nil when git is missing, failed or ran out of time.
     /// Git truth belongs to Core: a frontend may render it, it may never shell out for it.
     private func gitOutput(_ arguments: [String]) async -> String? {
-        guard let gitExe = LingXiPlatform.process.resolveExecutable(
-            named: "git", customSearchPaths: ["/usr/bin", "/usr/local/bin"]) else { return nil }
-        guard let result = try? await runToolProcess(
-            invocation: ToolProcessInvocation(executable: gitExe, arguments: arguments),
-            cwd: extensionPlatform.projectRoot,
-            environment: EnvironmentSanitizer.sanitized(),
-            timeoutMilliseconds: 3_000
-        ), result.exitCode == 0 else { return nil }
+        // 与 GitTool / Git RPC 共用 GitRunner：Core 内部也只保留一条 git 执行路径（契约第十三节）。
+        guard let result = try? await gitRunner.execute(
+            arguments, in: extensionPlatform.projectRoot, timeoutMilliseconds: 3_000
+        ) else { return nil }
         return result.stdout
     }
 
@@ -4657,33 +4670,30 @@ extension CoreHost {
         var worktreeRoot: String?
         var isLinkedWorktree = false
         var changedFileCount: Int?
+        var dirtyPathCount: Int?
+        var trackedChangeCount: Int?
+        var untrackedFileCount: Int?
+        var conflictedFileCount: Int?
         var isDirty: Bool?
 
         if isGit {
-            // porcelain v2 carries the branch and every changed/untracked entry in one call.
-            // `--ignored` stays off so a dirty count means work, not build output noise.
-            if let status = await gitOutput(["status", "--porcelain=v2", "--branch"]) {
-                var entries = 0
-                for line in status.split(separator: "\n") {
-                    if line.hasPrefix("# branch.head ") {
-                        let name = line.dropFirst("# branch.head ".count).trimmingCharacters(in: .whitespaces)
-                        gitBranch = name == "(detached)" ? nil : name
-                    } else if !line.hasPrefix("#") && !line.isEmpty {
-                        entries += 1
-                    }
-                }
-                changedFileCount = entries
-                isDirty = entries > 0
+            // porcelain v2 + `-uall`：一份解析结果同时给出分支与全部分类计数（契约第二十一、二十二节）。
+            if let status = try? await gitRunner.status() {
+                gitBranch = status.branch
+                dirtyPathCount = status.dirtyPathCount
+                trackedChangeCount = status.trackedChangeCount
+                untrackedFileCount = status.untrackedFileCount
+                conflictedFileCount = status.conflictedFileCount
+                isDirty = status.isDirty
+                // 兼容周期内 changedFileCount 与 dirtyPathCount 同值，不再是"行数"。
+                changedFileCount = status.dirtyPathCount
             }
-            // A linked worktree resolves its common dir outside its own top level.
-            if let resolved = await gitOutput(["rev-parse", "--git-common-dir", "--show-toplevel"]) {
-                let lines = resolved.split(separator: "\n").map(String.init)
-                if lines.count >= 2 {
-                    worktreeRoot = lines[1]
-                    let common = URL(fileURLWithPath: lines[0]).standardizedFileURL.path
-                    isLinkedWorktree = common != URL(fileURLWithPath: lines[1])
-                        .appendingPathComponent(".git").standardizedFileURL.path
-                }
+            // main checkout root 用 --git-common-dir 推导；当前目录可能是 linked worktree。
+            if let mainRoot = try? await gitRunner.mainCheckoutRoot() {
+                worktreeRoot = mainRoot.path
+                let currentTop = (await gitOutput(["rev-parse", "--show-toplevel"]))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                isLinkedWorktree = currentTop.map { URL(fileURLWithPath: $0).standardizedFileURL.path != mainRoot.standardizedFileURL.path } ?? false
             }
         }
 
@@ -4697,7 +4707,11 @@ extension CoreHost {
             worktreeRoot: worktreeRoot,
             isLinkedWorktree: isLinkedWorktree,
             changedFileCount: changedFileCount,
-            isDirty: isDirty
+            isDirty: isDirty,
+            dirtyPathCount: dirtyPathCount,
+            trackedChangeCount: trackedChangeCount,
+            untrackedFileCount: untrackedFileCount,
+            conflictedFileCount: conflictedFileCount
         )
     }
 
