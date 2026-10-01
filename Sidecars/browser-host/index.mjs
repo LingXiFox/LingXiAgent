@@ -1,6 +1,12 @@
 import readline from "node:readline";
 import fs from "node:fs";
 
+// The sidecar ships with the product, so its reported version must come from the same place the
+// package manifest does. A literal here was the drift that let `--version` and the release tag disagree.
+const HOST_VERSION = JSON.parse(
+  fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")
+).version;
+
 const HOST_MODE = process.env.LINGXI_BROWSER_HOST_MODE || "real"; // "real" | "mock"
 // Anything else must fail loudly. Every other branch in this file compares against "real"
 // exactly, so an unrecognised value -- a typo, a stray case -- skipped every real-mode guard and
@@ -218,7 +224,7 @@ rl.on("line", async (line) => {
 
         sendResponse(id, {
           protocolVersion: "v1",
-          hostVersion: "lingxi-browser-host-1.1.0",
+          hostVersion: `lingxi-browser-host-${HOST_VERSION}`,
           mode: HOST_MODE,
           playwrightAvailable: isPlaywrightAvailable,
           capabilities: ["navigation", "dom", "screenshot", "actions", "capture"]

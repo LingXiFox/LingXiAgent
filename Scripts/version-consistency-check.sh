@@ -71,6 +71,28 @@ else
     fail "bundle-mac-app.sh 应注入 __PRODUCT_VERSION__，不得再硬编码 CFBundleShortVersionString"
 fi
 
+# The lockfile and the manifest are read by different tools; both must carry the value.
+LOCK_VERSION="$(sed -nE 's/^  "version": "([^"]+)".*/\1/p' Sidecars/browser-host/package-lock.json | head -n1)"
+if [ "${LOCK_VERSION}" = "${CURRENT}" ]; then
+    ok "Sidecars/browser-host/package-lock.json: ${LOCK_VERSION}"
+else
+    fail "package-lock.json 版本 ${LOCK_VERSION} != ${CURRENT}"
+fi
+
+# The sidecar reports its own version over the wire; a literal there is a second source of truth.
+if matches="$(rg -n 'lingxi-browser-host-[0-9]' Sidecars --glob '!node_modules/**' 2>/dev/null)"; then
+    while IFS= read -r line; do fail "Sidecar 硬编码 hostVersion: ${line}"; done <<< "${matches}"
+else
+    ok "browser-host hostVersion 由 package.json 推导"
+fi
+
+# Evaluation summaries are stamped with the product version; same rule.
+if grep -qF -- 'releaseTag: "v\(ProductVersion.current)"' Evals/Runner/main.swift; then
+    ok "Evals Runner 的 releaseTag 由 ProductVersion 推导"
+else
+    fail "Evals/Runner/main.swift 应写 releaseTag: \"v\\(ProductVersion.current)\"，不得抄死"
+fi
+
 for page in Server/agent-site/public/index.html; do
     # 首页的版本槽位是静态 fallback + 运行时由 GitHub API 覆盖，
     # fallback 必须等于常量，否则就是又造了一个会过期的手写版本号。

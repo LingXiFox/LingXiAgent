@@ -272,7 +272,7 @@ final class EvalRunner {
 
         let summary = EvalSummary(
             version: 1,
-            releaseTag: "v1.1.0",
+            releaseTag: "v\(ProductVersion.current)",
             protocolVersion: ProtocolVersion.current.description,
             gitCommit: gitCommit,
             platform: platform,

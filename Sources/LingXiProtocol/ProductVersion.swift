@@ -16,7 +16,7 @@ import Foundation
 /// own axes and must not be coupled to a release tag.
 public enum ProductVersion {
     /// Must equal the latest release tag without its leading `v`/`V`.
-    public static let current = "1.1.0"
+    public static let current = "1.2.0"
 
     /// Release channel shown next to the version string.
     public static let releaseName = "Stable"

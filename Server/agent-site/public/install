@@ -136,6 +136,9 @@ if [ -f "./Package.swift" ] && grep -q "LingXiAgent" ./Package.swift 2>/dev/null
         if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" ]; then
             cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
         fi
+        if [ -d "$BIN_DIR_PATH/LingXiAgent_LingXiWebUI.bundle" ]; then
+            cp -R "$BIN_DIR_PATH/LingXiAgent_LingXiWebUI.bundle" "$BIN_DIR/"
+        fi
         install_sidecars "."
         INSTALLED=true
         echo -e "${GREEN}[✓] 本地编译并成功安装至 ${TARGET_BIN}${RESET}"
@@ -172,14 +175,17 @@ if [ "$INSTALLED" = false ]; then
                 chmod +x "$BIN_DIR/LingXiTUI"
             fi
             # auth / mcp / skills / exec / review / doctor / resume / acp live in the ops
-            # binary; `lingxiagent` only points at it, so shipping it without this leaves
-            # users with a suggestion to run a command that is not installed.
+            # binary; `lingxiagent` only points at it, so shipping without this leaves users
+            # with a suggestion to run a command that is not installed.
             if [ -f "$TMP_DIR/lingxiagent-ops" ]; then
                 cp -f "$TMP_DIR/lingxiagent-ops" "$BIN_DIR/lingxiagent-ops"
                 chmod +x "$BIN_DIR/lingxiagent-ops"
             fi
             if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
+            if [ -d "$TMP_DIR/LingXiAgent_LingXiWebUI.bundle" ]; then
+                cp -R "$TMP_DIR/LingXiAgent_LingXiWebUI.bundle" "$BIN_DIR/"
             fi
             install_sidecars "$TMP_DIR"
             INSTALLED=true
@@ -221,6 +227,9 @@ if [ "$INSTALLED" = false ]; then
             fi
             if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
+            fi
+            if [ -d "$RELEASE_PATH/LingXiAgent_LingXiWebUI.bundle" ]; then
+                cp -R "$RELEASE_PATH/LingXiAgent_LingXiWebUI.bundle" "$BIN_DIR/"
             fi
             install_sidecars "$CLONE_DIR"
         )

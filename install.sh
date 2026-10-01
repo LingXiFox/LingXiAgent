@@ -174,6 +174,13 @@ if [ "$INSTALLED" = false ]; then
                 cp -f "$TMP_DIR/LingXiTUI" "$BIN_DIR/LingXiTUI"
                 chmod +x "$BIN_DIR/LingXiTUI"
             fi
+            # auth / mcp / skills / exec / review / doctor / resume / acp live in the ops
+            # binary; `lingxiagent` only points at it, so shipping without this leaves users
+            # with a suggestion to run a command that is not installed.
+            if [ -f "$TMP_DIR/lingxiagent-ops" ]; then
+                cp -f "$TMP_DIR/lingxiagent-ops" "$BIN_DIR/lingxiagent-ops"
+                chmod +x "$BIN_DIR/lingxiagent-ops"
+            fi
             if [ -d "$TMP_DIR/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$TMP_DIR/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"
             fi
@@ -202,6 +209,7 @@ if [ "$INSTALLED" = false ]; then
             swift build -c release --product lingxiagent
             swift build -c release --product LingXiCoreHost
             swift build -c release --product LingXiTUI || true
+            swift build -c release --product lingxiagent-ops || true
             RELEASE_PATH="$(swift build -c release --show-bin-path)"
             cp -f "$RELEASE_PATH/lingxiagent" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
@@ -212,6 +220,10 @@ if [ "$INSTALLED" = false ]; then
             if [ -f "$RELEASE_PATH/LingXiTUI" ]; then
                 cp -f "$RELEASE_PATH/LingXiTUI" "$BIN_DIR/LingXiTUI"
                 chmod +x "$BIN_DIR/LingXiTUI"
+            fi
+            if [ -f "$RELEASE_PATH/lingxiagent-ops" ]; then
+                cp -f "$RELEASE_PATH/lingxiagent-ops" "$BIN_DIR/lingxiagent-ops"
+                chmod +x "$BIN_DIR/lingxiagent-ops"
             fi
             if [ -d "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" ]; then
                 cp -R "$RELEASE_PATH/LingXiAgent_LingXiCore.bundle" "$BIN_DIR/"

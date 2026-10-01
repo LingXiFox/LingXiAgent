@@ -79,14 +79,31 @@ struct ProductVersionGateTests {
     @Test("the browser sidecar carries the same product version")
     func sidecarMatches() throws {
         let json = try text("Sidecars/browser-host/package.json")
-        guard let range = json.range(of: "\"version\": \"") else {
-            Issue.record("Sidecars/browser-host/package.json 没有 version 字段")
-            return
-        }
-        let rest = json[range.upperBound...]
-        let value = String(rest.prefix(while: { $0 != "\"" }))
-        #expect(value == ProductVersion.current,
-                "browser-host \u{201C}\(value)\u{201D} 与 ProductVersion.current 不一致")
+        #expect(sidecarVersion(in: json) == ProductVersion.current,
+                "browser-host package.json 与 ProductVersion.current 不一致")
+
+        // npm reads the lockfile, the host reads the manifest; a stale lockfile is a second source.
+        let lock = try text("Sidecars/browser-host/package-lock.json")
+        #expect(sidecarVersion(in: lock) == ProductVersion.current,
+                "browser-host package-lock.json 与 ProductVersion.current 不一致")
+
+        // `hostVersion:` is reported over the wire, so a literal there would drift silently.
+        let host = try text("Sidecars/browser-host/index.mjs")
+        #expect(host.range(of: #"lingxi-browser-host-[0-9]"#, options: .regularExpression) == nil,
+                "browser-host index.mjs 不得写死 hostVersion，必须由 package.json 推导")
+        #expect(host.contains("HOST_VERSION"), "index.mjs 应从 package.json 读出 HOST_VERSION")
+    }
+
+    @Test("the evaluation summary derives its release tag instead of copying it")
+    func evalsReleaseTagDerives() throws {
+        let runner = try text("Evals/Runner/main.swift")
+        #expect(runner.contains(#"releaseTag: "v\(ProductVersion.current)""#),
+                "Evals Runner 的 releaseTag 必须由 ProductVersion 拼出")
+    }
+
+    private func sidecarVersion(in json: String) -> String? {
+        guard let range = json.range(of: "\"version\": \"") else { return nil }
+        return String(json[range.upperBound...].prefix(while: { $0 != "\"" }))
     }
 
     @Test("the macOS bundle derives its version instead of hardcoding it")
