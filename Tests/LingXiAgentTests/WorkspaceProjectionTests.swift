@@ -61,13 +61,23 @@ struct WorkspaceProjectionTests {
         #expect(uncounted.addedLines == nil && uncounted.deletedLines == nil && uncounted.changedFiles == nil)
     }
 
-    @Test("The worktree contract reports itself unavailable instead of inventing a branch and a path")
-    func worktreeStubsFailLoudly() throws {
+    /// This check used to require a throwing default that said "not implemented". That was the
+    /// right fix when nothing was implemented; it is now the wrong guarantee, because a default —
+    /// even an honest one — still lets a conformer skip the RPC. Worktree management is really
+    /// implemented in `CoreHost+Worktree`, so the requirement is that no default exists at all.
+    @Test("The worktree RPCs have no protocol default to fall back on")
+    func worktreeMethodsAreNotDefaultImplemented() throws {
         let path = Self.repoRoot.appendingPathComponent("Sources/LingXiProtocol/ProtocolService.swift").path
         let source = try String(contentsOfFile: path, encoding: .utf8)
         #expect(!source.contains("/tmp/\\(envelope.payload.name)"),
                 "a default implementation is fabricating a worktree path again")
-        #expect(source.contains("lingxiWorktreeUnsupportedMessage"),
-                "the worktree defaults must declare the capability unavailable")
+        guard let marker = source.range(of: "public extension LingXiProtocolService") else {
+            Issue.record("协议扩展不存在，无法核对默认实现"); return
+        }
+        let extensionBody = source[marker.lowerBound...]
+        for method in ["createWorktree", "listWorktrees", "applyWorktree", "discardWorktree", "pruneWorktrees"] {
+            #expect(!extensionBody.contains("func \(method)(envelope:"),
+                    "\(method) 又有协议默认实现了 —— CoreHost 真实实现它，默认实现只会掩盖漏转发")
+        }
     }
 }

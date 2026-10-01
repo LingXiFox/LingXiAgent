@@ -31,14 +31,18 @@ public struct ProtocolVersion: Codable, Sendable, Equatable, Comparable, CustomS
 }
 
 /// Protocol capability feature flags for negotiation between Core and Clients.
+///
+/// A feature names a promise: "send me these RPCs and I will answer". It is therefore not a
+/// place to record that some Core type exists. `capability.gateway`, `trace.stream` and
+/// `trace.query` used to live here with no RPC behind any of them, which made "the enum has a
+/// case" indistinguishable from "the Runtime serves it" — exactly what §12 of the closure
+/// contract forbids. An internal-only subsystem stays internal-only (§21 category C) until an
+/// RPC, a transport dispatch and an implementation all exist.
 public enum ProtocolFeature: String, Codable, Sendable, CaseIterable {
     case taskPause = "task.pause"
     case taskResume = "task.resume"
     case taskFork = "task.fork"
     case workspaceFork = "workspace.fork"
-    case capabilityGateway = "capability.gateway"
-    case traceStream = "trace.stream"
-    case traceQuery = "trace.query"
     /// Git RPC namespace：`git.status/diff/log/show/branch` + `git.add/restore/checkout/switch/commit`。
     /// 契约第十七节要求 RPC 存在与 feature 广播必须同时成立，不允许只声明一半。
     case gitRPC = "git.rpc"
@@ -53,7 +57,26 @@ public enum ProtocolFeature: String, Codable, Sendable, CaseIterable {
         self = ProtocolFeature(rawValue: raw) ?? .unknown
     }
 
+    /// The wire methods a Runtime must dispatch for this advertisement to be true.
+    /// `RuntimeCapabilitiesContractTests` fails if any advertised feature has an unwired method.
+    public var requiredMethods: [String] {
+        switch self {
+        case .taskPause:      return ["task.pause"]
+        case .taskResume:     return ["task.resume"]
+        case .taskFork:       return ["task.fork"]
+        case .workspaceFork:  return ["worktree.create", "worktree.list", "worktree.apply",
+                                      "worktree.discard", "worktree.prune"]
+        case .gitRPC:         return ["git.status", "git.diff", "git.log", "git.show", "git.branch",
+                                      "git.add", "git.restore", "git.checkout", "git.switch", "git.commit"]
+        case .gitRemoteSync:  return ["git.fetch", "git.pull", "git.push"]
+        case .unknown:        return []
+        }
+    }
+
     /// Known active protocol features excluding fallback unknown case.
+    ///
+    /// This is the set the protocol *recognises*, not the set a Runtime serves. Producers must
+    /// state what they wire; nothing defaults to this.
     public static var knownFeatures: [ProtocolFeature] {
         allCases.filter { $0 != .unknown }
     }

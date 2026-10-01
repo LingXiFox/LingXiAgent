@@ -323,9 +323,6 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func getModelCapabilities(envelope: QueryEnvelope<GetModelCapabilitiesRequest>) async throws -> ResponseEnvelope<ModelCapabilitiesInfo> {
         try await underlying.getModelCapabilities(envelope: envelope)
     }
-    public func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
-        try await underlying.setModelSelection(envelope: envelope)
-    }
     public func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot> {
         try await underlying.getContextState(envelope: envelope)
     }
@@ -380,9 +377,6 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     }
     public func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary> {
         try await underlying.setWorkspace(envelope: envelope)
-    }
-    public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
-        try await underlying.getWorkspaceSummary(envelope: envelope)
     }
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
         try await underlying.getWorkspaceDiffSummary(envelope: envelope)
@@ -474,5 +468,143 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     }
     public func testCredential(envelope: CommandEnvelope<TestCredentialRequest>) async throws -> CommandReceipt<TestCredentialResult> {
         try await underlying.testCredential(envelope: envelope)
+    }
+    // A transport double must not answer from a protocol default: that is how a fake
+    // success reached a test that believed it was exercising Core. Everything forwards.
+
+    public func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.applyWorktree(envelope: envelope)
+    }
+    public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {
+        try await underlying.beginProviderAuth(envelope: envelope)
+    }
+    public func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.cancelProviderAuth(envelope: envelope)
+    }
+    public func cancelTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.cancelTask(envelope: envelope)
+    }
+    public func closeTerminalSession(envelope: CommandEnvelope<CloseTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.closeTerminalSession(envelope: envelope)
+    }
+    public func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult> {
+        try await underlying.compareMultiRuns(envelope: envelope)
+    }
+    public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        try await underlying.connectProvider(envelope: envelope)
+    }
+    public func createTask(envelope: CommandEnvelope<CreateTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.createTask(envelope: envelope)
+    }
+    public func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {
+        try await underlying.createWorktree(envelope: envelope)
+    }
+    public func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.deleteMCPServerConfiguration(envelope: envelope)
+    }
+    public func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.deleteProviderConfiguration(envelope: envelope)
+    }
+    public func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.discardWorktree(envelope: envelope)
+    }
+    public func finalizeTask(envelope: CommandEnvelope<TaskFinalizeRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.finalizeTask(envelope: envelope)
+    }
+    public func forkTask(envelope: CommandEnvelope<ForkTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.forkTask(envelope: envelope)
+    }
+    public func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> {
+        try await underlying.getBrowserCapture(envelope: envelope)
+    }
+    public func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {
+        try await underlying.getBrowserSessions(envelope: envelope)
+    }
+    public func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> {
+        try await underlying.getLanguageServiceStatuses(envelope: envelope)
+    }
+    public func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow> {
+        try await underlying.getProviderAuthFlow(envelope: envelope)
+    }
+    public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
+        try await underlying.getProviderCatalog(envelope: envelope)
+    }
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+        try await underlying.getProviderCatalogModels(envelope: envelope)
+    }
+    public func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
+        try await underlying.getProviderConfiguration(envelope: envelope)
+    }
+    public func getTask(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskSnapshot> {
+        try await underlying.getTask(envelope: envelope)
+    }
+    public func getTaskReport(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskReport?> {
+        try await underlying.getTaskReport(envelope: envelope)
+    }
+    public func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
+        try await underlying.getToolStatus(envelope: envelope)
+    }
+    public func interruptTerminalSession(envelope: CommandEnvelope<InterruptTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.interruptTerminalSession(envelope: envelope)
+    }
+    public func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]> {
+        try await underlying.listAgentPresets(envelope: envelope)
+    }
+    public func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]> {
+        try await underlying.listAgentRuns(envelope: envelope)
+    }
+    public func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {
+        try await underlying.listMCPServerConfigurations(envelope: envelope)
+    }
+    public func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> {
+        try await underlying.listProviderAuthProducts(envelope: envelope)
+    }
+    public func listTaskArtifacts(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<[TaskArtifact]> {
+        try await underlying.listTaskArtifacts(envelope: envelope)
+    }
+    public func listTasks(envelope: QueryEnvelope<ListTasksRequest>) async throws -> ResponseEnvelope<[TaskSnapshot]> {
+        try await underlying.listTasks(envelope: envelope)
+    }
+    public func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]> {
+        try await underlying.listTerminalSessions(envelope: envelope)
+    }
+    public func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> {
+        try await underlying.listWorktrees(envelope: envelope)
+    }
+    public func pauseTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.pauseTask(envelope: envelope)
+    }
+    public func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.pruneWorktrees(envelope: envelope)
+    }
+    public func readTerminalSession(envelope: QueryEnvelope<ReadTerminalSessionRequest>) async throws -> ResponseEnvelope<TerminalSessionOutput> {
+        try await underlying.readTerminalSession(envelope: envelope)
+    }
+    public func resumeTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.resumeTask(envelope: envelope)
+    }
+    public func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> {
+        try await underlying.saveMCPServerConfiguration(envelope: envelope)
+    }
+    public func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
+        try await underlying.saveProviderConfiguration(envelope: envelope)
+    }
+    public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
+        try await underlying.setSessionGoal(envelope: envelope)
+    }
+    public func spawnTerminalSession(envelope: CommandEnvelope<SpawnTerminalSessionRequest>) async throws -> CommandReceipt<TerminalSessionInfo> {
+        try await underlying.spawnTerminalSession(envelope: envelope)
+    }
+    public func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {
+        try await underlying.submitSideQuestion(envelope: envelope)
+    }
+    public func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult> {
+        try await underlying.testProviderDraft(envelope: envelope)
+    }
+    public func updateTaskCriteria(envelope: CommandEnvelope<UpdateTaskCriteriaRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await underlying.updateTaskCriteria(envelope: envelope)
+    }
+    public func writeTerminalSession(envelope: CommandEnvelope<WriteTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
+        try await underlying.writeTerminalSession(envelope: envelope)
     }
 }

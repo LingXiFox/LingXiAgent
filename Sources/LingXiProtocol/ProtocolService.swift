@@ -369,15 +369,6 @@ public struct ModelCapabilitiesInfo: Codable, Sendable, Equatable {
     }
 }
 
-public struct SetModelSelectionRequest: Codable, Sendable, Equatable {
-    public let modelID: String
-    public let sessionID: SessionID?
-
-    public init(modelID: String, sessionID: SessionID? = nil) {
-        self.modelID = modelID
-        self.sessionID = sessionID
-    }
-}
 
 // 5. Context Extended
 public struct GetContextStateRequest: Codable, Sendable, Equatable {
@@ -1067,7 +1058,6 @@ public protocol LingXiProtocolService: Sendable {
     func selectModel(envelope: CommandEnvelope<SelectModelRequest>) async throws -> CommandReceipt<ModelSelectionInfo>
     func getModel(envelope: QueryEnvelope<GetModelRequest>) async throws -> ResponseEnvelope<ProviderModelInfo>
     func getModelCapabilities(envelope: QueryEnvelope<GetModelCapabilitiesRequest>) async throws -> ResponseEnvelope<ModelCapabilitiesInfo>
-    func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo>
 
     // MARK: - 8. Context
     func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot>
@@ -1092,7 +1082,6 @@ public protocol LingXiProtocolService: Sendable {
     // MARK: - 10. Workspace
     func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary>
     func setWorkspace(envelope: CommandEnvelope<SetWorkspaceRequest>) async throws -> CommandReceipt<WorkspaceSummary>
-    func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary>
     func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary>
 
     // MARK: - 10b. Git RPC（契约第十四至十七节）
@@ -1217,10 +1206,13 @@ public protocol LingXiProtocolService: Sendable {
 }
 
 public extension LingXiProtocolService {
-    /// Conformers that do not implement Goal Mode keep compiling and fail explicitly.
-    func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
-        throw CoreError(code: .unsupportedCommand, message: "setSessionGoal 未实现")
-    }
+    /// Genuinely optional content-plane conveniences. These are not defaults for a
+    /// requirement — they are 1-argument overloads of the authorized form.
+    ///
+    /// Everything the Runtime actually serves deliberately has NO default here. A
+    /// default would let a conformer that forgot an RPC keep compiling and answer
+    /// with `applied: true`, `[]` or a made-up object, which is the failure mode
+    /// §11 of the closure contract removes outright.
 
     func getContentMetadata(ref: ContentRef) async throws -> ContentMetadata {
         try await getContentMetadata(ref: ref, authorization: .anonymous)
@@ -1231,193 +1223,17 @@ public extension LingXiProtocolService {
     func getContentRange(ref: ContentRef, offset: Int, length: Int) async throws -> Data {
         try await getContentRange(ref: ref, offset: offset, length: length, authorization: .anonymous)
     }
-
-    // Default implementations for newly added Task, Worktree, and Preset RPCs
-    func createTask(envelope: CommandEnvelope<CreateTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        let capsule = TaskCapsule(
-            sessionID: envelope.payload.sessionID,
-            projectID: envelope.payload.projectID,
-            objective: envelope.payload.objective,
-            successCriteria: envelope.payload.successCriteria
-        )
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: TaskSnapshot(capsule: capsule))
-    }
-
-    func getTask(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskSnapshot> {
-        throw CoreError(code: .resourceNotFound, message: "Task \(envelope.payload.taskID) not found")
-    }
-
-    func listTasks(envelope: QueryEnvelope<ListTasksRequest>) async throws -> ResponseEnvelope<[TaskSnapshot]> {
-        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
-    }
-
-    func pauseTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        throw CoreError(code: .unsupportedCommand, message: "pauseTask not implemented on base service")
-    }
-
-    func resumeTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        throw CoreError(code: .unsupportedCommand, message: "resumeTask not implemented on base service")
-    }
-
-    func cancelTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        throw CoreError(code: .unsupportedCommand, message: "cancelTask not implemented on base service")
-    }
-
-    func forkTask(envelope: CommandEnvelope<ForkTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        throw CoreError(code: .unsupportedCommand, message: "forkTask not implemented on base service")
-    }
-
-    func updateTaskCriteria(envelope: CommandEnvelope<UpdateTaskCriteriaRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        throw CoreError(code: .unsupportedCommand, message: "updateTaskCriteria not implemented on base service")
-    }
-
-    func listTaskArtifacts(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<[TaskArtifact]> {
-        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
-    }
-
-    func getTaskReport(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskReport?> {
-        return ResponseEnvelope(requestID: envelope.requestID, payload: nil)
-    }
-
-    func finalizeTask(envelope: CommandEnvelope<TaskFinalizeRequest>) async throws -> CommandReceipt<TaskSnapshot> {
-        throw CoreError(code: .unsupportedCommand, message: "finalizeTask not implemented on base service")
-    }
-
-    func createWorktree(envelope: CommandEnvelope<CreateWorktreeRequest>) async throws -> CommandReceipt<WorkspaceWorktreeInfo> {
-        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
-    }
-
-    func listWorktrees(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[WorkspaceWorktreeInfo]> {
-        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
-    }
-
-    func applyWorktree(envelope: CommandEnvelope<ApplyWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
-    }
-
-    func discardWorktree(envelope: CommandEnvelope<DiscardWorktreeRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
-    }
-
-    func pruneWorktrees(envelope: CommandEnvelope<PruneWorktreesRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: lingxiWorktreeUnsupportedMessage)
-    }
-
-    func getLanguageServiceStatuses(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[LanguageServiceStatus]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供语言服务运行状态")
-    }
-
-    func getToolStatus(envelope: QueryEnvelope<GetToolStatusRequest>) async throws -> ResponseEnvelope<[ToolStatusEntry]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供工具运行状态")
-    }
-
-    func getBrowserSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[BrowserSessionStatus]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供浏览器会话状态")
-    }
-
-    func getBrowserCapture(envelope: QueryEnvelope<GetBrowserCaptureRequest>) async throws -> ResponseEnvelope<BrowserCapture> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供浏览器会话截图")
-    }
-
-    func listTerminalSessions(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[TerminalSessionInfo]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供终端会话")
-    }
-
-    func spawnTerminalSession(envelope: CommandEnvelope<SpawnTerminalSessionRequest>) async throws -> CommandReceipt<TerminalSessionInfo> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持创建终端会话")
-    }
-
-    func readTerminalSession(envelope: QueryEnvelope<ReadTerminalSessionRequest>) async throws -> ResponseEnvelope<TerminalSessionOutput> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供终端会话输出")
-    }
-
-    func writeTerminalSession(envelope: CommandEnvelope<WriteTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持终端输入")
-    }
-
-    func interruptTerminalSession(envelope: CommandEnvelope<InterruptTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持终端中断")
-    }
-
-    func closeTerminalSession(envelope: CommandEnvelope<CloseTerminalSessionRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持关闭终端会话")
-    }
-
-    func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
-    }
-    func saveProviderConfiguration(envelope: CommandEnvelope<SaveProviderConfigurationRequest>) async throws -> CommandReceipt<ProviderConfigurationDetail> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
-    }
-
-    func deleteProviderConfiguration(envelope: CommandEnvelope<DeleteProviderConfigurationRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 Provider 配置")
-    }
-
-    func testProviderDraft(envelope: CommandEnvelope<TestProviderDraftRequest>) async throws -> CommandReceipt<TestProviderResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持测试未保存的 Provider")
-    }
-
-    func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
-    }
-
-    func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
-    }
-
-    func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
-    }
-
-    func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持 Provider 登录")
-    }
-
-    func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持连接 Provider 产品")
-    }
-
-    func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Provider 目录")
-    }
-
-    func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Provider 目录模型")
-    }
-
-    func listMCPServerConfigurations(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[MCPServerConfigurationDetail]> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 MCP 配置")
-    }
-
-    func saveMCPServerConfiguration(envelope: CommandEnvelope<SaveMCPServerRequest>) async throws -> CommandReceipt<MCPServerConfigurationDetail> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 MCP 配置")
-    }
-
-    func deleteMCPServerConfiguration(envelope: CommandEnvelope<DeleteMCPServerRequest>) async throws -> CommandReceipt<VoidResult> {
-        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持编辑 MCP 配置")
-    }
-
-    func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {
-        let result = SideQuestionResult(answer: "Processed side question: \(envelope.payload.question)", modelUsed: "side-runner")
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: result)
-    }
-
     func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]> {
-        let presets = [
-            AgentPresetInfo(id: "build", name: "Builder", description: "Standard autonomous building agent", mode: .build, reasoningEffort: .auto, permissionPolicy: .ask),
-            AgentPresetInfo(id: "plan", name: "Planner", description: "Architecture and design planning", mode: .plan, reasoningEffort: .high, permissionPolicy: .ask),
-            AgentPresetInfo(id: "explore", name: "Explorer", description: "Read-only exploration and diagnosis", mode: .explore, reasoningEffort: .low, permissionPolicy: .auto)
-        ]
-        return ResponseEnvelope(requestID: envelope.requestID, payload: presets)
+        // no production implementation behind this RPC; §11.3 forbids inventing a roster
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Agent Preset 目录。")
     }
-
     func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]> {
-        return ResponseEnvelope(requestID: envelope.requestID, payload: [])
+        // no production implementation; an empty list would read as "no runs" rather than "unsupported"
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Run 列表查询。")
     }
-
     func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult> {
-        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: 1, observedThrough: [], result: MultiRunCompareResult(runs: [:]))
+        // no production implementation; applied=true with an empty comparison is a fabricated success
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不支持多 Run 对比。")
     }
 }
 

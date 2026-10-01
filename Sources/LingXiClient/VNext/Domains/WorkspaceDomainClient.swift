@@ -18,10 +18,6 @@ public struct WorkspaceDomainClient: Sendable {
         return try await transport.setWorkspace(envelope: CommandEnvelope(payload: req))
     }
 
-    public func summary() async throws -> WorkspaceSummary {
-        let resp = try await transport.getWorkspaceSummary(envelope: QueryEnvelope(payload: VoidResult()))
-        return resp.payload
-    }
 
     public func diff() async throws -> WorkspaceDiffSummary {
         let resp = try await transport.getWorkspaceDiffSummary(envelope: QueryEnvelope(payload: VoidResult()))

@@ -35,8 +35,4 @@ public struct ModelDomainClient: Sendable {
         return resp.payload
     }
 
-    public func setSelection(modelID: String, sessionID: SessionID? = nil) async throws -> CommandReceipt<ModelSelectionInfo> {
-        let req = SetModelSelectionRequest(modelID: modelID, sessionID: sessionID)
-        return try await transport.setModelSelection(envelope: CommandEnvelope(payload: req))
-    }
 }

@@ -240,9 +240,6 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.getModelCapabilities(envelope: envelope)
     }
 
-    public func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
-        try await service.setModelSelection(envelope: envelope)
-    }
 
     // MARK: - LingXiProtocolService: 8. Context
     public func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot> {
@@ -448,9 +445,6 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.gitPush(envelope: envelope)
     }
 
-    public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
-        try await service.getWorkspaceSummary(envelope: envelope)
-    }
 
     public func getWorkspaceDiffSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceDiffSummary> {
         try await service.getWorkspaceDiffSummary(envelope: envelope)
@@ -567,6 +561,72 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.testCredential(envelope: envelope)
     }
 
+    // MARK: - Task & Agent domains
+
+    // Present until §11 removed the protocol defaults these were riding on: an unforwarded
+    // requirement silently answered from the extension, so over this transport createTask
+    // reported `applied: true` for a task CoreHost had never registered. Forgetting one now
+    // fails the build instead.
+
+    public func createTask(envelope: CommandEnvelope<CreateTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.createTask(envelope: envelope)
+    }
+
+    public func getTask(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskSnapshot> {
+        try await service.getTask(envelope: envelope)
+    }
+
+    public func listTasks(envelope: QueryEnvelope<ListTasksRequest>) async throws -> ResponseEnvelope<[TaskSnapshot]> {
+        try await service.listTasks(envelope: envelope)
+    }
+
+    public func pauseTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.pauseTask(envelope: envelope)
+    }
+
+    public func resumeTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.resumeTask(envelope: envelope)
+    }
+
+    public func cancelTask(envelope: CommandEnvelope<TaskLifecycleRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.cancelTask(envelope: envelope)
+    }
+
+    public func forkTask(envelope: CommandEnvelope<ForkTaskRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.forkTask(envelope: envelope)
+    }
+
+    public func updateTaskCriteria(envelope: CommandEnvelope<UpdateTaskCriteriaRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.updateTaskCriteria(envelope: envelope)
+    }
+
+    public func listTaskArtifacts(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<[TaskArtifact]> {
+        try await service.listTaskArtifacts(envelope: envelope)
+    }
+
+    public func getTaskReport(envelope: QueryEnvelope<GetTaskRequest>) async throws -> ResponseEnvelope<TaskReport?> {
+        try await service.getTaskReport(envelope: envelope)
+    }
+
+    public func finalizeTask(envelope: CommandEnvelope<TaskFinalizeRequest>) async throws -> CommandReceipt<TaskSnapshot> {
+        try await service.finalizeTask(envelope: envelope)
+    }
+
+    public func submitSideQuestion(envelope: CommandEnvelope<SubmitSideQuestionRequest>) async throws -> CommandReceipt<SideQuestionResult> {
+        try await service.submitSideQuestion(envelope: envelope)
+    }
+
+    public func listAgentPresets(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[AgentPresetInfo]> {
+        try await service.listAgentPresets(envelope: envelope)
+    }
+
+    public func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]> {
+        try await service.listAgentRuns(envelope: envelope)
+    }
+
+    public func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult> {
+        try await service.compareMultiRuns(envelope: envelope)
+    }
     // MARK: - Event Streams
     public func subscribeRuntimeEvents(after: EventCursor?) async -> AsyncStream<RuntimeEventEnvelope> {
         await service.subscribeRuntimeEvents(after: after)

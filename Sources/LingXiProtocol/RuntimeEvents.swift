@@ -45,12 +45,15 @@ public struct RuntimeCapabilities: Codable, Sendable, Equatable {
     public let supportedModes: [AgentMode]
     public let supportedFeatures: [ProtocolFeature]
 
+    /// `supportedFeatures` has no default on purpose. Every producer states which features this
+    /// Runtime wires, so a new `ProtocolFeature` case cannot reach a client by being added to an
+    /// enum. See §12 of the closure contract and `RuntimeCapabilitiesContractTests`.
     public init(
         supportsStreamReplay: Bool = true,
         supportsContentUpload: Bool = true,
         maxAttachmentBytes: Int = 100 * 1024 * 1024,
         supportedModes: [AgentMode] = [.build, .plan, .explore],
-        supportedFeatures: [ProtocolFeature] = ProtocolFeature.knownFeatures
+        supportedFeatures: [ProtocolFeature]
     ) {
         self.supportsStreamReplay = supportsStreamReplay
         self.supportsContentUpload = supportsContentUpload

@@ -2797,11 +2797,16 @@ extension CoreHost {
     }
 
     public func getRuntimeCapabilities(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeCapabilities> {
+        // Stated, not inherited from the enum: every entry here must have a dispatched RPC, a
+        // transport forward and an implementation, or `RuntimeCapabilitiesContractTests` fails.
         let caps = RuntimeCapabilities(
             supportsStreamReplay: true,
             supportsContentUpload: true,
             maxAttachmentBytes: 100 * 1024 * 1024,
-            supportedModes: [.build, .plan, .explore]
+            supportedModes: [.build, .plan, .explore],
+            supportedFeatures: [
+                .taskPause, .taskResume, .taskFork, .workspaceFork, .gitRPC, .gitRemoteSync,
+            ]
         )
         return ResponseEnvelope(
             requestID: envelope.requestID,
@@ -4711,7 +4716,10 @@ extension CoreHost {
         )
     }
 
-    public func getWorkspaceSummary(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
+    /// The workspace projection one query serves. `getWorkspaceSummary(envelope:)` used to sit
+    /// beside this as a second requirement on the same wire name, which left two names for one
+    /// fact and only one of them dispatched over stdio.
+    public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
         let summary = await getWorkspaceSummary()
         return ResponseEnvelope(
             requestID: envelope.requestID,
@@ -5164,16 +5172,6 @@ extension CoreHost {
         )
     }
 
-    public func setModelSelection(envelope: CommandEnvelope<SetModelSelectionRequest>) async throws -> CommandReceipt<ModelSelectionInfo> {
-        let req = SelectModelRequest(model: envelope.payload.modelID)
-        let selectEnvelope = CommandEnvelope(
-            commandID: envelope.commandID,
-            issuedAt: envelope.issuedAt,
-            expectedRevision: envelope.expectedRevision,
-            payload: req
-        )
-        return try await selectModel(envelope: selectEnvelope)
-    }
 
     public func searchContext(envelope: QueryEnvelope<SearchContextRequest>) async throws -> ResponseEnvelope<[ContextSearchResultItem]> {
         let coord = try await coordinator(for: envelope.payload.sessionID)
@@ -5431,9 +5429,7 @@ extension CoreHost {
 
 
 
-    public func getWorkspace(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<WorkspaceSummary> {
-        try await getWorkspaceSummary(envelope: envelope)
-    }
+
 
     /// 原子切换 Core 工作区数据面与控制面，消除 split-brain (Audit Round 5 Phase A, Round 7 Phase A & Round 9 Phase D)
     public func applyWorkspaceTransition(to newURL: URL) async throws {
@@ -5618,23 +5614,19 @@ extension CoreHost {
         return receipt
     }
 
+    /// Not served. This used to answer `requestCount: 0, errorCount: 0, averageLatencyMs: 0`,
+    /// which a Settings panel then rendered as fact — a runtime that had made a hundred provider
+    /// calls looked idle. There is no session-independent counter to put here; the real numbers
+    /// are per session via `getPerformanceMetrics`, which is what Diagnostics must use.
     public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> {
-        return ResponseEnvelope(
-            requestID: envelope.requestID,
-            revision: currentRevision,
-            eventCursor: await runtimeEventLog.currentCursor(),
-            payload: ProviderMetricsInfo(requestCount: 0, errorCount: 0, averageLatencyMs: 0.0)
-        )
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供全局 Provider 指标；请按会话查询 getPerformanceMetrics")
     }
 
+    /// Not served. The previous implementation returned a hard-coded `["run.start", "run.finish"]`,
+    /// so every run in the product had the same two-span trace regardless of what it did.
+    /// A real trace needs a span store; until then this is unsupported rather than invented.
     public func getRunTrace(envelope: QueryEnvelope<GetRunTraceRequest>) async throws -> ResponseEnvelope<RunTraceInfo> {
-        let coord = try await coordinator(for: envelope.payload.sessionID)
-        return ResponseEnvelope(
-            requestID: envelope.requestID,
-            revision: currentRevision,
-            eventCursor: await coord.eventLog.currentCursor(),
-            payload: RunTraceInfo(runID: envelope.payload.runID, sessionID: envelope.payload.sessionID, spans: ["run.start", "run.finish"])
-        )
+        throw CoreError(code: .unsupportedCommand, message: "该 Runtime 不提供 Run Trace 查询")
     }
 
     private func triggerInjectedCrash() -> Never {

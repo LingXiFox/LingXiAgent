@@ -986,7 +986,7 @@ struct ProtocolVNextFrozenContractTests {
         if let firstModel = modelList.payload.first {
             let getModelRes = try await service.getModel(envelope: QueryEnvelope(payload: GetModelRequest(modelID: firstModel.id)))
             #expect(getModelRes.payload.id == firstModel.id)
-            let setSelRes = try await service.setModelSelection(envelope: CommandEnvelope(payload: SetModelSelectionRequest(modelID: firstModel.id)))
+            let setSelRes = try await service.selectModel(envelope: CommandEnvelope(payload: SelectModelRequest(model: firstModel.id)))
             #expect(setSelRes.applied)
         }
 
@@ -1024,8 +1024,6 @@ struct ProtocolVNextFrozenContractTests {
         #expect(uninstExtRes.applied)
 
         // 10. Workspace Domain
-        let wsSummary = try await service.getWorkspaceSummary(envelope: QueryEnvelope(payload: VoidResult()))
-        #expect(wsSummary.payload.rootPath == tempDir.path)
         let wsGet = try await service.getWorkspace(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(wsGet.payload.rootPath == tempDir.path)
         let wsSet = try await service.setWorkspace(envelope: CommandEnvelope(payload: SetWorkspaceRequest(workspaceRoot: tempDir.path)))
@@ -1051,12 +1049,19 @@ struct ProtocolVNextFrozenContractTests {
         // 12. Diagnostics Domain
         let diagRes = try await service.getDiagnostics(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(!diagRes.payload.runtimeVersion.isEmpty)
+        // `payload == nil || payload != nil` and `requestCount >= 0` both passed on a Runtime
+        // that answered with nothing but zeros and a two-span stub. They asserted reachability,
+        // not truth, which is how fabricated diagnostics survived an audit.
         let perfRes = try await service.getPerformanceMetrics(envelope: QueryEnvelope(payload: GetPerformanceMetricsRequest(sessionID: sessionID)))
-        #expect(perfRes.payload == nil || perfRes.payload != nil)
-        let provMetrics = try await service.getProviderMetrics(envelope: QueryEnvelope(payload: VoidResult()))
-        #expect(provMetrics.payload.requestCount >= 0)
-        let runTraceRes = try await service.getRunTrace(envelope: QueryEnvelope(payload: GetRunTraceRequest(sessionID: sessionID, runID: RunID("r-test"))))
-        #expect(runTraceRes.payload.runID == RunID("r-test"))
+        if let report = perfRes.payload {
+            #expect(report.sessionID == sessionID, "性能报告必须属于被查询的那个 Session")
+        }
+        await #expect(throws: CoreError.self) {
+            _ = try await service.getProviderMetrics(envelope: QueryEnvelope(payload: VoidResult()))
+        }
+        await #expect(throws: CoreError.self) {
+            _ = try await service.getRunTrace(envelope: QueryEnvelope(payload: GetRunTraceRequest(sessionID: sessionID, runID: RunID("r-test"))))
+        }
 
         // 13. Credential Domain
         let credStoreRes = try await service.storeCredential(envelope: CommandEnvelope(payload: StoreCredentialRequest(secret: "dummy-secret")))

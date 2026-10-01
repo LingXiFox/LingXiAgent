@@ -33,11 +33,40 @@ struct ProtocolVersionContractTests {
         #expect(ProtocolFeature.allCases.count >= 7)
     }
 
-    @Test("RuntimeCapabilities defaults contain all core ProtocolFeature flags")
-    func runtimeCapabilitiesFeatureDefaults() {
-        let caps = RuntimeCapabilities()
+    /// §12 of the closure contract: an advertisement must be earned, never inherited.
+    ///
+    /// This assertion used to run the other way — it required `RuntimeCapabilities()` to contain
+    /// every `knownFeatures` entry, which locked in "the enum has a case, therefore the Runtime
+    /// serves it". Adding a feature case then silently promised it to every client. A default
+    /// argument no longer exists, so a producer that does not state its set does not compile.
+    @Test("RuntimeCapabilities cannot advertise a feature set it did not state")
+    func capabilitiesHaveNoInheritedFeatureSet() {
+        // `RuntimeCapabilities(...)` without `supportedFeatures:` must be a compile error.
+        // Written as a type-level check: the only initialiser leaves the parameter required.
+        let stated = RuntimeCapabilities(supportedFeatures: [.gitRPC])
+        #expect(stated.supportedFeatures == [.gitRPC])
+        #expect(Set(ProtocolFeature.allCases).isSuperset(of: Set(stated.supportedFeatures)))
+    }
+
+    /// A feature name with no RPC behind it is not a protocol feature, it is a guess.
+    @Test("Every advertised ProtocolFeature names RPCs a client could actually call")
+    func featureFlagsNameRealMethods() {
         for feature in ProtocolFeature.knownFeatures {
-            #expect(caps.supportedFeatures.contains(feature), "Missing default feature in RuntimeCapabilities: \(feature.rawValue)")
+            #expect(!feature.requiredMethods.isEmpty,
+                    "\(feature.rawValue) 被广播却没有任何对应的 RPC method，§12 禁止这种声明")
+            for method in feature.requiredMethods {
+                #expect(method.contains("."), "\(feature.rawValue) 的 \(method) 不像 method 名")
+            }
+        }
+    }
+
+    @Test("Feature flags that describe no RPC surface stay out of the enum")
+    func noPhantomFeatures() {
+        // capability.gateway / trace.stream / trace.query named Core-internal machinery with no
+        // RPC, no transport dispatch and no client. Re-adding one requires wiring all three first.
+        let raws = Set(ProtocolFeature.allCases.map(\.rawValue))
+        for phantom in ["capability.gateway", "trace.stream", "trace.query"] {
+            #expect(!raws.contains(phantom), "\(phantom) 没有 RPC 承载，不得作为协议特性广播")
         }
     }
 

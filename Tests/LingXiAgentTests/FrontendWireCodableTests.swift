@@ -111,10 +111,10 @@ struct FrontendWireCodableTests {
         )]
         session.todos = [TodoItemData(id: "todo-1", title: "ship it", status: "pending")]
         session.hasActiveError = false
-        session.recalculateStatus(connectionState: .connected(version: ProtocolVersion(major: 2, minor: 0), capabilities: RuntimeCapabilities()))
+        session.recalculateStatus(connectionState: .connected(version: ProtocolVersion(major: 2, minor: 0), capabilities: RuntimeCapabilities(supportedFeatures: [])))
 
         var state = ApplicationState(
-            connectionState: .connected(version: ProtocolVersion(major: 2, minor: 0), capabilities: RuntimeCapabilities()),
+            connectionState: .connected(version: ProtocolVersion(major: 2, minor: 0), capabilities: RuntimeCapabilities(supportedFeatures: [])),
             sessionCatalog: [SessionSummary(sessionID: sessionID, title: "Contract", workingDirectory: "/tmp")],
             activeSessionID: sessionID,
             activeSessionState: session

@@ -86,12 +86,30 @@ struct GitRPCSurfaceTests {
             #expect(protocolSource.contains(request), "\(request) 必须存在")
         }
 
-        // feature 声明 + RuntimeCapabilities 默认广播
+        // feature 声明 + Core 真实广播。广播值必须由 CoreHost 自己写出来：§12 之后
+        // RuntimeCapabilities 不再有 `knownFeatures` 默认参数，"构造一个默认对象看看有什么"
+        // 已经不再是"这个 Runtime 支持什么"的证据。
         #expect(featureSource.contains("case gitRPC = \"git.rpc\""))
         #expect(ProtocolFeature.knownFeatures.contains(.gitRPC))
-        #expect(RuntimeCapabilities().supportedFeatures.contains(.gitRPC), "knownFeatures 必须进 RuntimeCapabilities")
-        #expect(ProtocolFeature.knownFeatures.contains(.gitRemoteSync))
-        #expect(RuntimeCapabilities().supportedFeatures.contains(.gitRemoteSync), "远程同步 RPC 必须有对应 feature")
+        let advertised = try Self.coreHostAdvertisedFeatures()
+        #expect(advertised.contains(".gitRPC"), "git RPC 已接线，CoreHost 必须广播 .gitRPC")
+        #expect(advertised.contains(".gitRemoteSync"), "远程 git 已接线，CoreHost 必须广播 .gitRemoteSync")
+    }
+
+    /// The literal feature list CoreHost passes to `RuntimeCapabilities`.
+    static func coreHostAdvertisedFeatures() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/LingXiCore/App/CoreHost.swift"),
+            encoding: .utf8)
+        guard let start = source.range(of: "supportedFeatures:"),
+              let open = source[start.lowerBound...].firstIndex(of: "["),
+              let close = source[open...].firstIndex(of: "]") else {
+            Issue.record("CoreHost 未显式写出 supportedFeatures: [...] —— 广播不允许来自默认值")
+            return ""
+        }
+        return String(source[open...close])
     }
 
     /// 契约第十八节：Git 写不允许有 transport 默认实现 —— 有默认实现就等于允许某条 transport 静默绕过。

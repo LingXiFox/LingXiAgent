@@ -565,7 +565,7 @@ struct LingXiClientVNextTests {
         checkpoint("workspace")
         let ws = try await client.workspace.get()
         #expect(ws.rootPath == tempDir.path)
-        let wsSummary = try await client.workspace.summary()
+        let wsSummary = try await client.workspace.get()
         #expect(wsSummary.rootPath == tempDir.path)
         let wsSet = try await client.workspace.set(workspaceRoot: tempDir.path)
         #expect(wsSet.applied)
