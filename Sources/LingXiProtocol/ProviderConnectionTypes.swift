@@ -81,6 +81,19 @@ public struct ProviderAccountInfo: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// Whether one model is actually usable on the account behind a provider.
+///
+/// `/v1/models` cannot answer this: an endpoint happily lists models the token plan excludes, and the
+/// user meets that as a 403 in the middle of a conversation. Only a real turn reaches the truth.
+public enum ModelAvailability: String, Codable, Sendable, Equatable {
+    /// The request reached the model.
+    case available
+    /// Upstream said this model is not offered here: excluded by the plan, or not a name it knows.
+    case unavailable
+    /// Nothing was learned. Never demote a model on this.
+    case unknown
+}
+
 public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let providerID: String
@@ -96,6 +109,9 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
     public let backendVariants: [String]?
     public let vision: Bool
     public let toolCalling: Bool
+    /// nil until something has actually probed this model. Absent is not the same as available: a
+    /// model nobody has tried yet must not read as verified.
+    public let availability: ModelAvailability?
 
     public init(
         id: String,
@@ -111,7 +127,8 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         backendVariant: String? = nil,
         backendVariants: [String]? = nil,
         vision: Bool = false,
-        toolCalling: Bool = true
+        toolCalling: Bool = true,
+        availability: ModelAvailability? = nil
     ) {
         self.id = id
         self.providerID = providerID
@@ -127,6 +144,7 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         self.backendVariants = backendVariants
         self.vision = vision
         self.toolCalling = toolCalling
+        self.availability = availability
     }
 
     public init(from decoder: Decoder) throws {
@@ -145,6 +163,7 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         self.backendVariants = try container.decodeIfPresent([String].self, forKey: .backendVariants)
         self.vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         self.toolCalling = try container.decodeIfPresent(Bool.self, forKey: .toolCalling) ?? true
+        self.availability = try container.decodeIfPresent(ModelAvailability.self, forKey: .availability)
     }
 }
 

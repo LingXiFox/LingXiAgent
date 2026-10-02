@@ -37,3 +37,6 @@ Server/models-site/public/publication.json.prev
 # 公共 SDK 的本地联合开发副本：各自是独立 Git 仓库，不随主仓库提交
 /SDKs/LingXiModelSDK/
 /SDKs/LingXiPluginSDK/
+
+# Local CLI permission state (machine-local; contains host/username grants)
+.qoder/

@@ -75,6 +75,34 @@ struct TerminalSessionTests {
         #expect(handle.isClosed())
         #expect(handle.exitCode() != nil)
     }
+
+    @Test("The requested size and working directory reach the shell, and the pty is its controlling terminal")
+    func ptySizeCwdAndControllingTerminal() async throws {
+        let (root, _) = try temporaryWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let handle = try PosixPtyAdapter().spawn(
+            command: ["/bin/sh", "-c", "stty size; pwd -P; sleep 5; echo NOT-INTERRUPTED"], cwd: root,
+            environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"], columns: 52, rows: 17)
+        defer { handle.close() }
+        var seen = ""
+        for _ in 0..<40 {
+            seen += String(decoding: handle.drain() ?? Data(), as: UTF8.self)
+            if seen.contains(root.resolvingSymlinksInPath().lastPathComponent) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(seen.contains("17 52"), "shell 没拿到请求的窗口尺寸: \(seen)")
+        #expect(seen.contains(root.resolvingSymlinksInPath().lastPathComponent), "cwd 没有生效: \(seen)")
+
+        // ^C through the line discipline only signals anything when the pty is the
+        // session's controlling terminal.
+        handle.interrupt()
+        for _ in 0..<40 where !handle.isClosed() {
+            _ = handle.drain()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(handle.isClosed(), "^C 没有中断前台进程")
+        #expect(handle.exitCode() == 130)
+    }
     #endif
 
     @Test("An Agent process is projected as a session, without a fake interrupt")

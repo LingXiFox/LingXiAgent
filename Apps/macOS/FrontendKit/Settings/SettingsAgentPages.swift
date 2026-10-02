@@ -14,6 +14,7 @@ struct ProvidersSettingsPage: View {
     @ObservedObject var store: SettingsStore
     @State private var pendingRemoval: ProviderAccountInfo?
     @State private var detail: ProviderConfigurationDetail?
+    @State private var withheld: [String: [String]] = [:]
     @State private var isAdding = false
     @Environment(\.settingsSelection) private var selection
     @Environment(\.settingsAddTrigger) private var addTrigger
@@ -55,7 +56,14 @@ struct ProvidersSettingsPage: View {
                     }, rowSpacing: 0) {
                         ProviderModelList(store: store, models: models)
                     } footer: {
-                        Text("模型元数据默认来自 models.lingxifox.cn 官方实时索引；可用性由 Provider Discovery 动态确认。")
+                        VStack(alignment: .leading, spacing: LingXiMetrics.Space.xs) {
+                            Text("模型清单来自账户发现，不在 providers.json 中，所以这里不能手动添加。")
+                            // Five of seven looks like a broken integration unless the page says the
+                            // other two exist and why they are not offered.
+                            if let hidden = withheld[account.productID] ?? withheld[account.id], !hidden.isEmpty {
+                                Text("另有 \(hidden.count) 个模型账户可及但上游标记为不可选择：\(hidden.joined(separator: "、"))。")
+                            }
+                        }
                     }
                     .settingsAnchor("providers.list")
                 }
@@ -74,7 +82,7 @@ struct ProvidersSettingsPage: View {
         .sheet(isPresented: $isAdding) {
             AddProviderSheet(store: store) { added in
                 isAdding = false
-                if let added { select(added.providerID) }
+                if let added { select(added) }
             }
         }
         .confirmationDialog("移除 Provider 账户？", isPresented: Binding(
@@ -99,6 +107,7 @@ struct ProvidersSettingsPage: View {
     private func loadDetail() async {
         guard let id = account?.id else { detail = nil; return }
         detail = await store.providerConfiguration(id)
+        withheld = await store.withheldModels()
     }
 
     static func formatTokens(_ n: Int) -> String {

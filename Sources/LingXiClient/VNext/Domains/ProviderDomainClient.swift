@@ -89,9 +89,26 @@ public struct ProviderDomainClient: Sendable {
             envelope: QueryEnvelope(payload: GetProviderCatalogRequest(refresh: refresh))).payload
     }
 
-    public func catalogModels(entryID: String) async throws -> [String] {
+    public func catalogModels(entryID: String) async throws -> ProviderModelRoster {
         try await transport.getProviderCatalogModels(
             envelope: QueryEnvelope(payload: GetProviderCatalogModelsRequest(entryID: entryID))).payload
+    }
+
+    /// Probes the models this provider already has configured. Costs one minimal turn each.
+    public func probeModels(providerID: String) async throws -> [String: ModelAvailability] {
+        try await transport.probeProviderModels(
+            envelope: CommandEnvelope(payload: ProbeProviderModelsRequest(providerID: providerID))).result ?? [:]
+    }
+
+    /// What a previous probe settled, without spending another request.
+    public func modelAvailability(providerID: String) async throws -> [String: ModelAvailability] {
+        try await transport.getProviderModelAvailability(
+            envelope: QueryEnvelope(payload: GetProviderModelAvailabilityRequest(providerID: providerID))).payload
+    }
+
+    /// Models an account reaches but that are not offered for selection, keyed by product.
+    public func withheldModels() async throws -> [String: [String]] {
+        try await transport.getWithheldModels(envelope: QueryEnvelope(payload: VoidResult())).payload
     }
 
     /// Connects a registry product with the credential or endpoint its contract requires.

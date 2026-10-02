@@ -35,6 +35,11 @@ public enum ModelAvailabilityResolver {
         /// retired and compatibility mode is off. Retained so callers can
         /// explain the omission or offer an opt-in.
         public let withheldByStatus: [String]
+        /// Model IDs the account can reach but upstream marks `hide` / `disabled`, so they are not
+        /// offered for selection. Kept for the same reason as above: a settings page that shows five
+        /// models when the account reported seven reads as a broken integration unless it says which
+        /// two were withheld and why.
+        public let withheldByVisibility: [String]
         /// True when the runtime contract knows the product but has not
         /// implemented it, so nothing is offered regardless of metadata.
         public let runtimeUnsupported: Bool
@@ -45,11 +50,13 @@ public enum ModelAvailabilityResolver {
         public init(
             models: [ProviderModelInfo],
             withheldByStatus: [String] = [],
+            withheldByVisibility: [String] = [],
             runtimeUnsupported: Bool = false,
             fellBackToLegacyOnly: Bool = false
         ) {
             self.models = models
             self.withheldByStatus = withheldByStatus
+            self.withheldByVisibility = withheldByVisibility
             self.runtimeUnsupported = runtimeUnsupported
             self.fellBackToLegacyOnly = fellBackToLegacyOnly
         }
@@ -84,6 +91,7 @@ public enum ModelAvailabilityResolver {
             catalogModels.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        var hiddenByUpstream: [String] = []
 
         // Build the candidate list. Account discovery, when it produced
         // anything, is the authority on availability.
@@ -96,7 +104,10 @@ public enum ModelAvailabilityResolver {
                     // Upstream first-party visibility metadata determines selectability:
                     // models marked "hide" or "disabled" are preserved in listing and cache verbatim,
                     // but withheld from user selectable models.
-                    guard group.visibility.lowercased() != "hide" && group.visibility.lowercased() != "disabled" else { continue }
+                    guard group.visibility.lowercased() != "hide" && group.visibility.lowercased() != "disabled" else {
+                        hiddenByUpstream.append(group.primaryUpstreamModelID)
+                        continue
+                    }
                     let record = registryIndex[group.id] ?? registryIndex[group.primaryUpstreamModelID]
                     let synthesized = DiscoveredRemoteModel(
                         id: group.primaryUpstreamModelID,
@@ -126,7 +137,10 @@ public enum ModelAvailabilityResolver {
                 }
             } else {
                 for model in accountModels {
-                    guard model.visibility.lowercased() != "hide" && model.visibility.lowercased() != "disabled" else { continue }
+                    guard model.visibility.lowercased() != "hide" && model.visibility.lowercased() != "disabled" else {
+                        hiddenByUpstream.append(model.id)
+                        continue
+                    }
                     let record = registryIndex[model.id]
                     candidates.append(Candidate(discovered: model, record: record))
                 }
@@ -140,7 +154,11 @@ public enum ModelAvailabilityResolver {
             }
         }
 
-        guard !candidates.isEmpty else { return .empty }
+        guard !candidates.isEmpty else {
+            // Everything the account reported was withheld. Still say how many, or the page is blank
+            // with no explanation.
+            return Outcome(models: [], withheldByVisibility: hiddenByUpstream)
+        }
 
         // Partition by published status. A model the catalog has never seen has
         // no status and is treated as new rather than as legacy: it stays
@@ -198,6 +216,7 @@ public enum ModelAvailabilityResolver {
         return Outcome(
             models: models,
             withheldByStatus: withheld,
+            withheldByVisibility: hiddenByUpstream,
             runtimeUnsupported: false,
             fellBackToLegacyOnly: fellBack
         )

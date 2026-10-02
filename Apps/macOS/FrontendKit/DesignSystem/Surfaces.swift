@@ -3,11 +3,15 @@ import SwiftUI
 // MARK: - Surfaces
 //
 // Three kinds of surface exist, and only three:
-// - Panel: sidebar / stage / inspector. bg-window or bg-content, radius-panel,
-//   1px separator ring, NO shadow.
-// - Floating surface: composer, permission, question, palette. Static translucent
-//   fill over the app wallpaper, separator ring, shadow-float.
+// - Panel: sidebar / stage / inspector. Glass ground over the app wallpaper, radius-panel,
+//   1px lit edge, soft elevation shadow.
+// - Floating surface: composer, permission, question, palette. A lighter, closer glass,
+//   the same lit edge, and a deeper shadow — it must read above the panel, not beside it.
 // - Content: messages, events, output. No card, no border, no shadow, no glass.
+//
+// Panels and floating layers share `LXGlass`, `shapeStroke` and `topLitEdge`; only the wash
+// and the elevation differ. Against a photograph an outline alone vanishes and a shadow alone
+// smears, so both carry a stroke *and* a shadow.
 
 public extension View {
     /// 1px separator ring drawn inside `cornerRadius`.
@@ -19,14 +23,19 @@ public extension View {
         }
     }
 
-    /// Panel: a filled rounded rect with a separator ring and no shadow.
+    /// Panel: a glass rounded rect with a lit edge and elevation.
     func lxPanel(_ fill: Color = LXColor.window, cornerRadius: CGFloat = LingXiMetrics.Radius.panel) -> some View {
-        modifier(LXPanelBackground(fill: fill, cornerRadius: cornerRadius))
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .lxRing(cornerRadius: cornerRadius)
+        modifier(LXPanelChrome(fill: fill, cornerRadius: cornerRadius))
     }
 
-    /// Floating surface chrome: static translucent fill, ring, shadow-float.
+    /// A group inside a panel (a settings card, a list block): one glass step up from the
+    /// panel and the same lit edge, but no elevation — a shadow inside a panel reads as a
+    /// second floating layer, and glass stacked with two shadows reads as mud.
+    func lxInsetGroup(cornerRadius: CGFloat = LingXiMetrics.Radius.control) -> some View {
+        modifier(LXInsetGroupChrome(cornerRadius: cornerRadius))
+    }
+
+    /// Floating surface chrome: closer glass, lit edge, deeper shadow.
     @ViewBuilder
     func lxFloating(cornerRadius: CGFloat = LingXiMetrics.Radius.surface) -> some View {
         modifier(LXFloatingChrome(cornerRadius: cornerRadius))
@@ -38,6 +47,40 @@ public extension View {
             .padding(.vertical, LingXiMetrics.Space.sm)
             .background(LXColor.fillQuinary,
                         in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.inset, style: .continuous))
+    }
+}
+
+/// Kept as a modifier rather than a modifier chain at the call site: every panel in the app
+/// carries the same five stages (ground, clip, edge, rim, elevation) and inlining them into
+/// `View` extensions pushed several call sites past the compiler's type-check budget.
+private struct LXPanelChrome: ViewModifier {
+    let fill: Color
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .modifier(LXPanelBackground(fill: fill, cornerRadius: cornerRadius))
+            .clipShape(shape)
+            .shapeStroke(shape, colour: LXColor.glassEdge)
+            .topLitEdge(shape)
+            .shadow(color: .black.opacity(LingXiMetrics.Shadow.panelOpacity),
+                    radius: LingXiMetrics.Shadow.panelRadius, y: LingXiMetrics.Shadow.panelY)
+    }
+}
+
+private struct LXInsetGroupChrome: ViewModifier {
+    let cornerRadius: CGFloat
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(LXGlass(cornerRadius: cornerRadius, wash: LXColor.glassWash,
+                                solidFallback: LXColor.content, translucent: !reduceTransparency))
+            .clipShape(shape)
+            .shapeStroke(shape, colour: LXColor.glassEdge)
+            .topLitEdge(shape)
     }
 }
 

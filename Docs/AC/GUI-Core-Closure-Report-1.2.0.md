@@ -125,7 +125,7 @@ Bundle.module  →  GUI 背景
 | :--- | :--- | :--- |
 | **附件根本没进模型请求** | 本狐把附件条目加在 `startTurn` 的 `updatedEntries` 上，而那是 L1 **记账**变量；请求实际由 `runTurn` 里的 `allEntries → projection → compactor → context.modelMessages()` 组装。更糟的是当时的守卫 `if !updatedEntries.contains(…userMessage.id…)` 永远为假——CoreHost 在 `startTurn` 之前就已把用户消息提交进 session store。结果：字节被上传、被解析、然后丢掉 | 已修：`runTurn` 显式接收 attachments，注入到真正组装请求的 `allEntries`。resume 路径不传（文件属于引入它的那一轮） |
 | **9 处 `SessionSummary` 构造里 8 处丢 `goal:`** | 除 `setSessionGoal` 外，create / rename / setReasoningEffort / revert / getSession / listSessions / getSnapshot 全都广播 `goal: nil` 的 `.sessionUpdated`。于是任何一次改名或回滚都会把 GUI 的 goal chip 抹掉，而 Core 那边锚点还在、还在往每轮注入。`getSession` 还额外丢 `reasoningEffort`，并把 `mode` 写死 `.build` | 已修：新增 `currentGoal(_:)` 从唯一持有者 `SessionGoalRegistry` 读，9 处全部补齐；`listSessions` 的 `map` 改成循环（同步闭包无法 `await`，这正是它漏掉 goal 的原因） |
-| **`Stop` 语义两处不完整** | ① 被排队的 Turn 在 Stop 之后作为新的 root run 起来；② Stop 之后 Core 侧 pending interaction 仍是权威 | **未修**，保留为 `withKnownIssue` 标注，见 J 节 |
+| **`Stop` 语义两处不完整** | ① 被排队的 Turn 在 Stop 之后作为新的 root run 起来；② Stop 之后 Core 侧 pending interaction 仍是权威 | 已修：① `CancelRunRequest` 新增 `cancelQueuedTurns`，Core 在终结 active run **之前**排空队列，`finishRun` 的队列推进因此无处可提升（`SessionTurnCoordinator.cancelAllQueuedTurns`）；② `CoreHost.cancelRun` 在释放引擎之后写 `.interactionResolved` 账本并清父会话镜像，`interaction.listPending` 与快照读都变空。两条 `withKnownIssue` 已翻成硬断言 |
 
 §18.1 权威落点核对结果：Mode / Permission / Model 只经 `TurnExecutionIntent`（有专门一条测试断言 wire 上除 intent 之外没有别处携带这三者）；Reasoning 是 session 设置而非 turn 字段；Goal 进 `SessionGoalRegistry` 并经 summary / snapshot / 事件三条路投影；Attachments 进 `UserInput.attachments` 并真的成为模型看到的文本；Worktree 走真 git。
 
@@ -157,7 +157,23 @@ Bundle.module  →  GUI 背景
 
 ## I. 已知历史 flake
 
-（同上。）
+全量回归（1491 项 / 205 套件）里有 7 项在整跑时红、单独跑或小组跑时绿。它们都不在本次改动的路径上，逐条复跑确认：
+
+| 测试 | 断言 | 单跑结果 |
+| :--- | :--- | :--- |
+| `Round15SystemAuditTests` Queue Handoff | 10s 轮询内 Turn 2 进入 running | 0.03s 通过 |
+| `UXAndStreamingFixesTests` Pass 3 | `elapsed < 1` | 通过 |
+| `TUIRenderingTests` animationTicks… | 无半秒停顿 | 通过 |
+| `StdioConnectionDeadlineTests` / `VNextStdioTransportDeadlineTests` | `elapsed >= 0.9 && elapsed < 10` | 通过 |
+| `PlatformHTTPServerTests` routing | 客户端 exchange 往返 | 通过 |
+| `ProviderRateSchedulerTests` globalConcurrencyIsShared… | 并发计数 == 1 | 连续三次通过 |
+
+前六项是墙钟/共享全局注册表在满载下的抖动，不是行为缺陷。
+
+第七项不同，它是**真缺陷**且与负载无关：`LingXiAgentPublicModelSDKIntegrationTests.orderingIsShared` 单跑六次里红两次。它断言「目录发布顺序已经等于 SDK 的排序规则」，而 `ModelCatalogDecoder` 把 JSON **对象**经 Swift `Dictionary` 遍历成 `providers` / `models` 两个数组 —— Swift 哈希种子每进程随机，所以这两个数组的顺序是进程噪声，断言只在随机顺序恰好已排序时才成立。测试没写错，错在被测契约：两端各排一套顺序，正是它想盯住的那件事。
+
+**已修复并发布（2026-10-02）**：`LingXiModelSDK` 0.1.1（tag + GitHub Release）把解码结果规范化到 SDK 自己声明的顺序，并补了一条 `storedOrderIsStatedOrder` —— 原有的 `deterministic` 比较的是**同进程**两次解码，共享哈希种子，看不见每启动一次的乱序，所以缺陷躲过了它；新测试在撤掉修复后 5/5 红、修复后 5/5 绿。主仓库解析到 0.1.1 后 `orderingIsShared` 连续 6 次绿，全量回归里不再出现该失败。`Package.swift` 的 `from: "0.1.0"` 与 `PublicSDKConsumerGateTests` 均无需改动。
+
 
 ## J. CI_GATE
 

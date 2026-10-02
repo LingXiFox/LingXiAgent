@@ -112,6 +112,10 @@ public struct AnthropicMessagesProvider: ModelProvider {
             result.setValue(value, forHTTPHeaderField: name)
         }
         result.httpBody = try Self.makeRequestBody(request, maxOutputTokens: config.maxOutputTokens ?? 4_096, continuation: continuation)
+        // A file reference in the request needs the Files API beta on the request too.
+        if request.messages.contains(where: { $0.parts.contains { if case .imageFile = $0 { true } else { false } } }) {
+            result.addValue(Self.filesBeta, forHTTPHeaderField: "anthropic-beta")
+        }
         OpenCodeHeaderSupport.injectHeadersIfNeeded(into: &result, modelRequest: request)
         return result
     }
@@ -141,8 +145,12 @@ public struct AnthropicMessagesProvider: ModelProvider {
                 return nil
             case .user:
                 return RequestBody.Message(role: "user", content: message.parts.compactMap { part in
-                    if case let .text(text) = part { return .text(text) }
-                    return nil
+                    switch part {
+                    case let .text(text): return .text(text)
+                    case let .image(mediaType, data): return .image(mediaType: mediaType, base64: data.base64EncodedString())
+                    case let .imageFile(_, _, fileID): return .imageFile(fileID: fileID)
+                    case .toolCall, .toolResult: return nil
+                    }
                 })
             case .assistant:
                 return RequestBody.Message(role: "assistant", content: try message.parts.map { part in
@@ -156,6 +164,8 @@ public struct AnthropicMessagesProvider: ModelProvider {
                         return .toolUse(id: continuation?.externalCallID(for: call.callID) ?? call.callID.rawValue, name: call.toolID.rawValue, input: input)
                     case .toolResult:
                         throw CoreError(code: .provider, message: "Anthropic assistant message cannot contain tool results")
+                    case .image, .imageFile:
+                        throw CoreError(code: .provider, message: "Anthropic assistant message cannot contain images")
                     }
                 })
             case .tool:
@@ -387,15 +397,29 @@ private struct RequestBody: Encodable {
     }
     enum Content: Encodable {
         case text(String)
+        case image(mediaType: String, base64: String)
+        case imageFile(fileID: String)
         case toolUse(id: String, name: String, input: JSONValue)
         case toolResult(id: String, content: String, isError: Bool)
 
-        enum Keys: String, CodingKey { case type, text, id, name, input, toolUseID = "tool_use_id", content, isError = "is_error" }
+        enum Keys: String, CodingKey { case type, text, id, name, input, toolUseID = "tool_use_id", content, isError = "is_error", source }
+        enum SourceKeys: String, CodingKey { case type, mediaType = "media_type", data, fileID = "file_id" }
         func encode(to encoder: Encoder) throws {
             var values = encoder.container(keyedBy: Keys.self)
             switch self {
             case let .text(text):
                 try values.encode("text", forKey: .type); try values.encode(text, forKey: .text)
+            case let .image(mediaType, base64):
+                try values.encode("image", forKey: .type)
+                var source = values.nestedContainer(keyedBy: SourceKeys.self, forKey: .source)
+                try source.encode("base64", forKey: .type)
+                try source.encode(mediaType, forKey: .mediaType)
+                try source.encode(base64, forKey: .data)
+            case let .imageFile(fileID):
+                try values.encode("image", forKey: .type)
+                var source = values.nestedContainer(keyedBy: SourceKeys.self, forKey: .source)
+                try source.encode("file", forKey: .type)
+                try source.encode(fileID, forKey: .fileID)
             case let .toolUse(id, name, input):
                 try values.encode("tool_use", forKey: .type); try values.encode(id, forKey: .id); try values.encode(name, forKey: .name); try values.encode(input, forKey: .input)
             case let .toolResult(id, content, isError):
@@ -412,4 +436,29 @@ private struct RequestBody: Encodable {
     let tools: [Tool]?
 
     enum CodingKeys: String, CodingKey { case model, stream, system, messages, tools; case maxTokens = "max_tokens" }
+}
+
+extension AnthropicMessagesProvider: ProviderFileUploading {
+    static let filesBeta = "files-api-2025-04-14"
+
+    /// Anthropic's Files API on the official endpoint with an API key. Subscription (OAuth)
+    /// access and relays are not known to carry it, so they send inline.
+    public var supportsFileUploads: Bool {
+        guard config.baseURL.host == "api.anthropic.com" else { return false }
+        if case .oauth = config.authentication { return false }
+        return true
+    }
+
+    public func uploadFile(_ data: Data, mediaType: String, filename: String) async throws -> String {
+        let root = config.apiRoot.hasSuffix("/v1") ? config.apiRoot : config.apiRoot + "/v1"
+        guard let url = URL(string: root + "/files") else {
+            throw CoreError(code: .provider, message: "无法构造 Files API 地址")
+        }
+        var request = ProviderFileUpload.multipartRequest(url: url, fields: [], filename: filename,
+                                                          mediaType: mediaType, data: data)
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue(Self.filesBeta, forHTTPHeaderField: "anthropic-beta")
+        try await config.authorize(&request)
+        return try await ProviderFileUpload.send(request, transport: transport, wire: .anthropicMessages)
+    }
 }

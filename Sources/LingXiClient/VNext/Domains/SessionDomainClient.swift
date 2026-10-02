@@ -30,6 +30,17 @@ public struct SessionDomainClient: Sendable {
         return try await transport.renameSession(envelope: CommandEnvelope(payload: req))
     }
 
+    public func fork(sessionID: SessionID, title: String? = nil) async throws -> CommandReceipt<SessionSummary> {
+        let req = ForkSessionRequest(sessionID: sessionID, title: title)
+        return try await transport.forkSession(envelope: CommandEnvelope(payload: req))
+    }
+
+    /// Pauses or resumes the session's goal without changing it.
+    public func setGoalPaused(sessionID: SessionID, paused: Bool) async throws -> CommandReceipt<SessionSummary> {
+        let req = SetSessionGoalRequest(sessionID: sessionID, goal: nil, paused: paused)
+        return try await transport.setSessionGoal(envelope: CommandEnvelope(payload: req))
+    }
+
     public func setGoal(sessionID: SessionID, goal: String?) async throws -> CommandReceipt<SessionSummary> {
         let req = SetSessionGoalRequest(sessionID: sessionID, goal: goal)
         return try await transport.setSessionGoal(envelope: CommandEnvelope(payload: req))

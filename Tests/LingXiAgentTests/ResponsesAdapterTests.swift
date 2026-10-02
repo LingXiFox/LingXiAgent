@@ -38,6 +38,33 @@ struct ResponsesAdapterTests {
         #expect(tools[0]["name"] as? String == "read_file")
     }
 
+    @Test func userImagesAreEncodedByEveryWireAdapter() throws {
+        let image = Data([1, 2, 3])
+        let request = ModelRequest(model: ModelID("m"), messages: [
+            ModelMessage(role: .user, parts: [.text("看图"), .image(mediaType: "image/png", data: image)])
+        ])
+        let base64 = image.base64EncodedString()
+
+        let responses = try #require(JSONSerialization.jsonObject(
+            with: OpenAIResponsesProvider.makeRequestBody(request)) as? [String: Any])
+        let input = try #require((responses["input"] as? [[String: Any]])?.first)
+        let parts = try #require(input["content"] as? [[String: String]])
+        #expect(parts == [["type": "input_text", "text": "看图"],
+                          ["type": "input_image", "image_url": "data:image/png;base64,\(base64)"]])
+
+        let chat = try #require(JSONSerialization.jsonObject(
+            with: OpenAICompatibleProvider.makeRequestBody(request)) as? [String: Any])
+        let chatContent = try #require((chat["messages"] as? [[String: Any]])?.last?["content"] as? [[String: Any]])
+        #expect(chatContent.first?["type"] as? String == "text")
+        #expect((chatContent.last?["image_url"] as? [String: String])?["url"] == "data:image/png;base64,\(base64)")
+
+        let anthropic = try #require(JSONSerialization.jsonObject(
+            with: AnthropicMessagesProvider.makeRequestBody(request)) as? [String: Any])
+        let block = try #require(((anthropic["messages"] as? [[String: Any]])?.first?["content"] as? [[String: Any]])?.last)
+        #expect(block["type"] as? String == "image")
+        #expect(block["source"] as? [String: String] == ["type": "base64", "media_type": "image/png", "data": base64])
+    }
+
     @Test func parallelCallsMapToTheSameDomainEventsAsChatCompletions() throws {
         let requestID = ModelRequestID("responses-parallel")
         var responses = ResponsesSSEDecoder(requestID: requestID)

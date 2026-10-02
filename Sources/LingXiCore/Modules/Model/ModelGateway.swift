@@ -40,6 +40,12 @@ public struct ModelGateway: Sendable {
 
     public var isConfigured: Bool { provider != nil && modelID != nil }
 
+    /// The active provider's Files API, when the provider says it has a usable one.
+    public var fileUploader: (any ProviderFileUploading)? {
+        guard let uploader = provider as? ProviderFileUploading, uploader.supportsFileUploads else { return nil }
+        return uploader
+    }
+
     public var status: ProviderStatus {
         ProviderStatus(
             configured: isConfigured,

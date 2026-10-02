@@ -95,11 +95,33 @@ extension CoreHost {
                                                                 catalogClient: modelsCatalogClient))
     }
 
-    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
-        ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
-                         payload: await ProviderCatalog.modelIDs(entryID: envelope.payload.entryID,
-                                                                 catalogClient: modelsCatalogClient))
+    /// Saved endpoints supply their own roster; the published catalog is the fallback.
+    /// The stored key stays inside Core. An empty roster always says why.
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<ProviderModelRoster> {
+        let entryID = envelope.payload.entryID
+        let remote = await remoteModelIDs(providerID: entryID)
+        if !remote.ids.isEmpty {
+            let filtered = await filteringUnavailableModels(remote.ids, providerID: entryID)
+            var note: String?
+            if filtered.kept.isEmpty, !filtered.hidden.isEmpty {
+                note = "端点列出的 \(filtered.hidden.count) 个模型，当前账号一个都用不了（套餐不含）。"
+            } else if !filtered.hidden.isEmpty {
+                note = "已隐藏 \(filtered.hidden.count) 个当前账号套餐不含的模型。"
+            }
+            return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
+                                    payload: ProviderModelRoster(models: filtered.kept, note: note))
+        }
+        let published = await ProviderCatalog.modelIDs(entryID: entryID, catalogClient: modelsCatalogClient)
+        if !published.isEmpty {
+            return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
+                                    payload: ProviderModelRoster(models: published))
+        }
+        return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
+                                payload: ProviderModelRoster(
+                                    models: [],
+                                    note: remote.note ?? "端点未配置，且 models.lingxifox.cn 索引没有该提供商的条目。"))
     }
+
 
     public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {
         let productID = envelope.payload.productID.trimmingCharacters(in: .whitespaces)
@@ -123,6 +145,7 @@ extension CoreHost {
         if flow.phase == .connected && !appliedAuthFlows.contains(flow.flowID) {
             appliedAuthFlows.insert(flow.flowID)
             await reassembleCurrentModel(ifProvider: flow.productID)
+            await notifyProviderCatalogChanged()
         }
         return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: flow)
     }

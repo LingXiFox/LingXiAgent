@@ -115,11 +115,40 @@ public struct GoalRuntimeSnapshot: Codable, Sendable, Equatable {
     public let text: String
     public let since: Date
     public let steps: Int
+    /// A paused goal keeps its text and clock but is not put in front of the model.
+    public let paused: Bool
+    /// Active time accumulated before the current running span.
+    public let activeSeconds: Double
+    /// Start of the current running span; nil while paused.
+    public let resumedAt: Date?
 
-    public init(text: String, since: Date, steps: Int) {
+    public init(text: String, since: Date, steps: Int, paused: Bool = false,
+                activeSeconds: Double = 0, resumedAt: Date? = nil) {
         self.text = text
         self.since = since
         self.steps = steps
+        self.paused = paused
+        self.activeSeconds = activeSeconds
+        self.resumedAt = paused ? nil : (resumedAt ?? since)
+    }
+
+    /// Time the goal has actually been running, excluding paused spans.
+    public func runningSeconds(at now: Date = Date()) -> Double {
+        activeSeconds + (resumedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0)
+    }
+
+    private enum CodingKeys: String, CodingKey { case text, since, steps, paused, activeSeconds, resumedAt }
+
+    // The three later fields are optional on the wire: a snapshot written before pause existed
+    // decodes as a goal that has been running since it was set.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(text: try c.decode(String.self, forKey: .text),
+                  since: try c.decode(Date.self, forKey: .since),
+                  steps: try c.decode(Int.self, forKey: .steps),
+                  paused: try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false,
+                  activeSeconds: try c.decodeIfPresent(Double.self, forKey: .activeSeconds) ?? 0,
+                  resumedAt: try c.decodeIfPresent(Date.self, forKey: .resumedAt))
     }
 }
 

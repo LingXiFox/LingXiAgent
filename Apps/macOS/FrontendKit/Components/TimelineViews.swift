@@ -1,5 +1,7 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import ImageIO
+import LingXiProtocol
 
 // MARK: - Timeline views
 //
@@ -79,7 +81,7 @@ private struct UserBubble: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: LingXiMetrics.Space.xs) {
-            if !attachments.isEmpty { AttachmentStrip(attachments: attachments) }
+            if !attachments.isEmpty { AttachmentStrip(attachments: attachments, alignment: .trailing) }
             Text(content)
                 .font(LXType.message)
                 .lineSpacing(LXType.Leading.message)
@@ -111,28 +113,15 @@ private struct UserBubble: View {
     }
 }
 
-/// Assistant prose: no bubble, no card. Inline Markdown, fenced code as an
-/// inset mono block.
+/// Assistant prose: no bubble, no card. Real Markdown — blocks and inline both.
 private struct AssistantMessage: View {
     let content: String
     @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
-            ForEach(Array(MessageBlock.parse(content).enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .prose(let text):
-                    Text(MessageBlock.inline(text))
-                        .font(LXType.message)
-                        .lineSpacing(LXType.Leading.message)
-                        .foregroundStyle(.primary)
-                        .tint(LXColor.accentText)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .code(let code):
-                    OutputBlock(text: code)
-                }
-            }
+            MarkdownText(source: content)
+                .textSelection(.enabled)
             HStack(spacing: LingXiMetrics.Space.xs) {
                 LXCopyButton(content, label: "复制")
             }
@@ -142,53 +131,6 @@ private struct AssistantMessage: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .contextMenu { CopyMenu(text: content, markdown: true) }
-    }
-}
-
-enum MessageBlock {
-    case prose(String)
-    case code(String)
-
-    /// Splits on ``` fences; everything else stays prose.
-    static func parse(_ text: String) -> [MessageBlock] {
-        var blocks: [MessageBlock] = []
-        var prose: [Substring] = []
-        var code: [Substring] = []
-        var inCode = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                if inCode {
-                    blocks.append(.code(code.joined(separator: "\n")))
-                    code = []
-                } else {
-                    let chunk = prose.joined(separator: "\n").trimmingCharacters(in: .newlines)
-                    if !chunk.isEmpty { blocks.append(.prose(chunk)) }
-                    prose = []
-                }
-                inCode.toggle()
-            } else if inCode {
-                code.append(line)
-            } else {
-                prose.append(line)
-            }
-        }
-        if inCode, !code.isEmpty { blocks.append(.code(code.joined(separator: "\n"))) }
-        let tail = prose.joined(separator: "\n").trimmingCharacters(in: .newlines)
-        if !tail.isEmpty { blocks.append(.prose(tail)) }
-        return blocks
-    }
-
-    /// Inline Markdown (bold, italics, `code`, links) keeping line breaks.
-    static func inline(_ text: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        guard var attributed = try? AttributedString(markdown: text, options: options) else {
-            return AttributedString(text)
-        }
-        for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            attributed[run.range].font = .system(size: 14, design: .monospaced)
-            attributed[run.range].backgroundColor = LXColor.fillQuinary
-        }
-        return attributed
     }
 }
 
@@ -204,23 +146,86 @@ private struct CopyMenu: View {
 
 struct AttachmentStrip: View {
     let attachments: [AttachmentPresentation]
+    /// Which edge the chips hug: the composer's text column on the left, a user bubble on the
+    /// right. Without it a chip narrower than its 220pt slot was centred in the slot and sat
+    /// indented from the text below it.
+    var alignment: Alignment = .leading
 
     var body: some View {
         HStack(spacing: LingXiMetrics.Space.sm) {
             ForEach(attachments) { attachment in
                 HStack(spacing: LingXiMetrics.Space.xs) {
-                    Image(systemName: attachment.thumbnailSymbol).foregroundStyle(.secondary)
+                    AttachmentThumbnail(attachment: attachment)
                     Text(attachment.filename).lineLimit(1).truncationMode(.middle)
-                    Text(attachment.formattedSize).foregroundStyle(.secondary)
-                    if !attachment.isUploaded { ProgressView().controlSize(.small) }
+                    if attachment.byteCount > 0 {
+                        Text(attachment.formattedSize).foregroundStyle(.secondary)
+                    }
+                    AttachmentStateMark(state: attachment.preparation, detail: attachment.preparationDetail)
                 }
                 .font(LXType.meta)
                 .padding(.horizontal, LingXiMetrics.Space.sm)
                 .frame(height: LXControl.small)
                 .background(LXColor.fillQuinary,
                             in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.sm, style: .continuous))
-                .frame(maxWidth: 220)
+                .frame(maxWidth: 220, alignment: alignment)
+                // The name only: a local path is the user's business, not chrome.
+                .help(attachment.filename)
             }
+        }
+    }
+}
+
+/// A local preview the moment a file is picked: an image's own pixels (decoded as a 36px
+/// thumbnail, off the main thread) instead of a generic glyph.
+private struct AttachmentThumbnail: View {
+    let attachment: AttachmentPresentation
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFill()
+                    .frame(width: 16, height: 16)
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            } else {
+                Image(systemName: attachment.thumbnailSymbol).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: attachment.sourceURL) {
+            guard let url = attachment.sourceURL, attachment.thumbnailSymbol == "photo" else { return }
+            image = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 72,
+                      ] as CFDictionary) else { return nil }
+                return NSImage(cgImage: thumb, size: .zero)
+            }.value
+        }
+    }
+}
+
+/// Where background preparation stands. Ready shows nothing — the normal case stays quiet.
+private struct AttachmentStateMark: View {
+    let state: AttachmentPreparation.State
+    let detail: String?
+
+    var body: some View {
+        switch state {
+        case .preprocessing:
+            Text("准备中").foregroundStyle(.secondary)
+        case .uploading:
+            Text("上传中").foregroundStyle(.secondary)
+        case .ready:
+            if let detail {
+                Image(systemName: "info.circle").foregroundStyle(.secondary).help(detail)
+            }
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(LXColor.warning)
+                .help(detail ?? "附件准备失败")
+                .accessibilityLabel("附件准备失败：\(detail ?? "")")
         }
     }
 }

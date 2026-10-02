@@ -65,9 +65,13 @@ public enum ClientFingerprint {
 
     // MARK: - Official Versions
 
+    /// The Codex CLI version LingXi claims. Served from ``CodexClientVersion``, which keeps it current
+    /// from upstream releases — the ChatGPT backend gates the model list on this value and says nothing
+    /// when it withholds one, so a hand-maintained constant rots quietly.
+    ///
+    /// Override with `CODEX_CLI_VERSION` to pin a value without a build.
     public static func codexVersion() -> String {
-        let env = ProcessInfo.processInfo.environment
-        return env["CODEX_CLI_VERSION"] ?? "0.154.0"
+        CodexClientVersion.current()
     }
 
     public static func claudeVersion() -> String {

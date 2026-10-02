@@ -83,9 +83,14 @@ if [ -z "${PRODUCT_VERSION}" ]; then
     exit 1
 fi
 /usr/bin/sed -i '' "s/__PRODUCT_VERSION__/${PRODUCT_VERSION}/" "${APP_BUNDLE}/Contents/Info.plist"
-grep -q "<key>CFBundleShortVersionString</key>              <string>${PRODUCT_VERSION}</string>" \
-    "${APP_BUNDLE}/Contents/Info.plist" \
+# Whitespace-tolerant: the heredoc aligns the value with its own run of spaces, and
+# matching that layout exactly made this check fail even when the substitution had
+# worked. What matters is that the key is followed by the version and no placeholder.
+grep -E "<key>CFBundleShortVersionString</key>[[:space:]]*<string>${PRODUCT_VERSION}</string>" \
+    "${APP_BUNDLE}/Contents/Info.plist" > /dev/null \
     || { echo "Info.plist did not receive the product version" >&2; exit 1; }
+grep -q "__PRODUCT_VERSION__" "${APP_BUNDLE}/Contents/Info.plist" \
+    && { echo "Info.plist still contains the version placeholder" >&2; exit 1; }
 
 codesign --force --sign - --timestamp=none "${APP_BUNDLE}" >/dev/null 2>&1
 echo "${APP_BUNDLE}"

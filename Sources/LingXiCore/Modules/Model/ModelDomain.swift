@@ -32,6 +32,13 @@ public enum ModelRole: String, Sendable {
 /// 模型输入的结构化部分；Provider Adapter 再转换为厂商消息格式。
 public enum ModelContentPart: Sendable, Equatable {
     case text(String)
+    /// Raw image bytes attached by the user. Whether the model can see them is the provider's
+    /// and the model's call: each adapter encodes them in its own wire shape, and a text-only
+    /// model answers with its own error instead of Core guessing on its behalf.
+    case image(mediaType: String, data: Data)
+    /// The same image, already held by the provider under `fileID`. An adapter with a Files
+    /// API sends the reference; any other adapter sends `data` inline as for `.image`.
+    case imageFile(mediaType: String, data: Data, fileID: String)
     case toolCall(ToolCall)
     case toolResult(ToolResult)
 }

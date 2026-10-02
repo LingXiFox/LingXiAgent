@@ -184,7 +184,7 @@ struct CanonicalModelIdentityTests {
         #expect(single.backendVariants?.sorted() == ["gpt-5-6", "gpt-5-6-instant", "gpt-5-6-thinking"].sorted())
     }
 
-    @Test("Official Codex 0.154.0 catalog returns 7 real models with Astra, Sol, Terra, Luna and verbatim IDs")
+    @Test("a 7-model Codex catalog response parses verbatim (an older snapshot; the count is gated by client_version, not fixed)")
     func officialCodex7ModelsParsing() throws {
         let sampleJson = """
         {

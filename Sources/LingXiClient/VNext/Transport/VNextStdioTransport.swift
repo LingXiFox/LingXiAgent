@@ -260,6 +260,8 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
 
     public func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.create", envelope) }
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.rename", envelope) }
+    public func forkSession(envelope: CommandEnvelope<ForkSessionRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.fork", envelope) }
+    public func prepareAttachment(envelope: CommandEnvelope<PrepareAttachmentRequest>) async throws -> CommandReceipt<AttachmentPreparation> { try await command("attachment.prepare", envelope) }
     public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.setGoal", envelope) }
     public func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary> { try await command("session.set_reasoning_effort", envelope) }
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> { try await command("session.delete", envelope) }
@@ -400,7 +402,10 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func listProviderAuthProducts(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[ProviderAuthProduct]> { try await response("provider.authProducts", envelope) }
     public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> { try await command("provider.connect", envelope) }
     public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> { try await response("provider.catalog", envelope) }
-    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> { try await response("provider.catalogModels", envelope) }
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<ProviderModelRoster> { try await response("provider.catalogModels", envelope) }
+    public func probeProviderModels(envelope: CommandEnvelope<ProbeProviderModelsRequest>) async throws -> CommandReceipt<[String: ModelAvailability]> { try await command("provider.probeModels", envelope) }
+    public func getProviderModelAvailability(envelope: QueryEnvelope<GetProviderModelAvailabilityRequest>) async throws -> ResponseEnvelope<[String: ModelAvailability]> { try await response("provider.modelAvailability", envelope) }
+    public func getWithheldModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[String: [String]]> { try await response("provider.withheldModels", envelope) }
     public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> { try await command("provider.authBegin", envelope) }
     public func getProviderAuthFlow(envelope: QueryEnvelope<GetProviderAuthFlowRequest>) async throws -> ResponseEnvelope<ProviderAuthFlow> { try await response("provider.authStatus", envelope) }
     public func cancelProviderAuth(envelope: CommandEnvelope<CancelProviderAuthRequest>) async throws -> CommandReceipt<VoidResult> { try await command("provider.authCancel", envelope) }

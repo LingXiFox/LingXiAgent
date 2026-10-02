@@ -175,6 +175,12 @@ private struct ExtensionRow: View {
                 .accessibilityLabel("\(ext.id) 启用状态")
         }
         .lxSettingsRow()
+        // The whole row opens the detail, not only the 9pt chevron in its corner; the switch
+        // keeps its own click.
+        .contentShape(Rectangle())
+        .onTapGesture { toggle() }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(isOpen ? "收起详情" : "查看详情")
         // Disclosure, not a new card: the row itself stays as the list laid it out.
         .contextMenu {
             Button(isOpen ? "收起详情" : "查看详情") { toggle() }

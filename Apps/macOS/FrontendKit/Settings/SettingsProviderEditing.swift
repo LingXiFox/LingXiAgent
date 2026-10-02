@@ -128,6 +128,9 @@ struct ProviderModelsEditor: View {
     let detail: ProviderConfigurationDetail
     let onSaved: (ProviderConfigurationDetail) -> Void
     @State private var editing: EditingModel?
+    @State private var isAdding = false
+    @State private var availability: [String: ModelAvailability] = [:]
+    @State private var isProbing = false
 
     struct EditingModel: Identifiable {
         let id = UUID()
@@ -140,9 +143,15 @@ struct ProviderModelsEditor: View {
             LXSettingsSectionHeader("模型")
             Text("\(detail.models.count)").font(LXType.sectionHead).foregroundStyle(.secondary)
         }, rowSpacing: 0, accessory: {
-            Button("添加模型…") {
-                editing = EditingModel(model: ProviderModelConfigurationDetail(modelID: "", name: ""), isNew: true)
+            Button(isProbing ? "探测中…" : "探测可用性") {
+                isProbing = true
+                Task {
+                    availability = await store.probeProviderModels(providerID: detail.providerID)
+                    isProbing = false
+                }
             }
+            .disabled(isProbing)
+            Button("添加模型…") { isAdding = true }
         }) {
             ForEach(Array(detail.models.enumerated()), id: \.element.id) { index, model in
                 if index > 0 { LXSettingsDivider() }
@@ -151,6 +160,9 @@ struct ProviderModelsEditor: View {
                         HStack(spacing: LingXiMetrics.Space.xs) {
                             Text(model.name).font(LXType.body.weight(.medium)).lineLimit(1)
                             if isDefault(model) { LXBadge("当前默认", kind: .accent) }
+                            // Only a real turn tells a working model from one the plan excludes.
+                            if availability[model.modelID] == .unavailable { LXBadge("套餐不含", kind: .neutral) }
+                            if isProbing && availability[model.modelID] == nil { Text("…").font(LXType.meta).foregroundStyle(.secondary) }
                         }
                         Text(model.modelID).font(LXType.monoSmall).foregroundStyle(.secondary).lineLimit(1)
                     }
@@ -170,7 +182,12 @@ struct ProviderModelsEditor: View {
                 .lxSettingsRow()
             }
         } footer: {
-            Text("模型元数据默认来自 models.lingxifox.cn 官方实时索引；「编辑…」里改过的项标为「已自定义」，可逐项恢复。可用性由 Provider Discovery 动态确认。")
+            Text("模型元数据默认来自 models.lingxifox.cn 官方实时索引；「编辑…」里改过的项标为「已自定义」，可逐项恢复。端点列出的模型不等于这个账号能用——「探测可用性」对每个模型发一次最小请求，只有套餐不含或模型不存在才标「套餐不含」，限流与网关故障不算失败。")
+        }
+        // Read back what an earlier probe already settled, so leaving the page and coming back does
+        // not lose an answer the account already paid for.
+        .task(id: detail.providerID) {
+            availability = await store.modelAvailability(providerID: detail.providerID)
         }
         .sheet(item: $editing) { item in
             ProviderModelSheet(model: item.model, isNew: item.isNew, canRemove: detail.models.count > 1,
@@ -178,6 +195,12 @@ struct ProviderModelsEditor: View {
                 editing = nil
                 guard let result else { return }
                 Task { await apply(result, replacing: item.isNew ? nil : item.model.modelID) }
+            }
+        }
+        .sheet(isPresented: $isAdding) {
+            AddProviderModelsSheet(store: store, detail: detail) { saved in
+                onSaved(saved)
+                isAdding = false
             }
         }
     }
@@ -215,6 +238,101 @@ struct ProviderModelsEditor: View {
             apiKeyHeader: detail.apiKeyHeader, headers: detail.headers, apiKey: .keep)
         request.models = models
         if let saved = await store.saveProvider(request) { onSaved(saved) }
+    }
+}
+
+struct AddProviderModelsSheet: View {
+    @ObservedObject var store: SettingsStore
+    let detail: ProviderConfigurationDetail
+    let onSaved: (ProviderConfigurationDetail) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var models: [String] = []
+    @State private var emptyNote: String?
+    @State private var selected: Set<String> = []
+    @State private var query = ""
+    @State private var manualID = ""
+    @State private var isLoading = true
+    @State private var isSaving = false
+    @State private var error: String?
+
+    private var existingIDs: Set<String> { Set(detail.models.map(\.modelID)) }
+    private var additions: [String] {
+        var ids = selected
+        let manual = manualID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !manual.isEmpty { ids.insert(manual) }
+        return ids.subtracting(existingIDs).sorted()
+    }
+    private var visibleModels: [String] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return models.filter { needle.isEmpty || $0.localizedCaseInsensitiveContains(needle) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
+            Text("添加模型 · \(detail.name)").font(LXType.title)
+            NativeSearchField(text: $query, prompt: "搜索模型").navigatorChrome()
+            HStack {
+                Text(isLoading ? "正在获取模型列表…" : "已选 \(additions.count) 个模型")
+                    .font(LXType.meta).foregroundStyle(.secondary)
+                Spacer()
+                Button("全选") { selected = Set(models) }
+                Button("清空") { selected = [] }
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+                    if !isLoading && models.isEmpty {
+                        Text((emptyNote.map { $0 + " " } ?? "") + "可在下方手动输入模型 ID。")
+                            .foregroundStyle(.secondary)
+                    } else if !isLoading && visibleModels.isEmpty {
+                        Text("没有匹配的模型。")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(visibleModels, id: \.self) { id in
+                        Toggle(id, isOn: Binding(
+                            get: { selected.contains(id) },
+                            set: { if $0 { selected.insert(id) } else { selected.remove(id) } }))
+                            .toggleStyle(.checkbox)
+                            .font(LXType.monoSmall)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            TextField("手动输入模型 ID（可选）", text: $manualID)
+                .textFieldStyle(.roundedBorder).font(LXType.mono)
+            if let error { Text(error).foregroundStyle(LXColor.danger).font(LXType.meta) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(isSaving ? "保存中…" : "添加 \(additions.count) 个模型") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isLoading || isSaving || additions.isEmpty)
+            }
+        }
+        .padding(LingXiMetrics.Space.xl)
+        .frame(width: 620, height: 520)
+        .modifier(WallpaperWindow())
+        .lxNoInitialFocus()
+        .lxSettingsControlStyles()
+        .task {
+            let roster = await store.providerCatalogModels(entryID: detail.providerID)
+            models = Array(Set(roster.models).subtracting(existingIDs)).sorted()
+            selected = Set(models)
+            emptyNote = roster.models.isEmpty ? roster.note
+                : (models.isEmpty ? "端点列出的模型已全部在配置中。" : nil)
+            isLoading = false
+        }
+    }
+
+    private func save() {
+        let added = additions.map { ProviderModelConfigurationDetail(modelID: $0, name: $0) }
+        isSaving = true
+        error = nil
+        Task {
+            defer { isSaving = false }
+            let request = ProviderConnectionDraft(detail).request(for: detail, models: detail.models + added)
+            if let saved = await store.saveProvider(request) { onSaved(saved) }
+            else { error = store.notice ?? "保存模型失败。" }
+        }
     }
 }
 
@@ -379,7 +497,8 @@ struct ProviderModelSheet: View {
             .padding(LingXiMetrics.Space.lg)
         }
         .frame(width: 620, height: 640)
-        .background(LXColor.window)
+        .modifier(WallpaperWindow())
+        .lxNoInitialFocus()
         .lxSettingsControlStyles()
         .confirmationDialog("移除模型 \(model.modelID)？", isPresented: $confirmRemove) {
             Button("移除", role: .destructive) { onFinish(.remove) }
@@ -403,7 +522,7 @@ struct AddProviderSheet: View {
     }
 
     @ObservedObject var store: SettingsStore
-    let onFinish: (ProviderConfigurationDetail?) -> Void
+    let onFinish: (String?) -> Void
     @Environment(\.openURL) private var openURL
 
     @State private var query = ""
@@ -431,6 +550,7 @@ struct AddProviderSheet: View {
 
     // models of the selected catalog entry
     @State private var catalogModels: [String] = []
+    @State private var catalogNote: String?
     @State private var chosenModels: Set<String> = []
     @State private var modelQuery = ""
 
@@ -547,7 +667,8 @@ struct AddProviderSheet: View {
             .padding(LingXiMetrics.Space.lg)
         }
         .frame(width: 640, height: 680)
-        .background(LXColor.window)
+        .modifier(WallpaperWindow())
+        .lxNoInitialFocus()
         .lxSettingsControlStyles()
         .task {
             if store.providerCatalog.isEmpty { await store.loadProviderCatalog(refresh: false) }
@@ -622,14 +743,16 @@ struct AddProviderSheet: View {
         testResult = nil
         authFlow = nil
         catalogModels = []
+        catalogNote = nil
         chosenModels = []
+        modelQuery = ""
         guard let entry = store.providerCatalog.first(where: { $0.id == id }) else { return }
         Task {
-            let models = await store.providerCatalogModels(entryID: entry.id)
-            catalogModels = models
-            // A provider is unusable without at least one model, so the first
-            // published one is preselected rather than left blank.
-            chosenModels = models.first.map { [$0] } ?? []
+            let roster = await store.providerCatalogModels(entryID: entry.id)
+            guard choice == .entry(entry.id) else { return }
+            catalogModels = roster.models
+            catalogNote = roster.note
+            chosenModels = Set(roster.models)
         }
     }
 
@@ -696,11 +819,16 @@ struct AddProviderSheet: View {
         }
 
         if needsModelChoice {
-            LXSettingsCard(title: LXSettingsSectionHeader("模型"), rowSpacing: LingXiMetrics.Space.xs) {
+            LXSettingsCard(title: LXSettingsSectionHeader("模型"), rowSpacing: LingXiMetrics.Space.xs, accessory: {
+                Button("全选") { chosenModels = Set(catalogModels) }
+                Button("清空") { chosenModels = [] }
+            }) {
                 NativeSearchField(text: $modelQuery, prompt: "搜索模型")
                     .navigatorChrome()
                 if catalogModels.isEmpty {
-                    PlaceholderLine(modelQuery.isEmpty ? "目录未列出该提供商的模型。" : "没有匹配的模型。")
+                    PlaceholderLine(modelQuery.isEmpty
+                        ? (catalogNote ?? "目录未列出该提供商的模型。")
+                        : "没有匹配的模型。")
                 } else {
                     ScrollView(.vertical, showsIndicators: true) {
                         VStack(spacing: 0) {
@@ -839,7 +967,7 @@ struct AddProviderSheet: View {
                         contextWindow: contextWindow, maxOutputTokens: maxOutput)])
                 if let saved = await store.saveProvider(request) {
                     stagedRef = nil
-                    onFinish(saved)
+                    onFinish(saved.providerID)
                 } else if let staged = stagedRef {
                     await store.discardStagedSecret(staged)
                     stagedRef = nil
@@ -852,8 +980,7 @@ struct AddProviderSheet: View {
                     endpoint: trimmedEndpoint.isEmpty ? nil : trimmedEndpoint,
                     fields: fields, modelIDs: Array(chosenModels).sorted())) {
                     stagedRef = nil
-                    _ = account
-                    onFinish(nil)
+                    onFinish(account.id)
                 } else if let staged = stagedRef {
                     await store.discardStagedSecret(staged)
                     stagedRef = nil

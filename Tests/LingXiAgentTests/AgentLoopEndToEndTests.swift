@@ -408,7 +408,7 @@ struct AgentLoopEndToEndTests {
         // The two steps the composer performs: upload first, then dispatch carrying the refs.
         let ref = try await fixture.client.resource.upload(
             data: Data(body.utf8), filename: "Frozen.swift",
-            mediaType: AttachmentSupport.textMediaTypes["swift"])
+            mediaType: "text/x-swift")
         #expect(ref.byteCount == body.utf8.count)
 
         await fixture.store.dispatch(.submitPrompt(text: "读一下附件", attachments: [ref]))
@@ -691,10 +691,11 @@ struct AgentLoopEndToEndTests {
 
     // MARK: - Defects this audit found
     //
-    // The contract obligations in the tests above all pass. What follows pins five behaviours that
-    // do NOT: the knob reaches Core, but Core does not hand it back where the contract says it can
-    // be read, or a required cleanup does not happen. Each body runs inside `withKnownIssue`, so
-    // the suite stays green today and the defect flips to a hard failure the moment it is fixed.
+    // The contract obligations in the tests above all pass. What follows pins behaviours that did
+    // NOT pass when this audit wrote them down: the knob reached Core, but Core did not hand it back
+    // where the contract says it can be read, or a required cleanup did not happen. They are now
+    // hard assertions - if one starts failing again, the behaviour regressed rather than the test
+    // being optimistic.
 
     @Test("client.session.get reports the session's reasoning effort")
     func getSessionDropsReasoningEffort() async throws {
@@ -752,7 +753,7 @@ struct AgentLoopEndToEndTests {
         let body = "CLOSURE-MARKER-8f31: func frozen() {}\n"
         let ref = try await fixture.client.resource.upload(
             data: Data(body.utf8), filename: "Frozen.swift",
-            mediaType: AttachmentSupport.textMediaTypes["swift"])
+            mediaType: "text/x-swift")
         let receipt = try await fixture.client.turn.submitTurn(
             sessionID: sessionID, input: UserInput(text: "读一下附件", attachments: [ref]))
         let turnID = try #require(receipt.result?.turnID)
@@ -764,8 +765,141 @@ struct AgentLoopEndToEndTests {
                 "附件被 Core 解析出来了，却没有进入模型请求：\(String(provider.allText.prefix(600)))")
     }
 
-    @Test("KNOWN DEFECT: Stop lets the queued Turn it was meant to cancel start as a new root run")
-    func stopPromotesTheQueuedTurnItCannotCancel() async throws {
+    @Test("An image attachment reaches the model request as an image part, not a refusal")
+    func imageAttachmentReachesTheModelRequest() async throws {
+        let provider = ScriptedProvider(replying: "ok")
+        let fixture = try await makeFixture(provider: provider)
+        defer { Task { await fixture.shutdown() } }
+        let sessionID = try await newSession(fixture)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF])
+        let ref = try await fixture.client.resource.upload(data: png, filename: "shot.png", mediaType: "image/png")
+        let receipt = try await fixture.client.turn.submitTurn(
+            sessionID: sessionID, input: UserInput(text: "看一下这张图", attachments: [ref]))
+        let turnID = try #require(receipt.result?.turnID)
+        try await waitUntil { try await turnStatus(fixture, session: sessionID, turn: turnID) == .completed }
+        let images = provider.requests.flatMap(\.messages).flatMap(\.parts).compactMap { part -> Data? in
+            if case let .image(mediaType, data) = part, mediaType == "image/png" { return data }
+            return nil
+        }
+        #expect(images.first == png, "图片附件没有以图片内容进入模型请求")
+        #expect(provider.allText.contains("ATTACHED IMAGE shot.png"))
+    }
+
+    @Test("A local image attached by path reaches the model as an image, and the model is told the path")
+    func localImageByPathReachesTheModel() async throws {
+        let provider = ScriptedProvider(replying: "ok")
+        let fixture = try await makeFixture(provider: provider)
+        defer { Task { await fixture.shutdown() } }
+        let sessionID = try await newSession(fixture)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lx-path-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let image = dir.appendingPathComponent("IMG_0930.JPG")
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02])
+        try bytes.write(to: image)
+        let note = dir.appendingPathComponent("notes.md")
+        try Data("# notes".utf8).write(to: note)
+
+        let receipt = try await fixture.client.turn.submitTurn(
+            sessionID: sessionID, input: UserInput(text: "这张图片内容是什么"),
+            executionIntent: TurnExecutionIntent(contextReferences: [image.path, note.path]))
+        let turnID = try #require(receipt.result?.turnID)
+        try await waitUntil { try await turnStatus(fixture, session: sessionID, turn: turnID) == .completed }
+        let images = provider.requests.flatMap(\.messages).flatMap(\.parts).compactMap { part -> Data? in
+            if case let .image(mediaType, data) = part, mediaType == "image/jpeg" { return data }
+            return nil
+        }
+        #expect(images.first == bytes)
+        #expect(provider.allText.contains(image.standardizedFileURL.path))
+        #expect(provider.allText.contains(note.standardizedFileURL.path))
+        #expect(!provider.allText.contains("# notes"), "非图片文件只告诉模型路径，不内联内容")
+    }
+
+    @Test("A file prepared when picked is reused at send, and the turn's latency is laid out by phase")
+    func preparedAttachmentIsReusedAndTraced() async throws {
+        let provider = ScriptedProvider(replying: "ok")
+        let fixture = try await makeFixture(provider: provider)
+        defer { Task { await fixture.shutdown() } }
+        let sessionID = try await newSession(fixture)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lx-prep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let image = dir.appendingPathComponent("shot.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: image)
+
+        let preparation = try await fixture.client.resource.prepareAttachment(path: image.path)
+        #expect(preparation.state == .ready)
+        #expect(!preparation.providerSupportsFiles, "脚本 Provider 没有 Files API，应走内联")
+
+        let receipt = try await fixture.client.turn.submitTurn(
+            sessionID: sessionID, input: UserInput(text: "看图"),
+            executionIntent: TurnExecutionIntent(contextReferences: [image.path]))
+        let turnID = try #require(receipt.result?.turnID)
+        try await waitUntil { try await turnStatus(fixture, session: sessionID, turn: turnID) == .completed }
+
+        var latency: RuntimeTraceEvent?
+        for _ in 0..<30 where latency == nil {
+            try await Task.sleep(for: .milliseconds(100))
+            latency = try await fixture.client.diagnostics.getBundle().trace.first { $0.event == "latency.turn" }
+        }
+        let report = try #require(latency, "本轮结束后应写出 latency.turn 报告")
+        let phases = report.metadata.keys.sorted().joined(separator: ",")
+        for phase in ["attachment_selected", "preprocess_done", "message_send_requested",
+                      "inference_request_started", "first_text_delta", "completed"] {
+            #expect(phases.contains(phase), "报告缺少 \(phase)：\(phases)")
+        }
+    }
+
+    @Test("A paused goal stops being put in front of the model and stops its clock")
+    func pausedGoalIsNotInjected() async throws {
+        let provider = ScriptedProvider(replying: "ok")
+        let fixture = try await makeFixture(provider: provider)
+        defer { Task { await fixture.shutdown() } }
+        let sessionID = try await newSession(fixture)
+        _ = try await fixture.client.session.setGoal(sessionID: sessionID, goal: "GOAL-MARKER-77")
+        _ = try await fixture.client.session.setGoalPaused(sessionID: sessionID, paused: true)
+        let paused = try #require(try await fixture.client.session.snapshot(sessionID: sessionID).goal)
+        #expect(paused.paused && paused.resumedAt == nil)
+        #expect(paused.text == "GOAL-MARKER-77", "暂停不能改动目标本身")
+
+        let receipt = try await fixture.client.turn.submitTurn(sessionID: sessionID, input: UserInput(text: "普通消息"))
+        let turnID = try #require(receipt.result?.turnID)
+        try await waitUntil { try await turnStatus(fixture, session: sessionID, turn: turnID) == .completed }
+        #expect(!provider.allText.contains("ACTIVE GOAL"), "暂停的目标仍被注入了模型请求")
+
+        _ = try await fixture.client.session.setGoalPaused(sessionID: sessionID, paused: false)
+        let resumed = try #require(try await fixture.client.session.snapshot(sessionID: sessionID).goal)
+        #expect(!resumed.paused && resumed.resumedAt != nil)
+    }
+
+    @Test("Forking a session copies its history into a new session and leaves the source alone")
+    func forkCopiesHistory() async throws {
+        let fixture = try await makeFixture(provider: ScriptedProvider(replying: "ok"))
+        defer { Task { await fixture.shutdown() } }
+        let sessionID = try await newSession(fixture)
+        let receipt = try await fixture.client.turn.submitTurn(
+            sessionID: sessionID, input: UserInput(text: "FORK-MARKER-41 第一轮"))
+        let turnID = try #require(receipt.result?.turnID)
+        try await waitUntil { try await turnStatus(fixture, session: sessionID, turn: turnID) == .completed }
+        _ = try await fixture.client.session.rename(sessionID: sessionID, title: "原会话")
+
+        let forked = try #require(try await fixture.client.session.fork(sessionID: sessionID).result)
+        #expect(forked.sessionID != sessionID)
+        #expect(forked.title == "原会话 · 分支")
+        #expect(forked.messageCount == 2)
+
+        let snapshot = try await fixture.client.session.snapshot(sessionID: forked.sessionID)
+        let copied = snapshot.recentEvents.contains { event in
+            if case let .userMessageCommitted(message) = event.payload { return message.text.contains("FORK-MARKER-41") }
+            return false
+        }
+        #expect(copied, "分支会话的时间线里没有源会话的历史")
+        #expect(snapshot.recentEvents.allSatisfy { $0.causal.sessionID == forked.sessionID })
+        #expect(try await fixture.client.session.get(sessionID: sessionID).title == "原会话")
+    }
+
+    @Test("Stop cancels the queued Turn instead of promoting it into a new root run")
+    func stopCancelsTheQueuedTurn() async throws {
         let hanging = HangingProvider()
         let fixture = try await makeFixture(provider: hanging)
         defer { Task { await fixture.shutdown() } }
@@ -784,22 +918,19 @@ struct AgentLoopEndToEndTests {
         await fixture.store.dispatch(.stopCurrentRun)
         await hanging.release()
 
-        // ApplicationStore.swift:271 cancels the active root run first; CoreHost.swift:3875 then
-        // promotes the next queued Turn, and the loop at ApplicationStore.swift:278 can only use
-        // cancelTurn, which CoreHost.swift:3771 refuses for a running Turn. Stop leaves a live run.
+        // Terminalizing a running Run advances the session queue, and a Turn that advance promotes is
+        // already running - `turn.cancel` refuses a running Turn, so a stop that only cancelled the
+        // active run left a live run behind. Core now drains the queue as part of the same request.
         let queuedSettled = await eventually(timeout: 4) {
             try await turnStatus(fixture, session: sessionID, turn: queued.turnID).isTerminal
         }
         let rootAfterStop = try await fixture.client.session.snapshot(sessionID: sessionID).activeRootRun
-        try await withKnownIssue(
-            "queued Turn is auto-promoted to running during Stop and never cancelled") {
-            #expect(queuedSettled)
-            #expect(rootAfterStop == nil)
-        }
+        #expect(queuedSettled, "Stop 之后排队的 Turn 仍然不是终态")
+        #expect(rootAfterStop == nil, "Stop 又把排队的 Turn 提升成了新的 root run")
     }
 
-    @Test("KNOWN DEFECT: Stop leaves the pending interaction authoritative in Core")
-    func stopLeavesCorePendingInteraction() async throws {
+    @Test("Stop clears the pending interaction in Core, not just on screen")
+    func stopClearsCorePendingInteractions() async throws {
         let fixture = try await makeFixture(
             provider: ScriptedProvider { _, step in
                 step == 0
@@ -814,19 +945,16 @@ struct AgentLoopEndToEndTests {
 
         await fixture.store.dispatch(.stopCurrentRun)
 
-        // CoreHost.cancelRun calls permissionEngine.cancelPending (CoreHost.swift:3849), which
-        // empties the engine's pending set. The store's later interaction.resolve then dies in
-        // PermissionEngine.reply ("权限请求已失效", PermissionEngine.swift:96) before reaching
-        // coord.resolveInteraction (CoreHost.swift:3979). Core keeps the ask; the frontend already
-        // dropped its mirror, so the next switchToSession resurrects a card for a dead run.
+        // permissionEngine/QuestionRuntime.cancelPending release the waiter but leave the ledger entry,
+        // which is what a snapshot read answers from. The frontend's later interaction.resolve then dies
+        // in PermissionEngine.reply ("权限请求已失效") because the engine is already empty, so the ask
+        // survived in Core while the card was gone - until the next switchToSession resurrected it for
+        // a run that had already ended.
         let emptied = await eventually(timeout: 4) {
             (try await fixture.client.interaction.listPending(sessionID: sessionID)).isEmpty
         }
         let snapshotPending = try await fixture.client.session.snapshot(sessionID: sessionID).pendingInteractions
-        try await withKnownIssue(
-            "Core's pendingInteractions survive Stop; only the frontend copy is cleared") {
-            #expect(emptied)
-            #expect(snapshotPending.isEmpty)
-        }
+        #expect(emptied, "Stop 之后 Core 仍在回报待处理交互")
+        #expect(snapshotPending.isEmpty, "会话快照里的 pendingInteractions 又留下来了")
     }
 }

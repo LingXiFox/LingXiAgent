@@ -103,6 +103,7 @@ extension CoreHost {
         }
         try await store.saveProviders(Self.rebuiltProviders(snapshot.providers, model: selected, providers: providers))
         await reassembleCurrentModel(ifProvider: providerID)
+        await notifyProviderCatalogChanged()
 
         let detail = await Self.providerDetail(providerID, providers[providerID]!)
         return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
@@ -122,6 +123,7 @@ extension CoreHost {
         if envelope.payload.deleteCredential, let reference = Self.vaultReference(removed.options.apiKey) {
             try await requireCredentialStore().removeSecret(for: reference)
         }
+        await notifyProviderCatalogChanged()
         return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
                               observedThrough: [], result: VoidResult())
     }

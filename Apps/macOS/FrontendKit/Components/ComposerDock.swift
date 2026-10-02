@@ -1,6 +1,7 @@
 #if canImport(SwiftUI)
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import LingXiProtocol
 import LingXiApplication
 
@@ -52,11 +53,17 @@ struct ComposerDock: View {
                         .transition(.opacity)
                 }
 
+                if let goal = model.goalState {
+                    GoalStatusBar(goal: goal, runtime: runtime)
+                        .transition(.opacity.combined(with: .offset(y: LingXiMetrics.Space.sm)))
+                }
+
                 ComposerSurface(runtime: runtime, model: model, isGenerating: conversation.isGenerating)
             }
         }
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: current?.id)
         .animation(LXMotion.animation(reduceMotion: reduceMotion), value: suggestions?.count)
+        .animation(LXMotion.animation(reduceMotion: reduceMotion), value: model.goalState == nil)
         .onChange(of: pending.count) { _, count in
             if activeIndex >= max(count, 1) { activeIndex = 0 }
         }
@@ -102,8 +109,14 @@ struct ComposerSurface: View {
     let isGenerating: Bool
 
     @State private var isDropTargeted = false
-    @State private var isEditingGoal = false
-    @State private var goalDraft = ""
+    /// 目标模式：整个输入框就是目标输入框。
+    ///
+    /// It used to open a `GoalEditor` popover with its own text field below the composer. That
+    /// was a second input box for the same job, so the popover is gone: toggling the mode
+    /// retitles the composer, and ⏎ sends whatever it holds as the goal. Outside this mode the
+    /// composer only ever sends messages — the goal is edited, paused and removed from the bar
+    /// above it.
+    @State private var goalMode = false
     @State private var confirmYOLO = false
     @State private var permissionBeforeYOLO: PermissionPreset?
     @State private var localBranches: [String] = []
@@ -129,9 +142,10 @@ struct ComposerSurface: View {
         .clipShape(RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous))
         .lxFloating()
         .overlay {
-            if isDropTargeted {
+            if isDropTargeted || goalMode {
                 RoundedRectangle(cornerRadius: LingXiMetrics.Radius.surface, style: .continuous)
-                    .strokeBorder(LXColor.accentText, lineWidth: 1)
+                    .strokeBorder(isDropTargeted ? LXColor.accentText : LXColor.accent,
+                                  lineWidth: isDropTargeted ? 1 : 1.5)
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -272,7 +286,18 @@ struct ComposerSurface: View {
             .accessibilityLabel("执行环境")
 
             Spacer(minLength: 0)
-            if isGenerating { Text("运行中不可切换") }
+            if isGenerating {
+                // Named what it locks instead of just saying 「不可切换」: the three menus to
+                // the left are what a run freezes, and a bare hint never said which. Same 24pt
+                // box as those menus, or the label sat on a different baseline than its own row.
+                HStack(spacing: LingXiMetrics.Space.xs) {
+                    Image(systemName: "lock").font(.system(size: LXIcon.strip))
+                    Text("工作区已锁定")
+                }
+                .padding(.horizontal, 6)
+                .frame(height: 24)
+                .accessibilityLabel("运行中，工作区、分支与执行环境已锁定")
+            }
         }
         .font(LXType.meta)
         .foregroundStyle(.secondary)
@@ -316,28 +341,21 @@ struct ComposerSurface: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
-            if let goal = model.goal {
-                GoalChip(goal: goal, onEdit: beginGoalEdit) { runtime.setGoal(nil) }
-            }
             if !model.attachments.isEmpty { AttachmentStrip(attachments: model.attachments) }
             MacNativeTextView(text: $model.text,
-                              placeholder: "给 Agent 发消息…",
+                              placeholder: goalMode ? "写下要达成的目标，⏎ 发出并开始…" : "给 Agent 发消息…",
                               submitRequiresCommand: sendKey == .commandReturn,
                               onSubmit: submit,
-                              wantsInitialFocus: true)
+                              wantsInitialFocus: false)
                 .frame(height: editorHeight)
-                .accessibilityLabel("消息输入框")
-                .help("@ 引用文件，/ 命令与技能，# 引用符号")
+                .accessibilityLabel(goalMode ? "任务目标输入框" : "消息输入框")
+                .help(goalMode ? "⏎ 发出目标并开始执行，Esc 回到发消息" : "@ 引用文件，/ 命令与技能，# 引用符号")
         }
         .frame(maxWidth: .infinity, minHeight: LingXiMetrics.composerMinHeight, alignment: .topLeading)
         .padding(.horizontal, LingXiMetrics.Space.lg)
         .padding(.vertical, LingXiMetrics.Space.md)
-        .popover(isPresented: $isEditingGoal, arrowEdge: .top) {
-            GoalEditor(draft: $goalDraft) { goal in
-                runtime.setGoal(goal)
-                isEditingGoal = false
-            }
-        }
+        .background { if goalMode { LXColor.accentSoft } }
+        .onExitCommand { if goalMode { exitGoalMode() } }
     }
 
     /// Grows with the draft from 2 to 8 lines, then scrolls inside.
@@ -371,20 +389,22 @@ struct ComposerSurface: View {
                     // Core 与 Application 侧都没有 @-mention 或符号解析，插入的 `@` 没有任何含义。
                     // 引用真实文件现在走上面的附件项，会真的上传并进入本轮上下文。
                 }
-                Button(action: beginGoalEdit) {
+                Button(action: goalMode ? exitGoalMode : enterGoalMode) {
                     Group {
-                        if compact { Image(systemName: "target") }
-                        else { Label("目标", systemImage: "target") }
+                        if compact { Image(systemName: goalMode ? "xmark" : "target") }
+                        else { Label(goalMode ? "退出目标" : "目标", systemImage: goalMode ? "xmark" : "target") }
                     }
                         .font(LXType.body.weight(.medium))
+                        .foregroundStyle(goalMode ? AnyShapeStyle(LXColor.accentText) : AnyShapeStyle(.primary))
                         .padding(.horizontal, compact ? 0 : 10)
                         .frame(width: compact ? LXControl.regular : nil)
                         .frame(height: LXControl.regular)
-                        .background(LXColor.fillControl,
+                        .background(goalMode ? LXColor.accentSoft : LXColor.fillControl,
                                     in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control))
                 }
                 .buttonStyle(.plain)
-                .help("设定任务目标")
+                .help(goalMode ? "退出目标模式，回到发消息" : "把输入框切成目标输入框")
+                .accessibilityValue(goalMode ? "目标模式开启" : "目标模式关闭")
                 Button {
                     if model.permissionPreset == .yoloFullAccess {
                         model.permissionPreset = permissionBeforeYOLO ?? .askWorkspace
@@ -461,9 +481,21 @@ struct ComposerSurface: View {
         ForEach(groups.keys.sorted(), id: \.self) { provider in
             Section(provider) {
                 ForEach(groups[provider] ?? [], id: \.id) { info in
-                    Toggle(info.displayName, isOn: Binding(
+                    Toggle(isOn: Binding(
                         get: { model.selectedModelID.map(info.matches(selection:)) ?? false },
-                        set: { if $0 { model.selectedModelID = info.qualifiedID } }))
+                        set: { if $0 { model.selectedModelID = info.qualifiedID } })) {
+                        // A probe that reached the model is the only thing that can tell a working name
+                        // from one the plan excludes; /v1/models lists both. nil means nobody has
+                        // tried yet, which must not read as a verdict either way.
+                        if info.availability == .unavailable {
+                            Label(info.displayName, systemImage: "exclamationmark.triangle")
+                        } else {
+                            Text(info.displayName)
+                        }
+                    }
+                    // Offered but not selectable: a plan can change, and hiding the row entirely would
+                    // leave no way to re-probe it from here. The reason stays visible in the label.
+                    .disabled(info.availability == .unavailable)
                 }
             }
         }
@@ -488,21 +520,39 @@ struct ComposerSurface: View {
     }
 
     /// One 28pt accent circle. Running swaps the glyph only; position and
-    /// colour never change and nothing glows.
+    /// colour never change and nothing glows. In 目标模式 it commits the goal instead of
+    /// sending, and a run in flight does not turn it into a stop button — anchoring a goal
+    /// is exactly the thing you want to be able to do mid-run.
     private var sendButton: some View {
-        Button(action: isGenerating ? runtime.stopGenerating : submit) {
-            Image(systemName: isGenerating ? "stop.fill" : "arrow.up")
-                .font(.system(size: isGenerating ? 11 : 14, weight: .bold))
+        let stops = !goalMode && isGenerating
+        let symbol = goalMode ? "checkmark" : (stops ? "stop.fill" : "arrow.up")
+        let inert = goalMode ? model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                             : (!isGenerating && isEmpty)
+        return Button(action: sendAction) {
+            Image(systemName: symbol)
+                .font(.system(size: stops ? 11 : 14, weight: .bold))
                 .foregroundStyle(LXColor.onAccent)
                 .frame(width: LXControl.regular, height: LXControl.regular)
                 .background(LXColor.accent, in: Circle())
-                .opacity(!isGenerating && isEmpty ? 0.4 : 1)
+                .opacity(inert ? 0.4 : 1)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(!isGenerating && isEmpty)
-        .help(isGenerating ? "停止生成 (⌘.)" : (sendKey == .commandReturn ? "发送 (⌘⏎)" : "发送 (⏎)"))
-        .accessibilityLabel(isGenerating ? "停止生成" : "发送")
+        .disabled(inert)
+        .help(sendHelp)
+        .accessibilityLabel(goalMode ? "发出目标" : (stops ? "停止生成" : "发送"))
+    }
+
+    private func sendAction() {
+        if goalMode { commitGoal() }
+        else if isGenerating { runtime.stopGenerating() }
+        else { submit() }
+    }
+
+    private var sendHelp: String {
+        if goalMode { return "发出目标并开始 (⏎)" }
+        if isGenerating { return "停止生成 (⌘.)" }
+        return sendKey == .commandReturn ? "发送 (⌘⏎)" : "发送 (⏎)"
     }
 
     private var isEmpty: Bool {
@@ -512,6 +562,7 @@ struct ComposerSurface: View {
     // MARK: Actions
 
     private func submit() {
+        if goalMode { commitGoal(); return }
         guard !isEmpty, !isGenerating || model.text.hasPrefix("/") else { return }
         runtime.sendMessage(text: model.text, mode: model.selectedMode, attachments: model.attachments)
     }
@@ -525,16 +576,36 @@ struct ComposerSurface: View {
         )
     }
 
-    private func beginGoalEdit() {
-        goalDraft = model.goal ?? ""
-        isEditingGoal = true
+    /// What is already typed stays: it becomes the goal when sent.
+    private func enterGoalMode() {
+        goalMode = true
     }
 
-    /// Attaches files the composer can actually hand to Core.
+    private func exitGoalMode() {
+        goalMode = false
+    }
+
+    /// ⏎ in 目标模式: the text is anchored as the goal and sent as the turn that starts work.
+    private func commitGoal() {
+        let trimmed = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        runtime.startGoal(trimmed, mode: model.selectedMode, attachments: model.attachments)
+        goalMode = false
+    }
+
+    /// Attaches whatever was picked, of any type.
     ///
     /// This used to splice `@/abs/path` into the text field. That looked like an attachment and
     /// was a sentence: nothing parsed it, and the file's contents never reached the model. The
     /// strip below now holds real files, which `RuntimeFrontend` uploads before submitting.
+    ///
+    /// It also used to consult `AttachmentSupport.textMediaTypes`, a 40-entry extension table, and
+    /// refuse anything not on it. That table answered a question the composer cannot answer —
+    /// whether a model reads a file is not a fact about file extensions — and it got both sides
+    /// wrong: `.conf`, `.eps`, `.excalidraw` and extension-less files decode fine as text yet were
+    /// blocked, while the refusal it did raise blamed a type list for what is really a limit of
+    /// this product's model request. Refusing nothing here is what makes Core's one honest
+    /// failure (「这些字节不是文本，所以送不到模型」) the only gate that exists.
     private func pickFiles() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -547,18 +618,26 @@ struct ComposerSurface: View {
 
     private func addAttachment(url: URL) {
         guard !model.attachments.contains(where: { $0.sourceURL == url }) else { return }
-        guard let mediaType = AttachmentSupport.mediaType(for: url) else {
-            runtime.actionError = AttachmentSupport.unsupportedReason(for: url)
-            return
-        }
         let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
-        model.attachments.append(AttachmentPresentation(
-            filename: url.lastPathComponent, mediaType: mediaType, byteCount: size, sourceURL: url))
+        let mime = Self.mediaType(for: url)
+        let item = AttachmentPresentation(
+            filename: url.lastPathComponent, mediaType: mime, byteCount: size,
+            thumbnailSymbol: mime.hasPrefix("image/") ? "photo" : "doc.text",
+            sourceURL: url)
+        model.attachments.append(item)
+        // Preparation starts now, not at ⏎ — by the time the question is typed it is done.
+        runtime.prepareAttachment(id: item.id, url: url)
     }
 
-
-    private var separator: String {
-        model.text.isEmpty || model.text.hasSuffix(" ") || model.text.hasSuffix("\n") ? "" : " "
+    /// What the file says it is — a label that travels with the upload so the runtime can name
+    /// the thing in a message. Descriptive only; it is never a reason to refuse.
+    static func mediaType(for url: URL) -> String {
+        let byName = UTType(filenameExtension: url.pathExtension.lowercased())?.preferredMIMEType
+        if let byName, byName != "application/octet-stream" { return byName }
+        if let byContent = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType?.preferredMIMEType {
+            return byContent
+        }
+        return byName ?? "application/octet-stream"
     }
 }
 
@@ -609,56 +688,98 @@ private extension View {
 
 // MARK: - Goal
 
-/// 22pt accent-soft chip above the prompt, accent-text copy, clearable.
-private struct GoalChip: View {
-    let goal: String
-    let onEdit: () -> Void
-    let onClear: () -> Void
+/// The goal, above the composer: what it is, how long it has been running, and the only
+/// three things that act on it — edit, pause/resume, remove. The composer below never
+/// changes the goal; typing there is an ordinary message.
+private struct GoalStatusBar: View {
+    let goal: GoalRuntimeSnapshot
+    @ObservedObject var runtime: RuntimeFrontend
+    @State private var isEditing = false
+    @State private var draft = ""
+    @State private var confirmRemove = false
 
     var body: some View {
-        HStack(spacing: LingXiMetrics.Space.xs) {
-            Button(action: onEdit) {
-                Label(goal, systemImage: "target").lineLimit(1)
+        HStack(spacing: LingXiMetrics.Space.sm) {
+            Image(systemName: goal.paused ? "pause.circle" : "target")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(goal.paused ? AnyShapeStyle(.secondary) : AnyShapeStyle(LXColor.accentText))
+            Text(goal.text)
+                .font(LXType.body.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(goal.text)
+            Spacer(minLength: LingXiMetrics.Space.sm)
+            Text(goal.paused ? "已暂停" : "进行中")
+                .font(LXType.micro.weight(.medium))
+                .foregroundStyle(goal.paused ? AnyShapeStyle(.secondary) : AnyShapeStyle(LXColor.accentText))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(goal.paused ? LXColor.fillControl : LXColor.accentSoft, in: Capsule())
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(Self.clock(goal.runningSeconds(at: context.date)))
+                    .font(LXType.meta.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            Button(action: onClear) {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+            .help("目标运行时间（暂停期间不计）· 已推进 \(goal.steps) 步")
+            HStack(spacing: 2) {
+                Button {
+                    draft = goal.text
+                    isEditing = true
+                } label: { Image(systemName: "pencil") }
+                    .help("编辑目标")
+                    .accessibilityLabel("编辑目标")
+                    .popover(isPresented: $isEditing, arrowEdge: .top) { editor }
+                Button { runtime.setGoalPaused(!goal.paused) } label: {
+                    Image(systemName: goal.paused ? "play.fill" : "pause.fill")
+                }
+                .help(goal.paused ? "恢复目标" : "暂停目标：暂停期间 Agent 不再被目标驱动")
+                .accessibilityLabel(goal.paused ? "恢复目标" : "暂停目标")
+                Button { confirmRemove = true } label: { Image(systemName: "trash") }
+                    .help("删除目标")
+                    .accessibilityLabel("删除目标")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("清除目标")
+            .buttonStyle(LXIconButtonStyle(side: LXControl.small))
         }
-        .font(LXType.meta.weight(.medium))
-        .foregroundStyle(LXColor.accentText)
-        .padding(.horizontal, LingXiMetrics.Space.sm)
-        .frame(height: LXControl.small)
-        .background(LXColor.accentSoft, in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.sm, style: .continuous))
+        .padding(.horizontal, LingXiMetrics.Space.md)
+        .frame(height: 36)
+        .lxFloating(cornerRadius: LingXiMetrics.Radius.control)
+        .confirmationDialog("删除目标？", isPresented: $confirmRemove) {
+            Button("删除目标", role: .destructive) { runtime.setGoal(nil) }
+        } message: {
+            Text("Agent 将不再被这个目标驱动。会话记录不受影响。")
+        }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("任务目标：\(goal)")
+        .accessibilityLabel("目标：\(goal.text)，\(goal.paused ? "已暂停" : "进行中")")
     }
-}
 
-private struct GoalEditor: View {
-    @Binding var draft: String
-    let onCommit: (String?) -> Void
-
-    var body: some View {
+    private var editor: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.md) {
-            Text("任务目标").font(LXType.headline)
-            TextField("交付物与验收标准", text: $draft, axis: .vertical)
+            Text("编辑目标").font(LXType.headline)
+            TextField("要达成的目标", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
-                .lineLimit(2...5)
-                .frame(width: 320)
-                .onSubmit { onCommit(draft) }
-            HStack(spacing: LingXiMetrics.Space.sm) {
-                Spacer(minLength: 0)
-                Button("清除") { onCommit(nil) }.buttonStyle(.lxSecondary)
-                Button { onCommit(draft) } label: { LXKeyHintLabel("设定", hint: "⏎") }
-                    .buttonStyle(.lxPrimary)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                .lineLimit(2...6)
+                .frame(width: 360)
+            HStack {
+                Spacer()
+                Button("取消") { isEditing = false }
+                    .buttonStyle(.lxSecondary)
+                    .keyboardShortcut(.cancelAction)
+                Button("保存") {
+                    runtime.setGoal(draft)
+                    isEditing = false
+                }
+                .buttonStyle(.lxPrimary)
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(LingXiMetrics.Space.lg)
+    }
+
+    static func clock(_ seconds: Double) -> String {
+        let total = Int(seconds)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
     }
 }
 

@@ -17,6 +17,17 @@ public struct ResourceDomainClient: Sendable {
     }
 
     /// 高层便捷 API：上传二进制数据（自动分块、校验并提交，失败自动中止）
+    /// Starts preparing a picked local file in Core: normalize, hash, cache, and — with
+    /// `upload` — send it to the active provider's Files API ahead of the turn.
+    public func prepareAttachment(path: String, selectedAt: Date = Date(), upload: Bool = false) async throws -> AttachmentPreparation {
+        let receipt = try await transport.prepareAttachment(envelope: CommandEnvelope(
+            payload: PrepareAttachmentRequest(path: path, selectedAt: selectedAt, upload: upload)))
+        guard let result = receipt.result else {
+            throw CoreError(code: .transport, message: "attachment.prepare 没有返回结果")
+        }
+        return result
+    }
+
     public func upload(
         data: Data,
         filename: String,

@@ -116,7 +116,7 @@ swift build -c release --product lingxiagent-ops
   * 支持 `search` 拓扑符号检索与增量时间戳轻量本地持久化缓存。
 * **🔒 本地加密凭据保险箱**：
   * 凭据统一存放在数据目录的 `credentials.vault`：AES-256-GCM 认证加密，密钥来自口令派生（PBKDF2-HMAC-SHA256，≥100,000 轮）或机器绑定的保护性密钥，文件权限收紧到 `0600`；macOS Keychain 只做一次性迁移读取；
-  * 配置文件里不允许出现明文凭据：`providers.json` / `mcp.json` 的凭据字段只接受 `{env:VAR}` 与 `{vault:...}` 引用形式。
+  * 配置文件里不允许出现明文凭据：`providers.json` / `mcp.json` 的凭据字段只接受 `{env:VAR}` 与 `{vault:...}` 引用形式；`{vault:...}` 是唯一的持久凭据源，`{env:VAR}` 只作开发 / CI / 命令行临时覆盖用（Dock/Finder 启动的 GUI 继承 launchd 环境，读不到登录 shell 的变量），`LINGXI_<PROVIDER_ID>_API_KEY` 是显式覆盖层，优先级最高；
 * **🎨 现代交互式 TUI 体系与 24-bit TrueColor 主题引擎**：
   * 内置 6 套高保真配色主题（LingXiAgent Dark、LingXiAgent Light、Catppuccin Mocha、Nord Aurora、Dracula、Monochrome Minimal），支持 24-bit RGB TrueColor 与 ANSI 动态回退；
   * 全局快捷键 `Ctrl+T` 或 `/theme` 呼出弹出式**主题选择器 (Theme Picker)**，支持按键即时搜索过滤、光标上下切换与免重启即时热重载；

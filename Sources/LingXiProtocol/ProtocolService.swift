@@ -50,11 +50,17 @@ public struct CancelRunRequest: Codable, Sendable, Equatable {
     public let sessionID: SessionID
     public let runID: RunID
     public let reason: String?
+    /// Stop means "leave nothing queued behind this run". Terminalizing a running Run advances the
+    /// session queue, and a promoted Turn is already running and can no longer be cancelled by
+    /// `turn.cancel`; the caller that wants a full stop has to say so here so Core drains the queue
+    /// first. Absent means false, so an older peer keeps the per-run cancel behaviour.
+    public let cancelQueuedTurns: Bool?
 
-    public init(sessionID: SessionID, runID: RunID, reason: String? = nil) {
+    public init(sessionID: SessionID, runID: RunID, reason: String? = nil, cancelQueuedTurns: Bool? = nil) {
         self.sessionID = sessionID
         self.runID = runID
         self.reason = reason
+        self.cancelQueuedTurns = cancelQueuedTurns
     }
 }
 
@@ -99,14 +105,84 @@ public struct RenameSessionRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// Branches a session: a new session in the same workspace that starts with a copy of the
+/// source's full history. The source is untouched; a session with a run in flight is refused,
+/// because a copy taken mid-run would carry half a turn.
+public struct ForkSessionRequest: Codable, Sendable, Equatable {
+    public let sessionID: SessionID
+    public let title: String?
+
+    public init(sessionID: SessionID, title: String? = nil) {
+        self.sessionID = sessionID
+        self.title = title
+    }
+}
+
+/// Asks Core to get a local file ready for a later turn, the moment the user picks it.
+public struct PrepareAttachmentRequest: Codable, Sendable, Equatable {
+    public let path: String
+    /// When the user picked the file, for the latency trace.
+    public let selectedAt: Date?
+    /// Also upload it to the active provider when that provider has a Files API.
+    public let upload: Bool
+
+    public init(path: String, selectedAt: Date? = nil, upload: Bool = false) {
+        self.path = path
+        self.selectedAt = selectedAt
+        self.upload = upload
+    }
+}
+
+/// Where a picked file stands. A turn refers to the file by path; this only reports progress.
+public struct AttachmentPreparation: Codable, Sendable, Equatable {
+    public enum State: String, Codable, Sendable { case preprocessing, uploading, ready, failed }
+
+    public let path: String
+    public let filename: String
+    public let state: State
+    public let sha256: String?
+    public let mediaType: String?
+    public let originalBytes: Int
+    /// Size actually sent inline for an image; nil for a file sent by path only.
+    public let preparedBytes: Int?
+    /// The active provider already holds the file; a send will reference it, not re-upload it.
+    public let providerFileReady: Bool
+    /// The active provider has a Files API, so an upload ahead of the send is worth doing.
+    public let providerSupportsFiles: Bool
+    public let fromCache: Bool
+    public let preprocessMilliseconds: Int?
+    public let detail: String?
+
+    public init(path: String, filename: String, state: State, sha256: String?, mediaType: String?,
+                originalBytes: Int, preparedBytes: Int?, providerFileReady: Bool, providerSupportsFiles: Bool,
+                fromCache: Bool, preprocessMilliseconds: Int?, detail: String?) {
+        self.path = path
+        self.filename = filename
+        self.state = state
+        self.sha256 = sha256
+        self.mediaType = mediaType
+        self.originalBytes = originalBytes
+        self.preparedBytes = preparedBytes
+        self.providerFileReady = providerFileReady
+        self.providerSupportsFiles = providerSupportsFiles
+        self.fromCache = fromCache
+        self.preprocessMilliseconds = preprocessMilliseconds
+        self.detail = detail
+    }
+}
+
 /// Session-lifetime goal anchor. Volatile by design: never persisted, cleared with the session.
 public struct SetSessionGoalRequest: Codable, Sendable, Equatable {
     public let sessionID: SessionID
     public let goal: String?
+    /// Non-nil pauses or resumes the existing goal and leaves its text alone; `goal` is then
+    /// ignored. Nil (and absent on the wire) keeps the original meaning: set, edit or clear.
+    public let paused: Bool?
 
-    public init(sessionID: SessionID, goal: String?) {
+    public init(sessionID: SessionID, goal: String?, paused: Bool? = nil) {
         self.sessionID = sessionID
         self.goal = goal
+        self.paused = paused
     }
 }
 
@@ -1018,6 +1094,8 @@ public protocol LingXiProtocolService: Sendable {
     // MARK: - 2. Session
     func createSession(envelope: CommandEnvelope<CreateSessionRequest>) async throws -> CommandReceipt<SessionSummary>
     func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary>
+    func forkSession(envelope: CommandEnvelope<ForkSessionRequest>) async throws -> CommandReceipt<SessionSummary>
+    func prepareAttachment(envelope: CommandEnvelope<PrepareAttachmentRequest>) async throws -> CommandReceipt<AttachmentPreparation>
     func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary>
     func setSessionReasoningEffort(envelope: CommandEnvelope<SetSessionReasoningEffortRequest>) async throws -> CommandReceipt<SessionSummary>
     func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult>
@@ -1181,7 +1259,13 @@ public protocol LingXiProtocolService: Sendable {
     /// Every provider Core knows about: curated registry plus the published
     /// models.lingxifox.cn index.
     func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]>
-    func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]>
+    func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<ProviderModelRoster>
+    func probeProviderModels(envelope: CommandEnvelope<ProbeProviderModelsRequest>) async throws -> CommandReceipt<[String: ModelAvailability]>
+    func getProviderModelAvailability(envelope: QueryEnvelope<GetProviderModelAvailabilityRequest>) async throws -> ResponseEnvelope<[String: ModelAvailability]>
+    /// Models an account can reach but that are not offered for selection, keyed by product: upstream
+    /// marked them `hide`/`disabled`, or the registry has them as deprecated/retired. A page that shows
+    /// five models when the account reported seven is read as a broken integration unless it says so.
+    func getWithheldModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[String: [String]]>
 
     /// Connects a catalog entry using the credential or endpoint its contract asks for.
     func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo>

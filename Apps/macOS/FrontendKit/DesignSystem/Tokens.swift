@@ -63,6 +63,22 @@ public enum LXColor {
     public static let elevated = adaptive(light: 0xFFFEFB, dark: 0x2A2A2A)
     /// separator: hairlines and the 1px ring of panels and surfaces.
     public static let separator = adaptive(light: 0x6D594B, dark: 0xFFFFFF, lightAlpha: 0.16, darkAlpha: 0.10)
+    /// glass-edge: the 1px stroke a translucent surface needs to read as an object on
+    /// the photograph. `separator` at 10% white disappears against a bright part of the
+    /// backdrop, which is why panels used to look flat and swallowed (§2 玻璃质感不突出).
+    public static let glassEdge = adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.20)
+    /// glass-top: the lit upper rim of the same stroke. Half-edge strength, faded out by
+    /// a gradient at the caller; it is what turns a outline into a bevel.
+    public static let glassTopLight = adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.22)
+    /// glass-wash: the panel ground. A lift of white over the scrimmed photograph rather than
+    /// a darker tint: the backdrop is already dark, so a dark tint made panels sink into it.
+    public static let glassWash = adaptive(light: 0xFFFCF8, dark: 0xFFFFFF, lightAlpha: 0.62, darkAlpha: 0.075)
+    /// glass-lift: the floating layer (composer, permission, palette) — one clear step lighter
+    /// than a panel so it reads closer to the eye, and never the near-black the bottom of the
+    /// scrim turns a dark tint into.
+    public static let glassLift = adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, lightAlpha: 0.74, darkAlpha: 0.13)
+    /// glass-sheen: the top-down highlight inside a glass surface.
+    public static let glassSheen = adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, lightAlpha: 0.30, darkAlpha: 0.06)
     /// fill-quinary: inset / output blocks, badges.
     public static let fillQuinary = adaptive(light: 0x6D594B, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.05)
     /// fill-control: secondary buttons, chips, selected rows and tabs.
@@ -258,6 +274,18 @@ public enum LingXiMetrics {
         public static let windowWithToolMin: CGFloat = 980
         public static let windowMinWidth: CGFloat = 760
         public static let windowMinHeight: CGFloat = 520
+    }
+
+    /// Two elevation levels, and only two: a panel sits on the photograph, a floating
+    /// surface sits above the panel. Both need a stroke *and* a shadow — the stroke alone
+    /// disappears against a light area of the backdrop, the shadow alone reads as a smudge.
+    public enum Shadow {
+        public static let panelOpacity: CGFloat = 0.28
+        public static let panelRadius: CGFloat = 14
+        public static let panelY: CGFloat = 6
+        public static let floatOpacity: CGFloat = 0.38
+        public static let floatRadius: CGFloat = 26
+        public static let floatY: CGFloat = 12
     }
 
     public enum Column {

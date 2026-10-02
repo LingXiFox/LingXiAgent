@@ -46,6 +46,12 @@ public actor ApplicationStore {
            savedPerm != .yoloFullAccess { // 严格遵守 AppCompositionRoot 安全契约：禁止从 preferences.json 隐式继承 YOLO 全量越权
             self.state.nextTurnPermission = savedPerm
         }
+        // The reasoning level was written on every change and read by nobody. `AppCompositionRoot`
+        // restores it, but the macOS app does not boot through that path, so every launch came up on
+        // `auto` and the user re-picked the same level each time.
+        if let savedEffort = initialPrefs.lastReasoningEffort.flatMap(ReasoningEffort.init(rawValue:)) {
+            self.state.nextTurnReasoningEffort = savedEffort
+        }
 
         // 注册全部内建 20 个正式业务命令
         for cmd in BuiltinCommands.createAll() {
@@ -222,8 +228,8 @@ public actor ApplicationStore {
     public func dispatch(_ action: ApplicationAction) async {
         switch action {
         // MARK: 1. Prompt & Turn 提交
-        case let .submitPrompt(text: prompt, attachments):
-            await handleSubmitPrompt(prompt, attachments: attachments)
+        case let .submitPrompt(text: prompt, attachments, fileReferences):
+            await handleSubmitPrompt(prompt, attachments: attachments, fileReferences: fileReferences)
 
         // MARK: 2. 会话管理
         case let .createSession(title, mode):
@@ -269,23 +275,38 @@ public actor ApplicationStore {
             state.backgroundTasks.removeAll()
             if let sID = state.activeSessionID {
                 if let activeRunID = state.activeSessionState?.activeRootRunID {
-                    _ = try? await client.run.cancelRun(sessionID: sID, runID: activeRunID, reason: "User stopped")
+                    // Core drains the queue as part of this call. Terminalizing a running Run
+                    // advances the queue, and a Turn the advance promoted is already running - by the
+                    // time a separate cancelTurn could reach it, Core refuses to cancel a running Turn.
+                    _ = try? await client.run.cancelRun(sessionID: sID, runID: activeRunID,
+                                                        reason: "User stopped", cancelQueuedTurns: true)
                 }
                 if let activeTurnID = state.activeSessionState?.activeTurnID {
                     _ = try? await client.turn.cancelTurn(sessionID: sID, turnID: activeTurnID)
                 }
+                // Covers a queue the mirror still shows while activeRootRunID has already cleared;
+                // a running Turn is not this call's business and Core would reject it.
                 if let turns = state.activeSessionState?.turns.values {
-                    for turn in turns {
-                        if turn.status == .running || turn.status == .queued {
-                            _ = try? await client.turn.cancelTurn(sessionID: sID, turnID: turn.turnID)
-                        }
+                    for turn in turns where turn.status == .queued {
+                        _ = try? await client.turn.cancelTurn(sessionID: sID, turnID: turn.turnID)
                     }
                 }
+                // Core terminalized the asks belonging to the run it just cancelled. This covers what
+                // is left: an ask whose run had already ended, where there was nothing to cancel and
+                // so no Core-side cleanup to hang off.
                 for pending in state.activeSessionState?.pendingInteractions ?? [] {
-                    await resolveOnOwningSession(
-                        interactionID: pending.interactionID,
-                        resolution: .permission(.deny)
-                    )
+                    let resolution: InteractionResolution
+                    switch pending.kind {
+                    case .permission: resolution = .permission(.deny)
+                    case .question:
+                        resolution = .question(QuestionReply(
+                            questionID: pending.questionRequest?.questionID
+                                ?? QuestionID(pending.interactionID.rawValue),
+                            cancelled: true))
+                    case .decision: resolution = .decision("runCancelled")
+                    case .unknown: resolution = .unknown("runCancelled")
+                    }
+                    await resolveOnOwningSession(interactionID: pending.interactionID, resolution: resolution)
                 }
                 // The run is gone, so no ask raised by it can ever be answered again. Leaving the
                 // local mirror in place keeps the approval card on screen and it swallows every
@@ -538,7 +559,7 @@ public actor ApplicationStore {
     }
 
     // MARK: - Prompt 处理
-    private func handleSubmitPrompt(_ prompt: String, attachments: [ContentRef] = []) async {
+    private func handleSubmitPrompt(_ prompt: String, attachments: [ContentRef] = [], fileReferences: [String] = []) async {
         debug("handleSubmitPrompt.begin prompt=\(prompt.prefix(20))")
         var sessionID = state.activeSessionID
         let nextMode = state.nextTurnMode ?? state.activeSessionState?.mode ?? .build
@@ -640,7 +661,8 @@ public actor ApplicationStore {
         let intent = TurnExecutionIntent(
             modelSelection: effectiveModelSelection,
             mode: nextMode,
-            permissionConfiguration: nextPerm
+            permissionConfiguration: nextPerm,
+            contextReferences: fileReferences
         )
         state.nextTurnMode = nil
         state.nextTurnPermission = nil

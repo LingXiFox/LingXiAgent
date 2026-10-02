@@ -306,6 +306,27 @@ public actor SessionRuntime {
 
 
     /// 启动一轮对话并立即返回 DMA 通道；同一 Session 只允许一个活动 turn。
+    /// Puts this turn's image attachments into the last user message as image parts.
+    ///
+    /// Context entries are text-only (they are what the budget planner and the manifest count),
+    /// so images join at the last step before the request: after the labels they belong to.
+    static func attachingImages(_ attachments: [ResolvedAttachment], to messages: [ModelMessage],
+                                endpointKey: String? = nil) -> [ModelMessage] {
+        let images = attachments.compactMap { item -> ModelContentPart? in
+            guard let data = item.imageData else { return nil }
+            // Uploaded ahead of the send to this very endpoint: reference it. Anything else —
+            // no upload, an upload still running, another provider's id — goes inline.
+            if let endpointKey, let fileID = item.remoteRefs[endpointKey] {
+                return .imageFile(mediaType: item.mediaType, data: data, fileID: fileID)
+            }
+            return .image(mediaType: item.mediaType, data: data)
+        }
+        guard !images.isEmpty, let index = messages.lastIndex(where: { $0.role == .user }) else { return messages }
+        var result = messages
+        result[index] = ModelMessage(role: .user, parts: messages[index].parts + images)
+        return result
+    }
+
     public func startTurn(_ content: String, attachments: [ResolvedAttachment] = [], executionContext: RunExecutionContext? = nil) async throws -> OpenedStream {
         guard !shuttingDown, !turnRunning else {
             throw CoreError(code: .turnAlreadyRunning, message: "该 Session 已有进行中的对话轮次")
@@ -391,6 +412,9 @@ public actor SessionRuntime {
         runExecutionContext: RunExecutionContext? = nil
     ) async {
         var index = 0
+        let latencyRun = runID?.rawValue
+        var sawFirstText = false
+        var sawFirstReasoning = false
         var finalUsage: ModelUsage?
         var finalReason: ModelFinishReason?
         var lastSuccessfulRead: (signature: ToolRuntime.ReadOnlySignature, content: String)?
@@ -475,11 +499,24 @@ public actor SessionRuntime {
                 // message Core has already committed for this turn.
                 let attachmentOwner = session.messages.last(where: { $0.role == .user })?.id
                 for item in attachments {
+                    // Images ride in the request as image parts (see `attachingImages`); the
+                    // entry here is the label the model reads next to them and what the
+                    // budget planner and manifest account for.
+                    let body: String
+                    if let path = item.path {
+                        body = item.imageData == nil
+                            ? "ATTACHED FILE (local path, read it with the file tools if needed): \(path)"
+                            : "ATTACHED IMAGE (local path \(path), \(item.mediaType)); the image itself follows."
+                    } else {
+                        body = item.imageData == nil
+                            ? "ATTACHED FILE \(item.filename) (\(item.mediaType)):\n\(item.text)"
+                            : "ATTACHED IMAGE \(item.filename) (\(item.mediaType))"
+                    }
                     allEntries.append(ContextEntry(
                         messageID: attachmentOwner,
                         role: .user,
                         source: .attachment,
-                        part: .text("ATTACHED FILE \(item.filename) (\(item.mediaType)):\n\(item.text)")
+                        part: .text(body)
                     ))
                 }
 
@@ -496,7 +533,7 @@ public actor SessionRuntime {
 
                 // Goal anchor: restated on every step so it survives context growth and compaction,
                 // while the model still sees only truncated tool output.
-                if let goal = await SessionGoalRegistry.shared.goal(sessionID) {
+                if let goal = await SessionGoalRegistry.shared.activeGoal(sessionID) {
                     await SessionGoalRegistry.shared.noteStep(sessionID)
                     allEntries.append(ContextEntry(
                         messageID: nil,
@@ -751,6 +788,8 @@ public actor SessionRuntime {
                 let clientHealth = await cacheController.lastClientHealth(for: sessionID) ?? ClientStructuralCacheHealth(stablePrefixHash: fingerprint.stablePrefixHash)
 
                 let epochInfo = cacheEpoch(for: coreTools)
+                let requestMessages = Self.attachingImages(attachments, to: context.modelMessages(),
+                                                           endpointKey: modelBus.gateway.endpoint?.fileReferenceKey)
                 let cachePlan = CanonicalCachePlan(
                     epochIdentity: CanonicalCachePlan.EpochIdentity(epoch: Int(epochInfo.epoch), reason: "turn_\(step + 1)"),
                     immutableBase: CanonicalCachePlan.ImmutableBase(
@@ -761,7 +800,7 @@ public actor SessionRuntime {
                     ),
                     appendOnlyContext: CanonicalCachePlan.AppendOnlyContext(
                         dynamicTools: epochProviderVisibleDynamicTools,
-                        messages: context.modelMessages(),
+                        messages: requestMessages,
                         skillActivations: []
                     ),
                     volatileTail: CanonicalCachePlan.VolatileTail(
@@ -775,7 +814,7 @@ public actor SessionRuntime {
                     continuationOf: effectiveContinuationID,
                     model: try modelID(),
                     executionID: runID,
-                    messages: context.modelMessages(),
+                    messages: requestMessages,
                     tools: effectiveTools,
                     reasoning: effectiveReasoning,
                     debugStep: step + 1,
@@ -790,6 +829,10 @@ public actor SessionRuntime {
                 profiler.recordProtocolValidator(liveBatches: toolBatches.filter { $0.state != .consumed }.count)
                 let submittedBatchIDs = Set(toolBatches.filter { $0.state == .settledAwaitingConsumption }.map(\.batchID))
                 trace("provider.stream.begin", step: step + 1)
+                if let latencyRun {
+                    await TurnLatencyRecorder.shared.mark(.inferenceRequestStarted, run: latencyRun)
+                    await TurnLatencyRecorder.shared.noteStep(run: latencyRun)
+                }
                 latestModelRequestID = request.requestID
 
                 let toolSchemaTokens = ConservativeTokenEstimator().estimate(tools: effectiveTools)
@@ -920,11 +963,19 @@ public actor SessionRuntime {
                         case .heartbeat:
                             break
                         case let .textDelta(delta):
+                            if !sawFirstText, let latencyRun {
+                                sawFirstText = true
+                                await TurnLatencyRecorder.shared.mark(.firstTextDelta, run: latencyRun)
+                            }
                             sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID, stepNumber: currentStepNumber, index: index, text: delta, kind: .text))
                             profiler.recordText(delta, streamElapsed: streamStarted.duration(to: clock.now))
                             index += 1
                             text += delta
                         case let .reasoningDelta(delta):
+                            if !sawFirstReasoning, let latencyRun {
+                                sawFirstReasoning = true
+                                await TurnLatencyRecorder.shared.mark(.firstReasoningDelta, run: latencyRun)
+                            }
                             sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID, stepNumber: currentStepNumber, index: index, text: delta, kind: .reasoning))
                             profiler.recordReasoning(delta, streamElapsed: streamStarted.duration(to: clock.now))
                             visibleReasoning = true

@@ -30,18 +30,21 @@ struct SettingsWorkbench: View {
     @State private var highlight: String?
     @State private var addTrigger = 0
 
+    /// The same window language as the workbench: the product backdrop and scrim behind,
+    /// glass panels with the same 8pt gutters, the same radius, edge and elevation. It used to
+    /// be three opaque `window`-grey columns split by hairlines — a different app's chrome.
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: LingXiMetrics.Space.sm) {
             SettingsSidebar(store: store, selectedPage: $page, highlight: $highlight)
                 .frame(width: LingXiMetrics.Column.settingsSidebar)
-                .background(LXColor.window)
-                .overlay(alignment: .trailing) { LXHairline(vertical: true) }
+                .frame(maxHeight: .infinity)
+                .lxPanel()
 
             if hasObjectList {
                 objectList
                     .frame(width: LingXiMetrics.Column.settingsObjects)
-                    .background(LXColor.window)
-                    .overlay(alignment: .trailing) { LXHairline(vertical: true) }
+                    .frame(maxHeight: .infinity)
+                    .lxPanel()
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -53,11 +56,13 @@ struct SettingsWorkbench: View {
                     .environment(\.settingsSelect, { selection = $0 })
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background { AtmosphereBackdrop(mode: .settings) }
+            .lxPanel(LXColor.content)
             .lxSettingsControlStyles()
         }
+        .padding(LingXiMetrics.Space.sm)
         .frame(minWidth: 900, idealWidth: 1120, minHeight: 560, idealHeight: 700)
-        .background(LXColor.window)
+        .modifier(WallpaperWindow())
+        .lxNoInitialFocus()
         .scrollIndicators(.hidden)
         .onChange(of: page) { _, next in
             selection = nil

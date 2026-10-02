@@ -81,8 +81,12 @@ public actor TerminalSessionManager {
         let root = Self.resolve(cwd: cwd, fallback: workspaceRoot)
         let program = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         var environment = EnvironmentSanitizer.sanitized()
-        environment["TERM"] = "dumb"
-        environment["NO_COLOR"] = "1"
+        // The GUI pane is a terminal emulator now (cursor, colours, alternate screen), so the
+        // shell is told it is talking to one. `dumb` + NO_COLOR belonged to the old pane that
+        // stripped escapes and showed a transcript.
+        environment["TERM"] = "xterm-256color"
+        environment["COLORTERM"] = "truecolor"
+        environment.removeValue(forKey: "NO_COLOR")
         environment["SHELL"] = program
         let handle = try pty.spawn(command: Self.arguments(forShell: program), cwd: root,
                                    environment: environment,
@@ -96,13 +100,10 @@ public actor TerminalSessionManager {
                                    supportsInput: true, supportsInterrupt: true)
     }
 
-    /// Interactive, but without job control: the session has no controlling
-    /// terminal, and monitor mode would only produce warnings the user cannot act on.
+    /// An interactive login shell, as Terminal.app starts one: the PTY is the session's
+    /// controlling terminal, so job control (^Z, fg, ^C to the foreground job) works.
     private static func arguments(forShell program: String) -> [String] {
-        switch (program as NSString).lastPathComponent {
-        case "zsh", "ksh", "ash", "dash": [program, "-i", "+m"]
-        default: [program, "-i"]
-        }
+        [program, "-i", "-l"]
     }
 
     private static func resolve(cwd: String?, fallback: URL?) -> URL {

@@ -78,6 +78,16 @@ struct ProviderCatalogTests {
           "models": { "chat-latest": { "id": "chat-latest", "name": "Chat Latest",
                                        "limit": { "context": 64000, "output": 8000 } } }
         },
+        "index-compat": {
+          "id": "index-compat", "name": "Index Compat", "npm": "@ai-sdk/openai-compatible",
+          "api": "https://compat.index.test/v1", "baseURL": "https://compat.index.test/v1",
+          "models": { "gamma": { "id": "gamma", "name": "Gamma" } }
+        },
+        "index-vendor-sdk": {
+          "id": "index-vendor-sdk", "name": "Index Vendor SDK", "npm": "@ai-sdk/google",
+          "api": "https://vendor.index.test/v1", "baseURL": "https://vendor.index.test/v1",
+          "models": { "delta": { "id": "delta", "name": "Delta" } }
+        },
         "index-no-endpoint": {
           "id": "index-no-endpoint", "name": "No Endpoint",
           "models": { "orphan": { "id": "orphan", "name": "Orphan" } }
@@ -110,6 +120,11 @@ struct ProviderCatalogTests {
         let deepseek = try #require(entries.first { $0.id == "deepseek" })
         #expect(deepseek.connectable)
         #expect(ProviderCatalog.adapter(forPublishedProvider: "deepseek") == "openai-compatible")
+
+        // An entry that declares the OpenAI-compatible wire dialect is driven by the adapter
+        // that already implements it; a vendor client library is not a wire dialect.
+        #expect(entries.first { $0.id == "index-compat" }?.connectable == true)
+        #expect(entries.first { $0.id == "index-vendor-sdk" }?.connectable == false)
 
         // A loopback endpoint is a local runtime, not something to send a key to.
         #expect(entries.first { $0.id == "index-local" }?.signInMode == .localEndpoint)
@@ -208,5 +223,92 @@ struct ProviderCatalogTests {
                 productID: "deepseek", credentialRef: reference)))
         }
         #expect(try await store.load().providers.providers.isEmpty)
+    }
+
+    @Test("Vault-backed Codex login appears in the same account list as saved providers")
+    func oauthAccountIsListed() async throws {
+        let (root, host, _, credentials) = try await fixture(client: catalogClient(Self.payload))
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await credentials.setSecret("test-oauth", for: CredentialRef("provider-openai-codex-oauth"))
+        let accounts = try await host.listProviders(envelope: QueryEnvelope(payload: VoidResult())).payload
+        let codex = try #require(accounts.first { $0.productID == "openai-codex" })
+        #expect(codex.accountType == .oauthUser)
+        #expect(!accounts.contains { $0.productID == "xai-api" || $0.productID == "opencode-zen" })
+    }
+
+    @Test("Saved endpoints list models with the Core-held key and the shared probe URL rules")
+    func savedEndpointRoster() async throws {
+        let (root, host, _, _) = try await fixture(client: catalogClient(Self.payload))
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try await host.saveProviderConfiguration(envelope: CommandEnvelope(payload: SaveProviderConfigurationRequest(
+            providerID: "relay", name: "Relay", adapter: "openai-compatible",
+            baseURL: "https://relay.test/v1/chat/completions", apiKeyHeader: "Authorization",
+            apiKey: .replace("test-roster-key"), models: [ProviderModelConfigurationDetail(modelID: "first", name: "First")])))
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.absoluteString == "https://relay.test/v1/models")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-roster-key")
+            return StubURLProtocol.StubResponse(status: 200, body: Data(#"{"data":[{"id":"second"},{"id":"first"},{"id":"second"},{"id":""}]}"#.utf8))
+        }
+        defer { StubURLProtocol.handler = nil }
+        let session = StubURLProtocol.makeSession()
+        defer { session.invalidateAndCancel() }
+        #expect(await host.remoteModelIDs(providerID: "relay", session: session).ids == ["first", "second"])
+    }
+
+    @Test("The roster reader takes the envelope the relay answered with, and a failed read says why")
+    func remoteRosterShapesAndNotes() async throws {
+        let (root, host, _, _) = try await fixture(client: catalogClient(Self.payload))
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try await host.saveProviderConfiguration(envelope: CommandEnvelope(payload: SaveProviderConfigurationRequest(
+            providerID: "relay", name: "Relay", adapter: "openai-compatible",
+            baseURL: "https://relay.test/v1", apiKeyHeader: "Authorization",
+            apiKey: .replace("test-roster-key"),
+            models: [ProviderModelConfigurationDetail(modelID: "first", name: "First")])))
+        StubURLProtocol.queuedResponses = [
+            // The connection test counted this body; the add-model picker called the same endpoint
+            // empty, because only one of the two readers knew `models` was a model list.
+            StubURLProtocol.StubResponse(status: 200, body: Data(#"{"models":[{"id":"beta"},{"id":"alpha"}]}"#.utf8)),
+            StubURLProtocol.StubResponse(status: 401, body: Data(#"{"error":"denied"}"#.utf8)),
+        ]
+        let session = StubURLProtocol.makeSession()
+        defer {
+            session.invalidateAndCancel()
+            StubURLProtocol.queuedResponses = []
+        }
+
+        let listed = await host.remoteModelIDs(providerID: "relay", session: session)
+        #expect(listed.ids == ["alpha", "beta"])
+        #expect(listed.note == nil)
+
+        let denied = await host.remoteModelIDs(providerID: "relay", session: session)
+        #expect(denied.ids.isEmpty)
+        #expect(denied.note?.contains("401") == true, "空列表必须带上端点说过的原因：\(String(describing: denied.note))")
+        #expect(denied.note?.contains("test-roster-key") == false, "诊断文字里不得出现凭据")
+    }
+
+    @Test("A credential reference that resolves to nothing names the reference instead of blaming the key")
+    func unresolvedCredentialReferenceIsNotReportedAsRejection() async throws {
+        let (root, host, store, _) = try await fixture(client: catalogClient(Self.payload))
+        defer { try? FileManager.default.removeItem(at: root) }
+        // `{env:…}` is what a hand-written providers.json carries: saving a key through the RPC cannot
+        // produce it, because `updateSecret` puts the plaintext in the vault and stores `{vault:…}`.
+        // So the entry is written the way the file on disk actually looks.
+        var providers = try await store.load().providers
+        providers.providers["relay"] = PublicProviderConfiguration(
+            name: "Relay", adapter: "openai-compatible",
+            options: PublicProviderOptions(baseURL: "https://relay.test/v1", apiKey: "{env:LX_UNSET_ROSTER_KEY}"),
+            models: ["first": PublicModelConfiguration(name: "First")])
+        try await store.saveProviders(providers)
+        // Nothing queued: a request that actually went out would fail as `无法连接`, not as this note.
+        StubURLProtocol.handler = nil
+        StubURLProtocol.queuedResponses = []
+        let session = StubURLProtocol.makeSession()
+        defer { session.invalidateAndCancel() }
+
+        let read = await host.remoteModelIDs(providerID: "relay", session: session)
+        #expect(read.ids.isEmpty)
+        #expect(read.note?.contains("LX_UNSET_ROSTER_KEY") == true,
+                "要指名解析不到的变量：\(String(describing: read.note))")
+        #expect(read.note?.contains("无法连接") == false, "凭据没解析出来时不该发出这个注定被拒的请求")
     }
 }

@@ -236,6 +236,14 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func renameSession(envelope: CommandEnvelope<RenameSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
         try await underlying.renameSession(envelope: envelope)
     }
+
+    public func forkSession(envelope: CommandEnvelope<ForkSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        try await underlying.forkSession(envelope: envelope)
+    }
+
+    public func prepareAttachment(envelope: CommandEnvelope<PrepareAttachmentRequest>) async throws -> CommandReceipt<AttachmentPreparation> {
+        try await underlying.prepareAttachment(envelope: envelope)
+    }
     public func deleteSession(envelope: CommandEnvelope<DeleteSessionRequest>) async throws -> CommandReceipt<VoidResult> {
         try await underlying.deleteSession(envelope: envelope)
     }
@@ -529,8 +537,17 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func getProviderCatalog(envelope: QueryEnvelope<GetProviderCatalogRequest>) async throws -> ResponseEnvelope<[ProviderCatalogEntry]> {
         try await underlying.getProviderCatalog(envelope: envelope)
     }
-    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<ProviderModelRoster> {
         try await underlying.getProviderCatalogModels(envelope: envelope)
+    }
+    public func probeProviderModels(envelope: CommandEnvelope<ProbeProviderModelsRequest>) async throws -> CommandReceipt<[String: ModelAvailability]> {
+        try await underlying.probeProviderModels(envelope: envelope)
+    }
+    public func getProviderModelAvailability(envelope: QueryEnvelope<GetProviderModelAvailabilityRequest>) async throws -> ResponseEnvelope<[String: ModelAvailability]> {
+        try await underlying.getProviderModelAvailability(envelope: envelope)
+    }
+    public func getWithheldModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[String: [String]]> {
+        try await underlying.getWithheldModels(envelope: envelope)
     }
     public func getProviderConfiguration(envelope: QueryEnvelope<GetProviderConfigurationRequest>) async throws -> ResponseEnvelope<ProviderConfigurationDetail> {
         try await underlying.getProviderConfiguration(envelope: envelope)

@@ -24,6 +24,11 @@ public struct AttachmentPresentation: Identifiable, Sendable, Equatable {
     /// not on this side of the wire, and there is nothing left to upload.
     public let sourceURL: URL?
     public var contentRef: ContentRef?
+    /// Background preparation in Core. Never blocks typing or sending: a send while this is
+    /// still running joins the same preparation instead of starting over.
+    public var preparation: AttachmentPreparation.State = .ready
+    /// Why it failed, or a note such as an upload that fell back to inline.
+    public var preparationDetail: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -510,6 +515,8 @@ public final class ComposerModel: ObservableObject {
     @Published public var selectedModelID: String?
     /// Active goal set through `/goal`; nil when none.
     @Published public var goal: String?
+    /// The goal as Core reports it: text, running clock and paused state.
+    @Published public var goalState: GoalRuntimeSnapshot?
 
     public init(text: String = "", selectedMode: AgentRunMode = .build) {
         self.text = text

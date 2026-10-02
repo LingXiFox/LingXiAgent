@@ -86,6 +86,68 @@ struct ClientFingerprintTests {
         #expect(geminiHeaders["User-Agent"]?.hasPrefix("GeminiCLI/0.1.5") == true)
     }
 
+    @Test("the Codex client version is resolved from the release tag, never from a guess")
+    func codexClientVersionResolution() {
+        // Tags carry a `rust-v` prefix; the release feed is full of `-alpha.N`.
+        #expect(CodexClientVersion.version(fromTag: "rust-v0.160.0") == "0.160.0")
+        #expect(CodexClientVersion.version(fromTag: "v0.160.0") == "0.160.0")
+        #expect(CodexClientVersion.version(fromTag: "0.159.3") == "0.159.3")
+        // A prerelease would put LingXi behind a protocol shape it has not implemented.
+        #expect(CodexClientVersion.version(fromTag: "rust-v0.162.0-alpha.7") == nil)
+        #expect(CodexClientVersion.version(fromTag: "nightly") == nil)
+        #expect(CodexClientVersion.version(fromTag: "") == nil)
+
+        // Numeric compare, so `0.9.0` cannot beat `0.159.3` the way a string compare would.
+        #expect(CodexClientVersion.compare("0.160.0", "0.159.3") == 1)
+        #expect(CodexClientVersion.compare("0.9.0", "0.159.3") == -1)
+        #expect(CodexClientVersion.compare("0.159.3", "0.159.3") == 0)
+    }
+
+    @Test("an unreached GitHub leaves a working version, and the override still wins")
+    func codexClientVersionNeverEmpty() async {
+        CodexClientVersion.resetForTesting()
+        // Nothing fetched yet: the floor, never empty and never `0`.
+        #expect(CodexClientVersion.current(environment: [:]) == CodexClientVersion.floor)
+        // An explicit pin outranks both the floor and whatever was fetched.
+        #expect(CodexClientVersion.current(environment: ["CODEX_CLI_VERSION": "0.200.0"]) == "0.200.0")
+
+        // A failed fetch keeps the floor and backs off rather than hammering GitHub.
+        actor Counter { var n = 0; func bump() { n += 1 }; func read() -> Int { n } }
+        let hits = Counter()
+        struct Offline: Error {}
+        let failing: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { _ in
+            await hits.bump()
+            throw Offline()
+        }
+        #expect(await CodexClientVersion.refresh(httpClient: failing) == CodexClientVersion.floor)
+        #expect(await CodexClientVersion.refresh(httpClient: failing) == CodexClientVersion.floor)
+        #expect(await hits.read() == 1, "失败后应退避，第二次调用不该再打网络")
+
+        // A successful one is adopted.
+        CodexClientVersion.resetForTesting()
+        let body = Data(#"{"tag_name":"rust-v0.161.0","prerelease":false}"#.utf8)
+        let afterSuccess = await CodexClientVersion.refresh { _ in
+            (body, HTTPURLResponse(url: CodexClientVersion.releasesURL, statusCode: 200,
+                                   httpVersion: nil, headerFields: nil)!)
+        }
+        #expect(afterSuccess == "0.161.0")
+        #expect(CodexClientVersion.current(environment: [:]) == "0.161.0")
+
+        // A prerelease release is refused, keeping the last good value.
+        CodexClientVersion.resetForTesting()
+        _ = await CodexClientVersion.refresh { _ in
+            (body, HTTPURLResponse(url: CodexClientVersion.releasesURL, statusCode: 200,
+                                   httpVersion: nil, headerFields: nil)!)
+        }
+        let pre = Data(#"{"tag_name":"rust-v0.162.0-alpha.1","prerelease":true}"#.utf8)
+        let afterPre = await CodexClientVersion.refresh { _ in
+            (pre, HTTPURLResponse(url: CodexClientVersion.releasesURL, statusCode: 200,
+                                  httpVersion: nil, headerFields: nil)!)
+        }
+        #expect(afterPre == "0.161.0", "prerelease 不该被采纳，更不能覆盖已知可用值")
+        CodexClientVersion.resetForTesting()
+    }
+
     @Test func providerMakeURLRequestRespectsRequiredHeadersUserAgent() throws {
         let dummyURL = URL(string: "https://example.com/v1")!
         let customUA = "CustomClient/9.9.9"

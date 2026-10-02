@@ -293,3 +293,51 @@ v2 是正式 envelope，未知 `schemaVersion` 主版本直接拒绝而不是半
 4. **模型站页面仍有两个无 SRI 的第三方引用**（`cdn.tailwindcss.com`、`fonts.googleapis.com`）。
    改造前即存在，不属于本契约条目，本狐没有擅自换构建方式；若要收口，建议本地化 Tailwind 产物并加 CSP。
 5. `docs/`、`Docs/Research` 等历史记录里仍有旧 Registry 时代的描述，按「历史记录不改写」原则保留。
+
+6. **「BAI 添加模型列表为空」已定位（2026-10-02），根因不在候选读取器**：`token.sensenova.cn/v1/models`
+   实测返回 `{"data":[{"id":…,"name":…},…]}` 共 **9 个模型**，`providers.json` 里 `bai` 只配了
+   `deepseek-v4-flash` 一个 —— 所以候选本该有 8 个，「配置只写了一个模型」这个猜测是错的。
+   真正断掉的是凭据引用：`bai.options.apiKey` 是 `{env:SENSENOVA_API_KEY}`，该变量只存在于登录 shell
+   （`.zshenv`，35 字节），`launchctl getenv` 读到 0 字节；GUI 从 Dock 启动时环境来自 launchd，
+   `VNextStdioTransport.swift:110` 又把这份环境原样交给 Core 子进程，于是 `resolveProviderSecret`
+   解析成 nil，请求以**无鉴权**发出并拿到 401。旧代码把 401 静默成 `[]`，再回退到公共索引
+   （索引里没有 `bai`），最终呈现为一个没有任何解释的空列表。
+   两处已改：读取器与连接测试合并为 `ProviderConnectivityProbe.modelIDs(in:)`（此前连接测试认
+   `models`/裸数组、候选读取器只认 `data`，同一端点两处结论相反）；`provider.catalogModels` 的 payload
+   改为 `ProviderModelRoster { models, note }`，空列表必须说明原因，且 `{env:X}` 解析不到时直接指名 X
+   而不再发出这个注定被拒的请求。
+   **配置方式本身已于同日整改**（见下条 7）。
+
+7. **Credential Resolution 层收敛（2026-10-02）**：按「显式 env override → vault/keychain → missing」
+   重建这一层，不再针对 BAI 打补丁。
+   - 新增 `Sources/LingXiCore/Configuration/ProviderCredentialSource.swift`：一份 grammar
+     （`{vault:}` / `{oauth:}` / `{env:}` / 兜底 literal）加一个 override 层
+     `LINGXI_<PROVIDER_ID>_API_KEY`（id 大写、非 `[A-Za-z0-9]` 转 `_`，所以 `openai-codex` 与
+     `Open AI` 不会拼出两个键）。`resolveProviderSecret` 与真正发请求的 `resolveRuntimeAssembly`
+     都先过 override，两处口径一致。
+   - **自愈迁移** `ProviderCredentialMigration.apply(configurationStore:credentialStore:environment:)`：
+     `{env:X}` 且 X 当前有值 → 写入 `provider-<id>-key` 并把配置改写为 `{vault:…}`，改写前备份
+     `providers.json.bak-pre-credential-migration`（已存在则不覆盖，保留最早的原文件）；X 无值 →
+     一个字都不改，因为改写指针等于销毁密钥的唯一记录处。写入走设置窗口已在用的 `saveProviders`，
+     没有引入新的形状转换。
+   - **落点是产品入口，不是 `CoreHost.start()`**：`LingXiCoreHost/main.swift` 与
+     `lingxiagent-ops/main.swift` 在 load 配置之前各调一次。本狐最初把它放在 `start()` 里，全量回归
+     因此改写了主人的线上 `providers.json` —— `VNextProductionIntegrationTests` 会故意拿真实 data root
+     起一个 host 做 skills/MCP 发现，测试二进制里几百个 host 都跑 `start()`，启动期写配置等于让测试
+     改用户 profile。已改到入口层，并加了一条源码门禁测试
+     （`migrationIsNotWiredIntoHostStartup`）盯住这件事，防止再被搬回 `start()`。
+   - 没有采用 `zsh -l` 导入登录 shell 环境，也没有把 `launchctl setenv` 当解决方案（诊断文字里原先
+     建议的那句已删）。`{env:}` 保留为开发 / CI / 命令行形态。
+   - 顺带修掉一个死值 bug：`auth import-env` 会把值额外写进 vault 引用 `env:NAME`，而
+     `RuntimeConfigurationResolver.credentialValue` 见到 `env:` 前缀去读**环境变量**、永不读 vault，
+     那条记录存进去就再也读不出来；`auth set env:NAME` 同理，而 help 还在宣传这个写法。
+     现在 `set` 拒绝 `env:` 前缀、`import-env` 只写一条、help 换成可用示例。
+   - 全仓扫描：本机持久账户里只有 `bai` 用了 `{env:}`（`xiaomi` 已是 `{vault:}`），无其它命中。
+   - 规范同步：`Docs/AA/P19.1-PROVIDER-TUI.md` 与 `README.md` 的凭据段已改写为三层口径。
+   - 验收：`ProviderCredentialResolutionTests`（9 项，含"迁移后撤掉环境变量仍能解析"、"变量缺失时
+     绝不改写"、"override 盖过 vault"、以及上面那条入口层门禁）。真实链路另跑过：`LingXiCoreHost`
+     从终端启动一次，把主人线上 `bai` 从 `{env:SENSENOVA_API_KEY}` 迁成 `{vault:provider-bai-key}`；
+     随后 `env -u SENSENOVA_API_KEY` 模拟 Dock 启动，干净退出、不再触发迁移；剥掉环境变量后
+     `/v1/models` 仍返回 **9 个模型**、note 为空，候选面板因此有 8 项可勾。
+     `LINGXI_BAI_API_KEY=sk-deliberately-wrong` 时读回 0 个并报 `HTTP 401`，证明 override 确实优先于
+     vault。一次性验证代码用完即删，未留在测试里。

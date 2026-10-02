@@ -40,6 +40,59 @@ public protocol ProviderHTTPTransport: Sendable {
     func send(_ request: URLRequest, context: ProviderHTTPRequestContext) async throws -> ProviderHTTPResponse
 }
 
+#if canImport(Darwin)
+/// Per-request timing for the latency trace: when the body finished uploading and what the
+/// connection looked like. `didSendBodyData` is live; the metrics arrive once the exchange ends
+/// and fill in what the live callbacks cannot (connect/TLS, reuse, exact first-byte time).
+private final class TransportTimingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let run: String?
+    private let lock = NSLock()
+    private var timing = TransportTiming()
+
+    init(run: String?) {
+        self.run = run
+        super.init()
+        timing.requestStarted = Date()
+    }
+
+    func responseArrived() {
+        let now = Date()
+        lock.lock(); if timing.responseStart == nil { timing.responseStart = now }; lock.unlock()
+        if let run { Task { await TurnLatencyRecorder.shared.mark(.responseStart, run: run, at: now) } }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        lock.lock()
+        timing.requestBodyBytes = totalBytesSent
+        var finished: Date?
+        if totalBytesExpectedToSend > 0, totalBytesSent >= totalBytesExpectedToSend, timing.bodySent == nil {
+            finished = Date()
+            timing.bodySent = finished
+        }
+        lock.unlock()
+        if let run, let finished {
+            Task { await TurnLatencyRecorder.shared.mark(.requestBodySent, run: run, at: finished) }
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard let run else { return }
+        lock.lock()
+        if let transaction = metrics.transactionMetrics.last {
+            timing.reusedConnection = transaction.isReusedConnection
+            timing.connectionReady = transaction.secureConnectionEndDate ?? transaction.connectEndDate ?? transaction.requestStartDate
+            if let end = transaction.requestEndDate { timing.bodySent = end }
+            if let first = transaction.responseStartDate { timing.responseStart = first }
+            if transaction.countOfRequestBodyBytesSent > 0 { timing.requestBodyBytes = transaction.countOfRequestBodyBytesSent }
+        }
+        let snapshot = timing
+        lock.unlock()
+        Task { await TurnLatencyRecorder.shared.recordTransport(snapshot, run: run) }
+    }
+}
+#endif
+
 public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
     public static let sharedSession: URLSession = {
         let config = URLSessionConfiguration.default
@@ -62,8 +115,10 @@ public struct URLSessionProviderHTTPTransport: ProviderHTTPTransport {
         #if canImport(Darwin)
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
+        let timing = TransportTimingDelegate(run: context.executionID?.rawValue)
         do {
-            (bytes, response) = try await session.bytes(for: request)
+            (bytes, response) = try await session.bytes(for: request, delegate: timing)
+            timing.responseArrived()
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as URLError where error.code == .timedOut {

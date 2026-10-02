@@ -44,6 +44,9 @@ struct ProviderAuthAndProbeTests {
         let bearer = ProviderConnectivityProbe.request(baseURL: "https://r.test/v1", adapter: "openai-compatible",
                                                        apiKeyHeader: nil, credential: "sk-1", headers: [:])
         #expect(bearer?.value(forHTTPHeaderField: "Authorization") == "Bearer sk-1")
+        let explicitBearer = ProviderConnectivityProbe.request(baseURL: "https://r.test/v1", adapter: "openai-compatible",
+                                                               apiKeyHeader: "Authorization", credential: "sk-1", headers: [:])
+        #expect(explicitBearer?.value(forHTTPHeaderField: "Authorization") == "Bearer sk-1")
 
         let named = ProviderConnectivityProbe.request(baseURL: "https://r.test/v1", adapter: "openai-compatible",
                                                       apiKeyHeader: "X-Team-Key", credential: "sk-1",
@@ -99,6 +102,34 @@ struct ProviderAuthAndProbeTests {
         let empty = try await ProviderConnectivityProbe.probe(
             baseURL: "https://r.test/v1", adapter: "openai-compatible", credential: nil) { _ in fakeOK("{}") }
         #expect(empty.models == 0)
+    }
+
+    @Test("A model list reads from every envelope the relay variants answer with")
+    func modelListShapesAllRead() async throws {
+        // The connection test counted `{"models":[…]}` while the add-model picker called the same
+        // endpoint empty: two readers, two ideas of what a model list looks like, one of them wrong.
+        let shapes: [(body: String, expected: [String])] = [
+            (#"{"data":[{"id":"b"},{"id":"a"}]}"#, ["a", "b"]),
+            (#"{"data":["a","b"]}"#, ["a", "b"]),
+            (#"{"models":[{"id":"a"},{"name":"b"}]}"#, ["a", "b"]),
+            (#"{"modelsList":["a"]}"#, ["a"]),
+            (#"{"results":[{"model":"a"}]}"#, ["a"]),
+            (#"{"items":["a",{"id":"b"}]}"#, ["a", "b"]),
+            (#"[{"id":"a"}]"#, ["a"]),
+        ]
+        for shape in shapes {
+            #expect(ProviderConnectivityProbe.modelIDs(in: Data(shape.body.utf8)) == shape.expected,
+                    "读不出 \(shape.body) 里的模型 ID")
+        }
+        #expect(ProviderConnectivityProbe.modelIDs(in: Data("not json".utf8)).isEmpty)
+        #expect(ProviderConnectivityProbe.modelIDs(in: Data(#"{"error":{"message":"denied"}}"#.utf8)).isEmpty)
+        #expect(ProviderConnectivityProbe.modelIDs(in: Data(#"{"data":{"object":"list"}}"#.utf8)).isEmpty)
+
+        let counted = try await ProviderConnectivityProbe.probe(
+            baseURL: "https://r.test/v1", adapter: "openai-compatible", credential: "sk") { _ in
+            fakeOK(#"{"models":[{"id":"a"},{"id":"b"},{"id":"c"}]}"#)
+        }
+        #expect(counted.models == 3, "连接测试数出的模型数，候选列表必须一个不少地读到")
     }
 
     @Test("A sign-in finishes over the loopback callback and no token reaches the client contract")

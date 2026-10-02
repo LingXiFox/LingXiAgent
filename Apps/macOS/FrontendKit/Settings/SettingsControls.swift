@@ -470,8 +470,7 @@ struct SettingsNotice: View {
 }
 
 /// Page-independent banner strip at the top of a detail page. Sits in the same
-/// content column as the page below it: one group surface (`LXColor.content`),
-/// radius-control, 1px separator ring, no glass, no shadow, no gradient.
+/// content column as the page below it: the same inset group as the cards below it.
 private struct SettingsBanner<Content: View>: View {
     private let content: Content
 
@@ -483,9 +482,7 @@ private struct SettingsBanner<Content: View>: View {
                 .padding(.horizontal, LingXiMetrics.Space.lg)
                 .padding(.vertical, LingXiMetrics.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(LXColor.content,
-                            in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control, style: .continuous))
-                .lxRing(cornerRadius: LingXiMetrics.Radius.control)
+                .lxInsetGroup()
         }
         .padding(.horizontal, LingXiMetrics.Space.xxl)
         .padding(.top, LingXiMetrics.Space.lg)

@@ -93,6 +93,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public let gitService: GitService
     public let extensionPlatform: ExtensionPlatform
     private let gateway: ModelGateway
+    /// Picked files, prepared ahead of the turn that uses them.
+    private let attachmentStore: AttachmentStore
     private let modelResolver: SubagentModelResolver
     private let subagentService: SubagentToolService
     /// internal：Git RPC 与其它 CoreHost+*.swift 扩展共用同一权限与串行化路径（契约第十五、十六节）。
@@ -324,6 +326,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         self.modelsCatalogClient = modelsCatalogClient
         self.restoreScheduler = restoreScheduler
         self.dataRootURL = dataRoot
+        self.attachmentStore = AttachmentStore(
+            cacheDirectory: dataRoot?.appendingPathComponent("cache/attachments", isDirectory: true))
         self.cachedAssemblies = modelRuntimes
         let questionsRuntime = QuestionRuntime(interactive: supportsInteraction)
         self.questions = questionsRuntime
@@ -512,6 +516,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     /// 注册控制面路由并进入 ready。
+    ///
+    /// Nothing here may rewrite a configuration file. `start()` runs inside the test binary for
+    /// hundreds of hosts, several of which deliberately point at the developer's own data root to
+    /// exercise real discovery paths; a startup mutation belongs in the product entry points that read
+    /// the file in the first place, which is where ``ProviderCredentialMigration`` is called.
     public func start() async {
         guard state == .starting else { return }
         if let retrievalTool = toolRuntime.registry.tool(for: RetrievalSearchTool.toolID) as? RetrievalSearchTool {
@@ -1493,6 +1502,28 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 ))
             }
         }
+        // Built-in products the user actually signed in to or stored a key for in the vault
+        // (a Codex login is the usual case) are accounts too: they had no providers.json entry,
+        // so Settings never listed the provider the composer was running on. A key that merely
+        // sits in the shell environment is not an account the user added here.
+        for product in BuiltinProviderCatalog.registryProducts where product.runtime.isRunnable {
+            guard !accounts.contains(where: { $0.id == product.id || $0.productID == product.id }),
+                  await providerCredential(providerID: product.id) != nil else { continue }
+            let hasOAuth = (try? await credentialStore?.secret(for: CredentialRef("provider-\(product.id)-oauth")))??.isEmpty == false
+            var availability = ProviderAccountAvailability.active
+            if let refresher = oauthRefreshers[product.id] {
+                switch await refresher.authState {
+                case .valid: availability = .active
+                case .refreshing: availability = .refreshing
+                case .refreshFailedTransient: availability = .refreshFailedTransient
+                case .reauthenticationRequired: availability = .reauthenticationRequired
+                }
+            }
+            accounts.append(ProviderAccountInfo(
+                id: product.id, productID: product.id, displayName: product.displayName,
+                accountType: hasOAuth ? .oauthUser : .apiKey, credentialRef: nil, endpoint: nil,
+                availability: availability))
+        }
         let runtimeProviderIDs = Set(runtimeProviderAccounts.values.map(\.productID))
         return accounts.filter { !runtimeProviderIDs.contains($0.productID) } + runtimeProviderAccounts.values.sorted { $0.id < $1.id }
     }
@@ -1700,7 +1731,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         providerID: String,
         provider: PublicProviderConfiguration
     ) async -> [ProviderModelInfo] {
-        await withTaskGroup(of: ProviderModelInfo?.self) { group in
+        // What a previous probe learned about this account. Reading the cache costs no request, so a
+        // model already configured before the probe existed still gets marked once someone has probed.
+        let availability = await recordedModelAvailability(providerID: providerID)
+        return await withTaskGroup(of: ProviderModelInfo?.self) { group in
             for modelID in provider.models.keys.sorted() {
                 guard let model = provider.models[modelID] else { continue }
                 group.addTask {
@@ -1716,7 +1750,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                         configured: true,
                         metadataIncomplete: detail.catalogDefaults.contextWindow == nil,
                         vision: detail.effective.vision,
-                        toolCalling: detail.effective.toolCalling
+                        toolCalling: detail.effective.toolCalling,
+                        availability: availability[modelID]
                     )
                 }
             }
@@ -1753,13 +1788,18 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             accountRef: accountRef
         )
         if cached == nil || cached?.models.isEmpty == true {
+            // The exact reference missed. Taking "the first non-empty account" made the list a
+            // function of directory enumeration order, and it silently served whichever account had
+            // been written first — including one that is no longer the current one. Order by when the
+            // listing was actually fetched so the live answer wins, deterministically.
             let availableAccounts = await AccountScopedCatalogCache.shared.listAccounts(productID: providerID)
-            for acc in availableAccounts {
-                if let record = await AccountScopedCatalogCache.shared.load(productID: providerID, accountRef: acc), !record.models.isEmpty {
-                    cached = record
-                    break
-                }
+            var candidates: [AccountCatalogCacheRecord] = []
+            for account in availableAccounts {
+                guard let record = await AccountScopedCatalogCache.shared.load(
+                        productID: providerID, accountRef: account), !record.models.isEmpty else { continue }
+                candidates.append(record)
             }
+            cached = candidates.max { $0.fetchedAt < $1.fetchedAt }
         }
 
         if let cached, !cached.models.isEmpty, !cached.isExpired {
@@ -1845,23 +1885,43 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
     /// The bearer token a provider test should send.
     ///
-    /// An OAuth account's vault entry is a token document, not a key: sending it
-    /// verbatim would put JSON in an Authorization header. Anything Core can
-    /// resolve from the file (`{vault:…}`, `{env:…}`) is read here, so the
-    /// credential never leaves the process that holds it.
+    /// An OAuth account's vault entry is a token document, not a key: sending it verbatim would put
+    /// JSON in an Authorization header. Resolution order is the one rule for the whole layer —
+    /// ``ProviderCredentialOverride`` first, then whatever `options.apiKey` names, then the
+    /// account-less fallback the vault holds for a signed-in product. The credential never leaves the
+    /// process that holds it.
     func resolveProviderSecret(_ source: String?, providerID: String) async -> String? {
-        if let source, source.hasPrefix("{env:"), source.hasSuffix("}") {
-            return ProcessInfo.processInfo.environment[String(source.dropFirst(5).dropLast())]
+        if let override = ProviderCredentialOverride.secret(providerID: providerID) { return override }
+        let parsed = ProviderCredentialSource(source)
+        switch parsed {
+        case .environment(let name):
+            return ProcessInfo.processInfo.environment[name]
+        case .vault, .oauth:
+            guard let ref = parsed.credentialReference, let credentialStore,
+                  let secret = try? await credentialStore.secret(for: ref), !secret.isEmpty else { return nil }
+            return Self.bearerToken(from: secret)
+        case .literal(let value):
+            return Self.bearerToken(from: value)
+        case .absent:
+            return Self.bearerToken(from: await providerCredential(providerID: providerID))
         }
-        if let source, source.hasPrefix("{vault:"), source.hasSuffix("}"),
-           let credentialStore {
-            let ref = CredentialRef(String(source.dropFirst(7).dropLast()))
-            if let secret = try? await credentialStore.secret(for: ref), !secret.isEmpty {
-                return Self.bearerToken(from: secret)
-            }
+    }
+
+    /// A credential *reference* that resolves to nothing is not the same failure as an endpoint that
+    /// rejected a real key. Sending the request anyway gets a 401 back, which reads as "wrong key" and
+    /// sends the user to the wrong file: a `{env:…}` account configured in a shell that the GUI never
+    /// inherited has no problem with its key at all.
+    private static func unresolvedCredentialNote(_ source: String?, providerID: String) -> String? {
+        switch ProviderCredentialSource(source) {
+        case .environment(let name):
+            return "该账户的凭据指向环境变量 \(name)，而 Core 进程读不到它。"
+                + "从 Dock/Finder 启动的 GUI 不继承登录 shell 的环境；从终端启动一次 LingXi，"
+                + "Core 会把它迁进凭据库，此后无需环境变量。"
+        case .vault(let ref), .oauth(let ref):
+            return "凭据库里读不出 \(ref.rawValue)，本次请求没有带上凭据。"
+        case .literal, .absent:
             return nil
         }
-        return Self.bearerToken(from: await providerCredential(providerID: providerID))
     }
 
     private static func bearerToken(from secret: String?) -> String? {
@@ -2009,6 +2069,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         try await store.saveProviders(snapshot.providers)
         let info = await accountInfo(account)
         runtimeProviderAccounts[request.id] = info
+        await notifyProviderCatalogChanged()
         return info
     }
 
@@ -2133,6 +2194,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             try await requireCredentialStore().removeSecret(for: reference)
             deleted = true
         }
+        await notifyProviderCatalogChanged()
         return ProviderDisconnectResult(accountID: id, credentialDeleted: deleted)
     }
 
@@ -2237,6 +2299,38 @@ extension CoreHost {
             questionRequest: interaction.questionRequest,
             decisionRequest: interaction.decisionRequest
         ))
+    }
+
+    /// Terminalize every HITL ask a session still holds, in the ledger Core answers reads from and
+    /// in the parent copy `mirrorInteractionToParent` made. `cancelPending` releases the waiter; only
+    /// this removes the ask, and a leftover entry reappears as a blocking card on the next snapshot.
+    private func resolvePendingInteractions(sessionID: SessionID, coordinator: SessionTurnCoordinator) async {
+        var parentCoordinator: SessionTurnCoordinator?
+        if let parentSessionID = try? await sessionStore.session(sessionID).parentSessionID,
+           parentSessionID != sessionID {
+            parentCoordinator = try? await self.coordinator(for: parentSessionID)
+        }
+        if parentCoordinator === coordinator { parentCoordinator = nil }
+        for interaction in await coordinator.listPendingInteractions() {
+            let resolution: InteractionResolution
+            switch interaction.kind {
+            case .permission: resolution = .permission(.deny)
+            case .question:
+                resolution = .question(QuestionReply(
+                    questionID: interaction.questionRequest?.questionID ?? QuestionID(interaction.interactionID.rawValue),
+                    cancelled: true))
+            case .decision: resolution = .decision("runCancelled")
+            case .unknown: resolution = .unknown("runCancelled")
+            }
+            try? await coordinator.resolveInteraction(interactionID: interaction.interactionID, resolution: resolution)
+            if let parentCoordinator,
+               await parentCoordinator.listPendingInteractions().contains(where: {
+                   $0.interactionID == interaction.interactionID
+               }) {
+                try? await parentCoordinator.resolveInteraction(
+                    interactionID: interaction.interactionID, resolution: resolution)
+            }
+        }
     }
 
     public func coordinator(for sessionID: SessionID) async throws -> SessionTurnCoordinator {
@@ -2384,6 +2478,8 @@ extension CoreHost {
         coordinator: SessionTurnCoordinator,
         sessionID: SessionID
     ) async -> SessionTurnCoordinator.NextTurnToRun? {
+        await TurnLatencyRecorder.shared.mark(.completed, run: runID.rawValue)
+        emitLatencyReport(run: runID.rawValue, sessionID: sessionID)
         var retries = 3
         var backoffMs: UInt64 = 50
         while true {
@@ -2433,6 +2529,7 @@ extension CoreHost {
 
         // Ensure user message is appended to sessionStore when run executes (queued turns are deferred until execution)
         if let turn = await coordinator.getTurn(turnID: turnID) {
+            await TurnLatencyRecorder.shared.mark(.messageSendRequested, run: runID.rawValue, at: turn.userMessage.createdAt)
             let msgID = turn.userMessage.messageID
             do {
                 let existing = try await sessionStore.session(sessionID).messages.contains(where: { $0.id == msgID })
@@ -2538,6 +2635,8 @@ extension CoreHost {
             // Resolved inside the turn's own error path: a file the user attached that cannot be
             // read must terminalize the run with a visible error, not abort a detached task.
             let resolvedAttachments = try await resolveAttachments(input.attachments)
+                + resolveFileReferences(executionIntent.contextReferences, run: runID.rawValue)
+            await TurnLatencyRecorder.shared.mark(.attachmentsResolved, run: runID.rawValue)
             var stream: OpenedStream?
             var retries = 5
             while true {
@@ -2821,12 +2920,13 @@ extension CoreHost {
     }
 
     /// Reads the bytes a turn references out of the content store, so the Agent Loop is handed
-    /// text rather than an address it cannot resolve.
+    /// content rather than an address it cannot resolve.
     ///
-    /// A ref that cannot be read or decoded fails the turn. The alternative — dropping that
-    /// attachment and proceeding — produces a turn the user believes carried a file, which is the
-    /// fake-success shape §3.2 of the closure contract rules out. The GUI filters by media type
-    /// first, so this is the trust boundary, not the user's first line of defence.
+    /// `image/*` bytes are passed through as images: whether the selected model can see them is
+    /// the provider's and the model's decision, not Core's. Everything else is carried as text
+    /// when it decodes as UTF-8, whatever its declared media type. Only bytes that are neither
+    /// fail the turn — dropping them and proceeding would produce a turn the user believes
+    /// carried a file, the fake-success shape §3.2 of the closure contract rules out.
     private func resolveAttachments(_ refs: [ContentRef]) async throws -> [ResolvedAttachment] {
         guard !refs.isEmpty else { return [] }
         let budget = AttachmentSupport.maximumTurnCharacters
@@ -2836,11 +2936,6 @@ extension CoreHost {
             let metadata = try? await contentStore.metadata(id: ref.id, authorization: .system)
             let name = metadata?.filename ?? ref.id.rawValue
             let mediaType = ref.mediaType ?? metadata?.ref.mediaType
-            guard AttachmentSupport.isText(mediaType: mediaType) else {
-                throw CoreError(code: .binaryFileUnsupported, message: """
-                附件「\(name)」是 \(mediaType ?? "未知类型")，本 Runtime 的模型请求只能携带文本。
-                """)
-            }
             let data: Data
             do {
                 data = try await contentStore.read(id: ref.id, authorization: .system)
@@ -2850,9 +2945,15 @@ extension CoreHost {
                 throw CoreError(code: .resourceNotFound,
                                 message: "附件「\(name)」的内容已不在存储中，无法用于本轮：\(error.localizedDescription)")
             }
+            if let mediaType, mediaType.lowercased().hasPrefix("image/") {
+                let payload = ImagePayload.prepared(data, mediaType: mediaType.lowercased())
+                resolved.append(ResolvedAttachment(
+                    filename: name, mediaType: payload.mediaType, text: "", imageData: payload.data, ref: ref))
+                continue
+            }
             guard let text = String(data: data, encoding: .utf8) else {
                 throw CoreError(code: .binaryFileUnsupported,
-                                message: "附件「\(name)」不是 UTF-8 文本，无法交给模型。")
+                                message: "附件「\(name)」（\(mediaType ?? "未知类型")）既不是图片也不是文本，无法交给模型。")
             }
             guard carried + text.count <= budget else {
                 throw CoreError(code: .contextBudgetExceeded, message: """
@@ -2865,6 +2966,280 @@ extension CoreHost {
                 filename: name, mediaType: mediaType ?? "text/plain", text: text, ref: ref))
         }
         return resolved
+    }
+
+    /// Local files attached by path. Core runs beside the user's files, so nothing is uploaded
+    /// at send time: the composer started preparing each file when it was picked
+    /// (`prepareAttachment`), and this only collects the result — waiting for a preparation
+    /// still running, never starting it again. The model is told every path; an image also
+    /// travels as normalized bytes or, where the provider already holds it, as a file id.
+    private func resolveFileReferences(_ paths: [String], run: String) async throws -> [ResolvedAttachment] {
+        var resolved: [ResolvedAttachment] = []
+        for raw in paths {
+            let prepared = try await attachmentStore.resolve(path: raw)
+            let recorder = TurnLatencyRecorder.shared
+            await recorder.mergeAttachment(.attachmentSelected, run: run, at: prepared.selectedAt, latest: false)
+            await recorder.mergeAttachment(.preprocessStarted, run: run, at: prepared.preprocessStarted, latest: false)
+            await recorder.mergeAttachment(.preprocessDone, run: run, at: prepared.preprocessDone, latest: true)
+            if let started = prepared.uploadStarted {
+                await recorder.mergeAttachment(.uploadStarted, run: run, at: started, latest: false)
+            }
+            if let ready = prepared.providerFileReady {
+                await recorder.mergeAttachment(.providerFileReady, run: run, at: ready, latest: true)
+            }
+            if prepared.isImage {
+                await recorder.note("attachment.\(prepared.filename)",
+                                    "\(prepared.originalBytes)B→\(prepared.payload?.count ?? 0)B\(prepared.fromCache ? " cache-hit" : "")"
+                                        + (prepared.remoteRefs.isEmpty ? " inline" : " file-ref"),
+                                    run: run)
+            }
+            resolved.append(ResolvedAttachment(filename: prepared.filename, mediaType: prepared.mediaType, text: "",
+                                               imageData: prepared.payload, path: prepared.path,
+                                               remoteRefs: prepared.remoteRefs, ref: nil))
+        }
+        return resolved
+    }
+
+    /// Composer → Core, the moment a file is picked: normalize, hash, cache and — when the
+    /// active provider has a Files API — upload, all before the user sends anything.
+    public func prepareAttachment(envelope: CommandEnvelope<PrepareAttachmentRequest>) async throws -> CommandReceipt<AttachmentPreparation> {
+        let request = envelope.payload
+        let preparation: AttachmentPreparation
+        do {
+            var prepared = try await attachmentStore.prepare(path: request.path, selectedAt: request.selectedAt ?? Date()).value
+            var state: AttachmentPreparation.State = .ready
+            var detail: String?
+            if request.upload, prepared.isImage,
+               let endpoint = gateway.endpoint, let uploader = gateway.fileUploader {
+                state = .uploading
+                do {
+                    let result = try await attachmentStore.upload(path: request.path, endpointKey: endpoint.fileReferenceKey,
+                                                                  using: uploader)
+                    prepared = result.attachment
+                    state = .ready
+                } catch {
+                    // The image still goes inline; an upload failure is a slower send, not a failure.
+                    state = .ready
+                    detail = "预上传失败，将随消息内联发送：\(error.localizedDescription)"
+                }
+            }
+            preparation = AttachmentPreparation(
+                path: prepared.path, filename: prepared.filename, state: state, sha256: prepared.sha256,
+                mediaType: prepared.mediaType, originalBytes: prepared.originalBytes,
+                preparedBytes: prepared.payload?.count, providerFileReady: !prepared.remoteRefs.isEmpty,
+                providerSupportsFiles: gateway.fileUploader != nil, fromCache: prepared.fromCache,
+                preprocessMilliseconds: Int(prepared.preprocessDone.timeIntervalSince(prepared.preprocessStarted) * 1_000),
+                detail: detail)
+        } catch {
+            preparation = AttachmentPreparation(
+                path: request.path, filename: URL(fileURLWithPath: request.path).lastPathComponent, state: .failed,
+                sha256: nil, mediaType: nil, originalBytes: 0, preparedBytes: nil, providerFileReady: false,
+                providerSupportsFiles: gateway.fileUploader != nil, fromCache: false, preprocessMilliseconds: nil,
+                detail: (error as? CoreError)?.message ?? error.localizedDescription)
+        }
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: currentRevision,
+                              observedThrough: [], result: preparation)
+    }
+
+    /// Lays the turn's latency trace out in the runtime trace (visible in the trace window) and
+    /// appends it to `logs/latency.jsonl`. Delayed a moment: the transport's metrics arrive
+    /// once its exchange has fully closed, which can be just after the run ends.
+    private func emitLatencyReport(run: String, sessionID: SessionID) {
+        let store = diagnosticsStore
+        let log = dataRootURL?.appendingPathComponent("logs", isDirectory: true)
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let report = await TurnLatencyRecorder.shared.finish(run: run) else { return }
+            await store.record(kind: .provider, event: "latency.turn", sessionID: sessionID,
+                               runID: AgentRunID(run), metadata: report.traceMetadata)
+            guard let log else { return }
+            try? FileManager.default.createDirectory(at: log, withIntermediateDirectories: true)
+            let file = log.appendingPathComponent("latency.jsonl")
+            let line = Data((report.jsonLine + "\n").utf8)
+            if let handle = try? FileHandle(forWritingTo: file) {
+                handle.seekToEndOfFile(); handle.write(line); try? handle.close()
+            } else {
+                try? line.write(to: file)
+            }
+        }
+    }
+
+    /// Everything a probe needs about one saved endpoint, or nil when it has no endpoint to probe.
+    /// The account reference is a hash of the credential, so swapping keys invalidates remembered
+    /// verdicts instead of carrying one account's plan onto another's.
+    private func probeContext(providerID: String) async
+    -> (baseURL: String, adapter: String, apiKeyHeader: String?, credential: String?,
+        headers: [String: String], accountRef: String)? {
+        guard let store = configurationStore, let snapshot = try? await store.load(),
+              let provider = snapshot.providers.providers[providerID],
+              !provider.options.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let credential = await resolveProviderSecret(provider.options.apiKey, providerID: providerID)
+        return (provider.options.baseURL, provider.adapter, provider.options.apiKeyHeader, credential,
+                provider.options.headers,
+                AccountScopedCatalogCache.accountHash(fromTokenOrIdentifier: credential ?? "provider:\(providerID)"))
+    }
+
+    /// Probes model ids against the endpoint and remembers the verdicts against this account.
+    ///
+    /// `/v1/models` over-reports: an endpoint lists models the token plan excludes, and the user meets
+    /// that as a 403 in the middle of a conversation. A one-token streaming turn per model is the
+    /// cheapest call that tells the two apart. Only a real "not offered here" verdict marks a model
+    /// unavailable — a 401, a dead gateway or a timeout is recorded as usable, because hiding a working
+    /// model on an infrastructure hiccup is worse than the bug this catches.
+    func probeModelAvailability(ids: [String], providerID: String,
+                                httpClient: (@Sendable (URLRequest) async throws -> (Data, URLResponse))? = nil) async
+    -> [String: ModelAvailability] {
+        guard let context = await probeContext(providerID: providerID) else { return [:] }
+        var verdicts: [String: ModelAvailability] = [:]
+        // Four at a time: a burst of probes would rate-limit the account the user is about to talk to.
+        var index = 0
+        while index < ids.count {
+            let end = min(index + 4, ids.count)
+            let chunk = Array(ids[index..<end])
+            index = end
+            let results = await withTaskGroup(of: (String, ModelAvailability).self) { group in
+                for id in chunk {
+                    group.addTask {
+                        (id, await ProviderModelAvailabilityProbe.probe(
+                            baseURL: context.baseURL, adapter: context.adapter, modelID: id,
+                            apiKeyHeader: context.apiKeyHeader, credential: context.credential,
+                            headers: context.headers, httpClient: httpClient))
+                    }
+                }
+                var collected: [(String, ModelAvailability)] = []
+                for await result in group { collected.append(result) }
+                return collected
+            }
+            for (id, verdict) in results { verdicts[id] = verdict }
+        }
+        try? await AccountScopedCatalogCache.shared.save(
+            productID: providerID, accountRef: context.accountRef,
+            models: ids.compactMap { id in
+                guard let verdict = verdicts[id] else { return nil }
+                return DiscoveredRemoteModel(id: id, displayName: id,
+                                             visibility: verdict == .unavailable ? "hide" : "list")
+            },
+            source: "Model availability probe", ttl: 86_400)
+        return verdicts
+    }
+
+    /// What a previous probe learned about this account's models. Empty until something has probed —
+    /// absent is not the same claim as verified.
+    func recordedModelAvailability(providerID: String) async -> [String: ModelAvailability] {
+        guard let context = await probeContext(providerID: providerID),
+              let record = await AccountScopedCatalogCache.shared.load(
+                productID: providerID, accountRef: context.accountRef)
+        else { return [:] }
+        var verdicts: [String: ModelAvailability] = [:]
+        for model in record.models {
+            verdicts[model.id] = model.visibility.lowercased() == "hide" ? .unavailable : .available
+        }
+        return verdicts
+    }
+
+    /// Drops the candidates this account cannot actually use, and reports which ones.
+    func filteringUnavailableModels(_ ids: [String], providerID: String,
+                                    httpClient: (@Sendable (URLRequest) async throws -> (Data, URLResponse))? = nil) async
+    -> (kept: [String], hidden: [String]) {
+        let verdicts = await probeModelAvailability(ids: ids, providerID: providerID, httpClient: httpClient)
+        let hidden = ids.filter { verdicts[$0] == .unavailable }
+        return (ids.filter { verdicts[$0] != .unavailable }, hidden)
+    }
+
+    /// What a previous probe learned about this provider's models. No request leaves the process.
+    public func getProviderModelAvailability(envelope: QueryEnvelope<GetProviderModelAvailabilityRequest>) async throws
+    -> ResponseEnvelope<[String: ModelAvailability]> {
+        ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision,
+                         payload: await recordedModelAvailability(providerID: envelope.payload.providerID))
+    }
+
+    /// Models an account reaches but that are not offered for selection, keyed by product.
+    ///
+    /// `providerModels()` deliberately drops these — upstream `hide`/`disabled`, or a registry status of
+    /// deprecated/retired. Dropping them silently made a five-of-seven account look like a broken
+    /// integration, so the count has to be readable by anything that explains the list.
+    public func getWithheldModels(envelope: QueryEnvelope<VoidResult>) async throws
+    -> ResponseEnvelope<[String: [String]]> {
+        var withheld: [String: [String]] = [:]
+        for product in BuiltinProviderCatalog.registryProducts where product.runtime.isRunnable {
+            let isConfigured = await isProductConfigured(product: product)
+            let accountModels = isConfigured
+                ? await accountDiscoveredModels(product: product, providerID: product.id) : []
+            let outcome = ModelAvailabilityResolver.resolve(
+                product: product,
+                catalogModels: await modelsCatalogClient.publishedRecords(forProduct: product.id),
+                accountModels: accountModels,
+                isConfigured: isConfigured)
+            let ids = outcome.withheldByVisibility + outcome.withheldByStatus
+            if !ids.isEmpty { withheld[product.id] = Array(Set(ids)).sorted() }
+        }
+        return ResponseEnvelope(requestID: envelope.requestID, revision: currentRevision, payload: withheld)
+    }
+
+    /// Probe the models a provider already has configured, and hand back what was learned.
+    ///
+    /// Opening 添加模型 already probes, so a model that came from the picker carries a verdict without
+    /// this being called. A model configured earlier, or by hand, never was — and that is exactly the
+    /// case where the user has already picked a dead default and needs the list to say so.
+    public func probeProviderModels(envelope: CommandEnvelope<ProbeProviderModelsRequest>) async throws
+    -> CommandReceipt<[String: ModelAvailability]> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "probeProviderModels",
+                                                   as: [String: ModelAvailability].self) {
+            return cached
+        }
+        guard let store = configurationStore, let snapshot = try? await store.load(),
+              let provider = snapshot.providers.providers[envelope.payload.providerID] else {
+            throw CoreError(code: .provider, message: "未找到已配置的提供商 \(envelope.payload.providerID)")
+        }
+        let verdicts = await probeModelAvailability(
+            ids: provider.models.keys.sorted(), providerID: envelope.payload.providerID)
+        let receipt = CommandReceipt<[String: ModelAvailability]>(
+            commandID: envelope.commandID, applied: true, revision: nextRevision(),
+            observedThrough: [], result: verdicts)
+        try await recordIdempotency(envelope: envelope, commandName: "probeProviderModels", receipt: receipt)
+        return receipt
+    }
+
+    /// A saved endpoint's own model list, plus why it produced none. The note is what turns a blank
+    /// picker into a diagnosable one; it never carries the credential or the response body.
+    func remoteModelIDs(providerID: String, session: URLSession = .shared) async -> (ids: [String], note: String?) {
+        guard let store = configurationStore, let snapshot = try? await store.load(),
+              let provider = snapshot.providers.providers[providerID] else {
+            return ([], nil)  // No saved account: the published index is the only roster there is.
+        }
+        guard !provider.options.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ([], "该提供商没有填写 Base URL，无法向端点查询模型列表。")
+        }
+        let secret = await resolveProviderSecret(provider.options.apiKey, providerID: providerID)
+        if secret == nil, let unresolved = Self.unresolvedCredentialNote(provider.options.apiKey, providerID: providerID) {
+            return ([], unresolved)
+        }
+        guard let request = ProviderConnectivityProbe.request(
+            baseURL: provider.options.baseURL, adapter: provider.adapter,
+            apiKeyHeader: provider.options.apiKeyHeader, credential: secret, headers: provider.options.headers) else {
+            return ([], "Base URL 无法解析为模型列表地址。")
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            return ([], "无法读取端点的模型列表：\(error.localizedDescription)")
+        }
+        guard let status = (response as? HTTPURLResponse)?.statusCode else {
+            return ([], "端点的模型列表返回了非 HTTP 响应。")
+        }
+        guard (200..<300).contains(status) else {
+            return ([], "端点的模型列表返回 HTTP \(status)。")
+        }
+        let ids = ProviderConnectivityProbe.modelIDs(in: data)
+        guard !ids.isEmpty else {
+            return ([], "端点已应答，但模型列表里没有可识别的模型 ID。")
+        }
+        return (ids, nil)
     }
 
     // MARK: - Idempotency & In-Flight Concurrency Control
@@ -3091,6 +3466,96 @@ extension CoreHost {
         return receipt
     }
 
+    /// Branches a session: a new primary session in this Core's workspace that carries a copy
+    /// of the source's history — the messages the model reads and the events the timeline is
+    /// rebuilt from — with every reference to the source's id rewritten to the new one.
+    ///
+    /// Only finished turns are copied. A source with a run in flight is refused outright, and
+    /// events of a turn that never reached a terminal state are left behind: the new session's
+    /// coordinator restores its queue from these events, and copying an open turn would have it
+    /// re-run someone else's half-finished work.
+    public func forkSession(envelope: CommandEnvelope<ForkSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        await inFlightLock.acquire(commandID: envelope.commandID)
+        defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
+
+        if let cached = try await checkIdempotency(envelope: envelope, commandName: "forkSession", as: SessionSummary.self) {
+            return cached
+        }
+        let sourceID = envelope.payload.sessionID
+        let source = try await sessionStore.session(sourceID)
+        let sourceCoord = try await coordinator(for: sourceID)
+        guard await sourceCoord.activeRootRunID == nil else {
+            throw CoreError(code: .turnAlreadyRunning, message: "会话正在执行，等这一轮结束后再创建分支。")
+        }
+
+        let trimmedSource = source.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedRequest = envelope.payload.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = !trimmedRequest.isEmpty ? trimmedRequest
+            : "\(trimmedSource.isEmpty ? "未命名会话" : trimmedSource) · 分支"
+        let forked = try await sessionStore.create(
+            id: SessionID(UUID().uuidString), kind: .primary, parentSessionID: nil, rootSessionID: nil,
+            spawnedByRunID: nil, spawnedByToolCallID: nil, title: title)
+        do {
+            // Message ids are a global key in the store, so each copy gets its own.
+            for message in source.messages {
+                try await sessionStore.appendMessage(forked.id, message: Message(
+                    id: MessageID(UUID().uuidString), role: message.role,
+                    parts: message.parts, createdAt: message.createdAt))
+            }
+
+            let events = await sourceCoord.eventLog.allEvents()
+            var finishedTurns: Set<TurnID> = []
+            for event in events {
+                switch event.payload {
+                case let .turnCompleted(turnID, _), let .turnFailed(turnID, _): finishedTurns.insert(turnID)
+                default: break
+                }
+            }
+            let forkedLog = SessionEventLog(sessionID: forked.id, storageDirectory: eventLogStorageDirectory)
+            let encoder = JSONEncoder()
+            let decoder = JSONDecoder()
+            for event in events {
+                if let turnID = event.causal.turnID, !finishedTurns.contains(turnID) { continue }
+                let data = try encoder.encode(event)
+                let rewritten = String(decoding: data, as: UTF8.self)
+                    .replacingOccurrences(of: sourceID.rawValue, with: forked.id.rawValue)
+                let copy = try decoder.decode(SessionEventEnvelope.self, from: Data(rewritten.utf8))
+                _ = try await forkedLog.append(causal: copy.causal, payload: copy.payload)
+            }
+        } catch {
+            try? await sessionStore.deleteSession(forked.id)
+            throw error
+        }
+
+        let coord = try await coordinator(for: forked.id)
+        let stored = try await sessionStore.session(forked.id)
+        let summary = SessionSummary(
+            sessionID: stored.id,
+            title: stored.title,
+            goal: await currentGoal(stored.id),
+            createdAt: stored.createdAt,
+            updatedAt: stored.updatedAt,
+            turnCount: 0,
+            mode: .build,
+            reasoningEffort: stored.reasoningEffort,
+            workingDirectory: workspaceURL.standardizedFileURL.resolvingSymlinksInPath().path,
+            messageCount: stored.messages.count
+        )
+        _ = try? await runtimeEventLog.append(payload: .sessionCreated(summary))
+        let receipt = CommandReceipt<SessionSummary>(
+            commandID: envelope.commandID,
+            applied: true,
+            revision: nextRevision(),
+            observedThrough: [
+                await runtimeEventLog.currentWatermark(),
+                await coord.eventLog.currentWatermark()
+            ],
+            result: summary
+        )
+        try await recordIdempotency(envelope: envelope, commandName: "forkSession", receipt: receipt)
+        return receipt
+    }
+
     /// Goal Mode: sets or clears the session's volatile goal anchor and republishes the summary.
     public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
         await inFlightLock.acquire(commandID: envelope.commandID)
@@ -3100,7 +3565,13 @@ extension CoreHost {
             return cached
         }
         let sessionID = envelope.payload.sessionID
-        let goal = await SessionGoalRegistry.shared.set(sessionID, goal: envelope.payload.goal)
+        let goal: String?
+        if let paused = envelope.payload.paused {
+            await SessionGoalRegistry.shared.setPaused(sessionID, paused: paused)
+            goal = await SessionGoalRegistry.shared.goal(sessionID)
+        } else {
+            goal = await SessionGoalRegistry.shared.set(sessionID, goal: envelope.payload.goal)
+        }
         let session = try await sessionStore.session(sessionID)
         let coord = try await coordinator(for: session.id)
         let summary = SessionSummary(
@@ -3886,6 +4357,9 @@ extension CoreHost {
         }
 
         let nextTurnToRun: SessionTurnCoordinator.NextTurnToRun?
+        if envelope.payload.cancelQueuedTurns == true {
+            await coord.cancelAllQueuedTurns()
+        }
         if run.status == .queued {
             // Target is queued: cancel only queued run, NEVER cancel active tasks or session!
             nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
@@ -3903,6 +4377,12 @@ extension CoreHost {
             try? await agent?.cancelAgentRun(AgentRunID(envelope.payload.runID.rawValue))
             _ = await cancelledTask?.result
             nextTurnToRun = try await coord.cancelRun(runID: envelope.payload.runID, reason: envelope.payload.reason)
+            // Releasing the engine above only unblocks the waiter; the interaction stays in the
+            // session's ledger, which is what a snapshot read and every late subscriber answer from.
+            // Clearing it here is the difference between "the frontend hid the card" and "Core is no
+            // longer asking" - the latter has to be true, or the next switchToSession brings the card
+            // back for a run that is already gone.
+            await resolvePendingInteractions(sessionID: envelope.payload.sessionID, coordinator: coord)
         }
 
         let watermark = await coord.eventLog.currentWatermark()
@@ -4490,9 +4970,12 @@ extension CoreHost {
             throw CoreError(code: .provider, message: "无效的自定义 baseURL: \(baseURLStr)")
         }
 
-        var authToken: String? = nil
+        // The same precedence the probe path uses: an explicit `LINGXI_<ID>_API_KEY` replaces the
+        // account's credential for this process, so the source the file names — including an OAuth
+        // document that would need refreshing — is not consulted at all.
+        var authToken: String? = ProviderCredentialOverride.secret(providerID: providerID)
         var oauthRefresher: OAuthTokenRefresher? = nil
-        if let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
+        if authToken == nil, let apiKey = providerConfig.options.apiKey, !apiKey.isEmpty {
             if apiKey.hasPrefix("{vault:") && apiKey.hasSuffix("}") {
                 let refStr = String(apiKey.dropFirst(7).dropLast(1))
                 if let credStore = credentialStore, let secret = try? await credStore.secret(for: CredentialRef(refStr)) {
@@ -5199,6 +5682,7 @@ extension CoreHost {
             availability: .configured
         )
         runtimeProviderAccounts[info.id] = info
+        await notifyProviderCatalogChanged()
         let receipt = CommandReceipt<ProviderAccountInfo>(
             commandID: envelope.commandID,
             applied: true,
@@ -5217,7 +5701,6 @@ extension CoreHost {
         if let cached = try await checkIdempotency(envelope: envelope, commandName: "removeProvider", as: VoidResult.self) {
             return cached
         }
-        runtimeProviderAccounts.removeValue(forKey: envelope.payload.accountID)
         _ = try? await deleteProviderAccount(id: envelope.payload.accountID, deleteUnusedCredential: false)
         let watermark = await runtimeEventLog.currentWatermark()
         let receipt = CommandReceipt<VoidResult>(
@@ -5238,6 +5721,13 @@ extension CoreHost {
         if let cached = try await checkIdempotency(envelope: envelope, commandName: "reloadProviders", as: VoidResult.self) {
             return cached
         }
+        await notifyProviderCatalogChanged()
+        // A fresh account cache is served without any network call, so without this the button was a
+        // notification and nothing else. Mark first, then read the list: the read path re-discovers
+        // every stale account on the way through, which is what makes the refresh happen now instead
+        // of whenever the TTL feels like expiring.
+        _ = await AccountScopedCatalogCache.shared.markAllStale()
+        _ = try? await providerModels()
         let watermark = await runtimeEventLog.currentWatermark()
         let receipt = CommandReceipt<VoidResult>(
             commandID: envelope.commandID,
@@ -5452,6 +5942,10 @@ extension CoreHost {
 
     public func notifyExtensionCatalogChanged() async {
         _ = try? await runtimeEventLog.append(payload: .extensionCatalogChanged)
+    }
+
+    func notifyProviderCatalogChanged() async {
+        _ = try? await runtimeEventLog.append(payload: .providerCatalogChanged)
     }
 
     public func reloadExtensions(envelope: CommandEnvelope<VoidResult>) async throws -> CommandReceipt<VoidResult> {

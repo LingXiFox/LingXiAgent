@@ -382,7 +382,8 @@ struct AddMCPServerSheet: View {
             .padding(LingXiMetrics.Space.lg)
         }
         .frame(width: 640, height: 620)
-        .background(LXColor.window)
+        .modifier(WallpaperWindow())
+        .lxNoInitialFocus()
         .lxSettingsControlStyles()
     }
 }
@@ -419,7 +420,7 @@ struct MCPRestartBanner: View {
             }
             .padding(.horizontal, LingXiMetrics.Space.lg)
             .padding(.vertical, LingXiMetrics.Space.md)
-            .lxPanel(LXColor.content, cornerRadius: LingXiMetrics.Radius.control)
+            .lxInsetGroup()
         }
     }
 }

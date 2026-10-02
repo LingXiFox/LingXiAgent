@@ -115,8 +115,9 @@ case .acp:
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         )
         let configurations = try ConfigurationStore(dataRoot: dataRoot)
-        let snapshot = try await configurations.load()
         let credentials = try PlatformSecureCredentialStore(dataRoot: dataRoot, passphrase: env["LINGXI_CREDENTIALS_PASSPHRASE"])
+        await ProviderCredentialMigration.apply(configurationStore: configurations, credentialStore: credentials)
+        let snapshot = try await configurations.load()
         let providers = try await RuntimeConfigurationResolver.resolveProviders(
             snapshot.providers,
             credentials: credentials,

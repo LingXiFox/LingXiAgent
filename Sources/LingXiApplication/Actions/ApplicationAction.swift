@@ -16,7 +16,10 @@ public enum ApplicationAction: Sendable {
     // MARK: - Prompt & 执行
     /// A turn submission. `attachments` are `ContentRef`s already uploaded to Core — the
     /// frontend uploads before dispatching, so an action carrying refs means the bytes exist.
-    case submitPrompt(text: String, attachments: [ContentRef] = [])
+    /// `fileReferences` are absolute paths of local files the user attached. Core runs on this
+    /// machine, so nothing is uploaded: the paths travel in `TurnExecutionIntent.contextReferences`
+    /// and Core reads what it needs at the turn's edge.
+    case submitPrompt(text: String, attachments: [ContentRef] = [], fileReferences: [String] = [])
     case cancelRun(RunID, reason: String? = nil)
     case stopCurrentRun
     case setMode(AgentMode)

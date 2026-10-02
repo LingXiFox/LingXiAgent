@@ -97,6 +97,13 @@ public enum AuthCLI {
                 return "Error: Credential reference is required. Usage: lingxiagent auth set <key> [value]"
             }
             let key = args[1]
+            // `env:` is a scheme the resolver reads from the *environment*, never from the vault, so a
+            // vault entry under that name is a value stored where nothing will ever look for it.
+            guard !key.hasPrefix("env:") else {
+                return "Error: '\(key)' names an environment variable, which the vault cannot serve. "
+                     + "Store it under a plain reference (e.g. provider-\(key.dropFirst(4).lowercased())-key) "
+                     + "and point providers.json at {vault:that-reference}."
+            }
             let val: String
             if args.count > 2 {
                 val = args[2]
@@ -119,10 +126,9 @@ public enum AuthCLI {
                 return "Error: Environment variable '\(envName)' is not set or empty in current process."
             }
             try await credStore.setSecret(envVal, for: CredentialRef(targetKey))
-            if targetKey != "env:\(envName)" {
-                try await credStore.setSecret(envVal, for: CredentialRef("env:\(envName)"))
-            }
-            return "✓ Successfully imported '\(envName)' into encrypted vault (as '\(targetKey)' and 'env:\(envName)')."
+            return "✓ Successfully imported '\(envName)' into encrypted vault as '\(targetKey)'. "
+                 + "Point providers.json at {vault:\(targetKey)} — an {env:\(envName)} entry there "
+                 + "is not durable for a GUI launched from the Dock."
 
         case "help", "--help", "-h":
             return renderHelp()
@@ -786,8 +792,8 @@ Available models:
                 "  lingxiagent auth list",
                 "  lingxiagent auth openai-codex",
                 "  lingxiagent auth login gemini-code-assist",
-                "  lingxiagent auth set env:ALIBABA_CLOUD_ACCESS_KEY_ID",
-                "  lingxiagent auth import-env ALIBABA_CLOUD_ACCESS_KEY_ID",
+                "  lingxiagent auth set provider-bai-key",
+                "  lingxiagent auth import-env SENSENOVA_API_KEY provider-bai-key",
                 "  lingxiagent auth status antigravity",
                 "  lingxiagent auth login deepseek-api",
                 "  lingxiagent matrix",

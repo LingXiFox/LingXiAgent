@@ -127,7 +127,12 @@ public struct WarmWorkbench: View {
                         }
                         .background(windowBackground)
                         .overlay { if runtime.isCommandPalettePresented { palette } }
-                        .onChange(of: navigation.selectedTool) { _, selected in
+                        .onChange(of: navigation.selectedTool) { previous, selected in
+                            // Closing the terminal (or switching the panel to another tool)
+                            // releases its shells; reopening starts a fresh one.
+                            if previous == .terminal, selected != .terminal {
+                                Task { await runtime.closeUserShells() }
+                            }
                             if selected != nil && geometry.size.width < 1024 {
                                 sidebar.isNavigatorVisible = false
                             }
@@ -156,6 +161,7 @@ public struct WarmWorkbench: View {
                     .disabled(runtime.link != .connected)
             }
         }
+        .lxNoInitialFocus()
         .sheet(isPresented: $navigation.showsSettings, onDismiss: { runtime.isShowingSettings = false }) {
             SettingsWorkbench(store: settings, page: $navigation.settingsPage)
         }

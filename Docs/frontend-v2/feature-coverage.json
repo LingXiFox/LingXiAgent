@@ -39,7 +39,7 @@
         },
         {
           "file": "Apps/macOS/FrontendKit/Frontend/RuntimeFrontend.swift",
-          "contains": "client.resource.upload"
+          "contains": ".submitPrompt(text: text, fileReferences: paths)"
         },
         {
           "file": "Sources/LingXiApplication/ApplicationStore.swift",
@@ -47,7 +47,7 @@
         },
         {
           "file": "Sources/LingXiCore/App/CoreHost.swift",
-          "contains": "resolveAttachments(input.attachments)"
+          "contains": "resolveFileReferences(executionIntent.contextReferences, run:"
         },
         {
           "file": "Sources/LingXiCore/Modules/Session/SessionRuntime.swift",

@@ -76,6 +76,21 @@ enum CoreProjection {
         )
     }
 
+    /// A file attached by path: shown by name, never by its full path.
+    static func projectedFile(_ path: String) -> AttachmentPresentation {
+        let url = URL(fileURLWithPath: path)
+        let image = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff"]
+            .contains(url.pathExtension.lowercased())
+        return AttachmentPresentation(
+            id: path,
+            filename: url.lastPathComponent,
+            mediaType: image ? "image/*" : "application/octet-stream",
+            byteCount: 0,
+            thumbnailSymbol: image ? "photo" : "doc.text",
+            sourceURL: url
+        )
+    }
+
     // MARK: Timeline
 
     static func timeline(_ session: SessionViewState?) -> [TimelineItemPresentation] {
@@ -91,9 +106,11 @@ enum CoreProjection {
         case .message(let message):
             switch message.role {
             case .user:
-                let matchedTurnID = session.turns.first(where: { $0.value.userMessage.messageID == message.messageID })?.key.rawValue
+                let matchedTurn = session.turns.first(where: { $0.value.userMessage.messageID == message.messageID })
+                let matchedTurnID = matchedTurn?.key.rawValue
+                let files = (matchedTurn?.value.executionIntent.contextReferences ?? []).map(projectedFile)
                 return .user(content: message.content,
-                             attachments: message.citations.map(projectedAttachment),
+                             attachments: message.citations.map(projectedAttachment) + files,
                              messageID: message.messageID.rawValue,
                              turnID: matchedTurnID,
                              sessionID: session.sessionID.rawValue)

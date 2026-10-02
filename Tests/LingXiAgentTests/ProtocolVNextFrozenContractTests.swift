@@ -952,8 +952,8 @@ struct ProtocolVNextFrozenContractTests {
         // whether or not this machine has the published index cached.
         let modelsRes = try await service.getProviderCatalogModels(
             envelope: QueryEnvelope(payload: GetProviderCatalogModelsRequest(entryID: curated.id)))
-        #expect(modelsRes.payload.count == curated.modelCount)
-        #expect(modelsRes.payload.allSatisfy { !$0.isEmpty })
+        #expect(modelsRes.payload.models.count == curated.modelCount)
+        #expect(modelsRes.payload.models.allSatisfy { !$0.isEmpty })
         // Terminal sessions: the panel's only source of a live process.
         let termList = try await service.listTerminalSessions(envelope: QueryEnvelope(payload: VoidResult()))
         #expect(termList.payload.allSatisfy { !$0.id.isEmpty })

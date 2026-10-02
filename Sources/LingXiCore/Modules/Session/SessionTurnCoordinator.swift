@@ -536,6 +536,15 @@ public actor SessionTurnCoordinator {
         }
     }
 
+    /// Terminalizing a running Run advances the queue, so a caller that means "stop everything"
+    /// has to empty it first; a Turn the advance already promoted is running and `cancelTurn`
+    /// refuses it. Each cancel keeps its own durable-event discipline and rolls back on failure.
+    public func cancelAllQueuedTurns() async {
+        for turn in queuedTurns {
+            try? await cancelTurn(turnID: turn.turnID)
+        }
+    }
+
     public func rollbackTurn(decision: SubmitTurnDecision) async {
         rollbackTurnID(decision.turn.turnID, runID: decision.runID)
     }

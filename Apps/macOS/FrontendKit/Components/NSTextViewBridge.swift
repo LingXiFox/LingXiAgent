@@ -145,6 +145,7 @@ public struct MacNativeTextView: NSViewRepresentable {
 }
 
 public final class KeyInterceptingTextView: NSTextView {
+
     var placeholderColor: NSColor = .secondaryLabelColor
     public var onSubmit: (() -> Void)?
     public var submitRequiresCommand = false

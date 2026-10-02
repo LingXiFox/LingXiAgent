@@ -43,7 +43,17 @@ enum ProviderConnectivityProbe {
         for (name, value) in headers where !name.isEmpty {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        guard let credential, !credential.isEmpty else { return request }
+        applyCredential(to: &request, adapter: adapter, apiKeyHeader: apiKeyHeader, credential: credential)
+        return request
+    }
+
+    /// Attaches a credential the way this adapter expects it. Shared with
+    /// ``ProviderModelAvailabilityProbe`` so there is only ever one answer to "how does this vendor
+    /// want its key spelled" — a second implementation is how a probe starts succeeding on a request
+    /// the real call would have had rejected.
+    static func applyCredential(to request: inout URLRequest, adapter: String,
+                                apiKeyHeader: String?, credential: String?) {
+        guard let credential, !credential.isEmpty else { return }
         let custom = apiKeyHeader?.trimmingCharacters(in: .whitespaces)
         let headerName = (custom?.isEmpty == false) ? custom : nil
         if adapter == "anthropic-messages" {
@@ -51,12 +61,11 @@ enum ProviderConnectivityProbe {
             if request.value(forHTTPHeaderField: "anthropic-version") == nil {
                 request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
             }
-        } else if let headerName {
+        } else if let headerName, headerName.lowercased() != "authorization" {
             request.setValue(credential, forHTTPHeaderField: headerName)
         } else {
             request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         }
-        return request
     }
 
     static func probe(
@@ -92,17 +101,42 @@ enum ProviderConnectivityProbe {
         guard (200...299).contains(http.statusCode) else {
             throw CoreError(code: .provider, message: "HTTP \(http.statusCode)")
         }
-        return Outcome(latencyMs: elapsed, models: Self.countModels(data))
+        return Outcome(latencyMs: elapsed, models: Self.modelIDs(in: data).count)
     }
 
-    private static func countModels(_ data: Data) -> Int {
-        guard let object = try? JSONSerialization.jsonObject(with: data) else { return 0 }
-        if let array = object as? [Any] { return array.count }
-        if let dictionary = object as? [String: Any] {
-            for key in ["data", "models", "modelsList"] {
-                if let array = dictionary[key] as? [Any] { return array.count }
+    /// Model ids a listing endpoint carried.
+    ///
+    /// "OpenAI-compatible" describes the request dialect; the reply envelope does not follow it.
+    /// Relays disagree on the container key and on whether an entry is an object or a bare id, so
+    /// one permissive reader backs both the connectivity count and the add-model picker. They used
+    /// to disagree: a relay answering `{"models":["a"]}` reported "1 model" in the connection test
+    /// while the picker called the same endpoint empty.
+    static func modelIDs(in data: Data) -> [String] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        let entries: [Any]
+        if let array = object as? [Any] {
+            entries = array
+        } else if let dictionary = object as? [String: Any] {
+            entries = ["data", "models", "modelsList", "results", "items"]
+                .lazy.compactMap { dictionary[$0] as? [Any] }.first ?? []
+        } else {
+            entries = []
+        }
+        var ids: Set<String> = []
+        for entry in entries {
+            let raw: String?
+            if let string = entry as? String {
+                raw = string
+            } else if let dictionary = entry as? [String: Any] {
+                raw = ["id", "model", "name", "slug"]
+                    .lazy.compactMap { dictionary[$0] as? String }.first
+            } else {
+                raw = nil
+            }
+            if let id = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                ids.insert(id)
             }
         }
-        return 0
+        return ids.sorted()
     }
 }

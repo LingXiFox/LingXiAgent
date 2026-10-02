@@ -125,7 +125,8 @@ public struct OpenAIResponsesProvider: ModelProvider {
             request,
             continuation: continuation,
             previousResponseID: effectiveStore ? previousResponseID : nil,
-            store: effectiveStore
+            store: effectiveStore,
+            reasoningSummary: isCodexBackend ? "auto" : nil
         )
         OpenCodeHeaderSupport.injectHeadersIfNeeded(into: &urlRequest, modelRequest: request)
         return urlRequest
@@ -133,10 +134,15 @@ public struct OpenAIResponsesProvider: ModelProvider {
 
     /// Domain request -> Responses API JSON.
     public static func makeRequestBody(_ request: ModelRequest) throws -> Data {
-        try makeRequestBody(request, continuation: nil, previousResponseID: nil, store: false)
+        try makeRequestBody(request, continuation: nil, previousResponseID: nil, store: false, reasoningSummary: nil)
     }
 
-    private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?, previousResponseID: String?, store: Bool) throws -> Data {
+    /// `reasoningSummary` asks the model to stream a summary of its thinking. Without it a
+    /// reasoning model is silent for the whole thinking phase — 10–40s of nothing on a simple
+    /// question at `high` effort. It is only sent where it is known to be accepted: the ChatGPT
+    /// (Codex) backend defaults it to `auto`, while platform.openai.com rejects it with a 400
+    /// for organizations that are not verified.
+    private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?, previousResponseID: String?, store: Bool, reasoningSummary: String?) throws -> Data {
         let messages = previousResponseID == nil ? request.messages : continuationMessages(request)
         let input = messages.flatMap { message -> [ResponseRequestBody.Input] in
             let calls = message.parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }
@@ -168,7 +174,18 @@ public struct OpenAIResponsesProvider: ModelProvider {
             case .system:
                 return [.message(role: "developer", content: message.content)]
             case .user:
-                return [.message(role: "user", content: message.content)]
+                let images = message.parts.compactMap { part -> ResponseRequestBody.ImageInput? in
+                    switch part {
+                    case let .image(mediaType, data):
+                        return .url("data:\(mediaType);base64,\(data.base64EncodedString())")
+                    case let .imageFile(_, _, fileID):
+                        return .file(fileID)
+                    default:
+                        return nil
+                    }
+                }
+                guard !images.isEmpty else { return [.message(role: "user", content: message.content)] }
+                return [.userParts(text: message.content, images: images)]
             }
         }
         let orderedTools: [ToolDefinition]
@@ -190,7 +207,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
             instructions: instructions,
             input: input,
             tools: orderedTools.isEmpty ? nil : orderedTools.map(ResponseRequestBody.Tool.init),
-            reasoning: request.reasoning.map { ResponseRequestBody.Reasoning(effort: $0) },
+            reasoning: request.reasoning.map { ResponseRequestBody.Reasoning(effort: $0, summary: reasoningSummary) },
             include: !store && request.reasoning != nil ? ["reasoning.encrypted_content"] : nil,
             previousResponseID: previousResponseID
         ))
@@ -709,8 +726,14 @@ private struct ResponseRequestBody: Encodable {
         }
     }
 
+    enum ImageInput: Equatable {
+        case url(String)
+        case file(String)
+    }
+
     enum Input: Encodable {
         case message(role: String, content: String)
+        case userParts(text: String, images: [ImageInput])
         case functionCall(callID: String, name: String, arguments: String, itemID: String? = nil)
         case functionOutput(callID: String, output: String)
         case opaque(Data)
@@ -722,6 +745,17 @@ private struct ResponseRequestBody: Encodable {
             case let .message(role, content):
                 var values = encoder.container(keyedBy: Keys.self)
                 try values.encode(role, forKey: .role); try values.encode(content, forKey: .content)
+            case let .userParts(text, images):
+                var values = encoder.container(keyedBy: Keys.self)
+                try values.encode("user", forKey: .role)
+                var parts: [[String: String]] = text.isEmpty ? [] : [["type": "input_text", "text": text]]
+                parts += images.map { image in
+                    switch image {
+                    case let .url(url): ["type": "input_image", "image_url": url]
+                    case let .file(id): ["type": "input_image", "file_id": id]
+                    }
+                }
+                try values.encode(parts, forKey: .content)
             case let .functionCall(callID, name, arguments, itemID):
                 var values = encoder.container(keyedBy: Keys.self)
                 try values.encode("function_call", forKey: .type)
@@ -751,5 +785,21 @@ private struct ResponseRequestBody: Encodable {
     enum CodingKeys: String, CodingKey {
         case model, stream, store, instructions, input, tools, reasoning, include
         case previousResponseID = "previous_response_id"
+    }
+}
+
+extension OpenAIResponsesProvider: ProviderFileUploading {
+    /// The OpenAI platform's `/v1/files` (purpose `vision`). The ChatGPT/Codex backend has no
+    /// Files API, and a relay speaking the Responses dialect may not either: those send inline.
+    public var supportsFileUploads: Bool { config.baseURL.host == "api.openai.com" }
+
+    public func uploadFile(_ data: Data, mediaType: String, filename: String) async throws -> String {
+        guard let url = URL(string: config.apiRoot + "/files") else {
+            throw CoreError(code: .provider, message: "无法构造 Files API 地址")
+        }
+        var request = ProviderFileUpload.multipartRequest(url: url, fields: [("purpose", "vision")],
+                                                          filename: filename, mediaType: mediaType, data: data)
+        try await config.authorize(&request)
+        return try await ProviderFileUpload.send(request, transport: transport, wire: .responses)
     }
 }

@@ -23,6 +23,25 @@ private final class LXSearchFieldCell: NSSearchFieldCell {
                       width: max(0, rect.maxX - x - 6),
                       height: lineHeight)
     }
+
+    // While typing, the text lives in the field editor, which AppKit lays out over the whole
+    // cell unless told otherwise — the caret and the first characters landed on the magnifier.
+    private func editingRect(_ rect: NSRect) -> NSRect {
+        let text = searchTextRect(forBounds: rect)
+        let cancelWidth: CGFloat = 22
+        return NSRect(x: text.minX, y: text.minY, width: max(0, rect.maxX - text.minX - cancelWidth), height: text.height)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText,
+                       delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: editingRect(rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText,
+                         delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: editingRect(rect), in: controlView, editor: textObj, delegate: delegate,
+                     start: selStart, length: selLength)
+    }
 }
 
 /// AppKit search field for places without a navigation container to host
@@ -37,6 +56,11 @@ struct NativeSearchField: NSViewRepresentable {
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
         let cell = LXSearchFieldCell(textCell: "")
+        // A cell made with `init(textCell:)` is neither editable nor selectable. The default
+        // search cell is; swapping in this one without these two lines left every search field
+        // in the app (navigator, settings, provider picker) unable to take a single keystroke.
+        cell.isEditable = true
+        cell.isSelectable = true
         cell.controlSize = .regular
         cell.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         cell.isBordered = false
@@ -83,6 +107,33 @@ extension NativeSearchField {
             .frame(height: 28)
             .background(LXColor.fillControl,
                         in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.control, style: .continuous))
+    }
+}
+/// Undoes the focus AppKit hands the first text field of a window or sheet when it opens.
+/// AppKit gives a newly shown window or sheet a focused field on its own, so it would open with
+/// a caret blinking in a field nobody clicked.
+private struct NoInitialFocus: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            DispatchQueue.main.async {
+                let responder = window.firstResponder
+                if responder is NSText || responder is NSTextField {
+                    window.makeFirstResponder(nil)
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    /// Opens without a focused text field: the user clicks the one they want.
+    func lxNoInitialFocus() -> some View {
+        background(NoInitialFocus().frame(width: 0, height: 0).allowsHitTesting(false))
     }
 }
 #endif

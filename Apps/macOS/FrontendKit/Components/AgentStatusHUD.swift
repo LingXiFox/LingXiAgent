@@ -240,7 +240,11 @@ struct AgentStatusHUD: View {
                 Circle().stroke(LXColor.fillControl, lineWidth: 10)
                 if let usage = contextUsage {
                     Circle()
-                        .trim(from: 0, to: min(1, max(0, usage)))
+                        // A million-token window puts a normal session at well under 1%, and a
+                        // 1% arc on this ring is sub-pixel: the ring looked empty next to a
+                        // token count that said otherwise. Any non-zero usage gets at least a
+                        // visible nub; zero still draws nothing.
+                        .trim(from: 0, to: usage > 0 ? min(1, max(0.03, usage)) : 0)
                         .stroke(usage >= 0.85 ? LXColor.warning : LXColor.running,
                                 style: StrokeStyle(lineWidth: 10, lineCap: .round))
                         .rotationEffect(.degrees(-90))
@@ -346,9 +350,14 @@ struct AgentStatusHUD: View {
         .accessibilityLabel("\(title) \(percent(value))")
     }
 
+    /// Context windows are now over a million tokens, so a real session sits at well under 1%
+    /// for a long time. Rounding to an integer printed 3.8K/1.05M as 「0%」 right beside a
+    /// token pair that said otherwise — one decimal below 1% is the smallest honest change.
     private func percent(_ value: Double?) -> String {
         guard let value else { return "—" }
-        return "\(Int((value * 100).rounded()))%"
+        let points = value * 100
+        if points > 0, points < 1 { return String(format: "%.1f%%", points) }
+        return "\(Int(points.rounded()))%"
     }
 
     private func tokenPair(_ used: Int?, _ budget: Int?) -> String {
@@ -388,8 +397,16 @@ struct AgentStatusHUD: View {
         return Double(used) / Double(budget)
     }
 
+    /// What the active context is measured against: the most a single model request can
+    /// carry — the model's own window, or the P-Core hard limit when Core reports a smaller one.
+    /// `addressableBudget` (which also counts E-Core storage the model never sees in one
+    /// request) is only the last fallback.
+    ///
+    /// The ring that "always read 0%" was not a placeholder: a gpt-5.6-luna window is 1.05M
+    /// tokens, a working session sits at 0.3% of it, and `percent` rounded that to an integer.
     private var contextBudget: Int? {
-        live?.contextPolicy?.addressableBudget ?? contextWindow
+        let limits = [live?.contextPolicy?.pCoreHardLimit, contextWindow].compactMap { $0 }.filter { $0 > 0 }
+        return limits.min() ?? live?.contextPolicy?.addressableBudget
     }
 
     private var contextWindow: Int? {

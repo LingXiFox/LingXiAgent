@@ -53,7 +53,7 @@ enum ProviderCatalog {
                 signInMode: signInMode(baseURL: provider.baseURL),
                 modelCount: provider.modelCount,
                 vendor: provider.fields["vendor"]?.stringValue,
-                connectable: adapter(forPublishedProvider: provider.id) != nil
+                connectable: adapter(for: provider) != nil
                     && !(provider.baseURL?.isEmpty ?? true)))
         }
         return result
@@ -68,9 +68,10 @@ enum ProviderCatalog {
     }
 
     static func plan(entryID: String, catalogClient: PublicModelCatalogClient = .shared) async -> Plan? {
-        guard let baseURL = await catalogClient.providerBaseURL(entryID), !baseURL.isEmpty,
-              let adapter = adapter(forPublishedProvider: entryID) else { return nil }
-        let name = await catalogClient.provider(entryID)?.name ?? entryID
+        guard let provider = await catalogClient.provider(entryID),
+              let baseURL = provider.baseURL, !baseURL.isEmpty,
+              let adapter = adapter(for: provider) else { return nil }
+        let name = provider.name
         return Plan(providerID: entryID, name: name, baseURL: baseURL, adapter: adapter)
     }
 
@@ -89,6 +90,28 @@ enum ProviderCatalog {
         case "anthropic_messages": return "anthropic-messages"
         case "openai_responses": return "openai-responses"
         case "openai_chat": return "openai-compatible"
+        default: return nil
+        }
+    }
+
+    /// The adapter for a published provider: LingXi's own product contract first, then the
+    /// wire dialect the entry itself declares.
+    ///
+    /// Every entry marked "驱动未支持" used to be one without a curated product, even though
+    /// 184 of them declare `@ai-sdk/openai-compatible` — a statement that the endpoint speaks
+    /// OpenAI Chat Completions, which is exactly what the `openai-compatible` adapter
+    /// implements. Only the two package names that *are* a wire dialect map here; a vendor
+    /// SDK (`@ai-sdk/google`, `@ai-sdk/amazon-bedrock`, …) names a client library whose
+    /// protocol LingXi does not speak, and stays unconnectable.
+    static func adapter(for provider: CatalogProvider) -> String? {
+        if let contract = adapter(forPublishedProvider: provider.id) { return contract }
+        return declaredWireAdapter(provider.fields["npm"]?.stringValue)
+    }
+
+    static func declaredWireAdapter(_ package: String?) -> String? {
+        switch package {
+        case "@ai-sdk/openai-compatible": return "openai-compatible"
+        case "@ai-sdk/anthropic": return "anthropic-messages"
         default: return nil
         }
     }

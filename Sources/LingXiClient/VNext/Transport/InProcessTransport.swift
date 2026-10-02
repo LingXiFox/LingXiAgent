@@ -115,6 +115,14 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.renameSession(envelope: envelope)
     }
 
+    public func forkSession(envelope: CommandEnvelope<ForkSessionRequest>) async throws -> CommandReceipt<SessionSummary> {
+        try await service.forkSession(envelope: envelope)
+    }
+
+    public func prepareAttachment(envelope: CommandEnvelope<PrepareAttachmentRequest>) async throws -> CommandReceipt<AttachmentPreparation> {
+        try await service.prepareAttachment(envelope: envelope)
+    }
+
     public func setSessionGoal(envelope: CommandEnvelope<SetSessionGoalRequest>) async throws -> CommandReceipt<SessionSummary> {
         try await service.setSessionGoal(envelope: envelope)
     }
@@ -331,8 +339,20 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.getProviderCatalog(envelope: envelope)
     }
 
-    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<[String]> {
+    public func getProviderCatalogModels(envelope: QueryEnvelope<GetProviderCatalogModelsRequest>) async throws -> ResponseEnvelope<ProviderModelRoster> {
         try await service.getProviderCatalogModels(envelope: envelope)
+    }
+
+    public func probeProviderModels(envelope: CommandEnvelope<ProbeProviderModelsRequest>) async throws -> CommandReceipt<[String: ModelAvailability]> {
+        try await service.probeProviderModels(envelope: envelope)
+    }
+
+    public func getProviderModelAvailability(envelope: QueryEnvelope<GetProviderModelAvailabilityRequest>) async throws -> ResponseEnvelope<[String: ModelAvailability]> {
+        try await service.getProviderModelAvailability(envelope: envelope)
+    }
+
+    public func getWithheldModels(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[String: [String]]> {
+        try await service.getWithheldModels(envelope: envelope)
     }
 
     public func beginProviderAuth(envelope: CommandEnvelope<BeginProviderAuthRequest>) async throws -> CommandReceipt<ProviderAuthFlow> {

@@ -1,6 +1,7 @@
 #if canImport(SwiftUI)
 import Foundation
 import Testing
+import LingXiClient
 @testable import LingXiApplication
 @testable import LingXiProtocol
 @testable import LingXiFrontendKit
@@ -8,6 +9,81 @@ import Testing
 
 @Suite("GUI: ApplicationState projection and live backend", .serialized)
 struct GUICoreProjectionTests {
+
+    @Test("The composer offers only providers in the Settings account list, including OAuth accounts")
+    @MainActor
+    func modelMenuUsesAccounts() {
+        var state = ApplicationState()
+        state.providers = [
+            ProviderAccountInfo(id: "bai", productID: "bai", displayName: "BAI", accountType: .apiKey,
+                                credentialRef: nil, endpoint: nil, availability: .configured),
+            ProviderAccountInfo(id: "codex-account", productID: "openai-codex", displayName: "Codex", accountType: .oauthUser,
+                                credentialRef: nil, endpoint: nil, availability: .active)
+        ]
+        state.models = ["bai", "openai-codex", "xai-api", "xai-grok-subscription", "opencode-zen"].map {
+            ProviderModelInfo(id: "\($0)/model", providerID: $0, modelID: "model", displayName: $0,
+                              contextWindow: 128_000, maxOutputTokens: 8_000, reasoning: false, configured: true)
+        }
+        let runtime = RuntimeFrontend()
+        runtime.apply(state)
+        #expect(Set(runtime.composerModel.models.map(\.providerID)) == ["bai", "openai-codex"])
+    }
+
+    @Test("A saved reasoning level comes back on the next launch instead of resetting to auto")
+    func reasoningEffortIsRestoredAtStartup() async throws {
+        // `handleSetReasoningEffort` wrote the level to preferences.json on every change and nothing on
+        // the launch path read it back: `AppCompositionRoot` restores it, but the macOS app does not
+        // boot through that path, so every start came up on `auto`.
+        let root = URL(fileURLWithPath: "/tmp").appendingPathComponent("lx-effort-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserPreferencesStore(fileURL: root.appendingPathComponent("preferences.json"))
+        preferences.update(reasoningEffort: ReasoningEffort.high.rawValue)
+
+        let host = try CoreHost(startupPolicy: .unitTest)
+        let client = try await LingXiClientVNext.inProcess(service: host)
+        let application = await ApplicationStore(client: client, preferencesStore: preferences)
+        #expect(await application.state.nextTurnReasoningEffort == .high)
+        #expect(await application.state.effectiveReasoningEffort == .high)
+    }
+
+    @Test("Provider and model writes reach the open GUI through Core events without reconnecting")
+    @MainActor
+    func providerWritesRefreshLiveGUI() async throws {
+        let root = URL(fileURLWithPath: "/tmp").appendingPathComponent("lx-provider-live-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = try ConfigurationStore(dataRoot: root)
+        let host = try CoreHost(startupPolicy: .unitTest, configurationStore: configuration)
+        let client = try await LingXiClientVNext.inProcess(service: host)
+        let application = await ApplicationStore(client: client,
+            preferencesStore: UserPreferencesStore(fileURL: root.appendingPathComponent("preferences.json")))
+        let runtime = RuntimeFrontend()
+        runtime.attach(application)
+        var request = SaveProviderConfigurationRequest(
+            providerID: "gui-relay", name: "GUI Relay", adapter: "openai-compatible", baseURL: "https://relay.test/v1",
+            models: [ProviderModelConfigurationDetail(modelID: "first", name: "First")])
+        _ = try await client.provider.saveConfiguration(request)
+        for _ in 0..<100 where !runtime.composerModel.models.contains(where: { $0.id == "gui-relay/first" }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(runtime.composerModel.models.contains { $0.id == "gui-relay/first" })
+        #expect(await application.state.providers.contains { $0.id == "gui-relay" })
+
+        request.models?.append(ProviderModelConfigurationDetail(modelID: "second", name: "Second"))
+        _ = try await client.provider.saveConfiguration(request)
+        for _ in 0..<100 where !runtime.composerModel.models.contains(where: { $0.id == "gui-relay/second" }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(runtime.composerModel.models.filter { $0.providerID == "gui-relay" }.count == 2)
+
+        try await client.provider.deleteConfiguration(providerID: "gui-relay", deleteCredential: false)
+        for _ in 0..<100 where runtime.composerModel.models.contains(where: { $0.providerID == "gui-relay" }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!runtime.composerModel.models.contains { $0.providerID == "gui-relay" })
+        #expect(await application.state.providers.allSatisfy { $0.id != "gui-relay" })
+        await runtime.closeWorkspace()
+        await host.shutdown()
+    }
 
     private func sessionState() -> SessionViewState {
         var session = SessionViewState(sessionID: SessionID("s1"), title: "修复构建")

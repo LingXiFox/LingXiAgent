@@ -2,8 +2,15 @@
 import SwiftUI
 import AppKit
 
-/// Navigator — "where am I": the workspace, its sessions, and the way to
-/// Settings. No execution controls; those live in the composer.
+/// Navigator — "where am I": Workspace → Session, and the way to Settings. No execution
+/// controls; those live in the composer.
+///
+/// Two levels and only two. Every workspace is a peer row (the current one is marked, not
+/// promoted into a separate header), and every session sits under the workspace it belongs
+/// to. The head used to repeat the current workspace's name above a folder row of the same
+/// name, so 「LingXiAgent」 appeared twice with no way to tell which was the workspace and
+/// which the session folder; a 「新建会话」 button at the top never said where the session
+/// would go. Creating a session is now a per-workspace action, and the top only imports.
 ///
 /// Sidebar contract: system material, neutral ground, no ambient light.
 /// Selection is `fill-control` with the row icon in `accent-text`; the only
@@ -16,11 +23,12 @@ public struct SidebarView: View {
 
     @State private var collapsed: Set<String> = []
     @State private var expanded: Set<String> = []
-    @State private var showsOtherWorkspaces = false
+    @State private var showsArchived: Set<String> = []
+    @State private var showsMissing = false
+    @State private var archived: Set<String> = ArchivedSessions.all
     @State private var renaming: SessionItemPresentation?
     @State private var renameDraft = ""
     @State private var pendingDeletion: SessionItemPresentation?
-    @State private var projectlessError: String?
 
     public init(runtime: RuntimeFrontend) {
         self.runtime = runtime
@@ -30,54 +38,38 @@ public struct SidebarView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            SidebarHead(runtime: runtime, workspace: model.workspace)
+            SidebarHead(count: workspaces.filter(\.exists).count)
 
-            NativeSearchField(text: $model.searchText, prompt: "搜索会话")
+            NativeSearchField(text: $model.searchText, prompt: "搜索工作区或会话")
                 .navigatorChrome()
                 .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
                 .padding(.bottom, LingXiMetrics.Space.sm)
 
-            HStack(spacing: LingXiMetrics.Space.sm) {
-                Button {
-                    runtime.newSession()
-                } label: {
-                    Label("新建会话", systemImage: "square.and.pencil")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(runtime.link != .connected)
-                .help("在当前工作区新建会话")
-
-                Button {
-                    Task {
-                        do { try await runtime.newSessionWithoutWorkspace() }
-                        catch { projectlessError = error.localizedDescription }
-                    }
-                } label: {
-                    Label("无项目", systemImage: "plus.square")
-                        .frame(maxWidth: .infinity)
-                }
-                .help("新建无项目会话")
-                .accessibilityLabel("新建无项目会话")
+            Button {
+                WorkspacePicker.choose(runtime)
+            } label: {
+                Label("导入工作区", systemImage: "folder.badge.plus")
+                    .frame(maxWidth: .infinity)
             }
             .font(LXType.meta.weight(.medium))
             .buttonStyle(LXButtonStyle(.secondary, size: .small))
+            .help("选择一个文件夹作为工作区；会话都建在某个工作区之下")
             .padding(.horizontal, LingXiMetrics.Space.panelInset)
             .padding(.bottom, LingXiMetrics.Space.sm)
 
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(sections.filter(\.isCurrent)) { section in
-                        sectionContent(section)
+                    ForEach(visibleWorkspaces.filter(\.exists)) { workspace in
+                        workspaceContent(workspace)
                     }
-                    if !otherSections.isEmpty {
-                        disclosureHeader("其他工作区 · \(otherSections.count)", isExpanded: otherWorkspacesVisible) {
-                            showsOtherWorkspaces.toggle()
+                    let missing = visibleWorkspaces.filter { !$0.exists }
+                    if !missing.isEmpty {
+                        MissingWorkspacesToggle(count: missing.count,
+                                                isExpanded: showsMissing || !query.isEmpty) {
+                            showsMissing.toggle()
                         }
-                        if otherWorkspacesVisible {
-                            ForEach(otherSections) { section in
-                                sectionContent(section)
-                                    .padding(.leading, LingXiMetrics.Space.sm)
-                            }
+                        if showsMissing || !query.isEmpty {
+                            ForEach(missing) { workspace in workspaceContent(workspace) }
                         }
                     }
                 }
@@ -86,7 +78,7 @@ public struct SidebarView: View {
             }
             .scrollIndicators(.hidden)
             .overlay {
-                if sections.isEmpty {
+                if visibleWorkspaces.isEmpty {
                     PlaceholderLine(emptyText)
                         .multilineTextAlignment(.center)
                         .padding(LingXiMetrics.Space.xl)
@@ -106,117 +98,199 @@ public struct SidebarView: View {
         .confirmationDialog("删除会话？", isPresented: Binding(
             get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }
         ), presenting: pendingDeletion) { session in
-            Button("删除「\(session.title)」", role: .destructive) { runtime.deleteSession(id: session.id) }
+            Button("删除「\(session.title)」", role: .destructive) {
+                runtime.deleteSession(id: session.id)
+                setArchived(session.id, false)
+            }
         } message: { _ in
-            Text("会话记录将从 Core 中删除，无法恢复。")
-        }
-        .alert("无法新建无项目会话", isPresented: Binding(
-            get: { projectlessError != nil }, set: { if !$0 { projectlessError = nil } }
-        )) {
-            Button("好") { projectlessError = nil }
-        } message: {
-            Text(projectlessError ?? "")
+            Text("会话记录将从 Core 中删除，无法恢复。不想看到它但还要留着，用「归档」。")
         }
     }
 
-    // MARK: Sections
+    // MARK: Workspaces
 
-    private struct Section: Identifiable {
+    private struct Workspace: Identifiable {
+        /// Standardised absolute path, or the projection's label when Core gave none.
         let id: String
-        let title: String
-        let sessions: [SessionItemPresentation]
+        let name: String
+        /// Parent folder, shown only when two workspaces share a name.
+        var disambiguation: String?
         let isCurrent: Bool
+        let sessions: [SessionItemPresentation]
+        /// The folder is still on disk. A workspace whose folder is gone keeps its sessions
+        /// readable, but nothing can be created in it, so it is not listed among the live ones.
+        var exists: Bool { isCurrent || url.map { FileManager.default.fileExists(atPath: $0.path) } ?? true }
+        var url: URL? { id.hasPrefix("/") ? URL(fileURLWithPath: id) : nil }
     }
 
-    private var sections: [Section] {
-        let query = model.searchText.trimmingCharacters(in: .whitespaces)
-        return model.folders.compactMap { folder in
-            let sessions = query.isEmpty || folder.folderName.localizedCaseInsensitiveContains(query) ? folder.sessions
-                : folder.sessions.filter { $0.title.localizedCaseInsensitiveContains(query) }
-            guard !sessions.isEmpty else { return nil }
-            let currentPath = runtime.workspaceURL?.standardizedFileURL.path
-            let isCurrent = folder.id == currentPath ||
-                (currentPath == nil && folder.folderName == model.workspace.name)
-            return Section(id: folder.id, title: folder.folderName, sessions: sessions, isCurrent: isCurrent)
+    private var currentPath: String? {
+        runtime.workspaceURL?.standardizedFileURL.path
+    }
+
+    /// The current workspace (even with no sessions yet), every workspace that owns sessions,
+    /// then recently opened ones — each exactly once.
+    private var workspaces: [Workspace] {
+        var order: [String] = []
+        var sessions: [String: [SessionItemPresentation]] = [:]
+        if let currentPath { order.append(currentPath) }
+        for folder in model.folders {
+            let key = folder.id.hasPrefix("/") ? URL(fileURLWithPath: folder.id).standardizedFileURL.path : folder.id
+            if !order.contains(key) { order.append(key) }
+            sessions[key, default: []].append(contentsOf: folder.sessions)
+        }
+        for url in RecentWorkspaces.all where FileManager.default.fileExists(atPath: url.path) {
+            let key = url.standardizedFileURL.path
+            if !order.contains(key) { order.append(key) }
+        }
+        var result = order.map { path in
+            Workspace(id: path,
+                      name: path.hasPrefix("/") ? URL(fileURLWithPath: path).lastPathComponent : path,
+                      isCurrent: path == currentPath,
+                      sessions: sessions[path] ?? [])
+        }
+        let names = Dictionary(grouping: result.indices, by: { result[$0].name })
+        for (_, indices) in names where indices.count > 1 {
+            for index in indices {
+                result[index].disambiguation = result[index].url?.deletingLastPathComponent().lastPathComponent
+            }
+        }
+        return result
+    }
+
+    private var query: String { model.searchText.trimmingCharacters(in: .whitespaces) }
+
+    private var visibleWorkspaces: [Workspace] {
+        guard !query.isEmpty else { return workspaces }
+        return workspaces.compactMap { workspace in
+            if workspace.name.localizedCaseInsensitiveContains(query) { return workspace }
+            let hits = workspace.sessions.filter { $0.title.localizedCaseInsensitiveContains(query) }
+            guard !hits.isEmpty else { return nil }
+            return Workspace(id: workspace.id, name: workspace.name, disambiguation: workspace.disambiguation,
+                             isCurrent: workspace.isCurrent, sessions: hits)
         }
     }
 
-    private var otherSections: [Section] { sections.filter { !$0.isCurrent } }
-
-    private var otherWorkspacesVisible: Bool {
-        showsOtherWorkspaces || !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty ||
-            otherSections.contains { section in section.sessions.contains { $0.id == model.selectedSessionID } }
+    private func isExpanded(_ workspace: Workspace) -> Bool {
+        if collapsed.contains(workspace.id) { return false }
+        if !query.isEmpty { return true }
+        return workspace.isCurrent || expanded.contains(workspace.id) ||
+            workspace.sessions.contains { $0.id == model.selectedSessionID }
     }
 
-    private func isExpanded(_ section: Section) -> Bool {
-        if collapsed.contains(section.id) { return false }
-        if !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty { return true }
-        return expanded.contains(section.id) ||
-            section.sessions.contains { $0.id == model.selectedSessionID }
+    private func toggle(_ workspace: Workspace) {
+        if isExpanded(workspace) {
+            collapsed.insert(workspace.id)
+            expanded.remove(workspace.id)
+        } else {
+            collapsed.remove(workspace.id)
+            expanded.insert(workspace.id)
+        }
     }
 
     @ViewBuilder
-    private func sectionContent(_ section: Section) -> some View {
-        sectionHeader(section)
-        if isExpanded(section) {
-            ForEach(section.sessions) { session in row(session) }
-        }
-    }
-
-    private func sectionHeader(_ section: Section) -> some View {
-        disclosureHeader(section.title, isExpanded: isExpanded(section)) {
-            if isExpanded(section) {
-                collapsed.insert(section.id)
-                expanded.remove(section.id)
-            } else {
-                collapsed.remove(section.id)
-                expanded.insert(section.id)
-            }
-        }
-    }
-
-    private func disclosureHeader(_ title: String, isExpanded: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: LingXiMetrics.Space.xs) {
-                Text(title)
-                    .font(LXType.micro)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
+    private func workspaceContent(_ workspace: Workspace) -> some View {
+        WorkspaceHeader(name: workspace.name,
+                        disambiguation: workspace.disambiguation,
+                        path: workspace.id,
+                        isCurrent: workspace.isCurrent,
+                        branch: workspace.isCurrent ? model.workspace.gitBranch : nil,
+                        isExpanded: isExpanded(workspace),
+                        canCreate: workspace.url != nil && workspace.exists,
+                        onToggle: { toggle(workspace) },
+                        onNewSession: { newSession(in: workspace) })
+            .contextMenu { workspaceMenu(workspace) }
+        if isExpanded(workspace) {
+            let active = workspace.sessions.filter { !archived.contains($0.id) }
+            let shelved = workspace.sessions.filter { archived.contains($0.id) }
+            if active.isEmpty && shelved.isEmpty {
+                Text("还没有会话")
+                    .font(LXType.meta)
                     .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .padding(.leading, LingXiMetrics.Space.panelInset + 18)
+                    .padding(.vertical, LingXiMetrics.Space.xs)
             }
-            .padding(.horizontal, LingXiMetrics.Space.panelInset)
-            .padding(.top, LingXiMetrics.Space.sm)
-            .padding(.bottom, LingXiMetrics.Space.xs)
-            .contentShape(Rectangle())
+            ForEach(active) { session in row(session, in: workspace) }
+            if !shelved.isEmpty {
+                ArchivedToggle(count: shelved.count, isExpanded: showsArchived.contains(workspace.id)) {
+                    if showsArchived.contains(workspace.id) { showsArchived.remove(workspace.id) }
+                    else { showsArchived.insert(workspace.id) }
+                }
+                if showsArchived.contains(workspace.id) {
+                    ForEach(shelved) { session in
+                        row(session, in: workspace).opacity(0.7)
+                    }
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title)，\(isExpanded ? "已展开" : "已折叠")")
     }
 
-    private func row(_ session: SessionItemPresentation) -> some View {
-        SessionRow(session: session,
-                   isSelected: session.id == model.selectedSessionID,
-                   awaitingAnswer: awaitingAnswer(session)) {
+    @ViewBuilder
+    private func workspaceMenu(_ workspace: Workspace) -> some View {
+        if workspace.url != nil, workspace.exists {
+            Button("在此工作区新建会话") { newSession(in: workspace) }
+        }
+        if let url = workspace.url, workspace.exists {
+            if !workspace.isCurrent {
+                Button("切换到此工作区") { Task { await runtime.openWorkspace(url) } }
+            }
+            Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+        if workspace.isCurrent, runtime.link == .connected {
+            Divider()
+            Button("关闭工作区") { Task { await runtime.closeWorkspace() } }
+        }
+    }
+
+    private func row(_ session: SessionItemPresentation, in workspace: Workspace) -> some View {
+        let isArchived = archived.contains(session.id)
+        return SessionRow(session: session,
+                          isSelected: session.id == model.selectedSessionID,
+                          awaitingAnswer: awaitingAnswer(session)) {
             guard session.id != model.selectedSessionID else { return }
             runtime.switchSession(id: session.id)
         }
+        .padding(.leading, LingXiMetrics.Space.md)
         .contextMenu {
             Button("重命名…") {
                 renameDraft = session.title
                 renaming = session
             }
+            Button("创建分支") { fork(session, in: workspace) }
+                .disabled(session.isActive)
+            Button(isArchived ? "取消归档" : "归档") { setArchived(session.id, !isArchived) }
             Divider()
             Button("删除…", role: .destructive) { pendingDeletion = session }
         }
     }
 
+    // MARK: Actions
+
+    private func newSession(in workspace: Workspace) {
+        guard let url = workspace.url else { return }
+        collapsed.remove(workspace.id)
+        Task { await runtime.newSession(inWorkspace: url.path) }
+    }
+
+    /// A fork is created by the Core that serves the session's workspace.
+    private func fork(_ session: SessionItemPresentation, in workspace: Workspace) {
+        if workspace.isCurrent || workspace.url == nil {
+            runtime.forkSession(id: session.id)
+            return
+        }
+        Task {
+            if let url = workspace.url { await runtime.openWorkspace(url) }
+            if runtime.link == .connected { runtime.forkSession(id: session.id) }
+        }
+    }
+
+    private func setArchived(_ id: String, _ value: Bool) {
+        ArchivedSessions.set(id, archived: value)
+        archived = ArchivedSessions.all
+    }
+
     private var emptyText: String {
-        if runtime.link != .connected { return "打开工作区后，这里列出它的会话。" }
-        return model.searchText.isEmpty ? "还没有会话。⌘N 新建一个。" : "没有匹配「\(model.searchText)」的会话。"
+        if !query.isEmpty { return "没有匹配「\(model.searchText)」的工作区或会话。" }
+        return "还没有工作区。点「导入工作区」选择一个文件夹。"
     }
 
     /// A running row that is the current session and holds a real pending card.
@@ -226,6 +300,147 @@ public struct SidebarView: View {
             if case .interaction(let card) = $0.kind { return card.status == .pending }
             return false
         }
+    }
+}
+
+// MARK: - Workspace header
+
+/// One workspace row: disclosure, folder glyph, name, 「当前」 + branch for the open one, and
+/// its own 「新建会话」. The full path is the tooltip, so two folders that share a name are
+/// never ambiguous.
+private struct WorkspaceHeader: View {
+    let name: String
+    let disambiguation: String?
+    let path: String
+    let isCurrent: Bool
+    let branch: String?
+    let isExpanded: Bool
+    let canCreate: Bool
+    let onToggle: () -> Void
+    let onNewSession: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: LingXiMetrics.Space.xs) {
+            Button(action: onToggle) {
+                HStack(spacing: LingXiMetrics.Space.xs) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 10)
+                    Image(systemName: isCurrent ? "folder.fill" : "folder")
+                        .font(.system(size: 12))
+                        .foregroundStyle(isCurrent ? AnyShapeStyle(LXColor.accentText) : AnyShapeStyle(.secondary))
+                    Text(name)
+                        .font(LXType.meta.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let disambiguation {
+                        Text(disambiguation)
+                            .font(LXType.micro)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    if isCurrent {
+                        Text("当前")
+                            .font(LXType.micro.weight(.medium))
+                            .foregroundStyle(LXColor.accentText)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(LXColor.accentSoft, in: Capsule())
+                    }
+                    Spacer(minLength: 0)
+                    if let branch, !branch.isEmpty {
+                        Label(branch, systemImage: "arrow.triangle.branch")
+                            .labelStyle(.titleAndIcon)
+                            .font(LXType.micro)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help("Git 分支 \(branch)")
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("工作区 \(name)\(isCurrent ? "，当前" : "")，\(isExpanded ? "已展开" : "已折叠")")
+
+            if canCreate {
+                Button(action: onNewSession) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                        .background(isHovered ? LXColor.fillControl : .clear,
+                                    in: RoundedRectangle(cornerRadius: LingXiMetrics.Radius.sm, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("在「\(name)」中新建会话")
+                .accessibilityLabel("在 \(name) 中新建会话")
+            }
+        }
+        .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
+        .padding(.top, LingXiMetrics.Space.sm)
+        .padding(.bottom, LingXiMetrics.Space.xs)
+        .onHover { isHovered = $0 }
+        .help(path)
+    }
+}
+
+/// The workspaces whose folders were deleted (temporary directories, moved projects). Their
+/// sessions stay reachable, collapsed out of the way of the ones that still exist.
+private struct MissingWorkspacesToggle: View {
+    let count: Int
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 10)
+                Image(systemName: "folder.badge.questionmark")
+                    .font(.system(size: 12))
+                Text("目录已不存在的工作区 · \(count)")
+                    .font(LXType.meta)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, LingXiMetrics.Space.panelInset - 4)
+            .padding(.top, LingXiMetrics.Space.md)
+            .padding(.bottom, LingXiMetrics.Space.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("这些工作区的文件夹已被删除或移动；会话仍可查看，不能在其中新建会话")
+    }
+}
+
+private struct ArchivedToggle: View {
+    let count: Int
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: LingXiMetrics.Space.xs) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 10))
+                Text(isExpanded ? "收起已归档 · \(count)" : "已归档 · \(count)")
+                    .font(LXType.micro)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.tertiary)
+            .padding(.leading, LingXiMetrics.Space.panelInset + 18)
+            .padding(.vertical, LingXiMetrics.Space.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -247,47 +462,22 @@ private final class ScrollBarDisablerView: NSView {
 
 // MARK: - Head
 
-/// 44 tall: workspace name (600 13) as a menu to switch workspace, branch on
-/// the right as a caption.
+/// 44 tall: names the level the list below is made of. It used to be the current workspace's
+/// name as a menu, which repeated the first folder row right under it.
 private struct SidebarHead: View {
-    @ObservedObject var runtime: RuntimeFrontend
-    let workspace: WorkspaceSummaryPresentation
+    let count: Int
 
     var body: some View {
         HStack(spacing: LingXiMetrics.Space.sm) {
-            Menu {
-                ForEach(RecentWorkspaces.all.filter { FileManager.default.fileExists(atPath: $0.path) }, id: \.path) { url in
-                    Button {
-                        Task { await runtime.openWorkspace(url) }
-                    } label: {
-                        Label(url.lastPathComponent, systemImage: url == runtime.workspaceURL ? "checkmark" : "folder")
-                    }
-                }
-                Divider()
-                Button("打开工作区…") { WorkspacePicker.choose(runtime) }
-                if runtime.link == .connected {
-                    Button("关闭工作区") { Task { await runtime.closeWorkspace() } }
-                }
-            } label: {
-                Text(workspace.name)
-                    .font(LXType.body.weight(.semibold))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.visible)
-            .tint(.primary)
-            .fixedSize()
-            .help("切换工作区")
-
-            Spacer(minLength: LingXiMetrics.Space.sm)
-
-            if let branch = workspace.gitBranch, !branch.isEmpty {
-                Text(branch)
+            Text("工作区")
+                .font(LXType.body.weight(.semibold))
+            if count > 0 {
+                Text("\(count)")
                     .font(LXType.meta)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help("Git 分支 \(branch)")
+                    .monospacedDigit()
             }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, LingXiMetrics.Space.panelInset)
         .frame(height: LingXiMetrics.Size.sidebarHead)

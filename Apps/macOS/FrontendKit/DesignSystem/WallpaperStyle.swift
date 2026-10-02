@@ -8,7 +8,11 @@ struct WallpaperWindow: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         content
-            .foregroundStyle(Color.white, Color.white.opacity(0.84), Color.white.opacity(0.68))
+            // The whole workbench is white-on-photograph, so the hierarchy has to be lifted
+            // rather than pushed down: 0.84/0.68 secondary text over a glass panel that is
+            // already a blur of a mid-tone picture lands under 4.5:1, and 「文字过暗看不清」
+            // was the acceptance complaint. 0.92 still separates from primary.
+            .foregroundStyle(Color.white, Color.white.opacity(0.92), Color.white.opacity(0.78))
             .toolbarBackground(.hidden, for: .windowToolbar)
             .background {
                 ZStack {
@@ -58,7 +62,12 @@ struct WallpaperBackdrop: View {
     static let resourceName = "Background"
     static let resourceExtension = "jpg"
 
-    @State private var image: NSImage?
+    /// Decoded once per process and shared by every window and sheet. Each backdrop used to
+    /// decode it in its own `.task`, so a sheet's first frame was the bare gradient and the
+    /// photograph popped in a moment later — the Settings flash from solid to see-through.
+    @MainActor static let shared: NSImage? = load()
+
+    @State private var image: NSImage? = WallpaperBackdrop.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
@@ -84,7 +93,7 @@ struct WallpaperBackdrop: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .task {
-            if image == nil { image = Self.load() }
+            if image == nil { image = Self.shared }
         }
     }
 
@@ -122,14 +131,10 @@ struct LXPanelBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         content.background {
-            Group {
-                if !reduceTransparency {
-                    Color.black.opacity(0.06)
-                } else {
-                    fill
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            LXGlass(cornerRadius: cornerRadius,
+                    wash: LXColor.glassWash,
+                    solidFallback: fill,
+                    translucent: !reduceTransparency)
         }
     }
 }
@@ -142,11 +147,65 @@ struct LXFloatingChrome: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content.background {
-            LXColor.elevated.opacity(reduceTransparency ? 1 : 0.62)
-                .clipShape(shape)
+            LXGlass(cornerRadius: cornerRadius,
+                    wash: LXColor.glassLift,
+                    solidFallback: LXColor.elevated,
+                    translucent: !reduceTransparency)
         }
-        .lxRing(cornerRadius: cornerRadius)
-        .shadow(color: .black.opacity(0.06), radius: 1, y: 1)
-        .shadow(color: .black.opacity(0.10), radius: 12, y: 8)
+        .shapeStroke(shape, colour: LXColor.glassEdge)
+        .topLitEdge(shape)
+        .shadow(color: .black.opacity(LingXiMetrics.Shadow.floatOpacity),
+                radius: LingXiMetrics.Shadow.floatRadius, y: LingXiMetrics.Shadow.floatY)
+        // The tight contact shadow is what separates a floating layer from a panel that
+        // merely has a soft glow; without it the composer floats at the same height as the
+        // stage behind it.
+        .shadow(color: .black.opacity(0.30), radius: 1, y: 1)
+    }
+}
+
+/// The glass ground shared by panels and floating surfaces.
+///
+/// Static on purpose: the workbench hosts no live blur (WallpaperStyleTests, and the idle-GPU
+/// budget it protects). Glass is built from what a blur would have produced over this dark,
+/// scrimmed backdrop — a lift of white over it, brighter at the top where light falls — so the
+/// surface reads as a pane in front of the photograph instead of a hole cut into it.
+/// `translucent: false` is the Reduce Transparency path — one opaque token colour.
+struct LXGlass: View {
+    let cornerRadius: CGFloat
+    let wash: Color
+    let solidFallback: Color
+    let translucent: Bool
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if translucent {
+            shape.fill(wash)
+                .overlay(shape.fill(LinearGradient(colors: [LXColor.glassSheen, .clear],
+                                                   startPoint: .top, endPoint: .bottom)))
+        } else {
+            shape.fill(solidFallback)
+        }
+    }
+}
+
+extension View {
+    /// 1px stroke that follows a rounded shape, drawn on the inside so it never changes
+    /// the size of what it frames.
+    func shapeStroke(_ shape: some InsettableShape, colour: Color) -> some View {
+        overlay(shape.strokeBorder(colour, lineWidth: 1).allowsHitTesting(false))
+    }
+
+    /// The lit rim along the top edge of a glass surface. A uniform ring reads as a
+    /// sticker; light falling from above reads as a bevel, and this is the half-stop that
+    /// makes the panels look three-dimensional instead of outlined.
+    func topLitEdge(_ shape: some InsettableShape) -> some View {
+        overlay {
+            shape.strokeBorder(
+                LinearGradient(colors: [LXColor.glassTopLight, .clear],
+                               startPoint: .top, endPoint: .center),
+                lineWidth: 1
+            )
+            .allowsHitTesting(false)
+        }
     }
 }

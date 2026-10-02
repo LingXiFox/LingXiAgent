@@ -265,8 +265,20 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 content: message.content.isEmpty && !validCalls.isEmpty ? nil : message.content,
                 toolCalls: validCalls.isEmpty ? nil : validCalls
             )]
-        case .system, .user:
+        case .system:
             return [Message(role: message.role.rawValue, content: message.content)]
+        case .user:
+            // No Files API in the chat-completions dialect: a provider-held image goes inline too.
+            let images = message.parts.compactMap { part -> (String, Data)? in
+                switch part {
+                case let .image(mediaType, data), let .imageFile(mediaType, data, _): return (mediaType, data)
+                default: return nil
+                }
+            }
+            guard !images.isEmpty else { return [Message(role: "user", content: message.content)] }
+            var parts: [Message.Part] = message.content.isEmpty ? [] : [.text(message.content)]
+            parts += images.map { .imageURL("data:\($0.0);base64,\($0.1.base64EncodedString())") }
+            return [Message(role: "user", content: message.content, parts: parts)]
         }
     }
 
@@ -563,20 +575,52 @@ extension OpenAICompatibleProvider {
         struct Message: Encodable {
             let role: String
             let content: String?
+            /// Multi-part user content (text + images). When set it is what goes on the wire as
+            /// `content`; `content` still carries the plain text for everything that reads it.
+            let parts: [Part]?
             let toolCalls: [ProviderToolCall]?
             let toolCallID: String?
 
-            init(role: String, content: String?, toolCalls: [ProviderToolCall]? = nil, toolCallID: String? = nil) {
+            init(role: String, content: String?, parts: [Part]? = nil, toolCalls: [ProviderToolCall]? = nil, toolCallID: String? = nil) {
                 self.role = role
                 self.content = content
+                self.parts = parts
                 self.toolCalls = toolCalls
                 self.toolCallID = toolCallID
+            }
+
+            enum Part: Encodable {
+                case text(String)
+                case imageURL(String)
+
+                enum Keys: String, CodingKey { case type, text, imageURL = "image_url" }
+                enum ImageKeys: String, CodingKey { case url }
+                func encode(to encoder: Encoder) throws {
+                    var values = encoder.container(keyedBy: Keys.self)
+                    switch self {
+                    case let .text(text):
+                        try values.encode("text", forKey: .type); try values.encode(text, forKey: .text)
+                    case let .imageURL(url):
+                        try values.encode("image_url", forKey: .type)
+                        var image = values.nestedContainer(keyedBy: ImageKeys.self, forKey: .imageURL)
+                        try image.encode(url, forKey: .url)
+                    }
+                }
             }
 
             enum CodingKeys: String, CodingKey {
                 case role, content
                 case toolCalls = "tool_calls"
                 case toolCallID = "tool_call_id"
+            }
+
+            func encode(to encoder: Encoder) throws {
+                var values = encoder.container(keyedBy: CodingKeys.self)
+                try values.encode(role, forKey: .role)
+                if let parts { try values.encode(parts, forKey: .content) }
+                else { try values.encodeIfPresent(content, forKey: .content) }
+                try values.encodeIfPresent(toolCalls, forKey: .toolCalls)
+                try values.encodeIfPresent(toolCallID, forKey: .toolCallID)
             }
         }
 

@@ -44,8 +44,14 @@ let dataRoot = LingXiDataRootResolver.resolve(
     homeDirectory: FileManager.default.homeDirectoryForCurrentUser
 )
 let configurations = try ConfigurationStore(dataRoot: dataRoot)
-let snapshot = try await configurations.load()
 let credentials = try PlatformSecureCredentialStore(dataRoot: dataRoot, passphrase: environment["LINGXI_CREDENTIALS_PASSPHRASE"])
+// Before the file is read into a runtime: a hand-written `{env:…}` account becomes a vault entry
+// here, so the snapshot below — and every later Dock-launched run — sees the durable form.
+await ProviderCredentialMigration.apply(configurationStore: configurations, credentialStore: credentials)
+// The ChatGPT backend gates the Codex model list on the client version it is told. Kick the fetch so
+// chat's User-Agent is current too, not only the discovery path that refreshes inline.
+Task { await CodexClientVersion.refresh() }
+let snapshot = try await configurations.load()
 let providers = try await RuntimeConfigurationResolver.resolveProviders(
     snapshot.providers,
     credentials: credentials,

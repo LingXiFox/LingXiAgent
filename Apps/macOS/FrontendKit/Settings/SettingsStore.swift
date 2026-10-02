@@ -347,6 +347,10 @@ public final class SettingsStore: ObservableObject {
 
     func reloadProviders() async {
         await perform("重新发现 Provider") { _ = try await $0.provider.reload() }
+        // Core re-discovered every account behind that call; the model list this window shows is a
+        // separate read, so without this the discovery happens and the界面 keeps the old list.
+        await loadProviderCatalog(refresh: false)
+        runtime?.refreshModels()
     }
 
     func selectDefaultModel(_ modelID: String) async {
@@ -422,9 +426,34 @@ public final class SettingsStore: ObservableObject {
         }
     }
 
-    func providerCatalogModels(entryID: String) async -> [String] {
-        guard let client else { return [] }
-        return (try? await client.provider.catalogModels(entryID: entryID)) ?? []
+    func providerCatalogModels(entryID: String) async -> ProviderModelRoster {
+        guard let client else { return ProviderModelRoster(models: [], note: "Core 未连接。") }
+        return (try? await client.provider.catalogModels(entryID: entryID))
+            ?? ProviderModelRoster(models: [], note: "向 Core 查询模型列表失败。")
+    }
+
+    /// Probes the models one provider already has configured. Costs a minimal turn each, so it is
+    /// something the user asks for rather than something the settings window does on its own.
+    @discardableResult
+    func probeProviderModels(providerID: String) async -> [String: ModelAvailability] {
+        guard let client else { return [:] }
+        let verdicts = (try? await client.provider.probeModels(providerID: providerID)) ?? [:]
+        // The composer builds its menu from the model list, which Core now answers differently.
+        runtime?.refreshModels()
+        return verdicts
+    }
+
+    /// What a previous probe settled. Free, so a settings page can restore its badges on every visit.
+    func modelAvailability(providerID: String) async -> [String: ModelAvailability] {
+        guard let client else { return [:] }
+        return (try? await client.provider.modelAvailability(providerID: providerID)) ?? [:]
+    }
+
+    /// Models an account reaches that are deliberately not offered — upstream `hide`/`disabled`, or a
+    /// superseded registry status. Surfaced so "模型 5" is not read as "the integration lost two".
+    func withheldModels() async -> [String: [String]] {
+        guard let client else { return [:] }
+        return (try? await client.provider.withheldModels()) ?? [:]
     }
 
     /// Products Core can actually sign a user in to; empty when the runtime
@@ -491,6 +520,7 @@ public final class SettingsStore: ObservableObject {
         do {
             let account = try await client.provider.connect(request)
             notice = "已连接 \(account.displayName)。"
+            await refresh(domains: [.providers, .models])
             return account
         } catch {
             notice = "连接失败：\(error.localizedDescription)"

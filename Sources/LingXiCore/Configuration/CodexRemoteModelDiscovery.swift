@@ -42,6 +42,9 @@ public enum CodexRemoteModelDiscovery {
         requestProfile: OverlayRequestProfile? = nil,
         httpClient: (@Sendable (URLRequest) async throws -> (Data, URLResponse))? = nil
     ) async throws -> [DiscoveredRemoteModel] {
+        // This path is already network-bound, so keeping the claimed client version current costs
+        // nothing here and the synchronous callers (User-Agent, chat) inherit the result afterwards.
+        await CodexClientVersion.refresh(httpClient: httpClient)
         let candidateEndpoints: [URL] = {
             if let custom = endpoint { return [custom] }
             if let profileOverride = requestProfile?.endpointOverride, let url = URL(string: profileOverride) {

@@ -9,8 +9,9 @@ import Glibc
 ///
 /// Uses `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` instead of `openpty` so the
 /// same code runs on macOS and Linux without linking libutil. The child is
-/// spawned into its own session, which is what lets an interrupt reach everything
-/// the user started rather than only the shell.
+/// spawned into its own session and opens the slave itself, so the slave becomes its
+/// controlling terminal: the line discipline then turns ^C into SIGINT for whatever
+/// job is in the foreground, and the shell gets job control like any terminal app.
 #if canImport(Darwin) || canImport(Glibc)
 public final class PosixPtyAdapter: PlatformPtyProtocol, @unchecked Sendable {
     public init() {}
@@ -29,11 +30,7 @@ public final class PosixPtyAdapter: PlatformPtyProtocol, @unchecked Sendable {
             closeDescriptor(master)
             throw PtyError.allocationFailed("无法取得从终端: \(String(cString: strerror(errno)))")
         }
-        let slave = open(slaveName, Int32(O_RDWR))
-        guard slave >= 0 else {
-            closeDescriptor(master)
-            throw PtyError.allocationFailed("无法打开从终端: \(String(cString: strerror(errno)))")
-        }
+        let slavePath = String(cString: slaveName)
 
         var window = winsize(ws_row: UInt16(max(1, rows)), ws_col: UInt16(max(1, columns)),
                              ws_xpixel: 0, ws_ypixel: 0)
@@ -45,14 +42,27 @@ public final class PosixPtyAdapter: PlatformPtyProtocol, @unchecked Sendable {
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
         posix_spawn_file_actions_init(&actions)
-        posix_spawn_file_actions_adddup2(&actions, slave, 0)
-        posix_spawn_file_actions_adddup2(&actions, slave, 1)
-        posix_spawn_file_actions_adddup2(&actions, slave, 2)
-        posix_spawn_file_actions_addclose(&actions, slave)
+        // Opened in the child, after SETSID, and without O_NOCTTY: that is what makes the slave
+        // the new session's controlling terminal. Opening it here and dup2-ing it (as this used
+        // to) leaves the shell without one — no job control, and a typed ^C was just a byte.
+        posix_spawn_file_actions_addopen(&actions, 0, slavePath, Int32(O_RDWR), 0)
+        posix_spawn_file_actions_adddup2(&actions, 0, 1)
+        posix_spawn_file_actions_adddup2(&actions, 0, 2)
+        // `cwd` was accepted and never applied: every shell started wherever Core was.
+        posix_spawn_file_actions_addchdir_np(&actions, cwd.path)
         posix_spawnattr_init(&attributes)
         // A new session makes the child a process-group leader, so a signal can be
         // delivered to the whole pipeline it starts.
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
+        // A terminal's child starts with default signal handling and nothing blocked. posix_spawn
+        // otherwise inherits the host's SIG_IGN dispositions and mask, and a shell spawned by a
+        // host that ignores SIGINT ignores ^C for good.
+        var defaults = sigset_t()
+        sigfillset(&defaults)
+        posix_spawnattr_setsigdefault(&attributes, &defaults)
+        var unblocked = sigset_t()
+        sigemptyset(&unblocked)
+        posix_spawnattr_setsigmask(&attributes, &unblocked)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
         defer {
             posix_spawn_file_actions_destroy(&actions)
             posix_spawnattr_destroy(&attributes)
@@ -77,12 +87,16 @@ public final class PosixPtyAdapter: PlatformPtyProtocol, @unchecked Sendable {
                 }
             }
         }
-        closeDescriptor(slave)
         guard status == 0 else {
             closeDescriptor(master)
             throw PtyError.spawnFailed("无法启动 \(executable): \(String(cString: strerror(status)))")
         }
 
+        // The slave's first open — the child's, which is what made it the controlling
+        // terminal — resets the window size, so a shell would start at 80 columns whatever was
+        // asked. posix_spawn returns after that open; setting the size again now either lands
+        // before the shell reads it or reaches it as SIGWINCH.
+        _ = ioctl(master, UInt(TIOCSWINSZ), &window)
         _ = fcntl(master, F_SETFL, O_NONBLOCK)
         return PosixPtyHandle(masterFD: master, pid: pid)
     }
@@ -169,7 +183,12 @@ private final class PosixPtyHandle: PtyHandle, @unchecked Sendable {
         _ = ioctl(master, UInt(TIOCSWINSZ), &window)
     }
 
-    func interrupt() { signalGroup(SIGINT) }
+    /// ^C through the line discipline, exactly as a keypress: it reaches the foreground job
+    /// (not just the shell's own group), and a program in raw mode receives the byte instead.
+    func interrupt() {
+        guard master >= 0 else { return signalGroup(SIGINT) }
+        writeAll(master, Data([0x03]))
+    }
 
     func terminate() {
         signalGroup(SIGTERM)

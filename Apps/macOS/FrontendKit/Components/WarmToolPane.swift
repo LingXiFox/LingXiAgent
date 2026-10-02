@@ -872,23 +872,39 @@ private struct WarmGitPane: View {
 @MainActor private final class WarmTerminalModel: ObservableObject {
     @Published var sessions: [TerminalSessionInfo] = []
     @Published var selectedID: String?
-    @Published var command = ""
     @Published var error: String?
     private weak var runtime: RuntimeFrontend?
     private var pollTask: Task<Void, Never>?
+    private(set) var columns = 80
+    private(set) var rows = 24
+    /// When the user last typed or output last arrived. Polling is fast while a session is
+    /// live in front of someone and backs off when it goes quiet.
+    private var lastActivity = Date.distantPast
 
     var selected: TerminalSessionInfo? { sessions.first { $0.id == selectedID } }
-    var output: String { selected.flatMap { runtime?.terminalOutput[$0.id] } ?? "" }
     var isRunning: Bool { selected?.state == .running }
 
     func attach(to runtime: RuntimeFrontend) {
         self.runtime = runtime
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
+            // Opening the panel opens a shell, as opening Terminal does — unless one is already
+            // running (the panel was only re-laid out). The size is measured on appear first.
+            await self?.refreshSessions()
+            if let self, runtime.workspaceURL != nil,
+               !self.sessions.contains(where: { $0.kind == .user && $0.state == .running }) {
+                try? await Task.sleep(for: .milliseconds(50))
+                await self.spawnShellNow()
+            }
+            var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
-                try? await Task.sleep(for: .milliseconds(700))
+                // The session list changes rarely; the screen of the selected one constantly.
+                if tick % 10 == 0 { await self.refreshSessions() }
+                await self.pollSelected()
+                tick += 1
+                let hot = Date().timeIntervalSince(self.lastActivity) < 3
+                try? await Task.sleep(for: .milliseconds(hot ? 40 : 250))
             }
         }
     }
@@ -899,37 +915,59 @@ private struct WarmGitPane: View {
         pollTask = nil
     }
 
-    func refresh() async {
+    func refreshSessions() async {
         guard let runtime else { return }
         await runtime.refreshTerminalSessions()
         sessions = runtime.terminalSessions
         if selected == nil { selectedID = sessions.first?.id }
-        if let selected, selected.state == .running {
-            await runtime.pollTerminalOutput(sessionID: selected.id, columns: 80, rows: 24)
+        error = runtime.terminalError
+    }
+
+    func pollSelected() async {
+        guard let runtime, let selected, selected.state == .running else { return }
+        if await runtime.pollTerminalOutput(sessionID: selected.id, columns: columns, rows: rows) {
+            lastActivity = Date()
         }
         error = runtime.terminalError
     }
 
     func select(_ id: String) {
         selectedID = id
-        Task { await refresh() }
+        lastActivity = Date()
+        Task { await pollSelected() }
+    }
+
+    /// The pane's size before any screen exists, so a new shell starts at the right width.
+    func measured(_ size: CGSize) {
+        guard selected == nil else { return }
+        (columns, rows) = TerminalScreenView.gridSize(for: size)
+    }
+
+    func resized(columns: Int, rows: Int) {
+        self.columns = columns
+        self.rows = rows
+        lastActivity = Date()
     }
 
     func spawnShell() {
-        guard let runtime else { return }
-        Task {
-            await runtime.spawnTerminalShell()
-            await refresh()
-        }
+        Task { await spawnShellNow() }
     }
 
-    func send() {
+    func spawnShellNow() async {
+        guard let runtime else { return }
+        await runtime.spawnTerminalShell(columns: columns, rows: rows)
+        await refreshSessions()
+        selectedID = runtime.terminalSessions.last { $0.kind == .user && $0.state == .running }?.id ?? selectedID
+        lastActivity = Date()
+    }
+
+    /// Raw keystrokes, sent as typed: the PTY echoes and edits, not this view.
+    func send(_ text: String) {
         guard let runtime, let selected else { return }
-        let value = command + "\n"
-        command = ""
+        lastActivity = Date()
         Task {
-            await runtime.sendTerminalInput(sessionID: selected.id, text: value)
-            await refresh()
+            await runtime.sendTerminalInput(sessionID: selected.id, text: text)
+            await pollSelected()
         }
     }
 
@@ -937,7 +975,7 @@ private struct WarmGitPane: View {
         guard let runtime, let selected else { return }
         Task {
             await runtime.interruptTerminal(sessionID: selected.id)
-            await refresh()
+            await pollSelected()
         }
     }
 
@@ -946,7 +984,7 @@ private struct WarmGitPane: View {
         Task {
             await runtime.closeTerminalSession(selected.id)
             selectedID = nil
-            await refresh()
+            await refreshSessions()
         }
     }
 }
@@ -978,55 +1016,52 @@ private struct WarmTerminalPane: View {
                         .buttonStyle(LXIconButtonStyle(side: LXControl.small))
                         .help("结束该会话")
                         .accessibilityLabel("结束会话")
-                } else {
-                    Button { terminal.spawnShell() } label: { Image(systemName: "play.circle") }
-                        .buttonStyle(LXIconButtonStyle(side: LXControl.small))
-                        .disabled(runtime.workspaceURL == nil)
-                        .help("新建 shell")
-                        .accessibilityLabel("新建 shell")
                 }
+                Button { terminal.spawnShell() } label: { Image(systemName: "plus.circle") }
+                    .buttonStyle(LXIconButtonStyle(side: LXControl.small))
+                    .disabled(runtime.workspaceURL == nil)
+                    .help("新建 shell")
+                    .accessibilityLabel("新建 shell")
             }
             .padding(.horizontal, LingXiMetrics.Space.sm)
             .padding(.vertical, 6)
             LXHairline()
 
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    Group {
-                        if terminal.sessions.isEmpty {
-                            PlaceholderLine(runtime.workspaceURL == nil
-                                ? "未打开工作区。"
-                                : (terminal.isRunning ? "等待输出…" : "还没有终端会话。"))
-                                .padding(LingXiMetrics.Space.md)
-                        } else {
-                            Text(terminal.output.isEmpty ? "终端已就绪" : terminal.output)
-                                .font(LXType.monoSmall)
-                                .lineSpacing(3)
-                                .foregroundStyle(terminal.output.isEmpty ? Color.secondary : Color.primary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(LingXiMetrics.Space.md)
+            Group {
+                if let selected = terminal.selected {
+                    TerminalScreen(emulator: runtime.terminalScreen(for: selected.id),
+                                   generation: runtime.terminalGeneration,
+                                   isEnabled: selected.state == .running && selected.supportsInput,
+                                   onInput: terminal.send,
+                                   onResize: terminal.resized)
+                        .id(selected.id)
+                } else {
+                    VStack(spacing: LingXiMetrics.Space.md) {
+                        PlaceholderLine(runtime.workspaceURL == nil ? "未打开工作区。" : "还没有终端会话。")
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                        if runtime.workspaceURL != nil {
+                            Button("新建 shell") { terminal.spawnShell() }
+                                .buttonStyle(LXButtonStyle(.secondary, size: .small))
                         }
                     }
-                    .id("tail")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .onChange(of: terminal.output.count) { _, _ in proxy.scrollTo("tail", anchor: .bottom) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.18))
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { terminal.measured(geometry.size) }
+                        .onChange(of: geometry.size) { _, size in terminal.measured(size) }
+                }
             }
             if let error = terminal.error {
                 LXStatusText(error, systemImage: "exclamationmark.triangle", tone: .danger)
                     .padding(.horizontal, LingXiMetrics.Space.md)
             }
-            HStack(spacing: LingXiMetrics.Space.sm) {
-                Text("$").font(LXType.monoSmall).foregroundStyle(.secondary)
-                TextField("输入命令并回车", text: $terminal.command, onCommit: terminal.send)
-                    .textFieldStyle(.plain)
-                    .font(LXType.monoSmall)
-                    .disabled(terminal.selected?.supportsInput != true)
-            }
-            .padding(.horizontal, LingXiMetrics.Space.md)
-            .frame(height: LingXiMetrics.Size.rowList)
-            .overlay(alignment: .top) { LXHairline() }
-            footer(terminal.selected.map(Self.describe) ?? "没有会话 · 点击 ▶ 新建 shell")
+            footer(terminal.selected.map(Self.describe) ?? "没有会话 · 点击 ⊕ 新建 shell")
         }
         .onAppear { terminal.attach(to: runtime) }
         // Collapsing the panel stops reading. It never ends a session.
@@ -1075,7 +1110,7 @@ private struct WarmTerminalPane: View {
         case .terminated: state = "已终止"
         }
         switch session.kind {
-        case .user: return "你的 shell · \(state)"
+        case .user: return "你的 shell · \(state) · ⌘C 复制选区 · ⌘V 粘贴 · ⌘K 清屏"
         case .agent:
             let owner = session.ownerRunID.map { " · run \($0.prefix(8))" } ?? ""
             return "Agent 会话 · \(state)\(owner)"
@@ -1094,3 +1129,4 @@ private struct WarmTerminalPane: View {
 }
 
 #endif
+

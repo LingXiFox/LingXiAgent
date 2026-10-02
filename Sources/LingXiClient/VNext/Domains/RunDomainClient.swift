@@ -8,8 +8,8 @@ public struct RunDomainClient: Sendable {
         self.transport = transport
     }
 
-    public func cancelRun(sessionID: SessionID, runID: RunID, reason: String? = nil) async throws -> CommandReceipt<VoidResult> {
-        let req = CancelRunRequest(sessionID: sessionID, runID: runID, reason: reason)
+    public func cancelRun(sessionID: SessionID, runID: RunID, reason: String? = nil, cancelQueuedTurns: Bool? = nil) async throws -> CommandReceipt<VoidResult> {
+        let req = CancelRunRequest(sessionID: sessionID, runID: runID, reason: reason, cancelQueuedTurns: cancelQueuedTurns)
         return try await transport.cancelRun(envelope: CommandEnvelope(payload: req))
     }
 

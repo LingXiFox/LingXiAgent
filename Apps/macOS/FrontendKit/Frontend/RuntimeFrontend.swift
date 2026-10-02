@@ -183,7 +183,8 @@ public final class RuntimeFrontend: ObservableObject {
         sidebarModel.folders = CoreProjection.sessionFolders(state, workspaceRoot: workspaceURL)
         sidebarModel.selectedSessionID = state.activeSessionID?.rawValue
 
-        composerModel.models = state.models
+        let accountIDs = Set(state.providers.flatMap { [$0.id, $0.productID] })
+        composerModel.models = state.models.filter { accountIDs.contains($0.providerID) }
         composerModel.selectedModelID = state.currentModelID ?? state.selectedModel?.qualifiedID
         let mode = state.nextTurnMode ?? session?.mode ?? .build
         composerModel.selectedMode = AgentRunMode(mode)
@@ -197,6 +198,8 @@ public final class RuntimeFrontend: ObservableObject {
         if isLive {
             let reportedGoal = session?.goal?.text
             composerModel.goal = (reportedGoal?.isEmpty == false) ? reportedGoal : nil
+            let reportedState = composerModel.goal == nil ? nil : session?.goal
+            if composerModel.goalState != reportedState { composerModel.goalState = reportedState }
         }
 
         inspectorModel.live = isLive ? inspectorSnapshot(state) : nil
@@ -365,60 +368,67 @@ public final class RuntimeFrontend: ObservableObject {
                 Task { await backend.dispatch(.submitPrompt(text: text, attachments: [])) }
                 return
             }
-            Task { await submitWithAttachments(text: trimmed, attachments: attachments) }
+            submitWithFiles(text: trimmed, attachments: attachments)
             return
         }
         guard isPreview else { return }
         sendPreviewMessage(text: text, mode: mode, attachments: attachments)
     }
 
-    /// Uploads the composer's attachments and only then submits.
+    /// Starts preparing a picked file in Core right away, so the send finds it ready: normalize
+    /// and hash first, then — only if the active provider has a Files API — upload. The chip
+    /// follows each step; nothing here waits on the user or blocks the composer.
+    public func prepareAttachment(id: String, url: URL) {
+        guard let client else { return }
+        let selectedAt = Date()
+        func update(_ state: AttachmentPreparation.State, _ detail: String?) {
+            guard let index = composerModel.attachments.firstIndex(where: { $0.id == id }) else { return }
+            composerModel.attachments[index].preparation = state
+            composerModel.attachments[index].preparationDetail = detail
+        }
+        update(.preprocessing, nil)
+        Task {
+            do {
+                let local = try await client.resource.prepareAttachment(path: url.path, selectedAt: selectedAt)
+                guard local.state != .failed else { return update(.failed, local.detail) }
+                guard local.providerSupportsFiles, local.preparedBytes != nil, !local.providerFileReady else {
+                    return update(.ready, local.detail)
+                }
+                update(.uploading, nil)
+                let uploaded = try await client.resource.prepareAttachment(path: url.path, selectedAt: selectedAt, upload: true)
+                update(uploaded.state, uploaded.detail)
+            } catch {
+                update(.failed, error.localizedDescription)
+            }
+        }
+    }
+
+    /// Hands the composer's files to Core by path and submits.
     ///
-    /// The draft is cleared after every upload succeeded, because §3.2 requires that a failed
-    /// attachment never turn into a silently attachment-free turn. One failure aborts the
-    /// submission: refs already obtained are left in Core's content store, which is where they
-    /// belong — they are addressed by digest and cost nothing to re-reference.
-    private func submitWithAttachments(text: String, attachments: [AttachmentPresentation]) async {
-        guard let client, let backend else {
-            actionError = "未连接 Core，附件无法上传。"
+    /// Core runs on this machine beside the files, so there is nothing to upload: the turn carries
+    /// each absolute path and Core reads what it needs (an image's bytes; for anything else the
+    /// model is told the path). The chip used to wait for an upload, and because the composer
+    /// item never received the ref back, its spinner never stopped. A file that has gone away
+    /// is reported here and nothing is sent, so a turn never silently loses an attachment.
+    private func submitWithFiles(text: String, attachments: [AttachmentPresentation]) {
+        guard let backend else {
+            actionError = "未连接 Core，无法发送附件。"
             return
         }
-        let limit = lastState.runtimeCapabilities?.maxAttachmentBytes ?? 100 * 1024 * 1024
-        var refs: [ContentRef] = []
+        var paths: [String] = []
         for item in attachments {
-            // A chip with no local file is one projected back from a snapshot — already Core's,
-            // never re-uploadable. Reaching here would mean the pending strip held something it
-            // should not, and dropping it quietly is the failure mode worth guarding against.
             guard let url = item.sourceURL else {
-                actionError = "「\(item.filename)」不在本机，无法再次上传。"
+                actionError = "「\(item.filename)」不在本机，无法再次发送。"
                 return
             }
-            guard AttachmentSupport.isText(mediaType: item.mediaType) else {
-                actionError = AttachmentSupport.unsupportedReason(for: url)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                actionError = "「\(item.filename)」已被移动或删除，本轮未发送。"
                 return
             }
-            guard item.byteCount <= limit else {
-                actionError = "「\(item.filename)」有 \(item.formattedSize)，超过本 Core 声明的附件上限 "
-                    + "\(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .file))。"
-                return
-            }
-            let data: Data
-            do {
-                data = try Data(contentsOf: url)
-            } catch {
-                actionError = "读取「\(item.filename)」失败：\(error.localizedDescription)"
-                return
-            }
-            do {
-                refs.append(try await client.resource.upload(
-                    data: data, filename: item.filename, mediaType: item.mediaType))
-            } catch {
-                actionError = "上传「\(item.filename)」失败，本轮未发送：\(error.localizedDescription)"
-                return
-            }
+            paths.append(url.standardizedFileURL.path)
         }
         composerModel.clear()
-        await backend.dispatch(.submitPrompt(text: text, attachments: refs))
+        Task { await backend.dispatch(.submitPrompt(text: text, fileReferences: paths)) }
     }
 
     public func stopGenerating() {
@@ -429,6 +439,12 @@ public final class RuntimeFrontend: ObservableObject {
         activeStreamingTask?.cancel()
         activeStreamingTask = nil
         conversationModel.finalizeStreaming()
+    }
+
+    /// Re-read the model list. A probe changes what is known about a model, and the composer's menu
+    /// is built from this list — without a refresh the answer is paid for and then never shown.
+    public func refreshModels() {
+        if let backend { Task { await backend.dispatch(.listModels) } }
     }
 
     /// Permission allow / deny.
@@ -499,18 +515,35 @@ public final class RuntimeFrontend: ObservableObject {
         switchSession(id: newID)
     }
 
-    /// A private app-owned working directory lets Core run a session without
-    /// binding it to any of the user's projects.
-    public func newSessionWithoutWorkspace() async throws {
-        let support = try FileManager.default.url(for: .applicationSupportDirectory,
-                                                  in: .userDomainMask, appropriateFor: nil, create: true)
-        let root = support.appendingPathComponent("LingXiAgent", isDirectory: true)
-            .appendingPathComponent("无项目", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        if link != .connected || workspaceURL?.standardizedFileURL != root.standardizedFileURL {
-            await openWorkspace(root)
+    /// New session in a named workspace. A session always belongs to the workspace its Core
+    /// serves, so a workspace other than the current one is opened first.
+    public func newSession(inWorkspace path: String) async {
+        let target = URL(fileURLWithPath: path).standardizedFileURL
+        if link != .connected || workspaceURL?.standardizedFileURL != target {
+            guard FileManager.default.fileExists(atPath: target.path) else {
+                actionError = "工作区「\(target.lastPathComponent)」已不存在：\(target.path)"
+                return
+            }
+            await openWorkspace(target)
         }
         if link == .connected { newSession() }
+    }
+
+    /// Branches a session of the current workspace into a new one with the same history and
+    /// switches to it. Core refuses a session with a run in flight; the reason is surfaced.
+    public func forkSession(id: String) {
+        guard let client, let backend else { return }
+        Task {
+            do {
+                let receipt = try await client.session.fork(sessionID: SessionID(id))
+                await backend.dispatch(.listSessions)
+                if let forked = receipt.result?.sessionID {
+                    await backend.dispatch(.switchSession(forked))
+                }
+            } catch {
+                actionError = "无法创建分支：\(error.localizedDescription)"
+            }
+        }
     }
 
     public func renameSession(id: String, title: String) {
@@ -585,8 +618,24 @@ public final class RuntimeFrontend: ObservableObject {
     /// Sessions Core reports right now: the user's shells and the Agent's
     /// running processes. The pane never creates or kills a process itself.
     @Published public private(set) var terminalSessions: [TerminalSessionInfo] = []
-    @Published public private(set) var terminalOutput: [String: String] = [:]
+    /// One screen per terminal session, kept here rather than in the pane so collapsing and
+    /// reopening the panel shows the same screen instead of an empty one.
+    private var terminalScreens: [String: TerminalEmulator] = [:]
+    /// Bumped whenever any screen changes; the pane observes this, not the screens.
+    @Published public private(set) var terminalGeneration = 0
     @Published public var terminalError: String?
+
+    func terminalScreen(for sessionID: String) -> TerminalEmulator {
+        if let screen = terminalScreens[sessionID] { return screen }
+        let screen = TerminalEmulator()
+        // Replies a program asks the terminal for (cursor position, device attributes) go
+        // back down the same PTY, as they would from Terminal.app.
+        screen.respond = { [weak self] reply in
+            Task { await self?.sendTerminalInput(sessionID: sessionID, text: reply) }
+        }
+        terminalScreens[sessionID] = screen
+        return screen
+    }
 
     public func refreshTerminalSessions() async {
         guard let client else { return }
@@ -595,27 +644,34 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
-    /// Pulls whatever the session produced since the last poll.
-    public func pollTerminalOutput(sessionID: String, columns: Int, rows: Int) async {
-        guard let client else { return }
+    /// Pulls whatever the session produced since the last poll into its screen. Returns
+    /// whether anything arrived, which is what the pane paces its next poll by.
+    @discardableResult
+    public func pollTerminalOutput(sessionID: String, columns: Int, rows: Int) async -> Bool {
+        guard let client else { return false }
         do {
             let chunk = try await client.terminal.read(sessionID: sessionID, columns: columns, rows: rows)
             if !chunk.text.isEmpty {
-                var text = terminalOutput[sessionID] ?? ""
-                text += Self.plainTerminalText(chunk.text)
-                if text.count > 120_000 { text.removeFirst(text.count - 120_000) }
-                terminalOutput[sessionID] = text
+                let isPipe = terminalSessions.first { $0.id == sessionID }?.kind == .agent
+                // An Agent process writes to a pipe, where nothing turns LF into CR LF the way a
+                // tty's line discipline does; without it every line would start where the last ended.
+                let text = isPipe ? chunk.text.replacingOccurrences(of: "\r\n", with: "\n")
+                    .replacingOccurrences(of: "\n", with: "\r\n") : chunk.text
+                terminalScreen(for: sessionID).feed(text)
+                terminalGeneration &+= 1
             }
             if chunk.state != .running { await refreshTerminalSessions() }
+            return !chunk.text.isEmpty
         } catch {
             terminalError = error.localizedDescription
+            return false
         }
     }
 
-    public func spawnTerminalShell() async {
+    public func spawnTerminalShell(columns: Int = 80, rows: Int = 24) async {
         guard let client else { return }
         do {
-            _ = try await client.terminal.spawnShell(cwd: workspaceURL?.path, columns: 80, rows: 24)
+            _ = try await client.terminal.spawnShell(cwd: workspaceURL?.path, columns: columns, rows: rows)
             terminalError = nil
             await refreshTerminalSessions()
         } catch {
@@ -643,24 +699,25 @@ public final class RuntimeFrontend: ObservableObject {
         }
     }
 
+    /// Ends every shell the user started. The terminal panel owns those: closing it releases
+    /// them, as closing a Terminal window does. Processes an Agent run started are not touched.
+    public func closeUserShells() async {
+        await refreshTerminalSessions()
+        for session in terminalSessions where session.kind == .user && session.state == .running {
+            await closeTerminalSession(session.id)
+        }
+    }
+
     public func closeTerminalSession(_ sessionID: String) async {
         guard let client else { return }
         do {
             try await client.terminal.close(sessionID: sessionID)
-            terminalOutput[sessionID] = nil
+            terminalScreens[sessionID] = nil
             terminalError = nil
             await refreshTerminalSessions()
         } catch {
             terminalError = error.localizedDescription
         }
-    }
-
-    /// The pane renders text, not a screen: escape sequences are dropped rather
-    /// than drawn. Core's output is untouched.
-    private static func plainTerminalText(_ text: String) -> String {
-        text.replacingOccurrences(of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "\u{001B}\\][^\u{0007}]*\u{0007}", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "\r", with: "")
     }
 
     /// Sets, changes or clears the session goal.
@@ -685,6 +742,53 @@ public final class RuntimeFrontend: ObservableObject {
                 _ = try await client.session.setGoal(sessionID: sessionID, goal: next)
             } catch {
                 actionError = (next == nil ? "清除目标失败：" : "设置目标失败：") + error.localizedDescription
+            }
+        }
+    }
+
+    /// Pauses or resumes the goal. Core stops putting a paused goal in front of the model and
+    /// stops its clock; the bar above the composer renders whatever Core reports back.
+    public func setGoalPaused(_ paused: Bool) {
+        guard let client, let sessionID = lastState.activeSessionID else { return }
+        Task {
+            do {
+                _ = try await client.session.setGoalPaused(sessionID: sessionID, paused: paused)
+            } catch {
+                actionError = (paused ? "暂停目标失败：" : "恢复目标失败：") + error.localizedDescription
+            }
+        }
+    }
+
+    /// 目标模式 ⏎: anchors the text as a new goal and sends it as the turn that starts work.
+    ///
+    /// The anchor goes first when a session exists, so the first request already carries it.
+    /// With no session yet the turn creates one, and the goal is anchored on it right after —
+    /// the first turn still has the goal, because its message *is* the goal.
+    public func startGoal(_ text: String, mode: AgentRunMode, attachments: [AttachmentPresentation]) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let client else { return }
+        Task {
+            if let sessionID = lastState.activeSessionID {
+                do {
+                    // A new goal starts its own clock; editing one in the bar keeps it.
+                    if composerModel.goal != nil { _ = try await client.session.setGoal(sessionID: sessionID, goal: nil) }
+                    _ = try await client.session.setGoal(sessionID: sessionID, goal: trimmed)
+                } catch {
+                    actionError = "设置目标失败：" + error.localizedDescription
+                    return
+                }
+                sendMessage(text: trimmed, mode: mode, attachments: attachments)
+            } else {
+                sendMessage(text: trimmed, mode: mode, attachments: attachments)
+                for _ in 0..<50 where lastState.activeSessionID == nil {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard let sessionID = lastState.activeSessionID else {
+                    actionError = "会话尚未建立，目标没有设置。"
+                    return
+                }
+                do { _ = try await client.session.setGoal(sessionID: sessionID, goal: trimmed) }
+                catch { actionError = "设置目标失败：" + error.localizedDescription }
             }
         }
     }
@@ -1048,6 +1152,25 @@ public struct CommandDescriptor: Identifiable, Equatable, Sendable {
 }
 
 /// Recently opened workspaces, most recent first (UserDefaults, GUI-only).
+/// Sessions the user archived from the sidebar.
+///
+/// Archiving is a navigator concern — it keeps a finished thread out of the list without
+/// deleting anything — so it lives with the GUI's other preferences, not in Core. Other
+/// frontends still list these sessions.
+public enum ArchivedSessions {
+    static let key = "lx.sidebar.archivedSessions"
+
+    public static var all: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+
+    public static func set(_ id: String, archived: Bool) {
+        var ids = all
+        if archived { ids.insert(id) } else { ids.remove(id) }
+        UserDefaults.standard.set(ids.sorted(), forKey: key)
+    }
+}
+
 public enum RecentWorkspaces {
     static let key = "lx.workspace.recents"
 

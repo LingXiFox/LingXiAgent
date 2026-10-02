@@ -223,6 +223,29 @@ public actor AccountScopedCatalogCache {
         }
     }
 
+    /// Marks every cached account listing stale, across every product.
+    ///
+    /// A cached listing that has not reached its TTL is served without any network call, so a
+    /// "重新发现" that only notified listeners changed nothing — an account whose models had moved
+    /// (a new generation gated behind a client version, a plan change) stayed wrong until the TTL
+    /// expired on its own. Staleness is the flag the read path already acts on, so setting it is what
+    /// turns an explicit user request into an actual re-discovery.
+    ///
+    /// Returns the number of records marked.
+    @discardableResult
+    public func markAllStale() -> Int {
+        guard let products = try? fileManager.contentsOfDirectory(atPath: baseCacheDirectory.path) else { return 0 }
+        var marked = 0
+        for product in products where !product.hasPrefix(".") {
+            for account in listAccounts(productID: product) {
+                guard load(productID: product, accountRef: account)?.isStale != true else { continue }
+                markStale(productID: product, accountRef: account)
+                marked += 1
+            }
+        }
+        return marked
+    }
+
     public func listAccounts(productID: String) -> [String] {
         let dir = baseCacheDirectory.appendingPathComponent(productID, isDirectory: true)
         guard let files = try? fileManager.contentsOfDirectory(atPath: dir.path) else { return [] }

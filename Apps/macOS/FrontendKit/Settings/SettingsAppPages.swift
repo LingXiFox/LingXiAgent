@@ -117,7 +117,7 @@ struct LXSettingsCard<Title: View, Accessory: View, Content: View, Footer: View>
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .lxPanel(LXColor.content, cornerRadius: LingXiMetrics.Radius.control)
+            .lxInsetGroup()
 
             footer
                 .font(LXType.meta)

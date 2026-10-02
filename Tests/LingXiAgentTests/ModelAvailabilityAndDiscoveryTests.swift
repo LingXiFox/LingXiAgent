@@ -122,6 +122,41 @@ struct ModelAvailabilityAndDiscoveryTests {
 
     // MARK: - C. Account discovery is the authority on availability
 
+    @Test("models withheld from selection are reported, not silently dropped")
+    func testC_hiddenModelsAreAccountedFor() {
+        // The account reported four; upstream marks two `hide` / `disabled`. A settings page that then
+        // says "模型 2" reads as a broken integration — five-of-seven has to be explainable, and the
+        // ids have to survive the resolver for anything to explain it with.
+        let accountModels = [
+            Self.discovered("model-a"),
+            DiscoveredRemoteModel(id: "gpt-reserve", displayName: "GPT-Reserve", visibility: "hide"),
+            DiscoveredRemoteModel(id: "auto-review", displayName: "Auto Review", visibility: "disabled"),
+            Self.discovered("model-c")
+        ]
+        let outcome = ModelAvailabilityResolver.resolve(
+            product: Self.product(),
+            catalogModels: [Self.record("model-a"), Self.record("model-c")],
+            accountModels: accountModels,
+            isConfigured: true
+        )
+        #expect(outcome.models.map(\.modelID) == ["model-a", "model-c"])
+        #expect(Set(outcome.withheldByVisibility) == ["gpt-reserve", "auto-review"],
+                "被扣掉的模型必须可查，否则页面无法说明清单为什么比账户报的少")
+    }
+
+    @Test("an account whose every model is hidden still reports what was withheld")
+    func testC_allHiddenAccountStillExplainsItself() {
+        let outcome = ModelAvailabilityResolver.resolve(
+            product: Self.product(),
+            catalogModels: [],
+            accountModels: [DiscoveredRemoteModel(id: "gpt-reserve", displayName: "GPT-Reserve", visibility: "hide")],
+            isConfigured: true
+        )
+        #expect(outcome.models.isEmpty)
+        #expect(outcome.withheldByVisibility == ["gpt-reserve"],
+                "一个都不剩的时候更不能什么都不说")
+    }
+
     @Test func testC_accountAvailabilityNarrowsTheRegistry() {
         // Registry knows A B C D; this account can reach only A and C.
         let catalogModels = [
