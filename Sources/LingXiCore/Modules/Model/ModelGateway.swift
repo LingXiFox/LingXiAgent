@@ -15,11 +15,20 @@ public struct ModelGateway: Sendable {
     public let deadlinePolicy: ExecutionDeadlinePolicy
     private let rateScheduler: ProviderRateScheduler
     private let activityRegistry: ProviderActivityRegistry
+    private let runtimeContext: ModelRuntimeContextState?
     public var modelID: ModelID? { endpoint?.modelID }
-    public var contextProfile: ModelContextProfile { endpoint?.contextProfile ?? ModelContextProfile() }
+    public var contextProfile: ModelContextProfile {
+        if let active = runtimeContext?.snapshot().assembly?.endpoint,
+           let endpoint, active.providerID == endpoint.providerID, active.modelID == endpoint.modelID,
+           active.accountID == endpoint.accountID, active.baseURL == endpoint.baseURL {
+            return active.contextProfile
+        }
+        return endpoint?.contextProfile ?? ModelContextProfile()
+    }
 
     public init(provider: (any ModelProvider)?, modelID: ModelID?, missingRequirements: [String] = [], contextProfile: ModelContextProfile = ModelContextProfile(), reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), activityRegistry: ProviderActivityRegistry? = nil) {
         self.provider = provider
+        self.runtimeContext = nil
         endpoint = modelID.map { ResolvedModelEndpoint(providerID: "default", modelID: $0, baseURL: nil, wireProtocol: .chatCompletions, contextProfile: contextProfile) }
         self.missingRequirements = missingRequirements
         self.reasoning = reasoning
@@ -28,7 +37,8 @@ public struct ModelGateway: Sendable {
         rateScheduler = .shared
     }
 
-    public init(assembly: ModelRuntimeAssembly?, missingRequirements: [String] = [], reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), activityRegistry: ProviderActivityRegistry? = nil) {
+    public init(assembly: ModelRuntimeAssembly?, missingRequirements: [String] = [], reasoning: String? = nil, deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(), activityRegistry: ProviderActivityRegistry? = nil, runtimeContext: ModelRuntimeContextState? = nil) {
+        self.runtimeContext = runtimeContext
         provider = assembly?.provider
         endpoint = assembly?.endpoint
         self.missingRequirements = missingRequirements
@@ -38,7 +48,9 @@ public struct ModelGateway: Sendable {
         rateScheduler = .shared
     }
 
-    public var isConfigured: Bool { provider != nil && modelID != nil }
+    public var isConfigured: Bool {
+        provider != nil && modelID != nil && (runtimeContext == nil || runtimeContext?.snapshot().assembly != nil)
+    }
 
     /// The active provider's Files API, when the provider says it has a usable one.
     public var fileUploader: (any ProviderFileUploading)? {
@@ -60,7 +72,7 @@ public struct ModelGateway: Sendable {
         _ request: ModelRequest,
         onActivityChanged: (@Sendable (ProviderActivitySnapshot) async -> Void)? = nil
     ) async throws -> AsyncThrowingStream<ModelEvent, Error> {
-        guard let provider else {
+        guard let provider, isConfigured else {
             throw CoreError(
                 code: .provider,
                 message: "未配置模型 Provider；请检查 providers.json 与 CredentialStore: \(missingRequirements.joined(separator: ", "))"

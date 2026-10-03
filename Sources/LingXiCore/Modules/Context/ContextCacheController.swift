@@ -126,7 +126,8 @@ public struct ContextResidencyTelemetry: Sendable, Codable, Equatable {
 /// Cache Controller 负责三级缓存的加权调度与 L1/L2/L3 Residency 管理。
 /// 模型只负责声明检索意图 (context_search)，调度决策完全由 Cache Controller 驱动。
 public actor ContextCacheController {
-    public let policy: EffectiveContextPolicy
+    public nonisolated let runtimeContext: ModelRuntimeContextState
+    public nonisolated var policy: EffectiveContextPolicy { runtimeContext.snapshot().policy }
     public nonisolated let ecoreStore: ECoreObjectStore
     public nonisolated let scheduler: CacheAwareContextScheduler
     private let weights: CachePriorityWeights
@@ -162,12 +163,13 @@ public actor ContextCacheController {
         policy: EffectiveContextPolicy = EffectiveContextPolicy(),
         weights: CachePriorityWeights = CachePriorityWeights(),
         ecoreStore: ECoreObjectStore? = nil,
-        scheduler: CacheAwareContextScheduler? = nil
+        scheduler: CacheAwareContextScheduler? = nil,
+        runtimeContext: ModelRuntimeContextState? = nil
     ) {
         self.contextPager = contextPager
         self.scanner = scanner
         self.compactor = compactor
-        self.policy = policy
+        self.runtimeContext = runtimeContext ?? ModelRuntimeContextState(policy: policy)
         self.weights = weights
         self.ecoreStore = ecoreStore ?? ECoreObjectStore()
         self.scheduler = scheduler ?? CacheAwareContextScheduler()
@@ -186,7 +188,7 @@ public actor ContextCacheController {
         self.contextPager = contextPager
         self.scanner = scanner
         self.compactor = compactor
-        self.policy = EffectiveContextPolicy(
+        self.runtimeContext = ModelRuntimeContextState(policy: EffectiveContextPolicy(
             addressableBudget: 1_048_576,
             modelWindow: 1_048_576,
             economicThreshold: 272_000,
@@ -197,10 +199,31 @@ public actor ContextCacheController {
             eCoreStorageBudget: 456_576,
             eCoreRecallBudget: 350_000,
             eCorePressureThreshold: 0.85
-        )
+        ))
         self.weights = weights
         self.ecoreStore = ecoreStore ?? ECoreObjectStore()
         self.scheduler = scheduler ?? CacheAwareContextScheduler()
+    }
+
+    /// Replaces only the policy. Residency, object storage, epochs and prefix records are untouched.
+    @discardableResult
+    public nonisolated func updatePolicy(_ policy: EffectiveContextPolicy) -> Bool {
+        runtimeContext.updatePolicy(policy)
+    }
+
+    @discardableResult
+    nonisolated func updateRuntimeContext(assembly: ModelRuntimeAssembly, policy: EffectiveContextPolicy) -> Bool {
+        runtimeContext.apply(assembly: assembly, policy: policy)
+    }
+
+    /// Reuses the retrieval pressure path without admitting or restoring any pages.
+    public func reconcilePolicyPressure() async {
+        let sessions = Set(residentPagesBySession.keys).union(sessionL1BaseTokens.keys)
+        for sessionID in sessions {
+            let activeFiles = await compactor?.activeFilePaths(sessionID: sessionID) ?? []
+            enforceResidentBudget(sessionID: sessionID, query: "", activeTask: "",
+                                  activeFiles: activeFiles, currentClock: clock)
+        }
     }
 
     /// 记录指定 Session 的基础 L1 token 数与条目数（当前 resident working set）
@@ -926,6 +949,49 @@ public actor ContextCacheController {
         // Record admission into context pager
         await contextPager.recordInjection(pagedInCodebasePages)
 
+        residentPagesBySession[sessionID] = currentL1
+        warmL2EntriesBySession[sessionID] = currentL2
+        enforceResidentBudget(sessionID: sessionID, query: query, activeTask: activeTask,
+                              activeFiles: activeFiles, currentClock: currentClock)
+
+        var outputSections: [String] = []
+        if !ecoreResults.isEmpty {
+            let formatted = ecoreResults.map { meta, snippet in
+                "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
+            }.joined(separator: "\n")
+            outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
+        }
+
+        if !pagedOutResults.isEmpty {
+            let formatted = pagedOutResults.map { reference, snippet in
+                "- [\(reference.origin.rawValue)] reference=\(reference.referenceID) object=\(reference.objectID.rawValue):\n```\n\(snippet)\n```"
+            }.joined(separator: "\n")
+            outputSections.append("## E-Core Paged-Out Context (\(pagedOutResults.count) objects restored by reference)\n" + formatted)
+        }
+
+        if !pagedInCodebasePages.isEmpty {
+            let formatted = pagedInCodebasePages.map { page in
+                "### \(page.path):\(page.startLine)-\(page.endLine)\n```\n\(page.content)\n```"
+            }.joined(separator: "\n\n")
+            outputSections.append("## Codebase Context (\(pagedInCodebasePages.count) pages paged into L1)\n" + formatted)
+        }
+
+        if !pagedInDerivedPages.isEmpty {
+            let formatted = pagedInDerivedPages.map { page in
+                let snippet = page.content.count > 500 ? String(page.content.prefix(500)) + "..." : page.content
+                return "- [\(page.sourceKind.rawValue)]: \(snippet)"
+            }.joined(separator: "\n")
+            outputSections.append("## Historical Context\n" + formatted)
+        }
+
+        return outputSections.joined(separator: "\n\n")
+    }
+
+    private func enforceResidentBudget(sessionID: SessionID, query: String, activeTask: String,
+                                       activeFiles: [String], currentClock: UInt64) {
+        let policy = self.policy
+        var currentL1 = residentPagesBySession[sessionID] ?? [:]
+        var currentL2 = warmL2EntriesBySession[sessionID] ?? [:]
         // Evict from L1 to L2 Warm Cache if over soft limit (demote lower priority entries)
         let baseTokens = sessionL1BaseTokens[sessionID] ?? 0
         var dynamicTokens = currentL1.values.reduce(0) { $0 + $1.tokens }
@@ -987,37 +1053,6 @@ public actor ContextCacheController {
         residentPagesBySession[sessionID] = currentL1
         warmL2EntriesBySession[sessionID] = currentL2
 
-        var outputSections: [String] = []
-        if !ecoreResults.isEmpty {
-            let formatted = ecoreResults.map { meta, snippet in
-                "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
-            }.joined(separator: "\n")
-            outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
-        }
-
-        if !pagedOutResults.isEmpty {
-            let formatted = pagedOutResults.map { reference, snippet in
-                "- [\(reference.origin.rawValue)] reference=\(reference.referenceID) object=\(reference.objectID.rawValue):\n```\n\(snippet)\n```"
-            }.joined(separator: "\n")
-            outputSections.append("## E-Core Paged-Out Context (\(pagedOutResults.count) objects restored by reference)\n" + formatted)
-        }
-
-        if !pagedInCodebasePages.isEmpty {
-            let formatted = pagedInCodebasePages.map { page in
-                "### \(page.path):\(page.startLine)-\(page.endLine)\n```\n\(page.content)\n```"
-            }.joined(separator: "\n\n")
-            outputSections.append("## Codebase Context (\(pagedInCodebasePages.count) pages paged into L1)\n" + formatted)
-        }
-
-        if !pagedInDerivedPages.isEmpty {
-            let formatted = pagedInDerivedPages.map { page in
-                let snippet = page.content.count > 500 ? String(page.content.prefix(500)) + "..." : page.content
-                return "- [\(page.sourceKind.rawValue)]: \(snippet)"
-            }.joined(separator: "\n")
-            outputSections.append("## Historical Context\n" + formatted)
-        }
-
-        return outputSections.joined(separator: "\n\n")
     }
 
     private func calculatePriority(
@@ -1221,4 +1256,3 @@ public actor ContextCacheController {
         await ecoreStore.exportObservationMetrics(sessionID: sessionID)
     }
 }
-

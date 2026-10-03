@@ -656,7 +656,7 @@ struct VNextProductionIntegrationTests {
                    if case let .message(message) = $0.kind { return message.role == .assistant && message.content == "workspace 拒绝。" }
                    return false
                }) == true,
-               state?.status == .ready {
+               state?.status == .error {
                 break
             }
             try await Task.sleep(for: .milliseconds(20))
@@ -665,7 +665,7 @@ struct VNextProductionIntegrationTests {
         let rejected = try #require(await store.state.activeSessionState?.toolNodes[denied.callID]?.result)
         #expect(rejected.success == false)
         #expect(rejected.error?.message.contains("FullAccess/YOLO") == true)
-        #expect(await store.state.activeSessionState?.status == .ready)
+        #expect(await store.state.activeSessionState?.status == .error)
 
         let permissionResult = try await store.executeCommand("/permissions yolo")
         #expect(permissionResult.nextTurnPermission == .yoloFullAccess)

@@ -41,7 +41,7 @@ struct RuntimeDiagnosticsTests {
         await host.start()
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
-        for try await _ in try await client.sendMessage(sessionID: sessionID, content: "run verification") {}
+        for try await _ in try await client.sendMessage(sessionID: sessionID, content: "verification") {}
         try await Task.sleep(for: .milliseconds(10))
         let bundle = try await client.diagnostics()
 

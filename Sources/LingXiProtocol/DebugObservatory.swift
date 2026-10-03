@@ -707,6 +707,25 @@ public struct DebugPCorePanel: Codable, Sendable, Equatable {
 ///
 /// This is a projection over authoritative Core data, never a second store. Each field is nil when
 /// Core has nothing to say, so the UI has to render "unknown" rather than defaulting to zero.
+public struct DebugRuntimeContextPolicy: Codable, Sendable, Equatable {
+    public let runtimeModelWindow: Int?
+    public let effectivePolicy: ContextCachePolicySnapshot
+    public let generation: UInt64
+
+    public var isConsistent: Bool {
+        runtimeModelWindow == effectivePolicy.modelWindow &&
+        effectivePolicy.pCoreTarget <= effectivePolicy.pCoreSoftLimit &&
+        effectivePolicy.pCoreSoftLimit <= effectivePolicy.pCoreHardLimit &&
+        effectivePolicy.pCoreHardLimit + effectivePolicy.reserve <= effectivePolicy.modelWindow
+    }
+
+    public init(runtimeModelWindow: Int?, effectivePolicy: ContextCachePolicySnapshot, generation: UInt64) {
+        self.runtimeModelWindow = runtimeModelWindow
+        self.effectivePolicy = effectivePolicy
+        self.generation = generation
+    }
+}
+
 public struct RuntimeObservatorySnapshot: Codable, Sendable, Equatable {
     public let generatedAt: Date
     public let sessionID: SessionID
@@ -726,6 +745,7 @@ public struct RuntimeObservatorySnapshot: Codable, Sendable, Equatable {
     /// The local inference runtime behind the current model, as of its last discovery and last
     /// response. Nil for a cloud provider. Read from Core's cache; producing it sends no request.
     public let localRuntime: LocalRuntimeModelStatus?
+    public let runtimeContextPolicy: DebugRuntimeContextPolicy?
 
     /// The session's model is deliberately absent: the frontends already carry it in the
     /// authoritative pushed state, and repeating it here would create a second place for it to be
@@ -742,8 +762,10 @@ public struct RuntimeObservatorySnapshot: Codable, Sendable, Equatable {
         prefixAudit: DebugPrefixByteAudit? = nil,
         scheduler: DebugSchedulerDecision? = nil,
         prediction: PredictionRuntimeSnapshot? = nil,
-        localRuntime: LocalRuntimeModelStatus? = nil
+        localRuntime: LocalRuntimeModelStatus? = nil,
+        runtimeContextPolicy: DebugRuntimeContextPolicy? = nil
     ) {
+        self.runtimeContextPolicy = runtimeContextPolicy
         self.localRuntime = localRuntime
         self.generatedAt = generatedAt
         self.sessionID = sessionID

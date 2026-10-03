@@ -89,6 +89,133 @@ struct AgentToolLoopTests {
         })
     }
 
+    @Test func actionRequiredRetriesOnceThenExecutesRealWrite() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let write = ToolCall(callID: ToolCallID("write"), toolID: ToolID("write_file"), arguments: #"{"path":"hello.txt","content":"hello"}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.textDelta("已创建 hello.txt"), .completed(.stop)],
+            [.toolCallCompleted(write), .completed(.toolCalls)],
+            [.textDelta("已创建 hello.txt"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow, maxAgentLoopSteps: 2)
+        let (capture, eventTask) = await collectEvents(client)
+        defer { eventTask.cancel() }
+        let session = try await client.createSession()
+        for try await _ in try await client.sendMessage(sessionID: session, content: "请创建 hello.txt，内容为 hello") {}
+        let events = await capture.waitForTerminal()
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto, .required, .auto])
+        #expect(try String(contentsOf: root.appendingPathComponent("hello.txt"), encoding: .utf8) == "hello")
+        #expect(events.contains { if case .turnCompleted = $0 { return true }; return false })
+        #expect(events.contains { if case let .toolResult(result) = $0 { return result.success && !result.fileMutations.isEmpty }; return false })
+        let snapshot = try await client.session(session)
+        #expect(snapshot.messages.filter { $0.role == .assistant && $0.content == "已创建 hello.txt" }.count == 1,
+                "The unsupported first answer must not become committed history")
+    }
+
+    @Test func actionRequiredTextTwiceFailsWithoutCompletion() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = ScriptedFakeProvider(script: [[.textDelta("已创建 hello.txt"), .completed(.stop)]])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let (capture, eventTask) = await collectEvents(client)
+        defer { eventTask.cancel() }
+        let session = try await client.createSession()
+        do {
+            for try await _ in try await client.sendMessage(sessionID: session, content: "创建 hello.txt") {}
+            Issue.record("An evidence-free action must fail")
+        } catch let error as CoreError { #expect(error.code == .toolExecutionFailed) }
+        let events = await capture.waitForTerminal()
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto, .required])
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("hello.txt").path))
+        #expect(events.contains { if case .turnFailed = $0 { return true }; return false })
+        #expect(!events.contains { if case .turnCompleted = $0 { return true }; return false })
+    }
+
+    @Test func readOnlyCallCannotProveMutationAndDoesNotTriggerRequired() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "old".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(call()), .completed(.toolCalls)],
+            [.textDelta("已修改 README.md"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let session = try await client.createSession()
+        do {
+            for try await _ in try await client.sendMessage(sessionID: session, content: "修改 README.md") {}
+            Issue.record("A read cannot prove a write")
+        } catch let error as CoreError { #expect(error.code == .toolExecutionFailed) }
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto, .auto])
+    }
+
+    @Test func deniedWriteCannotProveCompletion() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let write = ToolCall(callID: ToolCallID("write"), toolID: ToolID("write_file"), arguments: #"{"path":"hello.txt","content":"hello"}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(write), .completed(.toolCalls)],
+            [.textDelta("已创建 hello.txt"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .deny)
+        let session = try await client.createSession()
+        do {
+            for try await _ in try await client.sendMessage(sessionID: session, content: "创建 hello.txt") {}
+            Issue.record("A denied write cannot prove completion")
+        } catch let error as CoreError { #expect(error.code == .toolExecutionFailed) }
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto, .auto])
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("hello.txt").path))
+    }
+
+    @Test func unsolicitedCompletionClaimFailsWithoutRetry() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = ScriptedFakeProvider(script: [[.textDelta("已编译项目"), .completed(.stop)]])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let session = try await client.createSession()
+        do {
+            for try await _ in try await client.sendMessage(sessionID: session, content: "你好") {}
+            Issue.record("Unsupported completion claims must fail even on ordinary turns")
+        } catch let error as CoreError { #expect(error.code == .toolExecutionFailed) }
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto])
+    }
+
+    @Test func historicalWriteDoesNotProveANewTurn() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let write = ToolCall(callID: ToolCallID("previous-write"), toolID: ToolID("write_file"), arguments: #"{"path":"old.txt","content":"old"}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(write), .completed(.toolCalls)],
+            [.textDelta("已创建 old.txt"), .completed(.stop)],
+            [.textDelta("已创建 new.txt"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let session = try await client.createSession()
+        for try await _ in try await client.sendMessage(sessionID: session, content: "创建 old.txt") {}
+        do {
+            for try await _ in try await client.sendMessage(sessionID: session, content: "创建 new.txt") {}
+            Issue.record("A historical ToolResult must not prove a new action")
+        } catch let error as CoreError { #expect(error.code == .toolExecutionFailed) }
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto, .auto, .auto, .required])
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("new.txt").path))
+    }
+
+    @Test func successfulRealCommandProvesExecution() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let command = ToolCall(callID: ToolCallID("command"), toolID: ToolID("shell"), arguments: #"{"command":"printf hello","timeout_ms":10000}"#)
+        let provider = ScriptedFakeProvider(script: [
+            [.toolCallCompleted(command), .completed(.toolCalls)],
+            [.textDelta("已运行命令"), .completed(.stop)],
+        ])
+        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let session = try await client.createSession()
+        for try await _ in try await client.sendMessage(sessionID: session, content: "运行 printf hello") {}
+        #expect(provider.recorder.requests.map(\.toolChoice) == [.auto, .auto])
+        let snapshot = try await client.session(session)
+        #expect(snapshot.messages.flatMap(\.parts).contains { if case let .toolResult(result) = $0 { return result.success && result.exitCode == 0 }; return false })
+    }
+
     @Test func toolResultReturnsToSecondModelStepAsStructuredHistory() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

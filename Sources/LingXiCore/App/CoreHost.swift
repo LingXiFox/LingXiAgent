@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import LingXiProtocol
 
 /// internal：Git RPC 与其余 CoreHost 扩展共用同一 commandID 串行化锁。
@@ -165,7 +168,13 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     var terminalSessions: TerminalSessionManager?
     /// Flows whose success has already been folded into the runtime.
     var appliedAuthFlows: Set<String> = []
-    private var currentAssembly: ModelRuntimeAssembly?
+    private let runtimeContext: ModelRuntimeContextState
+    private var currentAssembly: ModelRuntimeAssembly? { runtimeContext.snapshot().assembly }
+    private let initialContextConfiguration: CoreConfiguration
+    private var localRuntimeRefreshTask: Task<Void, Never>?
+    private var localRuntimePollingTask: Task<Void, Never>?
+    private let localRuntimeHTTPClient: LMStudioDiscovery.HTTPClient?
+    private var pendingLocalRuntimeAssembly: ModelRuntimeAssembly?
     /// The provider behind the current model, for read-only views in other files.
     var currentProviderID: String? { currentAssembly?.endpoint.providerID }
     private let dataRootURL: URL?
@@ -226,7 +235,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     package var backgroundManagerRef: BackgroundCommandManager { backgroundManager }
     package var workflowRuntimeRef: WorkflowRuntime? { workflows }
     package var performanceStoreRef: PerformanceStore { performanceStore }
-    public private(set) var effectiveContextPolicy: EffectiveContextPolicy
+    public var effectiveContextPolicy: EffectiveContextPolicy { runtimeContext.snapshot().policy }
 
     private func recordInitialECoreToken(_ token: ECoreObjectStore.MutationSubscriptionToken) {
         if self.ecoreMutationSubscriptionToken == nil {
@@ -293,8 +302,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         extensionPlatform: ExtensionPlatform? = nil,
         backgroundManager: BackgroundCommandManager? = nil,
         modelsCatalogClient: PublicModelCatalogClient = .shared,
-        crashTestStage: String? = nil
+        crashTestStage: String? = nil,
+        localRuntimeHTTPClient: (@Sendable (URLRequest) async throws -> (Data, URLResponse))? = nil
     ) throws {
+        self.localRuntimeHTTPClient = localRuntimeHTTPClient
         let environment = ProcessInfo.processInfo.environment
         let processName = ProcessInfo.processInfo.processName.lowercased()
         let arguments = ProcessInfo.processInfo.arguments
@@ -443,35 +454,19 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let pager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: RecallWorkingSet(characterBudget: eCoreRecallBudget), projectCharacterBudget: pCoreProjectBudget)
         let scanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let effective = providerAssembly ?? .unavailable
-        self.currentAssembly = (providerAssembly != nil && !effective.modelID.rawValue.isEmpty) ? providerAssembly : nil
-        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy, activityRegistry: effectiveActivityRegistry)
+
         let selection = defaultModelSelection ?? ModelSelection(providerID: effective.endpoint.providerID, accountID: effective.endpoint.accountID, profileID: effective.endpoint.profileID, modelID: effective.modelID.rawValue)
         modelResolver = SubagentModelResolver(defaultRuntime: effective, runtimes: modelRuntimes, defaultSelection: selection)
 
-        let modelWindow = effective.endpoint.contextProfile.contextWindowTokens
-        let globalContextConfig = configuration?.context ?? ContextCacheConfiguration()
-        let resolvedPolicy: EffectiveContextPolicy
-        do {
-            resolvedPolicy = try ContextPolicyResolver.resolve(
-                global: globalContextConfig,
-                modelWindow: modelWindow
-            )
-        } catch {
-            resolvedPolicy = EffectiveContextPolicy(
-                addressableBudget: 1_048_576,
-                modelWindow: modelWindow,
-                economicThreshold: 272_000,
-                reserve: 22_000,
-                l1Target: 220_000,
-                l1SoftLimit: 235_000,
-                l1HardLimit: 250_000,
-                l2Max: 350_000,
-                l3Capacity: 456_576
-            )
-        }
+        let contextConfiguration = configuration ?? CoreConfiguration()
+        self.initialContextConfiguration = contextConfiguration
+        let resolvedPolicy = try Self.resolveContextPolicy(assembly: effective, configuration: contextConfiguration)
+        let runtimeContext = ModelRuntimeContextState(
+            assembly: effective.modelID.rawValue.isEmpty ? nil : providerAssembly, policy: resolvedPolicy)
+        self.runtimeContext = runtimeContext
+        gateway = ModelGateway(assembly: effective.modelID.rawValue.isEmpty ? nil : effective, missingRequirements: providerAssembly == nil ? ["providers.defaultSelection"] : providerMissingRequirements, deadlinePolicy: executionDeadlinePolicy, activityRegistry: effectiveActivityRegistry, runtimeContext: runtimeContext)
         self.gitRunner = GitRunner(workspace: workspace)
         self.gitService = GitService(runner: gitRunner)
-        self.effectiveContextPolicy = resolvedPolicy
 
         let ecoreStore = ECoreObjectStore(
             baseDirectory: layout.ecore,
@@ -486,7 +481,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             scanner: scanner,
             compactor: compactor,
             policy: resolvedPolicy,
-            ecoreStore: ecoreStore
+            ecoreStore: ecoreStore,
+            runtimeContext: runtimeContext
         )
         let codeIntelligence = agentSettings.codeIntelligenceEnabled ? CodeIntelligence(workspace: workspace, scanner: scanner, pager: pager) : nil
         self.codeIntelligence = codeIntelligence
@@ -612,8 +608,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             let agent = try await requireAgent()
             let selection = try await modelSelection(for: model)
             let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
-            try await agent.selectModel(selection, assembly: assembly)
-            await setCurrentAssembly(assembly)
+            try await applyModelRuntimeContextChange(assembly, selection: selection)
             await setSelectedModelOverride(model)
             if let contextWindow = try await modelContextWindow(for: model) { await setSelectedModelContextWindow(contextWindow) }
             if let store = configurationStore {
@@ -856,10 +851,14 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                    !defaultModel.isEmpty,
                    let selection = try? await modelSelection(for: defaultModel),
                    let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: defaultModel) {
-                    try? await agent.selectModel(selection, assembly: assembly)
-                    self.currentAssembly = assembly
+                    try await applyModelRuntimeContextChange(assembly, selection: selection)
                     self.selectedModelOverride = defaultModel
                 }
+            }
+            if let current = currentAssembly {
+                try await applyModelRuntimeContextChange(current, selection: ModelSelection(
+                    providerID: current.endpoint.providerID, accountID: current.endpoint.accountID,
+                    profileID: current.endpoint.profileID, modelID: current.modelID.rawValue))
             }
         } catch {
             await diagnosticsStore.record(kind: .error, event: "core.start.failed", metadata: ["errorType": String(describing: type(of: error))], errorCode: (error as? CoreError)?.code.rawValue)
@@ -867,7 +866,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             setState(.stopped)
             return
         }
+        await refreshLocalRuntimeIfStale(maxAge: 0)
         setState(.ready)
+        startLocalRuntimePollingIfNeeded()
         await diagnosticsStore.record(kind: .core, event: "core.start.completed")
         // Off the start path: it may wait on a LAN server, and nothing here needs it to be done.
         Task { [weak self] in await self?.migrateLegacyLMStudioEntry() }
@@ -886,6 +887,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     public func shutdown() async {
+        localRuntimePollingTask?.cancel()
+        localRuntimePollingTask = nil
+        localRuntimeRefreshTask?.cancel()
         await diagnosticsStore.record(kind: .core, event: "core.shutdown.begin")
         setState(.shuttingDown)
         lifecycle("cleanupStarted", waitingOn: "agent")
@@ -923,6 +927,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     deinit {
+        localRuntimePollingTask?.cancel()
+        localRuntimeRefreshTask?.cancel()
         catalogWarmupTask?.cancel()
         workspaceIndexTask?.cancel()
         extensionPlatform.terminatePluginsSync()
@@ -1222,6 +1228,78 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
     // MARK: - Private
 
+    private static func resolveContextPolicy(assembly: ModelRuntimeAssembly, configuration: CoreConfiguration,
+                                            providers: ProvidersConfiguration = ProvidersConfiguration()) throws -> EffectiveContextPolicy {
+        let endpoint = assembly.endpoint
+        let account = providers.accounts.first {
+            $0.id == (endpoint.accountID ?? endpoint.providerID)
+        }
+        let model = providers.providers[endpoint.providerID]?.models[assembly.modelID.rawValue]
+        let profile = providers.modelProfiles.first {
+            $0.id == endpoint.profileID && $0.providerID == endpoint.providerID
+        }
+        return try ContextPolicyResolver.resolve(
+            global: configuration.context, modelWindow: assembly.contextProfile.contextWindowTokens,
+            providerOverride: account?.context, modelOverride: model?.context ?? profile?.context,
+            modelEconomicThreshold: model?.economicThreshold ?? profile?.economicThreshold)
+    }
+
+    /// All model installations publish one assembly/policy generation before exposing the selection.
+    @discardableResult
+    package func applyModelRuntimeContextChange(_ assembly: ModelRuntimeAssembly, selection: ModelSelection,
+                                               expectedGeneration: UInt64? = nil) async throws -> Bool {
+        let configuration = try await configurationStore?.load()
+        let policy = try Self.resolveContextPolicy(assembly: assembly,
+            configuration: configuration?.core ?? initialContextConfiguration,
+            providers: configuration?.providers ?? ProvidersConfiguration())
+        let previous = runtimeContext.snapshot()
+        if let expectedGeneration {
+            guard previous.generation == expectedGeneration else {
+                throw CoreError(code: .commandFailed, message: "Runtime context refresh superseded by a newer model generation")
+            }
+            if previous.assembly?.endpoint == assembly.endpoint && previous.policy == policy { return false }
+        }
+        let controller = cacheController
+        let runtimeContext = self.runtimeContext
+        let commit: @Sendable () throws -> Void = {
+            if let expectedGeneration, runtimeContext.snapshot().generation != expectedGeneration {
+                throw CoreError(code: .commandFailed, message: "Runtime context refresh superseded by a newer model generation")
+            }
+            controller.updateRuntimeContext(assembly: assembly, policy: policy)
+        }
+        if let agent {
+            try await agent.selectModel(selection, assembly: assembly, onCommit: commit)
+        } else {
+            try commit()
+        }
+        // Reselecting the same model must not reinstall a cached, older runtime window.
+        cachedAssemblies["\(selection.providerID)::\(selection.modelID)"] = assembly
+        cachedAssemblies[selection.providerID] = assembly
+        let changed = previous.generation != runtimeContext.snapshot().generation
+        pendingLocalRuntimeAssembly = nil
+        startLocalRuntimePollingIfNeeded()
+        guard changed else { return false }
+        selectedModelContextWindow = policy.modelWindow
+        // Budget growth does not manufacture page-ins. Shrink reuses the existing pressure paths.
+        if policy.pCoreSoftLimit < previous.policy.pCoreSoftLimit || policy.pCoreHardLimit < previous.policy.pCoreHardLimit {
+            await controller.reconcilePolicyPressure()
+            try await agent?.reconcileRuntimeContextPressure(profile: assembly.contextProfile, policy: policy)
+        }
+        await diagnosticsStore.record(kind: .core, event: "context.runtime_policy.updated", metadata: [
+            "generation": String(runtimeContext.snapshot().generation), "modelWindow": String(policy.modelWindow),
+            "target": String(policy.pCoreTarget), "soft": String(policy.pCoreSoftLimit),
+            "hard": String(policy.pCoreHardLimit), "reserve": String(policy.reserve)
+        ])
+        for (sessionID, coordinator) in sessionCoordinators {
+            let snapshot = await buildContextStateSnapshot(sessionID: sessionID)
+            await coordinator.recordContextStateChanged(snapshot, causal: CausalContext(sessionID: sessionID))
+        }
+        await notifyProviderCatalogChanged()
+        return true
+    }
+
+    package var runtimeContextSnapshot: ModelRuntimeContextState.Snapshot { runtimeContext.snapshot() }
+
     private func requireAgent() throws -> AgentRuntime {
         guard state == .ready, let agent else {
             throw CoreError(code: .notReady, message: "Agent 尚未启动")
@@ -1264,9 +1342,6 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
     }
 
-    private func setCurrentAssembly(_ assembly: ModelRuntimeAssembly?) {
-        currentAssembly = assembly
-    }
 
     private func setSelectedModelOverride(_ model: String) {
         selectedModelOverride = model
@@ -1281,6 +1356,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
 
     private func contextProjection(_ sessionID: SessionID) async throws -> ContextCacheProjection? {
+        await refreshLocalRuntimeIfStale()
         let agent = try requireAgent()
         let snapshot = try await agent.ensureContextSnapshot(sessionID)
         let manifest = await agent.latestContextManifest(sessionID)
@@ -1496,8 +1572,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let value = "\(providerID)/\(current.modelID.rawValue)"
         guard let selection = try? await modelSelection(for: value),
               let assembly = try? await resolveRuntimeAssembly(for: selection, fullModelValue: value) else { return }
-        guard (try? await agent.selectModel(selection, assembly: assembly)) != nil else { return }
-        currentAssembly = assembly
+        try? await applyModelRuntimeContextChange(assembly, selection: selection)
     }
 
     func requireConfigurationStore() throws -> ConfigurationStore {
@@ -2474,6 +2549,13 @@ extension CoreHost {
         let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: eventLogStorageDirectory)
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog, todoStore: self.todoStore)
         await coord.restoreHistoricalQueue()
+        // Continue durable context revisions across Core restarts. Otherwise replayed old
+        // policy events outrank the fresh runtime projection in frontend reducers.
+        let restoredContextRevision = await eventLog.allEvents().compactMap { event -> UInt64? in
+            if case let .contextStateChanged(snapshot) = event.payload { return snapshot.revision }
+            return nil
+        }.max() ?? 0
+        contextStateRevisions[sessionID] = max(contextStateRevisions[sessionID] ?? 0, restoredContextRevision)
         sessionCoordinators[sessionID] = coord
         return coord
     }
@@ -2532,11 +2614,12 @@ extension CoreHost {
         contextStateRevisions[sessionID, default: 0] += 1
         let contextRevision = contextStateRevisions[sessionID]!
 
+        let policy = effectiveContextPolicy
         let pCoreSnapshot = PCoreStateSnapshot(
             usedTokens: pCoreTokens,
-            targetTokens: effectiveContextPolicy.l1Target,
-            softLimitTokens: effectiveContextPolicy.l1SoftLimit,
-            hardLimitTokens: effectiveContextPolicy.l1HardLimit
+            targetTokens: policy.l1Target,
+            softLimitTokens: policy.l1SoftLimit,
+            hardLimitTokens: policy.l1HardLimit
         )
 
         let eCoreSnapshot = ECoreStateSnapshot(
@@ -2691,8 +2774,7 @@ extension CoreHost {
                     let selection = try await modelSelection(for: model)
                     explicitModelSelection = selection
                     let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: model)
-                    try await agent?.selectModel(selection, assembly: assembly)
-                    self.currentAssembly = assembly
+                    try await applyModelRuntimeContextChange(assembly, selection: selection)
                 } catch {
                     modelResolutionError = error
                 }
@@ -4861,8 +4943,7 @@ extension CoreHost {
         let selection = try await modelSelection(for: envelope.payload.model)
         let agent = try requireAgent()
         let assembly = try await resolveRuntimeAssembly(for: selection, fullModelValue: envelope.payload.model)
-        try await agent.selectModel(selection, assembly: assembly)
-        setCurrentAssembly(assembly)
+        try await applyModelRuntimeContextChange(assembly, selection: selection)
         setSelectedModelOverride(envelope.payload.model)
         if let contextWindow = try await modelContextWindow(for: envelope.payload.model) {
             setSelectedModelContextWindow(contextWindow)
@@ -5213,6 +5294,10 @@ extension CoreHost {
         let local = await localRuntimeAssembly(providerID: providerID, options: providerConfig.options,
                                                baseURL: baseURLStr, modelID: selection.modelID,
                                                credential: authToken, wireProtocol: wireProtocol)
+        if let local, local.status.runtimeContextTokens == nil {
+            // A failed native discovery cannot turn a catalog maximum into an active local window.
+            throw CoreError(code: .provider, message: "LM Studio active runtime context is unavailable; load the model and retry discovery")
+        }
         let contextWindow = local?.status.runtimeContextTokens ?? settings.contextWindow
         let contextSource = local?.status.runtimeContextTokens != nil
             ? "lmstudio-runtime:\(fullModelValue)"
@@ -5283,25 +5368,86 @@ extension CoreHost {
         )
     }
 
-    /// Re-reads a local runtime before a turn when the last reading is older than 30 seconds.
+    /// Re-reads a local runtime before turns and context reads when its discovery is stale.
     ///
     /// A user can reload the model in LM Studio with a different context at any time; the budget
-    /// must follow. The assembly is rebuilt only when the loaded context actually changed: an
-    /// unchanged server keeps the same provider object, so a routine re-read can never move the
-    /// prefix cache.
-    private func refreshLocalRuntimeIfStale(maxAge: TimeInterval = 30) async {
-        guard let current = currentAssembly,
-              let previous = localRuntimeRegistry.status(providerID: current.endpoint.providerID),
-              Date().timeIntervalSince(previous.discoveredAt) > maxAge,
+    /// must follow. Unchanged effective inputs do nothing; a changed window republishes only the
+    /// context profile and policy, retaining the provider and its prefix state.
+    private func startLocalRuntimePollingIfNeeded() {
+        guard startupPolicy.allowNetwork, localRuntimePollingTask == nil,
+              currentProviderID.flatMap({ localRuntimeRegistry.status(providerID: $0) }) != nil || pendingLocalRuntimeAssembly != nil else { return }
+        localRuntimePollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                guard let self else { return }
+                await self.refreshLocalRuntimeIfStale()
+            }
+        }
+    }
+
+    func refreshLocalRuntimeIfStale(maxAge: TimeInterval = 30, httpClient: LMStudioDiscovery.HTTPClient? = nil) async {
+        if let task = localRuntimeRefreshTask {
+            await task.value
+            return
+        }
+        let startingGeneration = runtimeContext.snapshot()
+        guard let current = startingGeneration.assembly ?? pendingLocalRuntimeAssembly,
               let config = try? await configurationStore?.load().providers.providers[current.endpoint.providerID],
               config.options.localRuntime?.backend == .lmStudio else { return }
+        if let task = localRuntimeRefreshTask { await task.value; return }
+        guard runtimeContext.snapshot().generation == startingGeneration.generation else { return }
+        let previous = localRuntimeRegistry.status(providerID: current.endpoint.providerID)
+        if let previous, let loaded = previous.runtimeContextTokens,
+           loaded != current.contextProfile.contextWindowTokens {
+            await applyLocalRuntimeDiscovery(previous, current: current, generation: startingGeneration.generation)
+            return
+        }
+        if let previous, Date().timeIntervalSince(previous.discoveredAt) <= maxAge { return }
         let providerID = current.endpoint.providerID
-        let secret = await resolveProviderSecret(config.options.apiKey, providerID: providerID)
-        let fresh = await LMStudioDiscovery.discover(baseURL: config.options.baseURL,
-                                                     modelID: current.modelID.rawValue, credential: secret)
-        localRuntimeRegistry.record(fresh, providerID: providerID)
-        if let loaded = fresh.runtimeContextTokens, loaded != current.contextProfile.contextWindowTokens {
-            await reassembleCurrentModel(ifProvider: providerID)
+        let generation = startingGeneration.generation
+        let httpClient = httpClient ?? localRuntimeHTTPClient
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let secret = await self.resolveProviderSecret(config.options.apiKey, providerID: providerID)
+            let fresh = await LMStudioDiscovery.discover(baseURL: config.options.baseURL,
+                modelID: current.modelID.rawValue, credential: secret, httpClient: httpClient)
+            guard !Task.isCancelled else { return }
+            await self.applyLocalRuntimeDiscovery(fresh, current: current, generation: generation)
+        }
+        localRuntimeRefreshTask = task
+        await task.value
+        localRuntimeRefreshTask = nil
+    }
+
+    private func applyLocalRuntimeDiscovery(_ fresh: LocalRuntimeModelStatus, current: ModelRuntimeAssembly,
+                                            generation: UInt64) async {
+        guard runtimeContext.snapshot().generation == generation else { return }
+        localRuntimeRegistry.record(fresh, providerID: current.endpoint.providerID)
+        if fresh.runtimeContextTokens == nil && !current.contextProfile.source.hasPrefix("lmstudio-runtime:") {
+            // There is no confirmed local generation to retain. Never expose a static maximum as active.
+            runtimeContext.apply(assembly: nil, policy: effectiveContextPolicy)
+            pendingLocalRuntimeAssembly = current
+            return
+        }
+        guard let loaded = fresh.runtimeContextTokens, loaded > 0 else { return }
+        // Keep the provider, manifest and prefix intact. Only its runtime context profile changes.
+        let old = current.endpoint
+        let profile = ModelContextProfile(contextWindowTokens: loaded,
+            maxOutputTokens: current.contextProfile.maxOutputTokens.map { min($0, loaded) },
+            recommendedOutputReserveTokens: current.contextProfile.recommendedOutputReserveTokens,
+            source: "lmstudio-runtime:\(current.endpoint.providerID)/\(current.modelID.rawValue)")
+        let endpoint = ResolvedModelEndpoint(providerID: old.providerID, productID: old.productID,
+            endpointID: old.endpointID, accountID: old.accountID, profileID: old.profileID, modelID: old.modelID,
+            baseURL: old.baseURL, wireProtocol: old.wireProtocol, contextProfile: profile,
+            capabilities: old.capabilities, rateLimits: old.rateLimits)
+        do {
+            try await applyModelRuntimeContextChange(
+                ModelRuntimeAssembly(provider: current.provider, modelID: current.modelID, endpoint: endpoint),
+                selection: ModelSelection(providerID: old.providerID, accountID: old.accountID,
+                    profileID: old.profileID, modelID: current.modelID.rawValue), expectedGeneration: generation)
+        } catch {
+            await diagnosticsStore.record(kind: .error, event: "context.runtime_policy.refresh_failed",
+                metadata: ["error": String(describing: error)])
         }
     }
 
@@ -5311,7 +5457,8 @@ extension CoreHost {
                                       modelID: String, credential: String?,
                                       wireProtocol: ModelWireProtocol) async -> (status: LocalRuntimeModelStatus, wireExtension: (any ChatCompletionsWireExtension)?)? {
         guard let runtime = options.localRuntime, runtime.backend == .lmStudio else { return nil }
-        let status = await LMStudioDiscovery.discover(baseURL: baseURL, modelID: modelID, credential: credential)
+        let status = await LMStudioDiscovery.discover(baseURL: baseURL, modelID: modelID, credential: credential,
+                                                     httpClient: localRuntimeHTTPClient)
         localRuntimeRegistry.record(status, providerID: providerID)
         guard wireProtocol == .chatCompletions else { return (status, nil) }
         let capability = LMStudioDiscovery.reasoningCapability(status)
@@ -5361,6 +5508,7 @@ extension CoreHost {
 
     // MARK: - 8. Context
     public func getContextState(envelope: QueryEnvelope<GetContextStateRequest>) async throws -> ResponseEnvelope<ContextStateSnapshot> {
+        await refreshLocalRuntimeIfStale()
         let coord = try await coordinator(for: envelope.payload.sessionID)
         let snapshot = await buildContextStateSnapshot(sessionID: envelope.payload.sessionID)
         return ResponseEnvelope(
@@ -5372,10 +5520,12 @@ extension CoreHost {
     }
 
     public func contextStateSnapshot(sessionID: SessionID) async -> ContextStateSnapshot {
-        await buildContextStateSnapshot(sessionID: sessionID)
+        await refreshLocalRuntimeIfStale()
+        return await buildContextStateSnapshot(sessionID: sessionID)
     }
 
     public func getContextPolicy(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ContextCachePolicySnapshot> {
+        await refreshLocalRuntimeIfStale()
         let policy = ContextCachePolicySnapshot(policy: effectiveContextPolicy)
         return ResponseEnvelope(
             requestID: envelope.requestID,
@@ -6276,7 +6426,8 @@ extension CoreHost {
             scanner: candidateScanner,
             compactor: compactor,
             policy: self.effectiveContextPolicy,
-            ecoreStore: self.cacheController.ecoreStore
+            ecoreStore: self.cacheController.ecoreStore,
+            runtimeContext: runtimeContext
         )
         let candidateRegistry = ToolRegistry.builtin(
             workspace: candidateWorkspace,

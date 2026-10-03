@@ -139,7 +139,7 @@ public actor SubagentToolService {
     }
 }
 
-private struct SubagentSpawnResponse: Codable {
+struct SubagentSpawnResponse: Codable {
     let childSessionID: SessionID
     let run: AgentRunInfo
 }

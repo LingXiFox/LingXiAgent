@@ -153,11 +153,21 @@ public struct OpenAICompatibleProvider: ModelProvider {
     }
 
     /// 可测试：Domain 请求 → wire JSON。
+    private static func toolChoiceBody(_ request: ModelRequest) -> JSONValue? {
+        switch request.toolChoice {
+        case .auto: return nil // The protocol default preserves existing ordinary requests.
+        case .none: return .string("none")
+        case .required: return .string("required")
+        case let .function(name): return .object(["type": .string("function"), "function": .object(["name": .string(name)])])
+        }
+    }
+
     public static func makeRequestBody(_ request: ModelRequest, parallelToolCalls: Bool? = nil) throws -> Data {
         try makeRequestBody(request, continuation: nil, parallelToolCalls: parallelToolCalls)
     }
 
     private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?, parallelToolCalls: Bool? = nil) throws -> Data {
+        try request.validateToolChoice()
         var messages: [ChatRequestBody.Message] = []
         let orderedTools: [ToolDefinition]
         if let plan = request.cachePlan {
@@ -194,6 +204,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
             stream: true,
             messages: sanitizedMessages,
             tools: orderedTools.isEmpty ? nil : orderedTools.map(ProviderTool.init),
+            toolChoice: toolChoiceBody(request),
             parallelToolCalls: enableParallel,
             streamOptions: ChatRequestBody.StreamOptions(includeUsage: true)
         )
@@ -666,11 +677,13 @@ extension OpenAICompatibleProvider {
         let stream: Bool
         let messages: [Message]
         let tools: [ProviderTool]?
+        let toolChoice: JSONValue?
         let parallelToolCalls: Bool?
         let streamOptions: StreamOptions?
 
         enum CodingKeys: String, CodingKey {
             case model, stream, messages, tools
+            case toolChoice = "tool_choice"
             case parallelToolCalls = "parallel_tool_calls"
             case streamOptions = "stream_options"
         }

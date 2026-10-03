@@ -347,8 +347,31 @@ public actor AgentRuntime {
         return try await store.updateTitle(id, title: normalized?.isEmpty == true ? nil : normalized).toInfo()
     }
 
-    public func selectModel(_ selection: ModelSelection, assembly: ModelRuntimeAssembly? = nil) async throws {
-        try await modelResolver.setDefaultSelection(selection, assembly: assembly)
+    public func selectModel(_ selection: ModelSelection, assembly: ModelRuntimeAssembly? = nil,
+                            onCommit: (@Sendable () throws -> Void)? = nil) async throws {
+        try await modelResolver.setDefaultSelection(selection, assembly: assembly, onCommit: onCommit)
+    }
+
+    /// Idle working sets converge now; an active lane uses the new profile at its next pressure check.
+    func reconcileRuntimeContextPressure(profile: ModelContextProfile, policy: EffectiveContextPolicy) async throws {
+        guard let assembly = cacheController.runtimeContext.snapshot().assembly else { return }
+        for session in try await store.listSessions() {
+            let snapshot = await contextEngine.latestSnapshot(for: session.id)
+            let usage = await cacheController.l1UsageTokens(for: session.id)
+            guard max(usage, snapshot?.metrics.estimatedTokens ?? 0) > policy.pCoreSoftLimit else { continue }
+            let runtime: SessionRuntime
+            if let resident = runtimes[session.id] {
+                runtime = resident
+            } else {
+                // A projected working set may outlive its idle lane. Hydrate only an over-budget
+                // lane, using the existing restoration/persistence path rather than clearing it.
+                let bus = ModelBus(gateway: ModelGateway(assembly: assembly, deadlinePolicy: deadlinePolicy,
+                    activityRegistry: providerActivityRegistry, runtimeContext: cacheController.runtimeContext))
+                runtime = makeRuntime(for: session.id, modelBus: bus, rootSessionID: session.rootSessionID)
+                try await runtime.restore()
+            }
+            try await runtime.reconcileRuntimeContextPressure(profile: profile, policy: policy)
+        }
     }
 
     public func contextSnapshot(_ id: SessionID) async -> PCoreSnapshot? {
@@ -728,7 +751,7 @@ public actor AgentRuntime {
         await evictIdleRuntimesIfNeeded()
         if let run {
             let resolved = try await modelResolver.resolve(run.modelSelection, subagent: run.agentKind == .subagent)
-            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning, deadlinePolicy: deadlinePolicy, activityRegistry: providerActivityRegistry))
+            let bus = ModelBus(gateway: ModelGateway(assembly: resolved.assembly, reasoning: run.modelSelection.reasoning, deadlinePolicy: deadlinePolicy, activityRegistry: providerActivityRegistry, runtimeContext: cacheController.runtimeContext))
             let session = try await store.session(sessionID)
             let runtime = makeRuntime(for: sessionID, run: run, modelBus: bus, rootSessionID: session.rootSessionID)
             runtimes[sessionID] = runtime

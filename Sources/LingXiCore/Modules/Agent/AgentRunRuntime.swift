@@ -81,12 +81,20 @@ public actor SubagentModelResolver {
         return (selection, effectiveAssembly)
     }
 
-    public func setDefaultSelection(_ selection: ModelSelection, assembly: ModelRuntimeAssembly? = nil) throws {
-        if let assembly {
-            registerAssembly(assembly, for: selection)
+    public func setDefaultSelection(_ selection: ModelSelection, assembly: ModelRuntimeAssembly? = nil,
+                                    onCommit: (@Sendable () throws -> Void)? = nil) throws {
+        let previousRuntimes = runtimes
+        do {
+            if let assembly {
+                registerAssembly(assembly, for: selection)
+            }
+            _ = try resolve(selection)
+            try onCommit?()
+            defaultSelection = selection
+        } catch {
+            runtimes = previousRuntimes
+            throw error
         }
-        _ = try resolve(selection)
-        defaultSelection = selection
     }
 
     public func currentDefaultSelection() -> ModelSelection? { defaultSelection }
@@ -146,4 +154,3 @@ public enum AgentExecutionContext {
     @TaskLocal public static var currentRunContext: RunExecutionContext?
     @TaskLocal public static var currentCapabilityScope: SubagentCapabilityScope?
 }
-

@@ -31,6 +31,29 @@ struct ThinkingCardPresentationTests {
         #expect(image.size.height > 40, "正文与复制按钮应在同一卡片内纵向排列：\(image.size)")
     }
 
+    @Test("trailing blank lines do not enlarge the thinking card")
+    func trailingBlankLines() throws {
+        let text = "文件创建成功。现在编译并运行程序验证:"
+        let compact = try cardSize(text)
+        let padded = try cardSize(text + String(repeating: "\n \t", count: 8))
+        #expect(padded == compact)
+    }
+
+    @Test("paragraph breaks and wrapped text keep their natural height")
+    func paragraphAndWrappingHeight() throws {
+        let singleLine = try cardSize("First paragraph.")
+        let paragraphs = try cardSize("First paragraph.\n\nSecond paragraph.")
+        #expect(paragraphs.height > singleLine.height)
+        let longText = String(repeating: "Reasoning should wrap naturally. ", count: 10)
+        #expect(try cardSize(longText, width: 260).height > cardSize(longText, width: 520).height)
+    }
+
+    private func cardSize(_ content: String, width: CGFloat = 520) throws -> CGSize {
+        let renderer = ImageRenderer(content: ThinkingDetailCard(content: content).frame(width: width))
+        renderer.scale = 1
+        return try #require(renderer.nsImage).size
+    }
+
     // MARK: - 23. Symmetric margins
 
     @Test("left and right margins are the same value")

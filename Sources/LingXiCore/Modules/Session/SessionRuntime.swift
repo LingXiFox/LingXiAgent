@@ -426,6 +426,8 @@ public actor SessionRuntime {
         var sawFirstReasoning = false
         var finalUsage: ModelUsage?
         var finalReason: ModelFinishReason?
+        var completionGuard = ActionCompletionGuard(task: task)
+        var nextToolChoice: ToolChoice = .auto
         var lastSuccessfulRead: (signature: ToolRuntime.ReadOnlySignature, content: String)?
         var successfulReadsBySignature: [ToolRuntime.ReadOnlySignature: String] = [:]
         var signatureReadCounts: [ToolRuntime.ReadOnlySignature: Int] = [:]
@@ -443,6 +445,17 @@ public actor SessionRuntime {
                 try await settleDurableBatches(session: session, deadline: deadline, profiler: profiler, runExecutionContext: runExecutionContext)
                 try ensureExecuting(executionID)
             }
+            if resume {
+                let definitions = await toolRuntime.availableDefinitions(sessionID: sessionID, runID: runID, interactive: interactive, executionProfile: executionProfile)
+                for batch in toolBatches where batch.turnID == runLease.turnID {
+                    for durable in batch.toolCallStates {
+                        if let result = durable.result {
+                            completionGuard.record(call: durable.call, result: result,
+                                                   definition: definitions.first { $0.id == durable.call.toolID || $0.name == durable.call.toolName })
+                        }
+                    }
+                }
+            }
             var lastCallBatchSignature: String?
             var consecutiveIdenticalBatches = 0
             var loopTracker = ToolLoopProgressTracker()
@@ -451,7 +464,9 @@ public actor SessionRuntime {
             var lastObservedContent: String?
             var pendingLifecycleTraces: [ToolLifecycleTrace] = []
 
-            for step in 0..<maximumAgentSteps {
+            // The single corrective request does not consume the normal action budget.
+            for step in 0..<(maximumAgentSteps + 1) {
+                if step == maximumAgentSteps && !completionGuard.retriedRequired { break }
                 try Task.checkCancellation()
                 let currentModelStepID = ModelStepID()
                 let currentStepNumber = step + 1
@@ -830,12 +845,14 @@ public actor SessionRuntime {
                     executionID: runID,
                     messages: requestMessages,
                     tools: effectiveTools,
+                    toolChoice: nextToolChoice,
                     reasoning: effectiveReasoning,
                     debugStep: step + 1,
                     overallTimeoutSeconds: deadline.remainingSeconds(),
                     idleTimeoutSeconds: deadlinePolicy.idleTimeout(for: .provider).map { Self.durationSeconds($0) },
                     cachePlan: cachePlan
                 )
+                nextToolChoice = .auto
                 if finalTokens > budget.hardInputLimit {
                     throw CoreError(code: .contextBudgetExceeded, message: "最终模型请求超出输入预算")
                 }
@@ -858,7 +875,7 @@ public actor SessionRuntime {
                     volatileTailTokens: currentTurnTokens + providerFramingTokens,
                     epoch: epochInfo
                 )
-                let triggerReason = step == 0 ? "initial_turn_prompt" : "tool_result_continuation"
+                let triggerReason = request.toolChoice == .required ? "action_required_retry" : step == 0 ? "initial_turn_prompt" : "tool_result_continuation"
                 let callTrace = ProviderCallTrace(
                     sessionID: sessionID,
                     userTurnID: userTurnID,
@@ -1070,6 +1087,14 @@ public actor SessionRuntime {
                 profiler.recordModel(dispatch: dispatch, stream: streamStarted.duration(to: clock.now))
 
                 guard !calls.isEmpty else {
+                    if completionGuard.retryChoice(firstResponse: step == 0 && !resume, hasTools: !effectiveTools.isEmpty) {
+                        nextToolChoice = .required
+                        trace("agent.action_required.retry", step: step + 1)
+                        await diagnostics?.record(kind: .agentRun, event: "agent.action_required.retry", sessionID: sessionID,
+                                                  metadata: ["toolChoice": "required"])
+                        continue
+                    }
+
                     let hasRunningBgTasks = await backgroundManager.hasRunningTasks
                     if hasRunningBgTasks {
                         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1100,6 +1125,8 @@ public actor SessionRuntime {
                         continue
                     }
 
+                    completionGuard.recordBackground(await backgroundManager.list())
+
                     // Some local models (Qwen thinking templates under LM Studio, verified on the wire)
                     // finish with the whole answer inside reasoning_content and an empty content.
                     // A completed final step with nothing visible would leave the user an empty
@@ -1122,7 +1149,8 @@ public actor SessionRuntime {
                         usage: finalUsage,
                         profiler: profiler,
                         executionID: executionID,
-                        lease: runLease
+                        lease: runLease,
+                        completionGuard: completionGuard
                     )
                     return
                 }
@@ -1288,6 +1316,7 @@ public actor SessionRuntime {
                     let call = calls[offset]
                     profiler.recordTool(outcome)
                     let result = outcome.result
+                    completionGuard.record(call: call, result: result, definition: availableTools.first { $0.id == call.toolID || $0.name == call.toolName })
                     if !publishedOutcomes.contains(offset) {
                         trace("tool.execute.end", step: step + 1, toolCallID: call.callID)
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
@@ -1595,6 +1624,37 @@ public actor SessionRuntime {
         )
     }
 
+    /// A smaller runtime window changes thresholds, not retention scoring or stored messages.
+    func reconcileRuntimeContextPressure(profile: ModelContextProfile, policy: EffectiveContextPolicy) async throws {
+        guard modelBus.gateway.modelID == cacheController.runtimeContext.snapshot().assembly?.modelID,
+              !turnRunning else { return }
+        let session = try await store.session(sessionID)
+        let residentPages = await cacheController.residentPages(for: sessionID)
+        let entries = await contextEngine.entries(for: session, projectPages: residentPages,
+                                                  systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+        let projected = await ContextProjection(configuration: cacheController.ecoreStore.configuration)
+            .project(entries: entries, session: session, ecoreStore: cacheController.ecoreStore)
+        let tokens = ConservativeTokenEstimator().estimate(entries: projected)
+        let requestBudget = budgetPlanner.plan(profile: profile,
+            toolSchemaTokens: ConservativeTokenEstimator().estimate(tools: await toolRuntime.availableDefinitions()))
+        guard tokens > min(policy.pCoreSoftLimit, requestBudget.hardInputLimit) else { return }
+        let budget = ContextBudget(
+            hardInputLimit: min(policy.pCoreHardLimit, requestBudget.hardInputLimit),
+            preferredActiveTokens: min(policy.pCoreTarget, requestBudget.preferredActiveTokens),
+            highWaterTokens: min(policy.pCoreSoftLimit, requestBudget.highWaterTokens),
+            lowWaterTokens: min(policy.pCoreTarget, requestBudget.lowWaterTokens),
+            reservedOutputTokens: requestBudget.reservedOutputTokens,
+            protocolOverheadTokens: requestBudget.protocolOverheadTokens,
+            toolSchemaTokens: requestBudget.toolSchemaTokens, safetyMarginTokens: requestBudget.safetyMarginTokens)
+        let result = try await compactor.compact(
+            sessionID: sessionID, entries: projected, budget: budget, batches: toolBatches,
+            projectBackedContents: Set(residentPages.map(\.content)), trigger: .automaticHighWater,
+            evictionEpoch: compactionGeneration, activeTask: await SessionGoalRegistry.shared.goal(sessionID) ?? "")
+        if result.triggered { compactionGeneration += 1 }
+        await syncL1ResidentAccounting(with: result.entries)
+        if result.triggered { try await persistCompaction() }
+    }
+
     public func compactNow() async throws -> CompactSessionResponse {
         guard !turnRunning else { throw CoreError(code: .turnAlreadyRunning, message: "对话进行中，不能压缩当前 Session") }
         let session = try await store.session(sessionID)
@@ -1780,7 +1840,8 @@ public actor SessionRuntime {
         usage: ModelUsage?,
         profiler: TurnProfiler,
         executionID: UUID,
-        lease: RunLease? = nil
+        lease: RunLease? = nil,
+        completionGuard: ActionCompletionGuard
     ) async {
         do {
             guard isExecuting(executionID) else { return }
@@ -1794,6 +1855,14 @@ public actor SessionRuntime {
                     return
                 }
             }
+            var completionError: CoreError?
+            do {
+                try completionGuard.validateCompletion(content)
+            } catch let error as CoreError {
+                // Keep an honest blocker report, but never commit a fabricated success claim.
+                if completionGuard.hasUnsupportedClaims(content) { throw error }
+                completionError = error
+            }
             let message = try await store.appendMessage(handle.sessionID, role: .assistant, content: content, expectedRevision: lease?.revision)
             let assistantEntry = ContextEntry(messageID: message.id, role: .assistant, source: .assistantMessage, part: .text(content))
             var updatedEntries = currentActiveEntries
@@ -1801,6 +1870,7 @@ public actor SessionRuntime {
                 updatedEntries.append(assistantEntry)
             }
             await syncL1ResidentAccounting(with: updatedEntries)
+            if let completionError { throw completionError }
             guard await finishExecution(executionID) else { return }
             await performanceStore.recordProviderCalls(sessionID: handle.sessionID, calls: profiler.recordedProviderCalls)
             if let report = profiler.report() { await performanceStore.save(report) }

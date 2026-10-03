@@ -120,11 +120,21 @@ public struct AnthropicMessagesProvider: ModelProvider {
         return result
     }
 
+    private static func toolChoiceBody(_ request: ModelRequest) -> JSONValue? {
+        switch request.toolChoice {
+        case .auto: return nil // The protocol default preserves existing ordinary requests.
+        case .none: return .object(["type": .string("none")])
+        case .required: return .object(["type": .string("any")])
+        case let .function(name): return .object(["type": .string("tool"), "name": .string(name)])
+        }
+    }
+
     public static func makeRequestBody(_ request: ModelRequest, maxOutputTokens: Int = 4_096) throws -> Data {
         try makeRequestBody(request, maxOutputTokens: maxOutputTokens, continuation: nil)
     }
 
     private static func makeRequestBody(_ request: ModelRequest, maxOutputTokens: Int, continuation: ProviderContinuation?) throws -> Data {
+        try request.validateToolChoice()
         let orderedTools: [ToolDefinition]
         let system: String?
         if let plan = request.cachePlan {
@@ -192,7 +202,8 @@ public struct AnthropicMessagesProvider: ModelProvider {
             stream: true,
             system: (system?.isEmpty ?? true) ? nil : system,
             messages: messages,
-            tools: tools
+            tools: tools,
+            toolChoice: toolChoiceBody(request)
         ))
     }
 
@@ -434,8 +445,9 @@ private struct RequestBody: Encodable {
     let system: String?
     let messages: [Message]
     let tools: [Tool]?
+    let toolChoice: JSONValue?
 
-    enum CodingKeys: String, CodingKey { case model, stream, system, messages, tools; case maxTokens = "max_tokens" }
+    enum CodingKeys: String, CodingKey { case model, stream, system, messages, tools; case toolChoice = "tool_choice"; case maxTokens = "max_tokens" }
 }
 
 extension AnthropicMessagesProvider: ProviderFileUploading {

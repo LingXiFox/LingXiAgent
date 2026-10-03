@@ -133,6 +133,15 @@ public struct OpenAIResponsesProvider: ModelProvider {
     }
 
     /// Domain request -> Responses API JSON.
+    private static func toolChoiceBody(_ request: ModelRequest) -> JSONValue? {
+        switch request.toolChoice {
+        case .auto: return nil // The protocol default preserves existing ordinary requests.
+        case .none: return .string("none")
+        case .required: return .string("required")
+        case let .function(name): return .object(["type": .string("function"), "name": .string(name)])
+        }
+    }
+
     public static func makeRequestBody(_ request: ModelRequest) throws -> Data {
         try makeRequestBody(request, continuation: nil, previousResponseID: nil, store: false, reasoningSummary: nil)
     }
@@ -143,6 +152,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
     /// (Codex) backend defaults it to `auto`, while platform.openai.com rejects it with a 400
     /// for organizations that are not verified.
     private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?, previousResponseID: String?, store: Bool, reasoningSummary: String?) throws -> Data {
+        try request.validateToolChoice()
         let messages = previousResponseID == nil ? request.messages : continuationMessages(request)
         let input = messages.flatMap { message -> [ResponseRequestBody.Input] in
             let calls = message.parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }
@@ -207,6 +217,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
             instructions: instructions,
             input: input,
             tools: orderedTools.isEmpty ? nil : orderedTools.map(ResponseRequestBody.Tool.init),
+            toolChoice: toolChoiceBody(request),
             reasoning: request.reasoning.map { ResponseRequestBody.Reasoning(effort: $0, summary: reasoningSummary) },
             include: !store && request.reasoning != nil ? ["reasoning.encrypted_content"] : nil,
             previousResponseID: previousResponseID
@@ -778,12 +789,14 @@ private struct ResponseRequestBody: Encodable {
     let instructions: String?
     let input: [Input]
     let tools: [Tool]?
+    let toolChoice: JSONValue?
     let reasoning: Reasoning?
     let include: [String]?
     let previousResponseID: String?
 
     enum CodingKeys: String, CodingKey {
         case model, stream, store, instructions, input, tools, reasoning, include
+        case toolChoice = "tool_choice"
         case previousResponseID = "previous_response_id"
     }
 }

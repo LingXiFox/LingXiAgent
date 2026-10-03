@@ -182,6 +182,19 @@ struct ObservatoryOverviewPane: View {
 
     private var runtimeCard: some View {
         ObservatoryCard(title: "运行时") {
+            if let context = model.snapshot?.runtimeContextPolicy {
+                ObservatoryKV(key: "Model runtime window", value: context.runtimeModelWindow.map(String.init))
+                ObservatoryKV(key: "Effective policy model window", value: String(context.effectivePolicy.modelWindow))
+                ObservatoryKV(key: "Reserve", value: String(context.effectivePolicy.reserve))
+                ObservatoryKV(key: "Policy generation", value: String(context.generation))
+                HStack {
+                    Text("Runtime Policy Consistency").font(LXType.micro)
+                    Spacer()
+                    Text(context.isConsistent ? "CONSISTENT" : "MISMATCH")
+                        .font(LXType.micro.weight(.semibold))
+                        .foregroundStyle(context.isConsistent ? LXStatus.success : LXStatus.error)
+                }
+            }
             if let pCore = model.snapshot?.pCore {
                 ObservatoryMetricRow(label: "P-Core tokens",
                                      metric: DebugMetric(value: pCore.usedTokens, provenance: .measured))

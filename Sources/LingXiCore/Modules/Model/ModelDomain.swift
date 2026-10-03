@@ -437,6 +437,14 @@ public struct ModelMessage: Sendable, Equatable {
     }
 }
 
+/// Provider-independent control over whether a model may request tools.
+public enum ToolChoice: Sendable, Equatable {
+    case auto
+    case none
+    case required
+    case function(name: String)
+}
+
 public struct ModelRequest: Sendable, Equatable {
     public let requestID: ModelRequestID
     public let continuationOf: ModelRequestID?
@@ -445,6 +453,7 @@ public struct ModelRequest: Sendable, Equatable {
     public let system: String?
     public let messages: [ModelMessage]
     public let tools: [ToolDefinition]
+    public let toolChoice: ToolChoice
     public let reasoning: String?
     public let debugStep: Int?
     public let overallTimeoutSeconds: Double?
@@ -459,6 +468,7 @@ public struct ModelRequest: Sendable, Equatable {
         system: String? = nil,
         messages: [ModelMessage],
         tools: [ToolDefinition] = [],
+        toolChoice: ToolChoice = .auto,
         reasoning: String? = nil,
         debugStep: Int? = nil,
         overallTimeoutSeconds: Double? = nil,
@@ -472,11 +482,22 @@ public struct ModelRequest: Sendable, Equatable {
         self.system = system
         self.messages = messages
         self.tools = tools
+        self.toolChoice = toolChoice
         self.reasoning = reasoning
         self.debugStep = debugStep
         self.overallTimeoutSeconds = overallTimeoutSeconds
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.cachePlan = cachePlan
+    }
+
+    func validateToolChoice() throws {
+        switch toolChoice {
+        case .required where tools.isEmpty:
+            throw CoreError(code: .provider, message: "ToolChoice.required requires at least one tool")
+        case let .function(name) where !tools.contains(where: { $0.name == name }):
+            throw CoreError(code: .provider, message: "ToolChoice.function references an unavailable tool: \(name)")
+        default: break
+        }
     }
 }
 

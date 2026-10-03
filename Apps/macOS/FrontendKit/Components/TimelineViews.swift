@@ -376,7 +376,8 @@ struct ThinkingDetailCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
-            Text(content)
+            // Ignore boundary whitespace for layout; copy keeps the original reasoning.
+            Text(content.trimmingCharacters(in: .whitespacesAndNewlines))
                 .font(LXType.thinkingBody)
                 .lineSpacing(LXType.Leading.thinking)
                 .foregroundStyle(.secondary)

@@ -119,13 +119,17 @@ extension CoreHost {
         let context = await contextStateSnapshot(sessionID: sessionID)
         let (runID, turnID) = hub.correlation(sessionID: sessionID)
 
+        let eCore = await buildECorePanel(hub: hub, sessionID: sessionID, topN: topN)
+        let cursor = await coord.eventLog.currentCursor()
+        let runtime = runtimeContextSnapshot
+        let policy = runtime.policy
         let pCore: DebugPCorePanel?
         if let core = context.pCore {
             pCore = DebugPCorePanel(
                 usedTokens: core.usedTokens,
-                targetTokens: core.targetTokens,
-                softLimitTokens: core.softLimitTokens,
-                hardLimitTokens: core.hardLimitTokens,
+                targetTokens: policy.pCoreTarget,
+                softLimitTokens: policy.pCoreSoftLimit,
+                hardLimitTokens: policy.pCoreHardLimit,
                 stablePrefixBytes: hub.stablePrefixBytes(sessionID: sessionID),
                 growingContextTokens: context.estimatedTokens,
                 eCoreIndexTokens: nil
@@ -137,7 +141,7 @@ extension CoreHost {
         return ResponseEnvelope(
             requestID: envelope.requestID,
             revision: currentRevision,
-            eventCursor: await coord.eventLog.currentCursor(),
+            eventCursor: cursor,
             payload: RuntimeObservatorySnapshot(
                 generatedAt: .now,
                 sessionID: sessionID,
@@ -145,12 +149,15 @@ extension CoreHost {
                 runID: runID,
                 turnID: turnID,
                 pCore: pCore,
-                eCore: await buildECorePanel(hub: hub, sessionID: sessionID, topN: topN),
+                eCore: eCore,
                 cache: hub.cacheSample(sessionID: sessionID) ?? DebugCacheSampleMapper.from(context: context),
                 prefixAudit: hub.prefixAudit(sessionID: sessionID),
                 scheduler: hub.schedulerDecision(sessionID: sessionID),
                 prediction: context.prediction,
-                localRuntime: currentProviderID.flatMap { localRuntimeRegistry.status(providerID: $0) }
+                localRuntime: currentProviderID.flatMap { localRuntimeRegistry.status(providerID: $0) },
+                runtimeContextPolicy: DebugRuntimeContextPolicy(
+                    runtimeModelWindow: runtime.assembly?.contextProfile.contextWindowTokens,
+                    effectivePolicy: ContextCachePolicySnapshot(policy: policy), generation: runtime.generation)
             )
         )
     }

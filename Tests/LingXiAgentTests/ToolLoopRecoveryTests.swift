@@ -128,7 +128,12 @@ struct ToolLoopRecoveryTests {
         let client = try await makeClient(root: root, provider: provider)
         let sessionID = try await client.createSession()
         let stream = try await client.sendMessage(sessionID: sessionID, content: "编译 primes.cpp")
-        for try await _ in stream {}
+        do {
+            for try await _ in stream {}
+            Issue.record("A blocked compilation must not complete the turn")
+        } catch let error as CoreError {
+            #expect(error.code == .toolExecutionFailed)
+        }
 
         let snapshot = try await client.session(sessionID)
         #expect(snapshot.messages.last?.content.contains("xcodebuild -license") == true, "模型应能报告真实 blocker")
