@@ -902,7 +902,13 @@ public final class RuntimeFrontend: ObservableObject {
         switch await client.debug.probe() {
         case .unsupported: observatoryModel.availability = .unsupported
         case .disabled: observatoryModel.availability = .disabled
-        case .enabled(let status): observatoryModel.availability = .enabled(status)
+        case .enabled(let status):
+            observatoryModel.availability = .enabled(status)
+            // The probe already carries the status, so record it here. `refreshObservatory` bails
+            // out when there is no active session, and leaving this nil made the recording card
+            // report 不可知 for something Core had just answered — which is the exact confusion
+            // the provenance rules exist to prevent.
+            observatoryModel.status = status
         case .unknown: observatoryModel.availability = .unknown(reason: "Core 未回答该探测")
         }
     }
@@ -913,11 +919,10 @@ public final class RuntimeFrontend: ObservableObject {
     /// the frontend: one of the deep reads behind this is a full heat recompute, so putting it on
     /// the projection path would make an unopened debug window cost the running agent real work.
     public func refreshObservatory() async {
-        guard let client, let sessionID = activeSessionID else {
-            observatoryModel.availability = .notConnected
-            return
-        }
+        // Probe first even when there is no session yet, so a window that opened too early can
+        // recover by itself instead of staying on "未连接" for the rest of the process.
         await probeObservatory()
+        guard let client, let sessionID = activeSessionID else { return }
         guard observatoryModel.isLive else { return }
 
         do {

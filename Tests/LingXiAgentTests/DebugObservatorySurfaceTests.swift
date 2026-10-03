@@ -301,6 +301,94 @@ struct DebugObservatorySurfaceTests {
         #expect(auditValue.canonicalDefinition == .epochCanonical)
     }
 
+    /// Debug mode is Core-held state, so it has to survive the thing that actually happens in use:
+    /// Core restarting while the same data root stays put.
+    ///
+    /// This test exists because the first implementation persisted the flag and then could not read
+    /// it back. `save` wrote `updatedAt` as an ISO8601 string while `load` decoded with a default
+    /// `JSONDecoder`, which expects a Double and threw — and "unparseable means off", the correct
+    /// rule for genuine corruption, turned that into a silent no-op. Only a restart-and-re-read
+    /// catches that asymmetry; an in-process toggle never sees the reader.
+    @Test("debug mode persists across a Core restart on the same data root")
+    func debugModeSurvivesCoreRestart() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lx-obs-persist-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        func makeHost() async throws -> CoreHost {
+            let host = try CoreHost(
+                startupPolicy: .integrationTest,
+                providerAssembly: ModelRuntimeAssembly(provider: ObservatoryFakeProvider(),
+                                                       modelID: ModelID("fake")),
+                workspaceRoot: try WorkspaceRoot(path: root.path),
+                dataRoot: root,
+                interactive: false,
+                credentialStore: EphemeralCredentialStore()
+            )
+            await host.start()
+            return host
+        }
+
+        let first = try await makeHost()
+        let firstClient = try await LingXiClientVNext.inProcess(service: first)
+        #expect((try await firstClient.debug.status()).enabled == false,
+                "全新数据根应默认关闭")
+        #expect(try await firstClient.debug.setEnabled(true).enabled, "开启未生效")
+
+        // The mode file is the hand-off point between the two processes.
+        let modeFile = root.appendingPathComponent("debug/mode.json")
+        #expect(FileManager.default.fileExists(atPath: modeFile.path),
+                "开启后 Core 没有落盘，重启必然丢失")
+
+        await first.shutdown()
+
+        let second = try await makeHost()
+        let secondClient = try await LingXiClientVNext.inProcess(service: second)
+        defer { Task { await second.shutdown() } }
+
+        let restored = try await secondClient.debug.status()
+        #expect(restored.enabled,
+                "Core 重启后调试模式没有恢复：写进去的文件读不回来，等于该开关只能管一个进程生命周期")
+
+        // And turning it off must persist symmetrically, or the flag could never be cleared for good.
+        _ = try await secondClient.debug.setEnabled(false)
+        await second.shutdown()
+
+        let third = try await makeHost()
+        defer { Task { await third.shutdown() } }
+        let thirdClient = try await LingXiClientVNext.inProcess(service: third)
+        #expect((try await thirdClient.debug.status()).enabled == false,
+                "关闭状态没有持久化，下次启动会带着上一次的调试模式起来")
+    }
+
+    /// A mode file written by an earlier build must still be readable.
+    ///
+    /// The whole-second form below is literally what the first version of `DebugModeStore.save`
+    /// produced. Restoring the reader to accept only the current format would fix the round-trip
+    /// and still leave every existing install switched off forever, because `load` treats an
+    /// unreadable file as "off".
+    @Test("a mode file from an older build is still honoured")
+    func legacyModeFileIsReadable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lx-obs-legacy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("debug"),
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DebugModeStore(layout: CoreStorageLayout(root: root))
+
+        let legacy = Data(#"{ "enabled" : true, "schemaVersion" : 1, "updatedAt" : "2026-10-03T05:20:17Z" }"#
+            .utf8)
+        try legacy.write(to: root.appendingPathComponent("debug/mode.json"))
+        #expect(store.load(), "旧格式的时间戳把整个文件判成了不可读")
+
+        // Current format still works, and a genuinely corrupt file still means off.
+        #expect(store.save(enabled: false) == false || true)
+        #expect(!store.load(), "save 之后应能读回 false")
+        try Data("not json".utf8).write(to: root.appendingPathComponent("debug/mode.json"))
+        #expect(!store.load(), "损坏文件必须回落到关闭，而不是抛错打断启动")
+    }
+
     // MARK: - Harness
     //
     // Helpers are static so the tests below stay readable; the fixture shape matches

@@ -55,6 +55,16 @@ public struct RuntimeObservatoryView: View {
             await runtime.probeObservatory()
             await runtime.refreshObservatory()
         }
+        // Re-probe when the connection changes. Without this the window can stick on "未连接
+        // Core" forever: macOS restores windows at launch, so this one's `.task` often runs before
+        // the workspace has reconnected, and nothing afterwards would ask again.
+        .onChange(of: runtime.link) { _, link in
+            guard link == .connected else { return }
+            Task {
+                await runtime.probeObservatory()
+                await runtime.refreshObservatory()
+            }
+        }
     }
 
     // MARK: - Header
@@ -78,13 +88,15 @@ public struct RuntimeObservatoryView: View {
                     .font(LXType.monoSmall)
                     .foregroundStyle(.secondary)
             }
+            // Never disabled. `refreshObservatory` re-probes first, so this is how a window that
+            // came up before Core connected recovers; greying it out while unavailable removes the
+            // one control that could fix the state it is complaining about.
             Button {
                 Task { await runtime.refreshObservatory() }
             } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
             .controlSize(.large)
-            .disabled(!model.isLive)
         }
         .padding(.horizontal, LingXiMetrics.Space.md)
         .padding(.vertical, LingXiMetrics.Space.sm)
