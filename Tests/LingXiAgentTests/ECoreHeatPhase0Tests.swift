@@ -132,6 +132,61 @@ import LingXiProtocol
         #expect(snapshot?.topHottestObjects.first?.objectID == metaA.objectID)
     }
 
+    /// 读取热度快照不得改变被观测的热度本身。
+    ///
+    /// `heatSnapshot` 曾把按时间衰减后的 `rawHeatScore` 写回 actor 状态，却不推进
+    /// `lastAccessedAt`，于是下一次读取会对同一段时间再衰减一遍。快照要喂给数百轮的
+    /// endurance test，读一次偏一次意味着数据从第一轮起就不可信，因此把这条钉住。
+    @Test func testHeatSnapshotIsObservableWithoutPerturbingHeat() async {
+        let tempDir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let halfLife: Double = 3600
+        let config = ContextObjectFabricConfiguration(
+            eCorePersistenceEnabled: true,
+            objectizationThreshold: 100,
+            heatTrackingEnabled: true,
+            heatDecayHalfLifeSeconds: halfLife
+        )
+        let store = ECoreObjectStore(baseDirectory: tempDir, configuration: config)
+        let sID = SessionID("s-heat-observer-effect")
+        guard let meta = await store.store(
+            sessionID: sID,
+            toolCallID: ToolCallID("call_obs"),
+            toolName: "read_file",
+            content: String(repeating: "Observation Content Line\n", count: 20)
+        ) else {
+            Issue.record("store 未生成对象，无法验证观察者效应")
+            return
+        }
+        guard let seeded = await store.heatState(sessionID: sID, objectID: meta.objectID), seeded.rawHeatScore > 0 else {
+            Issue.record("对象未建立热度，测试前提不成立")
+            return
+        }
+
+        // now 取「上次访问 + 恰好一个半衰期」，衰减系数就是 0.5。
+        // 不能随手推到很远未来：pow(0.5, elapsed/halfLife) 会下溢成 0，而 0 再衰减仍是 0，
+        // 二次衰减在数值上反而看不出来，测试就成了空跑。
+        let now = seeded.lastAccessedAt.addingTimeInterval(halfLife)
+
+        let first = await store.heatSnapshot(sessionID: sID, topN: 4, now: now)
+        let second = await store.heatSnapshot(sessionID: sID, topN: 4, now: now)
+
+        #expect(first != nil && second != nil)
+        if let first, let second {
+            #expect(first == second, "同一时刻重复读取热度快照，结果变了 —— 上一次读取改写了持久热度")
+        }
+        // 单次读取就应当已经衰减掉一半，否则上面那条相等是恒真的空断言。
+        #expect((first?.medianHeat ?? 0) > 0, "衰减后热度归零，测试参数没能制造出可分辨的衰减")
+        #expect(abs((first?.medianHeat ?? 0) - seeded.rawHeatScore / 2) < 1e-9,
+                "单次读取的衰减值不是预期的半个半衰期，无法据此判断二次衰减")
+
+        // 更直白的一条：快照前后，actor 里存着的原始分数必须一模一样。
+        let afterRead = await store.heatState(sessionID: sID, objectID: meta.objectID)
+        #expect(afterRead?.rawHeatScore == seeded.rawHeatScore,
+                "heatSnapshot 把时间衰减写回了 heatStates")
+    }
+
     // 4. 长期未访问对象衰减（Decayed Accumulator 纯时间流逝验证）
     @Test func testInactiveObjectHeatDecaysOverTime() {
         let halfLife: Double = 3600.0 // 1 hour

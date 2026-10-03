@@ -1113,7 +1113,9 @@ public actor ECoreObjectStore {
             }
             states[id] = s
         }
-        heatStates[sessionID] = states
+        // 有意不写回 heatStates：上面两步都只在局部副本上算。写回会让 `rawHeatScore` 就地衰减，
+        // 而 `lastAccessedAt` 不变，于是下一次读取会对同一段时间再衰减一遍 —— 观测本身改变被观测量，
+        // 长跑越久偏得越多。持久衰减由真正发生过访问的写入路径负责，与只读的 heatState 保持一致。
 
         // 3. 排序提取 Top-N Hottest
         let sortedByHeat = states.values.sorted {
