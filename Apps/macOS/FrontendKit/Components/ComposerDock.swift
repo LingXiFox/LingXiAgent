@@ -452,10 +452,10 @@ struct ComposerSurface: View {
                            help: runtime.providerStatus?.configured == false ? "Provider 未就绪，请在设置中连接账户" : "选择模型：\(modelLabel)") {
                     modelMenu
                 }
-                LXChipMenu(model.reasoningEffort.rawValue, symbol: "sparkle", help: "思考等级") {
+                LXChipMenu(model.reasoningLabel(model.reasoningEffort), symbol: "sparkle", help: "思考等级") {
                     Picker("思考等级", selection: $model.reasoningEffort) {
-                        ForEach(ReasoningEffortLevel.allCases, id: \.self) { level in
-                            Text(level.rawValue).tag(level)
+                        ForEach(model.reasoningMenuLevels, id: \.self) { level in
+                            Text(model.reasoningLabel(level)).tag(level)
                                 .disabled(!model.availableReasoningLevels.contains(level))
                         }
                     }

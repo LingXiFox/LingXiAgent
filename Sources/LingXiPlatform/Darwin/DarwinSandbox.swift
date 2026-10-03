@@ -51,9 +51,23 @@ public final class DarwinSandboxAdapter: PlatformSandboxProtocol, @unchecked Sen
         (allow file-read* (literal \"/bin/sh\"))
         (allow file-read* (literal \"/private/var/select/sh\"))
         \(trustedRoots)
+        \(Self.toolchainCacheRule)
         """
         return ToolProcessInvocation(executable: "/usr/bin/sandbox-exec", arguments: ["-p", profile, executable] + arguments)
     }
+
+    /// xcrun keeps its lookup cache at `<DARWIN_USER_TEMP_DIR>/xcrun_db*`, which it resolves from
+    /// confstr rather than TMPDIR, so redirecting TMPDIR into the workspace does not reach it.
+    /// Denied, every compiler call prints "couldn't create cache file" ahead of the real error and
+    /// hides it. Only that file name is opened up; the rest of the user temp directory stays shut.
+    ///
+    /// xcodebuild also reads `/Library/Preferences/com.apple.dt.Xcode.plist` to learn whether the
+    /// licence was accepted. Unreadable, it reports "You have not agreed to the Xcode license" and
+    /// exits 69 even on a machine where it was accepted — a false environment blocker that sent a
+    /// real agent run hunting for a licence problem that did not exist. That file is opened
+    /// read-only, and nothing else under /Library/Preferences.
+    static let toolchainCacheRule = "(allow file-read* file-write* (regex #\"^(/private)?/var/folders/[^/]+/[^/]+/T/xcrun_db\"))\n"
+        + "(allow file-read* (literal \"/Library/Preferences/com.apple.dt.Xcode.plist\"))"
 
     private func escapeSandboxString(_ value: String) -> String {
         value.replacingOccurrences(of: "\\", with: "\\\\")

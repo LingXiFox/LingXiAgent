@@ -255,6 +255,8 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
     public let contentRef: ContentRef?
     public let error: RuntimeError?
     public let timing: ToolTiming
+    /// Before/after diffs of the files this call wrote. Independent of Git.
+    public let fileMutations: [FileMutationDiff]
 
     public init(
         callID: ToolCallID,
@@ -264,8 +266,10 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
         preview: String? = nil,
         contentRef: ContentRef? = nil,
         error: RuntimeError? = nil,
-        timing: ToolTiming = ToolTiming()
+        timing: ToolTiming = ToolTiming(),
+        fileMutations: [FileMutationDiff] = []
     ) {
+        self.fileMutations = fileMutations
         self.callID = callID
         self.toolName = toolName
         self.success = success
@@ -277,7 +281,7 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, toolName, success, summary, preview, contentRef, error, timing
+        case callID, toolName, success, summary, preview, contentRef, error, timing, fileMutations
     }
 
     public init(from decoder: Decoder) throws {
@@ -290,6 +294,7 @@ public struct ToolResultSnapshot: Codable, Sendable, Equatable {
         contentRef = try container.decodeIfPresent(ContentRef.self, forKey: .contentRef)
         error = try container.decodeIfPresent(RuntimeError.self, forKey: .error)
         timing = try container.decodeIfPresent(ToolTiming.self, forKey: .timing) ?? ToolTiming()
+        fileMutations = try container.decodeIfPresent([FileMutationDiff].self, forKey: .fileMutations) ?? []
     }
 }
 

@@ -31,7 +31,7 @@ extension CoreHost {
         }
         let name = request.name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { throw CoreError(code: .toolArgumentInvalid, message: "名称不能为空") }
-        let baseURL = request.baseURL.trimmingCharacters(in: .whitespaces)
+        let baseURL = ProviderBaseURLNormalizer.normalize(request.baseURL, adapter: request.adapter)
         _ = try ConfigurationEndpointPolicy.resolve(baseURL, path: "$.providers.\(providerID).options.baseURL")
         for header in request.headers.keys where header.trimmingCharacters(in: .whitespaces).isEmpty {
             throw CoreError(code: .toolArgumentInvalid, message: "请求头名称不能为空 (\(header))")
@@ -93,7 +93,12 @@ extension CoreHost {
                 baseURL: baseURL,
                 apiKey: apiKey,
                 apiKeyHeader: request.apiKeyHeader.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 },
-                headers: request.headers),
+                headers: request.headers,
+                // A draft model chosen by hand in providers.json survives a save from the form.
+                localRuntime: request.localRuntime.map {
+                    LocalRuntimeOptions(backend: $0, draftModel: existing?.options.localRuntime?.backend == $0
+                                        ? existing?.options.localRuntime?.draftModel : nil)
+                } ?? existing?.options.localRuntime),
             models: models)
         // A removed model must not stay the default.
         var selected = snapshot.providers.model
@@ -295,6 +300,45 @@ extension CoreHost {
 
     /// `ProvidersConfiguration` encodes from its internal account/profile
     /// form, so edits to `providers` only persist through this initializer.
+    /// Repairs an LM Studio connection written by an earlier build.
+    ///
+    /// That build stored the catalog connection under the product id `lm-studio-local`, with no
+    /// models and no runtime marker; sharing the product id also made the settings page treat it
+    /// as catalog-managed. Waiting for the user to reconnect is not a fix, so on start the entry is
+    /// moved to `lmstudio`, marked as a local runtime, and given the models the server reports.
+    /// Its key, header and headers are kept as they are. Without a reachable server there is
+    /// nothing valid to write (an entry needs a model), so it is left alone and retried next start.
+    /// Returns the provider id it wrote, if any.
+    @discardableResult
+    func migrateLegacyLMStudioEntry(httpClient: LMStudioDiscovery.HTTPClient? = nil) async -> String? {
+        guard let store = try? requireConfigurationStore(), let snapshot = try? await store.load(),
+              var entry = snapshot.providers.providers[Self.lmStudioProductID] else { return nil }
+        var providers = snapshot.providers.providers
+        entry.options.baseURL = ProviderBaseURLNormalizer.normalize(entry.options.baseURL, adapter: "openai-compatible")
+        if entry.options.localRuntime == nil { entry.options.localRuntime = LocalRuntimeOptions(backend: .lmStudio) }
+        if entry.models.isEmpty {
+            let secret = await resolveProviderSecret(entry.options.apiKey, providerID: Self.lmStudioProductID)
+            for id in await LMStudioDiscovery.listChatModels(baseURL: entry.options.baseURL, credential: secret,
+                                                               httpClient: httpClient) ?? [] {
+                entry.models[id] = PublicModelConfiguration(name: id)
+            }
+        }
+        guard !entry.models.isEmpty else { return nil }
+        let targetID = providers["lmstudio"] == nil ? "lmstudio" : "lmstudio-\(UUID().uuidString.prefix(6).lowercased())"
+        providers.removeValue(forKey: Self.lmStudioProductID)
+        providers[targetID] = entry
+        // The old entry had no models, so nothing could have been selected from it. With no model
+        // chosen at all, the first discovered one becomes the default instead of a warning.
+        var model = snapshot.providers.model
+        if model == nil || model?.hasPrefix("\(Self.lmStudioProductID)/") == true,
+           let first = entry.models.keys.sorted().first {
+            model = "\(targetID)/\(first)"
+        }
+        guard (try? await store.saveProviders(Self.rebuiltProviders(snapshot.providers, model: model, providers: providers))) != nil else { return nil }
+        await notifyProviderCatalogChanged()
+        return targetID
+    }
+
     private static func rebuiltProviders(_ current: ProvidersConfiguration, model: String?,
                                          providers: [String: PublicProviderConfiguration]) -> ProvidersConfiguration {
         ProvidersConfiguration(schema: current.schema, version: current.version, model: model, providers: providers)

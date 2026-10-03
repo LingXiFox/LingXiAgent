@@ -535,6 +535,9 @@ struct AddProviderSheet: View {
     @State private var baseURL = "https://"
     @State private var apiKeyHeader = ""
     @State private var modelID = ""
+    /// Models the endpoint listed during the last successful test; Core's answer, not a guess.
+    @State private var discoveredModels: [String] = []
+    @State private var chosenDiscovered: Set<String> = []
     @State private var contextWindow = 128_000
     @State private var maxOutput = 8_192
 
@@ -611,9 +614,17 @@ struct AddProviderSheet: View {
                 && !Set(store.providers.map(\.id)).contains(trimmedID)
                 && !name.trimmingCharacters(in: .whitespaces).isEmpty
                 && baseURL.count > "https://".count
-                && !modelID.trimmingCharacters(in: .whitespaces).isEmpty
+                && !customModelIDs.isEmpty
                 && contextWindow > 0 && maxOutput > 0
         }
+    }
+
+    /// Ticked discovered models plus a manually typed one, deduplicated, in a stable order.
+    private var customModelIDs: [String] {
+        var ids = chosenDiscovered.sorted()
+        let manual = modelID.trimmingCharacters(in: .whitespaces)
+        if !manual.isEmpty, !ids.contains(manual) { ids.append(manual) }
+        return ids
     }
 
     private func needsKey(_ entry: ProviderCatalogEntry) -> Bool {
@@ -674,6 +685,14 @@ struct AddProviderSheet: View {
             if store.providerCatalog.isEmpty { await store.loadProviderCatalog(refresh: false) }
         }
         .onDisappear { pollTask?.cancel() }
+        // A key already handed to Core no longer matches what is typed; drop it so the next test
+        // or save stages the new one. Applies to every form in the sheet, not only the custom one.
+        .onChange(of: apiKey) { _, _ in
+            if let staged = stagedRef {
+                stagedRef = nil
+                Task { await store.discardStagedSecret(staged) }
+            }
+        }
     }
 
     // MARK: 提供商
@@ -790,6 +809,15 @@ struct AddProviderSheet: View {
                             .font(LXType.mono).frame(width: 280)
                     }
                     .lxSettingsRow()
+                } else if entry.signInMode == .localEndpoint {
+                    // A local server can still require a key (LM Studio has an auth switch), so the
+                    // field is always offered; empty means the server is open.
+                    LabeledContent("API Key") {
+                        SecureField("可选：服务开启鉴权时填写", text: $apiKey)
+                            .labelsHidden().textFieldStyle(.roundedBorder)
+                            .font(LXType.mono).frame(width: 280)
+                    }
+                    .lxSettingsRow()
                 }
                 if entry.signInMode == .localEndpoint {
                     LXTextRow(title: "本地端点", info: "目录给出的地址留空时沿用目录值。",
@@ -881,31 +909,91 @@ struct AddProviderSheet: View {
                     .labelsHidden().fixedSize()
                 }
                 .lxSettingsRow()
-                LXTextRow(title: "Base URL", text: $baseURL, prompt: "https://", monospaced: true)
+                LXTextRow(title: "Base URL",
+                          info: "填服务器地址即可，如 http://192.168.1.20:1234。OpenAI 兼容端点路径为空时自动补 /v1；"
+                              + "从 curl 粘贴的 …/chat/completions 会截回 API 根。局域网与本机地址可用 http，公网必须 https。",
+                          text: $baseURL, prompt: "http://192.168.1.20:1234 或 https://…/v1", monospaced: true)
                 LabeledContent("API Key") {
-                    SecureField("粘贴 API Key", text: $apiKey)
+                    SecureField("可选：无鉴权的本地端点留空", text: $apiKey)
                         .labelsHidden().textFieldStyle(.roundedBorder)
                         .font(LXType.mono).frame(width: 280)
                 }
                 .lxSettingsRow()
-                LXTextRow(title: "API Key 请求头", text: $apiKeyHeader, prompt: "Authorization", monospaced: true)
+                LXTextRow(title: "API Key 请求头", info: "留空即 Authorization: Bearer <Key>；未填 Key 时不发送任何鉴权头。",
+                          text: $apiKeyHeader, prompt: "Authorization", monospaced: true)
             } footer: {
                 Text("自己搭的中转或内网端点，写入 providers.json。API Key 由 CredentialBroker 保存，"
                      + "不下发给子 Agent 或 MCP，也不会以明文显示。")
             }
-            LXSettingsCard("首个模型") {
-                LXTextRow(title: "模型 ID", text: $modelID, prompt: "例如 deepseek-v4-flash", monospaced: true)
+            if let testResult {
+                VStack(alignment: .leading, spacing: 4) {
+                    LXStatusText(testResult.reachable
+                        ? "连接可达" + (testResult.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? "")
+                            + (testResult.message.map { " · \($0)" } ?? "")
+                        : "连接失败：\(testResult.message ?? "未知错误")",
+                        systemImage: testResult.reachable ? "checkmark.circle" : "xmark.circle",
+                        tone: testResult.reachable ? .success : .danger)
+                    if let resolved = testResult.resolvedBaseURL {
+                        Text("实际使用的 Base URL：\(resolved)")
+                            .font(LXType.meta).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
+            }
+            if !discoveredModels.isEmpty {
+                LXSettingsCard(title: LXSettingsSectionHeader("端点模型"), rowSpacing: LingXiMetrics.Space.xs, accessory: {
+                    Button("全选") { chosenDiscovered = Set(discoveredModels) }
+                    Button("清空") { chosenDiscovered = [] }
+                }) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 0) {
+                            ForEach(discoveredModels, id: \.self) { model in
+                                discoveredRow(model)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 170)
+                } footer: {
+                    Text("测试连接时从端点 /models 读取。已选 \(chosenDiscovered.count) 个。")
+                }
+            }
+            LXSettingsCard(title: LXSettingsSectionHeader(discoveredModels.isEmpty ? "模型" : "模型参数")) {
+                LXTextRow(title: discoveredModels.isEmpty ? "模型 ID" : "额外模型 ID",
+                          info: discoveredModels.isEmpty ? "先点「测试连接」可从端点自动列出模型。" : "可选：端点未列出的模型。",
+                          text: $modelID, prompt: "例如 qwen3.8-9b", monospaced: true)
                 LXNumberRow(title: "上下文窗口", value: $contextWindow.optional, unit: "tokens")
                 LXNumberRow(title: "输出上限", value: $maxOutput.optional, unit: "tokens")
-            }
-            if let testResult {
-                LXStatusText(testResult.reachable
-                    ? "连接可达" + (testResult.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? "")
-                    : "连接失败：\(testResult.message ?? "未知错误")",
-                    systemImage: testResult.reachable ? "checkmark.circle" : "xmark.circle",
-                    tone: testResult.reachable ? .success : .danger)
+            } footer: {
+                Text("上下文窗口与输出上限应用于本次添加的所有模型。")
             }
         }
+        // A test result describes the endpoint it was taken against. Edit the endpoint and the
+        // result, its model list and any key already handed to Core no longer apply.
+        .onChange(of: baseURL) { _, _ in invalidateCustomTest() }
+        .onChange(of: adapter) { _, _ in invalidateCustomTest() }
+        .onChange(of: apiKey) { _, _ in invalidateCustomTest() }
+    }
+
+    private func invalidateCustomTest() {
+        testResult = nil
+        discoveredModels = []
+        chosenDiscovered = []
+    }
+
+    private func discoveredRow(_ model: String) -> some View {
+        Button {
+            if chosenDiscovered.contains(model) { chosenDiscovered.remove(model) } else { chosenDiscovered.insert(model) }
+        } label: {
+            HStack(spacing: LingXiMetrics.Space.sm) {
+                Image(systemName: chosenDiscovered.contains(model) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(chosenDiscovered.contains(model) ? LXColor.accent : Color.secondary)
+                Text(model).font(LXType.monoSmall).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, LingXiMetrics.Space.sm)
+            .frame(minHeight: LingXiMetrics.Size.rowList)
+        }
+        .buttonStyle(.plain)
     }
 
     private var canTest: Bool {
@@ -928,12 +1016,19 @@ struct AddProviderSheet: View {
             await stageKeyIfNeeded()
             switch choice {
             case .custom:
-                testResult = await store.testProviderDraft(TestProviderDraftRequest(
+                let result = await store.testProviderDraft(TestProviderDraftRequest(
                     adapter: adapter, baseURL: baseURL.trimmingCharacters(in: .whitespaces),
                     apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
                     credentialRef: stagedRef))
+                testResult = result
+                discoveredModels = result?.models ?? []
+                // Keep earlier ticks that are still listed; preselect only when nothing was chosen.
+                let still = chosenDiscovered.intersection(discoveredModels)
+                chosenDiscovered = still.isEmpty && discoveredModels.count == 1 ? Set(discoveredModels) : still
             case .entry(let id):
+                // A local endpoint is tested where the user said it is, not at the catalog default.
                 testResult = await store.testProviderDraft(TestProviderDraftRequest(
+                    baseURL: endpoint.trimmingCharacters(in: .whitespaces),
                     credentialRef: stagedRef, productID: id))
             }
         }
@@ -961,10 +1056,13 @@ struct AddProviderSheet: View {
                     baseURL: baseURL.trimmingCharacters(in: .whitespaces),
                     apiKeyHeader: apiKeyHeader.trimmingCharacters(in: .whitespaces).isEmpty ? nil : apiKeyHeader,
                     apiKey: stagedRef.map { SecretUpdate.staged(reference: $0) } ?? .keep,
-                    models: [ProviderModelConfigurationDetail(
-                        modelID: modelID.trimmingCharacters(in: .whitespaces),
-                        name: modelID.trimmingCharacters(in: .whitespaces),
-                        contextWindow: contextWindow, maxOutputTokens: maxOutput)])
+                    models: customModelIDs.map {
+                        ProviderModelConfigurationDetail(modelID: $0, name: $0,
+                                                         contextWindow: contextWindow, maxOutputTokens: maxOutput)
+                    },
+                    // Core identified the endpoint during the test; the runtime's own loaded
+                    // context then overrides the window typed above.
+                    localRuntime: testResult?.reachable == true ? testResult?.localRuntime : nil)
                 if let saved = await store.saveProvider(request) {
                     stagedRef = nil
                     onFinish(saved.providerID)

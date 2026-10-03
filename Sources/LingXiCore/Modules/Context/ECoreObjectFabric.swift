@@ -246,6 +246,20 @@ public actor ECoreObjectStore {
     private var heatStates: [SessionID: [ContextObjectID: ECoreHeatState]] = [:]
     private var projectionCounts: [SessionID: [ContextObjectID: Int]] = [:]
     private var cachedMetrics: [SessionID: SessionStorageMetrics] = [:]
+    /// 权威物理普查：objectID -> 载荷字节数，覆盖当前**真实存在**的每一个 E-Core 载荷。
+    ///
+    /// 键是内容寻址的 objectID，所以这张表本质是集合，而普查需要的正是集合语义：
+    /// 同一份字节既经 `store()` 又经 `pageOut()` 落盘、或一份载荷被四十条引用指向，都只占一项。
+    /// 按引用计数会让一个去重存储的读数随 churn 增长——那正是泄漏检测器最不能有的性质。
+    ///
+    /// 之所以不从 `ObservationMetadata` 派生：`pageOut()` 有意不写 `.meta.json`。那不是遗漏，
+    /// 而是职责边界——`ObservationMetadata` 描述工具产物语义（`toolCallID` 非可选），
+    /// `ECoreReference` 描述 occurrence 生命周期，都不属于载荷本身。把 page-out 伪装成工具产物
+    /// 来让旧口径变对，会同时弄脏这三者的语义。载荷的真相是 `objects/<objectID>.txt`，
+    /// 于是普查就直接数它。
+    private var physicalObjects: [SessionID: [ContextObjectID: Int]] = [:]
+    /// 冷启动扫描每个会话只做一次；`storageMetrics` 的 O(1) 承诺靠它维持。
+    private var censusLoaded: Set<SessionID> = []
     /// Developer Debug Mode 旁路。nil 表示未开启，此时下面每一处埋点都只是一次 nil 判断。
     ///
     /// 有意独立于 `configuration.heatTrackingEnabled`：热度统计关掉时，page-out 与 restore 的
@@ -323,6 +337,7 @@ public actor ECoreObjectStore {
     /// 调用方必须处于 Fail-Open 保护下：持久化后端的磁盘异常沿现有路径降级。
     private func writePayload(sessionID: SessionID, objectID: ContextObjectID, content: String, metadata: ObservationMetadata) throws {        guard persistsPayloads else {
             memoryPayloads[sessionID, default: [:]][objectID] = content
+            censusRegister(sessionID: sessionID, objectID: objectID, bytes: content.utf8.count)
             return
         }
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
@@ -332,13 +347,65 @@ public actor ECoreObjectStore {
             try content.write(to: targetURL, atomically: false, encoding: .utf8)
         }
         try JSONEncoder().encode(metadata).write(to: metadataURL(sessionID: sessionID, objectID: objectID), options: [])
+        censusRegister(sessionID: sessionID, objectID: objectID, bytes: content.utf8.count)
     }
 
     private func removePayload(sessionID: SessionID, objectID: ContextObjectID) {
         memoryPayloads[sessionID]?.removeValue(forKey: objectID)
+        censusUnregister(sessionID: sessionID, objectID: objectID)
         guard persistsPayloads else { return }
         try? FileManager.default.removeItem(at: payloadURL(sessionID: sessionID, objectID: objectID))
         try? FileManager.default.removeItem(at: metadataURL(sessionID: sessionID, objectID: objectID))
+    }
+
+    // MARK: - 权威物理普查（physical census）
+
+    /// 把会话的普查从磁盘（或内存后端）建立起来。每个会话只扫一次。
+    ///
+    /// 读的是 `.txt` 文件大小而不是元数据里记的字节数：载荷被截断写入或外部改动时，
+    /// 一个声称「有多少字节」的仪表必须报它测到的值，而不是当初打算写的值。
+    private func ensureCensusLoaded(sessionID: SessionID) {
+        guard !censusLoaded.contains(sessionID) else { return }
+        censusLoaded.insert(sessionID)
+        var objects: [ContextObjectID: Int] = [:]
+        if persistsPayloads {
+            let dir = sessionObjectsDirectory(sessionID: sessionID)
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]
+            )) ?? []
+            for url in files where url.lastPathComponent.hasSuffix(".txt") {
+                guard let objectID = try? ContextObjectID(url.deletingPathExtension().lastPathComponent) else { continue }
+                objects[objectID] = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            }
+        } else {
+            for (objectID, content) in (memoryPayloads[sessionID] ?? [:]) {
+                objects[objectID] = content.utf8.count
+            }
+        }
+        physicalObjects[sessionID] = objects
+        refreshCachedMetrics(sessionID: sessionID)
+    }
+
+    /// 登记一个载荷。重复登记同内容是无操作，这正是去重语义要求的。
+    private func censusRegister(sessionID: SessionID, objectID: ContextObjectID, bytes: Int) {
+        ensureCensusLoaded(sessionID: sessionID)
+        guard physicalObjects[sessionID]?[objectID] == nil else { return }
+        physicalObjects[sessionID, default: [:]][objectID] = max(0, bytes)
+        refreshCachedMetrics(sessionID: sessionID)
+    }
+
+    private func censusUnregister(sessionID: SessionID, objectID: ContextObjectID) {
+        ensureCensusLoaded(sessionID: sessionID)
+        guard physicalObjects[sessionID]?.removeValue(forKey: objectID) != nil else { return }
+        refreshCachedMetrics(sessionID: sessionID)
+    }
+
+    private func refreshCachedMetrics(sessionID: SessionID) {
+        let objects = physicalObjects[sessionID] ?? [:]
+        cachedMetrics[sessionID] = SessionStorageMetrics(
+            count: objects.count,
+            totalBytes: objects.values.reduce(0) { $0 + $1 }
+        )
     }
 
     // MARK: - Page-out 引用层（契约「补充冻结：ECoreObjectID 身份」）
@@ -440,13 +507,19 @@ public actor ECoreObjectStore {
     private func writePageOutPayload(sessionID: SessionID, objectID: ContextObjectID, content: String) throws {
         guard persistsPayloads else {
             memoryPayloads[sessionID, default: [:]][objectID] = content
+            censusRegister(sessionID: sessionID, objectID: objectID, bytes: content.utf8.count)
             return
         }
         let url = payloadURL(sessionID: sessionID, objectID: objectID)
-        guard !FileManager.default.fileExists(atPath: url.path) else { return }
-        let dir = sessionObjectsDirectory(sessionID: sessionID)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try content.write(to: url, atomically: false, encoding: .utf8)
+        let existed = FileManager.default.fileExists(atPath: url.path)
+        if !existed {
+            let dir = sessionObjectsDirectory(sessionID: sessionID)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try content.write(to: url, atomically: false, encoding: .utf8)
+        }
+        // 登记放在 guard-else-return 之外：早退时文件已经存在，它同样是一个真实载荷，
+        // 而重启后的进程内存里并没有它的记录。登记是幂等的，所以两条路径都安全。
+        censusRegister(sessionID: sessionID, objectID: objectID, bytes: content.utf8.count)
     }
 
     /// Exact Restore 的第一跳：referenceID → 引用。不靠词法或语义检索猜对象是什么（契约第九节）。
@@ -481,13 +554,20 @@ public actor ECoreObjectStore {
     /// 丢弃引用。只有当该 session 内再无引用指向该 payload 时才回收，
     /// 这是内容去重之后必须付的代价：删对象不能再由单次引用决定。
     public func dropReference(sessionID: SessionID, referenceID: String) async {
-        guard let ref = pageOutReferences[sessionID]?[referenceID] else { return }
+        // 走 `reference(...)` 而不是直接查内存表：重启后 `pageOutReferences` 是空的，
+        // 原先的 `guard ... else { return }` 会让一次冷启动后的删除静默变成无操作，
+        // 载荷于是永不回收——那正是「长期存储是否泄漏」这个问题最想发现的东西。
+        guard let ref = await reference(sessionID: sessionID, referenceID: referenceID) else { return }
         pageOutReferences[sessionID]?.removeValue(forKey: referenceID)
         if persistsPayloads {
             try? FileManager.default.removeItem(at: referenceURL(sessionID: sessionID, referenceID: referenceID))
         }
-        let stillReferenced = pageOutReferences[sessionID]?.values.contains { $0.objectID == ref.objectID } ?? false
+        // 同理，判断「还有没有别的引用」之前必须先把目录里的引用补齐，
+        // 否则内存里恰好缺一条会被当成「没人引用了」而误删仍被需要的载荷。
+        let allReferences = await references(sessionID: sessionID)
+        let stillReferenced = allReferences.contains { $0.objectID == ref.objectID }
         if !stillReferenced {
+            censusUnregister(sessionID: sessionID, objectID: ref.objectID)
             pageOutObjects[sessionID]?.removeValue(forKey: ref.objectID)
             memoryPayloads[sessionID]?.removeValue(forKey: ref.objectID)
             if persistsPayloads {
@@ -586,25 +666,9 @@ public actor ECoreObjectStore {
             if metadataCache[sessionID] == nil {
                 metadataCache[sessionID] = [:]
             }
-            let previousMeta = metadataCache[sessionID]?[objectID]
             metadataCache[sessionID]?[objectID] = metadata
-
-            if var existing = cachedMetrics[sessionID] {
-                if let previousMeta {
-                    existing = SessionStorageMetrics(
-                        count: existing.count,
-                        totalBytes: max(0, existing.totalBytes - previousMeta.totalBytes + byteCount)
-                    )
-                } else {
-                    existing = SessionStorageMetrics(
-                        count: existing.count + 1,
-                        totalBytes: existing.totalBytes + byteCount
-                    )
-                }
-                cachedMetrics[sessionID] = existing
-            } else {
-                cachedMetrics[sessionID] = SessionStorageMetrics(count: 1, totalBytes: byteCount)
-            }
+            // 指标不在这里累加。`writePayload` 已经把载荷登记进权威普查，
+            // 而这里按「本次写入」增量加一次会把 page-out 那份算漏、把重复 store 算重。
 
             if configuration.heatTrackingEnabled {
                 let event = ECoreAccessEvent(
@@ -1024,19 +1088,14 @@ public actor ECoreObjectStore {
                 let txtURL = objectsDir.appendingPathComponent("\(objID.rawValue).txt", isDirectory: false)
                 try? FileManager.default.removeItem(at: url)
                 try? FileManager.default.removeItem(at: txtURL)
+                censusUnregister(sessionID: sessionID, objectID: objID)
             }
         }
         if projectionCounts[sessionID]?.isEmpty == true {
             projectionCounts.removeValue(forKey: sessionID)
         }
-        if let remaining = metadataCache[sessionID]?.values {
-            cachedMetrics[sessionID] = SessionStorageMetrics(
-                count: remaining.count,
-                totalBytes: remaining.reduce(0) { $0 + $1.totalBytes }
-            )
-        } else {
-            cachedMetrics[sessionID] = SessionStorageMetrics(count: 0, totalBytes: 0)
-        }
+        // 不再从 metadataCache 反推 cachedMetrics：那个来源看不见 page-out 载荷，
+        // 用它覆盖会把刚登记好的权威普查改回旧口径。普查由 register/unregister 维护。
         notifyMutation()
     }
 
@@ -1049,24 +1108,23 @@ public actor ECoreObjectStore {
         memoryPayloads.removeValue(forKey: sessionID)
         pageOutObjects.removeValue(forKey: sessionID)
         pageOutReferences.removeValue(forKey: sessionID)
+        physicalObjects.removeValue(forKey: sessionID)
+        censusLoaded.remove(sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)
         try? FileManager.default.removeItem(at: objectsDir)
         try? FileManager.default.removeItem(at: referencesDirectory(sessionID: sessionID))
         notifyMutation()
     }
 
-    /// 获取会话级外部存储指标（O(1) 内存访问，仅冷启动时扫描一次）
+    /// 会话级外部存储指标（O(1) 内存访问，仅冷启动时扫描一次）。
+    ///
+    /// 这是**权威物理普查**：覆盖 `store()` 与 `pageOut()` 两条来源的全部载荷，按 objectID
+    /// 去重。旧实现从 `listObjects()` 派生，而那条路径只认 `.meta.json`，因此看不见任何
+    /// page-out 内容——`ECoreStateSnapshot.objectCount/totalBytes` 于是系统性少算，
+    /// 偏偏少算的就是 endurance test 要测的那部分。
     public func storageMetrics(for sessionID: SessionID) async -> SessionStorageMetrics {
-        if let cached = cachedMetrics[sessionID] {
-            return cached
-        }
-        let objects = await listObjects(sessionID: sessionID)
-        let metrics = SessionStorageMetrics(
-            count: objects.count,
-            totalBytes: objects.reduce(0) { $0 + $1.totalBytes }
-        )
-        cachedMetrics[sessionID] = metrics
-        return metrics
+        ensureCensusLoaded(sessionID: sessionID)
+        return cachedMetrics[sessionID] ?? SessionStorageMetrics()
     }
 
     /// 获取特定对象的投影计数（供测试与诊断使用）

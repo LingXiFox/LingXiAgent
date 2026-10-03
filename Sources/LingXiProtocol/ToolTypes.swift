@@ -312,6 +312,36 @@ public struct ToolDiagnostics: Sendable, Equatable, Codable {
     }
 }
 
+/// What a file-mutation tool actually did to one file, as a unified diff of the real bytes before
+/// and after the call.
+///
+/// Independent of Git on purpose: the target may be outside any repository (`~/Desktop`), and
+/// `git diff` would not show an untracked new file anyway. This is the agent's mutation record;
+/// the workspace's Git status stays a separate, Git-semantics view.
+public struct FileMutationDiff: Sendable, Equatable, Codable {
+    public enum Kind: String, Sendable, Codable, Equatable {
+        case created, modified, deleted
+    }
+
+    /// Workspace-relative when inside the workspace, otherwise absolute with `~` for home.
+    public let path: String
+    public let kind: Kind
+    public let unifiedDiff: String
+    public let additions: Int
+    public let deletions: Int
+    /// True when the diff was cut to stay bounded; counts still describe the whole change.
+    public let truncated: Bool
+
+    public init(path: String, kind: Kind, unifiedDiff: String, additions: Int, deletions: Int, truncated: Bool = false) {
+        self.path = path
+        self.kind = kind
+        self.unifiedDiff = unifiedDiff
+        self.additions = additions
+        self.deletions = deletions
+        self.truncated = truncated
+    }
+}
+
 public struct ToolResult: Sendable, Equatable, Codable {
     public let callID: ToolCallID
     public let success: Bool
@@ -328,6 +358,8 @@ public struct ToolResult: Sendable, Equatable, Codable {
     public let exitCode: Int?
     public let diagnostics: ToolDiagnostics?
     public let changedFiles: [String]
+    /// Real before/after diffs for `write_file`, `edit_file` and `apply_patch`. Empty otherwise.
+    public let fileMutations: [FileMutationDiff]
     /// 完整输出在持久化 archive 中时，供调用方继续读取的引用。
     public let continuation: String?
     public let sessionID: SessionID?
@@ -335,10 +367,11 @@ public struct ToolResult: Sendable, Equatable, Codable {
     public let modelStepID: ModelStepID?
 
     private enum CodingKeys: String, CodingKey {
-        case callID, success, content, error, toolName, outcome, summary, metadata, provenance, touchedResources, timing, output, exitCode, diagnostics, changedFiles, continuation, sessionID, agentRunID, modelStepID
+        case callID, success, content, error, toolName, outcome, summary, metadata, provenance, touchedResources, timing, output, exitCode, diagnostics, changedFiles, fileMutations, continuation, sessionID, agentRunID, modelStepID
     }
 
-    public init(callID: ToolCallID, success: Bool, content: String, error: ToolError? = nil, toolName: String? = nil, outcome: ToolOutcome? = nil, summary: String = "", metadata: [String: String] = [:], provenance: ToolProvenance? = nil, touchedResources: [ToolTouchedResource] = [], timing: ToolTiming = ToolTiming(), output: ToolOutputMetadata? = nil, exitCode: Int? = nil, diagnostics: ToolDiagnostics? = nil, changedFiles: [String] = [], continuation: String? = nil, sessionID: SessionID? = nil, agentRunID: AgentRunID? = nil, modelStepID: ModelStepID? = nil) {
+    public init(callID: ToolCallID, success: Bool, content: String, error: ToolError? = nil, toolName: String? = nil, outcome: ToolOutcome? = nil, summary: String = "", metadata: [String: String] = [:], provenance: ToolProvenance? = nil, touchedResources: [ToolTouchedResource] = [], timing: ToolTiming = ToolTiming(), output: ToolOutputMetadata? = nil, exitCode: Int? = nil, diagnostics: ToolDiagnostics? = nil, changedFiles: [String] = [], continuation: String? = nil, sessionID: SessionID? = nil, agentRunID: AgentRunID? = nil, modelStepID: ModelStepID? = nil, fileMutations: [FileMutationDiff] = []) {
+        self.fileMutations = fileMutations
         self.callID = callID
         self.success = success
         self.content = content
@@ -361,7 +394,7 @@ public struct ToolResult: Sendable, Equatable, Codable {
     }
 
     public func withProvenance(sessionID: SessionID, agentRunID: AgentRunID?, modelStepID: ModelStepID? = nil) -> ToolResult {
-        ToolResult(callID: callID, success: success, content: content, error: error, toolName: toolName, outcome: outcome, summary: summary, metadata: metadata, provenance: provenance, touchedResources: touchedResources, timing: timing, output: output, exitCode: exitCode, diagnostics: diagnostics, changedFiles: changedFiles, continuation: continuation, sessionID: sessionID, agentRunID: agentRunID, modelStepID: modelStepID ?? self.modelStepID)
+        ToolResult(callID: callID, success: success, content: content, error: error, toolName: toolName, outcome: outcome, summary: summary, metadata: metadata, provenance: provenance, touchedResources: touchedResources, timing: timing, output: output, exitCode: exitCode, diagnostics: diagnostics, changedFiles: changedFiles, continuation: continuation, sessionID: sessionID, agentRunID: agentRunID, modelStepID: modelStepID ?? self.modelStepID, fileMutations: fileMutations)
     }
 
     public init(from decoder: Decoder) throws {
@@ -381,6 +414,7 @@ public struct ToolResult: Sendable, Equatable, Codable {
         exitCode = try values.decodeIfPresent(Int.self, forKey: .exitCode)
         diagnostics = try values.decodeIfPresent(ToolDiagnostics.self, forKey: .diagnostics)
         changedFiles = try values.decodeIfPresent([String].self, forKey: .changedFiles) ?? []
+        fileMutations = try values.decodeIfPresent([FileMutationDiff].self, forKey: .fileMutations) ?? []
         continuation = try values.decodeIfPresent(String.self, forKey: .continuation)
         sessionID = try values.decodeIfPresent(SessionID.self, forKey: .sessionID)
         agentRunID = try values.decodeIfPresent(AgentRunID.self, forKey: .agentRunID)
@@ -406,8 +440,13 @@ public struct ToolResult: Sendable, Equatable, Codable {
             changedFiles: changedFiles,
             continuation: continuation,
             sessionID: sessionID,
-            agentRunID: agentRunID
+            agentRunID: agentRunID,
+            fileMutations: fileMutations
         )
+    }
+
+    public func withFileMutations(_ mutations: [FileMutationDiff]) -> ToolResult {
+        ToolResult(callID: callID, success: success, content: content, error: error, toolName: toolName, outcome: outcome, summary: summary, metadata: metadata, provenance: provenance, touchedResources: touchedResources, timing: timing, output: output, exitCode: exitCode, diagnostics: diagnostics, changedFiles: changedFiles, continuation: continuation, sessionID: sessionID, agentRunID: agentRunID, modelStepID: modelStepID, fileMutations: mutations)
     }
 
     public func withTiming(_ newTiming: ToolTiming) -> ToolResult {
@@ -429,7 +468,8 @@ public struct ToolResult: Sendable, Equatable, Codable {
             changedFiles: changedFiles,
             continuation: continuation,
             sessionID: sessionID,
-            agentRunID: agentRunID
+            agentRunID: agentRunID,
+            fileMutations: fileMutations
         )
     }
 }

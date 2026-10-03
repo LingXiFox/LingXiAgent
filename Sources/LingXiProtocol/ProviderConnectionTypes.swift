@@ -112,6 +112,14 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
     /// nil until something has actually probed this model. Absent is not the same as available: a
     /// model nobody has tried yet must not read as verified.
     public let availability: ModelAvailability?
+    /// What the model's reasoning control actually offers. Nil when only the `reasoning` flag is
+    /// known; a toggle model reports exactly Off and On.
+    public let reasoningCapability: ReasoningCapability?
+    /// The most the weights can address (a local runtime's `max_context_length`). Shown beside,
+    /// never instead of, `contextWindow`.
+    public let modelMaximumContextWindow: Int?
+    /// Set only when `contextWindow` came from a running local runtime's loaded instance.
+    public let runtimeContextWindow: Int?
 
     public init(
         id: String,
@@ -128,8 +136,14 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         backendVariants: [String]? = nil,
         vision: Bool = false,
         toolCalling: Bool = true,
-        availability: ModelAvailability? = nil
+        availability: ModelAvailability? = nil,
+        reasoningCapability: ReasoningCapability? = nil,
+        modelMaximumContextWindow: Int? = nil,
+        runtimeContextWindow: Int? = nil
     ) {
+        self.reasoningCapability = reasoningCapability
+        self.modelMaximumContextWindow = modelMaximumContextWindow
+        self.runtimeContextWindow = runtimeContextWindow
         self.id = id
         self.providerID = providerID
         self.modelID = modelID
@@ -164,6 +178,9 @@ public struct ProviderModelInfo: Codable, Sendable, Equatable, Identifiable {
         self.vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         self.toolCalling = try container.decodeIfPresent(Bool.self, forKey: .toolCalling) ?? true
         self.availability = try container.decodeIfPresent(ModelAvailability.self, forKey: .availability)
+        self.reasoningCapability = try container.decodeIfPresent(ReasoningCapability.self, forKey: .reasoningCapability)
+        self.modelMaximumContextWindow = try container.decodeIfPresent(Int.self, forKey: .modelMaximumContextWindow)
+        self.runtimeContextWindow = try container.decodeIfPresent(Int.self, forKey: .runtimeContextWindow)
     }
 }
 

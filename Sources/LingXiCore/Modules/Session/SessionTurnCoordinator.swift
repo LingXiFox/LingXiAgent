@@ -131,7 +131,8 @@ public actor SessionTurnCoordinator {
                                     callID: res.callID,
                                     toolName: res.toolName,
                                     success: res.success,
-                                    summary: summaryText
+                                    summary: summaryText,
+                                    fileMutations: res.fileMutations
                                 )
                                 _ = try? await eventLog.append(causal: causal, payload: .toolCompleted(
                                     callID: res.callID,
@@ -173,7 +174,8 @@ public actor SessionTurnCoordinator {
                             callID: res.callID,
                             toolName: res.toolName,
                             success: res.success,
-                            summary: summaryText
+                            summary: summaryText,
+                            fileMutations: res.fileMutations
                         )
                         if !hasExistingEvents {
                             _ = try? await eventLog.append(causal: causal, payload: .toolCompleted(

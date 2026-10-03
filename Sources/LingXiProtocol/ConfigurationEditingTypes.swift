@@ -341,10 +341,15 @@ public struct SaveProviderConfigurationRequest: Codable, Sendable, Equatable {
     public var headers: [String: String]
     public var apiKey: SecretUpdate
     public var models: [ProviderModelConfigurationDetail]?
+    /// Marks the endpoint as a local inference runtime. Nil keeps what is stored, so the plain
+    /// edit form cannot strip a runtime it does not show.
+    public var localRuntime: LocalInferenceBackend?
 
     public init(providerID: String, name: String, adapter: String, baseURL: String,
                 apiKeyHeader: String? = nil, headers: [String: String] = [:],
-                apiKey: SecretUpdate = .keep, models: [ProviderModelConfigurationDetail]? = nil) {
+                apiKey: SecretUpdate = .keep, models: [ProviderModelConfigurationDetail]? = nil,
+                localRuntime: LocalInferenceBackend? = nil) {
+        self.localRuntime = localRuntime
         self.providerID = providerID
         self.name = name
         self.adapter = adapter

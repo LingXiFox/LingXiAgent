@@ -95,9 +95,23 @@ enum CoreProjection {
 
     static func timeline(_ session: SessionViewState?) -> [TimelineItemPresentation] {
         guard let session else { return [] }
-        return session.timelineNodes.compactMap { node in
-            guard let kind = kind(for: node, in: session) else { return nil }
-            return TimelineItemPresentation(id: node.id.rawValue, timestamp: node.timestamp, kind: kind)
+        return session.timelineNodes.flatMap { node -> [TimelineItemPresentation] in
+            guard let kind = kind(for: node, in: session) else { return [] }
+            let item = TimelineItemPresentation(id: node.id.rawValue, timestamp: node.timestamp, kind: kind)
+            return [item] + mutationDiffs(for: node)
+        }
+    }
+
+    /// One diff row per file a mutation tool changed, from Core's before/after capture.
+    ///
+    /// This is the agent's own record, not `git diff`: it shows a new file outside any repository
+    /// and an untracked one inside it, and it never touches the index. Ids derive from the tool
+    /// node, so a re-projection replaces rather than duplicates them.
+    static func mutationDiffs(for node: TimelineNode) -> [TimelineItemPresentation] {
+        guard case .tool(let tool) = node.kind, let mutations = tool.result?.fileMutations, !mutations.isEmpty else { return [] }
+        return mutations.enumerated().map { index, mutation in
+            TimelineItemPresentation(id: "\(node.id.rawValue)#mutation-\(index)", timestamp: node.timestamp,
+                                     kind: .diff(filePath: mutation.path, diffContent: mutation.unifiedDiff))
         }
     }
 

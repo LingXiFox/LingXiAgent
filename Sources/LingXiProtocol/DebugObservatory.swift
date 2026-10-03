@@ -21,6 +21,9 @@ public enum DebugMetricProvenance: String, Sendable, Equatable, Codable {
     case measured
     /// Reported by the provider upstream; Core only forwards it.
     case coreReported
+    /// Read from a local inference runtime's own status endpoint: its configuration as it reports
+    /// it, not something a response carried.
+    case nativeRuntime
     /// Computed from other metrics by the formula named in `basis`.
     case derived
     /// An approximation. `basis` says what it approximates and how.
@@ -117,6 +120,14 @@ public enum DebugTelemetryCategory: String, Sendable, Equatable, Codable {
     case eCoreObjectStored = "ecore.object_stored"
     case agentTurnStarted = "agent.turn_started"
     case agentTurnCompleted = "agent.turn_completed"
+    /// Tool-loop verdicts, so a stopped run says which rule stopped it.
+    case agentLoopExactDuplicate = "agent.loop.exact_duplicate"
+    case agentLoopFailureCluster = "agent.loop.failure_cluster"
+    case agentLoopStrategyChanged = "agent.loop.strategy_changed"
+    case agentLoopSoftWarning = "agent.loop.soft_warning"
+    case agentLoopHardStop = "agent.loop.hard_stop"
+    /// A local runtime response carried speculative-decoding statistics.
+    case localRuntimeSpeculative = "local_runtime.speculative"
     case toolStarted = "tool.started"
     case toolCompleted = "tool.completed"
     case providerRequestStarted = "provider.request_started"
@@ -500,22 +511,44 @@ public struct DebugECoreCounters: Codable, Sendable, Equatable {
     }
 }
 
-/// E-Core census, with the known blind spot stated rather than hidden.
+/// E-Core census.
 ///
-/// `ECoreObjectStore.pageOut` writes only `<objectID>.txt` and never a `.meta.json`, while
-/// `listObjects` enumerates `*.meta.json`. So `objectCount` and `totalBytes` systematically omit
-/// everything P-Core evicted — which is precisely the population an endurance run is measuring.
-/// Rather than quietly fix that here (it would move `storageMetrics`, `dropReference`, `purge` and
-/// every existing `objectCount` assertion), the panel reports both figures and says which one the
-/// census cannot see.
+/// `objectCount` / `totalBytes` are the **authoritative physical census**: every payload that
+/// exists right now, whether it arrived through `store()` or through `pageOut()`, deduplicated by
+/// content-addressed object id. These are the numbers to read for "is E-Core growing without
+/// bound".
+///
+/// The breakdowns below are kept beside the total rather than folded into it.
+/// `metaIndexObjectCount` is what the older `.meta.json`-based view reports, and the gap between
+/// it and `objectCount` is exactly the page-out population that view cannot see — shown so the
+/// difference is reconcilable instead of looking like a broken instrument. `pageOutOnly*` is the
+/// bypass's own tally taken as each page-out happened, and it is the only figure that separates
+/// "one object paged out forty times" from "forty objects".
 public struct DebugECorePanel: Codable, Sendable, Equatable {
+    /// Authoritative: distinct payloads that physically exist right now.
     public let objectCount: Int
+    /// Authoritative: their combined size in bytes.
     public let totalBytes: Int
+    /// Occurrence-level references. Not an object count and not comparable to one: dedupe means
+    /// many references legitimately share a single payload.
     public let referenceCount: Int
+    /// The narrower legacy view that only sees `.meta.json` objects.
+    public let metaIndexObjectCount: Int?
+    public let metaIndexTotalBytes: Int?
     public let pageOutOnlyObjectCount: Int
     public let pageOutOnlyBytes: Int
-    /// False while page-out payloads stay out of the metadata index.
+    /// Deprecated — replaced by `censusIsPhysical` (and `censusBlindSpotObjectCount` for the
+    /// breakdown). Kept only so a client built against the earlier shape still decodes.
+    ///
+    /// It existed to flag that `objectCount` / `totalBytes` omitted page-out payloads. That is
+    /// fixed, but the flag still states its literal fact and stays `false`: the metadata index
+    /// itself still cannot see page-out payloads. Flipping it to `true` would make the field lie
+    /// about its own name; an older client reading `false` shows a conservative warning, never an
+    /// overconfident one.
     public let pageOutsVisibleViaMetaIndex: Bool
+    /// True when `objectCount` / `totalBytes` come from the physical payload census. A client that
+    /// needs that guarantee should assert on this rather than infer it from the flag above.
+    public let censusIsPhysical: Bool
     public let counters: DebugECoreCounters
     public let recentEvictions: [DebugEvictionEntry]
     public let heat: DebugHeatSummary?
@@ -526,9 +559,12 @@ public struct DebugECorePanel: Codable, Sendable, Equatable {
         objectCount: Int = 0,
         totalBytes: Int = 0,
         referenceCount: Int = 0,
+        metaIndexObjectCount: Int? = nil,
+        metaIndexTotalBytes: Int? = nil,
         pageOutOnlyObjectCount: Int = 0,
         pageOutOnlyBytes: Int = 0,
         pageOutsVisibleViaMetaIndex: Bool = false,
+        censusIsPhysical: Bool = true,
         counters: DebugECoreCounters = DebugECoreCounters(),
         recentEvictions: [DebugEvictionEntry] = [],
         heat: DebugHeatSummary? = nil,
@@ -537,13 +573,43 @@ public struct DebugECorePanel: Codable, Sendable, Equatable {
         self.objectCount = objectCount
         self.totalBytes = totalBytes
         self.referenceCount = referenceCount
+        self.metaIndexObjectCount = metaIndexObjectCount
+        self.metaIndexTotalBytes = metaIndexTotalBytes
         self.pageOutOnlyObjectCount = pageOutOnlyObjectCount
         self.pageOutOnlyBytes = pageOutOnlyBytes
         self.pageOutsVisibleViaMetaIndex = pageOutsVisibleViaMetaIndex
+        self.censusIsPhysical = censusIsPhysical
         self.counters = counters
         self.recentEvictions = recentEvictions
         self.heat = heat
         self.heatTrackingEnabled = heatTrackingEnabled
+    }
+
+    /// Tolerates a payload from a Core that predates the physical census. Such a Core's
+    /// `objectCount` was the metadata-index view, so a missing `censusIsPhysical` decodes as
+    /// `false` — the honest reading — instead of failing the whole snapshot.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        objectCount = try c.decode(Int.self, forKey: .objectCount)
+        totalBytes = try c.decode(Int.self, forKey: .totalBytes)
+        referenceCount = try c.decode(Int.self, forKey: .referenceCount)
+        metaIndexObjectCount = try c.decodeIfPresent(Int.self, forKey: .metaIndexObjectCount)
+        metaIndexTotalBytes = try c.decodeIfPresent(Int.self, forKey: .metaIndexTotalBytes)
+        pageOutOnlyObjectCount = try c.decode(Int.self, forKey: .pageOutOnlyObjectCount)
+        pageOutOnlyBytes = try c.decode(Int.self, forKey: .pageOutOnlyBytes)
+        pageOutsVisibleViaMetaIndex = try c.decode(Bool.self, forKey: .pageOutsVisibleViaMetaIndex)
+        censusIsPhysical = try c.decodeIfPresent(Bool.self, forKey: .censusIsPhysical) ?? false
+        counters = try c.decode(DebugECoreCounters.self, forKey: .counters)
+        recentEvictions = try c.decode([DebugEvictionEntry].self, forKey: .recentEvictions)
+        heat = try c.decodeIfPresent(DebugHeatSummary.self, forKey: .heat)
+        heatTrackingEnabled = try c.decode(Bool.self, forKey: .heatTrackingEnabled)
+    }
+
+    /// Payloads the metadata index cannot see. Non-zero is normal — it is the population the old view
+    /// dropped, now made explicit instead of silently missing.
+    public var censusBlindSpotObjectCount: Int {
+        guard let metaIndexObjectCount else { return 0 }
+        return max(0, objectCount - metaIndexObjectCount)
     }
 }
 
@@ -657,6 +723,9 @@ public struct RuntimeObservatorySnapshot: Codable, Sendable, Equatable {
     /// Branch prediction. Core has produced this every turn and macOS has never displayed it; it
     /// belongs here because it is observability and reads nothing back into the loop.
     public let prediction: PredictionRuntimeSnapshot?
+    /// The local inference runtime behind the current model, as of its last discovery and last
+    /// response. Nil for a cloud provider. Read from Core's cache; producing it sends no request.
+    public let localRuntime: LocalRuntimeModelStatus?
 
     /// The session's model is deliberately absent: the frontends already carry it in the
     /// authoritative pushed state, and repeating it here would create a second place for it to be
@@ -672,8 +741,10 @@ public struct RuntimeObservatorySnapshot: Codable, Sendable, Equatable {
         cache: DebugCacheSample? = nil,
         prefixAudit: DebugPrefixByteAudit? = nil,
         scheduler: DebugSchedulerDecision? = nil,
-        prediction: PredictionRuntimeSnapshot? = nil
+        prediction: PredictionRuntimeSnapshot? = nil,
+        localRuntime: LocalRuntimeModelStatus? = nil
     ) {
+        self.localRuntime = localRuntime
         self.generatedAt = generatedAt
         self.sessionID = sessionID
         self.revision = revision

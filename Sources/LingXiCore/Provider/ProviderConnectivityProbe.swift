@@ -16,7 +16,8 @@ enum ProviderConnectivityProbe {
     struct Outcome: Sendable, Equatable {
         let latencyMs: Double
         /// Models the endpoint listed; 0 when the reply carried no list.
-        let models: Int
+        var models: Int { modelIDs.count }
+        let modelIDs: [String]
     }
 
     private static let anthropicVersion = "2023-06-01"
@@ -26,8 +27,14 @@ enum ProviderConnectivityProbe {
         var value = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
         while value.hasSuffix("/") { value.removeLast() }
-        for suffix in ["/chat/completions", "/responses", "/completions", "/models"] where value.hasSuffix(suffix) {
+        for suffix in ["/chat/completions", "/responses", "/completions", "/models", "/v1/messages", "/messages"]
+            where value.hasSuffix(suffix) {
             value = String(value.dropLast(suffix.count))
+        }
+        // Anthropic lists models at `/v1/models` under the same root its runtime appends
+        // `/v1/messages` to; asking `<root>/models` tested a URL the real call never uses.
+        if adapter == "anthropic-messages", !value.hasSuffix("/v1") {
+            return URL(string: value + "/v1/models")
         }
         return URL(string: value + "/models")
     }
@@ -101,7 +108,7 @@ enum ProviderConnectivityProbe {
         guard (200...299).contains(http.statusCode) else {
             throw CoreError(code: .provider, message: "HTTP \(http.statusCode)")
         }
-        return Outcome(latencyMs: elapsed, models: Self.modelIDs(in: data).count)
+        return Outcome(latencyMs: elapsed, modelIDs: Self.modelIDs(in: data))
     }
 
     /// Model ids a listing endpoint carried.

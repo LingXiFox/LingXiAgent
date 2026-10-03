@@ -4,6 +4,12 @@ import LingXiProtocol
 public actor RuntimeDiagnosticsStore {
     private let limit: Int
     private var events: [RuntimeTraceEvent] = []
+    /// Sees every recorded event. Set only while Developer Debug Mode is on.
+    private var observer: (@Sendable (RuntimeTraceEvent) -> Void)?
+
+    public func setObserver(_ observer: (@Sendable (RuntimeTraceEvent) -> Void)?) {
+        self.observer = observer
+    }
 
     public init(limit: Int = 4_000) {
         self.limit = max(100, limit)
@@ -42,6 +48,7 @@ public actor RuntimeDiagnosticsStore {
             errorCode: errorCode
         )
         events.append(item)
+        observer?(item)
         if events.count > limit { events.removeFirst(events.count - limit) }
     }
 

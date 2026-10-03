@@ -359,12 +359,25 @@ public struct TestProviderResult: Codable, Sendable, Equatable {
     public let reachable: Bool
     public let latencyMs: Double?
     public let message: String?
+    /// Model ids the endpoint listed during the test, so a form can offer them instead of asking
+    /// the user to type one. Nil from an older Core or when the endpoint carried no list.
+    public let models: [String]?
+    /// The Base URL Core actually tested and will store, after normalisation (`/v1` added to a bare
+    /// server, a pasted `/chat/completions` removed). Shown so the user is not left guessing.
+    public let resolvedBaseURL: String?
+    /// Set when the endpoint answered a local runtime's native status API, so the form can save it
+    /// as that runtime instead of as an anonymous OpenAI-compatible relay.
+    public let localRuntime: LocalInferenceBackend?
 
-    public init(providerID: String, reachable: Bool, latencyMs: Double? = nil, message: String? = nil) {
+    public init(providerID: String, reachable: Bool, latencyMs: Double? = nil, message: String? = nil,
+                models: [String]? = nil, resolvedBaseURL: String? = nil, localRuntime: LocalInferenceBackend? = nil) {
+        self.localRuntime = localRuntime
         self.providerID = providerID
         self.reachable = reachable
         self.latencyMs = latencyMs
         self.message = message
+        self.models = models
+        self.resolvedBaseURL = resolvedBaseURL
     }
 }
 

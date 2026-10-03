@@ -21,7 +21,15 @@ extension CoreHost {
         var apiKeyHeader = request.apiKeyHeader
         var headers = request.headers
 
-        if let productID = request.productID?.trimmingCharacters(in: .whitespaces), !productID.isEmpty {
+        // LM Studio is tested at the address the user typed, as a local runtime; the catalog's
+        // localhost default is only a fallback. Everything below then treats it as custom.
+        var isLMStudio = false
+        if request.productID == Self.lmStudioProductID {
+            isLMStudio = true
+            adapter = "openai-compatible"
+            if baseURL.isEmpty { baseURL = Self.lmStudioDefaultEndpoint }
+        }
+        if !isLMStudio, let productID = request.productID?.trimmingCharacters(in: .whitespaces), !productID.isEmpty {
             // A registry product: Core knows its endpoint, wire and headers.
             guard let definition = BuiltinProviderCatalog.definition(id: productID),
                   let endpoint = definition.endpoints.first, let resolved = endpoint.baseURL else {
@@ -39,6 +47,8 @@ extension CoreHost {
             guard Self.editableAdapters.contains(adapter) else {
                 throw CoreError(code: .toolArgumentInvalid, message: "不支持的接口类型: \(adapter)")
             }
+            // Same normalisation as save, so the test exercises the URL that will be stored.
+            baseURL = ProviderBaseURLNormalizer.normalize(baseURL, adapter: adapter)
             _ = try ConfigurationEndpointPolicy.resolve(baseURL, path: "$.draft.baseURL")
         }
 
@@ -51,12 +61,25 @@ extension CoreHost {
             let outcome = try await ProviderConnectivityProbe.probe(
                 baseURL: baseURL, adapter: adapter, apiKeyHeader: apiKeyHeader,
                 credential: secret, headers: headers)
+            // Only a custom OpenAI-compatible endpoint is asked whether it is LM Studio; a registry
+            // product never is, and a native answer is required, not inferred from the model list.
+            var detected: LocalInferenceBackend?
+            if request.productID == nil || isLMStudio, adapter == "openai-compatible", let first = outcome.modelIDs.first {
+                let status = await LMStudioDiscovery.discover(baseURL: baseURL, modelID: first, credential: secret)
+                if status.source == .native { detected = .lmStudio }
+            }
+            let parts = [outcome.models > 0 ? "\(outcome.models) 个模型" : nil,
+                         detected == .lmStudio ? "已识别为 LM Studio" : nil].compactMap { $0 }
             result = TestProviderResult(providerID: Self.draftProviderID, reachable: true,
                                         latencyMs: outcome.latencyMs,
-                                        message: outcome.models > 0 ? "\(outcome.models) 个模型" : nil)
+                                        message: parts.isEmpty ? nil : parts.joined(separator: " · "),
+                                        models: outcome.modelIDs.isEmpty ? nil : outcome.modelIDs,
+                                        resolvedBaseURL: baseURL,
+                                        localRuntime: detected)
         } catch {
             result = TestProviderResult(providerID: Self.draftProviderID, reachable: false,
-                                        message: Self.providerTestMessage(error))
+                                        message: Self.providerTestMessage(error),
+                                        resolvedBaseURL: baseURL)
         }
         return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
                               observedThrough: [], result: result)

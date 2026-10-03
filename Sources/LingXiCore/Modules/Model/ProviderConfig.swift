@@ -102,6 +102,9 @@ public struct ProviderConfig: Sendable {
     public var anthropicMessagesURL: URL {
         let trimmedString = baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if trimmedString.hasSuffix("/v1/messages") || trimmedString.hasSuffix("/messages") { return baseURL }
+        // A base that already ends in the version segment (LM Studio, llama.cpp: `…/v1`) needs only
+        // `/messages`; appending `/v1/messages` produced `/v1/v1/messages`.
+        if trimmedString.hasSuffix("/v1") { return URL(string: trimmedString + "/messages") ?? baseURL }
         return URL(string: trimmedString + "/v1/messages") ?? baseURL
     }
 }

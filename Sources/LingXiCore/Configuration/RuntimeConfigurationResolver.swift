@@ -461,10 +461,62 @@ enum ConfigurationEndpointPolicy {
         guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else {
             throw ConfigurationValidationError(path: path, reason: "invalid endpoint URL")
         }
-        let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
-        guard scheme == "https" || (scheme == "http" && loopback) else {
-            throw ConfigurationValidationError(path: path, reason: "endpoint must use HTTPS or HTTP loopback")
+        guard scheme == "https" || (scheme == "http" && isPrivateNetworkHost(host)) else {
+            throw ConfigurationValidationError(path: path,
+                                               reason: "endpoint must use HTTPS, or HTTP on loopback / a private LAN address")
         }
         return url
+    }
+
+    /// Hosts plain HTTP may reach: this machine, or an address that cannot be routed on the public
+    /// internet. A model server on the LAN (LM Studio, llama.cpp, vLLM on another box) almost never
+    /// has TLS; refusing it pushed users toward exposing it publicly instead. A public host still
+    /// needs HTTPS, because that is where a key in cleartext would actually leave the building.
+    static func isPrivateNetworkHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") { return true }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false).compactMap { UInt8($0) }
+        if octets.count == 4, host.split(separator: ".").count == 4 {
+            switch (octets[0], octets[1]) {
+            case (127, _), (10, _), (192, 168), (169, 254): return true
+            case (172, 16...31): return true
+            case (100, 64...127): return true  // CGNAT, which is also where Tailscale lives.
+            default: return false
+            }
+        }
+        if host.contains(":") {
+            if host == "::1" { return true }
+            // fc00::/7 unique-local and fe80::/10 link-local.
+            guard let first = host.split(separator: ":").first, let word = UInt16(first, radix: 16) else { return false }
+            return (word & 0xFE00) == 0xFC00 || (word & 0xFFC0) == 0xFE80
+        }
+        return false
+    }
+}
+
+/// One answer to "what does the user mean by this Base URL", shared by test and save.
+///
+/// The runtime appends `/chat/completions`, `/responses` or `/v1/messages` to the stored value, so
+/// the stored value must be the API root. Users paste three shapes: the bare server
+/// (`http://lan:1234`), the API root (`http://lan:1234/v1`), or a full endpoint copied from a curl
+/// line (`…/v1/chat/completions`). All three should land on the same root.
+enum ProviderBaseURLNormalizer {
+    static func normalize(_ raw: String, adapter: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        for suffix in ["/chat/completions", "/responses", "/completions", "/models", "/v1/messages", "/messages"]
+            where value.hasSuffix(suffix) {
+            value = String(value.dropLast(suffix.count))
+            break
+        }
+        while value.hasSuffix("/") { value.removeLast() }
+        guard let components = URLComponents(string: value), components.host != nil else { return value }
+        // An OpenAI-style server with no path at all is served under /v1 by every implementation
+        // in practice (OpenAI, LM Studio, llama.cpp, vLLM, Ollama). A non-empty path is a relay's
+        // own layout (`/api/paas/v4`, `/compatible-mode/v1`) and is left exactly as typed.
+        if adapter != "anthropic-messages", components.path.isEmpty {
+            value += "/v1"
+        }
+        return value
     }
 }

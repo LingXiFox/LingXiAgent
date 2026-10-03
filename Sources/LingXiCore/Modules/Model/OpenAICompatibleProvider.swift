@@ -12,17 +12,25 @@ public struct OpenAICompatibleProvider: ModelProvider {
     private let config: ProviderConfig
     private let transport: any ProviderHTTPTransport
     private let provenance: ProviderProvenanceStore
+    /// A runtime-specific dialect layered on the shared wire (LM Studio's reasoning switch and
+    /// speculative statistics). Nil for every cloud provider, which then takes byte-for-byte the
+    /// same path as before the hook existed.
+    private let wireExtension: (any ChatCompletionsWireExtension)?
 
-    public init(config: ProviderConfig, session: URLSession = .shared, provenance: ProviderProvenanceStore = ProviderProvenanceStore()) {
+    public init(config: ProviderConfig, session: URLSession = .shared, provenance: ProviderProvenanceStore = ProviderProvenanceStore(),
+                wireExtension: (any ChatCompletionsWireExtension)? = nil) {
         self.config = config
         transport = URLSessionProviderHTTPTransport(session: session)
         self.provenance = provenance
+        self.wireExtension = wireExtension
     }
 
-    public init(config: ProviderConfig, transport: any ProviderHTTPTransport, provenance: ProviderProvenanceStore = ProviderProvenanceStore()) {
+    public init(config: ProviderConfig, transport: any ProviderHTTPTransport, provenance: ProviderProvenanceStore = ProviderProvenanceStore(),
+                wireExtension: (any ChatCompletionsWireExtension)? = nil) {
         self.config = config
         self.transport = transport
         self.provenance = provenance
+        self.wireExtension = wireExtension
     }
 
     // MARK: - ModelProvider
@@ -97,7 +105,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
                     provenance: provenance,
                     debugStep: request.debugStep,
                     diagnosticsEnabled: config.diagnosticsEnabled,
-                    performanceDiagnosticsEnabled: config.performanceDiagnosticsEnabled
+                    performanceDiagnosticsEnabled: config.performanceDiagnosticsEnabled,
+                    wireExtension: wireExtension
                 ).run()
             }
             continuation.onTermination = { @Sendable _ in
@@ -134,7 +143,11 @@ public struct OpenAICompatibleProvider: ModelProvider {
         for (name, value) in config.requiredHeaders {
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
-        urlRequest.httpBody = try Self.makeRequestBody(request, continuation: continuation, parallelToolCalls: config.parallelToolCalling ?? true)
+        var body = try Self.makeRequestBody(request, continuation: continuation, parallelToolCalls: config.parallelToolCalling ?? true)
+        if let wireExtension {
+            body = try Self.applyExtensionFields(wireExtension.additionalBodyFields(for: request), to: body)
+        }
+        urlRequest.httpBody = body
         OpenCodeHeaderSupport.injectHeadersIfNeeded(into: &urlRequest, modelRequest: request)
         return urlRequest
     }
@@ -187,6 +200,19 @@ public struct OpenAICompatibleProvider: ModelProvider {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(body)
+    }
+
+    /// Merges an extension's top-level fields into an encoded body. Keys the shared encoder already
+    /// wrote win: an extension may add a dialect field, never rewrite the common request.
+    static func applyExtensionFields(_ fields: [String: JSONValue], to body: Data) throws -> Data {
+        guard !fields.isEmpty else { return body }
+        guard case var .object(object) = try JSONDecoder().decode(JSONValue.self, from: body) else { return body }
+        for (key, value) in fields where object[key] == nil {
+            object[key] = value
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(JSONValue.object(object))
     }
 
     /// 保证送往上游模型的历史消息严格符合 OpenAI API 规范：
@@ -438,8 +464,10 @@ public struct OpenAICompatibleProvider: ModelProvider {
         private let debugStep: Int?
         private let diagnosticsEnabled: Bool
         private let performanceDiagnosticsEnabled: Bool
+        private let wireExtension: (any ChatCompletionsWireExtension)?
 
-        init(source: AsyncThrowingStream<Data, Error>, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, request: ModelRequest, prior: ProviderContinuation?, provenance: ProviderProvenanceStore, debugStep: Int?, diagnosticsEnabled: Bool, performanceDiagnosticsEnabled: Bool) {
+        init(source: AsyncThrowingStream<Data, Error>, continuation: AsyncThrowingStream<ModelEvent, Error>.Continuation, request: ModelRequest, prior: ProviderContinuation?, provenance: ProviderProvenanceStore, debugStep: Int?, diagnosticsEnabled: Bool, performanceDiagnosticsEnabled: Bool, wireExtension: (any ChatCompletionsWireExtension)? = nil) {
+            self.wireExtension = wireExtension
             self.source = source
             self.continuation = continuation
             self.request = request
@@ -548,6 +576,8 @@ public struct OpenAICompatibleProvider: ModelProvider {
             if unquotedPayload.caseInsensitiveCompare("[done]") == .orderedSame || unquotedPayload.caseInsensitiveCompare("done") == .orderedSame { return true }
 
             let chunk = try OpenAICompatibleProvider.decodeSSEChunk(String(payload))
+            // Observation only: whatever the extension reads, the events below are unchanged.
+            wireExtension?.observe(ssePayload: payload, request: request)
             if let delta = chunk.choices?.first?.delta {
                 if !(delta.content ?? "").isEmpty { textChunks += 1 }
                 if !(delta.reasoning ?? "").isEmpty { reasoningChunks += 1 }

@@ -158,8 +158,10 @@ public enum LXType {
     public static let monoSmall = Font.system(size: 12.5, design: .monospaced)
     /// Composer editor and question body 15/22.
     public static let editor = Font.system(size: 15)
-    /// Expanded reasoning 14/22.
-    public static let thinkingBody = Font.system(size: 14, weight: .medium)
+    /// Expanded reasoning 15/23. One step under the 16pt message body: secondary, still readable
+    /// in the main chat column (14pt read as a footnote there).
+    public static let thinkingBodySize: CGFloat = 15
+    public static let thinkingBody = Font.system(size: thinkingBodySize, weight: .medium)
 
     /// Extra leading that turns the system line height into the token's.
     public enum Leading {
@@ -167,7 +169,7 @@ public enum LXType {
         public static let message: CGFloat = 7
         /// editor 15 → 22
         public static let editor: CGFloat = 4
-        /// thinking 14 → 22
+        /// thinking 15 → 23
         public static let thinking: CGFloat = 5
         /// mono 13.5 → 20
         public static let mono: CGFloat = 4

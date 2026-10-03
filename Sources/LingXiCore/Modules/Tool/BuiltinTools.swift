@@ -2116,3 +2116,33 @@ public extension ToolRegistry {
         ToolRegistry(BuiltInToolProvider(workspace: workspace, contextPager: contextPager, scanner: scanner, questions: questions, processes: processes, backgroundManager: backgroundManager, codeIntelligence: codeIntelligence, cacheController: cacheController, webSearchEndpoint: webSearchEndpoint, tavilyAPIKey: tavilyAPIKey, graphEngine: graphEngine, todoStore: todoStore, browserManager: browserManager).tools)
     }
 }
+
+// MARK: - File mutation targets
+
+extension WriteFileTool: FileMutationTargetProviding {
+    var mutationWorkspace: URL { workspace.url }
+    func mutationTargets(for arguments: String, profile: ExecutionProfile) throws -> [URL] {
+        let input: WriteArguments = try decodeArguments(arguments)
+        return [try workspace.resolve(input.path, profile: profile)]
+    }
+}
+
+extension EditFileTool: FileMutationTargetProviding {
+    var mutationWorkspace: URL { workspace.url }
+    func mutationTargets(for arguments: String, profile: ExecutionProfile) throws -> [URL] {
+        let input: EditArguments = try decodeArguments(arguments)
+        return [try workspace.resolve(input.path, profile: profile)]
+    }
+}
+
+extension ApplyPatchTool: FileMutationTargetProviding {
+    var mutationWorkspace: URL { workspace.url }
+    /// Both ends of a move: the source disappears and the destination appears.
+    func mutationTargets(for arguments: String, profile: ExecutionProfile) throws -> [URL] {
+        let input: PatchArguments = try decodeArguments(arguments)
+        var seen = Set<String>()
+        return try parsePatch(input.patch).flatMap { spec in
+            try [spec.path, spec.moveTo].compactMap { $0 }.map { try workspace.resolve($0, profile: profile) }
+        }.filter { seen.insert($0.path).inserted }
+    }
+}

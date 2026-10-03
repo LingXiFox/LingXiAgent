@@ -463,6 +463,9 @@ public final class RuntimeObservatoryPresentationModel: ObservableObject {
     /// The last failure, if any. Reads that fail leave the previous values alone rather than
     /// clearing them to empty, because an unread panel must look unknown, not like a healthy zero.
     @Published public var readFailure: String?
+    /// The last rejected start/stop recording command. A message, not state: whether a recording
+    /// is running is only ever read from `status`.
+    @Published public var recorderActionFailure: String?
 
     // MARK: View-only filters. These never reach Core and never change what is recorded.
     @Published public var searchText = ""
@@ -526,6 +529,7 @@ public final class RuntimeObservatoryPresentationModel: ObservableObject {
         status = nil
         ringTruncated = false
         lastSeenSequence = 0
+        recorderActionFailure = nil
     }
 
     /// Matches on the fields an operator actually searches: category, the correlation ids, and any
@@ -643,10 +647,31 @@ public final class ComposerModel: ObservableObject {
 
     /// Reasoning levels the selected model can honour (all of them when unknown).
     public var availableReasoningLevels: [ReasoningEffortLevel] {
-        guard let id = selectedModelID, let model = models.first(where: { $0.matches(selection: id) }) else {
-            return ReasoningEffortLevel.allCases
-        }
+        guard let model = selectedModelInfo else { return ReasoningEffortLevel.allCases }
+        if isReasoningToggle { return [.off, .auto] }
         return model.reasoning ? ReasoningEffortLevel.allCases : [.auto, .off]
+    }
+
+    private var selectedModelInfo: ProviderModelInfo? {
+        guard let id = selectedModelID else { return nil }
+        return models.first(where: { $0.matches(selection: id) })
+    }
+
+    /// The model's reasoning is a switch, not a dial (LM Studio reports `["off", "on"]`). The menu
+    /// then offers exactly Off and On instead of levels the model cannot honour.
+    public var isReasoningToggle: Bool {
+        selectedModelInfo?.reasoningCapability?.mode == .toggle
+    }
+
+    /// The levels the menu lists. A toggle model gets only its two states.
+    public var reasoningMenuLevels: [ReasoningEffortLevel] {
+        isReasoningToggle ? [.off, .auto] : ReasoningEffortLevel.allCases
+    }
+
+    /// Menu and chip label. For a toggle model, Auto is the runtime's default, which is On.
+    public func reasoningLabel(_ level: ReasoningEffortLevel) -> String {
+        guard isReasoningToggle else { return level.rawValue }
+        return level == .off ? "Off" : "On"
     }
 
     private var hasAppliedDefaults = false

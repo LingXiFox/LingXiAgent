@@ -201,8 +201,14 @@ struct DebugObservatorySurfaceTests {
         // The census that the store's own metadata index cannot see.
         #expect((snapshot.eCore?.pageOutOnlyObjectCount ?? 0) == 1,
                 "page-out 对象数应可被观测，尽管 .meta.json 里没有它")
+        // The authoritative total now includes it; the metadata index still does not, and the
+        // deprecated flag keeps saying so literally rather than flipping to a claim that is false.
+        #expect(snapshot.eCore?.censusIsPhysical == true, "权威普查口径没有声明出来")
+        #expect((snapshot.eCore?.objectCount ?? 0) >= 1, "page-out 载荷没进权威总数")
+        #expect((snapshot.eCore?.censusBlindSpotObjectCount ?? 0) >= 1,
+                "meta index 与权威总数的差额应等于它看不见的 page-out 载荷")
         #expect(snapshot.eCore?.pageOutsVisibleViaMetaIndex == false,
-                "口径盲区必须被声明出来，而不是留给读者发现")
+                "废弃字段必须保持字面真值：meta index 仍然看不见 page-out")
 
         // And the same transitions as ordered events.
         let page = try await fixture.client.debug.events(sessionID: sessionID)

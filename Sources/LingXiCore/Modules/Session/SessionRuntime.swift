@@ -445,9 +445,8 @@ public actor SessionRuntime {
             }
             var lastCallBatchSignature: String?
             var consecutiveIdenticalBatches = 0
-            var consecutiveIdenticalFailures = 0
+            var loopTracker = ToolLoopProgressTracker()
             var consecutiveEmptyBatches = 0
-            var lastObservedFailure: String?
             var lastExecutedCall: ToolCall?
             var lastObservedContent: String?
             var pendingLifecycleTraces: [ToolLifecycleTrace] = []
@@ -915,6 +914,7 @@ public actor SessionRuntime {
                 let dispatch = dispatchStarted.duration(to: clock.now)
                 let streamStarted = clock.now
                 var text = ""
+                var reasoningText = ""
                 var visibleReasoning = false
                 var calls: [ToolCall] = []
                 var providerRequestID = "local:\(request.requestID.rawValue)"
@@ -994,6 +994,7 @@ public actor SessionRuntime {
                             sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID, stepNumber: currentStepNumber, index: index, text: delta, kind: .reasoning))
                             profiler.recordReasoning(delta, streamElapsed: streamStarted.duration(to: clock.now))
                             visibleReasoning = true
+                            reasoningText += delta
                             index += 1
                         case .toolCallStarted, .toolCallDelta:
                             break // Tool arguments 只在完整聚合后进入控制面。
@@ -1099,6 +1100,18 @@ public actor SessionRuntime {
                         continue
                     }
 
+                    // Some local models (Qwen thinking templates under LM Studio, verified on the wire)
+                    // finish with the whole answer inside reasoning_content and an empty content.
+                    // A completed final step with nothing visible would leave the user an empty
+                    // reply, so the reasoning becomes the answer. Only on a clean stop: a
+                    // truncated reasoning is not an answer.
+                    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, finalReason == .stop,
+                       !reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        text = reasoningText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        sink.yield(StreamChunk(streamID: handle.streamID, sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID, stepNumber: currentStepNumber, index: index, text: text, kind: .text))
+                        index += 1
+                        logDiagnostic("session.reasoning_promoted sessionID=\(sessionID.rawValue) step=\(step + 1) chars=\(text.count)")
+                    }
                     await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
                     _ = await BranchPredictionRuntime.shared.record(sessionID: sessionID, action: .directAnswer)
                     await completeTurn(
@@ -1326,19 +1339,23 @@ public actor SessionRuntime {
                     )
                 }
 
-                let resultMessage: Message
-                if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: settled.map { .toolResult($0.result) }, createdAt: .now) }
-                else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: settled.map { .toolResult($0.result) }, expectedRevision: runLease.revision) }
-                try await settleBatch(batchID: batchID, resultMessageID: resultMessage.id, results: settled.map(\.result), resultMessage: resultMessage, lease: runLease)
-                await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
-                let hasCancelledTool = settled.contains {
-                    $0.result.outcome == .cancelled ||
-                    $0.result.error?.code == CoreError.Code.toolCancelled.rawValue ||
-                    $0.result.error?.code == CoreError.Code.permissionCancelled.rawValue
-                }
-                if Task.isCancelled || shuttingDown || hasCancelledTool {
-                    throw CoreError(code: .toolCancelled, message: "AgentRun 已取消")
-                }
+                // No-progress verdict, decided before the results reach the model so a soft
+                // warning can travel with them. Identity is the call (tool + arguments), not the
+                // error text alone: different commands meeting one blocker are exploration.
+                let loopVerdict = loopTracker.record(zip(calls, settled).map { call, outcome in
+                    let error = outcome.result.error
+                    // A repeat the runtime already blocked is the original failure again, so it
+                    // counts towards the exact-duplicate rule rather than reading as a new failure.
+                    let signature = outcome.result.metadata["repeatBlocked"] == "true"
+                        ? outcome.result.metadata["errorSignature"]
+                        : error.map { "\($0.code):\($0.message)" }
+                    return ToolLoopProgressTracker.CallOutcome(callKey: failureKey(for: call),
+                                                               succeeded: outcome.result.success,
+                                                               errorMessage: outcome.result.success ? nil : signature)
+                })
+                recordLoopVerdict(loopVerdict, step: step + 1)
+                // The persisted results are what the next request is built from, so the warning has
+                // to be written here; a note added after persistence never reaches the model.
                 let allEmptyResults = settled.allSatisfy { outcome in
                     let content = outcome.result.content.trimmingCharacters(in: .whitespacesAndNewlines)
                     return content == "[]" || content == "[] (empty list)" || content.contains("0 tools found") || content.contains("No tools found") || (content.isEmpty && outcome.result.error == nil)
@@ -1348,14 +1365,36 @@ public actor SessionRuntime {
                 } else {
                     consecutiveEmptyBatches = 0
                 }
-
-                let toolResultEntries = settled.map { outcome -> ContextEntry in
-                    var res = outcome.result
-                    if consecutiveEmptyBatches >= 2 && outcome.result.callID == settled.last?.result.callID {
+                let deliveredResults: [ToolResult] = settled.map { outcome in
+                    guard outcome.result.callID == settled.last?.result.callID else { return outcome.result }
+                    var result = outcome.result
+                    if consecutiveEmptyBatches >= 2 {
                         let note = "\n[System note: The tool or resource query returned empty results. Do NOT repeatedly retry with slight keyword variations. If the capability or tool is unavailable, please skip this step or report directly to the user.]"
-                        res = res.withContent(res.content + note)
+                        result = result.withContent(result.content + note)
                     }
-                    return ContextEntry(messageID: resultMessage.id, role: .tool, source: .toolResult, part: .toolResult(res))
+                    if case let .softWarning(_, message) = loopVerdict {
+                        result = result.withContent(result.content + "\n[System note: \(message)]")
+                    }
+                    return result
+                }
+
+                let resultMessage: Message
+                if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: deliveredResults.map { .toolResult($0) }, createdAt: .now) }
+                else { resultMessage = try await store.appendMessage(sessionID, role: .tool, parts: deliveredResults.map { .toolResult($0) }, expectedRevision: runLease.revision) }
+                try await settleBatch(batchID: batchID, resultMessageID: resultMessage.id, results: deliveredResults, resultMessage: resultMessage, lease: runLease)
+                await toolRuntime.finishMCPProviderStep(sessionID: sessionID)
+                let hasCancelledTool = settled.contains {
+                    $0.result.outcome == .cancelled ||
+                    $0.result.error?.code == CoreError.Code.toolCancelled.rawValue ||
+                    $0.result.error?.code == CoreError.Code.permissionCancelled.rawValue
+                }
+                if Task.isCancelled || shuttingDown || hasCancelledTool {
+                    throw CoreError(code: .toolCancelled, message: "AgentRun 已取消")
+                }
+
+
+                let toolResultEntries = deliveredResults.map { res -> ContextEntry in
+                    ContextEntry(messageID: resultMessage.id, role: .tool, source: .toolResult, part: .toolResult(res))
                 }
                 var postToolEntries = currentActiveEntries
                 postToolEntries.append(contentsOf: toolResultEntries)
@@ -1376,19 +1415,12 @@ public actor SessionRuntime {
                     consecutiveIdenticalBatches = 1
                 }
 
-                let batchFailures = settled.compactMap { $0.result.error?.message }.joined(separator: ";")
-                if !batchFailures.isEmpty && batchFailures == lastObservedFailure {
-                    consecutiveIdenticalFailures += 1
-                } else {
-                    lastObservedFailure = batchFailures.isEmpty ? nil : batchFailures
-                    consecutiveIdenticalFailures = batchFailures.isEmpty ? 0 : 1
-                }
-
-                if consecutiveIdenticalFailures >= 3 {
+                if case let .hardStop(kind, message) = loopVerdict {
                     let callDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
+                    let label = kind == .exactDuplicate ? "完全重复的失败调用" : "多策略同一阻塞且提示后无进展"
                     throw CoreError(
                         code: .agentStepLimitReached,
-                        message: "Agent Tool Loop 检测到无进展死循环：连续 \(consecutiveIdenticalFailures) 次遇到相同的 Tool 失败: \(lastObservedFailure ?? "") · 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc)"
+                        message: "Agent Tool Loop 检测到无进展死循环（\(label)）：\(message) · 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc)"
                     )
                 }
 
@@ -1492,6 +1524,29 @@ public actor SessionRuntime {
             toolName: signature.toolName,
             resource: signature.resource
         )
+    }
+
+    /// Records the loop verdict as an `agent.loop.*` trace, which the Observatory turns into its own
+    /// categories. Plain progress with no strategy change is not worth a line.
+    private func recordLoopVerdict(_ verdict: ToolLoopProgressTracker.Verdict, step: Int) {
+        let event: String
+        var metadata: [String: String] = ["step": String(step)]
+        switch verdict {
+        case .progress(let changed):
+            guard changed else { return }
+            event = "agent.loop.strategy_changed"
+        case .exactDuplicate(let count):
+            event = "agent.loop.exact_duplicate"; metadata["count"] = String(count)
+        case .failureCluster(let strategies):
+            event = "agent.loop.failure_cluster"; metadata["strategies"] = String(strategies)
+        case .softWarning(let strategies, _):
+            event = "agent.loop.soft_warning"; metadata["strategies"] = String(strategies)
+        case .hardStop(let kind, _):
+            event = "agent.loop.hard_stop"; metadata["rule"] = kind.rawValue
+        }
+        let executionID = activeExecution?.id.uuidString
+        Task { await diagnostics?.record(kind: .agentRun, event: event, sessionID: sessionID, runID: runID, rootRunID: rootRunID,
+                                         parentRunID: parentRunID, executionID: executionID, metadata: metadata) }
     }
 
     private func failureKey(for call: ToolCall) -> String {

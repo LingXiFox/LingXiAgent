@@ -37,6 +37,8 @@ public final class DebugTelemetryHub: @unchecked Sendable {
 
     private var pendingDrain: [DebugTelemetryEvent] = []
     private var drainScheduled = false
+    /// The drain task currently in flight, so a detach can wait for it instead of racing it.
+    private var drainTask: Task<Void, Never>?
     private var recorder: DebugRunRecorder?
     private var archiveWriteFailures = 0
     private var recording = false
@@ -241,6 +243,33 @@ public final class DebugTelemetryHub: @unchecked Sendable {
         }
     }
 
+    /// Detaches the archive and returns only once everything it accepted is on disk and the file
+    /// is closed.
+    ///
+    /// `setRecorder(nil, ...)` closes the old recorder on an unawaited task, so a caller that
+    /// reports "stopped" from it can still be ahead of the file: events queued for the drain are
+    /// discarded once the recorder is gone, and a drain already holding the recorder can append
+    /// after `stop()` closed the handle. Detach, the queued batch and the in-flight drain are
+    /// therefore taken under one lock, the drain is awaited, and the remainder written before close.
+    public func detachRecorder() async {
+        let (old, leftover, inFlight) = withLock { () -> (DebugRunRecorder?, [DebugTelemetryEvent], Task<Void, Never>?) in
+            let old = self.recorder
+            self.recorder = nil
+            self.recording = false
+            self.runName = nil
+            let leftover = self.pendingDrain
+            self.pendingDrain.removeAll(keepingCapacity: true)
+            return (old, leftover, self.drainTask)
+        }
+        guard let old else { return }
+        await inFlight?.value
+        if !leftover.isEmpty {
+            await old.appendBatch(Self.encode(leftover))
+        }
+        await old.stop()
+        noteArchiveFailures(await old.snapshot().failures)
+    }
+
     public func isRecording() -> Bool {
         withLock { recording }
     }
@@ -259,14 +288,14 @@ public final class DebugTelemetryHub: @unchecked Sendable {
     // MARK: - Drain
 
     private func scheduleDrainIfNeeded() {
-        let shouldSchedule = withLock { () -> Bool in
-            guard !drainScheduled, !pendingDrain.isEmpty else { return false }
+        // The task is created and stored inside the lock, so `detachRecorder` can never observe a
+        // scheduled drain whose handle it cannot await.
+        withLock {
+            guard !drainScheduled, !pendingDrain.isEmpty else { return }
             drainScheduled = true
-            return true
-        }
-        guard shouldSchedule else { return }
-        Task.detached(priority: .utility) { [weak self] in
-            await self?.drainOnce()
+            drainTask = Task.detached(priority: .utility) { [weak self] in
+                await self?.drainOnce()
+            }
         }
     }
 
@@ -274,10 +303,12 @@ public final class DebugTelemetryHub: @unchecked Sendable {
     /// flushes on this task rather than waiting for a new one.
     private func drainOnce() async {
         while true {
-            let batch: [DebugTelemetryEvent] = withLock {
+            // The recorder is read in the same critical section as the batch, so a batch is only
+            // ever written to the recorder that was attached when its events were queued.
+            let (batch, recorder) = withLock { () -> ([DebugTelemetryEvent], DebugRunRecorder?) in
                 let taken = self.pendingDrain
                 self.pendingDrain.removeAll(keepingCapacity: true)
-                return taken
+                return (taken, self.recorder)
             }
             if batch.isEmpty {
                 withLock { drainScheduled = false }
@@ -287,7 +318,7 @@ public final class DebugTelemetryHub: @unchecked Sendable {
                 }
                 return
             }
-            guard let recorder = withLock({ self.recorder }) else { continue }
+            guard let recorder else { continue }
             await recorder.appendBatch(Self.encode(batch))
             let failures = await recorder.snapshot().failures
             noteArchiveFailures(failures)

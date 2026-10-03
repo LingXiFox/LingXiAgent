@@ -70,7 +70,8 @@ extension CoreHost {
 
         case .stopRecording:
             let hub = try requireDebugHub()
-            hub.setRecorder(nil, runName: nil)
+            // Awaited, so the receipt's `recording: false` means the archive is flushed and closed.
+            await hub.detachRecorder()
             status = hub.status()
 
         case .clear:
@@ -148,7 +149,8 @@ extension CoreHost {
                 cache: hub.cacheSample(sessionID: sessionID) ?? DebugCacheSampleMapper.from(context: context),
                 prefixAudit: hub.prefixAudit(sessionID: sessionID),
                 scheduler: hub.schedulerDecision(sessionID: sessionID),
-                prediction: context.prediction
+                prediction: context.prediction,
+                localRuntime: currentProviderID.flatMap { localRuntimeRegistry.status(providerID: $0) }
             )
         )
     }
@@ -200,7 +202,7 @@ extension CoreHost {
             installDebugHub(hub)
             await propagateDebugHub(hub)
         } else if !enabled {
-            debugHub?.setRecorder(nil, runName: nil)
+            await debugHub?.detachRecorder()
             installDebugHub(nil)
             await propagateDebugHub(nil)
         }
@@ -220,6 +222,15 @@ extension CoreHost {
     private func propagateDebugHub(_ hub: DebugTelemetryHub?) async {
         await cacheController.attachDebugHub(hub)
         await cacheController.ecoreStore.attachDebugHub(hub)
+        // Loop verdicts are already traced by the session; with debug on they also become
+        // categories in the ring. Off, the store has no observer and nothing changes.
+        await diagnosticsStoreForDebug.setObserver(hub.map { hub in
+            { @Sendable event in
+                guard event.event.hasPrefix("agent.loop."),
+                      let category = DebugTelemetryCategory(rawValue: event.event) else { return }
+                hub.record(category, sessionID: event.sessionID, runID: event.runID)
+            }
+        })
     }
 
     /// Maps Core's own lifecycle events onto debug categories.
@@ -273,6 +284,12 @@ extension CoreHost {
     private func startDebugRecording(runName: String?) async throws -> DebugObservatoryStatus {
         let hub = try requireDebugHub()
         let name = runName?.isEmpty == false ? runName! : "run-\(Self.runNameStamp(.now))"
+        // The name becomes a directory under the archive root, and it now arrives from a text
+        // field. Anything that could leave that root, or hide itself there, is refused outright.
+        guard Self.isValidRunName(name) else {
+            throw CoreError(code: .commandFailed,
+                            message: "运行名只能包含字母、数字、. _ -，且不能以 . 开头：\(name)")
+        }
         let recorder = DebugRunRecorder(
             directory: storageLayout.debugArchive.appendingPathComponent(name, isDirectory: true)
         )
@@ -292,6 +309,14 @@ extension CoreHost {
             hub.noteArchiveFailures(reported + 1)
         }
         return hub.status()
+    }
+
+    static func isValidRunName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 128, !name.hasPrefix(".") else { return false }
+        return name.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
+                || $0 == "." || $0 == "_" || $0 == "-"
+        }
     }
 
     /// Pull-only, on explicit request. The recorder is flushed first so an exported run contains
@@ -328,10 +353,10 @@ extension CoreHost {
 
     /// E-Core census, assembled only when someone asks.
     ///
-    /// Both pulls are expensive by design: `heatSnapshot` recomputes the full distribution and
-    /// `storageMetrics` can fall back to a directory scan reading one metadata file per object.
-    /// Neither may happen on a per-turn path, which is why they live behind this RPC instead of in
-    /// an event payload.
+    /// These pulls are expensive by design: `heatSnapshot` recomputes the full distribution,
+    /// `listObjects` scans the directory and reads one metadata file per object, and
+    /// `storageMetrics` may scan once per session on cold start. None of them may happen on a
+    /// per-turn path, which is why they live behind this RPC instead of in an event payload.
     private func buildECorePanel(hub: DebugTelemetryHub, sessionID: SessionID,
                                  topN: Int) async -> DebugECorePanel {
         let metrics = await ecoreStoreRef.storageMetrics(for: sessionID)
@@ -347,16 +372,23 @@ extension CoreHost {
             DebugEvictionMapper.from($0, scoringActive: scoringActive)
         }
 
+        // The metadata index is the old, narrower view: it enumerates `.meta.json` and so never
+        // saw a page-out payload. Read alongside the census it becomes the reconciliation the
+        // operator can check, instead of a silent undercount.
+        let metaObjects = await ecoreStoreRef.listObjects(sessionID: sessionID)
         let (pageOutObjects, pageOutBytes) = census
         return DebugECorePanel(
             objectCount: metrics.count,
             totalBytes: metrics.totalBytes,
             referenceCount: references.count,
+            metaIndexObjectCount: metaObjects.count,
+            metaIndexTotalBytes: metaObjects.reduce(0) { $0 + $1.totalBytes },
             pageOutOnlyObjectCount: pageOutObjects,
             pageOutOnlyBytes: pageOutBytes,
-            // False because page-out payloads never get a `.meta.json`, so `metrics.count` above
-            // does not include them. Stated rather than left for the reader to rediscover.
+            // Deprecated, literal: the meta index still cannot see page-outs. The authoritative
+            // total above no longer depends on it, which is what `censusIsPhysical` states.
             pageOutsVisibleViaMetaIndex: false,
+            censusIsPhysical: true,
             counters: hub.eCoreCounters(sessionID: sessionID),
             recentEvictions: evictions,
             heat: heat.map(DebugHeatMapper.from),

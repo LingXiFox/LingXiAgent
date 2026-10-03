@@ -133,7 +133,7 @@ public struct RuntimeObservatoryView: View {
             unavailablePane
         } else {
             switch section {
-            case .overview: ObservatoryOverviewPane(model: model, inspector: inspector)
+            case .overview: ObservatoryOverviewPane(model: model, inspector: inspector, runtime: runtime)
             case .corePE: PEECorePane(model: model)
             case .prefixCache: PrefixCachePane(model: model)
             case .events: EventsPane(model: model, onSelect: { selectedEventID = $0 })

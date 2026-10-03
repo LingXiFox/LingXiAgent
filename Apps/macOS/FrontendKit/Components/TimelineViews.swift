@@ -241,13 +241,17 @@ struct EventRow<Title: View, Detail: View>: View {
     var trailing: String?
     var status: EventStatus = .none
     var hasDetail: Bool
+    /// Right inset of the detail area. Zero for every row except one that draws its own card and
+    /// needs the same margin on both sides (thinking).
+    var detailTrailingInset: CGFloat = 0
     let detail: Detail
     @State private var isOpen: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(symbol: String, tint: Color? = nil, trailing: String? = nil, status: EventStatus = .none,
-         hasDetail: Bool = true, initiallyOpen: Bool = false,
+         hasDetail: Bool = true, initiallyOpen: Bool = false, detailTrailingInset: CGFloat = 0,
          @ViewBuilder title: () -> Title, @ViewBuilder detail: () -> Detail) {
+        self.detailTrailingInset = detailTrailingInset
         self.symbol = symbol
         self.tint = tint
         self.trailing = trailing
@@ -294,6 +298,7 @@ struct EventRow<Title: View, Detail: View>: View {
             if isOpen {
                 VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) { detail }
                     .padding(.leading, LingXiMetrics.detailIndent)
+                    .padding(.trailing, detailTrailingInset)
                     .padding(.bottom, LingXiMetrics.Space.sm)
                     .transition(.opacity)
             }
@@ -340,21 +345,11 @@ struct ThinkingRow: View {
             }
         } else {
             EventRow(symbol: "sparkles", tint: LXStatus.thinking, hasDetail: !content.isEmpty,
-                     initiallyOpen: expandByDefault) {
+                     initiallyOpen: expandByDefault,
+                     detailTrailingInset: ThinkingDetailCard.trailingMargin) {
                 eventTitle("思考", caption: metrics)
             } detail: {
-                HStack {
-                    Spacer(minLength: 0)
-                    LXCopyButton(content, label: "复制思考")
-                }
-                Text(content)
-                    .font(LXType.thinkingBody)
-                    .lineSpacing(LXType.Leading.thinking)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lxInsetBlock()
+                ThinkingDetailCard(content: content)
             }
         }
     }
@@ -364,6 +359,36 @@ struct ThinkingRow: View {
         if duration > 0 { parts.append(String(format: "%.1fs", duration)) }
         if tokens > 0 { parts.append("\(tokens) tok") }
         return parts.isEmpty ? "" : "· " + parts.joined(separator: " · ")
+    }
+}
+
+/// Expanded reasoning as one card: text and its copy control share a container, and the card sits
+/// on the same margin left and right.
+///
+/// It used to be a copy button floating above an inset block, with the row's leading indent on one
+/// side and nothing on the other, so the two edges and the button belonged to three different
+/// alignment axes.
+struct ThinkingDetailCard: View {
+    let content: String
+
+    /// Matches the row's leading `detailIndent`, which is what makes the card symmetric.
+    static let trailingMargin: CGFloat = LingXiMetrics.detailIndent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LingXiMetrics.Space.sm) {
+            Text(content)
+                .font(LXType.thinkingBody)
+                .lineSpacing(LXType.Leading.thinking)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Spacer(minLength: 0)
+                LXCopyButton(content, label: "复制思考")
+            }
+        }
+        .lxInsetBlock()
     }
 }
 

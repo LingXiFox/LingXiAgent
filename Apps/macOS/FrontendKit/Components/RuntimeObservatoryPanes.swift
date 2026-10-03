@@ -66,6 +66,7 @@ struct ProvenanceBadge: View {
         switch provenance {
         case .measured: return "measured"
         case .coreReported: return "provider"
+        case .nativeRuntime: return "native runtime"
         case .derived: return "derived"
         case .estimated: return "est"
         case .coarse: return "coarse"
@@ -77,6 +78,7 @@ struct ProvenanceBadge: View {
     private var color: Color {
         switch provenance {
         case .measured, .coreReported: return LXStatus.success
+        case .nativeRuntime: return LXColor.accent
         case .derived: return LXColor.accent
         case .estimated, .coarse: return LXStatus.warning
         case .unavailable, .unknown: return .secondary
@@ -125,6 +127,11 @@ struct ObservatoryCard<Content: View>: View {
 struct ObservatoryOverviewPane: View {
     @ObservedObject var model: RuntimeObservatoryPresentationModel
     @ObservedObject var inspector: RuntimeInspectorPresentationModel
+    let runtime: RuntimeFrontend
+    /// What the operator is typing. An input draft, not a copy of Core state: the run name shown
+    /// while recording is always `model.status.runName`.
+    @State private var runNameDraft = ""
+    @State private var recorderBusy = false
 
     var body: some View {
         ScrollView {
@@ -150,6 +157,9 @@ struct ObservatoryOverviewPane: View {
                 HStack(alignment: .top, spacing: LingXiMetrics.Space.sm) {
                     cacheCard
                     recordingCard
+                }
+                if let local = model.snapshot?.localRuntime {
+                    LocalRuntimeCard(status: local)
                 }
             }
             .padding(LingXiMetrics.Space.md)
@@ -184,12 +194,11 @@ struct ObservatoryOverviewPane: View {
             }
             if let eCore = model.snapshot?.eCore {
                 ObservatoryMetricRow(label: "E-Core objects",
-                                     metric: DebugMetric(value: eCore.objectCount, provenance: .measured))
-                ObservatoryMetricRow(label: "Page-out only",
-                                     metric: DebugMetric(value: eCore.pageOutOnlyObjectCount,
-                                                         provenance: .derived,
-                                                         basis: "counted by the debug bypass; the store's "
-                                                             + "metadata index cannot see page-out payloads"))
+                                     metric: DebugMetric(value: eCore.objectCount, provenance: .measured,
+                                                         basis: "authoritative physical census"))
+                ObservatoryMetricRow(label: "E-Core bytes",
+                                     metric: DebugMetric(value: eCore.totalBytes, provenance: .measured,
+                                                         basis: "authoritative physical census"))
             } else {
                 ObservatoryKV(key: "E-Core", value: nil)
             }
@@ -211,20 +220,164 @@ struct ObservatoryOverviewPane: View {
         }
     }
 
+    /// Start/stop the persistent archive. Every row reads Core's `DebugObservatoryStatus`; the
+    /// buttons only send the existing recorder commands and then show whatever Core answered.
     private var recordingCard: some View {
         ObservatoryCard(title: "Debug recording") {
-            ObservatoryKV(key: "Mode", value: model.status.map { $0.enabled ? "ON" : "OFF" })
-            ObservatoryKV(key: "Recording", value: model.status.map { $0.recording ? "yes" : "no" })
-            ObservatoryKV(key: "Run name", value: model.status?.runName)
+            let status = model.status
+            ObservatoryKV(key: "Mode", value: status.map { $0.enabled ? "ON" : "OFF" })
+            ObservatoryKV(key: "Recording", value: status.map { $0.recording ? "YES" : "no" })
+            ObservatoryKV(key: "Run name", value: status?.runName)
             ObservatoryMetricRow(label: "Buffered",
-                                 metric: DebugMetric(value: model.status.map { "\($0.eventsBuffered)/\($0.ringCapacity)" },
+                                 metric: DebugMetric(value: status.map { "\($0.eventsBuffered)/\($0.ringCapacity)" },
                                                      provenance: .measured))
             ObservatoryMetricRow(label: "Ring dropped",
-                                 metric: DebugMetric(value: model.status?.eventsDropped, provenance: .measured))
+                                 metric: DebugMetric(value: status?.eventsDropped, provenance: .measured))
             ObservatoryMetricRow(label: "Archive failures",
-                                 metric: DebugMetric(value: model.status?.archiveWriteFailures, provenance: .measured))
+                                 metric: DebugMetric(value: status?.archiveWriteFailures, provenance: .measured))
+            if let failures = status?.archiveWriteFailures, failures > 0 {
+                // Fail-open means the run keeps going; it must not also mean nobody notices the
+                // archive is incomplete.
+                warningLine("归档写入失败 \(failures) 次：JSONL 不完整，仅内存环形缓冲可信")
+            }
+            if status?.recording == false, let dropped = status?.eventsDropped, dropped > 0 {
+                warningLine("未录制且环形缓冲已丢弃 \(dropped) 条：这些事件已无法找回")
+            }
+            if let failure = model.recorderActionFailure {
+                warningLine(failure)
+            }
+            Divider()
+            if status?.recording == true {
+                Button(role: .destructive) {
+                    runRecorder { await runtime.stopDebugRecording() }
+                } label: {
+                    Label("停止记录", systemImage: "stop.circle")
+                }
+                .disabled(recorderBusy)
+            } else {
+                HStack(spacing: LingXiMetrics.Space.xs) {
+                    TextField("pe-qwen9b-001", text: $runNameDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(LXType.monoSmall)
+                        .help("留空由 Core 生成 run-<时间戳>；只允许字母、数字、. _ -")
+                    Button {
+                        let name = runNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        runRecorder { await runtime.startDebugRecording(runName: name.isEmpty ? nil : name) }
+                    } label: {
+                        Label("开始记录", systemImage: "record.circle")
+                    }
+                    .disabled(recorderBusy || status?.enabled != true)
+                }
+            }
         }
     }
+
+    private func warningLine(_ text: String) -> some View {
+        Text(text)
+            .font(LXType.micro)
+            .foregroundStyle(LXStatus.warning)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Disables the buttons until Core answers, so a double click cannot send two commands whose
+    /// receipts arrive out of order.
+    private func runRecorder(_ action: @escaping @MainActor () async -> Void) {
+        recorderBusy = true
+        Task { @MainActor in
+            await action()
+            recorderBusy = false
+        }
+    }
+}
+
+// MARK: - Local runtime
+
+/// What the local inference server says it has loaded, and what its last response measured.
+///
+/// Three kinds of value share this card and each is labelled: the server's configuration
+/// (`native runtime`), what a response actually carried (`measured`), and what is computed from
+/// those (`derived`). A field the server did not report renders as unavailable, never as zero.
+struct LocalRuntimeCard: View {
+    let status: LocalRuntimeModelStatus
+
+    var body: some View {
+        ObservatoryCard(title: "Local Runtime · \(backendName)") {
+            ObservatoryKV(key: "Endpoint", value: status.endpoint)
+            ObservatoryKV(key: "Discovery", value: sourceText)
+            if let note = status.note {
+                Text(note).font(LXType.micro).foregroundStyle(LXStatus.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(alignment: .top, spacing: LingXiMetrics.Space.lg) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ObservatoryKV(key: "Model", value: status.modelKey)
+                    ObservatoryKV(key: "Loaded Instance", value: status.loadedInstanceID)
+                    ObservatoryKV(key: "Architecture", value: status.architecture)
+                    ObservatoryKV(key: "Quantization", value: status.quantization)
+                    row("Runtime Context", status.runtimeContextTokens.map(grouped),
+                        basis: "loaded_instances[].config.context_length — the active budget")
+                    row("Model Maximum", status.modelMaxContextTokens.map(grouped),
+                        basis: "max_context_length — what the weights allow, not what is loaded")
+                    row("Tool Use", status.toolUse.map(yesNo))
+                    row("Vision", status.vision.map(yesNo))
+                    row("Reasoning", status.reasoningOptions.map { $0.joined(separator: "/") })
+                    row("Reasoning Default", status.reasoningDefault)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Acceleration").font(LXType.meta.weight(.semibold)).foregroundStyle(.secondary)
+                    row("Flash Attention", status.flashAttention.map(yesNo))
+                    row("KV Cache GPU", status.kvCacheOnGPU.map(yesNo))
+                    row("MTP", status.mtpEnabled.map(yesNo))
+                    row("External Draft", status.source == .native ? (status.externalDraftModel ?? "no") : nil)
+                    row("Draft Max Tokens", status.draftMaxTokens.map(String.init))
+                    row("Continue Threshold", status.draftMinContinueProbability.map { String(format: "%.2f", $0) })
+                    row("Speculative Mode", status.source == .native ? status.configuredSpeculativeMode.rawValue : nil,
+                        basis: "configured: MTP flag or external draft model")
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Observed Last Request").font(LXType.meta.weight(.semibold)).foregroundStyle(.secondary)
+                    let last = status.lastSpeculative
+                    measured("Mode", last?.mode.rawValue)
+                    measured("Drafted", last?.draftedTokens.map(String.init))
+                    measured("Accepted", last?.acceptedTokens.map(String.init))
+                    measured("Rejected", last?.rejectedTokens.map(String.init))
+                    ObservatoryMetricRow(label: "Acceptance",
+                                         metric: DebugMetric(value: last?.acceptanceRate.map { String(format: "%.1f%%", $0 * 100) },
+                                                             provenance: last?.acceptanceRate == nil ? .unavailable : .derived,
+                                                             basis: last == nil ? "no response has carried draft stats yet"
+                                                                 : "accepted / drafted"))
+                }
+            }
+        }
+    }
+
+    private var backendName: String {
+        switch status.backend { case .lmStudio: return "LM Studio" }
+    }
+
+    private var sourceText: String {
+        switch status.source {
+        case .native: return "native /api/v1/models"
+        case .openAICompatibleFallback: return "fallback /v1/models (runtime state unknown)"
+        case .unreachable: return "unreachable"
+        }
+    }
+
+    private func row(_ label: String, _ value: String?, basis: String? = nil) -> some View {
+        ObservatoryMetricRow(label: label,
+                             metric: DebugMetric(value: value, provenance: value == nil ? .unavailable : .nativeRuntime,
+                                                 basis: value == nil ? "not reported by the runtime" : basis))
+    }
+
+    private func measured(_ label: String, _ value: String?) -> some View {
+        ObservatoryMetricRow(label: label,
+                             metric: DebugMetric(value: value, provenance: value == nil ? .unavailable : .measured,
+                                                 basis: value == nil ? "the last response did not carry this field"
+                                                     : "stats in the last response"))
+    }
+
+    private func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
+    private func grouped(_ value: Int) -> String { value.formatted(.number.grouping(.automatic)) }
 }
 
 // MARK: - P/E-Core
@@ -279,36 +432,40 @@ struct PEECorePane: View {
 
     private func eCoreCard(_ eCore: DebugECorePanel) -> some View {
         ObservatoryCard(title: "E-Core 储量") {
-            ObservatoryMetricRow(label: "object count (meta index)",
-                                 metric: DebugMetric(value: eCore.objectCount, provenance: .measured))
-            ObservatoryMetricRow(label: "total bytes (meta index)",
-                                 metric: DebugMetric(value: eCore.totalBytes, provenance: .measured))
-            ObservatoryMetricRow(label: "references",
+            // The headline pair is the authoritative physical census: every payload that exists,
+            // from either source, deduplicated by content-addressed id. This is the number to
+            // watch for unbounded growth, and it is deliberately not the metadata-index view.
+            ObservatoryMetricRow(label: "object count (authoritative)",
+                                 metric: DebugMetric(value: eCore.objectCount, provenance: .measured,
+                                                     basis: eCore.censusIsPhysical
+                                                         ? "physical payload census: store() and "
+                                                           + "pageOut() union, deduplicated by objectID"
+                                                         : "legacy metadata index; does NOT include "
+                                                           + "page-out payloads"))
+            ObservatoryMetricRow(label: "total bytes (authoritative)",
+                                 metric: DebugMetric(value: eCore.totalBytes, provenance: .measured,
+                                                     basis: "sum of actual payload file sizes"))
+            // References are occurrence identities, not objects. Shown next to the object count on
+            // purpose: a run where references grow while objects stay flat is dedupe working, and
+            // an operator who reads them as the same unit will call that a leak.
+            ObservatoryMetricRow(label: "references (occurrences, not objects)",
                                  metric: DebugMetric(value: eCore.referenceCount, provenance: .measured))
-            ObservatoryMetricRow(label: "page-out objects",
-                                 metric: DebugMetric(value: eCore.pageOutOnlyObjectCount,
+            Divider()
+            ObservatoryMetricRow(label: "· meta-index view",
+                                 metric: DebugMetric(value: eCore.metaIndexObjectCount, provenance: .derived,
+                                                     basis: "what listObjects() sees: .meta.json only, "
+                                                          + "so no page-out payloads"))
+            ObservatoryMetricRow(label: "· invisible to it",
+                                 metric: DebugMetric(value: eCore.censusBlindSpotObjectCount, provenance: .derived,
+                                                     basis: "authoritative count minus meta-index count; "
+                                                          + "non-zero is normal and expected"))
+            ObservatoryMetricRow(label: "· page-out tallies",
+                                 metric: DebugMetric(value: "\(eCore.pageOutOnlyObjectCount) objects / "
+                                                          + "\(eCore.pageOutOnlyBytes) bytes",
                                                      provenance: .derived,
-                                                     basis: "counted by the bypass at pageOut time"))
-            ObservatoryMetricRow(label: "page-out bytes",
-                                 metric: DebugMetric(value: eCore.pageOutOnlyBytes,
-                                                     provenance: .derived,
-                                                     basis: "content.utf8.count at pageOut time"))
-            // Stated because it makes the two counts above disagree by construction, and an
-            // operator who is not told will spend an evening chasing a non-existent bug.
-            if !eCore.pageOutsVisibleViaMetaIndex {
-                HStack(alignment: .firstTextBaseline, spacing: LingXiMetrics.Space.xs) {
-                    Text("口径差异")
-                        .font(LXType.meta)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("objectCount 不含 page-out 对象")
-                        .font(LXType.micro)
-                        .foregroundStyle(LXStatus.warning)
-                        .help("ECoreObjectStore.pageOut writes <objectID>.txt but no .meta.json, while "
-                              + "listObjects enumerates *.meta.json. Page-out content is therefore "
-                              + "invisible to the census above. Known Core gap, reported not fixed here.")
-                }
-            }
+                                                     basis: "counted by the bypass as each pageOut "
+                                                          + "happened; distinguishes one object paged "
+                                                          + "out forty times from forty objects"))
             Toggle("显示热度分布（每次刷新全量重算）", isOn: $showHeat)
                 .font(LXType.meta)
                 .toggleStyle(.checkbox)

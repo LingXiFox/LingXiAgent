@@ -793,11 +793,22 @@ public struct ToolRuntime: Sendable {
             await observer?.executionClaimed(ToolExecutionClaim(mutatesProject: mutates))
             lifecycleTrace?.record(.executorStart)
             let boundRunID = currentRunID.map { RunID($0) }
+            // Real before/after for the three file-mutation tools. Captured inside the operation so
+            // it runs within the mutation queue: another write cannot land between "before" and
+            // the call. Any failure here costs only the diff, never the tool call.
+            let mutationTool = tool as? FileMutationTargetProviding
+            let mutationTargets = (try? mutationTool?.mutationTargets(for: call.arguments, profile: effectiveProfile)) ?? []
+            let mutationBox = FileMutationResultBox()
             let operation: @Sendable () async throws -> String = {
                 try await ToolExecutionContext.$observer.withValue(observer) {
                     try await ToolExecutionContext.$sessionID.withValue(sessionID) {
                         try await ToolExecutionContext.$runID.withValue(boundRunID) { () async throws -> String in
-                            try await tool.execute(arguments: call.arguments, profile: effectiveProfile)
+                            let capture = FileMutationCapture.begin(targets: mutationTargets)
+                            let output = try await tool.execute(arguments: call.arguments, profile: effectiveProfile)
+                            if let capture, let mutationTool {
+                                mutationBox.set(capture.finish(displayPath: mutationTool.mutationDisplayPath))
+                            }
+                            return output
                         }
                     }
                 }
@@ -819,7 +830,7 @@ public struct ToolRuntime: Sendable {
             execution = executionStart.duration(to: clock.now)
             let coding = Self.codingDetails(toolID: tool.definition.id, content: rawContent)
             return ExecutionOutcome(
-                result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: tool.definition.name, summary: coding.summary, metadata: coding.metadata, output: metadata, exitCode: coding.exitCode, diagnostics: coding.diagnostics, changedFiles: coding.changedFiles, continuation: metadata.outputBlobRef),
+                result: ToolResult(callID: call.callID, success: true, content: bounded.content, toolName: tool.definition.name, summary: coding.summary, metadata: coding.metadata, output: metadata, exitCode: coding.exitCode, diagnostics: coding.diagnostics, changedFiles: coding.changedFiles, continuation: metadata.outputBlobRef, fileMutations: mutationBox.value),
                 permissionWait: permissionWait,
                 permissionAsked: permissionAsked,
                 execution: execution,

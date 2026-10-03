@@ -117,6 +117,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private let diagnosticsStore: RuntimeDiagnosticsStore
+    var diagnosticsStoreForDebug: RuntimeDiagnosticsStore { diagnosticsStore }
     /// The Developer Debug Mode bypass. Nil unless debug mode is on, which makes every production
     /// call site `debugHub?.record(...)` and the disabled cost a single nil check — no flag to
     /// reason about, no actor hop, no allocation.
@@ -154,6 +155,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private var runtimeExtensions: [String: ExtensionInfo] = [:]
     private var cachedAssemblies: [String: ModelRuntimeAssembly] = [:]
     private var oauthRefreshers: [String: OAuthTokenRefresher] = [:]
+    /// What each local-runtime provider reported at its last discovery, plus the last observed
+    /// speculative statistics. Read by the model list and the Observatory without any request.
+    let localRuntimeRegistry = LocalRuntimeRegistry()
     /// Sign-in flows started from a front end; created once a login is asked for.
     var providerAuthCoordinator: ProviderAuthCoordinator?
     /// Terminal sessions a front end may render (user shells); Agent processes
@@ -162,6 +166,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     /// Flows whose success has already been folded into the runtime.
     var appliedAuthFlows: Set<String> = []
     private var currentAssembly: ModelRuntimeAssembly?
+    /// The provider behind the current model, for read-only views in other files.
+    var currentProviderID: String? { currentAssembly?.endpoint.providerID }
     private let dataRootURL: URL?
     private var selectedModelOverride: String?
     private var selectedModelContextWindow: Int?
@@ -863,6 +869,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
         setState(.ready)
         await diagnosticsStore.record(kind: .core, event: "core.start.completed")
+        // Off the start path: it may wait on a LAN server, and nothing here needs it to be done.
+        Task { [weak self] in await self?.migrateLegacyLMStudioEntry() }
         // Post-ready startup recovery: now that WAL reconciliation is complete and Core is ready,
         // safely trigger execution of any remaining queued turns across all persisted sessions.
         var allSessionIDs = Set(sessionCoordinators.keys)
@@ -1101,7 +1109,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                     preview: preview.isEmpty ? nil : preview,
                     contentRef: contentRef,
                     error: result.error.map { RuntimeError(category: .tool, code: $0.code, message: $0.message, retryability: .none, source: .tool) },
-                    timing: result.timing
+                    timing: result.timing,
+                    fileMutations: result.fileMutations
                 ),
                 stdoutFinalIndex: nil,
                 stderrFinalIndex: nil,
@@ -1428,6 +1437,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         guard let configurationStore else { return nil }
         let providerID = String(value[..<separator])
         let modelID = String(value[value.index(after: separator)...])
+        // A local runtime's loaded window wins over the written one, as in assembly.
+        if let runtime = localRuntimeRegistry.status(providerID: providerID),
+           runtime.loadedInstanceID == modelID || runtime.modelKey == modelID,
+           let loaded = runtime.runtimeContextTokens {
+            return loaded
+        }
         return try await configurationStore.load().providers.providers[providerID]?.models[modelID]?.limit?.context
     }
 
@@ -1770,24 +1785,42 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         // What a previous probe learned about this account. Reading the cache costs no request, so a
         // model already configured before the probe existed still gets marked once someone has probed.
         let availability = await recordedModelAvailability(providerID: providerID)
+        var local = localRuntimeRegistry.status(providerID: providerID)
+        if local == nil, provider.options.localRuntime?.backend == .lmStudio, let modelID = provider.models.keys.sorted().first {
+            // First listing before any assembly: one discovery so the picker does not show a
+            // written-down context the runtime does not have. Later listings read the cache.
+            let secret = await resolveProviderSecret(provider.options.apiKey, providerID: providerID)
+            let status = await LMStudioDiscovery.discover(baseURL: provider.options.baseURL, modelID: modelID, credential: secret)
+            localRuntimeRegistry.record(status, providerID: providerID)
+            local = status
+        }
         return await withTaskGroup(of: ProviderModelInfo?.self) { group in
             for modelID in provider.models.keys.sorted() {
                 guard let model = provider.models[modelID] else { continue }
                 group.addTask {
                     let detail = await CoreHost.modelDetail(providerID: providerID, modelID: modelID, model: model)
+                    // A local runtime's last discovery overrides the written context and reasoning,
+                    // but only for the model it actually describes.
+                    let runtime = local.flatMap { status in
+                        status.loadedInstanceID == modelID || status.modelKey == modelID ? status : nil
+                    }
+                    let capability = runtime.flatMap(LMStudioDiscovery.reasoningCapability)
                     return ProviderModelInfo(
                         id: "\(providerID)/\(modelID)",
                         providerID: providerID,
                         modelID: modelID,
                         displayName: model.name,
-                        contextWindow: detail.effective.contextWindow,
+                        contextWindow: runtime?.runtimeContextTokens ?? detail.effective.contextWindow,
                         maxOutputTokens: detail.effective.maxOutputTokens,
-                        reasoning: detail.effective.reasoning,
+                        reasoning: capability.map { _ in true } ?? detail.effective.reasoning,
                         configured: true,
-                        metadataIncomplete: detail.catalogDefaults.contextWindow == nil,
-                        vision: detail.effective.vision,
-                        toolCalling: detail.effective.toolCalling,
-                        availability: availability[modelID]
+                        metadataIncomplete: detail.catalogDefaults.contextWindow == nil && runtime?.runtimeContextTokens == nil,
+                        vision: runtime?.vision ?? detail.effective.vision,
+                        toolCalling: runtime?.toolUse ?? detail.effective.toolCalling,
+                        availability: availability[modelID],
+                        reasoningCapability: capability,
+                        modelMaximumContextWindow: runtime?.modelMaxContextTokens,
+                        runtimeContextWindow: runtime?.runtimeContextTokens
                     )
                 }
             }
@@ -2047,7 +2080,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             let hasKey = hasValidKey || hasStoredKey || hasEnvKey
             let credStore = try? requireCredentialStore()
             let hasOAuth = ((try? await credStore?.secret(for: oauthRef)) ?? nil) != nil
-            if !hasKey && !hasOAuth {
+            // A user-defined endpoint that names no key at all is a keyless server (LM Studio,
+            // llama.cpp on the LAN), which the runtime assembles with `.none`. Only a key that is
+            // named but cannot be resolved, or a built-in product that needs one, is an error.
+            let namesNoKey = (providerConfig.options.apiKey ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            let isKeylessEndpoint = namesNoKey && !isInheritedFromBuiltin
+            if !hasKey && !hasOAuth && !isKeylessEndpoint {
                 throw CoreError(code: .provider, message: "Provider '\(providerID)' 未配置有效 API Key 或未认证\n请检查 providers.json 中的 apiKey 或环境变量")
             }
             return ModelSelection(providerID: providerID, accountID: providerID, profileID: "\(providerID)::\(modelID)", modelID: modelID)
@@ -2118,6 +2156,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     public func connectProvider(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
         let request = envelope.payload
         let productID = request.productID.trimmingCharacters(in: .whitespaces)
+        if productID == Self.lmStudioProductID {
+            return try await connectLMStudio(envelope: envelope)
+        }
         guard let product = BuiltinProviderCatalog.connectableProducts().first(where: { $0.id == productID }),
               product.connectable, product.verificationStatus == .verified else {
             // Not a curated product. It may still be a published-index provider,
@@ -2171,6 +2212,62 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             }
             throw error
         }
+    }
+
+    static let lmStudioProductID = "lm-studio-local"
+    static let lmStudioDefaultEndpoint = "http://127.0.0.1:1234/v1"
+
+    /// LM Studio is stored as an editable `providers.json` entry marked as a local runtime, not as
+    /// a catalog account. That one choice gives it what the account path lacks: an optional key
+    /// (LM Studio can require one), model discovery against the server itself, an edit form, and
+    /// the runtime's own loaded context, reasoning switch and speculative statistics.
+    private func connectLMStudio(envelope: CommandEnvelope<ConnectProviderRequest>) async throws -> CommandReceipt<ProviderAccountInfo> {
+        let request = envelope.payload
+        let typed = request.endpoint?.trimmingCharacters(in: .whitespaces) ?? ""
+        let baseURL = ProviderBaseURLNormalizer.normalize(typed.isEmpty ? Self.lmStudioDefaultEndpoint : typed,
+                                                          adapter: "openai-compatible")
+        _ = try ConfigurationEndpointPolicy.resolve(baseURL, path: "$.endpoint")
+        var secret: String?
+        if let reference = request.credentialRef {
+            secret = try await requireCredentialStore().secret(for: reference)
+        }
+        var models = request.modelIDs.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        if models.isEmpty {
+            guard let discovered = await LMStudioDiscovery.listChatModels(baseURL: baseURL, credential: secret) else {
+                throw CoreError(code: .provider, message: "无法连接 LM Studio（\(baseURL)）：请确认服务已启动、地址可达；开启鉴权时需填写 API Key")
+            }
+            models = discovered
+        }
+        guard !models.isEmpty else {
+            throw CoreError(code: .provider, message: "LM Studio 已应答，但没有可用的对话模型；请先在 LM Studio 中下载或加载模型")
+        }
+        // One entry per server: reconnecting the same endpoint updates it instead of adding twins.
+        let existing = (try? await requireConfigurationStore().load())?.providers.providers ?? [:]
+        let providerID = existing.first { $0.key != Self.lmStudioProductID && $0.value.options.localRuntime?.backend == .lmStudio
+            && ProviderBaseURLNormalizer.normalize($0.value.options.baseURL, adapter: "openai-compatible") == baseURL }?.key
+            ?? (existing["lmstudio"] == nil ? "lmstudio" : "lmstudio-\(UUID().uuidString.prefix(6).lowercased())")
+        let save = SaveProviderConfigurationRequest(
+            providerID: providerID,
+            name: "LM Studio",
+            adapter: "openai-compatible",
+            baseURL: baseURL,
+            apiKey: request.credentialRef.map { .staged(reference: $0) } ?? .keep,
+            models: models.map { ProviderModelConfigurationDetail(modelID: $0, name: $0) },
+            localRuntime: .lmStudio)
+        _ = try await saveProviderConfiguration(envelope: CommandEnvelope(payload: save))
+        // An earlier build stored this connection under the catalog id itself, with no models and
+        // no runtime marker; sharing the product id also made the GUI treat it as read-only.
+        // It is replaced by the entry just written. Its vault secret, if any, is left in place
+        // (`deleteCredential: false`); a key typed in this connect is what the new entry uses.
+        if providerID != Self.lmStudioProductID, existing[Self.lmStudioProductID] != nil {
+            _ = try? await deleteProviderConfiguration(envelope: CommandEnvelope(
+                payload: DeleteProviderConfigurationRequest(providerID: Self.lmStudioProductID, deleteCredential: false)))
+        }
+        guard let info = try await providerAccounts().first(where: { $0.id == providerID || $0.productID == providerID }) else {
+            throw CoreError(code: .provider, message: "已保存 LM Studio，但账户列表尚未刷新")
+        }
+        return CommandReceipt(commandID: envelope.commandID, applied: true, revision: nextRevision(),
+                              observedThrough: [], result: info)
     }
 
     /// Connects a provider that comes from the published models.lingxifox.cn
@@ -2582,6 +2679,7 @@ extension CoreHost {
                 return
             }
         }
+        await refreshLocalRuntimeIfStale()
         // Turn 的 frozen executionIntent 由 per-run RunExecutionContext 强绑定并穿透至 ToolRuntime，避免并发 Run 串扰
         var explicitModelSelection: ModelSelection? = nil
         var modelResolutionError: Error? = nil
@@ -5086,7 +5184,10 @@ extension CoreHost {
         if let refresher = oauthRefresher {
             auth = .oauth(refresher)
         } else if let token = authToken {
-            if let headerName = providerConfig.options.apiKeyHeader {
+            // `Authorization` is the bearer scheme, as the connection probe and the account mapping
+            // treat it; sending the raw key there made a test pass that the real call then failed.
+            let headerName = providerConfig.options.apiKeyHeader?.trimmingCharacters(in: .whitespaces) ?? ""
+            if !headerName.isEmpty, headerName.caseInsensitiveCompare("authorization") != .orderedSame {
                 auth = .header(name: headerName, value: token)
             } else {
                 auth = .bearer(token)
@@ -5107,9 +5208,21 @@ extension CoreHost {
             settings = await ModelCatalogDefaults.resolve(providerID: providerID, modelID: selection.modelID)
                 .effectiveOrDefaults()
         }
-        let contextProfile = ModelContextProfile(contextWindowTokens: settings.contextWindow,
-                                                 maxOutputTokens: settings.maxOutputTokens,
-                                                 source: "custom:\(fullModelValue)")
+        // A local runtime knows what it has loaded right now, and that beats anything written down:
+        // a configured 128K or a catalog's 256K is room the loaded instance does not have.
+        let local = await localRuntimeAssembly(providerID: providerID, options: providerConfig.options,
+                                               baseURL: baseURLStr, modelID: selection.modelID,
+                                               credential: authToken, wireProtocol: wireProtocol)
+        let contextWindow = local?.status.runtimeContextTokens ?? settings.contextWindow
+        let contextSource = local?.status.runtimeContextTokens != nil
+            ? "lmstudio-runtime:\(fullModelValue)"
+            : (local != nil ? "custom:\(fullModelValue) (runtime context unknown)" : "custom:\(fullModelValue)")
+        let contextProfile = ModelContextProfile(contextWindowTokens: contextWindow,
+                                                 // Clamped only for a local runtime, whose loaded window
+                                                 // can be smaller than a written-down output limit.
+                                                 maxOutputTokens: local?.status.runtimeContextTokens != nil
+                                                     ? min(settings.maxOutputTokens, contextWindow) : settings.maxOutputTokens,
+                                                 source: contextSource)
 
         let runtimeConfig = ProviderConfig(
             baseURL: baseURL,
@@ -5132,7 +5245,8 @@ extension CoreHost {
         case .anthropicMessages:
             providerInstance = AnthropicMessagesProvider(config: runtimeConfig, provenance: provenance)
         case .chatCompletions:
-            providerInstance = OpenAICompatibleProvider(config: runtimeConfig, provenance: provenance)
+            providerInstance = OpenAICompatibleProvider(config: runtimeConfig, provenance: provenance,
+                                                        wireExtension: local?.wireExtension)
         }
 
         return ModelRuntimeAssembly(
@@ -5150,11 +5264,12 @@ extension CoreHost {
                 wireProtocol: wireProtocol,
                 contextProfile: contextProfile,
                 capabilities: ModelCapabilities(
-                    toolCalling: settings.toolCalling,
+                    toolCalling: local?.status.toolUse ?? settings.toolCalling,
                     parallelToolCalling: settings.parallelToolCalling,
-                    reasoning: settings.reasoning,
-                    vision: settings.vision,
-                    structuredOutput: settings.structuredOutput),
+                    reasoning: local.flatMap { LMStudioDiscovery.reasoningCapability($0.status) }.map { _ in true } ?? settings.reasoning,
+                    vision: local?.status.vision ?? settings.vision,
+                    structuredOutput: settings.structuredOutput,
+                    reasoningCapability: local.flatMap { LMStudioDiscovery.reasoningCapability($0.status) }),
                 rateLimits: ProviderRateLimits(
                     tpm: settings.tokensPerMinute,
                     rpm: settings.requestsPerMinute,
@@ -5166,6 +5281,52 @@ extension CoreHost {
                         jitterRatio: settings.retryJitterRatio))
             )
         )
+    }
+
+    /// Re-reads a local runtime before a turn when the last reading is older than 30 seconds.
+    ///
+    /// A user can reload the model in LM Studio with a different context at any time; the budget
+    /// must follow. The assembly is rebuilt only when the loaded context actually changed: an
+    /// unchanged server keeps the same provider object, so a routine re-read can never move the
+    /// prefix cache.
+    private func refreshLocalRuntimeIfStale(maxAge: TimeInterval = 30) async {
+        guard let current = currentAssembly,
+              let previous = localRuntimeRegistry.status(providerID: current.endpoint.providerID),
+              Date().timeIntervalSince(previous.discoveredAt) > maxAge,
+              let config = try? await configurationStore?.load().providers.providers[current.endpoint.providerID],
+              config.options.localRuntime?.backend == .lmStudio else { return }
+        let providerID = current.endpoint.providerID
+        let secret = await resolveProviderSecret(config.options.apiKey, providerID: providerID)
+        let fresh = await LMStudioDiscovery.discover(baseURL: config.options.baseURL,
+                                                     modelID: current.modelID.rawValue, credential: secret)
+        localRuntimeRegistry.record(fresh, providerID: providerID)
+        if let loaded = fresh.runtimeContextTokens, loaded != current.contextProfile.contextWindowTokens {
+            await reassembleCurrentModel(ifProvider: providerID)
+        }
+    }
+
+    /// Discovers a local-runtime provider and builds its wire dialect. Nil for every provider that
+    /// does not declare `options.localRuntime`, which is every cloud provider: they are never probed.
+    private func localRuntimeAssembly(providerID: String, options: PublicProviderOptions, baseURL: String,
+                                      modelID: String, credential: String?,
+                                      wireProtocol: ModelWireProtocol) async -> (status: LocalRuntimeModelStatus, wireExtension: (any ChatCompletionsWireExtension)?)? {
+        guard let runtime = options.localRuntime, runtime.backend == .lmStudio else { return nil }
+        let status = await LMStudioDiscovery.discover(baseURL: baseURL, modelID: modelID, credential: credential)
+        localRuntimeRegistry.record(status, providerID: providerID)
+        guard wireProtocol == .chatCompletions else { return (status, nil) }
+        let capability = LMStudioDiscovery.reasoningCapability(status)
+        let registry = localRuntimeRegistry
+        let draft = runtime.draftModel.flatMap { $0.isEmpty ? nil : $0 }
+        let wire = LMStudioChatExtension(
+            reasoningToggle: capability?.mode == .toggle,
+            reasoningDefaultOn: capability?.defaultEffort != .off,
+            externalDraftModel: draft,
+            mtpConfigured: status.mtpEnabled == true,
+            sink: { [weak self] metrics in
+                registry.observe(metrics, providerID: providerID)
+                Task { await self?.debugHub?.record(.localRuntimeSpeculative) }
+            })
+        return (status, wire)
     }
 
     private func getOrCreateOAuthRefresher(

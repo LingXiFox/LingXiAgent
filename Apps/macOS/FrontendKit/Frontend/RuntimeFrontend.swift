@@ -1007,9 +1007,19 @@ public final class RuntimeFrontend: ObservableObject {
             return
         }
         do {
-            observatoryModel.status = try await action(client)
+            let status = try await action(client)
+            observatoryModel.status = status
+            // The window subtitle reads the status carried by `availability`; updating only
+            // `status` left it announcing a recording that Core had already stopped.
+            observatoryModel.availability = status.enabled ? .enabled(status) : .disabled
+            observatoryModel.recorderActionFailure = nil
         } catch {
+            // Shown in the Observatory itself: `actionError` surfaces in the main window, which
+            // is not where the operator who pressed the button is looking.
+            observatoryModel.recorderActionFailure = "调试记录操作被拒绝：\(error.localizedDescription)"
             actionError = "调试记录操作失败：\(error.localizedDescription)"
+            // No optimistic state survives a rejection: re-read what Core actually holds.
+            await probeObservatory()
         }
     }
 

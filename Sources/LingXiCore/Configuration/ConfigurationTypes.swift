@@ -505,20 +505,38 @@ public enum StoredProviderAuthenticationKind: String, Codable, Sendable, Equatab
     case none, bearer, header
 }
 
+/// Options for a provider that is a local inference runtime rather than a cloud API.
+///
+/// Kept out of `ModelRequest` on purpose: a draft model is a property of one server, not of the
+/// conversation, and no other provider should ever see the field.
+public struct LocalRuntimeOptions: Codable, Sendable, Equatable {
+    public var backend: LocalInferenceBackend
+    /// An external draft model to request. Nil uses whatever the server has (MTP needs nothing).
+    public var draftModel: String?
+
+    public init(backend: LocalInferenceBackend, draftModel: String? = nil) {
+        self.backend = backend
+        self.draftModel = draftModel
+    }
+}
+
 public struct PublicProviderOptions: Codable, Sendable, Equatable {
     public var baseURL: String
     public var apiKey: String?
     public var apiKeyHeader: String?
     public var headers: [String: String]
+    public var localRuntime: LocalRuntimeOptions?
 
-    public init(baseURL: String, apiKey: String? = nil, apiKeyHeader: String? = nil, headers: [String: String] = [:]) {
+    public init(baseURL: String, apiKey: String? = nil, apiKeyHeader: String? = nil, headers: [String: String] = [:],
+                localRuntime: LocalRuntimeOptions? = nil) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.apiKeyHeader = apiKeyHeader
         self.headers = headers
+        self.localRuntime = localRuntime
     }
 
-    private enum CodingKeys: String, CodingKey { case baseURL, apiKey, apiKeyHeader, headers }
+    private enum CodingKeys: String, CodingKey { case baseURL, apiKey, apiKeyHeader, headers, localRuntime }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -529,6 +547,7 @@ public struct PublicProviderOptions: Codable, Sendable, Equatable {
         }
         apiKeyHeader = try values.decodeIfPresent(String.self, forKey: .apiKeyHeader)
         headers = try values.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+        localRuntime = try values.decodeIfPresent(LocalRuntimeOptions.self, forKey: .localRuntime)
     }
 }
 
@@ -1013,7 +1032,13 @@ public struct ProvidersConfiguration: Codable, Sendable, Equatable {
         for (providerID, provider) in providers.sorted(by: { $0.key < $1.key }) {
             customProviders.append(CustomProviderConfiguration(id: providerID, displayName: provider.name, baseURL: provider.options.baseURL, requiredHeaders: provider.options.headers))
             let credential = credentialReference(provider.options.apiKey)
-            let authentication: StoredProviderAuthenticationKind = provider.options.apiKeyHeader == nil ? (credential == nil ? .none : .bearer) : .header
+            // No key means no authentication, whatever the header field says: a header name alone
+            // used to select `.header`, which then failed at runtime for want of a credential —
+            // so a keyless local server (LM Studio) broke the moment the header field was filled.
+            // `Authorization` is the bearer scheme, matching how the connection probe sends it.
+            let header = provider.options.apiKeyHeader?.trimmingCharacters(in: .whitespaces)
+            let authentication: StoredProviderAuthenticationKind = credential == nil ? .none
+                : (header == nil || header!.isEmpty || header!.caseInsensitiveCompare("authorization") == .orderedSame ? .bearer : .header)
             accounts.append(ProviderAccountConfiguration(
                 id: providerID,
                 providerID: providerID,
