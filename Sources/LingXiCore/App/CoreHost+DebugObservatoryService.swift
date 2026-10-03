@@ -307,7 +307,9 @@ extension CoreHost {
         let url = URL(fileURLWithPath: destinationPath, isDirectory: true)
         let events = hub.events(after: 0, limit: Int.max)
         var payload = Data()
-        let encoder = JSONEncoder.lingxiDebugManifest()
+        // Same encoder as the live archive, so an exported run and a recorded one are byte-for-byte
+        // comparable.
+        let encoder = DebugTelemetryHub.archiveEncoder()
         for event in events {
             guard let line = try? encoder.encode(event) else { continue }
             payload.append(line)
@@ -379,13 +381,10 @@ struct DebugRunManifest: Codable, Sendable, Equatable {
 }
 
 extension JSONEncoder {
-    /// Files, not the wire: the wire uses epoch-double dates via the default encoder, while an
-    /// archive a human inspects in an editor wants ISO8601.
+    /// Manifest sidecar for an archived run. Delegates to the archive encoder so every file inside
+    /// one debug run agrees on date formatting.
     static func lingxiDebugManifest() -> JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        return encoder
+        DebugTelemetryHub.archiveEncoder()
     }
 }
 

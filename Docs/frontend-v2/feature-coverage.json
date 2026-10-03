@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-10-01",
+  "updated": "2026-10-03",
   "source": "LingXiAgent-GUI-Core-Closure-Freeze §23",
   "comment": [
     "Machine-checked inventory. FeatureCoverageManifestTests reads this file and fails if any",
@@ -189,7 +189,7 @@
       "status": [
         "CORE_USER_FEATURE_HIDDEN"
       ],
-      "note": "OPEN: getTaskReport has a real implementation but nothing in Core produces a TaskReport, so it always answers nil. An honest nil, not a fake — but the report feature is not user-visible yet. Either build report generation or classify it unsupported and drop the RPC.",
+      "note": "OPEN: getTaskReport is wired end to end but always answers payload: nil, because nothing in Core constructs a TaskReport. An honest nil, not a fake - the GUI already reads it and shows nothing. Report generation is separate work; this row stays open until something produces a report rather than being closed by formatting one.",
       "evidence": [
         {
           "file": "Sources/LingXiCore/App/CoreHost+TaskService.swift",
@@ -202,6 +202,14 @@
         {
           "file": "Sources/LingXiClient/VNext/Transport/InProcessTransport.swift",
           "contains": "service.finalizeTask(envelope:"
+        }
+      ],
+      "invariants": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost+TaskService.swift",
+          "mustContain": "payload: nil",
+          "mustNotContain": null,
+          "because": "the row is OPEN precisely because the handler still answers nil"
         }
       ]
     },
@@ -225,8 +233,10 @@
         "ContextInspectorClosureTests",
         "ContextCompactionTests"
       ],
-      "status": [],
-      "note": "§8 closed: searchContext and getContextEntry are reachable from the runtime detail window. The 运行上下文 card itself is frozen by §30 and was not touched — the inspector is a separate window, opened from the menu like 运行轨迹.",
+      "status": [
+        "PROTOCOL_FAKE_SUCCESS"
+      ],
+      "note": "§8 closed the wiring and only the wiring. RuntimeFrontend calls context.search and context.entry and the inspector window renders them, but CoreHost.searchContext answers with a snippet built from the query string and contextEntry answers with 'Context content for <uri>' and tokenCount 42. The surface is reachable and the data in it is invented, which is PROTOCOL_FAKE_SUCCESS and a worse defect class than no surface at all.",
       "evidence": [
         {
           "file": "Sources/LingXiCore/App/CoreHost.swift",
@@ -255,6 +265,14 @@
         {
           "file": "Apps/macOS/FrontendKit/Components/ContextInspectorView.swift",
           "contains": "runtime.contextEntry(uri:"
+        }
+      ],
+      "invariants": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "mustContain": "Context search query:",
+          "mustNotContain": null,
+          "because": "the row claims the payload is fabricated; this string is the fabrication"
         }
       ]
     },
@@ -387,7 +405,7 @@
       "classification": "observability-facing",
       "core": "CoreHost.getPerformanceMetrics via TurnProfiler",
       "protocol": [
-        "runtime.performance"
+        "diagnostics.performance"
       ],
       "client": "DiagnosticsDomainClient.getPerformanceMetrics",
       "application": "SettingsStore.refresh",
@@ -419,7 +437,7 @@
       "classification": "unsupported",
       "core": "CoreHost.getRunTrace throws unsupportedCommand",
       "protocol": [
-        "runtime.runTrace"
+        "diagnostics.runTrace"
       ],
       "client": "DiagnosticsDomainClient.getRunTrace",
       "application": null,
@@ -435,6 +453,20 @@
         {
           "file": "Sources/LingXiCore/App/CoreHost.swift",
           "contains": "func getRunTrace(envelope:"
+        }
+      ],
+      "invariants": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "mustContain": "func getRunTrace(envelope:",
+          "mustNotContain": null,
+          "because": "the handler must stay visible while this row claims it refuses"
+        },
+        {
+          "file": "Sources/LingXiCore/App/CoreHost.swift",
+          "mustContain": "该 Runtime 不提供 Run Trace 查询",
+          "mustNotContain": null,
+          "because": "this row is only honest while the handler still refuses"
         }
       ]
     },
@@ -462,6 +494,20 @@
           "file": "Sources/LingXiProtocol/ProtocolService.swift",
           "contains": "该 Runtime 不提供 Agent Preset 目录。"
         }
+      ],
+      "invariants": [
+        {
+          "file": "Sources/LingXiProtocol/ProtocolService.swift",
+          "mustContain": "func listAgentPresets(envelope:",
+          "mustNotContain": null,
+          "because": "the default that throws is the evidence for unsupported"
+        },
+        {
+          "file": "Sources/LingXiProtocol/ProtocolService.swift",
+          "mustContain": "该 Runtime 不提供 Agent Preset 目录。",
+          "mustNotContain": null,
+          "because": "an implementation replacing this message must reclassify the row"
+        }
       ]
     },
     {
@@ -488,27 +534,123 @@
     },
     {
       "feature": "multimodal-input",
-      "classification": "unsupported",
-      "core": "ModelContentPart has no image case",
-      "protocol": null,
-      "client": null,
-      "application": null,
-      "guiSurface": "attachment picker refuses non-text with a stated reason",
+      "classification": "user-facing",
+      "core": "ModelContentPart has .image and .imageFile; SessionRuntime.attachingImages joins them to the last user message after context projection, so an image never becomes a context entry and the stable prefix is untouched.",
+      "protocol": [
+        "attachment.prepare"
+      ],
+      "client": "ResourceDomainClient.prepareAttachment; ComposerDock -> RuntimeFrontend.prepareAttachment",
+      "application": "Composer attachments are carried into .submitPrompt as fileReferences",
+      "guiSurface": "ComposerDock attachment picker and chips",
       "settings": null,
-      "capability": "supportsContentUpload covers transport only, not inference",
+      "capability": null,
       "tests": [
+        "AgentLoopEndToEndTests",
+        "ResponsesAdapterTests",
+        "ImagePayloadTests",
+        "AttachmentPipelineTests",
         "AttachmentClosureTests"
       ],
       "status": [],
-      "note": "Recorded explicitly because the freeze asks for image attachments. Upload works and is not the limitation; a turn cannot carry an image to a model. §3 was closed for text attachments and images are refused out loud rather than accepted and ignored. Adding it means a content part plus the OpenAI and Anthropic encodings.",
+      "note": "This row said `unsupported` with the reason `ModelContentPart has no image case`. That enum case exists, all three wire adapters encode it, and the E2E tests put an image inside a real model request. It stayed green because every check in FeatureCoverageManifestTests was positive-only: the cited string `public enum ModelContentPart` is still literally present after the cases were added. The invariants below are what makes that failure mode impossible to repeat.",
       "evidence": [
         {
-          "file": "Sources/LingXiProtocol/AttachmentSupport.swift",
-          "contains": "maximumTurnCharacters"
+          "file": "Sources/LingXiCore/Modules/Model/ModelDomain.swift",
+          "contains": "case image(mediaType: String, data: Data)"
+        },
+        {
+          "file": "Sources/LingXiCore/Modules/Model/OpenAICompatibleProvider.swift",
+          "contains": "image_url"
+        },
+        {
+          "file": "Sources/LingXiCore/Modules/Model/OpenAIResponsesProvider.swift",
+          "contains": "input_image"
+        },
+        {
+          "file": "Sources/LingXiCore/Modules/Model/AnthropicMessagesProvider.swift",
+          "contains": "\"image\""
+        },
+        {
+          "file": "Sources/LingXiCore/Modules/Session/SessionRuntime.swift",
+          "contains": "attachingImages"
+        }
+      ],
+      "invariants": [
+        {
+          "file": "Sources/LingXiCore/Modules/Model/ModelDomain.swift",
+          "mustContain": "case image(mediaType: String, data: Data)",
+          "mustNotContain": null,
+          "because": "removing the image case re-opens this row and it must be reclassified"
         },
         {
           "file": "Sources/LingXiCore/Modules/Model/ModelDomain.swift",
-          "contains": "public enum ModelContentPart"
+          "mustContain": null,
+          "mustNotContain": "has no image case",
+          "because": "this is the sentence that made the row false while still passing the citation check"
+        },
+        {
+          "file": "Sources/LingXiProtocol/AttachmentSupport.swift",
+          "mustContain": null,
+          "mustNotContain": "no image",
+          "because": "images travel as image parts and each provider adapter encodes them"
+        }
+      ]
+    },
+    {
+      "feature": "runtime-observatory",
+      "classification": "observability-facing",
+      "core": "DebugTelemetryHub ring plus DebugRunRecorder JSONL behind debug.* RPCs. Developer Debug Mode is Core-held state persisted under the data root and defaults to off.",
+      "protocol": [
+        "debug.status",
+        "debug.mode.update",
+        "debug.snapshot",
+        "debug.events"
+      ],
+      "client": "DebugDomainClient, exposed as client.debug",
+      "application": "None by design: the Observatory pulls, so debug telemetry never enters ApplicationState or the 30 Hz projection.",
+      "guiSurface": "RuntimeObservatoryView, an independent window (id runtime-observatory), plus a Developer Debug Mode card on Settings -> Diagnostics",
+      "settings": "diagnostics.developerMode",
+      "capability": null,
+      "tests": [
+        "RuntimeObservatoryBypassTests",
+        "DebugObservatorySurfaceTests"
+      ],
+      "status": [],
+      "note": "A separate window rather than more rows in the main inspector, because §30 freezes the 运行上下文 card. The load-bearing claim is not the UI but that enabling it changes no model request, which RuntimeObservatoryBypassTests proves by comparing the stable fields of every ModelRequest between an off run and an on run.",
+      "evidence": [
+        {
+          "file": "Sources/LingXiCore/Infrastructure/Debug/DebugTelemetryHub.swift",
+          "contains": "public final class DebugTelemetryHub"
+        },
+        {
+          "file": "Sources/LingXiProtocol/DebugObservatory.swift",
+          "contains": "public struct DebugObservatoryStatus"
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Frontend/LingXiWorkbenchScene.swift",
+          "contains": "id: \"runtime-observatory\""
+        },
+        {
+          "file": "Apps/macOS/FrontendKit/Settings/SettingsSystemPages.swift",
+          "contains": "diagnostics.developerMode"
+        },
+        {
+          "file": "Sources/LingXiClient/VNext/Domains/DebugDomainClient.swift",
+          "contains": "public struct DebugDomainClient"
+        }
+      ],
+      "invariants": [
+        {
+          "file": "Sources/LingXiCore/App/CoreHost+DebugObservatoryService.swift",
+          "mustContain": "开发者调试模式未开启",
+          "mustNotContain": null,
+          "because": "with the mode off the reads must refuse; dropping this assertion would let an empty snapshot answer as if it were a real reading"
+        },
+        {
+          "file": "Tests/LingXiAgentTests/RuntimeObservatoryBypassTests.swift",
+          "mustContain": "func debugModeDoesNotChangeModelRequests",
+          "mustNotContain": null,
+          "because": "the pure-bypass claim is worth nothing while it is untested"
         }
       ]
     }

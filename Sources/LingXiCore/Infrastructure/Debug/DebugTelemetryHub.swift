@@ -294,9 +294,37 @@ public final class DebugTelemetryHub: @unchecked Sendable {
         }
     }
 
-    private static func encode(_ events: [DebugTelemetryEvent]) -> [Data] {
+    /// Encoder for every debug artefact written to disk.
+    ///
+    /// Fractional seconds are not cosmetic. The archive exists so that an E-Core page-out and a
+    /// cache bust inside the same turn can be told apart after the fact, and plain `.iso8601`
+    /// truncates to whole seconds — which would collapse exactly the events whose ordering is the
+    /// question being asked. The ring's `sequence` keeps in-memory order exact; the file has to
+    /// preserve the same distinction.
+    public static func archiveEncoder() -> JSONEncoder {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX"
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .formatted(formatter)
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
+    /// Matching decoder, so a reader cannot accidentally truncate what the writer kept.
+    public static func archiveDecoder() -> JSONDecoder {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX"
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .formatted(formatter)
+        return decoder
+    }
+
+    private static func encode(_ events: [DebugTelemetryEvent]) -> [Data] {
+        let encoder = archiveEncoder()
         // One JSON object per line, so a run still being written — or one killed mid-turn — stays
         // readable up to its last complete line.
         var lines: [Data] = []

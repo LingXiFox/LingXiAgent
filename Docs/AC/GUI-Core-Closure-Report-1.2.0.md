@@ -62,6 +62,8 @@ Core 内部两处自造数据：`getRunTrace` 对每个 run 返回固定 `["run.
 每个保留的 feature 现在带 `requiredMethods`，`FeatureCoverageManifestTests` 之外的 `ProtocolSurfaceParityTests` 会验证：广播某 feature 时，它点名的每个 method 必须在服务器 case 与客户端 wire 名里都存在；反向若某 feature 已全接线却没广播，同样失败。
 
 新增共享判据 `AttachmentSupport`（LingXiProtocol）：GUI 与 Core 用同一张「哪些媒体类型能被携带」的表，避免各判各的导致「界面收了、Core 丢了」。
+>
+> **后续变更（见文末附记）**：这张 40 项扩展名表已被删除。图片改为 `.image` / `.imageFile` 内容片段由各 Provider adapter 自行编码之后，「能不能携带」不再是需要两端查表判断的属性，`AttachmentSupport` 现在只剩 `maximumTurnCharacters`。该结论在 1.2.0 当时成立，今天已不成立。
 
 ---
 
@@ -178,3 +180,43 @@ Bundle.module  →  GUI 背景
 ## J. CI_GATE
 
 （同上，冻结文档只允许 `READY` 或 `BLOCKED`。）
+
+---
+
+## 附记 · 1.2.0 之后的变更（2026-10-03）
+
+本报告是按冻结文档对 HEAD `6120d22` 的收口结果，属于时间点记录，因此上面各节的历史结论不改写。
+这里只登记其后的变化，避免读者把当年正确的结论当成今天的事实。
+
+**已经不再成立的一条交付物**：§A 提到的共享媒体类型判据表。见该节内的后续变更标注。
+
+**状态被代码推进、但本报告仍记为缺口的一项**：多模态输入。
+`ModelContentPart` 现有 `.image(mediaType:data:)` 与 `.imageFile(mediaType:data:fileID:)`
+（`Sources/LingXiCore/Modules/Model/ModelDomain.swift:38,41`），三家 adapter 各自编码
+（`image_url` / `input_image` / `{type:"image",source:{base64|file_id}}`），
+`SessionRuntime.attachingImages` 在上下文投影之后才把图片并入最后一条 user 消息——图片因此
+不会成为上下文条目，稳定前缀也不受影响。`AgentLoopEndToEndTests` 里有图片进入真实
+`ModelRequest` 的端到端断言。
+
+同一时期被代码推翻、并已按现状改准的其它描述，集中在
+`Docs/frontend-v2/feature-coverage.json` 与 `Docs/frontend-v2/02-feature-mapping-and-ia.md`：
+`workspace.worktree.*` 五个 RPC、`task.*` 十一条路由、`git.branch`、`submitSideQuestion`
+（早已是真实流式模型调用，正文里那两条伪造字符串在 `Sources/` 中已不存在）、
+Branch Prediction 的 transport 与 diagnostic field、`RuntimeCapabilities.supportedFeatures`
+的填充、以及 workspace diff 的 numstat。
+
+**仍然真实未完成的**（本次没有顺手改，也没有为了闭环而补一个看起来完整的实现）：
+`getRunTrace.spans` 需要 span store；`updateContextPolicy` 仍忽略请求只回声当前策略；
+`installExtension` 仍记一条硬编码条目；`context.search` / `context.entry` 的载荷仍是把 query
+回显的假数据（接线真、内容假，已登记为 `PROTOCOL_FAKE_SUCCESS`）；`task.report` 仍回答
+`payload: nil`；`observedGranularity` 仍恒为 nil；`ECoreStateSnapshot` 的 hot/cold 仍为 nil。
+
+**本轮新增的一项能力**：Developer Debug Mode 与 Runtime Observatory，
+`debug.status` / `debug.mode.update` / `debug.snapshot` / `debug.events` 四个 RPC，
+macOS 独立窗口 `runtime-observatory`。它是只读旁路，`RuntimeObservatoryBypassTests` 用
+「同一脚本在开关两种状态下交给 provider 的每个 `ModelRequest` 的稳定字段逐一相等」来证明这一点。
+它不改变本报告任何一条 §结论，也不替代上面任何一项未完成工作。
+
+**本报告的两处空缺结论未代填**：§H 与 §CI_GATE 在归档时即为空（「待本轮全量回归与 Xcode 构建
+完成后填入」「同上，冻结文档只允许 `READY` 或 `BLOCKED`」）。它们不是本狐能替当轮验收作出的判断，
+保持原样。

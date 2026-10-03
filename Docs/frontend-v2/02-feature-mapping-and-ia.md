@@ -14,29 +14,36 @@ binding surface is `ApplicationStore`: it folds `subscribeSessionEvents` /
 models. **V2 reuses that boundary unchanged** — it is a page-structure problem, not a
 transport problem.
 
-Second constraint, and the more dangerous one: **a large part of the protocol is
-declared-but-stub.** `ProtocolFeature` even advertises `task.pause/resume/fork` and
-`workspace.fork` as if shipped while `RuntimeCapabilities.supportedFeatures` is never
-populated. Gating UI on `RuntimeCapabilities` would therefore lie. V2 gates on
-`supportedModes` plus a hand-authored capability table, and every stub renders as
-*unavailable*, never as an empty success state.
+Second constraint, and the more dangerous one: **a large part of the protocol was
+declared-but-stub.** `ProtocolFeature` advertised `task.pause/resume/fork` and
+`workspace.fork` as if shipped while `RuntimeCapabilities.supportedFeatures` was never
+populated, so gating UI on it would have lied.
+
+That half is now closed from the other direction: `CoreHost.swift:2905-2913` declares
+`supportedFeatures: [.taskPause, .taskResume, .taskFork, .workspaceFork, .gitRPC,
+.gitRemoteSync]` explicitly, and `ProtocolSurfaceParityTests.advertisedFeaturesAreWired`
+checks it in both directions — an advertised feature whose methods are not wired fails,
+and a fully-wired feature CoreHost does not broadcast also fails. `RuntimeEvents.swift:48`
+removed the default so a producer has to state it. Gating on `supportedFeatures` is now
+sound. V2 still gates on `supportedModes` plus this document's table, and every stub
+renders as *unavailable*, never as an empty success state.
 
 ### Confirmed stubs — must not be shown as working
 
 | Capability | Reality | V2 ruling |
 |---|---|---|
-| `submitSideQuestion` | Core default returns fabricated `"Processed side question: …"` with `modelUsed:"side-runner"` | **Live mock in the shipping path.** Quick Ask must say it is unsupported until Core implements it. |
-| `workspace.worktree.*` (5 RPCs) | Protocol default only; no CoreHost impl, no route; `listWorktrees()` always `[]` | Worktree section must read *不受支持*, not *没有 worktree*. |
-| `task.*` (11 RPCs) | Rich DTOs and a real `TaskRuntime` actor exist but `TaskRuntime` is never referenced by `CoreHost`; no `task.*` route | TaskCapsule surface stays out of the GUI. `/tasks` remains background shell tasks, labelled as such. |
-| Branch Prediction | `VariableOrderMarkovPredictor` is a real algorithm and `PredictionSnapshot` a real DTO, but there is **no RPC, no event case, no diagnostic field** | Cannot be bound. No prediction UI in V2; recorded as Core debt. |
-| `context.search` / `context.entry` | Return a fabricated snippet and `"Context content for <uri>"`, `tokenCount: 42` | Not exposed. Real retrieval exists only as agent tools. |
+| `submitSideQuestion` | Real streamed model call: `CoreHost.swift:34-66` guards an empty question and a missing `gateway.modelID`, builds a `ModelRequest` from the last eight session messages, streams it and accumulates `.textDelta`. Neither fabricated string named here exists anywhere in `Sources/` any more. | Reachable end to end (`agent.sideQuestion` → `TurnDomainClient` → `RuntimeFrontend.swift:1002`). Stays in Quick Ask as a separate answer path, not a turn. |
+| `workspace.worktree.*` (5 RPCs) | Implemented against real git: `CoreHost+Worktree.swift:16,37,46,66,76` run `git worktree add / merge --squash / remove / -D`. All five are routed (`VNextStdioCoreServer.swift:315-319`) and advertised as `.workspaceFork`. | Reachable: `SettingsStore.swift:303` reads `client.workspace.listWorktrees()`. An empty list now means *no worktree*, and can be read as such. |
+| `task.*` (11 RPCs) | Superseded by `feature-coverage.json`, which is the accurate record: `CoreHost+TaskService.swift` is a real 116-line `extension CoreHost` driving `taskRuntime` through `register / transition / getCapsule / listCapsules`, and all eleven verbs are routed. | The GUI already reaches the surface (`WarmTasksPane`). The one open piece is `task.report`, which answers `payload: nil` — an honest nil, tracked as OPEN, not closed by formatting a report. |
+| Branch Prediction | `BranchPredictionRuntime` is real and Core publishes it every turn: `PredictionRuntimeSnapshot` is a field on `ContextStateSnapshot` (`Snapshots.swift:591`), populated at `CoreHost.swift:2389,2447`. It reaches TUI (`ApplicationTUI.swift:2331-2350`) and WebUI (`Assets/js/state.js:355,1700,1854`). So there *is* a diagnostic field and a transport — inside `context.state`, not as its own RPC. | macOS has no product surface for it, which is correct for a forecast that must not steer the run. It is exposed in the Runtime Observatory (`AgentLoopPane`) as observability. A dedicated `prediction.*` RPC remains unbuilt and is not needed for that. |
+| `context.search` / `context.entry` | Fabrication still true: `CoreHost.swift:5773-5794` answers with `"Context search query: \(query)"` and `"Context content for \(uri)"` at `tokenCount: 42`. What changed is reachability — both are wired into the context inspector window (`RuntimeFrontend.swift:852,859`). | Exposed but carrying invented content, which is `PROTOCOL_FAKE_SUCCESS` in `feature-coverage.json` and a worse state than hiding it: a reachable panel whose numbers are made up will be believed. Real retrieval exists only as agent tools. |
 | `updateContextPolicy` | Ignores the request, echoes current policy | Context policy is read-only in the GUI. |
 | `installExtension` | Records a hardcoded `version:"1.0.0", kind:.plugin` entry; no download | Settings offers enable/disable/reload, never "install". |
-| `agentPreset.list`, `listAgentRuns`, `multiRun.compare` | Defaults / hardcoded arrays | Not surfaced. |
-| `getRunTrace.spans` → `traceEvents` | `traceEvents` is declared and read by `TraceWindowView` but **never written anywhere** | Trace window is permanently empty today. Must state that plainly or not be offered. |
+| `agentPreset.list`, `listAgentRuns`, `multiRun.compare` | No longer hardcoded arrays: all three now `throw CoreError(code: .unsupportedCommand)` with the reason in a comment (`ProtocolService.swift:1310-1321`), precisely because an empty list would read as *no runs* rather than *unsupported*. | Still not surfaced, and that is now the honest outcome rather than a stub pretending to be one. |
+| `getRunTrace.spans` → `traceEvents` | `getRunTrace` does still throw `unsupportedCommand` (`CoreHost.swift:6229-6231`) — a real trace needs a span store. But `traceEvents` *is* written: `RuntimeFrontend.swift:206` fills it from the diagnostics bundle's trace, which `TraceEmitter` genuinely produces. | The 运行轨迹 window works and is offered. What remains unsupported is the per-run span query, and the row now says so instead of calling the window empty. |
 | Goal mode | No `AgentMode.goal`; `/goal` is a slash command that renders a text panel | Keep, but label it what it is: a standing instruction, not a scheduler. |
-| Git branch | No RPC; `CoreProjection.gitBranch(at:)` reads `.git/HEAD` locally | Real data, client-side. Fine, but it is not Core state. |
-| Workspace diff | `getWorkspaceDiffSummary` runs `git diff` vs HEAD, truncated at 20 000 chars, no untracked, no numstat | Show the truncation, and say untracked files are not covered. |
+| Git branch | Both halves of the old claim are false: `git.branch` is routed (`CoreHost+GitRPC.swift:41`), and `CoreProjection.gitBranch(at:)` does not exist. The branch is Core-side — `gitRunner.status()` porcelain `status.branch` published through `WorkspaceSummary` (`CoreHost.swift:5271-5297`) and read at `CoreProjection.swift:307`. | Core state, reachable via RPC. No client-side `.git/HEAD` read anywhere. |
+| Workspace diff | Truncation and untracked are still true (`CoreHost.swift:1401,1405`). *no numstat* is not: `CoreHost.swift:5418-5430` runs `git diff --numstat` and fills `addedLines / deletedLines / changedFiles`, with a note that the frontend must not count `+`/`-` out of diff text. | Show the truncation; say untracked files are not covered. Line counts come from Core, not from the client parsing text. |
 
 ## 1. Feature → UX mapping
 
@@ -67,7 +74,7 @@ architecture, express it in LingXi's own terms · **C** LingXi already has the b
 | **E-Core** | no equivalent | D | Context panel | panel open | `ECoreStateSnapshot` (hot/cold always nil → omit) |
 | **Cache Debt** | 缓存命中率 only | D | Context panel + Advanced | panel open | `ProviderCacheStateSnapshot.cacheDebt` |
 | Context observability (prefix stability, bust rate, volatile tail, epoch) | 轮次统计 | B | 诊断 panel | folded | `ContextStateSnapshot` telemetry |
-| Branch Prediction Fabric | none | D→blocked | not in V2 | — | no transport |
+| Branch Prediction Fabric | none in the main GUI | D→observability | Runtime Observatory only | — | on the wire via `context.state`; no product surface, because a forecast that steered the run would stop being a forecast |
 | Todo | 计划 panel | A | 会话 panel | panel open | `SessionSnapshot.todos` |
 | Subagents | 轮次统计 rows | B | 会话 panel | panel open | `SubagentNode`, `getAgentTree` |
 | Background tasks | 终端 panel (different thing) | B | 会话 panel | panel open | `BackgroundTaskSnapshot` |
@@ -118,7 +125,23 @@ Structural changes actually made by V2, and why:
 
 ## 3. Deferred to Core, not fixable in V2
 
-Recorded so the gap is owned rather than papered over: Branch Prediction transport;
-`task.*` routes; worktree RPC; `getRunTrace.spans`; E-Core hot/cold counts; model
-`cost`/`modalities` decoded then dropped by `cachedModelsForProduct`; side-question
-execution; `supportedFeatures` population.
+Closed since this list was written — Branch Prediction now travels inside `context.state`
+and renders in TUI, WebUI and the Observatory; `task.*` and the five worktree RPCs are
+implemented and routed; side-question is a real streamed model call; `supportedFeatures`
+is populated and contract-checked; `git.branch` is a Core RPC.
+
+Still owned here, and unchanged by that: `getRunTrace.spans` (needs a span store; the
+handler throws rather than inventing two spans); E-Core hot/cold counts
+(`CoreHost.swift:2409-2415` passes `nil` for both, and `structuralPrefixStability` can
+only ever be 0.0 or 1.0); `observedGranularity`, hardcoded nil at `CoreHost.swift:2442`
+with no producer anywhere; `context.search` / `context.entry` payload, reachable but
+fabricated; `updateContextPolicy` echoing rather than applying; `installExtension`
+recording a hardcoded entry; `task.report` answering `payload: nil`; and model
+`cost`/`modalities`, which the discovery DTOs now carry but which this document cannot
+confirm reaches the product, because the `cachedModelsForProduct` named here does not
+exist in `Sources/` any more.
+
+The Runtime Observatory reads all of these out of Core unchanged and labels their
+provenance, so `observedGranularity` and the two nil hot/cold counts are now *visible* as
+unknown instead of being absent from view. That is a difference from hiding them, not a
+fix: none of them became measurable by being displayed.
