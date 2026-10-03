@@ -439,6 +439,118 @@ public final class RuntimeInspectorPresentationModel: ObservableObject {
     public init() {}
 }
 
+/// State behind the Runtime Observatory window.
+///
+/// Everything here is a copy of something Core answered, plus filter state that only affects what
+/// is displayed. The model computes no derived metric of its own: the moment the GUI starts
+/// producing numbers, the Observatory has two authorities and the less trustworthy one is the one
+/// nobody can inspect at 300 turns in.
+@MainActor
+public final class RuntimeObservatoryPresentationModel: ObservableObject {
+    /// Whether this Core has the debug surface at all, and whether the mode is on.
+    ///
+    /// Kept distinct from "connected, no data": a Core without the RPCs, a Core with the mode off
+    /// and a Core that is recording but has not yet seen a turn are three different things the
+    /// operator has to tell apart before drawing any conclusion.
+    @Published public var availability: ObservatoryAvailability = .notConnected
+    @Published public var status: DebugObservatoryStatus?
+    @Published public var snapshot: RuntimeObservatorySnapshot?
+    /// Telemetry held in the window's view. Core's ring is the authority; this is a read of it.
+    @Published public var events: [DebugTelemetryEvent] = []
+    /// Set once a read reports that Core had already discarded events older than what we have, so
+    /// the raw view can say "the beginning is missing" instead of showing a quiet-looking gap.
+    @Published public var ringTruncated = false
+    /// The last failure, if any. Reads that fail leave the previous values alone rather than
+    /// clearing them to empty, because an unread panel must look unknown, not like a healthy zero.
+    @Published public var readFailure: String?
+
+    // MARK: View-only filters. These never reach Core and never change what is recorded.
+    @Published public var searchText = ""
+    @Published public var selectedCategories: Set<String> = []
+    @Published public var followTail = true
+    /// Highest sequence folded into `events`, so the next read can ask for just what is new.
+    public private(set) var lastSeenSequence: UInt64 = 0
+
+    public init() {}
+
+    /// True only when Core both has the surface and has it switched on.
+    public var isLive: Bool {
+        if case .enabled = availability { return true }
+        return false
+    }
+
+    /// Newest first, which is what a scrolling event table wants; Core returns oldest first
+    /// because that is the order causality happened in.
+    public var visibleEvents: [DebugTelemetryEvent] {
+        var shown = events
+        if !selectedCategories.isEmpty {
+            shown = shown.filter { selectedCategories.contains($0.categoryRaw) }
+        }
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !needle.isEmpty {
+            shown = shown.filter { Self.matches($0, needle: needle) }
+        }
+        return shown.reversed()
+    }
+
+    /// Categories actually present in what has been read so far.
+    ///
+    /// Derived from received events rather than from the full category list, so a filter chip that
+    /// would match nothing never appears — a debug tool full of dead filters trains people to stop
+    /// trusting it.
+    public var availableCategories: [String] {
+        Array(Set(events.map(\.categoryRaw))).sorted()
+    }
+
+    public func absorb(_ page: DebugEventPage) {
+        ringTruncated = ringTruncated || page.truncated
+        guard !page.events.isEmpty else { return }
+        lastSeenSequence = max(lastSeenSequence, page.latestSequence)
+        // Merge by sequence rather than appending, so a re-read that overlaps what is already held
+        // cannot duplicate rows into a table whose whole purpose is counting occurrences.
+        let known = Set(events.map(\.sequence))
+        let fresh = page.events.filter { !known.contains($0.sequence) }
+        guard !fresh.isEmpty else { return }
+        events.append(contentsOf: fresh)
+        events.sort { $0.sequence < $1.sequence }
+        // Bound the view too. Core's ring is bounded; an unbounded GUI mirror would be the one
+        // component in the chain that grows without limit.
+        if events.count > Self.viewCap {
+            events.removeFirst(events.count - Self.viewCap)
+        }
+    }
+
+    public func reset() {
+        events = []
+        snapshot = nil
+        status = nil
+        ringTruncated = false
+        lastSeenSequence = 0
+    }
+
+    /// Matches on the fields an operator actually searches: category, the correlation ids, and any
+    /// object or reference identifier. Not on rendered values — the raw JSON view is for that.
+    static func matches(_ event: DebugTelemetryEvent, needle: String) -> Bool {
+        [event.categoryRaw, event.objectID, event.referenceID, event.sessionID?.rawValue,
+         event.runID?.rawValue, event.turnID?.rawValue, event.toolCallID?.rawValue]
+            .compactMap { $0 }
+            .contains { $0.localizedCaseInsensitiveContains(needle) }
+    }
+
+    static let viewCap = 5000
+
+    /// Three-way availability. `.unknown` is its own case so a transport failure cannot be
+    /// displayed as an old Core, which would send the operator off to upgrade something that is
+    /// fine.
+    public enum ObservatoryAvailability: Equatable {
+        case notConnected
+        case unsupported
+        case unknown(reason: String)
+        case disabled
+        case enabled(DebugObservatoryStatus)
+    }
+}
+
 /// Everything the inspector shows, taken from `ApplicationState` in one pass.
 public struct InspectorSnapshot: Equatable, Sendable {
     // Overview

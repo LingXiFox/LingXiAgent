@@ -191,6 +191,12 @@ enum SettingsSearchIndex {
 
         .init(anchor: "diagnostics.runtime", page: .diagnostics, title: "运行时状态", keywords: ["health", "version", "uptime"]),
         .init(anchor: "diagnostics.background", page: .diagnostics, title: "后台任务", keywords: ["background", "process", "kill"]),
+        .init(anchor: "diagnostics.developerMode", page: .diagnostics, title: "Developer Debug Mode",
+              keywords: ["debug", "developer", "遥测", "telemetry", "observatory", "调试"]),
+        .init(anchor: "diagnostics.observatory", page: .diagnostics, title: "Runtime Observatory",
+              keywords: ["observatory", "观测", "p-core", "e-core", "prefix cache", "调试"]),
+        .init(anchor: "diagnostics.debugData", page: .diagnostics, title: "Debug 数据导出与清除",
+              keywords: ["export", "导出", "clear", "清除", "jsonl", "archive"]),
         .init(anchor: "diagnostics.bundle", page: .diagnostics, title: "导出诊断包", keywords: ["bundle", "debug", "issue"]),
     ]
 }

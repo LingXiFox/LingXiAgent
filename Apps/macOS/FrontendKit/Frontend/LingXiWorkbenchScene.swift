@@ -46,6 +46,8 @@ public struct LingXiWorkbenchScene: Scene {
                 openWindow(id: "trace-window")
             }, onOpenContextInspector: {
                 openWindow(id: "context-inspector")
+            }, onOpenRuntimeObservatory: {
+                openWindow(id: "runtime-observatory")
             })
         }
 
@@ -59,6 +61,13 @@ public struct LingXiWorkbenchScene: Scene {
         // §30 freezes the 运行上下文 card and lists Context Search as a detail surface.
         WindowGroup("上下文检查器", id: "context-inspector") {
             ContextInspectorView(runtime: runtime)
+                .tint(LXColor.accent)
+        }
+
+        // 工程调试窗口：P/E-Core、Prefix Cache、遥测事件。同样坚持独立窗口，因为 §30 冻结了主
+        // 界面，而调试读数的密度本就不该出现在产品面上。
+        WindowGroup("运行时观测台", id: "runtime-observatory") {
+            RuntimeObservatoryView(runtime: runtime)
                 .tint(LXColor.accent)
         }
     }
@@ -91,6 +100,7 @@ public struct LingXiMenuCommands: Commands {
     @ObservedObject public var navigation: WarmNavigation
     public var onOpenTraceWindow: () -> Void
     public var onOpenContextInspector: () -> Void
+    public var onOpenRuntimeObservatory: () -> Void
 
     public var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -160,6 +170,15 @@ public struct LingXiMenuCommands: Commands {
                 onOpenContextInspector()
             }
             .keyboardShortcut("j", modifiers: [.option, .command])
+
+            // Gated on what Core actually answered, not on a local guess: an always-visible item
+            // that opens a window saying "unsupported" would be the dead control §22 forbids.
+            if case .enabled = runtime.observatoryModel.availability {
+                Button("运行时观测台…") {
+                    onOpenRuntimeObservatory()
+                }
+                .keyboardShortcut("d", modifiers: [.option, .command])
+           }
 
             Button("快速侧问浮窗") {
                 QuickAskPanelController.shared.show(onSubmit: { question in

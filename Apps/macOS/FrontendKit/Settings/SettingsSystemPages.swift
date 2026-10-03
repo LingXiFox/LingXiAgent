@@ -410,6 +410,7 @@ private struct WorktreeRow: View {
 
 struct DiagnosticsSettingsPage: View {
     @ObservedObject var store: SettingsStore
+    @Environment(\.openWindow) private var openWindow
     @State private var copied = false
 
     var body: some View {
@@ -535,7 +536,92 @@ struct DiagnosticsSettingsPage: View {
                 .lxSettingsRow()
                 .settingsAnchor("diagnostics.bundle")
             }
+
+            developerCard
         }
+    }
+
+    /// Developer Debug Mode.
+    ///
+    /// The switch's truth comes from Core, not from a local `@State`: what it gates is Core-side
+    /// collection, so a GUI-held copy would let this row show "on" while nothing is being recorded.
+    /// The toggle therefore issues the command and renders whatever Core answered.
+    @ViewBuilder private var developerCard: some View {
+        LXSettingsCard("开发者调试模式") {
+            if store.client == nil {
+                LabeledContent("状态") {
+                    Text("未连接 Core").font(LXType.meta).foregroundStyle(.secondary)
+                }
+                .lxSettingsRow()
+                Text("该开关控制 Core 侧的深度遥测采集，因此必须连上 Core 才能切换与读取。")
+                    .font(LXType.meta)
+                    .foregroundStyle(.secondary)
+                    .lxSettingsRow()
+            } else {
+                Toggle(isOn: Binding(
+                    get: { store.debugModeEnabled },
+                    set: { wanted in Task { await store.setDebugMode(wanted) } }
+                )) {
+                    HStack(spacing: LingXiMetrics.Space.xs) {
+                        Text("Developer Debug Mode")
+                        InfoHint("开启额外运行时遥测、诊断和调试记录。可能增加少量 CPU、内存和磁盘开销，"
+                                 + "但不得改变模型请求、上下文投影或 Agent 行为。")
+                    }
+                }
+                .lxSettingsRow()
+                .settingsAnchor("diagnostics.developerMode")
+
+                LabeledContent("Runtime Observatory") {
+                    Button("打开…") { openWindow(id: "runtime-observatory") }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                        .disabled(!store.debugModeEnabled)
+                }
+                .lxSettingsRow()
+                .settingsAnchor("diagnostics.observatory")
+
+                LabeledContent("Debug 数据") {
+                    HStack(spacing: LingXiMetrics.Space.xs) {
+                        Button("导出当前 Debug Run…") {
+                            // The panel lives here, not in SettingsStore: choosing a path is a view
+                            // concern, and the store should only ever be told a destination.
+                            let panel = NSSavePanel()
+                            panel.allowedContentTypes = [.plainText]
+                            panel.nameFieldStringValue = "observatory-telemetry.jsonl"
+                            if panel.runModal() == .OK, let url = panel.url {
+                                Task { await store.exportDebugRun(to: url) }
+                            }
+                        }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                        .disabled(!store.debugModeEnabled)
+
+                        Button("清除", role: .destructive) {
+                            Task { await store.clearDebugData() }
+                        }
+                        .buttonStyle(LXButtonStyle(.secondary, size: .small))
+                        .disabled(!store.debugModeEnabled)
+                    }
+                }
+                .lxSettingsRow()
+                .settingsAnchor("diagnostics.debugData")
+
+                // What is actually being collected, rather than a bare checkbox: the operator has
+                // to be able to see drops and archive failures before trusting the numbers.
+                if let status = store.debugStatus {
+                    Text(debugSummary(status))
+                        .font(LXType.meta)
+                        .foregroundStyle(.secondary)
+                        .lxSettingsRow()
+                }
+            }
+        }
+    }
+
+    private func debugSummary(_ status: DebugObservatoryStatus) -> String {
+        var pieces = ["缓冲 \(status.eventsBuffered)/\(status.ringCapacity)"]
+        pieces.append(status.recording ? "录制中" : "未录制")
+        if status.eventsDropped > 0 { pieces.append("已丢弃 \(status.eventsDropped)") }
+        if status.archiveWriteFailures > 0 { pieces.append("归档失败 \(status.archiveWriteFailures)") }
+        return pieces.joined(separator: " · ")
     }
 }
 

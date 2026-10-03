@@ -40,6 +40,62 @@ public final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: Developer Debug Mode
+    //
+    // Held as whatever Core last answered, never as a local switch. `debugModeEnabled` is derived
+    // rather than stored so the toggle and the recording state cannot drift apart inside this file.
+
+    @Published public var debugStatus: DebugObservatoryStatus?
+
+    /// Whether Core reports the mode on. False also covers "this Core has no debug surface".
+    public var debugModeEnabled: Bool { debugStatus?.enabled ?? false }
+
+    /// Toggles the mode through Core and renders Core's answer.
+    ///
+    /// No optimistic write, and no `try?`: a toggle that lit up while the command failed would make
+    /// every reading after it uninterpretable, which is worse than an error banner.
+    public func setDebugMode(_ enabled: Bool) async {
+        guard let client else {
+            notice = "未连接 Core，无法切换开发者调试模式。"
+            return
+        }
+        do {
+            debugStatus = try await client.debug.setEnabled(enabled)
+        } catch {
+            notice = "切换开发者调试模式失败：\(error.localizedDescription)"
+            debugStatus = try? await client.debug.status()
+        }
+    }
+
+    public func clearDebugData() async {
+        await runDebugCommand { try await $0.debug.clear() }
+    }
+
+    public func exportDebugRun(to url: URL) async {
+        guard let client else {
+            notice = "未连接 Core，无法导出调试数据。"
+            return
+        }
+        do {
+            debugStatus = try await client.debug.export(to: url.path)
+            notice = "已导出到 \(url.lastPathComponent)。"
+        } catch {
+            notice = "导出调试数据失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func runDebugCommand(_ command: (LingXiClientVNext) async throws -> DebugObservatoryStatus) async {
+        guard let client else {
+            notice = "未连接 Core，无法操作调试数据。"
+            return
+        }
+        do {
+            debugStatus = try await command(client)
+        } catch {
+            notice = "调试数据操作失败：\(error.localizedDescription)"
+        }
+    }
+
     /// Workspace Settings would start a Core in; defaults to the open one.
     @AppStorage("lx.settings.workspaceRoot") public var workspaceRoot: String = ""
 
@@ -308,6 +364,10 @@ public final class SettingsStore: ObservableObject {
         }
         if domains.contains(.diagnostics) {
             self.backgroundTasks = (try? await client.diagnostics.getBackgroundTasks()) ?? []
+            // A read, so a Core without the debug surface simply leaves this nil rather than
+            // breaking the page. `debugModeEnabled` reads false in that case, which is the honest
+            // answer: nothing is known to be on.
+            self.debugStatus = try? await client.debug.status()
         }
     }
 

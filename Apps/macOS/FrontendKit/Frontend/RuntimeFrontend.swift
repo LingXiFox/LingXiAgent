@@ -28,6 +28,8 @@ public final class RuntimeFrontend: ObservableObject {
     public let conversationModel: ConversationPresentationModel
     public let inspectorModel: RuntimeInspectorPresentationModel
     public let composerModel: ComposerModel
+    /// Backing state for the Runtime Observatory window. Read-only with respect to Core.
+    public let observatoryModel: RuntimeObservatoryPresentationModel
 
     @Published public private(set) var link: Link = .disconnected
     @Published public private(set) var workspaceURL: URL?
@@ -74,6 +76,7 @@ public final class RuntimeFrontend: ObservableObject {
         self.conversationModel = ConversationPresentationModel()
         self.inspectorModel = RuntimeInspectorPresentationModel()
         self.composerModel = ComposerModel()
+        self.observatoryModel = RuntimeObservatoryPresentationModel()
         bindComposerIntents()
     }
 
@@ -882,6 +885,126 @@ public final class RuntimeFrontend: ObservableObject {
         } catch {
             inspectorModel.performance = nil
             actionError = "读取性能报告失败：\(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Runtime Observatory (read-only)
+
+    /// Asks Core what the debug surface can do, and records the answer as availability.
+    ///
+    /// Separate from `refreshObservatory` because it is the one read allowed while the mode is off
+    /// — it is how the window knows to say "not enabled" instead of "enabled and empty".
+    public func probeObservatory() async {
+        guard let client else {
+            observatoryModel.availability = .notConnected
+            return
+        }
+        switch await client.debug.probe() {
+        case .unsupported: observatoryModel.availability = .unsupported
+        case .disabled: observatoryModel.availability = .disabled
+        case .enabled(let status): observatoryModel.availability = .enabled(status)
+        case .unknown: observatoryModel.availability = .unknown(reason: "Core 未回答该探测")
+        }
+    }
+
+    /// Pulls one fresh view of everything the Observatory shows.
+    ///
+    /// Triggered by the window's own controls and by its `.task`, never by a background timer in
+    /// the frontend: one of the deep reads behind this is a full heat recompute, so putting it on
+    /// the projection path would make an unopened debug window cost the running agent real work.
+    public func refreshObservatory() async {
+        guard let client, let sessionID = activeSessionID else {
+            observatoryModel.availability = .notConnected
+            return
+        }
+        await probeObservatory()
+        guard observatoryModel.isLive else { return }
+
+        do {
+            observatoryModel.status = try await client.debug.status()
+        } catch {
+            observatoryModel.readFailure = "读取调试状态失败：\(error.localizedDescription)"
+            return
+        }
+        do {
+            observatoryModel.snapshot = try await client.debug.snapshot(sessionID: sessionID)
+        } catch {
+            // Left at whatever was there before. A panel that clears itself on a failed read shows
+            // an absence that did not happen.
+            observatoryModel.readFailure = "读取运行时快照失败：\(error.localizedDescription)"
+        }
+        do {
+            let page = try await client.debug.events(sessionID: sessionID,
+                                                     afterSequence: observatoryModel.lastSeenSequence)
+            observatoryModel.absorb(page)
+        } catch {
+            observatoryModel.readFailure = "读取遥测事件失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Turns Developer Debug Mode on or off, then renders what Core answered.
+    ///
+    /// No optimistic write: the receipt from Core *is* the authoritative status, so this displays
+    /// that rather than what was requested. A toggle that showed "on" while Core said otherwise
+    /// would make every subsequent reading uninterpretable.
+    public func setDebugMode(_ enabled: Bool) async {
+        guard let client else {
+            actionError = "未连接 Core，无法切换开发者调试模式。"
+            return
+        }
+        do {
+            let status = try await client.debug.setEnabled(enabled)
+            observatoryModel.status = status
+            observatoryModel.availability = status.enabled ? .enabled(status) : .disabled
+            if !enabled { observatoryModel.reset() }
+            observatoryModel.readFailure = nil
+        } catch {
+            actionError = "切换开发者调试模式失败：\(error.localizedDescription)"
+            await probeObservatory()
+        }
+    }
+
+    public func startDebugRecording(runName: String?) async {
+        await runDebugRecorderAction { client in
+            try await client.debug.startRecording(runName: runName)
+        }
+    }
+
+    public func stopDebugRecording() async {
+        await runDebugRecorderAction { client in
+            try await client.debug.stopRecording()
+        }
+    }
+
+    /// Clears live telemetry only. The archive is a separate decision with a separate door.
+    public func clearDebugData() async {
+        await runDebugRecorderAction { client in
+            try await client.debug.clear()
+        }
+        observatoryModel.reset()
+    }
+
+    public func exportDebugRun(to url: URL) async {
+        guard let client else {
+            actionError = "未连接 Core，无法导出调试数据。"
+            return
+        }
+        do {
+            observatoryModel.status = try await client.debug.export(to: url.path)
+        } catch {
+            actionError = "导出调试数据失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func runDebugRecorderAction(_ action: (LingXiClientVNext) async throws -> DebugObservatoryStatus) async {
+        guard let client else {
+            actionError = "未连接 Core，无法操作调试记录。"
+            return
+        }
+        do {
+            observatoryModel.status = try await action(client)
+        } catch {
+            actionError = "调试记录操作失败：\(error.localizedDescription)"
         }
     }
 
