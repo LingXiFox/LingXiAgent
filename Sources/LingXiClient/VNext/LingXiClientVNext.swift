@@ -29,6 +29,9 @@ public final class LingXiClientVNext: Sendable {
     public let terminal: TerminalDomainClient
     public let resource: ResourceDomainClient
     public let diagnostics: DiagnosticsDomainClient
+    /// Developer Debug Mode 与 Runtime Observatory 的只读旁路面。无 feature 广播：
+    /// 探测 `debug.status` 本身就是区分「旧 Core 没这个方法」与「新 Core 未开启」的手段。
+    public let debug: DebugDomainClient
     public let credential: CredentialDomainClient
     public let task: TaskDomainClient
     public let agentPreset: AgentPresetDomainClient
@@ -60,6 +63,7 @@ public final class LingXiClientVNext: Sendable {
         self.terminal = TerminalDomainClient(transport: transport)
         self.resource = ResourceDomainClient(transport: transport)
         self.diagnostics = DiagnosticsDomainClient(transport: transport)
+        self.debug = DebugDomainClient(transport: transport)
         self.credential = CredentialDomainClient(transport: transport)
         self.task = TaskDomainClient(transport: transport)
         self.agentPreset = AgentPresetDomainClient(transport: transport)

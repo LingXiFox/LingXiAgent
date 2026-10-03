@@ -246,6 +246,17 @@ public actor ECoreObjectStore {
     private var heatStates: [SessionID: [ContextObjectID: ECoreHeatState]] = [:]
     private var projectionCounts: [SessionID: [ContextObjectID: Int]] = [:]
     private var cachedMetrics: [SessionID: SessionStorageMetrics] = [:]
+    /// Developer Debug Mode 旁路。nil 表示未开启，此时下面每一处埋点都只是一次 nil 判断。
+    ///
+    /// 有意独立于 `configuration.heatTrackingEnabled`：热度统计关掉时，page-out 与 restore 的
+    /// 计数仍然必须可用，否则「E-Core 有没有把内容找回来」这个问题会随一个无关开关一起消失。
+    private var debugHub: DebugTelemetryHub?
+
+    /// 由 CoreHost 在装配完成后注入。放在 setter 而不是构造参数里，是为了不惊动这一批已有调用方
+    /// 与测试的构造签名 —— 观测能力不该要求每个使用者都学会传它。
+    func attachDebugHub(_ hub: DebugTelemetryHub?) {
+        debugHub = hub
+    }
     public struct MutationSubscriptionToken: Hashable, Sendable {
         public let id: UUID
         public init(id: UUID = UUID()) { self.id = id }
@@ -412,8 +423,15 @@ public actor ECoreObjectStore {
                 FileHandle.standardError.write(Data("[E-CORE WARNING] page-out payload write failed: \(error)\n".utf8))
             }
         }
+        let isFirstWriteOfThisObject = pageOutObjects[sessionID]?[objectID] == nil
         pageOutObjects[sessionID, default: [:]][objectID] = record
         pageOutReferences[sessionID, default: [:]][reference.referenceID] = reference
+        debugHub?.notePageOut(sessionID: sessionID,
+                              objectID: objectID.rawValue,
+                              bytes: isFirstWriteOfThisObject ? bytes : 0,
+                              referenceID: reference.referenceID,
+                              toolName: toolName,
+                              reason: pageOutReason)
         notifyMutation()
         return reference
     }
@@ -445,8 +463,19 @@ public actor ECoreObjectStore {
 
     /// Exact Restore：referenceID → ECoreReference → objectID → 完整不可变 payload。
     public func restore(sessionID: SessionID, referenceID: String) async throws -> String? {
-        guard let ref = await reference(sessionID: sessionID, referenceID: referenceID) else { return nil }
-        return try await fetch(sessionID: sessionID, objectID: ref.objectID)
+        guard let ref = await reference(sessionID: sessionID, referenceID: referenceID) else {
+            // 引用查不到：P-Core Index 里还留着一个已经不存在的引用。
+            debugHub?.noteRestoreFailure(sessionID: sessionID, referenceID: referenceID, dangling: true)
+            return nil
+        }
+        let payload = try await fetch(sessionID: sessionID, objectID: ref.objectID)
+        if payload == nil {
+            // 引用在、对象没了：比上一种更糟，说明载荷本身丢了。
+            debugHub?.noteRestoreFailure(sessionID: sessionID, referenceID: referenceID, dangling: false)
+        } else {
+            debugHub?.noteExactRestore(sessionID: sessionID, referenceID: referenceID)
+        }
+        return payload
     }
 
     /// 丢弃引用。只有当该 session 内再无引用指向该 payload 时才回收，
@@ -940,10 +969,16 @@ public actor ECoreObjectStore {
             let hits = terms.reduce(0) { $0 + (haystack.contains($1) ? 1 : 0) }
             return hits > 0 ? (reference, hits) : nil
         }
-        return scored.sorted { lhs, rhs in
+        let matched = scored.sorted { lhs, rhs in
             if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
             return lhs.0.referenceID < rhs.0.referenceID
         }.prefix(max(0, limit)).map(\.0)
+        // 只记有命中的那次：一次无命中的语义检索值得看见，但它归 recall-miss 那条线，
+        // 不该同时把 semanticRecalls 这个「找回来了多少次」的数往上抬。
+        if !matched.isEmpty {
+            debugHub?.noteSemanticRecall(sessionID: sessionID)
+        }
+        return matched
     }
 
     /// 依据保留的 ToolCallIDs 裁剪废弃的观测对象文件与缓存（用于撤回或会话状态协同）

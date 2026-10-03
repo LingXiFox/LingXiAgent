@@ -453,6 +453,22 @@ public final class FaultInjectingTransport: ClientTransport, @unchecked Sendable
     public func getDiagnostics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<RuntimeDiagnosticsBundle> {
         try await underlying.getDiagnostics(envelope: envelope)
     }
+    public func debugStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<DebugObservatoryStatus> {
+        try await underlying.debugStatus(envelope: envelope)
+    }
+
+    public func debugModeUpdate(envelope: CommandEnvelope<UpdateDebugModeRequest>) async throws -> CommandReceipt<DebugObservatoryStatus> {
+        try await underlying.debugModeUpdate(envelope: envelope)
+    }
+
+    public func debugSnapshot(envelope: QueryEnvelope<GetObservatoryRequest>) async throws -> ResponseEnvelope<RuntimeObservatorySnapshot> {
+        try await underlying.debugSnapshot(envelope: envelope)
+    }
+
+    public func debugEvents(envelope: QueryEnvelope<GetObservatoryEventsRequest>) async throws -> ResponseEnvelope<DebugEventPage> {
+        try await underlying.debugEvents(envelope: envelope)
+    }
+
     public func getPerformanceMetrics(envelope: QueryEnvelope<GetPerformanceMetricsRequest>) async throws -> ResponseEnvelope<TurnPerformanceReport?> {
         try await underlying.getPerformanceMetrics(envelope: envelope)
     }

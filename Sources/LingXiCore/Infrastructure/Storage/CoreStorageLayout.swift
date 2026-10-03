@@ -26,6 +26,17 @@ public struct CoreStorageLayout: Sendable, Equatable {
     public var traces: URL { root.appendingPathComponent("traces.sqlite", isDirectory: false) }
     public var traceExport: URL { root.appendingPathComponent("traces", isDirectory: true) }
 
+    /// Home for Developer Debug Mode state and exported debug runs.
+    ///
+    /// Debug mode is Core's decision, not the GUI's: a second copy of the flag in UserDefaults
+    /// would give the Observatory a source of truth that can disagree with what Core is actually
+    /// recording. It lives here so that authority has somewhere to persist.
+    public var debug: URL { root.appendingPathComponent("debug", isDirectory: true) }
+    public var debugModeState: URL { debug.appendingPathComponent("mode.json", isDirectory: false) }
+    /// Created by the recorder when a run starts, not by `ensureDirectoriesExist`: an export
+    /// directory that is always present invites the archive to grow with nobody having asked.
+    public var debugArchive: URL { debug.appendingPathComponent("runs", isDirectory: true) }
+
     public init(root: URL) {
         self.root = root
     }
@@ -53,7 +64,7 @@ public struct CoreStorageLayout: Sendable, Equatable {
     /// 确保所有必要子目录在磁盘上创建
     public func ensureDirectoriesExist() throws {
         let fileManager = FileManager.default
-        let dirs = [persistence, sessions, todos, eventLog, content, cache, graphCache, providerCache, traceExport]
+        let dirs = [persistence, sessions, todos, eventLog, content, cache, graphCache, providerCache, traceExport, debug]
         for dir in dirs {
             if !fileManager.fileExists(atPath: dir.path) {
                 try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)

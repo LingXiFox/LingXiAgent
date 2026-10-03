@@ -1280,6 +1280,17 @@ public protocol LingXiProtocolService: Sendable {
     func listAgentRuns(envelope: QueryEnvelope<GetRunRequest>) async throws -> ResponseEnvelope<[AgentRunDetail]>
     func compareMultiRuns(envelope: CommandEnvelope<MultiRunCompareRequest>) async throws -> CommandReceipt<MultiRunCompareResult>
 
+    // MARK: - 17. Debug Observatory (read-only bypass)
+    //
+    // Deliberately no default implementations, like everything else the Runtime serves. When
+    // Developer Debug Mode is off these throw `unsupportedCommand` rather than answering with an
+    // empty page or a zeroed snapshot: an absent Observatory and an Observatory that found nothing
+    // are different facts, and collapsing them is the fabrication §11 forbids.
+    func debugStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<DebugObservatoryStatus>
+    func debugModeUpdate(envelope: CommandEnvelope<UpdateDebugModeRequest>) async throws -> CommandReceipt<DebugObservatoryStatus>
+    func debugSnapshot(envelope: QueryEnvelope<GetObservatoryRequest>) async throws -> ResponseEnvelope<RuntimeObservatorySnapshot>
+    func debugEvents(envelope: QueryEnvelope<GetObservatoryEventsRequest>) async throws -> ResponseEnvelope<DebugEventPage>
+
     // MARK: - Event Streams
     func subscribeRuntimeEvents(after: EventCursor?) async -> AsyncStream<RuntimeEventEnvelope>
     func subscribeSessionEvents(sessionID: SessionID, after: EventCursor?) async throws -> AsyncStream<SessionEventEnvelope>

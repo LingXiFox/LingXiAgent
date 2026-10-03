@@ -287,7 +287,8 @@ public actor ContextCacheController {
         fingerprint: PrefixFingerprint,
         prefixBytes: Int = 0,
         volatileBytes: Int = 0,
-        historySignatures: [String]? = nil
+        historySignatures: [String]? = nil,
+        canonicalStablePrefix: String? = nil
     ) {
         let lastFP = lastTurnFingerprintBySession[sessionID] ?? currentTurnFingerprintBySession[sessionID]
         currentTurnFingerprintBySession[sessionID] = fingerprint
@@ -355,6 +356,106 @@ public actor ContextCacheController {
             appendOnlyViolations: isAppendOnly ? 0 : 1
         )
         clientStructuralHealthBySession[sessionID] = health
+        recordDebugPrefixAudit(sessionID: sessionID,
+                               fingerprint: fingerprint,
+                               previous: lastFP,
+                               health: health,
+                               canonical: canonicalStablePrefix,
+                               isBust: isBust,
+                               status: status)
+    }
+
+    // MARK: - Developer Debug Mode（纯旁路）
+
+    /// Developer Debug Mode 旁路。nil 表示未开启。
+    private var debugHub: DebugTelemetryHub?
+
+    /// 上一轮 canonical stable prefix 全文，只为算字节公共前缀而留。
+    ///
+    /// 每会话一份，且随会话重置清空。绝不可改成保存历史列表：稳定前缀可到两百 KB，
+    /// 几百轮就是上百 MB，而这个面板的存在意义恰恰是发现这类泄漏。
+    private var lastCanonicalPrefixBySession: [SessionID: String] = [:]
+
+    func attachDebugHub(_ hub: DebugTelemetryHub?) {
+        debugHub = hub
+    }
+
+    /// Answers the question this whole surface exists for: after an E-Core page-out or restore,
+    /// did the stable prefix actually change — and if so, at which byte.
+    ///
+    /// Runs only while the hub exists. When debug mode is off this returns at the first line, and
+    /// nothing below it — including the O(prefix) byte scan — is reached.
+    private func recordDebugPrefixAudit(
+        sessionID: SessionID,
+        fingerprint: PrefixFingerprint,
+        previous: PrefixFingerprint?,
+        health: ClientStructuralCacheHealth,
+        canonical: String?,
+        isBust: Bool,
+        status: String
+    ) {
+        guard let hub = debugHub else {
+            lastCanonicalPrefixBySession[sessionID] = nil
+            return
+        }
+        let previousCanonical = lastCanonicalPrefixBySession[sessionID]
+        lastCanonicalPrefixBySession[sessionID] = canonical
+
+        // Byte-wise common prefix. Reported as bytes, never as tokens: Core estimates token counts
+        // but has no tokenizer, and calling a byte offset a token position would be the confident
+        // wrongness this panel is supposed to make impossible.
+        let commonBytes: Int
+        let currentBytes: Int
+        if let canonical {
+            let current = Array(canonical.utf8)
+            currentBytes = current.count
+            if let previousCanonical {
+                let prior = Array(previousCanonical.utf8)
+                var shared = 0
+                let limit = min(current.count, prior.count)
+                while shared < limit && current[shared] == prior[shared] {
+                    shared += 1
+                }
+                commonBytes = shared
+            } else {
+                // First turn observed: nothing to compare against, which is not the same as
+                // "changed completely".
+                commonBytes = current.count
+            }
+        } else {
+            commonBytes = 0
+            currentBytes = 0
+        }
+
+        hub.recordPrefixAudit(DebugPrefixByteAudit(
+            stablePrefixCommonBytes: commonBytes,
+            promptFirstChangedByteOffset: commonBytes,
+            stablePrefixBytes: currentBytes,
+            previousStablePrefixHash: previous?.stablePrefixHash,
+            currentStablePrefixHash: fingerprint.stablePrefixHash,
+            bustReason: isBust ? status : nil,
+            clientCaused: isBust ? true : nil,
+            requestProfileHash: fingerprint.requestProfileHash,
+            canonicalDefinition: canonical == nil ? .fingerprintProfile : .epochCanonical
+        ), sessionID: sessionID)
+
+        hub.record(DebugTelemetryEvent(
+            sequence: 0,
+            timestamp: .now,
+            category: isBust ? .cacheBust : (previous == nil ? .cacheEpochAdvanced : .contextPromptBuilt),
+            sessionID: sessionID,
+            promptAudit: hub.prefixAudit(sessionID: sessionID)
+        ))
+
+        hub.recordCache(DebugCacheSampleMapper.from(health: health, audit: hub.prefixAudit(sessionID: sessionID)),
+                        sessionID: sessionID)
+    }
+
+    /// Forgets a session's debug scratch state. Core calls this on session reset so the retained
+    /// canonical text cannot outlive the session it describes.
+    public func forgetDebugSession(_ sessionID: SessionID) {
+        lastCanonicalPrefixBySession[sessionID] = nil
+        debugHub?.forgetSession(sessionID)
     }
 
     /// 获取客户端自身结构化缓存健康指标（第一权威真相）

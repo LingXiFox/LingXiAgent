@@ -162,9 +162,18 @@ public actor SessionRuntime {
         )
     }
 
-    private func cacheEpoch(for coreTools: [ToolDefinition]) -> ProviderCacheEpoch {
+    /// The canonical stable-prefix text, exactly as Core hashes it to decide the cache epoch.
+    ///
+    /// A single definition on purpose. Core hashes two different things as "the stable prefix" —
+    /// this one, and `computePrefixFingerprint`'s, which additionally folds in model identity and
+    /// reasoning effort — so a byte offset is only meaningful once you say which. Both are reported,
+    /// and `DebugCanonicalDefinition` carries the answer.
+    func canonicalStablePrefix(_ coreTools: [ToolDefinition]) -> String {
         let coreSchema = coreTools.map(canonicalToolDefinition).joined(separator: "\n")
-        let canonical = "system:\(systemContext ?? "")\ncoreTools:\(coreSchema)"
+        return "system:\(systemContext ?? "")\ncoreTools:\(coreSchema)"
+    }
+
+    private func cacheEpoch(canonical: String) -> ProviderCacheEpoch {
         var hashValue: UInt64 = 14_695_981_039_346_656_037
         for byte in canonical.utf8 {
             hashValue ^= UInt64(byte)
@@ -778,16 +787,22 @@ public actor SessionRuntime {
                 let historySignatures = context.entries
                     .filter { $0.messageID != userTurnID && $0.source != .system }
                     .map { "\($0.role):\($0.part)" }
+                // Built here and reused by `cacheEpoch` below. This string was already assembled
+                // once per turn for the epoch hash; naming it adds no work, and passing it along is
+                // what lets Debug Mode diff two prefixes without Core having to keep a second,
+                // separately-computed copy of its own prompt.
+                let canonicalPrefix = canonicalStablePrefix(coreTools)
                 await cacheController.recordFingerprint(
                     sessionID: sessionID,
                     fingerprint: fingerprint,
                     prefixBytes: approxPrefixBytes,
                     volatileBytes: approxVolatileBytes,
-                    historySignatures: historySignatures
+                    historySignatures: historySignatures,
+                    canonicalStablePrefix: canonicalPrefix
                 )
                 let clientHealth = await cacheController.lastClientHealth(for: sessionID) ?? ClientStructuralCacheHealth(stablePrefixHash: fingerprint.stablePrefixHash)
 
-                let epochInfo = cacheEpoch(for: coreTools)
+                let epochInfo = cacheEpoch(canonical: canonicalPrefix)
                 let requestMessages = Self.attachingImages(attachments, to: context.modelMessages(),
                                                            endpointKey: modelBus.gateway.endpoint?.fileReferenceKey)
                 let cachePlan = CanonicalCachePlan(

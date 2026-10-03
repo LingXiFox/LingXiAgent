@@ -117,6 +117,23 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     private let subagentLimits: SubagentRuntimeLimits
     private let executionDeadlinePolicy: ExecutionDeadlinePolicy
     private let diagnosticsStore: RuntimeDiagnosticsStore
+    /// The Developer Debug Mode bypass. Nil unless debug mode is on, which makes every production
+    /// call site `debugHub?.record(...)` and the disabled cost a single nil check — no flag to
+    /// reason about, no actor hop, no allocation.
+    ///
+    /// Nothing in an agent decision path reads this. It is written by the loop and read by the
+    /// debug RPCs, in that direction only, which is what keeps "debug mode is pure observation"
+    /// true by construction rather than by discipline.
+    internal private(set) var debugHub: DebugTelemetryHub?
+    /// Swaps the hub.
+    ///
+    /// `debugHub` is `private(set)` so that installing or tearing down the bypass is something only
+    /// CoreHost itself can do; a debug surface that any subsystem could attach would stop being
+    /// observable-in-one-place, and would be one more thing to rule out when a run misbehaves.
+    internal func installDebugHub(_ hub: DebugTelemetryHub?) {
+        debugHub = hub
+    }
+    internal let debugModeStore: DebugModeStore
     private let mcpPager: MCPToolPager
     private let l2CharacterCapacity: Int
     private let l1ProjectCharacterCapacity: Int
@@ -298,6 +315,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
             layout = CoreStorageLayout.production
         }
         self.storageLayout = layout
+        let modeStore = DebugModeStore(layout: layout)
+        self.debugModeStore = modeStore
+        // Restored, not defaulted: a run that was being recorded before a restart resumes
+        // recording, and one that was never enabled stays off. Fresh data roots have no mode file,
+        // so tests and first launches are off without anybody configuring them.
+        self.debugHub = modeStore.load() ? DebugTelemetryHub() : nil
         self.crashTestStage = crashTestStage ?? environment["LINGXI_CRASH_TEST_STAGE"]
         try? layout.ensureDirectoriesExist()
 
@@ -542,6 +565,12 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 return try await self.coordinator(for: id)
             }
         )
+        // A mode restored from disk has to reach the recording sites the same way a live toggle
+        // does; init cannot await, so this is where the two paths converge.
+        if let restoredHub = debugHub {
+            await cacheController.attachDebugHub(restoredHub)
+            await cacheController.ecoreStore.attachDebugHub(restoredHub)
+        }
         await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
         // 快照来源必须先接到插件宿主层，再开始发现插件进程：否则第一批插件会在
         // 没有 provider 的情况下握手，插件读到的运行时信息从此一直是 unavailable。
@@ -954,6 +983,11 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         await appendVNextEvent(event)
         eventContinuations.values.forEach { $0.yield(event) }
 
+        // Debug telemetry is observed from here rather than instrumented inside each producer:
+        // this is the one funnel every lifecycle event passes, so one hook covers turns, tools and
+        // runs without touching any of their decision paths.
+        recordDebugCoreEvent(event)
+
         // Context accounting is diagnostic state and must not delay the user-visible
         // lifecycle event or tool result on the control plane.
         if let sessionID = eventSessionID(event), shouldRefreshVNextContext(for: event) {
@@ -1155,7 +1189,9 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         }
     }
 
-    private func eventSessionID(_ event: CoreEvent) -> SessionID? {
+    /// internal：Debug 旁路要用同一份「事件属于哪个会话」的口径。另写一份提取逻辑会让遥测的
+    /// 会话归属和控制面的归属对不上，那正是最需要信任的两件事。
+    func eventSessionID(_ event: CoreEvent) -> SessionID? {
         switch event {
         case let .sessionCreated(id): id
         case let .turnStarted(handle): handle.sessionID

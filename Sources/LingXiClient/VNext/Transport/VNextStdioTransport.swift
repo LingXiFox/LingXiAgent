@@ -371,6 +371,10 @@ public final class VNextStdioTransport: ClientTransport, @unchecked Sendable {
     public func getPerformanceMetrics(envelope: QueryEnvelope<GetPerformanceMetricsRequest>) async throws -> ResponseEnvelope<TurnPerformanceReport?> { try await response("diagnostics.performance", envelope) }
     public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> { try await response("diagnostics.providerMetrics", envelope) }
     public func getRunTrace(envelope: QueryEnvelope<GetRunTraceRequest>) async throws -> ResponseEnvelope<RunTraceInfo> { try await response("diagnostics.runTrace", envelope) }
+    public func debugStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<DebugObservatoryStatus> { try await response("debug.status", envelope) }
+    public func debugModeUpdate(envelope: CommandEnvelope<UpdateDebugModeRequest>) async throws -> CommandReceipt<DebugObservatoryStatus> { try await command("debug.mode.update", envelope) }
+    public func debugSnapshot(envelope: QueryEnvelope<GetObservatoryRequest>) async throws -> ResponseEnvelope<RuntimeObservatorySnapshot> { try await response("debug.snapshot", envelope) }
+    public func debugEvents(envelope: QueryEnvelope<GetObservatoryEventsRequest>) async throws -> ResponseEnvelope<DebugEventPage> { try await response("debug.events", envelope) }
     public func listCredentials(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<[CredentialRef]> { try await response("credential.list", envelope) }
     public func storeCredential(envelope: CommandEnvelope<StoreCredentialRequest>) async throws -> CommandReceipt<CredentialResult> { try await command("credential.store", envelope) }
     public func deleteCredential(envelope: CommandEnvelope<DeleteCredentialRequest>) async throws -> CommandReceipt<VoidResult> { try await command("credential.delete", envelope) }

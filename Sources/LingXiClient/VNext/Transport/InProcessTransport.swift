@@ -552,6 +552,22 @@ public final class InProcessTransport: ClientTransport, Sendable {
         try await service.getPerformanceMetrics(envelope: envelope)
     }
 
+    public func debugStatus(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<DebugObservatoryStatus> {
+        try await service.debugStatus(envelope: envelope)
+    }
+
+    public func debugModeUpdate(envelope: CommandEnvelope<UpdateDebugModeRequest>) async throws -> CommandReceipt<DebugObservatoryStatus> {
+        try await service.debugModeUpdate(envelope: envelope)
+    }
+
+    public func debugSnapshot(envelope: QueryEnvelope<GetObservatoryRequest>) async throws -> ResponseEnvelope<RuntimeObservatorySnapshot> {
+        try await service.debugSnapshot(envelope: envelope)
+    }
+
+    public func debugEvents(envelope: QueryEnvelope<GetObservatoryEventsRequest>) async throws -> ResponseEnvelope<DebugEventPage> {
+        try await service.debugEvents(envelope: envelope)
+    }
+
     public func getProviderMetrics(envelope: QueryEnvelope<VoidResult>) async throws -> ResponseEnvelope<ProviderMetricsInfo> {
         try await service.getProviderMetrics(envelope: envelope)
     }
