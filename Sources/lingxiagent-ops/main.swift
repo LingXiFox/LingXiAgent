@@ -8,6 +8,9 @@ let args = Array(CommandLine.arguments.dropFirst())
 let route = CLIParser.parse(arguments: args)
 
 switch route {
+case .gui:
+    FileHandle.standardError.write(Data("gui belongs to lingxiagent: use lingxiagent gui.\n".utf8))
+    exit(2)
 case .serve:
     // The WebUI is served by the pure-presentation CLI, which reaches Core over the
     // same stdio contract as every other frontend; ops has nothing to add here.

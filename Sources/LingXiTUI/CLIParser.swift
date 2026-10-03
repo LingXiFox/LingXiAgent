@@ -15,6 +15,7 @@ public enum CLIRoute: Equatable, Sendable {
     case completion([String])
     case acp([String])
     case task([String])
+    case gui([String])
     case help
     case version
     case smoke
@@ -47,6 +48,7 @@ public struct CLIParser: Sendable {
         }
 
         // 子命令路由
+        if first == "gui" { return .gui(Array(arguments.dropFirst())) }
         if authCommands.contains(first) {
             return .auth(arguments)
         }
@@ -244,6 +246,12 @@ public struct CLIParser: Sendable {
           -v, --version               显示版本信息
 
         SUBCOMMANDS:
+          gui send <text>             通过真实 macOS GUI Composer 发送
+          gui batch <tasks.json>      逐条等待 Composer 绘制、发送与 Turn 结束
+          gui status|trace|cancel     查看或取消 GUI 自动输入
+          gui resume                 继续明确暂停的自动发送
+          --benchmark                仅标记 telemetry 来源
+          --pause-before-send        Debug/Benchmark 下停在真实绘制确认后
           auth <command>              Provider 鉴权与凭据管理 (login, logout, status, list, models, matrix)
           mcp <command>               MCP 服务器配置与连接管理 (list, status, enable, disable, auth, add, remove)
           skills <command>            扩展 Skills 发现与激活管理 (list, info, enable, disable)

@@ -620,11 +620,29 @@ public struct SubagentRowPresentation: Identifiable, Equatable, Sendable {
 
 @MainActor
 public final class ComposerModel: ObservableObject {
-    @Published public var text: String = ""
+    @Published public var text: String = "" {
+        didSet {
+            guard text != oldValue else { return }
+            draftRevision += 1
+            draftDidChange?()
+        }
+    }
+    @Published public private(set) var draftRevision: UInt64 = 0
+    @Published public private(set) var presentedRevision: UInt64?
+    @Published public var automationPending = false
+    @Published public var isGoalMode = false { didSet { draftDidChange?() } }
+    var draftDidChange: (() -> Void)?
+
+    /// Only the real editor's presentation acknowledgement may advance this boundary.
+    func didPresent(revision: UInt64, text: String) -> Bool {
+        guard revision == draftRevision, text == self.text, presentedRevision != revision else { return false }
+        presentedRevision = revision
+        return true
+    }
     @Published public var selectedMode: AgentRunMode = .build
     @Published public var reasoningEffort: ReasoningEffortLevel = .auto
     @Published public var permissionPreset: PermissionPreset = .askWorkspace
-    @Published public var attachments: [AttachmentPresentation] = []
+    @Published public var attachments: [AttachmentPresentation] = [] { didSet { draftDidChange?() } }
     @Published public var isSubmitting: Bool = false
     /// Models Core discovered; the picker lists configured ones only.
     @Published public var models: [ProviderModelInfo] = []

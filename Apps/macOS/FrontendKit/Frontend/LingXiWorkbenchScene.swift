@@ -31,6 +31,7 @@ public struct LingXiWorkbenchScene: Scene {
             .background(WorkbenchWindowPlacement())
             .environment(\.timelineDisclosureDefaults, settings.timelineDisclosureDefaults)
             .task {
+                runtime.startGUIAutomation()
                 settings.runtime = runtime
                 let defaults = settings.composerDefaults
                 runtime.composerModel.applyDefaults(mode: defaults.mode,

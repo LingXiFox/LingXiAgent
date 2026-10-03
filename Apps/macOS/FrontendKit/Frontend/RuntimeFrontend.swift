@@ -60,6 +60,20 @@ public final class RuntimeFrontend: ObservableObject {
     /// Shared with Settings so only one Core process ever runs.
     public private(set) var client: LingXiClientVNext?
     private var backend: (any LingXiApplication.FrontendRuntime)?
+    var automationBackend: (any LingXiApplication.FrontendRuntime)? { backend }
+    public lazy var automationController = GUIAutomationController(runtime: self)
+    private var automationIPC: GUIAutomationIPC?
+
+    public func startGUIAutomation() {
+        guard automationIPC == nil else { return }
+        let controller = automationController
+        do {
+            automationIPC = try GUIAutomationIPC { request in await controller.handle(request) }
+        } catch {
+            actionError = "GUI Automation IPC 启动失败：" + error.localizedDescription
+        }
+    }
+
     private var isPreview = false
     private var updatesTask: Task<Void, Never>?
     private var renderTask: Task<Void, Never>?
@@ -125,6 +139,7 @@ public final class RuntimeFrontend: ObservableObject {
     }
 
     public func closeWorkspace() async {
+        automationController.cancel()
         updatesTask?.cancel()
         renderTask?.cancel()
         updatesTask = nil
@@ -163,6 +178,7 @@ public final class RuntimeFrontend: ObservableObject {
     // MARK: - Projection
 
     func apply(_ state: ApplicationState) {
+        automationController.stateDidChange(state)
         lastState = state
         isApplyingProjection = true
         defer { isApplyingProjection = false }
@@ -352,30 +368,45 @@ public final class RuntimeFrontend: ObservableObject {
 
     // MARK: - Actions
 
-    public func sendMessage(text: String, mode: AgentRunMode = .build, attachments: [AttachmentPresentation] = []) {
+    /// The normal Composer Send action, shared by keyboard, button and GUI automation.
+    @discardableResult
+    public func submitComposer() -> Task<Void, Never>? {
+        guard !composerModel.automationPending else { return nil }
+        if composerModel.isGoalMode {
+            let trimmed = composerModel.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            startGoal(trimmed, mode: composerModel.selectedMode, attachments: composerModel.attachments)
+            composerModel.isGoalMode = false
+            return nil
+        }
+        guard !conversationModel.isGenerating || composerModel.text.hasPrefix("/") else { return nil }
+        return sendMessage(text: composerModel.text, mode: composerModel.selectedMode, attachments: composerModel.attachments)
+    }
+
+    @discardableResult
+    public func sendMessage(text: String, mode: AgentRunMode = .build, attachments: [AttachmentPresentation] = []) -> Task<Void, Never>? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return nil }
         if trimmed.hasPrefix("/") {
             // A slash command is a command line, not a turn; there is nowhere for a file to go.
             guard attachments.isEmpty else {
                 actionError = "斜杠命令不能带附件。请先移除附件，或把附件和说明分成两次发送。"
-                return
+                return nil
             }
             composerModel.clear()
             runCommand(trimmed)
-            return
+            return nil
         }
         if let backend {
             guard !attachments.isEmpty else {
                 composerModel.clear()
-                Task { await backend.dispatch(.submitPrompt(text: text, attachments: [])) }
-                return
+                return Task { await backend.dispatch(.submitPrompt(text: text, attachments: [])) }
             }
-            submitWithFiles(text: trimmed, attachments: attachments)
-            return
+            return submitWithFiles(text: trimmed, attachments: attachments)
         }
-        guard isPreview else { return }
+        guard isPreview else { return nil }
         sendPreviewMessage(text: text, mode: mode, attachments: attachments)
+        return nil
     }
 
     /// Starts preparing a picked file in Core right away, so the send finds it ready: normalize
@@ -413,28 +444,31 @@ public final class RuntimeFrontend: ObservableObject {
     /// model is told the path). The chip used to wait for an upload, and because the composer
     /// item never received the ref back, its spinner never stopped. A file that has gone away
     /// is reported here and nothing is sent, so a turn never silently loses an attachment.
-    private func submitWithFiles(text: String, attachments: [AttachmentPresentation]) {
+    private func submitWithFiles(text: String, attachments: [AttachmentPresentation]) -> Task<Void, Never>? {
         guard let backend else {
             actionError = "未连接 Core，无法发送附件。"
-            return
+            return nil
         }
         var paths: [String] = []
         for item in attachments {
             guard let url = item.sourceURL else {
                 actionError = "「\(item.filename)」不在本机，无法再次发送。"
-                return
+                return nil
             }
             guard FileManager.default.fileExists(atPath: url.path) else {
                 actionError = "「\(item.filename)」已被移动或删除，本轮未发送。"
-                return
+                return nil
             }
             paths.append(url.standardizedFileURL.path)
         }
         composerModel.clear()
-        Task { await backend.dispatch(.submitPrompt(text: text, fileReferences: paths)) }
+        return Task { await backend.dispatch(.submitPrompt(text: text, fileReferences: paths)) }
     }
 
     public func stopGenerating() {
+        let wasPending = composerModel.automationPending
+        automationController.cancel()
+        if wasPending { return }
         if let backend {
             Task { await backend.dispatch(.stopCurrentRun) }
             return
@@ -483,6 +517,7 @@ public final class RuntimeFrontend: ObservableObject {
     }
 
     public func switchSession(id: String) {
+        automationController.cancel()
         if let backend {
             Task { await backend.dispatch(.switchSession(SessionID(id))) }
             return
@@ -499,6 +534,7 @@ public final class RuntimeFrontend: ObservableObject {
     }
 
     public func newSession() {
+        automationController.cancel()
         if let backend {
             let mode = AgentMode(composerModel.selectedMode)
             Task { await backend.dispatch(.createSession(title: nil, mode: mode)) }

@@ -116,7 +116,7 @@ struct ComposerSurface: View {
     /// retitles the composer, and ⏎ sends whatever it holds as the goal. Outside this mode the
     /// composer only ever sends messages — the goal is edited, paused and removed from the bar
     /// above it.
-    @State private var goalMode = false
+    private var goalMode: Bool { model.isGoalMode }
     @State private var confirmYOLO = false
     @State private var permissionBeforeYOLO: PermissionPreset?
     @State private var localBranches: [String] = []
@@ -346,7 +346,11 @@ struct ComposerSurface: View {
                               placeholder: goalMode ? "写下要达成的目标，⏎ 发出并开始…" : "给 Agent 发消息…",
                               submitRequiresCommand: sendKey == .commandReturn,
                               onSubmit: submit,
-                              wantsInitialFocus: false)
+                              wantsInitialFocus: false,
+                              presentationRevision: model.automationPending ? model.draftRevision : nil,
+                              focusRevision: model.automationPending ? model.draftRevision : nil,
+                              onPresented: runtime.automationController.composerPresented,
+                              onCancel: { runtime.automationController.cancel() })
                 .frame(height: editorHeight)
                 .accessibilityLabel(goalMode ? "任务目标输入框" : "消息输入框")
                 .help(goalMode ? "⏎ 发出目标并开始执行，Esc 回到发消息" : "@ 引用文件，/ 命令与技能，# 引用符号")
@@ -524,10 +528,10 @@ struct ComposerSurface: View {
     /// sending, and a run in flight does not turn it into a stop button — anchoring a goal
     /// is exactly the thing you want to be able to do mid-run.
     private var sendButton: some View {
-        let stops = !goalMode && isGenerating
+        let stops = model.automationPending || (!goalMode && isGenerating)
         let symbol = goalMode ? "checkmark" : (stops ? "stop.fill" : "arrow.up")
         let inert = goalMode ? model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                             : (!isGenerating && isEmpty)
+                             : (!isGenerating && !model.automationPending && isEmpty)
         return Button(action: sendAction) {
             Image(systemName: symbol)
                 .font(.system(size: stops ? 11 : 14, weight: .bold))
@@ -544,12 +548,13 @@ struct ComposerSurface: View {
     }
 
     private func sendAction() {
-        if goalMode { commitGoal() }
-        else if isGenerating { runtime.stopGenerating() }
+        if model.automationPending || isGenerating && !goalMode { runtime.stopGenerating() }
+        else if goalMode { commitGoal() }
         else { submit() }
     }
 
     private var sendHelp: String {
+        if model.automationPending { return "取消自动发送 (Esc)" }
         if goalMode { return "发出目标并开始 (⏎)" }
         if isGenerating { return "停止生成 (⌘.)" }
         return sendKey == .commandReturn ? "发送 (⌘⏎)" : "发送 (⏎)"
@@ -562,9 +567,7 @@ struct ComposerSurface: View {
     // MARK: Actions
 
     private func submit() {
-        if goalMode { commitGoal(); return }
-        guard !isEmpty, !isGenerating || model.text.hasPrefix("/") else { return }
-        runtime.sendMessage(text: model.text, mode: model.selectedMode, attachments: model.attachments)
+        runtime.submitComposer()
     }
 
     /// Presenting an optional message as an alert is the same four lines twice; inlined, the
@@ -578,19 +581,16 @@ struct ComposerSurface: View {
 
     /// What is already typed stays: it becomes the goal when sent.
     private func enterGoalMode() {
-        goalMode = true
+        model.isGoalMode = true
     }
 
     private func exitGoalMode() {
-        goalMode = false
+        model.isGoalMode = false
     }
 
     /// ⏎ in 目标模式: the text is anchored as the goal and sent as the turn that starts work.
     private func commitGoal() {
-        let trimmed = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        runtime.startGoal(trimmed, mode: model.selectedMode, attachments: model.attachments)
-        goalMode = false
+        runtime.submitComposer()
     }
 
     /// Attaches whatever was picked, of any type.

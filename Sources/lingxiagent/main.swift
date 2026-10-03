@@ -9,6 +9,15 @@ let args = Array(CommandLine.arguments.dropFirst())
 let route = CLIParser.parse(arguments: args)
 
 switch route {
+case let .gui(arguments):
+    do {
+        let response = try await GUIAutomationCLI.run(arguments: arguments)
+        print(String(decoding: try JSONEncoder().encode(response), as: UTF8.self))
+        exit(response.accepted ? 0 : 2)
+    } catch {
+        FileHandle.standardError.write(Data("GUI automation error: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
 case let .tui(options):
     do {
         let root = AppCompositionRoot(configuration: options.applicationConfiguration)
