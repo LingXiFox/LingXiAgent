@@ -26,9 +26,6 @@ test-results-artifact/
 # 2.4MB JPEG twice.
 Picture/
 
-# Per-chunk regression diagnostics: rewritten by every Scripts/ci-integration-tests.sh run.
-test-results-chunk-*.json
-
 # Scratch probes and mined CI logs (AGENTS.md convention)
 .tmp/
 # 同步管线的发布标记（上一次成功发布的记录，供漂移检查用），不入库

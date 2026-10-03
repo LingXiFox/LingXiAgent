@@ -39,6 +39,11 @@ STRESS_SUITES="MCPCLITests MCPRuntimeTests IPCPeerRobustnessTests NonProviderLat
 XUNIT_DIR="${LINGXI_CI_XUNIT_DIR:-}"
 # Reports are copied here as they finish and this is what the CI uploads.
 ARTIFACT_DIR="${XUNIT_DIR:+${XUNIT_DIR%/}-artifact}"
+# Where each chunk's JSON verdict lands. CI already has a directory for reports; a local run
+# had none and was dropping one file per chunk into the repository root. Same name, so the
+# ignore rules and the mental map of "reports live under test-results" hold either way.
+REPORT_DIR="${XUNIT_DIR:-test-results}"
+mkdir -p "$REPORT_DIR"
 
 # Suites listed here run alone, for two different reasons.
 #
@@ -603,16 +608,16 @@ for chunk in "${chunks[@]}"; do
     chunk_verdict="deficit"
   fi
 
-  json_report_file="test-results-chunk-${index}.json"
-  if [ -n "$XUNIT_DIR" ]; then
-    json_report_file="$XUNIT_DIR/test-results-chunk-${index}.json"
-  fi
+  json_report_file="$REPORT_DIR/test-results-chunk-${index}.json"
+  # A filter is written with escaped dots ("LingXiAgentTests\.Foo/"), and a bare backslash is not
+  # a legal JSON escape -- jq and python's json both failed to parse every report the stage wrote.
+  json_filter="${filter//\\/\\\\}"
   cat > "$json_report_file" <<EOF
 {
   "chunk": ${index},
   "total_chunks": ${#chunks[@]},
   "suites": $(printf '%s\n' "$names" | awk '{printf "["; for(i=1;i<=NF;i++){printf "\"%s\"%s", $i, (i==NF?"":", ")}; printf "]\n"}'),
-  "filter": "${filter}",
+  "filter": "${json_filter}",
   "expected_tests": ${expected_for_chunk},
   "executed_tests": ${ran},
   "passed_tests": $((ran - failed_in_chunk > 0 ? ran - failed_in_chunk : 0)),
@@ -779,8 +784,26 @@ for entry in ${failed_chunks[@]+"${failed_chunks[@]}"}; do echo "  FAILED  $entr
 for entry in ${timed_out_chunks[@]+"${timed_out_chunks[@]}"}; do echo "  HUNG    $entry"; done
 for entry in ${lingering_chunks[@]+"${lingering_chunks[@]}"}; do echo "  LINGERED  $entry"; done
 
+run_clean=yes
 if [ "${#failed_chunks[@]}" -gt 0 ] || [ "${#timed_out_chunks[@]}" -gt 0 ] \
    || [ "${#lingering_chunks[@]}" -gt 0 ]; then
+  run_clean=no
+fi
+
+# CI stages these for upload, so they leave the machine either way. A local run has no upload
+# step: if every chunk passed the verdicts said nothing worth keeping, so they are swept rather
+# than left one-per-chunk in the tree; anything else is the evidence a follow-up reads, and its
+# location is printed.
+if [ -z "$XUNIT_DIR" ]; then
+  if [ "$run_clean" = yes ]; then
+    rm -f "$REPORT_DIR"/test-results-chunk-*.json
+    rmdir "$REPORT_DIR" 2>/dev/null
+  else
+    echo "per-chunk diagnostics kept in ${REPORT_DIR}/"
+  fi
+fi
+
+if [ "$run_clean" = no ]; then
   exit 1
 fi
 echo "All chunks passed."
