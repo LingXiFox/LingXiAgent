@@ -218,7 +218,12 @@ public struct OpenAIResponsesProvider: ModelProvider {
             input: input,
             tools: orderedTools.isEmpty ? nil : orderedTools.map(ResponseRequestBody.Tool.init),
             toolChoice: toolChoiceBody(request),
-            reasoning: request.reasoning.map { ResponseRequestBody.Reasoning(effort: $0, summary: reasoningSummary) },
+            reasoning: request.reasoning.flatMap { effort in
+                // Domain toggles are not Responses effort enum values. Auto uses the runtime
+                // default; disabling reasoning uses the protocol's explicit "none" value.
+                if effort == "auto" { return nil }
+                return ResponseRequestBody.Reasoning(effort: effort == "off" ? "none" : effort, summary: reasoningSummary)
+            },
             include: !store && request.reasoning != nil ? ["reasoning.encrypted_content"] : nil,
             previousResponseID: previousResponseID
         ))
@@ -468,7 +473,7 @@ public struct ResponsesStreamStateMachine: Sendable {
             return []
 
         // 6. reasoning / reasoning_summary delta
-        case (_, "response.reasoning_summary_text.delta"), (_, "response.reasoning.delta"):
+        case (_, "response.reasoning_summary_text.delta"), (_, "response.reasoning_text.delta"), (_, "response.reasoning.delta"):
             if let delta = object["delta"] as? String {
                 return [.reasoningDelta(delta)]
             }

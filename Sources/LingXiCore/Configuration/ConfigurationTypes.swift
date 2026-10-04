@@ -579,9 +579,25 @@ public struct PublicProviderConfiguration: Codable, Sendable, Equatable {
 
     public init(name: String, adapter: String = "openai-compatible", options: PublicProviderOptions, models: [String: PublicModelConfiguration]) {
         self.name = name
-        self.adapter = adapter
+        self.adapter = Self.runtimeAdapter(adapter, options: options)
         self.options = options
         self.models = models
+    }
+
+    /// Entries created by the built-in LM Studio connector used Chat Completions before cache
+    /// telemetry was available. Resolve them once at the configuration boundary so the runtime,
+    /// stored model profiles and settings all agree on the protocol. Other providers stay intact.
+    private static func runtimeAdapter(_ adapter: String, options: PublicProviderOptions) -> String {
+        options.localRuntime?.backend == .lmStudio && adapter == "openai-compatible"
+            ? "openai-responses" : adapter
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(name: try values.decode(String.self, forKey: .name),
+                  adapter: try values.decode(String.self, forKey: .adapter),
+                  options: try values.decode(PublicProviderOptions.self, forKey: .options),
+                  models: try values.decode([String: PublicModelConfiguration].self, forKey: .models))
     }
 }
 

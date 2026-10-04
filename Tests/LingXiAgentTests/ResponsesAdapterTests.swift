@@ -7,6 +7,25 @@ import LingXiProtocol
 @testable import LingXiCore
 
 struct ResponsesAdapterTests {
+    @Test func reasoningTogglesUseResponsesEffortValuesWithoutChangingDomainRequest() throws {
+        for (domain, expected) in [("off", "none"), ("auto", nil), ("high", "high")] as [(String, String?)] {
+            let request = ModelRequest(model: ModelID("local-instance"), messages: [], reasoning: domain)
+            let json = try #require(JSONSerialization.jsonObject(with: OpenAIResponsesProvider.makeRequestBody(request)) as? [String: Any])
+            #expect((json["reasoning"] as? [String: String])?["effort"] == expected)
+            #expect(request.reasoning == domain)
+        }
+    }
+
+    @Test func lmStudioReasoningAndCachedUsageAreDecodedFromCompletedSSE() throws {
+        var decoder = ResponsesSSEDecoder()
+        #expect(try decoder.consume(#"{"type":"response.reasoning_text.delta","delta":"Checking"}"#) == [.reasoningDelta("Checking")])
+        let events = try decoder.consume(#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1474,"output_tokens":128,"total_tokens":1602,"input_tokens_details":{"cached_tokens":1470},"output_tokens_details":{"reasoning_tokens":128}}}}"#)
+        #expect(events.contains(.usage(ModelUsage(inputTokens: 1474, outputTokens: 128, reasoningTokens: 128, cacheReadTokens: 1470))))
+        var missing = ResponsesSSEDecoder()
+        let noCache = try missing.consume(#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1474,"output_tokens":1}}}"#)
+        #expect(noCache.contains(.usage(ModelUsage(inputTokens: 1474, outputTokens: 1))))
+    }
+
     private func tool() -> ToolDefinition {
         ToolDefinition(
             id: ToolID("read_file"),

@@ -8,13 +8,47 @@ import LingXiProtocol
 @Suite("Live LM Studio tool choice", .serialized,
        .enabled(if: ProcessInfo.processInfo.environment["LINGXI_LMSTUDIO_BASE_URL"] != nil))
 struct LMStudioToolChoiceIntegrationTests {
-    @Test func autoAllowsTextRequiredParsesWriteFile() async throws {
+    @Test func responsesReportsRealCacheReuse() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let baseURL = try #require(env["LINGXI_LMSTUDIO_BASE_URL"].flatMap(URL.init(string:)))
+        let model = try #require(env["LINGXI_LMSTUDIO_MODEL"])
+        let provider = OpenAIResponsesProvider(config: ProviderConfig(baseURL: baseURL, apiKey: nil,
+            model: model, wireProtocol: .responses))
+        let reference = (0..<96).map { "Reference \($0): amber cedar river cloud stone meadow." }.joined(separator: "\n")
+        let request = ModelRequest(model: ModelID(model), messages: [ModelMessage(role: .user,
+            content: "Independent cache telemetry test.\n\(reference)\nReply with only OK; do not use any tools.")],
+            reasoning: "off", overallTimeoutSeconds: 60, idleTimeoutSeconds: 30)
+        var usages: [ModelUsage] = []
+        for _ in 0..<2 {
+            var usage: ModelUsage?
+            var terminal: ModelFinishReason?
+            for try await event in try await provider.stream(request) {
+                if case let .usage(value) = event { usage = value }
+                if case let .failed(error) = event { throw error }
+                if case let .completed(reason) = event { terminal = reason }
+            }
+            #expect(terminal == .stop)
+            let measured = try #require(usage)
+            let input = try #require(measured.inputTokens)
+            let cached = try #require(measured.cacheReadTokens, "Missing cache telemetry must not pass as zero")
+            #expect(cached >= 0 && cached <= input)
+            usages.append(measured)
+        }
+        #expect(try #require(usages.last?.cacheReadTokens) > 0, "Repeated input must produce a measured cache hit on this runtime")
+        print("LIVE_RESPONSES_CACHE usages=\(usages)")
+    }
+
+    @Test(arguments: [ModelWireProtocol.chatCompletions, .responses])
+    func autoAllowsTextRequiredParsesWriteFile(wire: ModelWireProtocol) async throws {
         let env = ProcessInfo.processInfo.environment
         let baseURL = try #require(env["LINGXI_LMSTUDIO_BASE_URL"].flatMap(URL.init(string:)))
         let model = try #require(env["LINGXI_LMSTUDIO_MODEL"], "Provide a currently loaded model instance")
-        let provider = OpenAICompatibleProvider(config: ProviderConfig(baseURL: baseURL, apiKey: nil, model: model),
-            wireExtension: LMStudioChatExtension(reasoningToggle: true, reasoningDefaultOn: true,
-                                                externalDraftModel: nil, mtpConfigured: false, sink: { _ in }))
+        let config = ProviderConfig(baseURL: baseURL, apiKey: nil, model: model, wireProtocol: wire)
+        let provider: any ModelProvider = wire == .responses
+            ? OpenAIResponsesProvider(config: config)
+            : OpenAICompatibleProvider(config: config,
+                wireExtension: LMStudioChatExtension(reasoningToggle: true, reasoningDefaultOn: true,
+                    externalDraftModel: nil, mtpConfigured: false, sink: { _ in }))
         let tool = ToolDefinition(id: ToolID("write_file"), description: "Write UTF-8 text to a file at path.",
                                   inputSchema: ToolInputSchema(properties: [
                                     "path": ToolInputProperty(type: .string, description: "File path"),

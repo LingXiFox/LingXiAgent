@@ -2253,7 +2253,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let request = envelope.payload
         let typed = request.endpoint?.trimmingCharacters(in: .whitespaces) ?? ""
         let baseURL = ProviderBaseURLNormalizer.normalize(typed.isEmpty ? Self.lmStudioDefaultEndpoint : typed,
-                                                          adapter: "openai-compatible")
+                                                          adapter: "openai-responses")
         _ = try ConfigurationEndpointPolicy.resolve(baseURL, path: "$.endpoint")
         var secret: String?
         if let reference = request.credentialRef {
@@ -2277,7 +2277,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let save = SaveProviderConfigurationRequest(
             providerID: providerID,
             name: "LM Studio",
-            adapter: "openai-compatible",
+            adapter: "openai-responses",
             baseURL: baseURL,
             apiKey: request.credentialRef.map { .staged(reference: $0) } ?? .keep,
             models: models.map { ProviderModelConfigurationDetail(modelID: $0, name: $0) },

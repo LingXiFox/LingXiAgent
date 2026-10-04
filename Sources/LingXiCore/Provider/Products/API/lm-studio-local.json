@@ -5,6 +5,7 @@
   "credentialKind": "optionalKey",
   "authStrategy": "optionalBearer",
   "discoveryStrategy": "lmStudioNative",
+  "defaultProtocol": "openaiResponses",
   "distribution": {
     "cn": "default",
     "global": "default"

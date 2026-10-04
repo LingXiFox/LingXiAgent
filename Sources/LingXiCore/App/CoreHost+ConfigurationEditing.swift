@@ -314,7 +314,8 @@ extension CoreHost {
         guard let store = try? requireConfigurationStore(), let snapshot = try? await store.load(),
               var entry = snapshot.providers.providers[Self.lmStudioProductID] else { return nil }
         var providers = snapshot.providers.providers
-        entry.options.baseURL = ProviderBaseURLNormalizer.normalize(entry.options.baseURL, adapter: "openai-compatible")
+        entry.adapter = "openai-responses"
+        entry.options.baseURL = ProviderBaseURLNormalizer.normalize(entry.options.baseURL, adapter: entry.adapter)
         if entry.options.localRuntime == nil { entry.options.localRuntime = LocalRuntimeOptions(backend: .lmStudio) }
         if entry.models.isEmpty {
             let secret = await resolveProviderSecret(entry.options.apiKey, providerID: Self.lmStudioProductID)

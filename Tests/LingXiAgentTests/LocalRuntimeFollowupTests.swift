@@ -39,6 +39,7 @@ struct LocalRuntimeFollowupTests {
         let stored = try String(contentsOf: root.appendingPathComponent("providers.json"), encoding: .utf8)
         let config = try JSONDecoder().decode(ProvidersConfiguration.self, from: Data(stored.utf8))
         let entry = try #require(config.providers["lmstudio"])
+        #expect(entry.adapter == "openai-responses")
         #expect(entry.options.localRuntime?.backend == .lmStudio)
         #expect(entry.options.baseURL == "http://10.0.0.128:1234/v1", "裸服务器地址应规范化为 API 根")
         #expect(entry.options.apiKey == nil)
@@ -102,6 +103,21 @@ struct LocalRuntimeFollowupTests {
     }
 
     // MARK: - An answer written only into reasoning
+
+    @Test("saved LM Studio Chat entries resolve to Responses without changing connection or model settings")
+    func savedLocalRuntimeUsesResponses() throws {
+        let data = Data(#"{"version":1,"model":"local/custom-instance","providers":{"local":{"name":"Local","adapter":"openai-compatible","options":{"baseURL":"http://127.0.0.1:1234/v1","headers":{"X-Test":"preserved"},"localRuntime":{"backend":"lmstudio"}},"models":{"custom-instance":{"name":"Custom","limit":{"context":65536,"output":8192}}}},"cloud":{"name":"Cloud","adapter":"openai-compatible","options":{"baseURL":"https://example.com/v1"},"models":{"m":{"name":"M"}}}}}"#.utf8)
+        let config = try JSONDecoder().decode(ProvidersConfiguration.self, from: data)
+        let local = try #require(config.providers["local"])
+        #expect(local.adapter == "openai-responses")
+        #expect(local.options.baseURL == "http://127.0.0.1:1234/v1")
+        #expect(local.options.headers == ["X-Test": "preserved"])
+        #expect(local.models["custom-instance"]?.limit?.context == 65536)
+        #expect(config.modelProfiles.first { $0.providerID == "local" }?.wireProtocol == .responses)
+        #expect(config.providers["cloud"]?.adapter == "openai-compatible")
+        let reloaded = try JSONDecoder().decode(ProvidersConfiguration.self, from: JSONEncoder().encode(config))
+        #expect(reloaded == config)
+    }
 
     private func runTurn(_ script: [[ModelEvent]]) async throws -> (String?, ScriptedFakeProvider) {
         let root = try tempDir("lx-promote")

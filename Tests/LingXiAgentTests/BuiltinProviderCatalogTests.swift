@@ -2,6 +2,13 @@ import Testing
 @testable import LingXiCore
 
 struct BuiltinProviderCatalogTests {
+    @Test func lmStudioDefaultsToResponsesInBundleAndStaticFallback() throws {
+        let product = try #require(ProviderRegistry.shared.product(id: "lm-studio-local"))
+        #expect(product.primaryProtocol == "openaiResponses")
+        #expect(product.bindings[product.primaryProtocol]?.path == "/responses")
+        #expect(BuiltinStaticCatalog.loadStaticProducts()["lm-studio-local"]?.defaultProtocol == "openaiResponses")
+    }
+
     @Test func catalogHasStableUniqueProductsAndSeparateSubscriptionProducts() {
         let definitions = BuiltinProviderCatalog.definitions
         #expect(definitions.count == 27)
