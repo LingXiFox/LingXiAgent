@@ -133,11 +133,19 @@ public struct PCoreSnapshot: Sendable, Equatable {
 
         for entry in renderedEntries {
             let role = Self.modelRole(entry.role)
-            if currentID != entry.messageID || currentRole != role || currentSegment != entry.segment {
+            let segment: ModelContextSegment
+            if entry.source == .system && entry.messageID == nil {
+                segment = .immutableInstructions
+            } else if entry.segment == .conversation && (entry.source == .projectPage || entry.source == .derivedPage) {
+                segment = .retrievalData
+            } else {
+                segment = entry.segment
+            }
+            if currentID != entry.messageID || currentRole != role || currentSegment != segment {
                 appendCurrent()
                 currentID = entry.messageID
                 currentRole = role
-                currentSegment = entry.segment
+                currentSegment = segment
                 parts = []
             }
             parts.append(Self.modelPart(entry.part))
@@ -194,18 +202,11 @@ public actor PCoreContextEngine {
         }
         for message in session.messages {
             for part in message.parts {
-                let projectedPart: SessionMessagePart
-                switch part {
-                case let .toolResult(result):
-                    projectedPart = .toolResult(ModelToolResultProjection.projectToolResult(result))
-                default:
-                    projectedPart = part
-                }
                 entries.append(ContextEntry(
                     messageID: message.id,
                     role: contextRole(message.role),
                     source: source(message.role, part),
-                    part: projectedPart
+                    part: part
                 ))
             }
         }
@@ -262,14 +263,7 @@ public actor PCoreContextEngine {
         if systemContextAtBeginning, let systemEntry { entries.append(systemEntry) }
         for message in session.messages {
             for part in message.parts {
-                let projectedPart: SessionMessagePart
-                switch part {
-                case let .toolResult(result):
-                    projectedPart = .toolResult(ModelToolResultProjection.projectToolResult(result))
-                default:
-                    projectedPart = part
-                }
-                entries.append(ContextEntry(messageID: message.id, role: contextRole(message.role), source: source(message.role, part), part: projectedPart))
+                entries.append(ContextEntry(messageID: message.id, role: contextRole(message.role), source: source(message.role, part), part: part))
             }
         }
         let toolContents = Set(session.messages.flatMap { $0.parts.compactMap { if case let .toolResult(result) = $0 { result.content } else { nil } } })

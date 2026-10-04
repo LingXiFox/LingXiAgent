@@ -181,7 +181,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
             case .tool:
                 return RequestBody.Message(role: "user", content: message.parts.compactMap { part in
                     guard case let .toolResult(result) = part else { return nil }
-                    let projected = ModelToolResultProjection.project(result)
+                    let projected = ModelToolResultProjection.project(result, segment: message.segment)
                     return .toolResult(id: continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue, content: projected.content, isError: !projected.success)
                 })
             }

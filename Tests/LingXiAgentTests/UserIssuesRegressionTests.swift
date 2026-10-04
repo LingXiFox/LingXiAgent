@@ -264,8 +264,8 @@ struct UserIssuesRegressionTests {
         #expect(evolved.cacheReadTokens == 10_000)
     }
 
-    // MARK: - 7. 撤回操作建立合成冷启动基线 (coldNewEpoch)
-    @Test func revertEstablishesColdNewEpochBaseline() async throws {
+    // MARK: - 7. Revert records resident estimates without fabricated provider usage
+    @Test func revertInvalidatesProviderUsageAndRecordsResidentBaseline() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
@@ -277,18 +277,15 @@ struct UserIssuesRegressionTests {
             Message(id: MessageID("msg-2"), role: .assistant, content: "Sure, here is the answer that remains", createdAt: .now)
         ]
 
-        await controller.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
-
-        let record = await controller.lastProviderCacheRecord(for: sessionID)
-        #expect(record != nil, "Revert must produce a synthetic cache record for remaining messages")
-        #expect(record?.status == "coldNewEpoch", "Revert baseline status must be coldNewEpoch")
-        #expect(record?.epochReason == "revert_turn", "Epoch reason must be revert_turn")
-        #expect(record?.cachedTokens == 0, "Cached tokens in coldNewEpoch must be 0")
-        #expect((record?.promptTokens ?? 0) > 0, "Prompt tokens must accurately reflect remaining messages tokens")
-        #expect((record?.previousPromptTokens ?? 0) > 0, "Previous prompt tokens must be set as baseline for next turn")
-
-        let lastInput = await controller.lastProviderInputTokens(for: sessionID)
-        #expect(lastInput == record?.promptTokens, "lastProviderInputTokens must be aligned with promptTokens")
+        let engine = PCoreContextEngine()
+        let session = Session(id: sessionID, createdAt: .now, messages: remainingMessages)
+        let entries = await engine.entries(for: session)
+        let snapshot = await engine.snapshot(for: session, activeEntries: entries,
+            estimatedTokens: ConservativeTokenEstimator().estimate(entries: entries))
+        await controller.reconcileAfterRevert(sessionID: sessionID, activeSnapshot: snapshot)
+        #expect(await controller.lastProviderCacheRecord(for: sessionID) == nil)
+        #expect(await controller.lastProviderInputTokens(for: sessionID) == nil)
+        #expect(await controller.pCoreResidentTokens(for: sessionID) == snapshot.metrics.estimatedTokens)
     }
 
     // MARK: - 8. File Write 与 File Patch 的 Git 风格增删对比表与 Bash 自动嗅探

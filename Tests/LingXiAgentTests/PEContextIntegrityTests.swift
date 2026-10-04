@@ -23,6 +23,94 @@ import LingXiClient
         try data.write(to: root.appendingPathComponent(name), options: .atomic)
     }
 
+    @Test func coldProjectionRepairsLegacyRevertBaselineWithoutModelExecution() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = ScriptedFakeProvider(script: [])
+        let host = try CoreHost(startupPolicy: .unitTest,
+            providerAssembly: .init(provider: provider, modelID: ModelID("replay"), contextProfile: .init(contextWindowTokens: 65536)),
+            workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: root.appendingPathComponent("core"), permissionDecision: .allow)
+        await host.start()
+        defer { await host.shutdown() }
+        let sid = try await host.sessionStore.create().id
+        _ = try await host.sessionStore.appendMessage(sid, role: .user, content: "Old durable task")
+        let old = try await host.sessionStore.appendMessage(sid, role: .assistant,
+            content: String(repeating: "Historical context retained on disk. ", count: 14000))
+        _ = try await host.sessionStore.appendMessage(sid, role: .user, content: "Continue the same task")
+        let fabric = await host.ecoreStoreRef
+        let dir = await fabric.baseDirectory.appendingPathComponent(sid.rawValue)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["cachedTokens": 0, "promptTokens": 231000,
+            "previousPromptTokens": 231000, "status": "coldNewEpoch", "epoch": 2, "epochReason": "revert_turn"])
+            .write(to: dir.appendingPathComponent("telemetry.json"))
+        let projection = try #require(try await LingXiClient.inProcess(endpoint: host).contextProjection(sid))
+        #expect(projection.pCore.usedTokens < 65536)
+        let residentTokens = await host.cacheController.pCoreResidentTokens(for: sid)
+        #expect(projection.pCore.usedTokens == residentTokens)
+        #expect(await host.cacheController.lastProviderCacheRecord(for: sid) == nil)
+        #expect(await host.cacheController.lastProviderInputTokens(for: sid) == nil)
+        #expect(provider.recorder.requests.isEmpty)
+        #expect(try await host.sessionStore.session(sid).messages.contains { $0.id == old.id && $0.content == old.content })
+        let firstStates = await host.compactor.unitStates(sessionID: sid)
+        let firstRefs = await fabric.references(sessionID: sid)
+        _ = try await LingXiClient.inProcess(endpoint: host).contextProjection(sid)
+        #expect(await host.compactor.unitStates(sessionID: sid) == firstStates)
+        #expect(await fabric.references(sessionID: sid) == firstRefs)
+        print("COLD_REVERT_REPAIR legacyTokens=231000 activeTokens=\(projection.pCore.usedTokens) requests=\(provider.recorder.requests.count)")
+    }
+
+    @Test func revertPreservesPagedOutHistoryAndReportsOnlyResidentContext() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = try CoreHost(startupPolicy: .unitTest,
+            providerAssembly: .init(provider: ObservatoryFakeProvider(), modelID: ModelID("replay"), contextProfile: .init(contextWindowTokens: 65536)),
+            workspaceRoot: try WorkspaceRoot(path: root.path), dataRoot: root.appendingPathComponent("core"), permissionDecision: .allow)
+        await host.start()
+        defer { await host.shutdown() }
+        let sid = try await host.sessionStore.create().id
+        let user = try await host.sessionStore.appendMessage(sid, role: .user, content: "Keep this task")
+        let old = try await host.sessionStore.appendMessage(sid, role: .assistant,
+            content: String(repeating: "Historical failure evidence must remain durable. ", count: 14000))
+        _ = try await host.sessionStore.appendMessage(sid, role: .user, content: "Revert this turn")
+        let removed = try await host.sessionStore.appendMessage(sid, role: .assistant, content: "Reverted answer")
+        let fabric = await host.ecoreStoreRef
+        let ref = await fabric.pageOut(sessionID: sid, content: old.content, origin: .message,
+            contextOccurrenceID: old.id.rawValue, evictionEpoch: 1, summary: "historical failure evidence")
+        let states = [ContextUnitDebugSnapshot(messageID: user.id, residency: .active),
+            ContextUnitDebugSnapshot(messageID: old.id, residency: .derived, derivedPageID: ref.referenceID),
+            ContextUnitDebugSnapshot(messageID: removed.id, residency: .active)]
+        await host.compactor.restoreResidencies(sessionID: sid, values: states)
+        let persistence = try #require(await host.persistence)
+        try await persistence.saveCompaction(sessionID: sid, generation: 7, residencies: states)
+        let receipt = try await host.revertLastTurn(envelope: .init(payload: .init(sessionID: sid)))
+        let snapshot = try #require(receipt.result?.snapshot)
+        let durable = try await host.sessionStore.session(sid)
+        #expect(durable.messages.map(\.id) == [user.id, old.id])
+        #expect(durable.messages.last?.content == old.content)
+        let tokens = try #require(snapshot.contextState.pCore?.usedTokens)
+        #expect(tokens < 65536, "Durable history is not active provider input")
+        let residentTokens = await host.cacheController.pCoreResidentTokens(for: sid)
+        let targetTokens = await host.effectiveContextPolicy.pCoreTarget
+        #expect(tokens == residentTokens)
+        #expect(tokens < targetTokens)
+        #expect(await host.compactor.unitStates(sessionID: sid).first { $0.messageID == old.id }?.residency == .derived)
+        #expect(await host.compactor.unitStates(sessionID: sid).allSatisfy { $0.messageID != removed.id })
+        #expect(try await fabric.restore(sessionID: sid, referenceID: ref.referenceID) == old.content)
+        #expect(await host.cacheController.lastProviderInputTokens(for: sid) == nil)
+        #expect(await host.cacheController.lastProviderCacheRecord(for: sid) == nil)
+        let persisted = try #require(try await persistence.compaction(sessionID: sid))
+        #expect(persisted.generation == 7)
+        #expect(persisted.residencies.first { $0.messageID == old.id }?.residency == .derived)
+        let reopened = ContextCompactor(ecoreStore: fabric)
+        await reopened.restoreResidencies(sessionID: sid, values: persisted.residencies)
+        let entries = await PCoreContextEngine().entries(for: durable)
+        let active = await reopened.activeEntries(sessionID: sid, canonicalEntries: entries)
+        #expect(!active.contains { $0.messageID == old.id })
+        print("REVERT_RESIDENCY durableTokens=\(ConservativeTokenEstimator().estimate(entries: entries)) activeTokens=\(tokens) survivingObjects=\(await fabric.storageMetrics(for: sid).count)")
+    }
+
     @Test func failureEvidenceSurvivesRealT011WireEncoding() throws {
         let failure = try failedResult()
         #expect(failure.content.count == 9864)
@@ -146,7 +234,7 @@ import LingXiClient
         _ = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\"}", profile: .workspace)
         let active = await next.admitRequestedRecalls(sessionID: sid, canonicalEntries: [old,current], activeEntries: [current], hardInputLimit: 2000)
         #expect(active.contains { $0.messageID == old.messageID && $0.part == old.part && $0.segment == .recalledOccurrence })
-        #expect(await next.activeEntries(sessionID: sid, canonicalEntries: [old,current]).contains(old))
+        #expect(await next.activeEntries(sessionID: sid, canonicalEntries: [old,current]).contains { $0.messageID == old.messageID && $0.part == old.part && $0.segment == .recalledOccurrence })
     }
 
     @Test func boundedIndexGrowthAndQueryChangesPreserveExactMapping() async throws {

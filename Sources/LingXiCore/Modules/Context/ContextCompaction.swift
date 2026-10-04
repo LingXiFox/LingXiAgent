@@ -390,6 +390,10 @@ public actor DerivedContextStore {
     }
     public func pages(sessionID: SessionID) -> [DerivedContextPage] { pages[sessionID] ?? [] }
     public func allPages() -> [DerivedContextPage] { pages.values.flatMap { $0 } }
+    public func reconcileAfterRevert(sessionID: SessionID, remainingMessageIDs: Set<MessageID>) {
+        pages[sessionID] = pages[sessionID]?.filter { $0.messageID == nil || remainingMessageIDs.contains($0.messageID!) }
+        recalledPageIDs[sessionID] = recalledPageIDs[sessionID]?.intersection(Set((pages[sessionID] ?? []).map(\.id)))
+    }
     public func clear(sessionID: SessionID) {
         pages.removeValue(forKey: sessionID)
         recalledPageIDs.removeValue(forKey: sessionID)
@@ -458,9 +462,38 @@ public actor ContextCompactor {
         for state in values where state.residency == .active {
             guard let refID = state.derivedPageID, state.messageID.rawValue == refID,
                   let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: refID) else { continue }
-            admittedPayloads[sessionID, default: [:]][refID] = ContextEntry(messageID: state.messageID, role: .system, source: .derivedPage, part: .text("[Restored session context]\n\(payload)"))
+            admittedPayloads[sessionID, default: [:]][refID] = ContextEntry(messageID: state.messageID, role: .system, source: .derivedPage, part: .text("[Restored session context]\n\(payload)"), segment: .recalledOccurrence)
         }
     }
+    /// Retire only removed occurrences. Surviving E-Core-only history must not
+    /// become resident merely because the latest user turn was withdrawn.
+    public func reconcileAfterRevert(sessionID: SessionID, remainingMessages: [Message]) async {
+        let remainingMessageIDs = Set(remainingMessages.map(\.id))
+        let validCalls = Set(remainingMessages.flatMap(\.parts).compactMap { part -> ToolCallID? in
+            switch part {
+            case let .toolCall(call): return call.callID
+            case let .toolResult(result): return result.callID
+            default: return nil
+            }
+        })
+        await ecoreStore.prune(sessionID: sessionID, keepingToolCallIDs: validCalls)
+        let states = unitResidencies[sessionID] ?? [:]
+        let removed = states.values.filter {
+            !remainingMessageIDs.contains($0.messageID) && $0.messageID.rawValue != $0.derivedPageID
+        }
+        let survivingRefs = Set(states.values.filter { remainingMessageIDs.contains($0.messageID) }.compactMap(\.derivedPageID))
+        for ref in Set(removed.compactMap(\.derivedPageID)).subtracting(survivingRefs) {
+            await ecoreStore.dropReference(sessionID: sessionID, referenceID: ref)
+        }
+        let validRefs = Set(await ecoreStore.references(sessionID: sessionID).map(\.referenceID))
+        unitResidencies[sessionID] = states.filter {
+            remainingMessageIDs.contains($0.key) || ($0.key.rawValue == $0.value.derivedPageID && validRefs.contains($0.key.rawValue))
+        }
+        admittedPayloads[sessionID] = admittedPayloads[sessionID]?.filter { validRefs.contains($0.key) }
+        evictionTraces.removeValue(forKey: sessionID)
+        await derivedStore.reconcileAfterRevert(sessionID: sessionID, remainingMessageIDs: remainingMessageIDs)
+    }
+
     public func reset(sessionID: SessionID) async {
         unitResidencies.removeValue(forKey: sessionID)
         usageLedgers.removeValue(forKey: sessionID)
@@ -1051,8 +1084,14 @@ public actor ContextCompactor {
             case .active, nil: return true
             }
         }
-        let ids = Set(active.compactMap(\.messageID))
-        return active + (admittedPayloads[sessionID] ?? [:]).sorted { $0.key < $1.key }.map(\.value).filter {
+        let resident = active.map { entry in
+            guard let id = entry.messageID, states[id]?.residency == .active,
+                  states[id]?.derivedPageID != nil else { return entry }
+            return ContextEntry(messageID: id, role: entry.role, source: entry.source,
+                                part: entry.part, page: entry.page, segment: .recalledOccurrence)
+        }
+        let ids = Set(resident.compactMap(\.messageID))
+        return resident + (admittedPayloads[sessionID] ?? [:]).sorted { $0.key < $1.key }.map(\.value).filter {
             guard let id = $0.messageID else { return false }
             return !ids.contains(id) && (states[id]?.residency == nil || states[id]?.residency == .active)
         }
@@ -1078,19 +1117,24 @@ public actor ContextCompactor {
             let states = unitResidencies[sessionID] ?? [:]
             let ids = Set(states.values.filter { $0.derivedPageID == refID }.map(\.messageID))
             let alreadyActive = Set(active.compactMap(\.messageID))
-            var restored = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) && !alreadyActive.contains($0.messageID ?? MessageID("")) }
+            var restored = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) }
+            let retained = active.filter { !ids.contains($0.messageID ?? MessageID("")) }
+            if !ids.isEmpty && restored.isEmpty {
+                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "canonicalOccurrenceMissing")
+                continue
+            }
             if ids.isEmpty && !alreadyActive.contains(MessageID(refID)) {
                 restored = [ContextEntry(messageID: MessageID(refID), role: .system, source: .derivedPage, part: .text("[Restored session context]\n\(payload)"))]
             }
-            let cost = estimator.estimate(entries: active + restored)
+            let cost = estimator.estimate(entries: retained + restored)
             guard cost <= hardInputLimit else {
                 await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "inputBudgetExceeded: required=\(cost), hard=\(hardInputLimit)")
                 continue
             }
             restored = restored.map { ContextEntry(messageID: $0.messageID, role: $0.role, source: $0.source, part: $0.part, page: $0.page, segment: .recalledOccurrence) }
             // Prepend restored historical units so a pending tail stays last.
-            let prefix = active.prefix { $0.source == .system }
-            active = Array(prefix) + restored + active.dropFirst(prefix.count)
+            let prefix = retained.prefix { $0.source == .system }
+            active = Array(prefix) + restored + retained.dropFirst(prefix.count)
             for entry in restored {
                 guard let id = entry.messageID else { continue }
                 let old = states[id]

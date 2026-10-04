@@ -7,6 +7,67 @@ import LingXiProtocol
 @testable import LingXiCore
 
 struct ResponsesAdapterTests {
+    @Test func assembledInstructionFragmentsUseOnlyTheAuthoritativeInstructionsField() async throws {
+        let engine = PCoreContextEngine()
+        let session = Session(id: SessionID("native-prefix"), createdAt: .now, messages: [
+            Message(id: MessageID("u"), role: .user, content: "Repair the failing test", createdAt: .now),
+            Message(id: MessageID("a"), role: .assistant, content: "Checking the failure", createdAt: .now),
+        ])
+        let system = "Environment facts:\nworkspace: /tmp/isolated-native-probe\n\nStable instruction block one.\n\nStable instruction block two."
+        var entries = await engine.entries(for: session, systemContext: system, systemContextAtBeginning: false)
+        entries.append(.init(messageID: MessageID("project-data"), role: .system, source: .projectPage,
+            part: .text("[Project context] Retrieved source code")))
+        entries.append(.init(messageID: ContextCompactor.eCoreIndexMessageID, role: .system, source: .derivedPage,
+            part: .text("[E-Core index]\nreference=ref_native_prefix"), segment: .eCoreRetrievalProjection))
+        let snapshot = await engine.snapshot(for: session, activeEntries: entries, systemContext: system)
+        let messages = snapshot.modelMessages()
+        #expect(messages.filter { $0.role == .system }.count > 1)
+        let plan = CanonicalCachePlan(epochIdentity: .init(epoch: 1), immutableBase: .init(systemPrompt: system),
+            appendOnlyContext: .init(messages: messages), structuralHealth: .init(stablePrefixHash: "fixed"))
+        let request = ModelRequest(model: ModelID("runtime-instance"), messages: messages, cachePlan: plan)
+        let body = try OpenAIResponsesProvider.makeRequestBody(request)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["instructions"] as? String == system)
+        let input = try #require(json["input"] as? [[String: Any]])
+        #expect(input.compactMap { $0["role"] as? String } == ["user", "assistant", "user", "user"])
+        #expect(input[2]["content"] as? String == "[Project context] Retrieved source code")
+        #expect(input.last?["content"] as? String == "[E-Core index]\nreference=ref_native_prefix")
+        #expect(String(decoding: body, as: UTF8.self).components(separatedBy: "Stable instruction block one.").count == 2)
+        #expect(request.messages == messages && request.cachePlan == plan)
+    }
+
+    @Test func pEContextSegmentsRemainDataWithoutLateSystemMessages() throws {
+        let call = ToolCall(callID: ToolCallID("failed-test"), toolID: ToolID("shell"), arguments: "{}")
+        let result = ToolResult(callID: call.callID, success: false,
+            content: "NameError: name 'select' is not defined", toolName: "shell", exitCode: 1)
+        let messages: [ModelMessage] = [
+            .init(role: .user, content: "Repair the failing test"),
+            .init(role: .assistant, parts: [.toolCall(call)], segment: .recalledOccurrence),
+            .init(role: .tool, parts: [.toolResult(result)], segment: .recalledOccurrence),
+            .init(role: .system, content: "[Restored session context]\nNameError: archived evidence", segment: .recalledOccurrence),
+            .init(role: .system, content: "[E-Core index]\nreference=ref_archived_failure", segment: .eCoreRetrievalProjection),
+        ]
+        let plan = CanonicalCachePlan(epochIdentity: .init(epoch: 1),
+            immutableBase: .init(systemPrompt: "Stable instructions"),
+            appendOnlyContext: .init(messages: messages), structuralHealth: .init(stablePrefixHash: "fixed"))
+        let request = ModelRequest(model: ModelID("runtime-instance"), messages: messages, cachePlan: plan)
+        let provider = OpenAIResponsesProvider(config: ProviderConfig(baseURL: URL(string: "https://example.invalid/v1")!,
+            apiKey: nil, model: "runtime-instance", wireProtocol: .responses, remoteStateEnabled: true))
+        let data = try #require(provider.makeURLRequest(request, previousResponseID: "old-history").httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let input = try #require(json["input"] as? [[String: Any]])
+        #expect(json["instructions"] as? String == "Stable instructions")
+        #expect(json["previous_response_id"] == nil)
+        #expect(input.compactMap { $0["role"] as? String } == ["user", "user", "user"])
+        #expect(input[1]["type"] as? String == "function_call")
+        #expect(input[2]["type"] as? String == "function_call_output")
+        #expect((input[2]["output"] as? String)?.contains("NameError: name 'select' is not defined") == true)
+        #expect(input[3]["content"] as? String == messages[3].content)
+        #expect(input[4]["content"] as? String == messages[4].content)
+        #expect(request.messages == messages)
+        #expect(request.cachePlan == plan)
+    }
+
     @Test func reasoningTogglesUseResponsesEffortValuesWithoutChangingDomainRequest() throws {
         for (domain, expected) in [("off", "none"), ("auto", nil), ("high", "high")] as [(String, String?)] {
             let request = ModelRequest(model: ModelID("local-instance"), messages: [], reasoning: domain)

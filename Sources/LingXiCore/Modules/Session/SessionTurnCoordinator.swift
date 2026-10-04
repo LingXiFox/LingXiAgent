@@ -51,7 +51,7 @@ public actor SessionTurnCoordinator {
 
     /// 从持久化消息流中水合还原历史 turns 和 timeline events
     public func hydrateHistoricalMessages(_ messages: [Message]) async {
-        guard turns.isEmpty, !messages.isEmpty else { return }
+        guard !messages.isEmpty else { return }
 
         // 检查 eventLog 是否已从持久化存储（events.jsonl）加载过历史事件；若是，则内存水合只恢复 turns/tools，绝不重复写入 eventLog
         let existingEvents = await eventLog.recentEvents(count: 1)
@@ -66,6 +66,22 @@ public actor SessionTurnCoordinator {
                 }
             }
         }
+
+        // Queue restoration can already populate turns. Repair historical timing
+        // independently before the turn-hydration guard, including old zero-timing events.
+        for call in messages.flatMap(\.parts).compactMap({ part -> ToolCall? in
+            if case let .toolCall(call) = part { return call }; return nil
+        }) {
+            guard let result = toolResultsByCallID[call.callID] else { continue }
+            let existing = toolInvocations[call.callID]
+            guard (existing?.durationMs ?? 0) <= 0 else { continue }
+            toolInvocations[call.callID] = ToolInvocationSnapshot(
+                callID: call.callID, toolID: call.toolID, displayName: call.toolName,
+                argumentsSummary: call.arguments, state: existing?.state ?? .completed,
+                resultPreview: existing?.resultPreview, resultRef: existing?.resultRef,
+                durationMs: result.timing.executionMilliseconds, error: existing?.error)
+        }
+        guard turns.isEmpty else { return }
 
         var completedCallIDs: Set<ToolCallID> = []
         var currentTurnID: TurnID?
@@ -120,7 +136,8 @@ public actor SessionTurnCoordinator {
                             toolID: tc.toolID,
                             displayName: tc.toolName,
                             argumentsSummary: tc.arguments,
-                            state: hasResult ? .completed : .cancelled
+                            state: hasResult ? .completed : .cancelled,
+                            durationMs: toolResultsByCallID[tc.callID]?.timing.executionMilliseconds
                         )
                         toolInvocations[tc.callID] = invocation
                         if !hasExistingEvents {
@@ -132,6 +149,7 @@ public actor SessionTurnCoordinator {
                                     toolName: res.toolName,
                                     success: res.success,
                                     summary: summaryText,
+                                    timing: res.timing,
                                     fileMutations: res.fileMutations
                                 )
                                 _ = try? await eventLog.append(causal: causal, payload: .toolCompleted(
@@ -175,6 +193,7 @@ public actor SessionTurnCoordinator {
                             toolName: res.toolName,
                             success: res.success,
                             summary: summaryText,
+                            timing: res.timing,
                             fileMutations: res.fileMutations
                         )
                         if !hasExistingEvents {

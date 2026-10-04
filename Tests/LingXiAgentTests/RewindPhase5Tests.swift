@@ -6,7 +6,7 @@ import Foundation
 @Suite("RewindPhase5Tests")
 struct RewindPhase5Tests {
     @Test
-    func compactionAndDerivedContextDeletedOnRevert() async throws {
+    func revertPrunesOrphanResidenciesAndDerivedContext() async throws {
         let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
@@ -45,9 +45,10 @@ struct RewindPhase5Tests {
         // Perform revert
         _ = try await store.revertLastTurn(session.id)
 
-        // Verify both compaction_state and derived_context are wiped
+        // The orphan is pruned; the generation remains a durable fact.
         let afterCompaction = try await persistence.compaction(sessionID: session.id)
-        #expect(afterCompaction == nil)
+        #expect(afterCompaction?.generation == 1)
+        #expect(afterCompaction?.residencies.isEmpty == true)
         let afterDerived = try await persistence.loadDerived()
         #expect(afterDerived.isEmpty)
     }

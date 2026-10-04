@@ -90,7 +90,14 @@ public struct ModelToolResultProjection: Sendable, Equatable {
         self.items = items
     }
 
-    public static func project(_ result: ToolResult, budget: ToolResultBudget = .default) -> Self {
+    public static func project(_ result: ToolResult, segment: ModelContextSegment = .conversation, budget: ToolResultBudget = .default) -> Self {
+        // Assembly has already charged the admitted bytes against the input budget.
+        // Explicit recall slices have their own byte/line limits; do not slice them again.
+        if segment == .admittedToolResult || (result.success && (segment == .recalledOccurrence ||
+            (result.toolName == "context_recall" && result.content.hasPrefix("[Context Object Slice:")))) {
+            return Self(callID: result.callID, toolName: result.toolName, success: result.success,
+                        content: result.content, summary: result.summary, truncated: result.output.truncated)
+        }
         guard result.success else {
             let error = result.error ?? ToolError(code: "toolExecutionFailed", message: "Tool 执行失败")
             let retryability: Retryability = {
@@ -424,8 +431,14 @@ public struct ModelToolResultProjection: Sendable, Equatable {
 /// Context Assembly semantics survive independently of a provider's role encoding.
 public enum ModelContextSegment: Sendable, Equatable {
     case conversation
+    /// Assembly may render base instruction fragments; providers use the
+    /// authoritative request/cache-plan instructions rather than duplicating them.
+    case immutableInstructions
+    case retrievalData
     case eCoreRetrievalProjection
     case recalledOccurrence
+    /// A tool payload projected and budgeted by Context Assembly, ready for wire encoding.
+    case admittedToolResult
 }
 
 public struct ModelMessage: Sendable, Equatable {
@@ -511,12 +524,13 @@ public struct ModelRequest: Sendable, Equatable {
         }
     }
 
-    /// Deduplicate only an identical base prompt. Dynamic segments must never be
-    /// removed merely because their wire role happens to be system/developer.
+    /// Base instruction fragments defer to the authoritative immutable prompt.
+    /// Dynamic data must survive independently of its provider wire role.
     var providerContextMessages: [ModelMessage] {
         let base = cachePlan?.immutableBase.systemPrompt ?? system
         return (cachePlan?.appendOnlyContext.messages ?? messages).filter {
-            !($0.segment == .conversation && $0.role == .system && $0.content == base)
+            if base != nil && $0.segment == .immutableInstructions { return false }
+            return !($0.segment == .conversation && $0.role == .system && $0.content == base)
         }
     }
 }

@@ -32,6 +32,8 @@ public struct ToolNode: Sendable, Equatable, Codable {
     public var executorFinishedAt: Date?
     public var resultCommittedAt: Date?
     public var projectionReceivedAt: Date?
+    /// Authoritative restored timing can repair legacy events whose timing was omitted.
+    public var snapshotExecutionMilliseconds: Double?
 
     /// Shared front-end classification (see `ToolFamily` in LingXiProtocol).
     /// Derived from `toolName`, so it can never go stale; `toolFamily` is additionally
@@ -46,7 +48,7 @@ public struct ToolNode: Sendable, Equatable, Codable {
     private enum CodingKeys: String, CodingKey {
         case callID, toolName, argumentsJSON, phase, permissionID, stdout, stderr
         case result, error, modelStepID, requestedAt, admittedAt, executorStartedAt
-        case executorFinishedAt, resultCommittedAt, projectionReceivedAt, toolFamily
+        case executorFinishedAt, resultCommittedAt, projectionReceivedAt, snapshotExecutionMilliseconds, toolFamily
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +69,7 @@ public struct ToolNode: Sendable, Equatable, Codable {
         self.executorFinishedAt = try container.decodeIfPresent(Date.self, forKey: .executorFinishedAt)
         self.resultCommittedAt = try container.decodeIfPresent(Date.self, forKey: .resultCommittedAt)
         self.projectionReceivedAt = try container.decodeIfPresent(Date.self, forKey: .projectionReceivedAt)
+        self.snapshotExecutionMilliseconds = try container.decodeIfPresent(Double.self, forKey: .snapshotExecutionMilliseconds)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -87,17 +90,22 @@ public struct ToolNode: Sendable, Equatable, Codable {
         try container.encodeIfPresent(executorFinishedAt, forKey: .executorFinishedAt)
         try container.encodeIfPresent(resultCommittedAt, forKey: .resultCommittedAt)
         try container.encodeIfPresent(projectionReceivedAt, forKey: .projectionReceivedAt)
+        try container.encodeIfPresent(snapshotExecutionMilliseconds, forKey: .snapshotExecutionMilliseconds)
         try container.encode(toolFamily, forKey: .toolFamily)
     }
 
     public var executionDuration: Duration? {
-        if let execMs = result?.timing.executionMilliseconds, execMs >= 0 {
+        if let execMs = result?.timing.executionMilliseconds, execMs > 0 {
             return .milliseconds(execMs)
+        }
+        if let milliseconds = snapshotExecutionMilliseconds, milliseconds >= 0 {
+            return .milliseconds(milliseconds)
         }
         if let start = executorStartedAt, let finish = executorFinishedAt {
             let seconds = finish.timeIntervalSince(start)
             return .milliseconds(max(0, seconds * 1000.0))
         }
+        if let execMs = result?.timing.executionMilliseconds, execMs == 0 { return .zero }
         return nil
     }
 
@@ -117,7 +125,8 @@ public struct ToolNode: Sendable, Equatable, Codable {
         executorStartedAt: Date? = nil,
         executorFinishedAt: Date? = nil,
         resultCommittedAt: Date? = nil,
-        projectionReceivedAt: Date? = nil
+        projectionReceivedAt: Date? = nil,
+        snapshotExecutionMilliseconds: Double? = nil
     ) {
         self.callID = callID
         self.toolName = toolName
@@ -135,6 +144,7 @@ public struct ToolNode: Sendable, Equatable, Codable {
         self.executorFinishedAt = executorFinishedAt
         self.resultCommittedAt = resultCommittedAt
         self.projectionReceivedAt = projectionReceivedAt
+        self.snapshotExecutionMilliseconds = snapshotExecutionMilliseconds
     }
 
     public var argumentSummary: String {

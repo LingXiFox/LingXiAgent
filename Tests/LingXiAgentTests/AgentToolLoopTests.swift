@@ -351,7 +351,7 @@ struct AgentToolLoopTests {
             return
         }
         #expect(failure.error.code == .agentStepLimitReached)
-        #expect(provider.recorder.requests.count == 5)
+        #expect(provider.recorder.requests.count == 8)
         #expect(failure.error.message.contains("检测到无进展死循环"))
     }
 
@@ -393,7 +393,7 @@ struct AgentToolLoopTests {
         #expect(failure.error.message.contains("最后 observation:"))
     }
 
-    @Test func consecutiveIdenticalReadIsRecordedOnceAndSecondCallIsBlocked() async throws {
+    @Test func identicalReadsInOneBatchShareRealPayload() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         try "LingXiAgent".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
@@ -416,7 +416,9 @@ struct AgentToolLoopTests {
         }
         #expect(results.count == 2)
         #expect(results[0].success)
-        #expect(results[1].error?.code == "duplicateToolCall")
+        #expect(results[1].success)
+        #expect(results[1].content == results[0].content)
+        #expect(results[1].metadata["sharedRead"] == "true")
         #expect(provider.recorder.requests[1].messages.filter { $0.role == .tool }.count == 1)
     }
 

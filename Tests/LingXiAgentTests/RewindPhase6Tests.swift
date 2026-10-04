@@ -8,6 +8,47 @@ import Foundation
 @Suite("RewindPhase6Tests")
 struct RewindPhase6Tests {
 
+    @Test(arguments: [false, true]) @MainActor
+    func historicalToolHydrationPreservesRealTimingAcrossEventReplay(legacyEvents: Bool) async throws {
+        let sid = SessionID("timing-hydration"), callID = ToolCallID("timed-call")
+        let call = ToolCall(callID: callID, toolID: ToolID("shell"), arguments: "{}")
+        let timing = ToolTiming(milliseconds: 123.5, queueMilliseconds: 12, executionMilliseconds: 123.5, permissionMilliseconds: 7)
+        let result = ToolResult(callID: callID, success: true, content: "verified output", toolName: "shell", timing: timing)
+        let messages = [Message(id: MessageID("u"), role: .user, content: "Run tests", createdAt: .now),
+            Message(id: MessageID("a"), role: .assistant, parts: [.toolCall(call)], createdAt: .now),
+            Message(id: MessageID("r"), role: .tool, parts: [.toolResult(result)], createdAt: .now)]
+        let log = SessionEventLog(sessionID: sid)
+        let coord = SessionTurnCoordinator(sessionID: sid, eventLog: log)
+        if legacyEvents {
+            let causal = CausalContext(sessionID: sid)
+            _ = try await log.append(causal: causal, payload: .turnCreated(.init(turnID: TurnID("stored-turn"), sessionID: sid,
+                userMessage: .init(messageID: messages[0].id, role: .user, text: "Run tests", createdAt: .now),
+                executionIntent: .init(), status: .completed, createdAt: .now)))
+            _ = try await log.append(causal: causal, payload: .toolRequested(.init(callID: callID, toolID: call.toolID,
+                displayName: "shell", argumentsSummary: "{}", state: .completed)))
+            _ = try await log.append(causal: causal, payload: .toolCompleted(callID: callID,
+                result: .init(callID: callID, success: true, summary: "verified output"), stdoutFinalIndex: nil, stderrFinalIndex: nil))
+            await coord.restoreHistoricalQueue()
+            await coord.hydrateHistoricalMessages(messages)
+        } else { try await coord.resetForRevert(remainingMessages: messages) }
+        let events = await log.allEvents()
+        let completed = try #require(events.compactMap { event -> ToolResultSnapshot? in
+            if case let .toolCompleted(_, result, _, _) = event.payload { return result }; return nil
+        }.first)
+        if !legacyEvents { #expect(completed.timing == timing) }
+        let info = SessionSummary(sessionID: sid, title: "Timing", createdAt: .now, updatedAt: .now, turnCount: 1, mode: .build)
+        let snapshot = await coord.buildSnapshot(info: info, contextState: .init(sessionID: sid),
+            permissionConfiguration: .init(policy: .ask, profile: .workspace), agentMode: .build, revision: 1)
+        #expect(snapshot.recentToolInvocations.first?.durationMs == 123.5)
+        var state = SessionViewState(sessionID: sid)
+        SessionReducer.reduceSnapshot(state: &state, snapshot: snapshot, connectionState: .init(status: .connected))
+        #expect(state.toolNodes[callID]?.executionDuration == .milliseconds(123.5))
+        let projectedDuration = state.timelineNodes.compactMap { node -> Duration? in
+            if case let .tool(tool) = node.kind { return tool.executionDuration }; return nil
+        }.first
+        #expect(projectedDuration == .milliseconds(123.5))
+    }
+
     @Test
     func revertLastTurnReturnsAuthoritativeSnapshotAndRevision() async throws {
         let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

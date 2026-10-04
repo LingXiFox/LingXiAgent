@@ -50,7 +50,9 @@ public struct ContextProjection: Sendable {
 
             // Failure evidence is selected at the encoder boundary from diagnostics.
             // A success-shaped placeholder must not erase the structured failure.
-            guard result.success else { projectedEntries.append(entry); continue }
+            guard result.success, entry.segment != .recalledOccurrence,
+                  !(result.toolName == "context_recall" && result.content.hasPrefix("[Context Object Slice:"))
+            else { projectedEntries.append(entry); continue }
 
             let assistantCount = assistantCountAfterMessageID[messageID] ?? 0
             let toolName = result.toolName ?? "tool"
@@ -137,12 +139,29 @@ public struct ContextProjection: Sendable {
                 messageID: entry.messageID,
                 role: entry.role,
                 source: entry.source,
-                part: .toolResult(projectedResult)
+                part: .toolResult(projectedResult),
+                page: entry.page,
+                segment: entry.segment
             )
             projectedEntries.append(projectedEntry)
         }
 
         return projectedEntries
+    }
+
+    /// Lossy projection belongs before pressure/admission accounting, never in
+    /// canonical history. Wire adapters preserve these already-budgeted bytes.
+    public func modelEntries(entries: [ContextEntry], session: Session, ecoreStore: ECoreObjectStore) async -> [ContextEntry] {
+        let projected = await project(entries: entries, session: session, ecoreStore: ecoreStore)
+        return projected.map { entry in
+            guard case let .toolResult(result) = entry.part else { return entry }
+            if entry.segment == .recalledOccurrence && result.success { return entry }
+            let bounded = ModelToolResultProjection.project(result, segment: entry.segment)
+            let content = result.withContent(bounded.content, summary: bounded.summary)
+            return ContextEntry(messageID: entry.messageID, role: entry.role, source: entry.source,
+                                part: .toolResult(content), page: entry.page,
+                                segment: entry.segment == .recalledOccurrence ? .recalledOccurrence : .admittedToolResult)
+        }
     }
 
     /// 构建符合规范的稳定首尾 Placeholder（总计约 1KB 摘要）

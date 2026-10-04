@@ -20,6 +20,44 @@ struct ToolLoopRecoveryTests {
         [Outcome(callKey: "shell|{\"command\":\"\(command)\"}", succeeded: false, errorMessage: error)]
     }
 
+    @Test func successfulNoOpCannotEraseUnresolvedFailure() {
+        var tracker = ToolLoopProgressTracker()
+        var stopped = false
+        for _ in 0..<3 {
+            if case .hardStop = tracker.record(failed("test")) { stopped = true; break }
+            _ = tracker.record([Outcome(callKey: "write_file|unchanged", succeeded: true, errorMessage: nil)])
+        }
+        #expect(stopped)
+    }
+
+    @Test func successfulSiblingCannotHideRepeatedFailure() {
+        var tracker = ToolLoopProgressTracker()
+        let batch = failed("test") + [Outcome(callKey: "read_file|helper", succeeded: true, errorMessage: nil)]
+        _ = tracker.record(batch); _ = tracker.record(batch)
+        guard case .hardStop = tracker.record(batch) else { Issue.record("A successful sibling cannot clear repeated failure evidence"); return }
+    }
+
+    @Test func realNoOpRewriteCannotMaskRepeatedTestFailure() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "unchanged".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+        var script: [[ModelEvent]] = []
+        for n in 0..<3 {
+            script.append(shellStep("failed-\(n)", "echo NameError: missing_symbol; exit 1"))
+            let call = ToolCall(callID: ToolCallID("noop-\(n)"), toolID: ToolID("write_file"), arguments: "{\"path\":\"note.txt\",\"content\":\"unchanged\"}")
+            script.append([.toolCallCompleted(call), .completed(.toolCalls)])
+        }
+        script.append([.textDelta("Still blocked"), .completed(.stop)])
+        let provider = ScriptedFakeProvider(script: script)
+        let client = try await makeClient(root: root, provider: provider)
+        let sid = try await client.createSession()
+        do {
+            for try await _ in try await client.sendMessage(sessionID: sid, content: "Check the existing tests") {}
+            Issue.record("Repeated no-progress failures must not complete")
+        } catch let error as CoreError { #expect(error.code == .agentStepLimitReached) }
+        #expect(provider.recorder.requests.count < script.count)
+    }
+
     // MARK: - 11. Different strategies, one blocker
 
     @Test("g++ → clang → gcc failing alike is a cluster with a soft warning, not a stop")

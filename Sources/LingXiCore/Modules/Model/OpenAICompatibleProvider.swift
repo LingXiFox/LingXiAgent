@@ -274,7 +274,7 @@ public struct OpenAICompatibleProvider: ModelProvider {
         switch message.role {
         case .tool:
             return results.compactMap { result in
-                let projected = ModelToolResultProjection.project(result)
+                let projected = ModelToolResultProjection.project(result, segment: message.segment)
                 let callID = continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue
                 guard !callID.isEmpty else { return nil }
                 return Message(role: "tool", content: projected.content, toolCallID: callID)

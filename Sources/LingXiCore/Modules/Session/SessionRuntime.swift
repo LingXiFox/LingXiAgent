@@ -430,9 +430,6 @@ public actor SessionRuntime {
         var finalReason: ModelFinishReason?
         var completionGuard = ActionCompletionGuard(task: task)
         var nextToolChoice: ToolChoice = .auto
-        var lastSuccessfulRead: (signature: ToolRuntime.ReadOnlySignature, content: String)?
-        var successfulReadsBySignature: [ToolRuntime.ReadOnlySignature: String] = [:]
-        var signatureReadCounts: [ToolRuntime.ReadOnlySignature: Int] = [:]
         var deterministicFailures: [String: String] = [:]
         let executionProfile = self.executionProfile
 
@@ -595,7 +592,7 @@ public actor SessionRuntime {
 
                 // P-Core Context Projection (Phase 1B):
                 let projection = ContextProjection(configuration: cacheController.ecoreStore.configuration)
-                let projectedEntries = await projection.project(
+                let projectedEntries = await projection.modelEntries(
                     entries: allEntries,
                     session: session,
                     ecoreStore: cacheController.ecoreStore
@@ -1214,32 +1211,7 @@ public actor SessionRuntime {
                 for (offset, call) in calls.enumerated() {
                     await eventSink(.toolCallCompleted(call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)))
                     trace("tool.execute.begin", step: step + 1, toolCallID: call.callID)
-                    if let signature = signatures[offset], let previousContent = successfulReadsBySignature[signature] {
-                        let readCount = signatureReadCounts[signature, default: 1]
-                        if readCount >= 2 {
-                            let resourceName = signature.resource.isEmpty ? signature.toolName : signature.resource
-                            let reminder = "The content of '\(resourceName)' is already present in this session (\(previousContent.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
-                            let outcome = duplicateOutcome(for: call, signature: signature, content: reminder)
-                            outcomes[offset] = outcome
-                            await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
-                            publishedOutcomes.insert(offset)
-                            signatureReadCounts[signature] = readCount + 1
-                        } else {
-                            let note = "\n[System note: This file was already read previously in this conversation. Please analyze the code directly or proceed to answer the user.]"
-                            let outcome = duplicateOutcome(for: call, signature: signature, content: previousContent + note)
-                            outcomes[offset] = outcome
-                            await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
-                            publishedOutcomes.insert(offset)
-                            signatureReadCounts[signature] = readCount + 1
-                        }
-                    } else if let signature = signatures[offset], let previous = lastSuccessfulRead, previous.signature == signature {
-                        let resourceName = signature.resource.isEmpty ? signature.toolName : signature.resource
-                        let reminder = "The content of '\(resourceName)' is already present in this session (\(previous.content.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
-                        let outcome = duplicateOutcome(for: call, signature: signature, content: reminder)
-                        outcomes[offset] = outcome
-                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
-                        publishedOutcomes.insert(offset)
-                    } else if let failureSignature = deterministicFailures[failureKey(for: call)] {
+                    if signatures[offset] == nil, let failureSignature = deterministicFailures[failureKey(for: call)] {
                         let outcome = repeatedFailureOutcome(for: call, signature: failureSignature)
                         outcomes[offset] = outcome
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
@@ -1291,16 +1263,7 @@ public actor SessionRuntime {
                         // 关键：当 primary tool 产出结果时，同批次复用它的 secondary tool 立即发布完成，杜绝幽灵旋转并拦截重复读取
                         for sec in calls.indices where primaryByIndex[sec] == offset && sec != offset && outcomes[sec] == nil {
                             let secondaryCall = calls[sec]
-                            let secSignature = signatures[sec]!
-                            let resourceName = secSignature.resource.isEmpty ? secSignature.toolName : secSignature.resource
-                            let reminder = "The content of '\(resourceName)' is already present in this session (\(outcome.result.content.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
-                            let secOutcome = duplicateOutcome(
-                                for: secondaryCall,
-                                signature: secSignature,
-                                content: reminder,
-                                timing: outcome.result.timing,
-                                execution: outcome.execution
-                            )
+                            let secOutcome = sharedReadOutcome(for: secondaryCall, primary: outcome)
                             outcomes[sec] = secOutcome
                             trace("tool.execute.end", step: step + 1, toolCallID: secondaryCall.callID)
                             await publishCompletedTool(secOutcome, batchID: batchID, modelStepID: currentModelStepID)
@@ -1314,16 +1277,7 @@ public actor SessionRuntime {
                     guard let primary = primaryByIndex[offset], let previous = outcomes[primary] else {
                         throw CoreError(code: .modelStream, message: "Tool batch settlement 缺少结果: \(call.callID.rawValue)")
                     }
-                    let secSignature = signatures[offset]!
-                    let resourceName = secSignature.resource.isEmpty ? secSignature.toolName : secSignature.resource
-                    let reminder = "The content of '\(resourceName)' is already present in this session (\(previous.result.content.utf8.count) bytes). Do not repeatedly read this file; synthesize your recommendations from the existing context."
-                    let outcome = duplicateOutcome(
-                        for: call,
-                        signature: secSignature,
-                        content: reminder,
-                        timing: previous.result.timing,
-                        execution: previous.execution
-                    )
+                    let outcome = sharedReadOutcome(for: call, primary: previous)
                     outcomes[offset] = outcome
                     await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
                     publishedOutcomes.insert(offset)
@@ -1341,15 +1295,6 @@ public actor SessionRuntime {
                     if !publishedOutcomes.contains(offset) {
                         trace("tool.execute.end", step: step + 1, toolCallID: call.callID)
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
-                    }
-                    if let signature = signatures[offset], result.success || result.error?.code == "duplicateToolCall" {
-                        lastSuccessfulRead = (signature, result.content)
-                        if result.success && successfulReadsBySignature[signature] == nil {
-                            successfulReadsBySignature[signature] = result.content
-                            signatureReadCounts[signature] = 1
-                        }
-                    } else {
-                        lastSuccessfulRead = nil
                     }
                     if let error = result.error, isDeterministicFailure(result) {
                         deterministicFailures[failureKey(for: call)] = "\(error.code):\(error.message)"
@@ -1542,32 +1487,17 @@ public actor SessionRuntime {
         }
     }
 
-    private func duplicateOutcome(
-        for call: ToolCall,
-        signature: ToolRuntime.ReadOnlySignature,
-        content: String,
-        timing: ToolTiming? = nil,
-        execution: Duration = .zero
-    ) -> ToolRuntime.ExecutionOutcome {
-        let executionMs = max(1.0, timing?.executionMilliseconds ?? Double(execution.components.seconds * 1000))
-        let queueMs = timing?.queueMilliseconds ?? 0
-        let inheritedTiming = ToolTiming(milliseconds: executionMs, queueMilliseconds: queueMs, executionMilliseconds: executionMs)
-        let isSuppression = content.contains("is already present in this session")
-        return ToolRuntime.ExecutionOutcome(
-            result: ToolResult(
-                callID: call.callID,
-                success: !isSuppression,
-                content: content,
-                error: isSuppression ? ToolError(code: "duplicateToolCall", message: "重复读取已拦截，请直接利用已有上下文") : nil,
-                toolName: signature.toolName,
-                timing: inheritedTiming
-            ),
-            permissionWait: .zero,
-            permissionAsked: false,
-            execution: execution == .zero ? .milliseconds(Int64(executionMs)) : execution,
-            toolName: signature.toolName,
-            resource: signature.resource
-        )
+    private func sharedReadOutcome(for call: ToolCall, primary: ToolRuntime.ExecutionOutcome) -> ToolRuntime.ExecutionOutcome {
+        let r = primary.result
+        let result = ToolResult(callID: call.callID, success: r.success, content: r.content, error: r.error,
+            toolName: r.toolName, outcome: r.outcome, summary: r.summary,
+            metadata: r.metadata.merging(["sharedRead": "true"]) { current, _ in current },
+            provenance: r.provenance, touchedResources: r.touchedResources, timing: r.timing,
+            output: r.output, exitCode: r.exitCode, diagnostics: r.diagnostics, changedFiles: r.changedFiles,
+            continuation: r.continuation, sessionID: r.sessionID, agentRunID: r.agentRunID,
+            modelStepID: r.modelStepID, fileMutations: r.fileMutations)
+        return ToolRuntime.ExecutionOutcome(result: result, permissionWait: .zero, permissionAsked: false,
+                                            execution: .zero, toolName: primary.toolName, resource: primary.resource)
     }
 
     /// Records the loop verdict as an `agent.loop.*` trace, which the Observatory turns into its own
@@ -1647,8 +1577,9 @@ public actor SessionRuntime {
         let residentPages = await cacheController.residentPages(for: sessionID)
         let entries = await contextEngine.entries(for: session, projectPages: residentPages,
                                                   systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+        let resident = await compactor.activeEntries(sessionID: sessionID, canonicalEntries: entries, batches: toolBatches)
         let projected = await ContextProjection(configuration: cacheController.ecoreStore.configuration)
-            .project(entries: entries, session: session, ecoreStore: cacheController.ecoreStore)
+            .modelEntries(entries: resident, session: session, ecoreStore: cacheController.ecoreStore)
         let tokens = ConservativeTokenEstimator().estimate(entries: projected)
         let requestBudget = budgetPlanner.plan(profile: profile,
             toolSchemaTokens: ConservativeTokenEstimator().estimate(tools: await toolRuntime.availableDefinitions()))

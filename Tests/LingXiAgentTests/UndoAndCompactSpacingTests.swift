@@ -103,16 +103,22 @@ struct UndoAndCompactSpacingTests {
         await controller.recordPCoreBaseTokens(sessionID: sessionID, tokens: 1000, count: 2)
 
         // 模拟撤回到只有 1 条消息
-        await controller.reconcileAfterRevert(sessionID: sessionID, remainingMessages: [msg1])
+        let engine = PCoreContextEngine()
+        let session = Session(id: sessionID, createdAt: .now, messages: [msg1])
+        let entries = await engine.entries(for: session)
+        let active = await engine.snapshot(for: session, activeEntries: entries,
+            estimatedTokens: ConservativeTokenEstimator().estimate(entries: entries))
+        await controller.reconcileAfterRevert(sessionID: sessionID, activeSnapshot: active)
 
         let pCoreTokens = await controller.pCoreResidentTokens(for: sessionID)
         #expect(pCoreTokens > 0 && pCoreTokens < 1000)
 
         let record = await controller.lastProviderCacheRecord(for: sessionID)
-        #expect(record?.status == "coldNewEpoch")
+        #expect(record == nil)
 
         // 撤回至全部清空
-        await controller.reconcileAfterRevert(sessionID: sessionID, remainingMessages: [])
+        let empty = await engine.snapshot(for: Session(id: sessionID, createdAt: .now), activeEntries: [])
+        await controller.reconcileAfterRevert(sessionID: sessionID, activeSnapshot: empty)
         let clearedTokens = await controller.pCoreResidentTokens(for: sessionID)
         #expect(clearedTokens == 0)
 

@@ -1121,10 +1121,7 @@ public actor ECoreObjectStore {
 
     /// 依据保留的 ToolCallIDs 裁剪废弃的观测对象文件与缓存（用于撤回或会话状态协同）
     public func prune(sessionID: SessionID, keepingToolCallIDs: Set<ToolCallID>) async {
-        if keepingToolCallIDs.isEmpty {
-            await cleanSession(sessionID: sessionID)
-            return
-        }
+        // An empty tool set still permits surviving message/page references.
         await dropToolReferences(sessionID: sessionID, keepingToolCallIDs: keepingToolCallIDs)
         let pageOutObjectIDs = Set(await references(sessionID: sessionID).map(\.objectID))
         // 内存后端没有可枚举的目录，改按元数据缓存裁剪；规则一致：只裁工具产物。

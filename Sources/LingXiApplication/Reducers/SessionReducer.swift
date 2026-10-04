@@ -837,7 +837,8 @@ public enum SessionReducer {
                 toolName: tool.displayName,
                 argumentsJSON: tool.argumentsSummary,
                 phase: phase,
-                error: tool.error
+                error: tool.error,
+                snapshotExecutionMilliseconds: tool.durationMs
             )
             if phase == .running {
                 state.activeToolCallIDs.insert(tool.callID)

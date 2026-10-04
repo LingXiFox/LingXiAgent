@@ -386,11 +386,27 @@ public actor AgentRuntime {
     public func ensureContextSnapshot(_ id: SessionID) async throws -> PCoreSnapshot {
         if let snapshot = await contextEngine.latestSnapshot(for: id) { return snapshot }
         let session = try await store.session(id)
+        if await compactor.unitStates(sessionID: id).isEmpty,
+           let persisted = try await persistence?.compaction(sessionID: id) {
+            await compactor.restoreResidencies(sessionID: id, values: persisted.residencies)
+        }
         let canonical = await contextEngine.entries(for: session)
         let resident = await compactor.activeEntries(sessionID: id, canonicalEntries: canonical)
         let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolSchemaTokens: 0)
         let entries = await compactor.projectIndex(sessionID: id, entries: resident, hardInputLimit: budget.hardInputLimit, query: session.messages.last(where: { $0.role == .user })?.content ?? "")
         let estimatedTokens = ConservativeTokenEstimator().estimate(entries: entries)
+        let generation = cacheController.runtimeContext.snapshot()
+        if estimatedTokens > generation.policy.pCoreSoftLimit {
+            let runtime: SessionRuntime
+            if let existing = runtimes[id] { runtime = existing }
+            else {
+                runtime = makeRuntime(for: id)
+                try await runtime.restore()
+            }
+            try await runtime.reconcileRuntimeContextPressure(profile: modelBus.gateway.contextProfile, policy: generation.policy)
+            if let converged = await contextEngine.latestSnapshot(for: id) { return converged }
+        }
+        await cacheController.recordPCoreBaseTokens(sessionID: id, tokens: estimatedTokens, count: entries.count)
         return await contextEngine.snapshot(for: session, activeEntries: entries, estimatedTokens: estimatedTokens)
     }
 

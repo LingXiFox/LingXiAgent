@@ -654,6 +654,13 @@ public actor ContextCacheController {
               let dto = try? JSONDecoder().decode(DTO.self, from: data) else {
             return nil
         }
+        // Old rewind code persisted a full-history estimate as measured usage.
+        // Invalidation markers retain epoch identity without inventing an inference.
+        if dto.status == "invalidated" || (dto.status == "coldNewEpoch" && dto.epochReason == "revert_turn" && dto.provider == nil && dto.model == nil) {
+            sessionEpochs[sessionID] = max(sessionEpochs[sessionID] ?? 1, dto.epoch)
+            sessionEpochReasons[sessionID] = dto.epochReason
+            return nil
+        }
         let record = SessionCacheRecord(
             cachedTokens: dto.cachedTokens,
             promptTokens: dto.promptTokens,
@@ -971,23 +978,7 @@ public actor ContextCacheController {
     }
 
     /// 撤回（undo）操作后对齐 P-E 双核心架构状态与缓存基线
-    public func reconcileAfterRevert(sessionID: SessionID, remainingMessages: [Message]) async {
-        // 1. 提取剩余消息中所有有效的 ToolCallID
-        var validToolCallIDs = Set<ToolCallID>()
-        for msg in remainingMessages {
-            for part in msg.parts {
-                if case let .toolCall(tc) = part {
-                    validToolCallIDs.insert(tc.callID)
-                }
-                if case let .toolResult(res) = part {
-                    validToolCallIDs.insert(res.callID)
-                }
-            }
-        }
-
-        // 2. E-Core 存储裁剪：清理已被撤回的 Tool 所生成的大对象文件
-        await ecoreStore.prune(sessionID: sessionID, keepingToolCallIDs: validToolCallIDs)
-
+    public func reconcileAfterRevert(sessionID: SessionID, activeSnapshot: PCoreSnapshot) async {
         // 3. P-Core (PCore) 状态重置：撤回导致上一次 Provider 调用的 Cache Record 失效
         lastProviderInputTokensBySession.removeValue(forKey: sessionID)
         previousPromptTokensBySession.removeValue(forKey: sessionID)
@@ -1000,54 +991,18 @@ public actor ContextCacheController {
         sessionEpochs[sessionID] = (sessionEpochs[sessionID] ?? 1) + 1
         sessionEpochReasons[sessionID] = "revert_turn"
 
-        // 4. 重新基于剩余有效消息精确估算 PCore / P-Core 常驻 Tokens
-        if remainingMessages.isEmpty {
-            await clearSessionState(sessionID: sessionID)
-            return
-        } else {
-            let estimator = ConservativeTokenEstimator()
-            var entries: [ContextEntry] = []
-            for msg in remainingMessages {
-                let ctxRole: ContextRole
-                let src: ContextSource
-                switch msg.role {
-                case .user: ctxRole = .user; src = .userMessage
-                case .assistant: ctxRole = .assistant; src = .assistantMessage
-                case .tool: ctxRole = .tool; src = .toolResult
-                }
-                for part in msg.parts {
-                    entries.append(ContextEntry(
-                        messageID: msg.id,
-                        role: ctxRole,
-                        source: src,
-                        part: part
-                    ))
-                }
-            }
-            let tokens = estimator.estimate(entries: entries)
-            sessionPCoreBaseTokens[sessionID] = tokens
-            sessionPCoreBaseCount[sessionID] = entries.count
-            previousPromptTokensBySession[sessionID] = tokens
-            lastProviderInputTokensBySession[sessionID] = tokens
-
-            // 建立撤回后的合成基线记录，确保前缀复用与 P-Core 状态平滑衔接，不发生归零或乱跳
-            let revertEpoch = sessionEpochs[sessionID] ?? 1
-            let revertRecord = SessionCacheRecord(
-                cachedTokens: 0,
-                promptTokens: tokens,
-                previousPromptTokens: tokens,
-                status: "coldNewEpoch",
-                epoch: revertEpoch,
-                epochReason: "revert_turn",
-                stablePrefixHash: nil,
-                missDiagnostics: nil,
-                provider: nil,
-                model: nil,
-                cacheWriteTokens: nil
-            )
-            sessionCacheRecords[sessionID] = revertRecord
-            savePersistedTelemetry(sessionID: sessionID, record: revertRecord, debt: 0)
-        }
+        // Only the authoritative residency-filtered assembly is a resident baseline.
+        // No inference has occurred after rewind: never fabricate provider usage/cache hits.
+        residentPagesBySession.removeValue(forKey: sessionID)
+        lastPromptCacheHitBySession.removeValue(forKey: sessionID)
+        clientStructuralHealthBySession.removeValue(forKey: sessionID)
+        lastHistorySignaturesBySession.removeValue(forKey: sessionID)
+        sessionPCoreBaseTokens[sessionID] = activeSnapshot.metrics.estimatedTokens
+        sessionPCoreBaseCount[sessionID] = activeSnapshot.entries.count
+        savePersistedTelemetry(sessionID: sessionID, record: SessionCacheRecord(
+            cachedTokens: 0, promptTokens: 0, previousPromptTokens: nil, status: "invalidated",
+            epoch: sessionEpochs[sessionID] ?? 1, epochReason: "revert_turn", stablePrefixHash: nil,
+            missDiagnostics: nil, provider: nil, model: nil, cacheWriteTokens: nil), debt: 0)
 
         // 5. 调度器经济学债务状态对齐
         await scheduler.reset(sessionID: sessionID)

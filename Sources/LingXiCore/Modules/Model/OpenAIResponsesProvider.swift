@@ -164,7 +164,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
             switch message.role {
             case .tool:
                 return results.map {
-                    let projected = ModelToolResultProjection.project($0)
+                    let projected = ModelToolResultProjection.project($0, segment: message.segment)
                     return .functionOutput(callID: continuation?.externalCallID(for: projected.callID) ?? projected.callID.rawValue, output: projected.content)
                 }
             case .assistant:
@@ -186,7 +186,11 @@ public struct OpenAIResponsesProvider: ModelProvider {
                 }
                 return items
             case .system:
-                return [.message(role: "developer", content: message.content)]
+                // P/E segments carry retrieved data, not privileged instructions.
+                // Keep them in history order without a late system/developer item;
+                // local templates may require all instructions at the beginning.
+                let role = message.segment == .conversation || message.segment == .immutableInstructions ? "developer" : "user"
+                return [.message(role: role, content: message.content)]
             case .user:
                 let images = message.parts.compactMap { part -> ResponseRequestBody.ImageInput? in
                     switch part {

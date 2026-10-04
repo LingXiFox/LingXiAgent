@@ -224,8 +224,16 @@ public actor SQLitePersistenceStore {
                 try Self.execute(state, "DELETE FROM tool_exchange_batches WHERE assistant_message_id = ? OR result_message_id = ?", [mID, mID])
                 try Self.execute(state, "DELETE FROM messages WHERE message_id = ?", [mID])
             }
-            try Self.execute(state, "DELETE FROM compaction_state WHERE session_id = ?", [sessionID.rawValue])
-            try Self.execute(state, "DELETE FROM derived_context WHERE session_id = ?", [sessionID.rawValue])
+            // Rewind removes a tail, not the surviving history's residency.
+            let remainingIDs = Set(rows.filter { (Int($0[1]) ?? -1) < userOrdinal }.map { MessageID($0[0]) })
+            if let compacted = try compaction(sessionID: sessionID) {
+                let kept = compacted.residencies.filter {
+                    remainingIDs.contains($0.messageID) || $0.messageID.rawValue == $0.derivedPageID
+                }
+                try Self.execute(state, "UPDATE compaction_state SET residency_json = ?, updated_at = ? WHERE session_id = ?",
+                    [String(decoding: try JSONEncoder().encode(kept), as: UTF8.self), Self.now, sessionID.rawValue])
+            }
+            try Self.execute(state, "DELETE FROM derived_context WHERE session_id = ? AND message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages WHERE session_id = ?)", [sessionID.rawValue, sessionID.rawValue])
             try Self.execute(state, "DELETE FROM file_mutation_journal WHERE session_id = ?", [sessionID.rawValue])
             if bumpRevision {
                 try Self.execute(state, "UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE session_id = ?", [Self.now, sessionID.rawValue])

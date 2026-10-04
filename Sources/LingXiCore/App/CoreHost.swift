@@ -2564,11 +2564,7 @@ extension CoreHost {
         let goalText = goalProgress.map { "#\($0.steps) \($0.text)" }
         let prediction = await BranchPredictionRuntime.shared.snapshot(sessionID)
         let lastInput = await cacheController.lastProviderInputTokens(for: sessionID) ?? 0
-        var pCoreTokens = cacheRecord?.promptTokens ?? max(effectivePCoreUsage, lastInput)
-        if pCoreTokens == 0, let histSession = try? await sessionStore.session(sessionID) {
-            let msgTokens = histSession.messages.reduce(0) { $0 + max(1, $1.content.utf8.count / 4) }
-            if msgTokens > 0 { pCoreTokens = msgTokens }
-        }
+        let pCoreTokens = cacheRecord?.promptTokens ?? max(effectivePCoreUsage, lastInput)
 
         let effectivePromptTokens = cacheRecord?.promptTokens ?? (pCoreTokens > 0 ? pCoreTokens : nil)
 
@@ -3843,6 +3839,34 @@ extension CoreHost {
         return receipt
     }
 
+    private func reconcileContextAfterRevert(sessionID: SessionID, remainingMessages: [Message]) async throws {
+        // SQLite already prunes the tail atomically. Hydrate cold sessions too.
+        let persisted = try await persistence?.compaction(sessionID: sessionID)
+        if await compactor.unitStates(sessionID: sessionID).isEmpty, let persisted {
+            await compactor.restoreResidencies(sessionID: sessionID, values: persisted.residencies)
+        }
+        await compactor.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
+        if let persisted {
+            try await persistence?.saveCompaction(sessionID: sessionID, generation: persisted.generation,
+                residencies: await compactor.unitStates(sessionID: sessionID))
+        }
+        await contextEngine.reset(for: sessionID)
+        let activeSnapshot: PCoreSnapshot
+        if let agent {
+            activeSnapshot = try await agent.ensureContextSnapshot(sessionID)
+        } else {
+            let session = try await sessionStore.session(sessionID)
+            let canonical = await contextEngine.entries(for: session)
+            let resident = await compactor.activeEntries(sessionID: sessionID, canonicalEntries: canonical)
+            let entries = await compactor.projectIndex(sessionID: sessionID, entries: resident,
+                hardInputLimit: effectiveContextPolicy.pCoreHardLimit, query: remainingMessages.last(where: { $0.role == .user })?.content ?? "")
+            activeSnapshot = await contextEngine.snapshot(for: session, activeEntries: entries,
+                estimatedTokens: ConservativeTokenEstimator().estimate(entries: entries))
+        }
+        await cacheController.reconcileAfterRevert(sessionID: sessionID,
+            activeSnapshot: activeSnapshot)
+    }
+
     public func revertLastTurn(envelope: CommandEnvelope<RevertLastTurnRequest>) async throws -> CommandReceipt<RevertLastTurnResult> {
         await inFlightLock.acquire(commandID: envelope.commandID)
         defer { Task { await inFlightLock.release(commandID: envelope.commandID) } }
@@ -3875,9 +3899,7 @@ extension CoreHost {
                     let coord = try await coordinator(for: sessionID)
                     try await coord.resetForRevert(remainingMessages: remainingMessages)
 
-                    await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
-                    await compactor.reset(sessionID: sessionID)
-                    await contextEngine.reset(for: sessionID)
+                    try await reconcileContextAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
                     // 历史被截断后，n-gram 的既有轨迹不再代表真实因果链，必须一并作废。
                     await BranchPredictionRuntime.shared.clear(sessionID)
 
@@ -4039,10 +4061,7 @@ extension CoreHost {
             let coord = try await coordinator(for: sessionID)
             try await coord.resetForRevert(remainingMessages: remainingMessages)
 
-            // P-E 双核心架构协同：清理被撤回的 E-Core 对象，精确重估 P-Core (PCore) Tokens 并重置缓存调度器
-            await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
-            await compactor.reset(sessionID: sessionID)
-            await contextEngine.reset(for: sessionID)
+            try await reconcileContextAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
             await BranchPredictionRuntime.shared.clear(sessionID)
 
             let freshContextState = await buildContextStateSnapshot(sessionID: sessionID)
