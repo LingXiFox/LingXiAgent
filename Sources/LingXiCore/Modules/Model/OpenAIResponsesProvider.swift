@@ -189,7 +189,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
                 // P/E segments carry retrieved data, not privileged instructions.
                 // Keep them in history order without a late system/developer item;
                 // local templates may require all instructions at the beginning.
-                let role = message.segment == .conversation || message.segment == .immutableInstructions ? "developer" : "user"
+                let role = message.segment.carriesPrivilegedInstructions ? "developer" : "user"
                 return [.message(role: role, content: message.content)]
             case .user:
                 let images = message.parts.compactMap { part -> ResponseRequestBody.ImageInput? in

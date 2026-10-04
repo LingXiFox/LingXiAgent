@@ -292,7 +292,11 @@ public struct OpenAICompatibleProvider: ModelProvider {
                 toolCalls: validCalls.isEmpty ? nil : validCalls
             )]
         case .system:
-            return [Message(role: message.role.rawValue, content: message.content)]
+            // Only immutable instructions get the privileged `system` role. Retrieved and recalled
+            // content is assembled data the model asked for, so it travels as a `user` turn: still
+            // in history order, still complete, no instruction authority.
+            return [Message(role: message.segment.carriesPrivilegedInstructions ? "system" : "user",
+                            content: message.content)]
         case .user:
             // No Files API in the chat-completions dialect: a provider-held image goes inline too.
             let images = message.parts.compactMap { part -> (String, Data)? in

@@ -138,10 +138,15 @@ public struct AnthropicMessagesProvider: ModelProvider {
         let orderedTools: [ToolDefinition]
         let system: String?
         if let plan = request.cachePlan {
-            system = ([plan.immutableBase.systemPrompt].compactMap { $0 } + request.providerContextMessages.filter { $0.role == .system }.map(\.content)).joined(separator: "\n\n")
+            // The Messages API has no `system` role for input turns, so the top-level field is the
+            // only privileged channel there. Retrieved and recalled content must never be folded
+            // into it, however the assembly carried it internally.
+            system = ([plan.immutableBase.systemPrompt].compactMap { $0 }
+                + request.providerContextMessages.filter { $0.role == .system && $0.segment.carriesPrivilegedInstructions }.map(\.content))
+                .joined(separator: "\n\n")
             orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
         } else {
-            let messageSystem = request.messages.filter { $0.role == .system }.map(\.content).filter { !$0.isEmpty }
+            let messageSystem = request.messages.filter { $0.role == .system && $0.segment.carriesPrivilegedInstructions }.map(\.content).filter { !$0.isEmpty }
             system = ([request.system].compactMap { $0 } + messageSystem).joined(separator: "\n\n")
             let coreIDs = ToolRuntime.coreToolIDs
             let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
@@ -152,7 +157,18 @@ public struct AnthropicMessagesProvider: ModelProvider {
         let messages = try request.providerContextMessages.compactMap { message -> RequestBody.Message? in
             switch message.role {
             case .system:
-                return nil
+                // Privileged instructions are already in `system`. Anything else that was carried
+                // as a synthetic system turn is retrieved data and belongs in the conversation,
+                // where the model can read it without obeying it.
+                guard !message.segment.carriesPrivilegedInstructions else { return nil }
+                return RequestBody.Message(role: "user", content: message.parts.compactMap { part in
+                    switch part {
+                    case let .text(text): return .text(text)
+                    case let .image(mediaType, data): return .image(mediaType: mediaType, base64: data.base64EncodedString())
+                    case let .imageFile(_, _, fileID): return .imageFile(fileID: fileID)
+                    case .toolCall, .toolResult: return nil
+                    }
+                })
             case .user:
                 return RequestBody.Message(role: "user", content: message.parts.compactMap { part in
                     switch part {

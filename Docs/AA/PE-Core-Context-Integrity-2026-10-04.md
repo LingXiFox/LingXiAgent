@@ -66,11 +66,28 @@ SHA256：`db5a306beeba11b4591d939f6e69ad53fa9d316034e75b0e6e8101278ef7b3ff`。
 
 ContextEntry 和 ModelMessage 显式携带 `ModelContextSegment.eCoreRetrievalProjection`；重新 admit 的历史携带 `recalledOccurrence`。语义不再只依赖 system role 或正文标题。
 
-共享 provider context 投影仅去掉与 immutable base 完全相同的重复 system 内容，保留动态内容和索引。Chat 编码为 system message，Responses 编码为 developer input，Anthropic 放入 system 内容；协议表示不同，ref 内容一致。Responses 有 remote state 时，P/E segment 会使请求使用完整的当前 assembled active context，不能用远端旧历史和最新 tool tail 代替它。
+共享 provider context 投影仅去掉与 immutable base 完全相同的重复 system 内容，保留动态内容和索引。
+
+**权限语义（Phase 4 冻结）**：provider 的编码位置由 `ModelContextSegment` 决定，不由内部 `ContextRole` 决定。只有 `immutableInstructions` 是 privileged instruction；`retrievalData` / `eCoreRetrievalProjection` / `recalledOccurrence` 恒为 untrusted data；`conversation` 是正常对话；`admittedToolResult` 走 tool 结果通道。内部用 `role = .system` 承载 synthetic context 只是装配细节，任何 adapter 都不得据此授予指令权限。
+
+三家落点（协议表示不同、权限级别相同）：
+
+| segment | Chat Completions | Responses | Anthropic Messages |
+|---|---|---|---|
+| immutableInstructions | `messages[].role = "system"` | `instructions`（developer） | top-level `system` |
+| retrievalData / eCoreRetrievalProjection / recalledOccurrence | `messages[].role = "user"` | `input[].role = "user"` | `messages[]` 的 user content block |
+| conversation | user / assistant | 同名 | 同名 |
+| admittedToolResult | `role = "tool"` | `function_call_output` | user 消息内的 `tool_result` block |
+
+Anthropic 的 Messages API 没有输入侧 `system` role，因此 top-level `system` 是其唯一特权通道：E-Core 索引、引用行或任何召回载荷都不得被拼进去（修复前它们会被拼进去，这是本 Phase 的 P0）。连续同角色 turn 由服务端合并为同一 turn，因此把召回数据作为 user turn 发出不会破坏请求合法性。
+
+Responses 有 remote state 时，P/E segment 会使请求使用完整的当前 assembled active context，不能用远端旧历史和最新 tool tail 代替它。
+
+回归：`ProviderPrivilegeTests`（segment×provider 权限矩阵、真实 recall 注入路径、以及"特权前缀不得含索引/引用/召回内容且不得随授予而改变"）。
 
 位置：`PCoreContextEngine.swift`、`ModelDomain.swift`、`OpenAICompatibleProvider.swift`、`OpenAIResponsesProvider.swift`、`AnthropicMessagesProvider.swift`。
 
-测试：`eCoreIndexSurvivesAllProvidersWithCachePlan`、`responsesRemoteContinuationCannotDiscardOrDuplicateECoreSegments`；既有三种 adapter/contract 测试也通过。此仓库的上述三种生产 wire adapter 已覆盖，未把不存在的 adapter 算作已验证。
+测试：`eCoreIndexSurvivesAllProvidersWithCachePlan`、`responsesRemoteContinuationCannotDiscardOrDuplicateECoreSegments`、`ProviderPrivilegeTests`；既有三种 adapter/contract 测试也通过。此仓库的上述三种生产 wire adapter 已覆盖，未把不存在的 adapter 算作已验证。
 
 ### RecallRef 与 admission
 

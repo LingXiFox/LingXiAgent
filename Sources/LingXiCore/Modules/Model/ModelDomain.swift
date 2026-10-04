@@ -442,6 +442,19 @@ public enum ModelContextSegment: Sendable, Equatable {
     case admittedToolResult
 }
 
+extension ModelContextSegment {
+    /// The only segment a provider may place in its privileged instruction channel. Everything else
+    /// is content the agent assembled, including content the assembly carried as `role == .system`
+    /// only because it is synthetic rather than typed by a human.
+    public var carriesPrivilegedInstructions: Bool { self == .immutableInstructions }
+
+    /// Content this agent fetched rather than received: an E-Core index line, a restored
+    /// occurrence, a project or session page. Untrusted data on every provider, at every step.
+    public var isUntrustedRetrievedData: Bool {
+        self == .retrievalData || self == .eCoreRetrievalProjection || self == .recalledOccurrence
+    }
+}
+
 public struct ModelMessage: Sendable, Equatable {
     public let role: ModelRole
     public let parts: [ModelContentPart]
