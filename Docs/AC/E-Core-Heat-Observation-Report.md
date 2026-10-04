@@ -120,4 +120,4 @@
    * 真实 E-Core 存储事件 $\ge 50$ 次；
    * 真实 E-Core 召回事件 $\ge 20$ 次。
 3. **保持解耦**：
-   无论何时推进 Phase 1，始终遵守 P-Core 与 E-Core 的彻底解耦红线，不联动 L1/L2，不干扰 Prefix Cache。
+   无论何时推进 Phase 1，始终遵守 P-Core 与 E-Core 的彻底解耦红线，不联动 P/E-Core，不干扰 Prefix Cache。

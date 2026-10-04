@@ -602,7 +602,7 @@ struct SubagentRuntimeTests {
         let client = LingXiClient.inProcess(endpoint: host)
         let primary = try await client.createSession()
         let initialProjection = try #require(await client.contextProjection(primary))
-        let mandatoryTokens = initialProjection.l1.usageTokens + estimator.estimate(text: task) + 4
+        let mandatoryTokens = initialProjection.pCore.usedTokens + estimator.estimate(text: task) + 4
 
         let childTools = await host.toolRuntimeRef.availableDefinitions(sessionID: primary, interactive: false, executionProfile: nil)
         let toolTokens = estimator.estimate(tools: childTools)

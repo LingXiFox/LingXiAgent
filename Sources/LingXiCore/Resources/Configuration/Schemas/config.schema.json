@@ -55,21 +55,39 @@
         },
         "permissionPolicy": {
           "type": "string",
-          "enum": ["ask", "auto"]
+          "enum": [
+            "ask",
+            "auto"
+          ]
         },
         "executionProfile": {
           "type": "string",
-          "enum": ["readOnly", "workspace", "fullAccess"]
+          "enum": [
+            "readOnly",
+            "workspace",
+            "fullAccess"
+          ]
         },
         "codeIntelligenceEnabled": {
           "type": "boolean"
         },
         "behaviorProfile": {
-          "type": ["string", "null"],
-          "enum": ["build", "plan", "explore", null]
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "build",
+            "plan",
+            "explore",
+            null
+          ]
         },
         "systemContext": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "eCoreRecallMaxCharacters": {
           "type": "integer",
@@ -81,23 +99,18 @@
           "minimum": 1,
           "description": "P-Core 内项目页驻留字符上限。"
         },
-        "l2MaxCharacters": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "[Deprecated] 旧 L2 命名键，等价于 eCoreRecallMaxCharacters；仍可读，至少保留一个兼容周期。"
-        },
-        "l1ProjectMaxCharacters": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "[Deprecated] 旧 L1 命名键，等价于 pCoreProjectMaxCharacters；仍可读，至少保留一个兼容周期。"
-        },
         "preferredActiveTokens": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "maxAgentLoopSteps": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0,
+          "default": 0,
+          "description": "0 disables the fixed step ceiling; positive values set an explicit hard budget. Cancellation, deadlines and no-progress protection still apply."
         }
       },
       "required": [
@@ -120,16 +133,46 @@
         "execution": {
           "type": "object",
           "properties": {
-            "quickFilesystemSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "searchSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "foregroundShellSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "buildTestSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "mcpSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "providerSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "providerIdleSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "subagentSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "agentRunSeconds": { "type": "number", "exclusiveMinimum": 0 },
-            "maximumSeconds": { "type": "number", "exclusiveMinimum": 0 }
+            "quickFilesystemSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "searchSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "foregroundShellSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "buildTestSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "mcpSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "providerSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "providerIdleSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "subagentSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "agentRunSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "maximumSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
           },
           "additionalProperties": false
         }
@@ -143,72 +186,116 @@
     "context": {
       "type": "object",
       "properties": {
-        "addressableBudget": { "type": "integer", "minimum": 1 },
+        "addressableBudget": {
+          "type": "integer",
+          "minimum": 1
+        },
         "pCore": {
           "type": "object",
           "properties": {
-            "target": { "type": "integer", "minimum": 1 },
-            "softLimit": { "type": "integer", "minimum": 1 },
-            "hardLimit": { "type": "integer", "minimum": 1 }
+            "target": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "softLimit": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "hardLimit": {
+              "type": "integer",
+              "minimum": 1
+            }
           },
           "additionalProperties": false
         },
         "eCore": {
           "type": "object",
           "properties": {
-            "storageBudget": { "type": "integer", "minimum": 0 },
-            "recallBudget": { "type": "integer", "minimum": 0 },
-            "pressureThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
-            "useRemainingBudget": { "type": "boolean" }
+            "storageBudget": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recallBudget": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pressureThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "useRemainingBudget": {
+              "type": "boolean"
+            }
           },
           "additionalProperties": false
         },
-        "l1": {
-          "type": "object",
-          "properties": {
-            "target": { "type": "integer", "minimum": 1 },
-            "softLimit": { "type": "integer", "minimum": 1 },
-            "hardLimit": { "type": "integer", "minimum": 1 }
-          },
-          "additionalProperties": false
+        "reserve": {
+          "type": "integer",
+          "minimum": 0
         },
-        "l2": {
-          "type": "object",
-          "properties": {
-            "max": { "type": "integer", "minimum": 0 }
-          },
-          "additionalProperties": false
+        "economicThreshold": {
+          "type": [
+            "integer",
+            "null"
+          ]
         },
-        "l3": {
-          "type": "object",
-          "properties": {
-            "max": { "type": "integer", "minimum": 0 },
-            "useRemainingBudget": { "type": "boolean" }
-          },
-          "additionalProperties": false
-        },
-        "reserve": { "type": "integer", "minimum": 0 },
-        "economicThreshold": { "type": ["integer", "null"] },
         "fabric": {
           "type": "object",
           "properties": {
-            "eCorePersistenceEnabled": { "type": "boolean", "description": "是否把 E-Core 载荷持久化到磁盘。E-Core 本身是必选逻辑核心，此开关只切换持久化后端。" },
-            "ecoreStorageEnabled": { "type": "boolean", "description": "[Deprecated] 旧名，语义写错（切换的是持久化，不是 E-Core 开关），等价于 eCorePersistenceEnabled。" },
-            "observationProjectionEnabled": { "type": "boolean" },
-            "contextRecallEnabled": { "type": "boolean" },
-            "objectizationThreshold": { "type": "integer", "minimum": 1 },
-            "fullSendCount": { "type": "integer", "minimum": 1 },
-            "placeholderExcerpt": { "type": "integer", "minimum": 1 },
-            "recallMaxBytes": { "type": "integer", "minimum": 1 },
-            "recallMaxLines": { "type": "integer", "minimum": 1 },
-            "heatTrackingEnabled": { "type": "boolean" },
-            "heatDecayHalfLifeSeconds": { "type": "number", "minimum": 0 },
+            "eCorePersistenceEnabled": {
+              "type": "boolean",
+              "description": "是否把 E-Core 载荷持久化到磁盘。E-Core 本身是必选逻辑核心，此开关只切换持久化后端。"
+            },
+            "ecoreStorageEnabled": {
+              "type": "boolean",
+              "description": "[Deprecated] 旧名，语义写错（切换的是持久化，不是 E-Core 开关），等价于 eCorePersistenceEnabled。"
+            },
+            "observationProjectionEnabled": {
+              "type": "boolean"
+            },
+            "contextRecallEnabled": {
+              "type": "boolean"
+            },
+            "objectizationThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "fullSendCount": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "placeholderExcerpt": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "recallMaxBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "recallMaxLines": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "heatTrackingEnabled": {
+              "type": "boolean"
+            },
+            "heatDecayHalfLifeSeconds": {
+              "type": "number",
+              "minimum": 0
+            },
             "heatWeightPolicy": {
               "type": "object",
               "properties": {
-                "storedWeight": { "type": "number" },
-                "recalledWeight": { "type": "number" },
-                "recallMissWeight": { "type": "number" }
+                "storedWeight": {
+                  "type": "number"
+                },
+                "recalledWeight": {
+                  "type": "number"
+                },
+                "recallMissWeight": {
+                  "type": "number"
+                }
               },
               "additionalProperties": false
             }

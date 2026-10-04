@@ -47,7 +47,7 @@
      - `Agent/`: `AgentRuntime`（多 Session 调度与编排）。
      - `Session/`: `SessionRuntime`（单 Session 线性状态机、Turn 循环、上下文注入、模型交互）。
      - `Tool/`: `ToolRuntime`, `ToolRegistry`, `BackgroundCommandManager`。
-     - `Context/`: `L1ContextEngine`, `ContextCompactor`, `ContextBudgetPlanner`, `ContextProjection`。
+     - `Context/`: `PCoreContextEngine`, `ContextCompactor`, `ContextBudgetPlanner`, `ContextProjection`。
      - `Permission/`: `PermissionEngine`, `PermissionRule`。
      - `Symbol/`: `LSPCoordinator`, `GenericProcessLSPTransport`。
      - `Infrastructure/Persistence/`: `SQLitePersistenceStore`, `FileBlobStore`。
@@ -116,7 +116,7 @@ LingXiCore.SessionRuntime.runTurn(...) [Private Async Loop: 0..<maximumAgentStep
 |---|---|---|---|---|
 | **入口编排** | `Sources/LingXiCore/Modules/Agent/AgentRuntime.swift` | `public actor AgentRuntime` | `sendMessage(_:in:)`, `cancel(sessionId:)` | 持有 `runtimes: [SessionID: SessionRuntime]`, `activeSessions` |
 | **单会话运行** | `Sources/LingXiCore/Modules/Session/SessionRuntime.swift` | `public actor SessionRuntime` | `startTurn(...)`, `runTurn(...)` | 持有 `activeExecution: ActiveExecution?`，每个 Session 单一串行 Task |
-| **上下文管理** | `Sources/LingXiCore/Modules/Context/L1ContextEngine.swift` | `public actor L1ContextEngine` | `entries(for:limit:)`, `append(...)` | 持有内存活跃上下文，协调 L2 淘汰策略 |
+| **上下文管理** | `Sources/LingXiCore/Modules/Context/PCoreContextEngine.swift` | `public actor PCoreContextEngine` | `entries(for:limit:)`, `append(...)` | 持有内存活跃上下文，协调 RecallCache 淘汰策略 |
 | **预算压缩** | `Sources/LingXiCore/Modules/Context/ContextCompaction.swift` | `public struct ContextCompactor` | `compact(entries:profile:budgetPolicy:)` | 无状态纯函数结构体，依据 token 预算做阶段修剪 |
 | **模型总线** | `Sources/LingXiCore/Modules/Model/ModelBus.swift` | `public actor ModelBus` | `stream(_:)` | 持有底层 Provider 适配器，管理网络流与超时 |
 | **工具运行** | `Sources/LingXiCore/Modules/Tool/ToolRuntime.swift` | `public struct ToolRuntime` & `protocol ToolExecutor` | `executeWithMetrics(...)`, `execute(...)` | 引用 `ToolRegistry`；ToolExecutor 无状态执行 |

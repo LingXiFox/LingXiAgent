@@ -355,7 +355,7 @@ public struct RuntimeDiagnosticsBundle: Sendable, Equatable, Codable {
     }
 }
 
-/// 面向 Client 的 L1 摘要，不携带完整上下文内容。
+/// 面向 Client 的 PCore 摘要，不携带完整上下文内容。
 public enum ContextUnitResidency: String, Sendable, Equatable, Codable {
     case active
     case pagedOut
@@ -422,14 +422,6 @@ public struct ContextDebugSnapshot: Sendable, Equatable, Codable {
     }
 }
 
-public enum ContextLayer: String, Sendable, Equatable, Codable {
-    case l1, l2, l3
-}
-
-public enum ContextLayerState: String, Sendable, Equatable, Codable {
-    case available, empty, paging, compacting, unavailable
-}
-
 public enum ContextPagingActivity: String, Sendable, Equatable, Codable {
     case idle, paging, compacting
 }
@@ -454,15 +446,6 @@ public enum TokenFormatter {
             let rounded = (m * 100).rounded() / 100
             return rounded.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(rounded))M" : String(format: "%.2fM", rounded)
         }
-    }
-
-    public static func formatLayer(layer: String, usage: Int, capacity: Int, state: ContextLayerState) -> String {
-        if state == .unavailable {
-            return "\(layer) off"
-        }
-        let usageStr = usage == 0 ? "0" : format(usage)
-        let capacityStr = format(capacity)
-        return "\(layer) \(usageStr)/\(capacityStr)"
     }
 
     public static func formatBytes(_ bytes: Int) -> String {
@@ -495,14 +478,6 @@ public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
     public let eCorePressureThreshold: Double
     public let eCoreEnabled: Bool
 
-    // 向后兼容访问器（废弃 L1/L2/L3 体系）
-    public var l1Target: Int { pCoreTarget }
-    public var l1SoftLimit: Int { pCoreSoftLimit }
-    public var l1HardLimit: Int { pCoreHardLimit }
-    public var l2Max: Int { eCoreRecallBudget }
-    public var l3Capacity: Int { eCoreStorageBudget }
-    public var l3Enabled: Bool { eCoreEnabled }
-
     public init(
         addressableBudget: Int = 1_048_576,
         modelWindow: Int = 1_048_576,
@@ -529,39 +504,10 @@ public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
         self.eCoreEnabled = eCoreEnabled
     }
 
-    /// Legacy initializer for smooth bridge
-    public init(
-        addressableBudget: Int = 1_048_576,
-        modelWindow: Int = 1_048_576,
-        economicThreshold: Int? = 272_000,
-        reserve: Int = 22_000,
-        l1Target: Int = 220_000,
-        l1SoftLimit: Int = 235_000,
-        l1HardLimit: Int = 250_000,
-        l2Max: Int = 350_000,
-        l3Capacity: Int = 456_576,
-        l3Enabled: Bool = true
-    ) {
-        self.init(
-            addressableBudget: addressableBudget,
-            modelWindow: modelWindow,
-            economicThreshold: economicThreshold,
-            reserve: reserve,
-            pCoreTarget: l1Target,
-            pCoreSoftLimit: l1SoftLimit,
-            pCoreHardLimit: l1HardLimit,
-            eCoreStorageBudget: l3Capacity,
-            eCoreRecallBudget: l2Max,
-            eCorePressureThreshold: 0.85,
-            eCoreEnabled: l3Enabled
-        )
-    }
-
     private enum CodingKeys: String, CodingKey {
         case addressableBudget, modelWindow, economicThreshold, reserve
         case pCoreTarget, pCoreSoftLimit, pCoreHardLimit
         case eCoreStorageBudget, eCoreRecallBudget, eCorePressureThreshold, eCoreEnabled
-        case l1Target, l1SoftLimit, l1HardLimit, l2Max, l3Capacity, l3Enabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -572,19 +518,19 @@ public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
         reserve = try c.decodeIfPresent(Int.self, forKey: .reserve) ?? 22_000
 
         let pt = try c.decodeIfPresent(Int.self, forKey: .pCoreTarget)
-            ?? c.decodeIfPresent(Int.self, forKey: .l1Target) ?? 220_000
+            ?? 220_000
         let ps = try c.decodeIfPresent(Int.self, forKey: .pCoreSoftLimit)
-            ?? c.decodeIfPresent(Int.self, forKey: .l1SoftLimit) ?? 235_000
+            ?? 235_000
         let ph = try c.decodeIfPresent(Int.self, forKey: .pCoreHardLimit)
-            ?? c.decodeIfPresent(Int.self, forKey: .l1HardLimit) ?? 250_000
+            ?? 250_000
 
         let es = try c.decodeIfPresent(Int.self, forKey: .eCoreStorageBudget)
-            ?? c.decodeIfPresent(Int.self, forKey: .l3Capacity) ?? 456_576
+            ?? 456_576
         let er = try c.decodeIfPresent(Int.self, forKey: .eCoreRecallBudget)
-            ?? c.decodeIfPresent(Int.self, forKey: .l2Max) ?? 350_000
+            ?? 350_000
         let ep = try c.decodeIfPresent(Double.self, forKey: .eCorePressureThreshold) ?? 0.85
         let ee = try c.decodeIfPresent(Bool.self, forKey: .eCoreEnabled)
-            ?? c.decodeIfPresent(Bool.self, forKey: .l3Enabled) ?? true
+            ?? true
 
         self.pCoreTarget = pt
         self.pCoreSoftLimit = ps
@@ -608,13 +554,6 @@ public struct EffectiveContextPolicy: Sendable, Equatable, Codable {
         try c.encode(eCoreRecallBudget, forKey: .eCoreRecallBudget)
         try c.encode(eCorePressureThreshold, forKey: .eCorePressureThreshold)
         try c.encode(eCoreEnabled, forKey: .eCoreEnabled)
-        // Compatibility writes
-        try c.encode(pCoreTarget, forKey: .l1Target)
-        try c.encode(pCoreSoftLimit, forKey: .l1SoftLimit)
-        try c.encode(pCoreHardLimit, forKey: .l1HardLimit)
-        try c.encode(eCoreRecallBudget, forKey: .l2Max)
-        try c.encode(eCoreStorageBudget, forKey: .l3Capacity)
-        try c.encode(eCoreEnabled, forKey: .l3Enabled)
     }
 }
 
@@ -630,9 +569,6 @@ public struct ContextCachePolicySnapshot: Sendable, Equatable, Codable {
     public let eCoreRecallBudget: Int
     public let eCorePressureThreshold: Double
 
-    public var l1Target: Int { pCoreTarget }
-    public var l2Max: Int { eCoreRecallBudget }
-    public var l3Capacity: Int { eCoreStorageBudget }
 
     public init(
         addressableBudget: Int = 1_048_576,
@@ -656,30 +592,6 @@ public struct ContextCachePolicySnapshot: Sendable, Equatable, Codable {
         self.eCoreStorageBudget = eCoreStorageBudget
         self.eCoreRecallBudget = eCoreRecallBudget
         self.eCorePressureThreshold = eCorePressureThreshold
-    }
-
-    public init(
-        addressableBudget: Int,
-        modelWindow: Int,
-        economicThreshold: Int?,
-        reserve: Int,
-        l1Target: Int,
-        l1SoftLimit: Int,
-        l1HardLimit: Int,
-        l2Max: Int,
-        l3Capacity: Int
-    ) {
-        self.init(
-            addressableBudget: addressableBudget,
-            modelWindow: modelWindow,
-            economicThreshold: economicThreshold,
-            reserve: reserve,
-            pCoreTarget: l1Target,
-            pCoreSoftLimit: l1SoftLimit,
-            pCoreHardLimit: l1HardLimit,
-            eCoreStorageBudget: l3Capacity,
-            eCoreRecallBudget: l2Max
-        )
     }
 
     public init(policy: EffectiveContextPolicy) {
@@ -711,119 +623,11 @@ public struct ContextPagingStats: Sendable, Equatable, Codable {
     }
 }
 
-public struct ContextLayerStatus: Sendable, Equatable, Codable {
-    public let layer: ContextLayer
-    public let usageTokens: Int
-    public let capacityTokens: Int
-    public let entryCount: Int
-    public let state: ContextLayerState
-    public let pageInCount: Int
-    public let pageOutCount: Int
-
-    // Diagnostics / backward compatibility accessors
-    public var usage: Int? { usageTokens }
-    public var capacity: Int? { capacityTokens }
-    public var unit: String { "tokens" }
-    public var percent: Int? {
-        guard capacityTokens > 0 else { return nil }
-        return min(100, max(0, Int((Double(usageTokens) / Double(capacityTokens)) * 100.0)))
-    }
-    public var residentPages: Int? { entryCount }
-    public var totalPages: Int? { entryCount }
-
-    public init(
-        layer: ContextLayer,
-        usageTokens: Int,
-        capacityTokens: Int,
-        entryCount: Int = 0,
-        state: ContextLayerState,
-        pageInCount: Int = 0,
-        pageOutCount: Int = 0
-    ) {
-        self.layer = layer
-        self.usageTokens = usageTokens
-        self.capacityTokens = capacityTokens
-        self.entryCount = entryCount
-        self.state = state
-        self.pageInCount = pageInCount
-        self.pageOutCount = pageOutCount
-    }
-
-    public init(
-        layer: ContextLayer,
-        usage: Int?,
-        capacity: Int?,
-        unit: String? = nil,
-        percent: Int? = nil,
-        state: ContextLayerState,
-        residentPages: Int? = nil,
-        totalPages: Int? = nil,
-        pageInCount: Int = 0,
-        pageOutCount: Int = 0
-    ) {
-        self.layer = layer
-        self.usageTokens = usage ?? 0
-        self.capacityTokens = capacity ?? 0
-        self.entryCount = residentPages ?? totalPages ?? 0
-        self.state = state
-        self.pageInCount = pageInCount
-        self.pageOutCount = pageOutCount
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case layer, usageTokens, capacityTokens, entryCount, state, pageInCount, pageOutCount, usage, capacity, unit, percent, residentPages, totalPages
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        layer = try container.decode(ContextLayer.self, forKey: .layer)
-        state = try container.decode(ContextLayerState.self, forKey: .state)
-        pageInCount = try container.decodeIfPresent(Int.self, forKey: .pageInCount) ?? 0
-        pageOutCount = try container.decodeIfPresent(Int.self, forKey: .pageOutCount) ?? 0
-
-        if let u = try container.decodeIfPresent(Int.self, forKey: .usageTokens) {
-            usageTokens = u
-        } else {
-            usageTokens = try container.decodeIfPresent(Int.self, forKey: .usage) ?? 0
-        }
-
-        if let c = try container.decodeIfPresent(Int.self, forKey: .capacityTokens) {
-            capacityTokens = c
-        } else {
-            capacityTokens = try container.decodeIfPresent(Int.self, forKey: .capacity) ?? 0
-        }
-
-        if let e = try container.decodeIfPresent(Int.self, forKey: .entryCount) {
-            entryCount = e
-        } else {
-            entryCount = try container.decodeIfPresent(Int.self, forKey: .residentPages) ?? container.decodeIfPresent(Int.self, forKey: .totalPages) ?? 0
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(layer, forKey: .layer)
-        try container.encode(usageTokens, forKey: .usageTokens)
-        try container.encode(capacityTokens, forKey: .capacityTokens)
-        try container.encode(entryCount, forKey: .entryCount)
-        try container.encode(state, forKey: .state)
-        try container.encode(pageInCount, forKey: .pageInCount)
-        try container.encode(pageOutCount, forKey: .pageOutCount)
-        try container.encode(usageTokens, forKey: .usage)
-        try container.encode(capacityTokens, forKey: .capacity)
-        try container.encode("tokens", forKey: .unit)
-        try container.encode(percent, forKey: .percent)
-        try container.encode(entryCount, forKey: .residentPages)
-        try container.encode(entryCount, forKey: .totalPages)
-    }
-}
-
 public struct ContextCacheProjection: Sendable, Equatable, Codable {
     public let sessionID: SessionID
     public let policy: ContextCachePolicySnapshot
-    public let l1: ContextLayerStatus
-    public let l2: ContextLayerStatus
-    public let l3: ContextLayerStatus
+    public let pCore: PCoreStateSnapshot
+    public let eCore: ECoreStateSnapshot
     public let paging: ContextPagingStats
     public let pagingActivity: ContextPagingActivity
     public let compactionGeneration: Int
@@ -838,9 +642,8 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
     public init(
         sessionID: SessionID,
         policy: ContextCachePolicySnapshot = ContextCachePolicySnapshot(),
-        l1: ContextLayerStatus,
-        l2: ContextLayerStatus,
-        l3: ContextLayerStatus,
+        pCore: PCoreStateSnapshot,
+        eCore: ECoreStateSnapshot,
         paging: ContextPagingStats = ContextPagingStats(),
         pagingActivity: ContextPagingActivity = .idle,
         compactionGeneration: Int = 0,
@@ -854,9 +657,8 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
     ) {
         self.sessionID = sessionID
         self.policy = policy
-        self.l1 = l1
-        self.l2 = l2
-        self.l3 = l3
+        self.pCore = pCore
+        self.eCore = eCore
         self.paging = paging
         self.pagingActivity = pagingActivity
         self.compactionGeneration = compactionGeneration
@@ -870,7 +672,7 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionID, policy, l1, l2, l3, paging, pagingActivity, compactionGeneration, latestManifest, lastProviderInputTokens, cacheTelemetry
+        case sessionID, policy, pCore, eCore, paging, pagingActivity, compactionGeneration, latestManifest, lastProviderInputTokens, cacheTelemetry
         case pCoreTokens, eCoreObjectCount, eCoreTotalBytes, cacheDebt
     }
 
@@ -878,9 +680,8 @@ public struct ContextCacheProjection: Sendable, Equatable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try container.decode(SessionID.self, forKey: .sessionID)
         policy = try container.decodeIfPresent(ContextCachePolicySnapshot.self, forKey: .policy) ?? ContextCachePolicySnapshot()
-        l1 = try container.decode(ContextLayerStatus.self, forKey: .l1)
-        l2 = try container.decode(ContextLayerStatus.self, forKey: .l2)
-        l3 = try container.decode(ContextLayerStatus.self, forKey: .l3)
+        pCore = try container.decode(PCoreStateSnapshot.self, forKey: .pCore)
+        eCore = try container.decode(ECoreStateSnapshot.self, forKey: .eCore)
         paging = try container.decodeIfPresent(ContextPagingStats.self, forKey: .paging) ?? ContextPagingStats()
         pagingActivity = try container.decodeIfPresent(ContextPagingActivity.self, forKey: .pagingActivity) ?? .idle
         compactionGeneration = try container.decodeIfPresent(Int.self, forKey: .compactionGeneration) ?? 0
@@ -969,12 +770,12 @@ public struct ProviderCacheTelemetry: Sendable, Equatable, Codable {
 /// Sanitized Provider Context Manifest
 /// 记录进入本次 Provider 推理的全部动态与静态上下文条目。
 public struct ContextManifestEntry: Sendable, Equatable, Codable {
-    public let sourceKind: String        // "Pinned", "L1", "Dynamic Page-in", "Current Turn"
+    public let sourceKind: String        // "Pinned", "PCore", "Dynamic Page-in", "Current Turn"
     public let sourceID: String          // page ID or message ID
     public let origin: String            // file path, turn ID, system prompt
     public let tokenCount: Int
     public let inclusionReason: String   // e.g. "Active user prompt", "Pinned system context", "Retrieved by query"
-    public let cacheProvenance: String   // e.g. "pinned", "l1WorkingSet", "l2Promotion", "l3PageFault"
+    public let cacheProvenance: String   // e.g. "pinned", "pCoreWorkingSet", "eCoreRecall", "projectPageFault"
 
     public init(sourceKind: String, sourceID: String, origin: String, tokenCount: Int, inclusionReason: String, cacheProvenance: String) {
         self.sourceKind = sourceKind
@@ -1077,15 +878,15 @@ public struct ContextPagingPerformance: Sendable, Equatable, Codable {
     public let filesRebuilt: Int
     public let scanMilliseconds: Int
     public let initialIndexedFiles: Int
-    public let l2Lookups: Int
-    public let l2Hits: Int
-    public let l2Misses: Int
-    public let l2Pages: Int
-    public let l2Characters: Int
-    public let l3Pages: Int
-    public let l3Queries: Int
-    public let l3Candidates: Int
-    public let l3Materializations: Int
+    public let recallCacheLookups: Int
+    public let recallCacheHits: Int
+    public let recallCacheMisses: Int
+    public let recallCachePages: Int
+    public let recallCacheCharacters: Int
+    public let projectIndexPages: Int
+    public let projectIndexQueries: Int
+    public let projectIndexCandidates: Int
+    public let projectIndexMaterializations: Int
     public let staleRebuilds: Int
     public let pageFaults: Int
     public let promotions: Int
@@ -1123,12 +924,11 @@ public struct ContextPagingPerformance: Sendable, Equatable, Codable {
     public let referenceResolutionMilliseconds: Double
     public let referenceExpansionMilliseconds: Double
 
-    public init(queryCharacters: Int, queryTerms: Int, candidatePages: Int, candidateCharacters: Int, selectedPages: Int, selectedCharacters: Int, injectedPages: Int, injectedCharacters: Int, filesChecked: Int, filesRebuilt: Int, scanMilliseconds: Int, initialIndexedFiles: Int, l2Lookups: Int, l2Hits: Int, l2Misses: Int, l2Pages: Int, l2Characters: Int, l3Pages: Int, l3Queries: Int, l3Candidates: Int, l3Materializations: Int, staleRebuilds: Int, pageFaults: Int, promotions: Int, evictions: Int, retrievalMilliseconds: Double, materializationMilliseconds: Double, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, symbolHints: Int = 0, symbolExactMatches: Int = 0, symbolQualifiedExactMatches: Int = 0, symbolFallbackExactMatches: Int = 0, symbolPrefixMatches: Int = 0, symbolCandidatePages: Int = 0, symbolHintExtractionMilliseconds: Double = 0, symbolExactLookupMilliseconds: Double = 0, symbolPrefixLookupMilliseconds: Double = 0, symbolCandidateMergeMilliseconds: Double = 0, symbolRankingMilliseconds: Double = 0, symbolTotalMilliseconds: Double = 0, lexicalCandidatePages: Int = 0, currentSourceCandidates: Int = 0, documentationCandidates: Int = 0, referenceCandidates: Int = 0, referenceCount: Int = 0, resolvedReferenceCount: Int = 0, ambiguousReferenceCount: Int = 0, unresolvedReferenceCount: Int = 0, dependencyCount: Int = 0, referenceIndexedFiles: Int = 0, relationHints: Int = 0, directReferenceHits: Int = 0, dependencyHits: Int = 0, relatedPages: Int = 0, referenceResolutionMilliseconds: Double = 0, referenceExpansionMilliseconds: Double = 0, turn: ContextPagingTurnPerformance = .zero) {
+    public init(queryCharacters: Int, queryTerms: Int, candidatePages: Int, candidateCharacters: Int, selectedPages: Int, selectedCharacters: Int, injectedPages: Int, injectedCharacters: Int, filesChecked: Int, filesRebuilt: Int, scanMilliseconds: Int, initialIndexedFiles: Int, recallCacheLookups: Int, recallCacheHits: Int, recallCacheMisses: Int, recallCachePages: Int, recallCacheCharacters: Int, projectIndexPages: Int, projectIndexQueries: Int, projectIndexCandidates: Int, projectIndexMaterializations: Int, staleRebuilds: Int, pageFaults: Int, promotions: Int, evictions: Int, retrievalMilliseconds: Double, materializationMilliseconds: Double, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, symbolHints: Int = 0, symbolExactMatches: Int = 0, symbolQualifiedExactMatches: Int = 0, symbolFallbackExactMatches: Int = 0, symbolPrefixMatches: Int = 0, symbolCandidatePages: Int = 0, symbolHintExtractionMilliseconds: Double = 0, symbolExactLookupMilliseconds: Double = 0, symbolPrefixLookupMilliseconds: Double = 0, symbolCandidateMergeMilliseconds: Double = 0, symbolRankingMilliseconds: Double = 0, symbolTotalMilliseconds: Double = 0, lexicalCandidatePages: Int = 0, currentSourceCandidates: Int = 0, documentationCandidates: Int = 0, referenceCandidates: Int = 0, referenceCount: Int = 0, resolvedReferenceCount: Int = 0, ambiguousReferenceCount: Int = 0, unresolvedReferenceCount: Int = 0, dependencyCount: Int = 0, referenceIndexedFiles: Int = 0, relationHints: Int = 0, directReferenceHits: Int = 0, dependencyHits: Int = 0, relatedPages: Int = 0, referenceResolutionMilliseconds: Double = 0, referenceExpansionMilliseconds: Double = 0, turn: ContextPagingTurnPerformance = .zero) {
         self.turn = turn
-        self.queryCharacters = queryCharacters; self.queryTerms = queryTerms; self.candidatePages = candidatePages; self.candidateCharacters = candidateCharacters; self.selectedPages = selectedPages; self.selectedCharacters = selectedCharacters; self.injectedPages = injectedPages; self.injectedCharacters = injectedCharacters; self.filesChecked = filesChecked; self.filesRebuilt = filesRebuilt; self.scanMilliseconds = scanMilliseconds; self.initialIndexedFiles = initialIndexedFiles; self.l2Lookups = l2Lookups; self.l2Hits = l2Hits; self.l2Misses = l2Misses; self.l2Pages = l2Pages; self.l2Characters = l2Characters; self.l3Pages = l3Pages; self.l3Queries = l3Queries; self.l3Candidates = l3Candidates; self.l3Materializations = l3Materializations; self.staleRebuilds = staleRebuilds; self.pageFaults = pageFaults; self.promotions = promotions; self.evictions = evictions; self.retrievalMilliseconds = retrievalMilliseconds; self.materializationMilliseconds = materializationMilliseconds; self.symbolCount = symbolCount; self.symbolIndexedFiles = symbolIndexedFiles; self.symbolHints = symbolHints; self.symbolExactMatches = symbolExactMatches; self.symbolQualifiedExactMatches = symbolQualifiedExactMatches; self.symbolFallbackExactMatches = symbolFallbackExactMatches; self.symbolPrefixMatches = symbolPrefixMatches; self.symbolCandidatePages = symbolCandidatePages; self.symbolHintExtractionMilliseconds = symbolHintExtractionMilliseconds; self.symbolExactLookupMilliseconds = symbolExactLookupMilliseconds; self.symbolPrefixLookupMilliseconds = symbolPrefixLookupMilliseconds; self.symbolCandidateMergeMilliseconds = symbolCandidateMergeMilliseconds; self.symbolRankingMilliseconds = symbolRankingMilliseconds; self.symbolTotalMilliseconds = symbolTotalMilliseconds; self.lexicalCandidatePages = lexicalCandidatePages; self.currentSourceCandidates = currentSourceCandidates; self.documentationCandidates = documentationCandidates; self.referenceCandidates = referenceCandidates; self.referenceCount = referenceCount; self.resolvedReferenceCount = resolvedReferenceCount; self.ambiguousReferenceCount = ambiguousReferenceCount; self.unresolvedReferenceCount = unresolvedReferenceCount; self.dependencyCount = dependencyCount; self.referenceIndexedFiles = referenceIndexedFiles; self.relationHints = relationHints; self.directReferenceHits = directReferenceHits; self.dependencyHits = dependencyHits; self.relatedPages = relatedPages; self.referenceResolutionMilliseconds = referenceResolutionMilliseconds; self.referenceExpansionMilliseconds = referenceExpansionMilliseconds
+        self.queryCharacters = queryCharacters; self.queryTerms = queryTerms; self.candidatePages = candidatePages; self.candidateCharacters = candidateCharacters; self.selectedPages = selectedPages; self.selectedCharacters = selectedCharacters; self.injectedPages = injectedPages; self.injectedCharacters = injectedCharacters; self.filesChecked = filesChecked; self.filesRebuilt = filesRebuilt; self.scanMilliseconds = scanMilliseconds; self.initialIndexedFiles = initialIndexedFiles; self.recallCacheLookups = recallCacheLookups; self.recallCacheHits = recallCacheHits; self.recallCacheMisses = recallCacheMisses; self.recallCachePages = recallCachePages; self.recallCacheCharacters = recallCacheCharacters; self.projectIndexPages = projectIndexPages; self.projectIndexQueries = projectIndexQueries; self.projectIndexCandidates = projectIndexCandidates; self.projectIndexMaterializations = projectIndexMaterializations; self.staleRebuilds = staleRebuilds; self.pageFaults = pageFaults; self.promotions = promotions; self.evictions = evictions; self.retrievalMilliseconds = retrievalMilliseconds; self.materializationMilliseconds = materializationMilliseconds; self.symbolCount = symbolCount; self.symbolIndexedFiles = symbolIndexedFiles; self.symbolHints = symbolHints; self.symbolExactMatches = symbolExactMatches; self.symbolQualifiedExactMatches = symbolQualifiedExactMatches; self.symbolFallbackExactMatches = symbolFallbackExactMatches; self.symbolPrefixMatches = symbolPrefixMatches; self.symbolCandidatePages = symbolCandidatePages; self.symbolHintExtractionMilliseconds = symbolHintExtractionMilliseconds; self.symbolExactLookupMilliseconds = symbolExactLookupMilliseconds; self.symbolPrefixLookupMilliseconds = symbolPrefixLookupMilliseconds; self.symbolCandidateMergeMilliseconds = symbolCandidateMergeMilliseconds; self.symbolRankingMilliseconds = symbolRankingMilliseconds; self.symbolTotalMilliseconds = symbolTotalMilliseconds; self.lexicalCandidatePages = lexicalCandidatePages; self.currentSourceCandidates = currentSourceCandidates; self.documentationCandidates = documentationCandidates; self.referenceCandidates = referenceCandidates; self.referenceCount = referenceCount; self.resolvedReferenceCount = resolvedReferenceCount; self.ambiguousReferenceCount = ambiguousReferenceCount; self.unresolvedReferenceCount = unresolvedReferenceCount; self.dependencyCount = dependencyCount; self.referenceIndexedFiles = referenceIndexedFiles; self.relationHints = relationHints; self.directReferenceHits = directReferenceHits; self.dependencyHits = dependencyHits; self.relatedPages = relatedPages; self.referenceResolutionMilliseconds = referenceResolutionMilliseconds; self.referenceExpansionMilliseconds = referenceExpansionMilliseconds
     }
 
-    public var l2HitRate: Double? { l2Lookups == 0 ? nil : Double(l2Hits) / Double(l2Lookups) }
 }
 
 public struct ContextPagingTurnPerformance: Sendable, Equatable, Codable {
@@ -1174,42 +974,42 @@ public struct ContextPagingTurnPerformance: Sendable, Equatable, Codable {
 }
 
 public struct ProjectCacheDebugSnapshot: Sendable, Equatable, Codable {
-    public let l2Pages: Int
-    public let l2Characters: Int
-    public let l2HitRate: Double?
-    public let l3Pages: Int
+    public let recallCachePages: Int
+    public let recallCacheCharacters: Int
+    public let recallCacheHitRate: Double?
+    public let projectIndexPages: Int
     public let staleRebuilds: Int
     public let symbolCount: Int
     public let symbolIndexedFiles: Int
     public let referenceCount: Int
     public let dependencyCount: Int
-    public let sessionL2DerivedPages: Int
-    public let derivedL3Pages: Int
+    public let recalledDerivedPages: Int
+    public let historicalDerivedPages: Int
     public let derivedPageOutCount: Int
     public let derivedPageInCount: Int
     public let historicalToolEvidencePages: Int
-    public let derivedL3Hits: Int
-    public let sessionL2DerivedHits: Int
-    public let sessionL2DerivedPromotions: Int
+    public let historicalDerivedHits: Int
+    public let recalledDerivedHits: Int
+    public let derivedRestorations: Int
 
-    public init(l2Pages: Int, l2Characters: Int, l2HitRate: Double?, l3Pages: Int, staleRebuilds: Int, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, referenceCount: Int = 0, dependencyCount: Int = 0, sessionL2DerivedPages: Int = 0, derivedL3Pages: Int = 0, derivedPageOutCount: Int = 0, derivedPageInCount: Int = 0, historicalToolEvidencePages: Int = 0, derivedL3Hits: Int = 0, sessionL2DerivedHits: Int = 0, sessionL2DerivedPromotions: Int = 0) {
-        self.l2Pages = l2Pages
-        self.l2Characters = l2Characters
-        self.l2HitRate = l2HitRate
-        self.l3Pages = l3Pages
+    public init(recallCachePages: Int, recallCacheCharacters: Int, recallCacheHitRate: Double?, projectIndexPages: Int, staleRebuilds: Int, symbolCount: Int = 0, symbolIndexedFiles: Int = 0, referenceCount: Int = 0, dependencyCount: Int = 0, recalledDerivedPages: Int = 0, historicalDerivedPages: Int = 0, derivedPageOutCount: Int = 0, derivedPageInCount: Int = 0, historicalToolEvidencePages: Int = 0, historicalDerivedHits: Int = 0, recalledDerivedHits: Int = 0, derivedRestorations: Int = 0) {
+        self.recallCachePages = recallCachePages
+        self.recallCacheCharacters = recallCacheCharacters
+        self.recallCacheHitRate = recallCacheHitRate
+        self.projectIndexPages = projectIndexPages
         self.staleRebuilds = staleRebuilds
         self.symbolCount = symbolCount
         self.symbolIndexedFiles = symbolIndexedFiles
         self.referenceCount = referenceCount
         self.dependencyCount = dependencyCount
-        self.sessionL2DerivedPages = sessionL2DerivedPages
-        self.derivedL3Pages = derivedL3Pages
+        self.recalledDerivedPages = recalledDerivedPages
+        self.historicalDerivedPages = historicalDerivedPages
         self.derivedPageOutCount = derivedPageOutCount
         self.derivedPageInCount = derivedPageInCount
         self.historicalToolEvidencePages = historicalToolEvidencePages
-        self.derivedL3Hits = derivedL3Hits
-        self.sessionL2DerivedHits = sessionL2DerivedHits
-        self.sessionL2DerivedPromotions = sessionL2DerivedPromotions
+        self.historicalDerivedHits = historicalDerivedHits
+        self.recalledDerivedHits = recalledDerivedHits
+        self.derivedRestorations = derivedRestorations
     }
 }
 
@@ -1274,9 +1074,9 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
     public let estimatedPromptTokens: Int?
     public let actualPromptTokens: Int?
     public let estimatorErrorPercent: Double?
-    public let derivedL3Hits: Int
-    public let sessionL2DerivedHits: Int
-    public let sessionL2DerivedPromotions: Int
+    public let historicalDerivedHits: Int
+    public let recalledDerivedHits: Int
+    public let derivedRestorations: Int
     public let derivedPageIns: Int
     public let providerCalls: [ProviderCallTrace]
     public let cacheTelemetry: ProviderCacheTelemetry?
@@ -1286,7 +1086,7 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
         providerCalls.reduce(0) { $0 + ($1.actualUsage?.inputTokens ?? $1.estimatedPromptTokens) }
     }
 
-    public init(sessionID: SessionID, totalMilliseconds: Double, stepCount: Int, context: ContextDebugSnapshot?, steps: [StepPerformance], firstTextMilliseconds: Double?, firstReasoningMilliseconds: Double?, textChunks: Int, reasoningChunks: Int, textCharacters: Int, reasoningCharacters: Int, tools: [ToolPerformance], usage: ModelUsage?, outputTokensPerSecond: Double?, textCharactersPerSecond: Double?, coreOverheadMilliseconds: Double = 0, contextPaging: ContextPagingPerformance? = nil, permissions: PermissionPerformance = PermissionPerformance(autoApproved: 0, asked: 0, denied: 0, waitMilliseconds: 0), contextBudget: ContextBudgetDebug? = nil, compactions: [CompactionTurnPerformance] = [], protocolValidatorPassed: Int = 0, liveToolBatchCount: Int = 0, estimatedPromptTokens: Int? = nil, actualPromptTokens: Int? = nil, estimatorErrorPercent: Double? = nil, derivedL3Hits: Int = 0, sessionL2DerivedHits: Int = 0, sessionL2DerivedPromotions: Int = 0, derivedPageIns: Int = 0, providerCalls: [ProviderCallTrace] = [], cacheTelemetry: ProviderCacheTelemetry? = nil) {
+    public init(sessionID: SessionID, totalMilliseconds: Double, stepCount: Int, context: ContextDebugSnapshot?, steps: [StepPerformance], firstTextMilliseconds: Double?, firstReasoningMilliseconds: Double?, textChunks: Int, reasoningChunks: Int, textCharacters: Int, reasoningCharacters: Int, tools: [ToolPerformance], usage: ModelUsage?, outputTokensPerSecond: Double?, textCharactersPerSecond: Double?, coreOverheadMilliseconds: Double = 0, contextPaging: ContextPagingPerformance? = nil, permissions: PermissionPerformance = PermissionPerformance(autoApproved: 0, asked: 0, denied: 0, waitMilliseconds: 0), contextBudget: ContextBudgetDebug? = nil, compactions: [CompactionTurnPerformance] = [], protocolValidatorPassed: Int = 0, liveToolBatchCount: Int = 0, estimatedPromptTokens: Int? = nil, actualPromptTokens: Int? = nil, estimatorErrorPercent: Double? = nil, historicalDerivedHits: Int = 0, recalledDerivedHits: Int = 0, derivedRestorations: Int = 0, derivedPageIns: Int = 0, providerCalls: [ProviderCallTrace] = [], cacheTelemetry: ProviderCacheTelemetry? = nil) {
         self.sessionID = sessionID
         self.totalMilliseconds = totalMilliseconds
         self.stepCount = stepCount
@@ -1312,9 +1112,9 @@ public struct TurnPerformanceReport: Sendable, Equatable, Codable {
         self.estimatedPromptTokens = estimatedPromptTokens
         self.actualPromptTokens = actualPromptTokens
         self.estimatorErrorPercent = estimatorErrorPercent
-        self.derivedL3Hits = derivedL3Hits
-        self.sessionL2DerivedHits = sessionL2DerivedHits
-        self.sessionL2DerivedPromotions = sessionL2DerivedPromotions
+        self.historicalDerivedHits = historicalDerivedHits
+        self.recalledDerivedHits = recalledDerivedHits
+        self.derivedRestorations = derivedRestorations
         self.derivedPageIns = derivedPageIns
         self.providerCalls = providerCalls
         self.cacheTelemetry = cacheTelemetry
@@ -1334,7 +1134,7 @@ public struct ProviderCallTrace: Sendable, Equatable, Codable {
     public let actualUsage: ModelUsage?
     public let toolSchemaTokens: Int
     public let toolCount: Int
-    public let l1Tokens: Int
+    public let pCoreTokens: Int
     public let systemPinnedTokens: Int
     public let currentTurnTokens: Int
     public let providerFramingTokens: Int
@@ -1358,7 +1158,7 @@ public struct ProviderCallTrace: Sendable, Equatable, Codable {
         actualUsage: ModelUsage? = nil,
         toolSchemaTokens: Int,
         toolCount: Int,
-        l1Tokens: Int,
+        pCoreTokens: Int,
         systemPinnedTokens: Int,
         currentTurnTokens: Int,
         providerFramingTokens: Int,
@@ -1381,7 +1181,7 @@ public struct ProviderCallTrace: Sendable, Equatable, Codable {
         self.actualUsage = actualUsage
         self.toolSchemaTokens = toolSchemaTokens
         self.toolCount = toolCount
-        self.l1Tokens = l1Tokens
+        self.pCoreTokens = pCoreTokens
         self.systemPinnedTokens = systemPinnedTokens
         self.currentTurnTokens = currentTurnTokens
         self.providerFramingTokens = providerFramingTokens
@@ -1398,7 +1198,7 @@ public struct ProviderCallTrace: Sendable, Equatable, Codable {
             sessionID: sessionID, userTurnID: userTurnID, runID: runID, parentRunID: parentRunID,
             providerRequestID: providerRequestID, sequence: sequence, reason: reason, model: model,
             estimatedPromptTokens: estimatedPromptTokens, actualUsage: actualUsage,
-            toolSchemaTokens: toolSchemaTokens, toolCount: toolCount, l1Tokens: l1Tokens,
+            toolSchemaTokens: toolSchemaTokens, toolCount: toolCount, pCoreTokens: pCoreTokens,
             systemPinnedTokens: systemPinnedTokens, currentTurnTokens: currentTurnTokens,
             providerFramingTokens: providerFramingTokens, retryAttempt: retryAttempt,
             retryCount: retryCount, rateWaitMilliseconds: rateWaitMilliseconds,

@@ -463,7 +463,7 @@ sidecar 侧三处真实问题：
 - **Exact Restore**：`referenceID → ECoreReference → objectID → payload`；`context_recall` 按 summary 命中后同样按 referenceID 精确取回。rewind 只裁工具来源引用，非工具 page-out 保留。
 - **Context Value Eviction**：第四节冻结公式（`ContextValueEviction.swift`）+ 4.15 逐对象水位收敛 + 4.16 五级 tie-break + 4.19 Fail-Open + 4.20 全字段可观测（`evictionTrace(sessionID:)`）。
 - **activeFileAffinity 数据流**：改由批次真实 `ToolResult.changedFiles` 与 `ToolCall.arguments` 路径推导；`handleSearch` 的 `activeFiles` 参数（此前恒为 `[]`）删除，改为从同一工作集推导。
-- **L1/L2/L3 退出架构语义**：类型全部按真实职责重命名，`PCoreTerminologyGateTests` 禁止新增 L 类型；配置键走「新 P/E 键 → 旧 L 键 → 默认」，GUI 只显示 P/E 术语。
+- **P/E-Core 退出架构语义**：类型全部按真实职责重命名，`PCoreTerminologyGateTests` 禁止新增 L 类型；配置键走「新 P/E 键 → 旧 L 键 → 默认」，GUI 只显示 P/E 术语。
 - **Git RPC namespace**：`git.status/diff/log/show/branch` + `git.add/restore/checkout/switch/commit`，结构化参数、无默认实现（`ProtocolService` 里是必选项），CLI/GUI/Agent/stdio/in-process 全部经同一 `GitRunner`。写操作进 `ToolMutationCoordinator`，权限走 `PermissionEngine`，GUI 身份为 `gui:<UUID>`。
 - **`dirtyPathCount`**：porcelain v2 records 统一解析，同路径 staged+unstaged 计 1，`-uall` 展开未跟踪目录，ignored 不计；`mainCheckoutRoot` 由 `--git-common-dir` 推导。
 

@@ -134,7 +134,7 @@ flowchart TD
   Found 1 result(s) for 'SampleService executeTask':
 
   [1] [codebase_file] Score: 4.821
-      Target: Code 'Sample.swift' L1-L20
+      Target: Code 'Sample.swift' PCore-L20
       Action Hint: Call read_file(path: "Sample.swift", start_line: 1, end_line: 20) to inspect source
       Symbol Hint: SampleService
       Snippet:

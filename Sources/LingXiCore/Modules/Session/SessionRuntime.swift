@@ -70,7 +70,7 @@ public actor SessionRuntime {
     private let executionProfile: SubagentExecutionProfile?
     private let systemContext: String?
     private let systemContextAtBeginning: Bool
-    private let maximumAgentSteps: Int
+    private let maximumAgentSteps: Int?
     private let deadlinePolicy: ExecutionDeadlinePolicy
     private let restoreScheduler: SessionRestoreScheduler?
     private let diagnostics: RuntimeDiagnosticsStore?
@@ -214,7 +214,7 @@ public actor SessionRuntime {
         executionProfile: SubagentExecutionProfile? = nil,
         systemContext: String? = nil,
         systemContextAtBeginning: Bool = true,
-        maxAgentLoopSteps: Int = 32,
+        maxAgentLoopSteps: Int = 0,
         runObserver: (@Sendable (AgentRunStatus, String?, ModelUsage?, CoreError?, AgentTerminalTrace?) async -> Void)? = nil,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
@@ -249,7 +249,8 @@ public actor SessionRuntime {
         self.executionProfile = executionProfile
         self.systemContext = systemContext
         self.systemContextAtBeginning = systemContextAtBeginning
-        maximumAgentSteps = max(1, executionProfile?.maxSteps ?? maxAgentLoopSteps)
+        let configuredSteps = executionProfile?.maxSteps ?? maxAgentLoopSteps
+        maximumAgentSteps = configuredSteps > 0 ? configuredSteps : nil
         self.runObserver = runObserver
         self.deadlinePolicy = deadlinePolicy
         self.restoreScheduler = restoreScheduler
@@ -363,7 +364,7 @@ public actor SessionRuntime {
             if !updatedEntries.contains(where: { $0.messageID == userMessage.id }) {
                 updatedEntries.append(userEntry)
             }
-            await syncL1ResidentAccounting(with: updatedEntries)
+            await syncPCoreResidentAccounting(with: updatedEntries)
             guard modelBus.gateway.modelID != nil else {
                 throw CoreError(
                     code: .provider,
@@ -464,10 +465,22 @@ public actor SessionRuntime {
             var lastObservedContent: String?
             var pendingLifecycleTraces: [ToolLifecycleTrace] = []
 
-            // The single corrective request does not consume the normal action budget.
-            for step in 0..<(maximumAgentSteps + 1) {
-                if step == maximumAgentSteps && !completionGuard.retriedRequired { break }
+            var step = -1
+            while true {
+                step += 1
                 try Task.checkCancellation()
+                // Only an explicitly configured budget limits useful model work. The single
+                // corrective request does not consume that budget; cancellation, deadlines and
+                // evidence-based no-progress checks remain active without a step ceiling.
+                if let maximumAgentSteps,
+                   step - (completionGuard.retriedRequired ? 1 : 0) >= maximumAgentSteps {
+                    let lastCallDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
+                    let lastObsDesc = String((lastObservedContent ?? "").prefix(80))
+                    throw CoreError(
+                        code: .agentStepLimitReached,
+                        message: "Agent Tool Loop 超过上限 (\(maximumAgentSteps) steps) · 当前 step: \(step) · 最后 ToolCall: \(lastCallDesc) · 最后 observation: \(lastObsDesc)"
+                    )
+                }
                 let currentModelStepID = ModelStepID()
                 let currentStepNumber = step + 1
                 trace("agent.step.begin", step: step + 1)
@@ -510,8 +523,8 @@ public actor SessionRuntime {
                 profiler.recordBudget(budget, modelWindow: contextProfile.contextWindowTokens)
 
                 // Cache Controller Scheduling Invariant:
-                // Prompt Builder ONLY reads: Pinned Context + L1 Working Set + Current Turn.
-                // Dynamic pages enter L1 ONLY via Cache Controller explicit retrieval.
+                // Prompt Builder ONLY reads: Pinned Context + PCore Working Set + Current Turn.
+                // Dynamic pages enter PCore ONLY via Cache Controller explicit retrieval.
                 let residentPages = await cacheController.residentPages(for: sessionID)
                 var allEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
                 // This turn's attachments are not session messages, so nothing above contributes
@@ -588,7 +601,8 @@ public actor SessionRuntime {
                 // Phase 3: Cache-Aware Economic Compact & Debt Scheduler
                 let rawTokens = ConservativeTokenEstimator().estimate(entries: projectedEntries)
                 let economicThreshold = cacheController.policy.economicThreshold ?? 272_000
-                let remainingHorizon = max(1, maximumAgentSteps - step)
+                // A bounded estimate for the existing economic scheduler, not an execution cap.
+                let remainingHorizon = maximumAgentSteps.map { max(1, $0 - step) } ?? 32
                 let decision = await cacheController.scheduler.evaluate(
                     sessionID: sessionID,
                     currentTokens: rawTokens,
@@ -669,7 +683,7 @@ public actor SessionRuntime {
                     if emergency.triggered { try await persistCompaction() }
                 }
                 await cacheController.recordProviderInputTokens(sessionID: sessionID, tokens: finalTokens)
-                await syncL1ResidentAccounting(with: finalEntries)
+                await syncPCoreResidentAccounting(with: finalEntries)
                 let context = await contextEngine.snapshot(for: session, activeEntries: finalEntries, systemContext: systemContext, estimatedTokens: finalTokens, mandatoryTokens: compacted.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
 
                 let manifestEntries: [ContextManifestEntry] = finalEntries.compactMap { entry in
@@ -693,16 +707,16 @@ public actor SessionRuntime {
                             inclusionReason = "Active turn user message"
                             cacheProvenance = "currentTurn"
                         } else {
-                            sourceKind = "L1"
+                            sourceKind = "PCore"
                             origin = entry.messageID?.rawValue ?? "history"
-                            inclusionReason = "L1 historical user turn"
-                            cacheProvenance = "l1WorkingSet"
+                            inclusionReason = "PCore historical user turn"
+                            cacheProvenance = "pCoreWorkingSet"
                         }
                     case .assistantMessage:
-                        sourceKind = "L1"
+                        sourceKind = "PCore"
                         origin = entry.messageID?.rawValue ?? "history"
-                        inclusionReason = "L1 historical assistant response"
-                        cacheProvenance = "l1WorkingSet"
+                        inclusionReason = "PCore historical assistant response"
+                        cacheProvenance = "pCoreWorkingSet"
                     case .attachment:
                         // Attached with this turn's message, so it is current-turn content — it
                         // shows up in the manifest as its own row rather than folded into the
@@ -712,20 +726,20 @@ public actor SessionRuntime {
                         inclusionReason = "File attached to the active turn"
                         cacheProvenance = "currentTurn"
                     case .toolCall, .toolResult, .observation:
-                        sourceKind = "L1"
+                        sourceKind = "PCore"
                         origin = entry.messageID?.rawValue ?? "observation"
-                        inclusionReason = "L1 interaction/observation record"
-                        cacheProvenance = "l1WorkingSet"
+                        inclusionReason = "PCore interaction/observation record"
+                        cacheProvenance = "pCoreWorkingSet"
                     case .projectPage:
-                        sourceKind = "L1"
+                        sourceKind = "PCore"
                         origin = entry.page?.path ?? "projectPage"
                         inclusionReason = "Dynamic page-in via Cache Controller"
-                        cacheProvenance = "cacheControllerL1"
+                        cacheProvenance = "cacheControllerPCore"
                     case .derivedPage:
-                        sourceKind = "L1"
+                        sourceKind = "PCore"
                         origin = entry.page?.path ?? "derivedSummary"
                         inclusionReason = "Dynamic page-in via Cache Controller"
-                        cacheProvenance = "cacheControllerL1"
+                        cacheProvenance = "cacheControllerPCore"
                     }
                     return ContextManifestEntry(
                         sourceKind: sourceKind,
@@ -785,7 +799,7 @@ public actor SessionRuntime {
 
                 let systemPinnedTokens = context.entries.filter { $0.source == .system }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
                 let currentTurnTokens = context.entries.filter { $0.messageID == userTurnID }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
-                let l1Tokens = max(0, finalTokens - systemPinnedTokens - currentTurnTokens)
+                let pCoreTokens = max(0, finalTokens - systemPinnedTokens - currentTurnTokens)
 
                 let fingerprint = computePrefixFingerprint(
                     systemContext: systemContext,
@@ -871,7 +885,7 @@ public actor SessionRuntime {
                 let estimatedPromptTokens = finalTokens + toolSchemaTokens + providerFramingTokens
                 let cacheTelemetry = ProviderCacheTelemetry(
                     stablePrefixTokens: systemPinnedTokens + toolSchemaTokens,
-                    reusableHistoryTokens: l1Tokens,
+                    reusableHistoryTokens: pCoreTokens,
                     volatileTailTokens: currentTurnTokens + providerFramingTokens,
                     epoch: epochInfo
                 )
@@ -889,7 +903,7 @@ public actor SessionRuntime {
                     actualUsage: nil,
                     toolSchemaTokens: toolSchemaTokens,
                     toolCount: effectiveTools.count,
-                    l1Tokens: l1Tokens,
+                    pCoreTokens: pCoreTokens,
                     systemPinnedTokens: systemPinnedTokens,
                     currentTurnTokens: currentTurnTokens,
                     providerFramingTokens: providerFramingTokens,
@@ -1072,7 +1086,7 @@ public actor SessionRuntime {
                         "actualInputTokens": finalUsage?.inputTokens.map(String.init) ?? "none",
                         "toolSchemaTokens": String(toolSchemaTokens),
                         "toolCount": String(effectiveTools.count),
-                        "l1Tokens": String(l1Tokens),
+                        "pCoreTokens": String(pCoreTokens),
                         "systemPinnedTokens": String(systemPinnedTokens),
                         "currentTurnTokens": String(currentTurnTokens),
                         "providerFramingTokens": String(providerFramingTokens),
@@ -1111,7 +1125,7 @@ public actor SessionRuntime {
                             }
                             let assistantEntries = assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .assistantMessage, part: $0) }
                             currentActiveEntries.append(contentsOf: assistantEntries)
-                            await syncL1ResidentAccounting(with: currentActiveEntries)
+                            await syncPCoreResidentAccounting(with: currentActiveEntries)
                         }
 
                         await runObserver?(.waitingForTool, nil, finalUsage, nil, nil)
@@ -1180,7 +1194,7 @@ public actor SessionRuntime {
                 let assistantEntries = assistantParts.map { ContextEntry(messageID: assistantMessage.id, role: .assistant, source: .toolCall, part: $0) }
                 var updatedEntries = currentActiveEntries
                 updatedEntries.append(contentsOf: assistantEntries)
-                await syncL1ResidentAccounting(with: updatedEntries)
+                await syncPCoreResidentAccounting(with: updatedEntries)
                 trace("session.parts.append.end", step: step + 1, toolCount: calls.count)
 
                 trace("tool.batch.settle.begin", step: step + 1, toolCount: calls.count)
@@ -1427,7 +1441,7 @@ public actor SessionRuntime {
                 }
                 var postToolEntries = currentActiveEntries
                 postToolEntries.append(contentsOf: toolResultEntries)
-                await syncL1ResidentAccounting(with: postToolEntries)
+                await syncPCoreResidentAccounting(with: postToolEntries)
                 trace("session.parts.append.end", step: step + 1, toolCount: settled.count)
                 trace("tool.batch.settle.end", step: step + 1, toolCount: calls.count)
                 pendingLifecycleTraces = settled.compactMap(\.lifecycleTrace)
@@ -1469,12 +1483,6 @@ public actor SessionRuntime {
                     )
                 }
             }
-            let lastCallDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
-            let lastObsDesc = String((lastObservedContent ?? "").prefix(80))
-            throw CoreError(
-                code: .agentStepLimitReached,
-                message: "Agent Tool Loop 超过上限 (\(maximumAgentSteps) steps) · 当前 step: \(maximumAgentSteps) · 最后 ToolCall: \(lastCallDesc) · 最后 observation: \(lastObsDesc)"
-            )
         } catch let error as StaleRunError {
             logDiagnostic("session.stale_run_dropped sessionID=\(error.sessionID.rawValue) expected=\(error.expected) actual=\(error.actual)")
             await toolRuntime.abortMCPTurn(sessionID: sessionID)
@@ -1518,10 +1526,10 @@ public actor SessionRuntime {
         Task { await diagnostics?.record(kind: kind, event: event, sessionID: sessionID, runID: runID, rootRunID: rootRunID, parentRunID: parentRunID, executionID: executionID, providerRequestID: providerRequestID, toolCallID: toolCallID, metadata: ["step": String(step), "toolCount": String(toolCount ?? 0)]) }
     }
 
-    private func syncL1ResidentAccounting(with entries: [ContextEntry]) async {
+    private func syncPCoreResidentAccounting(with entries: [ContextEntry]) async {
         currentActiveEntries = entries
         let tokens = ConservativeTokenEstimator().estimate(entries: entries)
-        await cacheController.recordSessionL1Tokens(sessionID: sessionID, tokens: tokens, count: entries.count)
+        await cacheController.recordPCoreBaseTokens(sessionID: sessionID, tokens: tokens, count: entries.count)
         if let session = try? await store.session(sessionID) {
             _ = await contextEngine.snapshot(for: session, activeEntries: entries, systemContext: systemContext, estimatedTokens: tokens, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
         }
@@ -1651,7 +1659,7 @@ public actor SessionRuntime {
             projectBackedContents: Set(residentPages.map(\.content)), trigger: .automaticHighWater,
             evictionEpoch: compactionGeneration, activeTask: await SessionGoalRegistry.shared.goal(sessionID) ?? "")
         if result.triggered { compactionGeneration += 1 }
-        await syncL1ResidentAccounting(with: result.entries)
+        await syncPCoreResidentAccounting(with: result.entries)
         if result.triggered { try await persistCompaction() }
     }
 
@@ -1664,7 +1672,7 @@ public actor SessionRuntime {
         let entries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
         let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)), trigger: .manual, evictionEpoch: compactionGeneration, activeTask: await SessionGoalRegistry.shared.goal(sessionID) ?? "")
         if result.triggered { compactionGeneration += 1 }
-        await syncL1ResidentAccounting(with: result.entries)
+        await syncPCoreResidentAccounting(with: result.entries)
         let response = CompactSessionResponse(triggerSource: result.triggerSource.rawValue, beforeEstimatedTokens: result.beforeTokens, afterEstimatedTokens: result.afterTokens, targetLowWater: budget.lowWaterTokens, mandatoryFloor: result.mandatoryFloor, unitsKept: result.unitsKept, unitsPagedOut: result.pagedOut, historicalToolBatchesPagedOut: result.historicalToolBatchesPagedOut, projectBackedOffloads: result.projectBackedOffloads, derivedPagesCreated: result.derivedCreated, redundantDrops: result.redundantDrops, emergencyTrims: result.emergencyTrims, compactionGeneration: compactionGeneration, noEligibleReduction: result.noEligibleReduction)
         try await persistCompaction()
         return response
@@ -1692,7 +1700,7 @@ public actor SessionRuntime {
         lifecycle("cleanupCompleted", waitingOn: "turnTask")
     }
 
-    public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
+    public func cacheMetrics() async -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) {
         await compactor.cacheMetrics(sessionID: sessionID)
     }
 
@@ -1869,7 +1877,7 @@ public actor SessionRuntime {
             if !updatedEntries.contains(where: { $0.messageID == message.id }) {
                 updatedEntries.append(assistantEntry)
             }
-            await syncL1ResidentAccounting(with: updatedEntries)
+            await syncPCoreResidentAccounting(with: updatedEntries)
             if let completionError { throw completionError }
             guard await finishExecution(executionID) else { return }
             await performanceStore.recordProviderCalls(sessionID: handle.sessionID, calls: profiler.recordedProviderCalls)

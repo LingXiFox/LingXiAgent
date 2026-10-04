@@ -82,6 +82,29 @@ struct RuntimeContextPolicyRefreshTests {
         #expect(generation.policy.pCoreHardLimit + generation.policy.reserve <= window)
     }
 
+    @Test("Concurrent session attachment shares the policy event coordinator")
+    func concurrentPolicyCoordinator() async throws {
+        let f = try await fixture(window: 65_536)
+        defer { await f.shutdown() }
+        let sid = try await f.sessions.create().id
+        let coordinators = try await withThrowingTaskGroup(of: SessionTurnCoordinator.self) { group in
+            for _ in 0..<20 { group.addTask { try await f.host.coordinator(for: sid) } }
+            var values: [SessionTurnCoordinator] = []
+            for try await value in group { values.append(value) }
+            return values
+        }
+        let first = try #require(coordinators.first)
+        #expect(coordinators.allSatisfy { $0 === first })
+        try await f.host.applyModelRuntimeContextChange(assembly(32_768), selection: Self.selection)
+        let published = await first.eventLog.allEvents().compactMap { event -> ContextStateSnapshot? in
+            if case let .contextStateChanged(snapshot) = event.payload { return snapshot }
+            return nil
+        }
+        let state = try #require(published.last)
+        #expect(state.pCore?.targetTokens == (await f.host.effectiveContextPolicy).pCoreTarget)
+        #expect(state.pCore?.hardLimitTokens == (await f.host.effectiveContextPolicy).pCoreHardLimit)
+    }
+
     @Test("initial policies use the injected active window", arguments: [131_072, 65_536, 32_768])
     func initialWindow(_ window: Int) async throws {
         let f = try await fixture(window: window)
@@ -125,6 +148,29 @@ struct RuntimeContextPolicyRefreshTests {
         let native = try #require(await f.host.localRuntimeRegistry.status(providerID: "lmstudio"))
         #expect(native.modelMaxContextTokens == 262_144)
         #expect(native.runtimeContextTokens == 65_536)
+    }
+
+    @Test("context meter uses measured active input rather than retained historical estimates")
+    func activeContextMeter() async throws {
+        let f = try await fixture(window: 65_536)
+        defer { await f.shutdown() }
+        let controller = await f.host.cacheController
+        let sid = SessionID("restored-context-meter")
+        await controller.recordPCoreBaseTokens(sessionID: sid, tokens: 131_072)
+        await controller.recordProviderCacheHit(sessionID: sid, cachedTokens: 0, promptTokens: 17_733)
+        let object = await controller.ecoreStore.pageOut(sessionID: sid,
+            content: String(repeating: "archived history ", count: 8_000), origin: .message,
+            contextOccurrenceID: "meter-object", evictionEpoch: 1, summary: "history", pageOutReason: "test")
+        let before = await controller.ecoreStore.storageMetrics(for: sid)
+        let state = await f.host.contextStateSnapshot(sessionID: sid)
+        #expect(state.estimatedTokens == 17_733)
+        #expect(state.estimatedTokens == state.pCore?.usedTokens)
+        #expect(state.providerCache?.promptTokens == state.estimatedTokens)
+        #expect(state.eCore?.objectCount == before.count)
+        #expect(state.eCore?.totalBytes == before.totalBytes)
+        #expect(await controller.ecoreStore.reference(sessionID: sid, referenceID: object.referenceID) != nil)
+        #expect(await controller.pCoreResidentTokens(for: sid) == 131_072)
+        await assertGeneration(f.host, window: 65_536)
     }
 
     @Test("controller updates preserve resident pages and E-Core objects; growth does not page in")

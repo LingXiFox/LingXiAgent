@@ -4,6 +4,22 @@ import LingXiProtocol
 @testable import LingXiCore
 
 struct ConfigurationStoreTests {
+    @Test func stepCeilingIsOptInAndExplicitBudgetsRemainCompatible() throws {
+        #expect(AgentSettings().maxAgentLoopSteps == 0)
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        var json = try #require(JSONSerialization.jsonObject(with: encoder.encode(AgentSettings())) as? [String: Any])
+        json.removeValue(forKey: "maxAgentLoopSteps")
+        #expect(try decoder.decode(AgentSettings.self, from: JSONSerialization.data(withJSONObject: json)).maxAgentLoopSteps == 0)
+        for limit in [0, 4, 32] {
+            json["maxAgentLoopSteps"] = limit
+            #expect(try decoder.decode(AgentSettings.self, from: JSONSerialization.data(withJSONObject: json)).maxAgentLoopSteps == limit)
+        }
+        var configuration = CoreConfiguration()
+        configuration.agent.maxAgentLoopSteps = 0
+        try JSONSchemaValidator.validate(documentData: encoder.encode(configuration),
+                                         schemaData: ConfigurationResources.schemaData(for: .core))
+    }
     @Test func bootstrapCreatesFourTypedOfflineConfigurations() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

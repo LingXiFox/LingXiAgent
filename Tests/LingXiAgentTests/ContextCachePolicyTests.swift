@@ -13,10 +13,6 @@ import Foundation
         #expect(TokenFormatter.format(1_048_576) == "1.05M")
         #expect(TokenFormatter.format(0) == "0")
 
-        #expect(TokenFormatter.formatLayer(layer: "L1", usage: 1_320, capacity: 220_000, state: .available) == "L1 1.3K/220K")
-        #expect(TokenFormatter.formatLayer(layer: "L2", usage: 0, capacity: 350_000, state: .empty) == "L2 0/350K")
-        #expect(TokenFormatter.formatLayer(layer: "L3", usage: 0, capacity: 454_000, state: .empty) == "L3 0/454K")
-        #expect(TokenFormatter.formatLayer(layer: "L3", usage: 0, capacity: 454_000, state: .unavailable) == "L3 off")
     }
 
     @Test func policyResolverResolvesHierarchyAndValidates() throws {
@@ -27,26 +23,26 @@ import Foundation
         )
         #expect(defaultPolicy.addressableBudget == 1_048_576)
         #expect(defaultPolicy.modelWindow == 1_048_576)
-        #expect(defaultPolicy.l1Target == 220_000)
-        #expect(defaultPolicy.l1SoftLimit == 235_000)
-        #expect(defaultPolicy.l1HardLimit == 250_000)
-        #expect(defaultPolicy.l2Max == 350_000)
-        #expect(defaultPolicy.l3Capacity == 1_048_576 - 220_000 - 350_000)
-        #expect(defaultPolicy.l3Enabled == true)
+        #expect(defaultPolicy.pCoreTarget == 220_000)
+        #expect(defaultPolicy.pCoreSoftLimit == 235_000)
+        #expect(defaultPolicy.pCoreHardLimit == 250_000)
+        #expect(defaultPolicy.eCoreRecallBudget == 350_000)
+        #expect(defaultPolicy.eCoreStorageBudget == 1_048_576 - 220_000 - 350_000)
+        #expect(defaultPolicy.eCoreEnabled == true)
 
         // Invalid config target > softLimit
-        let invalidL1 = ContextCacheConfiguration(
-            l1: ContextCacheL1Configuration(target: 250_000, softLimit: 220_000, hardLimit: 260_000)
+        let invalidPCore = ContextCacheConfiguration(
+            pCore: ContextCachePCoreConfiguration(target: 250_000, softLimit: 220_000, hardLimit: 260_000)
         )
         #expect(throws: ConfigurationValidationError.self) {
-            try ContextPolicyResolver.resolve(global: invalidL1, modelWindow: 1_048_576)
+            try ContextPolicyResolver.resolve(global: invalidPCore, modelWindow: 1_048_576)
         }
 
         // Invalid config addressableBudget too small
         let smallBudget = ContextCacheConfiguration(
             addressableBudget: 100_000,
-            l1: ContextCacheL1Configuration(target: 80_000, softLimit: 90_000, hardLimit: 100_000),
-            l2: ContextCacheL2Configuration(max: 50_000)
+            pCore: ContextCachePCoreConfiguration(target: 80_000, softLimit: 90_000, hardLimit: 100_000),
+            eCore: ContextCacheECoreConfiguration(recallBudget: 50_000)
         )
         #expect(throws: ConfigurationValidationError.self) {
             try ContextPolicyResolver.resolve(global: smallBudget, modelWindow: 1_048_576)
@@ -55,20 +51,20 @@ import Foundation
         // Model override takes precedence
         let modelOverride = ContextCacheConfiguration(
             addressableBudget: 2_000_000,
-            l1: ContextCacheL1Configuration(target: 300_000, softLimit: 320_000, hardLimit: 350_000),
-            l2: ContextCacheL2Configuration(max: 500_000)
+            pCore: ContextCachePCoreConfiguration(target: 300_000, softLimit: 320_000, hardLimit: 350_000),
+            eCore: ContextCacheECoreConfiguration(recallBudget: 500_000)
         )
         let resolvedOverride = try ContextPolicyResolver.resolve(
             global: ContextCacheConfiguration(),
             modelWindow: 2_000_000,
             modelOverride: modelOverride
         )
-        #expect(resolvedOverride.l1Target == 300_000)
-        #expect(resolvedOverride.l2Max == 500_000)
+        #expect(resolvedOverride.pCoreTarget == 300_000)
+        #expect(resolvedOverride.eCoreRecallBudget == 500_000)
         #expect(resolvedOverride.addressableBudget == 2_000_000)
     }
 
-    @Test func cacheControllerEvictsToL2OnSoftLimitAndPromotesBack() async throws {
+    @Test func cacheControllerPagesOutToECoreAndRestoresByReference() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -86,33 +82,40 @@ import Foundation
             modelWindow: 100_000,
             economicThreshold: nil,
             reserve: 100,
-            l1Target: 10,
-            l1SoftLimit: 15,
-            l1HardLimit: 20,
-            l2Max: 1_000,
-            l3Capacity: 50_000
+            pCoreTarget: 10,
+            pCoreSoftLimit: 15,
+            pCoreHardLimit: 20,
+            eCoreStorageBudget: 50_000,
+            eCoreRecallBudget: 1_000
         )
         let controller = ContextCacheController(
             contextPager: pager,
             scanner: scanner,
-            policy: policy
+            policy: policy,
+            ecoreStore: ECoreObjectStore(baseDirectory: root.appendingPathComponent("ecore"))
         )
 
         let sessionID = SessionID("test-eviction")
         _ = try await controller.handleSearch(sessionID: sessionID, query: "alpha")
-        let l1AfterAlpha = await controller.l1UsageTokens(for: sessionID)
-        #expect(l1AfterAlpha > 0)
-        #expect(await controller.l2UsageTokens(for: sessionID) == 0)
+        let pCoreAfterAlpha = await controller.pCoreResidentTokens(for: sessionID)
+        #expect(pCoreAfterAlpha > 0)
+        #expect(await controller.eCoreObjectCount(for: sessionID) == 0)
 
-        // Adding beta will push L1 over softLimit (15 tokens), causing alpha to be demoted to L2
+        // Adding beta will push PCore over softLimit (15 tokens), causing alpha to be demoted to RecallCache
         _ = try await controller.handleSearch(sessionID: sessionID, query: "beta")
-        let l2AfterBeta = await controller.l2UsageTokens(for: sessionID)
-        #expect(l2AfterBeta > 0)
+        let eCoreAfterBeta = await controller.eCoreObjectCount(for: sessionID)
+        #expect(eCoreAfterBeta > 0)
+        let references = await controller.ecoreStore.references(sessionID: sessionID)
+        let alphaReference = try #require(references.first { $0.origin == .page && $0.summary.contains("FileA.swift") })
+        #expect(try await controller.ecoreStore.restore(sessionID: sessionID, referenceID: alphaReference.referenceID) == "func alpha() { print(\"alpha\") }")
+        let residency = await controller.residencyTelemetry(sessionID: sessionID)
+        #expect(residency.duplicateResidencyBytes == 0)
+
         let stats = await controller.pagingStats(for: sessionID)
         #expect(stats.demotions > 0)
         #expect(stats.pageOuts > 0)
 
-        // Searching alpha again promotes it from L2 warm cache back to L1
+        // Searching alpha again promotes it from RecallCache warm cache back to PCore
         _ = try await controller.handleSearch(sessionID: sessionID, query: "alpha")
         let statsAfterPromote = await controller.pagingStats(for: sessionID)
         #expect(statsAfterPromote.promotions > 0)
@@ -137,16 +140,16 @@ import Foundation
         let sessionB = SessionID("session-B")
 
         _ = try await controller.handleSearch(sessionID: sessionA, query: "SecretFact")
-        #expect(await controller.l1UsageTokens(for: sessionA) > 0)
+        #expect(await controller.pCoreResidentTokens(for: sessionA) > 0)
         #expect(await controller.residentPages(for: sessionA).count > 0)
 
         // Session B is completely isolated
-        #expect(await controller.l1UsageTokens(for: sessionB) == 0)
+        #expect(await controller.pCoreResidentTokens(for: sessionB) == 0)
         #expect(await controller.residentPages(for: sessionB).isEmpty)
 
         // Resetting Session A clears all its cached state
         await controller.resetSession(sessionA)
-        #expect(await controller.l1UsageTokens(for: sessionA) == 0)
+        #expect(await controller.pCoreResidentTokens(for: sessionA) == 0)
         #expect(await controller.residentPages(for: sessionA).isEmpty)
     }
 
@@ -171,7 +174,7 @@ import Foundation
         #expect(englishNoMatch.isEmpty)
     }
 
-    @Test func liveL1AccountingReflectsTurnCompletionAndDistinguishesProviderInput() async throws {
+    @Test func livePCoreAccountingReflectsTurnCompletionAndDistinguishesProviderInput() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -197,34 +200,34 @@ import Foundation
         let client = LingXiClient.inProcess(endpoint: host)
         let sessionID = try await client.createSession()
 
-    // Before any turn: the runtime system context is already resident in L1.
+    // Before any turn: the runtime system context is already resident in PCore.
     let initialProjection = try #require(await client.contextProjection(sessionID))
-    #expect(initialProjection.l1.usageTokens > 0)
+    #expect(initialProjection.pCore.usedTokens > 0)
         #expect(initialProjection.lastProviderInputTokens == nil)
 
         // Turn 1: "你好"
         let stream1 = try await client.sendMessage(sessionID: sessionID, content: "你好")
         for try await _ in stream1 {}
 
-        // After Turn 1: L1 resident usage must reflect both user prompt AND assistant response
+        // After Turn 1: PCore resident usage must reflect both user prompt AND assistant response
         let projection1 = try #require(await client.contextProjection(sessionID))
-        let turn1Usage = projection1.l1.usageTokens
+        let turn1Usage = projection1.pCore.usedTokens
         let turn1Input = try #require(projection1.lastProviderInputTokens)
 
-        // L1 resident usage must be strictly greater than the input token count sent before inference
+        // PCore resident usage must be strictly greater than the input token count sent before inference
         #expect(turn1Usage > turn1Input)
         #expect(turn1Usage > 0)
         #expect(turn1Input > 0)
-        #expect(projection1.l2.usageTokens == 0)
-        #expect(projection1.l3.usageTokens == 0)
+        #expect(projection1.eCore.objectCount == 0)
+        #expect(projection1.eCore.totalBytes == 0)
 
         // Turn 2: Multi-turn prompt
         let stream2 = try await client.sendMessage(sessionID: sessionID, content: "请介绍一下 Swift Concurrency 的核心概念。")
         for try await _ in stream2 {}
 
-        // After Turn 2: L1 usage and provider input must steadily grow
+        // After Turn 2: PCore usage and provider input must steadily grow
         let projection2 = try #require(await client.contextProjection(sessionID))
-        let turn2Usage = projection2.l1.usageTokens
+        let turn2Usage = projection2.pCore.usedTokens
         let turn2Input = try #require(projection2.lastProviderInputTokens)
 
         #expect(turn2Usage > turn1Usage)
@@ -247,11 +250,11 @@ import Foundation
                 modelWindow: 100_000,
                 economicThreshold: nil,
                 reserve: 100,
-                l1Target: 10,
-                l1SoftLimit: 15,
-                l1HardLimit: 20,
-                l2Max: 1_000,
-                l3Capacity: 50_000
+                pCoreTarget: 10,
+                pCoreSoftLimit: 15,
+                pCoreHardLimit: 20,
+                eCoreStorageBudget: 50_000,
+                eCoreRecallBudget: 1_000
             )
         )
 
@@ -316,11 +319,11 @@ import Foundation
                 modelWindow: 100_000,
                 economicThreshold: nil,
                 reserve: 100,
-                l1Target: 10,
-                l1SoftLimit: 15,
-                l1HardLimit: 20,
-                l2Max: 1_000,
-                l3Capacity: 50_000
+                pCoreTarget: 10,
+                pCoreSoftLimit: 15,
+                pCoreHardLimit: 20,
+                eCoreStorageBudget: 50_000,
+                eCoreRecallBudget: 1_000
             )
         )
 

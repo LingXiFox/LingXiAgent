@@ -305,7 +305,7 @@ struct PersistenceTests {
         #expect(try await store.agentRunResult(completed.runID)?.finalText == "complete")
     }
 
-    @Test func fullCoreRestartRestoresSessionAndDerivedRehydratesThroughL2() async throws {
+    @Test func fullCoreRestartRestoresSessionAndHistoricalRecall() async throws {
         let fixture = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: fixture) }
         let root = fixture.appendingPathComponent("Root", isDirectory: true)
@@ -330,7 +330,7 @@ struct PersistenceTests {
         try await derived.restore()
         let rehydrated = await derived.search(sessionID: sessionID, query: "PersistAnchor-729", limit: 1)
         #expect(rehydrated.map(\.content) == ["PersistAnchor-729"])
-        #expect((await derived.metrics(sessionID: sessionID)).l2Pages == 1)
+        #expect((await derived.metrics(sessionID: sessionID)).recallCachePages == 1)
         await second.shutdown()
     }
 }

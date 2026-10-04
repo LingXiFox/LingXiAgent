@@ -8,7 +8,7 @@ struct ContextProfilerTests {
         Message(id: MessageID(id), role: role, parts: parts, createdAt: Date())
     }
 
-    @Test func l1SnapshotKeepsSystemOrderStructureAndRevision() async {
+    @Test func pCoreSnapshotKeepsSystemOrderStructureAndRevision() async {
         var session = Session(id: SessionID("a"), createdAt: Date())
         let call = ToolCall(callID: ToolCallID("c"), toolID: ToolID("read_file"), arguments: #"{"path":"README.md"}"#)
         session.append(message("u", .user, [.text("hello")]))
@@ -30,7 +30,7 @@ struct ContextProfilerTests {
         #expect(second.modelMessages().last?.content == "answer")
     }
 
-    @Test func l1RevisionsAreSessionIsolated() async {
+    @Test func pCoreRevisionsAreSessionIsolated() async {
         let engine = PCoreContextEngine()
         let a = Session(id: SessionID("a"), createdAt: Date())
         let b = Session(id: SessionID("b"), createdAt: Date())
@@ -48,7 +48,7 @@ struct ContextProfilerTests {
         #expect(ContextQuery(currentTask: "Foo.Bar.baz").symbolHints == ["Foo.Bar.baz", "Foo.Bar", "Foo", "baz"])
     }
 
-    @Test func l1AddsProjectPagesAsSystemContextWithoutToolDuplicate() async {
+    @Test func pCoreAddsProjectPagesAsSystemContextWithoutToolDuplicate() async {
         var session = Session(id: SessionID("a"), createdAt: Date())
         session.append(message("u", .user, [.text("explain")]))
         session.append(message("t", .tool, [.toolResult(ToolResult(callID: ToolCallID("c"), success: true, content: "already read"))]))

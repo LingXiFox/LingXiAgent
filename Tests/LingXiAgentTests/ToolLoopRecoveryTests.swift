@@ -166,7 +166,50 @@ struct ToolLoopRecoveryTests {
         }
     }
 
-    // MARK: - 15. The step ceiling still holds
+    @Test("Default orchestration completes real mutations beyond 32 model steps")
+    func usefulWorkBeyond32StepsCompletes() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var script: [[ModelEvent]] = (1...35).map { i in
+            let call = ToolCall(callID: ToolCallID("write-\(i)"), toolID: ToolID("write_file"),
+                                arguments: "{\"path\":\"part\(i).txt\",\"content\":\"part \(i)\"}")
+            return [.toolCallStarted(callID: call.callID, toolID: call.toolID),
+                    .toolCallCompleted(call), .completed(.toolCalls)]
+        }
+        script.append([.textDelta("已写入并验证 35 个文件。"), .completed(.stop)])
+        let provider = ScriptedFakeProvider(script: script)
+        let client = try await makeClient(root: root, provider: provider)
+        let sessionID = try await client.createSession()
+        for try await _ in try await client.sendMessage(sessionID: sessionID, content: "创建这些文件") {}
+        #expect(provider.recorder.requests.count == 36)
+        for i in 1...35 {
+            #expect(try String(contentsOf: root.appendingPathComponent("part\(i).txt"), encoding: .utf8) == "part \(i)")
+        }
+        let snapshot = try await client.session(sessionID)
+        let results = snapshot.messages.flatMap(\.parts).compactMap { part -> ToolResult? in
+            if case let .toolResult(result) = part { return result }
+            return nil
+        }
+        #expect(results.count == 35)
+        #expect(results.allSatisfy { $0.success })
+    }
+
+    @Test("Changing failure observations beyond 32 steps can reach the model's report")
+    func recoveryBeyond32StepsReachesReport() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var script = (1...35).map { shellStep("recover-\($0)", "echo attempt-\($0); exit \($0 % 2 + 1)") }
+        script.append([.textDelta("检查结束，环境问题仍未解决。"), .completed(.stop)])
+        let provider = ScriptedFakeProvider(script: script)
+        let client = try await makeClient(root: root, provider: provider)
+        let sessionID = try await client.createSession()
+        for try await _ in try await client.sendMessage(sessionID: sessionID, content: "检查环境") {}
+        #expect(provider.recorder.requests.count == 36)
+        let snapshot = try await client.session(sessionID)
+        #expect(snapshot.messages.last?.content.contains("环境问题仍未解决") == true)
+    }
+
+    // MARK: - Explicit budgets still hold
 
     @Test("maximumAgentSteps still ends a run that keeps exploring")
     func stepCeilingHolds() async throws {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// L3 项目页存储。重建以文件版本为粒度，未变化文件的页面实例会被保留。
+/// ProjectIndex 项目页存储。重建以文件版本为粒度，未变化文件的页面实例会被保留。
 public actor ProjectPageStore {
     private var filesByProject: [String: [String: ScannedProjectFile]] = [:]
     private let symbolIndex: ProjectSymbolIndex

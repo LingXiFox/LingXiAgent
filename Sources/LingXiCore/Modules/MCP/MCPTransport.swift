@@ -102,7 +102,7 @@ public struct MCPStreamableHTTPTransport: MCPToolInvoker {
         return try MCPWire.resultText(response.data, contentType: response.contentType)
     }
 
-    /// tools/list stays outside the provider tool set; callers atomically install this completed generation into L3.
+    /// tools/list stays outside the provider tool set; callers atomically install this completed generation into ProjectIndex.
     public func listTools() async throws -> [MCPDiscoveredTool] {
         var sessionID: String?
         let initParams: [String: Any] = [

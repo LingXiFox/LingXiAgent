@@ -385,7 +385,7 @@ struct VNextProductionIntegrationTests {
         let snapshot = try await client.context.getState(sessionID: sessionID)
 
         #expect(snapshot.estimatedTokens > 0)
-        #expect(snapshot.l1Tokens > 0)
+        #expect((snapshot.pCore?.usedTokens ?? 0) > 0)
         await client.disconnect()
         await host.shutdown()
     }

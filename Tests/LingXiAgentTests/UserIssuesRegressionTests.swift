@@ -154,9 +154,6 @@ struct UserIssuesRegressionTests {
             sessionID: sID,
             revision: 2,
             estimatedTokens: 10_000,
-            l1Tokens: 10_000,
-            l2Tokens: 0,
-            l3Tokens: 0,
             compactionGeneration: 1,
             cacheReadTokens: 8_000,
             promptTokens: 10_000,
@@ -186,9 +183,6 @@ struct UserIssuesRegressionTests {
             sessionID: sID,
             revision: 1,
             estimatedTokens: 20,
-            l1Tokens: 20,
-            l2Tokens: 0,
-            l3Tokens: 0,
             compactionGeneration: 1,
             cacheReadTokens: nil,
             promptTokens: nil,
@@ -233,9 +227,6 @@ struct UserIssuesRegressionTests {
             sessionID: sID,
             revision: 3,
             estimatedTokens: 11_000,
-            l1Tokens: 11_000,
-            l2Tokens: 0,
-            l3Tokens: 0,
             compactionGeneration: 1,
             cacheReadTokens: 10_000,
             promptTokens: 11_000,
@@ -278,7 +269,7 @@ struct UserIssuesRegressionTests {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
-        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
+        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxPCoreResidentCharacters: 48 * 1024)
         let sessionID = SessionID("revert-baseline-sess")
 
         let remainingMessages = [

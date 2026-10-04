@@ -5,7 +5,7 @@ import LingXiCore
 import LingXiProtocol
 
 struct ProductionProjectionTests {
-    @Test func contextProjectionIsProducedByCoreWithIndependentLayers() async throws {
+    @Test func contextProjectionIsProducedByCoreWithCanonicalPEState() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -25,13 +25,11 @@ struct ProductionProjectionTests {
         for try await _ in stream {}
 
         let projection = try #require(try await client.contextProjection(sessionID))
-        #expect(projection.l1.layer == .l1)
         #expect(projection.policy.modelWindow == 10_000)
-        #expect(projection.l1.capacityTokens > 0)
-        #expect(projection.l1.percent != nil)
-        #expect(projection.l2.layer == .l2)
-        #expect(projection.l3.layer == .l3)
-        #expect(projection.l1 != projection.l2)
+        #expect((projection.pCore.targetTokens ?? 0) > 0)
+        #expect(projection.pCore.usedTokens == projection.pCoreTokens)
+        #expect(projection.eCore.objectCount == projection.eCoreObjectCount)
+        #expect(projection.eCore.totalBytes == projection.eCoreTotalBytes)
         await host.shutdown()
     }
 

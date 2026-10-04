@@ -55,7 +55,7 @@ struct SettingsClosureTests {
     }
 
     /// Every key declared in the drift table must be used by a control, or it is a key the GUI
-    /// knows about and shows nowhere — the `l3UseRemaining` case that sat unused for rounds.
+    /// knows about and shows nowhere — the `projectIndexUseRemaining` case that sat unused for rounds.
     @Test("no declared ConfigKey is orphaned from every control")
     func declaredKeysAreUsed() throws {
         let keys = try source("Apps/macOS/FrontendKit/Settings/CoreConfigFile.swift")

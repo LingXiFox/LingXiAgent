@@ -52,9 +52,8 @@ struct WireCodableTests {
             .sessionDetail(snapshot),
             .contextProjection(ContextCacheProjection(
                 sessionID: SessionID("s-1"),
-                l1: ContextLayerStatus(layer: .l1, usage: 10, capacity: 100, unit: "tokens", percent: 10, state: .available),
-                l2: ContextLayerStatus(layer: .l2, usage: 20, capacity: 200, unit: "characters", percent: 10, state: .available),
-                l3: ContextLayerStatus(layer: .l3, usage: 1, capacity: 10, unit: "pages", percent: 10, state: .available),
+                pCore: PCoreStateSnapshot(usedTokens: 10, targetTokens: 100),
+                eCore: ECoreStateSnapshot(objectCount: 1, totalBytes: 20),
                 pagingActivity: .idle,
                 compactionGeneration: 1
             )),

@@ -114,7 +114,7 @@ import LingXiProtocol
         let controller = ContextCacheController(
             contextPager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet()),
             scanner: ProjectScanner(root: root),
-            maxL1ResidentCharacters: 16000
+            maxPCoreResidentCharacters: 16000
         )
         let sessionID = SessionID("provider-a-session")
 
@@ -153,7 +153,7 @@ import LingXiProtocol
         let controller = ContextCacheController(
             contextPager: ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet()),
             scanner: ProjectScanner(root: root),
-            maxL1ResidentCharacters: 16000
+            maxPCoreResidentCharacters: 16000
         )
         let sessionID = SessionID("provider-c-session")
 
@@ -305,7 +305,7 @@ import LingXiProtocol
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
-        return ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
+        return ContextCacheController(contextPager: pager, scanner: scanner, maxPCoreResidentCharacters: 48 * 1024)
     }
 
     private func makeTool(id: String, name: String, desc: String = "Test tool") -> ToolDefinition {

@@ -101,8 +101,8 @@ README 里仍有整段旧架构与不可复现数字，和本轮修正后的官�
 | 75 | 冷启动 ~10ms、内存 ~35MB | 无复现 benchmark |
 | 82 | 动态宿主感知与**反封锁伪装** | 绝对化宣传 |
 | 87 | 无缝兼容 **75+** 模型 | 硬编码计数，目录已统一由 Models Hub 发布 |
-| 136 / 238 / 249 | 60FPS、三级缓存水位 | 未实测数字 + 旧架构 |
-| 156 / 212-228 | `ContextCompactor`、L1 Hot / L2 Warm / L3 Cold 与 mermaid 图 | 已废弃架构，官网已按 P/E 重写 |
+| 136 / 238 / 249 | 60FPS、P/E-Core context水位 | 未实测数字 + 旧架构 |
+| 156 / 212-228 | `ContextCompactor`、PCore Hot / RecallCache Warm / ProjectIndex Cold 与 mermaid 图 | 已废弃架构，官网已按 P/E 重写 |
 | 370 | Frontend「允许自由分发二次上架」 | 与 `LICENSE-MATRIX.md` 的 binary: no 口径不一致（许可文本，需主人定夺） |
 
 建议下一步单独一轮：把 README 的架构与能力段落按官网同一套判据重写，并把

@@ -29,7 +29,7 @@ P-Core
 E-Core
 ```
 
-L1/L2/L3 不再具有架构语义。
+运行时架构只有 P-Core 与 E-Core。
 
 ## 1. P-Core
 
@@ -134,7 +134,7 @@ E-Core
 P-Core
 ```
 
-因此不要再把 E-Core 定义成单纯 Cache、Warm Layer 或 L2/L3。
+因此不要再把 E-Core 定义成单纯 Cache、Warm Layer 或 RecallCache/ProjectIndex。
 
 ---
 
@@ -1192,71 +1192,25 @@ ContextCompaction 的 page-in 使用 Exact Restore。
 
 ---
 
-# 十、L1/L2/L3 彻底退出架构语义
+# 十、P/E-Core 唯一运行时语义
 
-权威字段已经是：
+权威预算仅有 `pCoreTarget / pCoreSoftLimit / pCoreHardLimit / reserve` 与
+`eCoreStorageBudget / eCoreRecallBudget / eCorePressureThreshold`。
+P-Core 是本次请求的活跃上下文；E-Core 是引用寻址的完整对象存储。
 
-```text
-pCoreTarget
-pCoreSoftLimit
-pCoreHardLimit
-eCoreStorageBudget
-eCoreRecallBudget
-```
+P→E page-out 的唯一载荷入口是 `ECoreObjectStore.pageOut`。
+取回必须按 `referenceID → objectID → payload`；P-Core 索引只能保存轻量引用。
+项目查询缓存、项目源代码索引和 MCP 使用计数按各自职责命名，不能成为额外上下文核心。
 
-继续以这些字段为唯一真实模型。
+# 十一、配置与协议收敛（2026-10-03）
 
-以下内容全部视为 Legacy terminology：
+本次明确结束预算别名兼容周期。配置只使用 `context.pCore / context.eCore`；
+Agent 字符预算只使用 `pCoreProjectMaxCharacters / eCoreRecallMaxCharacters`。
+有效策略和新的运行时快照只编码 P/E 字段，不再双写废弃预算字段。
+主 GUI、TUI、Web UI 与 Observatory 消费同一份 P/E 状态。
 
-```text
-l1Target
-l2Max
-l3Capacity
-
-L1ContextEngine
-L1ResidentPage
-WarmL2Entry
-L2WorkingSetPolicy
-
-l2Hits
-l3Hits
-l2Promotions
-```
-
-在 P/E 生命周期和 Store 收敛后，对它们进行清理或按真实职责重命名。
-
-不要再创造新的 L1/L2/L3 类型。
-
----
-
-# 十一、旧配置键兼容
-
-旧用户配置不能静默失效。
-
-例如：
-
-```text
-.agent.l1ProjectMaxCharacters
-.agent.l2MaxCharacters
-```
-
-新增 P/E 命名配置。
-
-读取优先级固定：
-
-```text
-new P/E key
-↓
-legacy L1/L2 key
-↓
-default
-```
-
-旧键仍然可读取，但标记 deprecated。
-
-GUI 只显示新的 P/E 术语。
-
-旧配置键至少保留一个正式兼容周期。
+会话、工具证据和 E-Core 引用不因接口迁移而清空。持久化的 P/E 快照仍可解码。
+迁移前的配置需要先转换为当前 schema；不恢复废弃的运行时接口。
 
 ---
 
@@ -1716,7 +1670,7 @@ dirtyPathCount
 7. 修复 activeFileAffinity 数据流
 8. 增加 reconstructability 信号
 9. 修复 BranchPrediction per-session state 清理，但不接 eviction
-10. 清理内部 L1/L2/L3 生命周期语义
+10. 统一内部 P/E-Core 生命周期语义
 11. 增加旧配置键兼容读取
 12. 实现 Git RPC Surface
 13. Git mutation 全部接入 ToolMutationCoordinator
@@ -1770,9 +1724,9 @@ E-Core Heat
 ```
 
 ```text
-L1/L2/L3
+P/E-Core
 =
-不再具有运行时架构意义
+唯一运行时上下文架构
 ```
 
 Git 必须满足：
@@ -1829,22 +1783,15 @@ E-Core 是 P/E 架构的**必选逻辑核心**，不存在「关闭 E-Core 后�
 现有 `ecoreStorageEnabled` 的命名 / 配置兼容迁移纳入第十、十一节的 P/E 术语清理：旧键可以兼容读取，但内部权威语义为 `eCorePersistenceEnabled`。
 ---
 
-# 落地记录（第十、十一节）
+# 落地记录（第十、十一节，2026-10-03 更新）
 
-已收敛：
-
-- P→E 唯一入口：`ContextCompactor` 只调用 `ECoreObjectStore.pageOut(...)`；`DerivedContextStore` 的写入 API 改名为 `insertLegacyPage`，生产路径无调用者，因此不存在两套 store 并行写入。
-- P-Core 的 E-Core Index Projection 由引用重建，只携带 `referenceID / origin / turn / summary`，不再内联完整 payload；索引自身受预算约束（≤ min(512 tokens, hardInput/8)，且不超过 hardInputLimit）。
-- Exact Restore：`referenceID → ECoreReference → objectID → payload`；`context_recall` 走 summary 命中后再按 referenceID 精确取回。
-- Context Value Eviction 按第四节冻结公式实现（`ContextValueEviction.swift`），pinned 直接从候选集排除，同分按 4.16 五级 tie-break，scorer 不可用时 Fail-Open 退回确定性旧顺序。
-- L 命名类型退出架构语义：`L1ContextEngine→PCoreContextEngine`、`L1ContextSnapshot→PCoreSnapshot`、`L1ContextPolicy→PCorePolicy`、`L1ResidentPage→PCoreResidentPage`、`WarmL2Entry→WarmRecallEntry`、`L2WorkingSet*→WorkingSet*/RecallWorkingSet`。门禁测试 `PCoreTerminologyGateTests` 阻止再新增 L 类型。
-- 旧配置键兼容：`agent.l1ProjectMaxCharacters`/`agent.l2MaxCharacters`/`context.fabric.ecoreStorageEnabled` 仍可读，优先级固定为 新键 → 旧键 → 默认；写入与重置只作用于新键；GUI 只显示 P/E 术语。
-
-仍在一个正式兼容周期内、按第十一节保留（不参与生命周期语义，随周期结束删除）：
-
-- `ContextCacheL1/L2/L3Configuration`：旧配置文件键的解码垫片。
-- `EffectiveContextPolicy` 上的 `l1Target/l1SoftLimit/l1HardLimit/l2Max/l3Capacity/l3Enabled` 只读别名。
-- Debug / 协议 observability 字段名（`l2Hits`、`l3Hits`、`l2Promotions`、`l1ResidentCount` 等）。它们统计的是 Legacy DerivedContextStore 的只读回退命中，本身已随 store 一起进入 legacy 状态；改名涉及线上协议字段，与能力/模式/契约测试同步处理，不单独半改。
+- P→E：历史上下文和移出的检索页面均写入 `ECoreObjectStore.pageOut`。
+- E→P：按引用精确恢复；历史持久化页面只作为读取迁移来源。
+- `ContextCacheProjection` 和 `ContextStateSnapshot` 共享 `PCoreStateSnapshot / ECoreStateSnapshot`。
+- Context 占用与 P-Core 使用相同活跃请求口径；E-Core 独立统计对象数与字节数。
+- `EffectiveContextPolicy` 的原子 generation 更新与 prefix NO-OP guard 保持不变。
+- 门禁覆盖代码、接口、schema 和架构文档，禁止再次引入废弃分层标识。
+- Context Value Eviction 公式与既有 tie-break 不变；本次只迁移存储入口和职责命名。
 
 ---
 

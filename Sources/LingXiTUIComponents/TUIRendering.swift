@@ -2783,7 +2783,7 @@ public final class TUIApp {
         }
         if currentY < bottomY { currentY += 1 } // 空行
 
-        // 2. 缓存用量 (含 L1/L2/L3 及真实提供商 Prefix Cache 命中率)（固定常驻）
+        // 2. 缓存用量 (含 PCore/RecallCache/ProjectIndex 及真实提供商 Prefix Cache 命中率)（固定常驻）
         if currentY < bottomY {
             writeLine("◈ 缓存用量", style: .sidebarHeader)
             if let prefix = model.prefixCache {

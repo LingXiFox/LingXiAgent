@@ -364,7 +364,7 @@
 }</pre>
         </div>
         <p class="text-[11px] text-zinc-500 leading-relaxed mb-2">
-          旧键 <code class="text-zinc-300">l1ProjectMaxCharacters</code> / <code class="text-zinc-300">l2MaxCharacters</code> 与 <code class="text-zinc-300">context.l1/l2/l3</code>、<code class="text-zinc-300">ecoreStorageEnabled</code> 仍可读，用于向后兼容；读取优先级为「新 P/E 键 → 旧键 → 默认值」，写入只落新键。这些旧名不代表三级缓存架构，当前架构只有 P-Core 与 E-Core。
+          旧键 <code class="text-zinc-300">pCoreProjectMaxCharacters</code> / <code class="text-zinc-300">eCoreRecallMaxCharacters</code> 与 <code class="text-zinc-300">context.pCore/recallCache/projectIndex</code>、<code class="text-zinc-300">ecoreStorageEnabled</code> 仍可读，用于向后兼容；读取优先级为「新 P/E 键 → 旧键 → 默认值」，写入只落新键。这些旧名不代表P/E-Core context架构，当前架构只有 P-Core 与 E-Core。
         </p>
       </article>
 
@@ -455,7 +455,7 @@
         </div>
 
         <div class="p-4 rounded-xl bg-amber-950/20 border border-amber-800/40 text-xs text-zinc-300 leading-relaxed">
-          <strong class="text-amber-300">职责边界（易被误解处）：</strong>P-Core 的淘汰由 <strong>P 侧保留策略</strong>决定；E-Core heat 只服务于召回排序、缓存与可观测性，<strong class="text-zinc-200">不驱动 P-Core eviction</strong>。历史文档中的「三级缓存 L1/L2/L3」语义已废弃，当前架构只有上述两个核心。
+          <strong class="text-amber-300">职责边界（易被误解处）：</strong>P-Core 的淘汰由 <strong>P 侧保留策略</strong>决定；E-Core heat 只服务于召回排序、缓存与可观测性，<strong class="text-zinc-200">不驱动 P-Core eviction</strong>。历史文档中的「P/E-Core context PCore/RecallCache/ProjectIndex」语义已废弃，当前架构只有上述两个核心。
         </div>
       </article>
 

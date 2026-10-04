@@ -139,8 +139,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
     }
     internal let debugModeStore: DebugModeStore
     private let mcpPager: MCPToolPager
-    private let l2CharacterCapacity: Int
-    private let l1ProjectCharacterCapacity: Int
+    private let eCoreRecallCharacterCapacity: Int
+    private let pCoreProjectCharacterCapacity: Int
     private let behaviorProfile: AgentBehaviorProfile
     private let behaviorInstructionsEnabled: Bool
     private var behaviorSystemContext: @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String?
@@ -253,6 +253,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
 
     public let runtimeEventLog: RuntimeEventLog
     private var sessionCoordinators: [SessionID: SessionTurnCoordinator] = [:]
+    private var sessionCoordinatorTasks: [SessionID: Task<SessionTurnCoordinator, Error>] = [:]
     private let idempotencyJournal: IdempotencyJournal
     let inFlightLock = InFlightMutationLock()
     public let commandWAL: DurableCommandWAL
@@ -449,8 +450,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
         let eCoreRecallBudget = agentSettings.eCoreRecallMaxCharacters
         let pCoreProjectBudget = agentSettings.pCoreProjectMaxCharacters
-        l2CharacterCapacity = eCoreRecallBudget
-        l1ProjectCharacterCapacity = pCoreProjectBudget
+        eCoreRecallCharacterCapacity = eCoreRecallBudget
+        pCoreProjectCharacterCapacity = pCoreProjectBudget
         let pager = ContextPager(store: ProjectPageStore(persistence: persistent), workingSet: RecallWorkingSet(characterBudget: eCoreRecallBudget), projectCharacterBudget: pCoreProjectBudget)
         let scanner = ProjectScanner(root: workspace.url, sensitivePathPolicy: sensitivePaths)
         let effective = providerAssembly ?? .unavailable
@@ -1361,75 +1362,27 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         let snapshot = try await agent.ensureContextSnapshot(sessionID)
         let manifest = await agent.latestContextManifest(sessionID)
 
-        let l1Usage = await cacheController.l1UsageTokens(for: sessionID)
-        let effectiveL1Usage = l1Usage > 0 ? l1Usage : snapshot.metrics.estimatedTokens
-        let l1Count = await cacheController.l1Count(for: sessionID)
-        let effectiveL1Count = l1Count > 0 ? l1Count : snapshot.entries.count
-
-        let l2Usage = await cacheController.l2UsageTokens(for: sessionID)
-        let l2Count = await cacheController.l2Count(for: sessionID)
-
-        let l3Usage = await cacheController.l3UsageTokens(for: sessionID)
-        let l3Count = await cacheController.l3Count(for: sessionID)
-
+        let state = await buildContextStateSnapshot(sessionID: sessionID)
         let pagingStats = await cacheController.pagingStats(for: sessionID)
         let lastInputTokens = await cacheController.lastProviderInputTokens(for: sessionID)
         let cacheTelemetry = ProviderCacheTelemetry.aggregate(
             (await performanceStore.providerCalls(for: sessionID)).compactMap(\.cacheTelemetry)
         )
-
-        let l1Status = ContextLayerStatus(
-            layer: .l1,
-            usageTokens: effectiveL1Usage,
-            capacityTokens: effectiveContextPolicy.l1Target,
-            entryCount: effectiveL1Count,
-            state: effectiveL1Usage == 0 ? .empty : .available,
-            pageInCount: pagingStats.pageIns,
-            pageOutCount: pagingStats.pageOuts
-        )
-
-        let l2Status = ContextLayerStatus(
-            layer: .l2,
-            usageTokens: l2Usage,
-            capacityTokens: effectiveContextPolicy.l2Max,
-            entryCount: l2Count,
-            state: l2Usage == 0 ? .empty : .available,
-            pageInCount: pagingStats.promotions,
-            pageOutCount: pagingStats.demotions
-        )
-
-        let l3State: ContextLayerState = effectiveContextPolicy.l3Enabled ? (l3Usage == 0 ? .empty : .available) : .unavailable
-        let l3Status = ContextLayerStatus(
-            layer: .l3,
-            usageTokens: l3Usage,
-            capacityTokens: effectiveContextPolicy.l3Capacity,
-            entryCount: l3Count,
-            state: l3State,
-            pageInCount: 0,
-            pageOutCount: 0
-        )
-
-        let ecoreMetrics = await cacheController.ecoreStore.storageMetrics(for: sessionID)
-        let ecoreCount = ecoreMetrics.count
-        let ecoreBytes = ecoreMetrics.totalBytes
-        let debtState = await cacheController.scheduler.debtState(for: sessionID)
-
         return ContextCacheProjection(
             sessionID: sessionID,
             policy: ContextCachePolicySnapshot(policy: effectiveContextPolicy),
-            l1: l1Status,
-            l2: l2Status,
-            l3: l3Status,
+            pCore: state.pCore ?? PCoreStateSnapshot(usedTokens: 0),
+            eCore: state.eCore ?? ECoreStateSnapshot(objectCount: 0, totalBytes: 0),
             paging: pagingStats,
             pagingActivity: contextActivity,
             compactionGeneration: snapshot.metrics.compactionGeneration,
             latestManifest: manifest,
             lastProviderInputTokens: lastInputTokens,
             cacheTelemetry: cacheTelemetry,
-            pCoreTokens: effectiveL1Usage,
-            eCoreObjectCount: ecoreCount,
-            eCoreTotalBytes: ecoreBytes,
-            cacheDebt: debtState.cacheDebt
+            pCoreTokens: state.pCore?.usedTokens,
+            eCoreObjectCount: state.eCore?.objectCount,
+            eCoreTotalBytes: state.eCore?.totalBytes,
+            cacheDebt: state.providerCache?.cacheDebt
         )
     }
 
@@ -2545,6 +2498,17 @@ extension CoreHost {
         if let existing = sessionCoordinators[sessionID] {
             return existing
         }
+        if let pending = sessionCoordinatorTasks[sessionID] {
+            return try await pending.value
+        }
+        // Attachment and runtime refresh must share one event log across actor suspension.
+        let task = Task { try await self.initializeSessionCoordinator(for: sessionID) }
+        sessionCoordinatorTasks[sessionID] = task
+        defer { sessionCoordinatorTasks.removeValue(forKey: sessionID) }
+        return try await task.value
+    }
+
+    private func initializeSessionCoordinator(for sessionID: SessionID) async throws -> SessionTurnCoordinator {
         _ = try await sessionStore.session(sessionID)
         let eventLog = SessionEventLog(sessionID: sessionID, storageDirectory: eventLogStorageDirectory)
         let coord = SessionTurnCoordinator(sessionID: sessionID, eventLog: eventLog, todoStore: self.todoStore)
@@ -2586,11 +2550,8 @@ extension CoreHost {
 
     private func buildContextStateSnapshot(sessionID: SessionID) async -> ContextStateSnapshot {
         let snapshot = try? await agent?.ensureContextSnapshot(sessionID)
-        let l1Usage = await cacheController.l1UsageTokens(for: sessionID)
-        let effectiveL1Usage = l1Usage > 0 ? l1Usage : (snapshot?.metrics.estimatedTokens ?? 0)
-        let l2Usage = await cacheController.l2UsageTokens(for: sessionID)
-        let l3Usage = await cacheController.l3UsageTokens(for: sessionID)
-        let estimatedTokens = effectiveL1Usage + l2Usage + l3Usage
+        let pCoreUsage = await cacheController.pCoreResidentTokens(for: sessionID)
+        let effectivePCoreUsage = pCoreUsage > 0 ? pCoreUsage : (snapshot?.metrics.estimatedTokens ?? 0)
         let generation = snapshot?.metrics.compactionGeneration ?? 0
 
         let cacheRecord = await cacheController.lastProviderCacheRecord(for: sessionID)
@@ -2603,7 +2564,7 @@ extension CoreHost {
         let goalText = goalProgress.map { "#\($0.steps) \($0.text)" }
         let prediction = await BranchPredictionRuntime.shared.snapshot(sessionID)
         let lastInput = await cacheController.lastProviderInputTokens(for: sessionID) ?? 0
-        var pCoreTokens = cacheRecord?.promptTokens ?? max(effectiveL1Usage, lastInput)
+        var pCoreTokens = cacheRecord?.promptTokens ?? max(effectivePCoreUsage, lastInput)
         if pCoreTokens == 0, let histSession = try? await sessionStore.session(sessionID) {
             let msgTokens = histSession.messages.reduce(0) { $0 + max(1, $1.content.utf8.count / 4) }
             if msgTokens > 0 { pCoreTokens = msgTokens }
@@ -2617,9 +2578,9 @@ extension CoreHost {
         let policy = effectiveContextPolicy
         let pCoreSnapshot = PCoreStateSnapshot(
             usedTokens: pCoreTokens,
-            targetTokens: policy.l1Target,
-            softLimitTokens: policy.l1SoftLimit,
-            hardLimitTokens: policy.l1HardLimit
+            targetTokens: policy.pCoreTarget,
+            softLimitTokens: policy.pCoreSoftLimit,
+            hardLimitTokens: policy.pCoreHardLimit
         )
 
         let eCoreSnapshot = ECoreStateSnapshot(
@@ -2649,7 +2610,8 @@ extension CoreHost {
             pCore: pCoreSnapshot,
             eCore: eCoreSnapshot,
             providerCache: providerCacheSnapshot,
-            estimatedTokens: estimatedTokens,
+            // Stored history and warm recall are not active provider input.
+            estimatedTokens: pCoreTokens,
             compactionGeneration: generation,
             structuralPrefixStability: clientHealth.map { $0.prefixMutationDetected ? 0.0 : 1.0 },
             clientCausedBustRate: clientHealth?.clientCausedBustRate,
@@ -4077,7 +4039,7 @@ extension CoreHost {
             let coord = try await coordinator(for: sessionID)
             try await coord.resetForRevert(remainingMessages: remainingMessages)
 
-            // P-E 双核心架构协同：清理被撤回的 E-Core 对象，精确重估 P-Core (L1) Tokens 并重置缓存调度器
+            // P-E 双核心架构协同：清理被撤回的 E-Core 对象，精确重估 P-Core (PCore) Tokens 并重置缓存调度器
             await cacheController.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
             await compactor.reset(sessionID: sessionID)
             await contextEngine.reset(for: sessionID)

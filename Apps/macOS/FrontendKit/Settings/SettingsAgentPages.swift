@@ -391,7 +391,7 @@ struct AgentDefaultsSettingsPage: View {
                 .lxSettingsRow()
                 .settingsAnchor("agent.reasoning")
 
-                ConfigNumberField(title: "单轮最大步数", info: "一次回合内 Agent 循环的步数上限。",
+                ConfigNumberField(title: "单轮最大步数", info: "0 表示不设固定步数上限；正数是显式硬预算。取消、超时与无进展保护始终有效。",
                                   key: ConfigKeys.maxAgentLoopSteps, store: store)
                 ConfigOptionalNumberField(title: "首选活跃 Token 预算",
                                           info: "覆盖 ContextBudgetPlanner 按模型窗口推导的活跃预算。"

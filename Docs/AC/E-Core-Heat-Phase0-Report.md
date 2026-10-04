@@ -197,4 +197,4 @@ $$Heat(t) = \left( N_{access} + 2 \times N_{recall} \right) \times 0.5^{\frac{\D
 | :--- | :--- | :--- |
 | **Phase 0 (当前交付)** | 旁路遥测与派生热度基础状态 | `ECoreAccessEvent`, `ECoreTelemetryLogger`, `ECoreHeatSnapshot`, `eCoreHeatSnapshot` |
 | **Phase 1 (反馈增强)** | 关联后续对齐反馈信号（Follow-up 引用率、二次召回率） | `ECoreAccessEvent.turnID`, `revision`, `toolCallID` 关联，派生满意度度量 |
-| **Phase 2 (分级调度)** | 热区上下文内存驻留与冷区归档调度 | `ECoreHeatState.candidateZone` (`hot`/`cold`)，与 `ContextCacheController` L1/L2 联动 |
+| **Phase 2 (分级调度)** | 热区上下文内存驻留与冷区归档调度 | `ECoreHeatState.candidateZone` (`hot`/`cold`)，与 `ContextCacheController` P/E-Core 联动 |

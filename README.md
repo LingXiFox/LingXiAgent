@@ -222,7 +222,7 @@ flowchart LR
 3. **E-Core heat 不参与淘汰**：heat（含 `heatDecayHalfLifeSeconds` 衰减）只服务召回排序、缓存与可观测性。
 4. **配置键即事实**：上述阈值全部来自 `config.json` 的 `context` 分段，语义以 `Sources/LingXiCore/Configuration/ConfigurationTypes.swift` 为准，详见 [/docs.html#arch-context](https://agent.lingxifox.cn/docs.html#arch-context)。
 
-> 历史文档中的「三级缓存 L1 / L2 / L3」与 `ContextCompactor` 冷热分级语义**已废弃**；当前架构只有 P-Core 与 E-Core 两个核心。`config.json` 里残留的 `l1/l2/l3`、`ecoreStorageEnabled` 等旧键只用于向后兼容读取，写入只落新的 P/E 键。
+> 历史文档中的「P/E-Core context PCore / RecallCache / ProjectIndex」与 `ContextCompactor` 冷热分级语义**已废弃**；当前架构只有 P-Core 与 E-Core 两个核心。`config.json` 里残留的 `pCore/recallCache/projectIndex`、`ecoreStorageEnabled` 等旧键只用于向后兼容读取，写入只落新的 P/E 键。
 
 ---
 

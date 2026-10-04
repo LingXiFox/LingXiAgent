@@ -100,7 +100,7 @@ struct UnifiedRetrievalPhaseGTests {
 
         // 公共代码库切片
         let publicCodeChunk = RetrievalChunk(
-            chunkID: "code:SharedConfig.swift#L1-L20",
+            chunkID: "code:SharedConfig.swift#PCore-L20",
             sourceType: .codebaseFile,
             sourceID: "SharedConfig.swift",
             rawSourceHandle: .codebase(path: "SharedConfig.swift", startLine: 1, endLine: 20),
@@ -128,9 +128,9 @@ struct UnifiedRetrievalPhaseGTests {
 
         // 4. 公共代码切片对所有 Session 可见
         let codeResultsA = snapshot.search(query: "SharedConfig defaultPort", scope: .all, sessionID: sessionA)
-        #expect(codeResultsA.contains(where: { $0.chunk.chunkID == "code:SharedConfig.swift#L1-L20" }))
+        #expect(codeResultsA.contains(where: { $0.chunk.chunkID == "code:SharedConfig.swift#PCore-L20" }))
         let codeResultsB = snapshot.search(query: "SharedConfig defaultPort", scope: .all, sessionID: sessionB)
-        #expect(codeResultsB.contains(where: { $0.chunk.chunkID == "code:SharedConfig.swift#L1-L20" }))
+        #expect(codeResultsB.contains(where: { $0.chunk.chunkID == "code:SharedConfig.swift#PCore-L20" }))
     }
 
     // MARK: - 3. 生产 Tool 注册表与 ToolRuntime 端到端闭环验证 (Audit Phase G)

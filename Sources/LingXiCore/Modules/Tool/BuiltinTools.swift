@@ -1829,7 +1829,7 @@ package struct ContextRetrieveTool: ToolExecutor {
         self.cacheController = cacheController
         self.definition = ToolDefinition(
             id: ToolID(id),
-            description: "Search and retrieve relevant context from the project codebase index or compacted session history. The runtime cache controller evaluates weighted priority and pages the highest relevance entries into the L1 working set.",
+            description: "Search and retrieve relevant context from the project codebase index or compacted session history. The runtime cache controller evaluates weighted priority and pages the highest relevance entries into the P-Core working set.",
             inputSchema: ToolInputSchema(
                 properties: [
                     "query": ToolInputProperty(type: .string, description: "Search query describing what context to retrieve"),

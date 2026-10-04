@@ -510,17 +510,17 @@ struct TUIRenderingTests {
     }
 
     @Test func cacheLayersFormatUsedOverTotalCorrectly() {
-        let l1Cap = 220_000
-        let l2Cap = 350_000
-        let l3Cap = 456_576
+        let pCoreCap = 220_000
+        let recallCacheCap = 350_000
+        let projectIndexCap = 456_576
 
-        let l1Formatted = "\(TokenFormatter.format(0))/\(TokenFormatter.format(l1Cap))"
-        let l2Formatted = "\(TokenFormatter.format(15_000))/\(TokenFormatter.format(l2Cap))"
-        let l3Formatted = "\(TokenFormatter.format(2_500_000))/\(TokenFormatter.format(l3Cap))"
+        let pCoreFormatted = "\(TokenFormatter.format(0))/\(TokenFormatter.format(pCoreCap))"
+        let recallCacheFormatted = "\(TokenFormatter.format(15_000))/\(TokenFormatter.format(recallCacheCap))"
+        let projectIndexFormatted = "\(TokenFormatter.format(2_500_000))/\(TokenFormatter.format(projectIndexCap))"
 
-        #expect(l1Formatted == "0/220K")
-        #expect(l2Formatted == "15K/350K")
-        #expect(l3Formatted == "2.50M/457K")
+        #expect(pCoreFormatted == "0/220K")
+        #expect(recallCacheFormatted == "15K/350K")
+        #expect(projectIndexFormatted == "2.50M/457K")
     }
 
     @Test func heroCenteredModeRendersLogoAndBoxAndTips() {
@@ -703,9 +703,9 @@ struct TUIRenderingTests {
         app.heroConfig = nil
 
         let cacheLayers = [
-            TUISidebarModel.CacheLayer(name: "L1", usedTokens: 15_000, capacityTokens: 220_000),
-            TUISidebarModel.CacheLayer(name: "L2", usedTokens: 38_000, capacityTokens: 350_000),
-            TUISidebarModel.CacheLayer(name: "L3", usedTokens: 120_000, capacityTokens: 456_576)
+            TUISidebarModel.CacheLayer(name: "PCore", usedTokens: 15_000, capacityTokens: 220_000),
+            TUISidebarModel.CacheLayer(name: "RecallCache", usedTokens: 38_000, capacityTokens: 350_000),
+            TUISidebarModel.CacheLayer(name: "ProjectIndex", usedTokens: 120_000, capacityTokens: 456_576)
         ]
 
         let mcpItems = [
@@ -743,9 +743,9 @@ struct TUIRenderingTests {
 
         // 2. 缓存用量模块与全宽进度条字符
         #expect(renderedText.contains("◈ 缓存用量"))
-        #expect(renderedText.contains("L1: 15K/220K"))
-        #expect(renderedText.contains("L2: 38K/350K"))
-        #expect(renderedText.contains("L3: 120K/457K"))
+        #expect(renderedText.contains("PCore: 15K/220K"))
+        #expect(renderedText.contains("RecallCache: 38K/350K"))
+        #expect(renderedText.contains("ProjectIndex: 120K/457K"))
         #expect(renderedText.contains("█") && renderedText.contains("░"))
 
         // 3. MCP 工具模块与状态
@@ -797,15 +797,15 @@ struct TUIRenderingTests {
 
     @Test func statusLineDoesNotContainRedundantCacheMetrics() {
         let status = StatusLine()
-        // 模拟 Agent 处于工作模式下的状态文字（三级缓存已移入右侧侧边栏，状态栏不再显示 context L1/L2/L3）
+        // 模拟 Agent 处于工作模式下的状态文字（P/E-Core context已移入右侧侧边栏，状态栏不再显示 context PCore/RecallCache/ProjectIndex）
         let workingStatus = "Ready  ·  deepseek-v4-flash (high)  ·  LingXiAgent  ·  Build  ·  Ask/Workspace"
         status.text = workingStatus
         let rendered = status.render(width: 80)
         
         #expect(!rendered.text.contains("context"))
-        #expect(!rendered.text.contains("L1"))
-        #expect(!rendered.text.contains("L2"))
-        #expect(!rendered.text.contains("L3"))
+        #expect(!rendered.text.contains("PCore"))
+        #expect(!rendered.text.contains("RecallCache"))
+        #expect(!rendered.text.contains("ProjectIndex"))
         #expect(rendered.text.contains("deepseek-v4-flash (high)"))
         #expect(rendered.text.contains("Build"))
     }
@@ -1065,7 +1065,7 @@ struct TUIRenderingTests {
         app.sidebarModel = TUISidebarModel(
             summary: "前缀缓存与完整展示测试",
             cacheLayers: [
-                TUISidebarModel.CacheLayer(name: "L1", usedTokens: 10_000, capacityTokens: 220_000)
+                TUISidebarModel.CacheLayer(name: "PCore", usedTokens: 10_000, capacityTokens: 220_000)
             ],
             prefixCache: TUISidebarModel.PrefixCacheStats(cachedTokens: 1152, promptTokens: 1250),
             mcpItems: mcpItems,

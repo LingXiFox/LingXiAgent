@@ -140,7 +140,7 @@ struct FullCoreStackV1Tests {
         let pager = try await mcpPager(server: mcpServer)
         let preflight = await pager.search(sessionID: SessionID("vcr-preflight"), projectID: ProjectID("vcr-preflight"), query: "full-core-stack-v1")
         guard let anchor = preflight.first(where: { $0.toolID == ToolID("vcr-fixture::lookup_anchor") }), anchor.availability == "available" else {
-            throw CassetteMismatch(message: "fixture anchor missing from MCP L3 catalog before record")
+            throw CassetteMismatch(message: "fixture anchor missing from MCP ProjectIndex catalog before record")
         }
         let cassette = try VCRCassetteStore(
             directory: configuration.cassetteDirectory,

@@ -57,7 +57,7 @@ public struct ECoreAccessEvent: Codable, Sendable, Equatable {
     }
 }
 
-/// 候选冷热区分类（仅属于 E-Core 内部存储与检索优化，绝对禁止与 P-Core 或 ContextCacheController L1/L2 缓存生命周期联动）
+/// 候选冷热区分类（仅属于 E-Core 内部存储与检索优化，绝对禁止与 P-Core 或 ContextCacheController PCore/RecallCache 缓存生命周期联动）
 public enum ECoreCandidateZone: String, Codable, Sendable {
     case hot
     case cold

@@ -71,7 +71,7 @@ Core 内部两处自造数据：`getRunTrace` 对每个 run 返回固定 `["run.
 
 - **`agent.preferredActiveTokens`**：Core 真读、`ContextBudgetPlanner` 真用、GUI 完全不知道。补 `ConfigKey` + `ConfigOptionalNumberField`。它的类型是 `Int?`，且**关闭 = 键不存在**（Core 据此回退到按模型窗口推导），所以不能用普通数字框——写 `0` 会被 planner 当成真实预算。开关关闭时调用 `writeOverride(key, nil)` 把键删掉。
 - **`context.eCore.pressureThreshold`**：键与漂移表都有、控件没有。新增 `ConfigFractionField`，硬边界 `(0, 1]`。
-- **`l3UseRemaining`**：Core 读 `context.eCore.useRemainingBudget`，GUI 里是个没有任何引用者的孤儿键（`§14` 同类问题）。改名 `eCoreUseRemainingBudget` 并补开关。
+- **`projectIndexUseRemaining`**：Core 读 `context.eCore.useRemainingBudget`，GUI 里是个没有任何引用者的孤儿键（`§14` 同类问题）。改名 `eCoreUseRemainingBudget` 并补开关。
 - **E-Core 热度文案**：原文「按访问热度决定上下文淘汰与召回优先顺序」与冻结架构冲突。改为「用于 E-Core 召回排序、热点索引与缓存优先级、可观测性；**不参与 P-Core 淘汰决策**——淘汰只由 P 侧 RetentionScore 决定」。
 - **七个失效搜索锚点**：`mcp.list`/`plugins.list`/`skills.list`/`hooks.list`/`providers.reload`/`mcp.reload`/`context.fabric` 在界面上不存在对应控件，点搜索结果等于跳空。重定向到真实 section，并由 `SettingsClosureTests.catalogAnchorsResolve` 比对两份清单，删除控件再也不会留下悬空结果。
 - **`InspectorTab` / `selectedTab` / `isPresented`**：声明后无任何读取者，随「详情面改用窗口」一并删除。
@@ -125,7 +125,7 @@ Bundle.module  →  GUI 背景
 
 | 缺陷 | 症状 | 处理 |
 | :--- | :--- | :--- |
-| **附件根本没进模型请求** | 本狐把附件条目加在 `startTurn` 的 `updatedEntries` 上，而那是 L1 **记账**变量；请求实际由 `runTurn` 里的 `allEntries → projection → compactor → context.modelMessages()` 组装。更糟的是当时的守卫 `if !updatedEntries.contains(…userMessage.id…)` 永远为假——CoreHost 在 `startTurn` 之前就已把用户消息提交进 session store。结果：字节被上传、被解析、然后丢掉 | 已修：`runTurn` 显式接收 attachments，注入到真正组装请求的 `allEntries`。resume 路径不传（文件属于引入它的那一轮） |
+| **附件根本没进模型请求** | 本狐把附件条目加在 `startTurn` 的 `updatedEntries` 上，而那是 PCore **记账**变量；请求实际由 `runTurn` 里的 `allEntries → projection → compactor → context.modelMessages()` 组装。更糟的是当时的守卫 `if !updatedEntries.contains(…userMessage.id…)` 永远为假——CoreHost 在 `startTurn` 之前就已把用户消息提交进 session store。结果：字节被上传、被解析、然后丢掉 | 已修：`runTurn` 显式接收 attachments，注入到真正组装请求的 `allEntries`。resume 路径不传（文件属于引入它的那一轮） |
 | **9 处 `SessionSummary` 构造里 8 处丢 `goal:`** | 除 `setSessionGoal` 外，create / rename / setReasoningEffort / revert / getSession / listSessions / getSnapshot 全都广播 `goal: nil` 的 `.sessionUpdated`。于是任何一次改名或回滚都会把 GUI 的 goal chip 抹掉，而 Core 那边锚点还在、还在往每轮注入。`getSession` 还额外丢 `reasoningEffort`，并把 `mode` 写死 `.build` | 已修：新增 `currentGoal(_:)` 从唯一持有者 `SessionGoalRegistry` 读，9 处全部补齐；`listSessions` 的 `map` 改成循环（同步闭包无法 `await`，这正是它漏掉 goal 的原因） |
 | **`Stop` 语义两处不完整** | ① 被排队的 Turn 在 Stop 之后作为新的 root run 起来；② Stop 之后 Core 侧 pending interaction 仍是权威 | 已修：① `CancelRunRequest` 新增 `cancelQueuedTurns`，Core 在终结 active run **之前**排空队列，`finishRun` 的队列推进因此无处可提升（`SessionTurnCoordinator.cancelAllQueuedTurns`）；② `CoreHost.cancelRun` 在释放引擎之后写 `.interactionResolved` 账本并清父会话镜像，`interaction.listPending` 与快照读都变空。两条 `withKnownIssue` 已翻成硬断言 |
 

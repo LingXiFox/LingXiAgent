@@ -30,9 +30,9 @@ final class TurnProfiler: @unchecked Sendable {
     private var compactions: [CompactionTurnPerformance] = []
     private var protocolValidatorPassed = 0
     private var liveToolBatchCount = 0
-    private var derivedL3Hits = 0
-    private var sessionL2DerivedHits = 0
-    private var sessionL2DerivedPromotions = 0
+    private var historicalDerivedHits = 0
+    private var recalledDerivedHits = 0
+    private var derivedRestorations = 0
     private var derivedPageIns = 0
     private var providerCalls: [ProviderCallTrace] = []
 
@@ -67,7 +67,7 @@ final class TurnProfiler: @unchecked Sendable {
             actualUsage: last.actualUsage,
             toolSchemaTokens: last.toolSchemaTokens,
             toolCount: last.toolCount,
-            l1Tokens: last.l1Tokens,
+            pCoreTokens: last.pCoreTokens,
             systemPinnedTokens: last.systemPinnedTokens,
             currentTurnTokens: last.currentTurnTokens,
             providerFramingTokens: last.providerFramingTokens,
@@ -96,7 +96,7 @@ final class TurnProfiler: @unchecked Sendable {
             actualUsage: last.actualUsage,
             toolSchemaTokens: last.toolSchemaTokens,
             toolCount: last.toolCount,
-            l1Tokens: last.l1Tokens,
+            pCoreTokens: last.pCoreTokens,
             systemPinnedTokens: last.systemPinnedTokens,
             currentTurnTokens: last.currentTurnTokens,
             providerFramingTokens: last.providerFramingTokens,
@@ -193,11 +193,11 @@ final class TurnProfiler: @unchecked Sendable {
 
     func recordProtocolValidator(liveBatches: Int) { if enabled { protocolValidatorPassed += 1; liveToolBatchCount = liveBatches } }
 
-    func recordDerivedPaging(l3Hits: Int, l2Hits: Int, l2Promotions: Int, pageIns: Int) {
+    func recordDerivedPaging(projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int, pageIns: Int) {
         guard enabled else { return }
-        derivedL3Hits = l3Hits
-        sessionL2DerivedHits = l2Hits
-        sessionL2DerivedPromotions = l2Promotions
+        historicalDerivedHits = projectIndexHits
+        recalledDerivedHits = recallCacheHits
+        derivedRestorations = recallCachePromotions
         derivedPageIns = pageIns
     }
 
@@ -210,9 +210,9 @@ final class TurnProfiler: @unchecked Sendable {
             injectedPages: metrics.injectedPages, injectedCharacters: metrics.injectedCharacters,
             filesChecked: metrics.filesChecked, filesRebuilt: metrics.filesRebuilt, scanMilliseconds: metrics.scanMilliseconds,
             initialIndexedFiles: metrics.initialIndexedFiles,
-            l2Lookups: metrics.l2Lookups, l2Hits: metrics.l2Hits, l2Misses: metrics.l2Misses,
-            l2Pages: metrics.l2Pages, l2Characters: metrics.l2Characters, l3Pages: metrics.l3Pages,
-            l3Queries: metrics.l3Queries, l3Candidates: metrics.l3Candidates, l3Materializations: metrics.l3Materializations,
+            recallCacheLookups: metrics.recallCacheLookups, recallCacheHits: metrics.recallCacheHits, recallCacheMisses: metrics.recallCacheMisses,
+            recallCachePages: metrics.recallCachePages, recallCacheCharacters: metrics.recallCacheCharacters, projectIndexPages: metrics.projectIndexPages,
+            projectIndexQueries: metrics.projectIndexQueries, projectIndexCandidates: metrics.projectIndexCandidates, projectIndexMaterializations: metrics.projectIndexMaterializations,
             staleRebuilds: metrics.staleRebuilds, pageFaults: metrics.pageFaults, promotions: metrics.promotions,
             evictions: metrics.evictions,
             retrievalMilliseconds: metrics.retrievalMilliseconds, materializationMilliseconds: metrics.materializationMilliseconds,
@@ -306,9 +306,9 @@ final class TurnProfiler: @unchecked Sendable {
             estimatedPromptTokens: estimated,
             actualPromptTokens: actual,
             estimatorErrorPercent: error,
-            derivedL3Hits: derivedL3Hits,
-            sessionL2DerivedHits: sessionL2DerivedHits,
-            sessionL2DerivedPromotions: sessionL2DerivedPromotions,
+            historicalDerivedHits: historicalDerivedHits,
+            recalledDerivedHits: recalledDerivedHits,
+            derivedRestorations: derivedRestorations,
             derivedPageIns: derivedPageIns,
             providerCalls: providerCalls,
             cacheTelemetry: ProviderCacheTelemetry.aggregate(providerCalls.compactMap(\.cacheTelemetry))

@@ -1,7 +1,7 @@
 import Foundation
 import LingXiProtocol
 
-/// L2 是有字符上限的 LRU 工作集，页面超出上限时只保留在 L3。
+/// RecallCache 是有字符上限的 LRU 工作集，页面超出上限时只保留在 ProjectIndex。
 public actor RecallWorkingSet {
     private let characterBudget: Int
     private let policy: WorkingSetPolicy
@@ -99,7 +99,7 @@ public actor RecallWorkingSet {
 
 }
 
-/// 将确定性 L3 查询结果按项目预算装配为模型可用上下文，并维护 L2 命中统计。
+/// 将确定性 ProjectIndex 查询结果按项目预算装配为模型可用上下文，并维护 RecallCache 命中统计。
 public actor ContextPager {
     private let store: ProjectPageStore
     private let workingSet: RecallWorkingSet
@@ -107,9 +107,9 @@ public actor ContextPager {
     private var hits = 0
     private var misses = 0
     private var pageFaults = 0
-    private var l3Queries = 0
-    private var l3Candidates = 0
-    private var l3Materializations = 0
+    private var projectIndexQueries = 0
+    private var projectIndexCandidates = 0
+    private var projectIndexMaterializations = 0
     private var staleRebuilds = 0
     private var initialIndexedFiles = 0
     private var promotions = 0
@@ -178,18 +178,18 @@ public actor ContextPager {
         guard limit > 0, (!query.terms.isEmpty || !query.symbolHints.isEmpty) else { return ContextPagerResult(pages: [], metrics: metrics()) }
         let clock = ContinuousClock()
         let retrievalStart = clock.now
-        let l2Candidates = await workingSet.search(projectRoot: projectRoot, query: query, limit: limit)
+        let recallCacheCandidates = await workingSet.search(projectRoot: projectRoot, query: query, limit: limit)
         let candidates: [ContextPage]
         let symbolMetrics: SymbolSearchMetrics
         let requiresStructuralCoverage = !query.symbolHints.isEmpty
-        if l2Candidates.isEmpty || requiresStructuralCoverage {
+        if recallCacheCandidates.isEmpty || requiresStructuralCoverage {
             let result = await store.searchResult(projectRoot: projectRoot, query: query, limit: .max)
             candidates = result.pages
             symbolMetrics = result.symbolMetrics
-            l3Queries += 1
-            l3Candidates += candidates.count
+            projectIndexQueries += 1
+            projectIndexCandidates += candidates.count
         } else {
-            candidates = l2Candidates
+            candidates = recallCacheCandidates
             symbolMetrics = .zero
         }
         retrievalMilliseconds += milliseconds(retrievalStart.duration(to: clock.now))
@@ -236,7 +236,7 @@ public actor ContextPager {
         let resolved = await resolve(selected)
         let materialization = milliseconds(materializationStart.duration(to: clock.now))
         materializationMilliseconds += materialization
-        l3Materializations += resolved.count
+        projectIndexMaterializations += resolved.count
         selectedPages += resolved.count
         injectedCharacters += resolved.reduce(0) { $0 + $1.characterCount }
         latestSelectedPages = selected.count
@@ -304,8 +304,8 @@ public actor ContextPager {
     }
 
     public func debugMetrics(projectRoot: URL) async -> ContextPagingDebugMetrics {
-        let l2 = await workingSet.metrics()
-        let l3 = await store.statistics(projectRoot: projectRoot)
+        let recallCache = await workingSet.metrics()
+        let projectIndex = await store.statistics(projectRoot: projectRoot)
         return ContextPagingDebugMetrics(
             queryCharacters: queryCharacters,
             queryTerms: queryTerms,
@@ -319,23 +319,23 @@ public actor ContextPager {
             filesRebuilt: filesRebuilt,
             scanMilliseconds: scanMilliseconds,
             initialIndexedFiles: initialIndexedFiles,
-            l2Lookups: hits + misses,
-            l2Hits: hits,
-            l2Misses: misses,
-            l2Pages: l2.pageCount,
-            l2Characters: l2.characterCount,
-            l3Pages: l3.pages,
-            l3Queries: l3Queries,
-            l3Candidates: l3Candidates,
-            l3Materializations: l3Materializations,
+            recallCacheLookups: hits + misses,
+            recallCacheHits: hits,
+            recallCacheMisses: misses,
+            recallCachePages: recallCache.pageCount,
+            recallCacheCharacters: recallCache.characterCount,
+            projectIndexPages: projectIndex.pages,
+            projectIndexQueries: projectIndexQueries,
+            projectIndexCandidates: projectIndexCandidates,
+            projectIndexMaterializations: projectIndexMaterializations,
             staleRebuilds: staleRebuilds,
             pageFaults: pageFaults,
             promotions: promotions,
             evictions: evictions,
             retrievalMilliseconds: retrievalMilliseconds,
             materializationMilliseconds: materializationMilliseconds,
-            symbolCount: l3.symbols,
-            symbolIndexedFiles: l3.symbolFiles,
+            symbolCount: projectIndex.symbols,
+            symbolIndexedFiles: projectIndex.symbolFiles,
             symbolHints: symbolHints,
             symbolExactMatches: symbolExactMatches,
             symbolQualifiedExactMatches: symbolQualifiedExactMatches,
@@ -352,9 +352,9 @@ public actor ContextPager {
             currentSourceCandidates: currentSourceCandidates,
             documentationCandidates: documentationCandidates,
             referenceCandidates: referenceCandidates
-            , referenceCount: l3.references.referenceCount, resolvedReferenceCount: l3.references.resolvedCount,
-            ambiguousReferenceCount: l3.references.ambiguousCount, unresolvedReferenceCount: l3.references.unresolvedCount,
-            dependencyCount: l3.references.dependencyCount, referenceIndexedFiles: l3.references.indexedFileCount,
+            , referenceCount: projectIndex.references.referenceCount, resolvedReferenceCount: projectIndex.references.resolvedCount,
+            ambiguousReferenceCount: projectIndex.references.ambiguousCount, unresolvedReferenceCount: projectIndex.references.unresolvedCount,
+            dependencyCount: projectIndex.references.dependencyCount, referenceIndexedFiles: projectIndex.references.indexedFileCount,
             relationHints: relationHints, directReferenceHits: directReferenceHits, dependencyHits: dependencyHits,
             relatedPages: relatedPages, referenceResolutionMilliseconds: referenceResolutionMilliseconds,
             referenceExpansionMilliseconds: referenceExpansionMilliseconds
@@ -366,7 +366,7 @@ public actor ContextPager {
         latestInjectedCharacters = pages.reduce(0) { $0 + $1.characterCount }
     }
 
-    /// Session/Derived L3 与 Project L2/L3 共用本 pager 进入 L1，绝不产生 Provider tool role。
+    /// Session/Derived ProjectIndex 与 Project RecallCache/ProjectIndex 共用本 pager 进入 PCore，绝不产生 Provider tool role。
     public func pageInDerived(store: DerivedContextStore, sessionID: SessionID, query: String, remainingTokens: Int) async -> [ContextEntry] {
         var remaining = max(0, remainingTokens)
         var entries: [ContextEntry] = []

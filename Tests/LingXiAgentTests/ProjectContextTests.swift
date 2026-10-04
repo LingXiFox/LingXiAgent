@@ -252,7 +252,7 @@ struct ProjectContextTests {
         #expect(result.turnMetrics.symbolFallbackExactMatches == 1)
     }
 
-    @Test func l2LexicalHitStillUsesL3StructuralCoverage() async throws {
+    @Test func queryCacheHitStillUsesProjectIndexStructuralCoverage() async throws {
         let root = try makeProject()
         defer { try? FileManager.default.removeItem(at: root) }
         try write("PermissionEngine legacy note", to: root, path: "Docs/Legacy.md")

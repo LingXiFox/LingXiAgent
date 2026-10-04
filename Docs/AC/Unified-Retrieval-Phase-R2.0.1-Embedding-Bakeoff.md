@@ -62,19 +62,19 @@
    ├─ Query Prefix:    "Represent this sentence for searching relevant passages: "
    ├─ Passage Prefix:  "" (无前缀)
    ├─ Pooling:         [CLS] Pooling (First Token)
-   └─ Normalization:   L2 Normalize (p=2)
+   └─ Normalization:   RecallCache Normalize (p=2)
 
 2. intfloat/multilingual-e5-small
    ├─ Query Prefix:    "query: " (官方强制要求)
    ├─ Passage Prefix:  "passage: " (官方强制要求)
    ├─ Pooling:         Mean Pooling (Average Token)
-   └─ Normalization:   L2 Normalize (p=2)
+   └─ Normalization:   RecallCache Normalize (p=2)
 
 3. Qwen/Qwen3-Embedding-0.6B
    ├─ Query Prefix:    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
    ├─ Passage Prefix:  "" (无前缀)
    ├─ Pooling:         Last Token Pooling / Causal Attention
-   └─ Normalization:   L2 Normalize (p=2)
+   └─ Normalization:   RecallCache Normalize (p=2)
 ```
 
 ---

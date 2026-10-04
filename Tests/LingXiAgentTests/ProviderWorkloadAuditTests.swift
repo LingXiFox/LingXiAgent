@@ -79,7 +79,7 @@ import Foundation
         #expect(searchOutcome.content.contains("git"))
 
         // Load git
-        let loadCall = ToolCall(callID: ToolCallID("l1"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"git"}"#)
+        let loadCall = ToolCall(callID: ToolCallID("pCore"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"git"}"#)
         let loadOutcome = await toolRuntime.execute(loadCall, sessionID: sessionID)
         #expect(loadOutcome.success)
         #expect(loadOutcome.content.contains("leased"))
@@ -94,7 +94,7 @@ import Foundation
         #expect(!otherSessionTools.map(\.id.rawValue).contains("git"))
 
         // Search and load subagent
-        let loadSubagentCall = ToolCall(callID: ToolCallID("l2"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"subagent"}"#)
+        let loadSubagentCall = ToolCall(callID: ToolCallID("recallCache"), toolID: ToolID("load_tool"), arguments: #"{"tool_id":"subagent"}"#)
         let loadSubagentOutcome = await toolRuntime.execute(loadSubagentCall, sessionID: sessionID)
         #expect(loadSubagentOutcome.success)
         #expect(loadSubagentOutcome.content.contains("leased"))

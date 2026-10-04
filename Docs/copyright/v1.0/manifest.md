@@ -24,7 +24,7 @@
 | 架构模块 | 文件数量 | 代码总行数 | 核心职能概述 |
 | :--- | :---: | :---: | :--- |
 | **Agent Runtime** | 5 | 1506 | 智能体决策主循环、工作流推进、System Prompt 装配与子智能体派发 |
-| **Context Engine** | 14 | 3932 | P-Core/E-Core 异构双核、L1/L2/L3 三级上下文流控、高水位智能压缩与缓存感知调度 |
+| **Context Engine** | 14 | 3932 | P-Core/E-Core 异构双核、P/E-Core 活跃上下文与对象存储、高水位智能压缩与缓存感知调度 |
 | **Session Runtime** | 6 | 2921 | 会话生命周期状态机、轮次独占锁协调、历史快照与防并发竞争保障 |
 | **Tool Runtime** | 6 | 2838 | 内置核心文件/命令/检索工具集、沙箱安全看门狗与大产物旁路归档 |
 | **MCP Runtime** | 3 | 1356 | 原生 Model Context Protocol 协议引擎（Stdio / HTTP 双通道）与 OAuth 2.1 鉴权 |
@@ -46,8 +46,8 @@
 | 3 | `Sources/LingXiCore/Modules/Agent/AgentInstructions.swift` | Agent Runtime | 183 | 动态指令构建器，装配系统提示词与上下文环境指引规范 | 是（100% 自主研发） |
 | 4 | `Sources/LingXiCore/Modules/Agent/AgentRunRuntime.swift` | Agent Runtime | 142 | 单次执行运行期状态控制，管理运行状态机生命周期与异常恢复 | 是（100% 自主研发） |
 | 5 | `Sources/LingXiCore/Modules/Agent/SubagentToolService.swift` | Agent Runtime | 140 | 子智能体调度服务，实现任务分发委托与子智能体协同调度 | 是（100% 自主研发） |
-| 6 | `Sources/LingXiCore/Modules/Context/L1ContextEngine.swift` | Context Engine | 279 | L1 Hot Working Set 物理推理工作集引擎，负责活跃上下文预算与软限制防爆 | 是（100% 自主研发） |
-| 7 | `Sources/LingXiCore/Modules/Context/L2WorkingSetPolicy.swift` | Context Engine | 48 | L2 Warm Cache 内存待命池管理与置换淘汰策略 | 是（100% 自主研发） |
+| 6 | `Sources/LingXiCore/Modules/Context/PCoreContextEngine.swift` | Context Engine | 279 | PCore Hot Working Set 物理推理工作集引擎，负责活跃上下文预算与软限制防爆 | 是（100% 自主研发） |
+| 7 | `Sources/LingXiCore/Modules/Context/WorkingSetPolicy.swift` | Context Engine | 48 | RecallCache Warm Cache 内存待命池管理与置换淘汰策略 | 是（100% 自主研发） |
 | 8 | `Sources/LingXiCore/Modules/Context/ContextCacheController.swift` | Context Engine | 940 | 上下文缓存控制器，实现服务端 Prompt Cache 命中率最优化调度 | 是（100% 自主研发） |
 | 9 | `Sources/LingXiCore/Modules/Context/CacheAwareContextScheduler.swift` | Context Engine | 177 | 缓存感知上下文调度器，动态平衡模型推理命中率与上下文配额 | 是（100% 自主研发） |
 | 10 | `Sources/LingXiCore/Modules/Context/ContextCompaction.swift` | Context Engine | 508 | 高水位上下文智能压缩摘要引擎，防止上下文爆炸与注意力迷航 | 是（100% 自主研发） |
@@ -101,5 +101,5 @@
 
 1. **第一方原创性**：本清单所列全部 53 个源码文件，均为项目团队自主架构设计与编写的原生 Swift 源码，完全属于第一方原创代码，不存在侵犯第三方知识产权的情形。
 2. **排除非核心与派生内容**：已严格排除单元测试代码（`Tests/`）、构建缓存（`.build/`）、外部包依赖、自动生成文件、JSON 纯配置/数据、模板代码及第三方 Shim 代码。
-3. **架构代表性**：优先纳入能够体现 LingXiAgent 异构双核（P-Core/E-Core）、三级上下文缓存（L1/L2/L3）、自主决策闭环、沙箱安全防护与统一网关的核心技术实现。
+3. **架构代表性**：优先纳入能够体现 LingXiAgent 异构双核（P-Core/E-Core）、P/E-Core 上下文管理、自主决策闭环、沙箱安全防护与统一网关的核心技术实现。
 4. **机密与隐私安全**：经代码静态安全性审查，全部纳入源码中均不含任何硬编码 API Key、访问令牌（Token）、密码私钥或用户私人绝对路径。

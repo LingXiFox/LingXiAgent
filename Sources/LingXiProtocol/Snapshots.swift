@@ -597,18 +597,6 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
 
     // MARK: - Legacy Compatibility Computed Properties (Non-stored runtime properties)
 
-    public var l1Tokens: Int {
-        pCore?.usedTokens ?? estimatedTokens
-    }
-
-    public var l2Tokens: Int {
-        0
-    }
-
-    public var l3Tokens: Int {
-        0
-    }
-
     public var pCoreTokens: Int? {
         pCore?.usedTokens
     }
@@ -674,9 +662,6 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         eCore: ECoreStateSnapshot? = nil,
         providerCache: ProviderCacheStateSnapshot? = nil,
         estimatedTokens: Int = 0,
-        l1Tokens: Int? = nil,
-        l2Tokens: Int? = nil,
-        l3Tokens: Int? = nil,
         compactionGeneration: Int = 0,
         cacheReadTokens: Int? = nil,
         promptTokens: Int? = nil,
@@ -783,9 +768,6 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         case prediction
 
         // Legacy decoding keys
-        case l1Tokens
-        case l2Tokens
-        case l3Tokens
         case pCoreTokens
         case eCoreObjectCount
         case eCoreTotalBytes
@@ -830,8 +812,6 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
             self.pCore = decodedPCore
         } else if let legacyPCoreTokens = try container.decodeIfPresent(Int.self, forKey: .pCoreTokens) {
             self.pCore = PCoreStateSnapshot(usedTokens: legacyPCoreTokens)
-        } else if let legacyL1 = try container.decodeIfPresent(Int.self, forKey: .l1Tokens), legacyL1 > 0 {
-            self.pCore = PCoreStateSnapshot(usedTokens: legacyL1)
         } else {
             self.pCore = nil
         }

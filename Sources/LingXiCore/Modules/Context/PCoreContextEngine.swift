@@ -1,7 +1,7 @@
 import Foundation
 import LingXiProtocol
 
-/// P-Core 的三分区。这是冻结的架构语义，L1/L2/L3 不再具有架构含义。
+/// P-Core has exactly three frozen regions; indexes and query caches are retrieval helpers.
 ///
 /// - `stablePrefix`: 当前 Session 中长期稳定的内容（system / 约束 / 核心目标 / 稳定工作状态）。
 /// - `growingContext`: 正在增长、当前阶段被模型直接需要的内容（消息、Tool Call/Result、观察）。
@@ -30,7 +30,7 @@ extension ContextSource {
     }
 }
 
-/// L1 来源描述的是模型工作集的语义，不是任何 Provider 的角色类型。
+/// PCore 来源描述的是模型工作集的语义，不是任何 Provider 的角色类型。
 public enum ContextSource: String, Sendable, Equatable, Hashable {
     case system
     case userMessage
@@ -94,7 +94,7 @@ public struct ContextMetrics: Sendable, Equatable {
     public var currentPCoreTokens: Int { estimatedTokens }
 }
 
-/// 一次 inference 实际可见的不可变 L1 工作集。
+/// 一次 inference 实际可见的不可变 PCore 工作集。
 public struct PCoreSnapshot: Sendable, Equatable {
     public let sessionID: SessionID
     public let revision: UInt64
@@ -161,7 +161,7 @@ public struct PCoreSnapshot: Sendable, Equatable {
     }
 }
 
-/// L1 初始策略：保留已完成 Session 的有序结构化历史，明确排除 reasoning 与 transient stream。
+/// PCore 初始策略：保留已完成 Session 的有序结构化历史，明确排除 reasoning 与 transient stream。
 public struct PCorePolicy: Sendable {
     public let systemContext: String?
 

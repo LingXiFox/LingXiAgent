@@ -528,10 +528,10 @@ struct ComposerSurface: View {
     /// sending, and a run in flight does not turn it into a stop button — anchoring a goal
     /// is exactly the thing you want to be able to do mid-run.
     private var sendButton: some View {
-        let stops = model.automationPending || (!goalMode && isGenerating)
+        let stops = !goalMode && isGenerating
         let symbol = goalMode ? "checkmark" : (stops ? "stop.fill" : "arrow.up")
         let inert = goalMode ? model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                             : (!isGenerating && !model.automationPending && isEmpty)
+                             : (!isGenerating && isEmpty)
         return Button(action: sendAction) {
             Image(systemName: symbol)
                 .font(.system(size: stops ? 11 : 14, weight: .bold))
@@ -548,13 +548,13 @@ struct ComposerSurface: View {
     }
 
     private func sendAction() {
-        if model.automationPending || isGenerating && !goalMode { runtime.stopGenerating() }
+        if isGenerating && !goalMode { runtime.stopGenerating() }
         else if goalMode { commitGoal() }
         else { submit() }
     }
 
     private var sendHelp: String {
-        if model.automationPending { return "取消自动发送 (Esc)" }
+        if model.automationPending { return "发送 (⏎)，Esc 取消自动发送" }
         if goalMode { return "发出目标并开始 (⏎)" }
         if isGenerating { return "停止生成 (⌘.)" }
         return sendKey == .commandReturn ? "发送 (⌘⏎)" : "发送 (⏎)"

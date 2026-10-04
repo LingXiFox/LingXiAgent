@@ -815,9 +815,7 @@ final class RetainedTUI: @unchecked Sendable {
 
     private func contextDetails(_ projection: ContextCacheProjection) -> String {
         let p = projection.policy
-        let l1 = projection.l1
-        let l2 = projection.l2
-        let l3 = projection.l3
+        let pCore = projection.pCore
         let pg = projection.paging
 
         var lines: [String] = []
@@ -830,13 +828,13 @@ final class RetainedTUI: @unchecked Sendable {
         lines.append(String(format: "%-22@ %@", "Reserve", TokenFormatter.format(p.reserve)))
         lines.append("")
         lines.append("P-Core · Context Projection & Scheduler")
-        let pCoreUsage = projection.pCoreTokens.map { TokenFormatter.format($0) } ?? (l1.usageTokens == 0 ? "0" : TokenFormatter.format(l1.usageTokens))
+        let pCoreUsage = projection.pCoreTokens.map { TokenFormatter.format($0) } ?? TokenFormatter.format(pCore.usedTokens)
         lines.append(String(format: "  %-20@ %@", "Active Projection", pCoreUsage))
         if let lastInput = projection.lastProviderInputTokens {
             lines.append(String(format: "  %-20@ %@", "Last Provider Input", TokenFormatter.format(lastInput)))
         }
-        lines.append(String(format: "  %-20@ %@", "Soft Limit", TokenFormatter.format(p.l1SoftLimit)))
-        lines.append(String(format: "  %-20@ %@", "Hard Limit", TokenFormatter.format(p.l1HardLimit)))
+        lines.append(String(format: "  %-20@ %@", "Soft Limit", TokenFormatter.format(p.pCoreSoftLimit)))
+        lines.append(String(format: "  %-20@ %@", "Hard Limit", TokenFormatter.format(p.pCoreHardLimit)))
         lines.append(String(format: "  %-20@ %d", "Cache Debt", projection.cacheDebt ?? 0))
         lines.append("")
         lines.append("E-Core · Context Object Fabric")

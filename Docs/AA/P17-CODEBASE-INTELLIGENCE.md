@@ -51,4 +51,4 @@ The repository currently has Swift production code and SourceKit-LSP is the conf
 
 ## Bounded Retrieval
 
-`ContextPager` already caps the model-side project context with `l1ProjectMaxCharacters`; the P17 tool applies a caller-specified cap before returning a context manifest. Search candidates are ranked using exact/qualified symbol matches, prefix matches, lexical terms, source/document priority, and one-hop indexed reference/dependency pages. L2 is a bounded LRU; L3 is rebuilt incrementally only for changed files.
+`ContextPager` already caps the model-side project context with `pCoreProjectMaxCharacters`; the P17 tool applies a caller-specified cap before returning a context manifest. Search candidates are ranked using exact/qualified symbol matches, prefix matches, lexical terms, source/document priority, and one-hop indexed reference/dependency pages. RecallCache is a bounded LRU; ProjectIndex is rebuilt incrementally only for changed files.

@@ -89,7 +89,7 @@ struct UndoAndCompactSpacingTests {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
-        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
+        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxPCoreResidentCharacters: 48 * 1024)
         let sessionID = SessionID("sess-cache-reconcile")
 
         let msg1 = Message(
@@ -100,20 +100,20 @@ struct UndoAndCompactSpacingTests {
         )
 
         // 模拟已记录的旧 Provider 状态
-        await controller.recordSessionL1Tokens(sessionID: sessionID, tokens: 1000, count: 2)
+        await controller.recordPCoreBaseTokens(sessionID: sessionID, tokens: 1000, count: 2)
 
         // 模拟撤回到只有 1 条消息
         await controller.reconcileAfterRevert(sessionID: sessionID, remainingMessages: [msg1])
 
-        let l1Tokens = await controller.l1UsageTokens(for: sessionID)
-        #expect(l1Tokens > 0 && l1Tokens < 1000)
+        let pCoreTokens = await controller.pCoreResidentTokens(for: sessionID)
+        #expect(pCoreTokens > 0 && pCoreTokens < 1000)
 
         let record = await controller.lastProviderCacheRecord(for: sessionID)
         #expect(record?.status == "coldNewEpoch")
 
         // 撤回至全部清空
         await controller.reconcileAfterRevert(sessionID: sessionID, remainingMessages: [])
-        let clearedTokens = await controller.l1UsageTokens(for: sessionID)
+        let clearedTokens = await controller.pCoreResidentTokens(for: sessionID)
         #expect(clearedTokens == 0)
 
         try? FileManager.default.removeItem(at: root)

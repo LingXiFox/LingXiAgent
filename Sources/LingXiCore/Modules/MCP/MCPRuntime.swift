@@ -25,7 +25,7 @@ public struct MCPToolAnnotations: Sendable, Equatable, Codable {
     public init(readOnlyHint: Bool? = nil, destructiveHint: Bool? = nil, idempotentHint: Bool? = nil, openWorldHint: Bool? = nil) { self.readOnlyHint = readOnlyHint; self.destructiveHint = destructiveHint; self.idempotentHint = idempotentHint; self.openWorldHint = openWorldHint }
 }
 
-/// L3 entry: metadata only. The full JSON Schema lives exclusively in MCPToolSchemaStore.
+/// Catalog entry: metadata only. The full JSON Schema lives exclusively in MCPToolSchemaStore.
 public struct MCPToolCatalogEntry: Sendable, Equatable, Codable {
     public let toolID: ToolID
     public let serverID: MCPServerID
@@ -143,7 +143,7 @@ public struct ProviderToolNameCodec: Sendable {
 }
 
 public actor MCPToolPager {
-    private struct SessionState { var l1: [ToolID: Int] = [:]; var candidates: Set<ToolID> = []; var leases: [String: MCPToolSchemaLease] = [:]; var presented: Set<String> = [] }
+    private struct SessionState { var useCounts: [ToolID: Int] = [:]; var candidates: Set<ToolID> = []; var leases: [String: MCPToolSchemaLease] = [:]; var presented: Set<String> = [] }
     private let schemas: MCPToolSchemaStore
     private let codec = ProviderToolNameCodec()
     private let maxSchemaBytes: Int
@@ -152,7 +152,7 @@ public actor MCPToolPager {
     private let invoker: (any MCPToolInvoker)?
     private var catalog: [ToolID: MCPToolCatalogEntry] = [:]
     private var sessions: [SessionID: SessionState] = [:]
-    private var l2: [ProjectID: [ToolID: Int]] = [:]
+    private var projectUseCounts: [ProjectID: [ToolID: Int]] = [:]
     private var providerSchemaCounts: [SessionID: [Int]] = [:]
     private var serverStatuses: [MCPServerID: MCPServerRuntimeStatus] = [:]
     private var serverAliases: [MCPServerID: String] = [:]
@@ -268,7 +268,7 @@ public actor MCPToolPager {
         let capability = capability?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : capability?.trimmingCharacters(in: .whitespacesAndNewlines)
         let terms = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         let session = sessions[sessionID] ?? SessionState()
-        let project = l2[projectID] ?? [:]
+        let project = projectUseCounts[projectID] ?? [:]
         var matched: [(entry: MCPToolCatalogEntry, score: Int)] = []
 
         for entry in catalog.values {
@@ -304,7 +304,7 @@ public actor MCPToolPager {
                 }
             }
 
-            let boost = (session.l1[entry.toolID] ?? 0) * 4 + (project[entry.toolID] ?? 0) * 2
+            let boost = (session.useCounts[entry.toolID] ?? 0) * 4 + (project[entry.toolID] ?? 0) * 2
             if terms.isEmpty || lexical >= 100 {
                 matched.append((entry, lexical + boost))
             }
@@ -314,7 +314,7 @@ public actor MCPToolPager {
         let limit = max(1, min(maxResults, 24))
         var result = Array(matched.prefix(limit)).map { item in
             let entry = item.entry
-            return MCPToolSearchCandidate(toolID: entry.toolID, displayName: "\(entry.serverAlias).\(entry.upstreamName)", serverAlias: entry.serverAlias, shortDescription: entry.shortDescription, riskHint: entry.annotations.readOnlyHint == true ? "external/read-only hint" : "external/untrusted", availability: entry.available ? (entry.stale ? "stale" : "available") : "unavailable", temperature: session.l1[entry.toolID] != nil ? "hot" : project[entry.toolID] != nil ? "warm" : "cold")
+            return MCPToolSearchCandidate(toolID: entry.toolID, displayName: "\(entry.serverAlias).\(entry.upstreamName)", serverAlias: entry.serverAlias, shortDescription: entry.shortDescription, riskHint: entry.annotations.readOnlyHint == true ? "external/read-only hint" : "external/untrusted", availability: entry.available ? (entry.stale ? "stale" : "available") : "unavailable", temperature: session.useCounts[entry.toolID] != nil ? "hot" : project[entry.toolID] != nil ? "warm" : "cold")
         }
 
         // 探测诊断：若检索目标涉及空列表或错误状态的 MCP 服务，暴露明确的诊断条目，切断模型无休止的重试
@@ -422,11 +422,11 @@ public actor MCPToolPager {
 
     public func markUsed(sessionID: SessionID, providerToolID: ToolID, projectID: ProjectID) throws -> MCPToolSchemaLease {
         let lease = try resolve(sessionID: sessionID, providerToolID: providerToolID)
-        var state = sessions[sessionID] ?? SessionState(); state.l1[lease.toolID, default: 0] += 1
-        trim(&state.l1)
+        var state = sessions[sessionID] ?? SessionState(); state.useCounts[lease.toolID, default: 0] += 1
+        trim(&state.useCounts)
         if var stored = state.leases[lease.leaseID] { stored.state = .used; state.leases[lease.leaseID] = stored }; sessions[sessionID] = state
-        l2[projectID, default: [:]][lease.toolID, default: 0] += 1
-        trim(&l2[projectID]!)
+        projectUseCounts[projectID, default: [:]][lease.toolID, default: 0] += 1
+        trim(&projectUseCounts[projectID]!)
         return lease
     }
 
@@ -447,11 +447,11 @@ public actor MCPToolPager {
         )
         var state = sessions[sessionID] ?? SessionState()
         state.leases[lease.leaseID] = lease
-        state.l1[entry.toolID, default: 0] += 1
-        trim(&state.l1)
+        state.useCounts[entry.toolID, default: 0] += 1
+        trim(&state.useCounts)
         sessions[sessionID] = state
-        l2[projectID, default: [:]][entry.toolID, default: 0] += 1
-        trim(&l2[projectID]!)
+        projectUseCounts[projectID, default: [:]][entry.toolID, default: 0] += 1
+        trim(&projectUseCounts[projectID]!)
         return lease
     }
 
@@ -513,8 +513,8 @@ public actor MCPToolPager {
     public func activeLeaseCount() -> Int { sessions.values.reduce(0) { $0 + $1.leases.values.filter { $0.state == .armed && $0.expiresAt > .now }.count } }
 
     private func removeReferences(_ toolID: ToolID) {
-        for sessionID in sessions.keys { sessions[sessionID]?.l1.removeValue(forKey: toolID); sessions[sessionID]?.candidates.remove(toolID); sessions[sessionID]?.leases = sessions[sessionID]!.leases.filter { $0.value.toolID != toolID } }
-        for projectID in l2.keys { l2[projectID]?.removeValue(forKey: toolID) }
+        for sessionID in sessions.keys { sessions[sessionID]?.useCounts.removeValue(forKey: toolID); sessions[sessionID]?.candidates.remove(toolID); sessions[sessionID]?.leases = sessions[sessionID]!.leases.filter { $0.value.toolID != toolID } }
+        for projectID in projectUseCounts.keys { projectUseCounts[projectID]?.removeValue(forKey: toolID) }
     }
     private func purgeExpired(_ sessionID: SessionID, now: Date = .now) {
         guard var state = sessions[sessionID] else { return }

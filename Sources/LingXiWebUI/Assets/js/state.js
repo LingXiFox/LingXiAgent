@@ -1835,7 +1835,7 @@ function renderPanel() {
     add('P-Core limits', `${fmtTokens(pick(pCore, 'softLimitTokens', 'soft_limit_tokens'))} soft · ${fmtTokens(pick(pCore, 'hardLimitTokens', 'hard_limit_tokens'))} hard`);
     add('E-Core objects', `${pick(eCore, 'objectCount', 'object_count') ?? 0} (${pick(eCore, 'hotObjectCount', 'hot_object_count') ?? 0} hot · ${pick(eCore, 'coldObjectCount', 'cold_object_count') ?? 0} cold)`);
     add('E-Core size', `${fmtBytes(pick(eCore, 'totalBytes', 'total_bytes'))} · rev ${pick(eCore, 'revision') ?? '—'}`);
-    /* ContextStateSnapshot has 17 wire keys; the legacy l1Tokens/l2Tokens/cacheStatus
+    /* ContextStateSnapshot has 17 wire keys; the flat P/E token and provider-cache fields
        style accessors are computed, so only estimatedTokens + compaction generation
        are readable here. */
     add('Tokens', `est ${fmtTokens(pick(context, 'estimatedTokens', 'estimated_tokens'))} · compact gen ${pick(context, 'compactionGeneration', 'compaction_generation') ?? '—'} · rev ${pick(context, 'revision') ?? '—'}`);

@@ -21,7 +21,7 @@ OpenCode 当前运行时的关键链路不是单一传统 `while` 循环：`Sess
 | 1. Agent loop 入口 | durable prompt 通过 `SessionV2.prompt` 准入并 `SessionExecution.wake`；本机 canonical drain 由 `packages/core/src/session/execution/local.ts:17` 调用位置作用域 `SessionRunner.run`。 |
 | 2. 完整 Context 在何处组装 | 主要入口是 `SessionRunner.runTurnAttempt`：`SessionContextEpoch.initialize/prepare` 后，由 `SessionHistory.entriesForRunner` 和 `toLLMMessages` 形成请求；再经 ProviderTransform 变换。详见 05。 |
 | 3. pruning/compaction | 不是检索式 memory；按模型 context limit 和 buffer 触发，生成 compaction summary、保留最近 turn，并在消息选择时过滤 compacted 历史。详见 06。 |
-| 4. L1/L2/L3 最关键替换层 | 基于当前结构，必须替换/截获 Context selection + compaction + snapshot epoch 的 Session runner 层；只替换 HTTP、provider 或 prompt 文本不足以改变每轮历史选择。 |
+| 4. P/E-Core 最关键替换层 | 基于当前结构，必须替换/截获 Context selection + compaction + snapshot epoch 的 Session runner 层；只替换 HTTP、provider 或 prompt 文本不足以改变每轮历史选择。 |
 | 5. Provider 抽象边界 | `Provider` 解析 catalog/config/auth 到 `LanguageModelV3`；AI SDK 接收规范化消息和 schema。边界之后仍有大量 provider/npm/model transform。 |
 | 6. 参数泄漏程度 | 中等偏高：通用 capabilities/variants 存在，但 reasoning、cache、tool schema、message replay、store、timeout 等在 `ProviderTransform` 和 provider loader 明确分支。 |
 | 7. Tool/MCP/Permission 关系 | MCP 维护连接和原生 definitions；ToolRegistry 选择/描述模型 tools；Permission 对工具可见性和实际 `ask` 决策，tool executor 在受许可后执行。 |

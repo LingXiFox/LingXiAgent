@@ -40,23 +40,10 @@ public struct AgentSettings: Codable, Sendable, Equatable {
     public var pCoreProjectMaxCharacters: Int
     public var preferredActiveTokens: Int?
     public var codeIntelligenceEnabled: Bool
+    /// Zero means no fixed step ceiling; positive values are explicit execution budgets.
     public var maxAgentLoopSteps: Int
 
-    /// [Legacy Compatibility] 旧 L1/L2 命名。契约第十一节：旧配置键至少保留一个正式兼容周期，
-    /// 读取优先级 新 P/E 键 → 旧 L 键 → 默认值；写入只落新键。
-    @available(*, deprecated, renamed: "pCoreProjectMaxCharacters")
-    public var l1ProjectMaxCharacters: Int {
-        get { pCoreProjectMaxCharacters }
-        set { pCoreProjectMaxCharacters = newValue }
-    }
-
-    @available(*, deprecated, renamed: "eCoreRecallMaxCharacters")
-    public var l2MaxCharacters: Int {
-        get { eCoreRecallMaxCharacters }
-        set { eCoreRecallMaxCharacters = newValue }
-    }
-
-    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, eCoreRecallMaxCharacters: Int = 256 * 1024, pCoreProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false, maxAgentLoopSteps: Int = 32) {
+    public init(maxConcurrentSubagents: Int = 4, maxSubagentDepth: Int = 3, maxTotalRunsPerRootRun: Int = 32, permissionPolicy: PermissionPolicy = .ask, executionProfile: ExecutionProfile = .workspace, behaviorProfile: AgentBehaviorProfile? = nil, systemContext: String? = nil, eCoreRecallMaxCharacters: Int = 256 * 1024, pCoreProjectMaxCharacters: Int = 32 * 1024, preferredActiveTokens: Int? = nil, codeIntelligenceEnabled: Bool = false, maxAgentLoopSteps: Int = 0) {
         self.maxConcurrentSubagents = maxConcurrentSubagents
         self.maxSubagentDepth = maxSubagentDepth
         self.maxTotalRunsPerRootRun = maxTotalRunsPerRootRun
@@ -73,9 +60,6 @@ public struct AgentSettings: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey { case maxConcurrentSubagents, maxSubagentDepth, maxTotalRunsPerRootRun, permissionPolicy, executionProfile, behaviorProfile, systemContext, eCoreRecallMaxCharacters, pCoreProjectMaxCharacters, preferredActiveTokens, codeIntelligenceEnabled, maxAgentLoopSteps }
 
-    /// 只用于读取旧配置；写入只落新的 P/E 键，所以旧键不能出现在 CodingKeys 里（否则 Encodable 合成会失败）。
-    private enum LegacyCodingKeys: String, CodingKey { case l2MaxCharacters, l1ProjectMaxCharacters }
-
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         maxConcurrentSubagents = try values.decode(Int.self, forKey: .maxConcurrentSubagents)
@@ -85,14 +69,13 @@ public struct AgentSettings: Codable, Sendable, Equatable {
         executionProfile = try values.decodeIfPresent(ExecutionProfile.self, forKey: .executionProfile) ?? .workspace
         behaviorProfile = try values.decodeIfPresent(AgentBehaviorProfile.self, forKey: .behaviorProfile)
         systemContext = try values.decodeIfPresent(String.self, forKey: .systemContext)
-        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
         eCoreRecallMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .eCoreRecallMaxCharacters)
-            ?? legacy.decodeIfPresent(Int.self, forKey: .l2MaxCharacters) ?? 256 * 1024
+            ?? 256 * 1024
         pCoreProjectMaxCharacters = try values.decodeIfPresent(Int.self, forKey: .pCoreProjectMaxCharacters)
-            ?? legacy.decodeIfPresent(Int.self, forKey: .l1ProjectMaxCharacters) ?? 32 * 1024
+            ?? 32 * 1024
         preferredActiveTokens = try values.decodeIfPresent(Int.self, forKey: .preferredActiveTokens)
         codeIntelligenceEnabled = try values.decodeIfPresent(Bool.self, forKey: .codeIntelligenceEnabled) ?? false
-        maxAgentLoopSteps = try values.decodeIfPresent(Int.self, forKey: .maxAgentLoopSteps) ?? 32
+        maxAgentLoopSteps = try values.decodeIfPresent(Int.self, forKey: .maxAgentLoopSteps) ?? 0
     }
 }
 
@@ -114,60 +97,6 @@ public struct RuntimeSettings: Codable, Sendable, Equatable {
         interactive = try values.decode(Bool.self, forKey: .interactive)
         commandTimeoutSeconds = try values.decodeIfPresent(Double.self, forKey: .commandTimeoutSeconds) ?? 60
         execution = try values.decodeIfPresent(ExecutionTimeoutSettings.self, forKey: .execution) ?? ExecutionTimeoutSettings(foregroundShellSeconds: commandTimeoutSeconds)
-    }
-}
-
-public struct ContextCacheL1Configuration: Codable, Sendable, Equatable {
-    public var target: Int
-    public var softLimit: Int
-    public var hardLimit: Int
-
-    public init(target: Int = 220_000, softLimit: Int = 235_000, hardLimit: Int = 250_000) {
-        self.target = target
-        self.softLimit = softLimit
-        self.hardLimit = hardLimit
-    }
-
-    private enum CodingKeys: String, CodingKey { case target, softLimit, hardLimit }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        target = try values.decodeIfPresent(Int.self, forKey: .target) ?? 220_000
-        softLimit = try values.decodeIfPresent(Int.self, forKey: .softLimit) ?? 235_000
-        hardLimit = try values.decodeIfPresent(Int.self, forKey: .hardLimit) ?? 250_000
-    }
-}
-
-public struct ContextCacheL2Configuration: Codable, Sendable, Equatable {
-    public var max: Int
-
-    public init(max: Int = 350_000) {
-        self.max = max
-    }
-
-    private enum CodingKeys: String, CodingKey { case max }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        max = try values.decodeIfPresent(Int.self, forKey: .max) ?? 350_000
-    }
-}
-
-public struct ContextCacheL3Configuration: Codable, Sendable, Equatable {
-    public var max: Int?
-    public var useRemainingBudget: Bool
-
-    public init(max: Int? = nil, useRemainingBudget: Bool = true) {
-        self.max = max
-        self.useRemainingBudget = useRemainingBudget
-    }
-
-    private enum CodingKeys: String, CodingKey { case max, useRemainingBudget }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        max = try values.decodeIfPresent(Int.self, forKey: .max)
-        useRemainingBudget = try values.decodeIfPresent(Bool.self, forKey: .useRemainingBudget) ?? true
     }
 }
 
@@ -298,20 +227,6 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
     public var eCore: ContextCacheECoreConfiguration
     public var fabric: ContextObjectFabricConfiguration
 
-    // 向后兼容访问器
-    public var l1: ContextCacheL1Configuration {
-        get { ContextCacheL1Configuration(target: pCore.target, softLimit: pCore.softLimit, hardLimit: pCore.hardLimit) }
-        set { pCore = ContextCachePCoreConfiguration(target: newValue.target, softLimit: newValue.softLimit, hardLimit: newValue.hardLimit) }
-    }
-    public var l2: ContextCacheL2Configuration {
-        get { ContextCacheL2Configuration(max: eCore.recallBudget) }
-        set { eCore.recallBudget = newValue.max }
-    }
-    public var l3: ContextCacheL3Configuration {
-        get { ContextCacheL3Configuration(max: eCore.storageBudget, useRemainingBudget: eCore.useRemainingBudget) }
-        set { eCore.storageBudget = newValue.max ?? eCore.storageBudget; eCore.useRemainingBudget = newValue.useRemainingBudget }
-    }
-
     public init(
         addressableBudget: Int = 1_048_576,
         reserve: Int = 22_000,
@@ -328,28 +243,8 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
         self.fabric = fabric
     }
 
-    public init(
-        addressableBudget: Int = 1_048_576,
-        l1: ContextCacheL1Configuration = ContextCacheL1Configuration(),
-        l2: ContextCacheL2Configuration = ContextCacheL2Configuration(),
-        l3: ContextCacheL3Configuration = ContextCacheL3Configuration(),
-        reserve: Int = 22_000,
-        economicThreshold: Int? = 272_000,
-        fabric: ContextObjectFabricConfiguration = ContextObjectFabricConfiguration()
-    ) {
-        self.init(
-            addressableBudget: addressableBudget,
-            reserve: reserve,
-            economicThreshold: economicThreshold,
-            pCore: ContextCachePCoreConfiguration(target: l1.target, softLimit: l1.softLimit, hardLimit: l1.hardLimit),
-            eCore: ContextCacheECoreConfiguration(storageBudget: l3.max ?? 456_576, recallBudget: l2.max, pressureThreshold: 0.85, useRemainingBudget: l3.useRemainingBudget),
-            fabric: fabric
-        )
-    }
-
     private enum CodingKeys: String, CodingKey {
         case addressableBudget, reserve, economicThreshold, pCore, eCore, fabric
-        case l1, l2, l3
     }
 
     public init(from decoder: Decoder) throws {
@@ -359,21 +254,8 @@ public struct ContextCacheConfiguration: Codable, Sendable, Equatable {
         economicThreshold = try values.decodeIfPresent(Int.self, forKey: .economicThreshold) ?? 272_000
         fabric = try values.decodeIfPresent(ContextObjectFabricConfiguration.self, forKey: .fabric) ?? ContextObjectFabricConfiguration()
 
-        if let explicitPCore = try values.decodeIfPresent(ContextCachePCoreConfiguration.self, forKey: .pCore) {
-            pCore = explicitPCore
-        } else if let legacyL1 = try values.decodeIfPresent(ContextCacheL1Configuration.self, forKey: .l1) {
-            pCore = ContextCachePCoreConfiguration(target: legacyL1.target, softLimit: legacyL1.softLimit, hardLimit: legacyL1.hardLimit)
-        } else {
-            pCore = ContextCachePCoreConfiguration()
-        }
-
-        if let explicitECore = try values.decodeIfPresent(ContextCacheECoreConfiguration.self, forKey: .eCore) {
-            eCore = explicitECore
-        } else {
-            let legacyL2 = try values.decodeIfPresent(ContextCacheL2Configuration.self, forKey: .l2) ?? ContextCacheL2Configuration()
-            let legacyL3 = try values.decodeIfPresent(ContextCacheL3Configuration.self, forKey: .l3) ?? ContextCacheL3Configuration()
-            eCore = ContextCacheECoreConfiguration(storageBudget: legacyL3.max ?? 456_576, recallBudget: legacyL2.max, pressureThreshold: 0.85, useRemainingBudget: legacyL3.useRemainingBudget)
-        }
+        pCore = try values.decodeIfPresent(ContextCachePCoreConfiguration.self, forKey: .pCore) ?? ContextCachePCoreConfiguration()
+        eCore = try values.decodeIfPresent(ContextCacheECoreConfiguration.self, forKey: .eCore) ?? ContextCacheECoreConfiguration()
     }
 
     public func encode(to encoder: Encoder) throws {

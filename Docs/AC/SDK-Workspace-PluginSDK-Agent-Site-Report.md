@@ -188,18 +188,18 @@ let publicSDKDependencies: [Package.Dependency] = [
   Keychain 仅一次性迁移读取）。
 - 页脚 `MIT License` 是错的：LingXiAgent 是 LCSAL-1.1 + PolyForm Noncommercial 多轨许可，
   已改为准确表述并链到 LICENSE-MATRIX。
-- TUI 演示窗口加了「界面示意 · 演示数据」标注，去掉 `Context L1` 与 60 FPS 标记。
+- TUI 演示窗口加了「界面示意 · 演示数据」标注，去掉 `Context PCore` 与 60 FPS 标记。
 
 ## M. docs.html 变更（§58、§59）
 
 - 标题/摘要去掉「Windows 实验性」；概览四卡重写（性能数字改为定性说明、
-  L1/L2/L3 改为 P/E 职责、反封锁改为请求画像并声明不承诺绕过风控）。
+  P/E-Core 改为 P/E 职责、反封锁改为请求画像并声明不承诺绕过风控）。
 - `#arch-dual-core` 改为冻结语义，并新增两节：`#arch-context`（预算、page-out 与召回，
   阈值全部取自 `ConfigurationTypes.swift` 默认值与 `config.schema.json`）与
   `#arch-decoupling`（Frontend 契约）。
 - `#config-spec` 的示例原本是编造的（`defaultModel` / `effort` / `permission.rules` /
-  `contextBudget.l1MaxTokens` / `compactionThreshold` 均不存在）。现按随包
-  `Defaults/config.json` 与 schema 顶层键重写，并说明旧 `l1/l2/l3`、
+  `contextBudget.pCoreMaxTokens` / `compactionThreshold` 均不存在）。现按随包
+  `Defaults/config.json` 与 schema 顶层键重写，并说明旧 `pCore/recallCache/projectIndex`、
   `ecoreStorageEnabled` 键的兼容读取优先级。
 - 新增 6 节填补「导航承诺但页面不存在」的空洞：`#vault-spec`、`#models-universal`、
   `#mcp-ecosystem`、`#skills-ecosystem`、`#slash-commands`、`#cli-manual`、
@@ -222,14 +222,14 @@ let publicSDKDependencies: [Package.Dependency] = [
 ## O. 陈旧词搜索结果（§58）
 
 ```bash
-rg -n 'v2\.0|V1\.0\.0|Windows 实验|L1/L2/L3|三级上下文|tool\.call|75\+|60 ?FPS|~10ms|35MB|反封锁|反检测|JSON-RPC' \
+rg -n 'v2\.0|V1\.0\.0|Windows 实验|P/E-Core|P/E-Core 上下文|tool\.call|75\+|60 ?FPS|~10ms|35MB|反封锁|反检测|JSON-RPC' \
   Server/agent-site/public Server/models-site/public/index.html
 ```
 
 命中 5 行，逐条确认全部是「否认句或真实协议事实」，无残留宣传：
 
 1. `sdk.html:884` — 「**不是** JSON-RPC 2.0」：§20 要求的正名句子。
-2. `docs.html:458` — 「L1/L2/L3 语义**已废弃**，当前架构只有两个核心」。
+2. `docs.html:458` — 「P/E-Core 语义**已废弃**，当前架构只有两个核心」。
 3. `docs.html:654` — LSP 确实是 Stdio JSON-RPC（与插件 IPC 无关的真实事实）。
 4. `docs.html:950` — ACP 确实是 JSON-RPC 2.0（代码 `LingXiACPServer` 发 `jsonrpc: "2.0"`，
    `ACPSpecRevision.modern = "2024-11-05"`）。

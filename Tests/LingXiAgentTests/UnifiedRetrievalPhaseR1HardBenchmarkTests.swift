@@ -168,7 +168,7 @@ struct UnifiedRetrievalPhaseR1HardBenchmarkTests {
                 rawSourceHandle: .codebase(path: "Sources/LingXiCore/Modules/Context/ContextCacheController.swift", startLine: 1, endLine: 120),
                 indexableText: """
                 public actor ContextCacheController {
-                    // 管理 L1/L2 工作集，处理项目代码搜索与缓存调度策略
+                    // 管理 PCore/RecallCache 工作集，处理项目代码搜索与缓存调度策略
                     public func handleSearch(query: String, limit: Int) async throws -> String {
                         return "search result"
                     }

@@ -98,7 +98,7 @@ import LingXiProtocol
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
-        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
+        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxPCoreResidentCharacters: 48 * 1024)
         let sID = SessionID("diag-session")
 
         let fp1 = PrefixFingerprint(
@@ -153,7 +153,7 @@ import LingXiProtocol
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
-        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
+        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxPCoreResidentCharacters: 48 * 1024)
         let sID = SessionID("telemetry-session")
 
         // First turn
@@ -257,7 +257,7 @@ import LingXiProtocol
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let pager = ContextPager(store: ProjectPageStore(), workingSet: RecallWorkingSet())
         let scanner = ProjectScanner(root: root)
-        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxL1ResidentCharacters: 48 * 1024)
+        let controller = ContextCacheController(contextPager: pager, scanner: scanner, maxPCoreResidentCharacters: 48 * 1024)
         let sID = SessionID("s_bust_test")
 
         // Turn 1: Initial turn, cold epoch

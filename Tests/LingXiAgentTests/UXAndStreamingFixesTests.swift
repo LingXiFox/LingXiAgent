@@ -141,7 +141,7 @@ struct UXAndStreamingFixesTests {
         app.sidebarModel = TUISidebarModel(
             summary: "Active UX Fix Session",
             cacheLayers: [
-                TUISidebarModel.CacheLayer(name: "L1", usedTokens: 500, capacityTokens: 1000)
+                TUISidebarModel.CacheLayer(name: "PCore", usedTokens: 500, capacityTokens: 1000)
             ],
             prefixCache: TUISidebarModel.PrefixCacheStats(
                 cachedTokens: 800,

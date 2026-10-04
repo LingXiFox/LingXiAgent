@@ -59,9 +59,6 @@ public struct ContextPolicySnapshot: Codable, Sendable, Equatable {
     public let eCoreRecallBudget: Int
     public let eCorePressureThreshold: Double
 
-    public var l1Target: Int { pCoreTarget }
-    public var l2Max: Int { eCoreRecallBudget }
-    public var l3Capacity: Int { eCoreStorageBudget }
 
     public init(
         addressableBudget: Int,
@@ -81,17 +78,7 @@ public struct ContextPolicySnapshot: Codable, Sendable, Equatable {
         self.eCorePressureThreshold = eCorePressureThreshold
     }
 
-    public init(addressableBudget: Int, l1Target: Int, l2Max: Int, l3Capacity: Int) {
-        self.init(
-            addressableBudget: addressableBudget,
-            pCoreTarget: l1Target,
-            pCoreSoftLimit: Int(Double(l1Target) * 1.07),
-            pCoreHardLimit: Int(Double(l1Target) * 1.14),
-            eCoreStorageBudget: l3Capacity,
-            eCoreRecallBudget: l2Max,
-            eCorePressureThreshold: 0.85
-        )
-    }
+
 }
 
 /// Context 压缩事件快照。

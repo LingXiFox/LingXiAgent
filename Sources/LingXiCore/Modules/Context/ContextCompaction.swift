@@ -335,12 +335,12 @@ public struct DerivedContextPage: Sendable, Equatable, Hashable {
 
 public actor DerivedContextStore {
     private var pages: [SessionID: [DerivedContextPage]] = [:]
-    private var l2: [SessionID: [DerivedContextPage]] = [:]
+    private var recalledPageIDs: [SessionID: Set<String>] = [:]
     private var pageOutCount = 0
     private var pageInCount = 0
-    private var l3Hits = 0
-    private var l2Hits = 0
-    private var l2Promotions = 0
+    private var projectIndexHits = 0
+    private var recallCacheHits = 0
+    private var recallCachePromotions = 0
     private let persistence: SQLitePersistenceStore?
     public init(persistence: SQLitePersistenceStore? = nil) { self.persistence = persistence }
     public func restore() async throws {
@@ -361,15 +361,15 @@ public actor DerivedContextStore {
         let normalizedQuery = query.lowercased()
         let terms = Set(normalizedQuery.split { !$0.isLetter && !$0.isNumber }.map(String.init))
         let identifiers = normalizedQuery.split(whereSeparator: \.isWhitespace).filter { $0.contains("-") }
-        let current = l2[sessionID] ?? []
+        let current = recalledPageIDs[sessionID] ?? []
         let candidates = pages[sessionID] ?? []
         let scored = candidates.enumerated().map { index, page in
             let content = page.content.lowercased()
             let lexical = terms.reduce(0) { $0 + (content.contains($1) ? 1 : 0) }
             let identifierMatch = identifiers.contains { content.contains($0) } ? 100 : 0
             let sourceWeight = page.sourceKind == .historicalTool ? 1 : 2
-            let l2Bonus = current.contains(page) ? 2 : 0
-            return (page, lexical, identifierMatch, lexical * 10 + sourceWeight + l2Bonus + index)
+            let recallCacheBonus = current.contains(page.id) ? 2 : 0
+            return (page, lexical, identifierMatch, lexical * 10 + sourceWeight + recallCacheBonus + index)
         }
         let lexicalMatches = scored.filter { !terms.isEmpty && $0.1 > 0 }
         let identifierMatches = scored.filter { $0.2 > 0 }
@@ -377,21 +377,22 @@ public actor DerivedContextStore {
         let candidatesForPageIn = !userIdentifierMatches.isEmpty ? userIdentifierMatches : (!identifierMatches.isEmpty ? identifierMatches : lexicalMatches)
         let matches = candidatesForPageIn.sorted { $0.3 > $1.3 }.prefix(limit).map(\.0)
         for page in matches {
-            if current.contains(page) { l2Hits += 1 } else { l2Promotions += 1 }
+            if current.contains(page.id) { recallCacheHits += 1 } else { recallCachePromotions += 1 }
         }
-        l3Hits += matches.count
-        l2[sessionID] = Array(matches)
+        projectIndexHits += matches.count
+        recalledPageIDs[sessionID] = Set(matches.map(\.id))
         pageInCount += matches.count
         return Array(matches)
     }
-    public func metrics(sessionID: SessionID) -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) { (l2[sessionID]?.count ?? 0, pages[sessionID]?.count ?? 0, pageOutCount, pageInCount, (pages[sessionID] ?? []).filter { $0.sourceKind == .historicalTool }.count, l3Hits, l2Hits, l2Promotions) }
-    public func allMetrics() -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) {
-        (l2.values.reduce(0) { $0 + $1.count }, pages.values.reduce(0) { $0 + $1.count }, pageOutCount, pageInCount, pages.values.flatMap { $0 }.filter { $0.sourceKind == .historicalTool }.count, l3Hits, l2Hits, l2Promotions)
+    public func metrics(sessionID: SessionID) -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) { (recalledPageIDs[sessionID]?.count ?? 0, pages[sessionID]?.count ?? 0, pageOutCount, pageInCount, (pages[sessionID] ?? []).filter { $0.sourceKind == .historicalTool }.count, projectIndexHits, recallCacheHits, recallCachePromotions) }
+    public func allMetrics() -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) {
+        (recalledPageIDs.values.reduce(0) { $0 + $1.count }, pages.values.reduce(0) { $0 + $1.count }, pageOutCount, pageInCount, pages.values.flatMap { $0 }.filter { $0.sourceKind == .historicalTool }.count, projectIndexHits, recallCacheHits, recallCachePromotions)
     }
     public func pages(sessionID: SessionID) -> [DerivedContextPage] { pages[sessionID] ?? [] }
+    public func allPages() -> [DerivedContextPage] { pages.values.flatMap { $0 } }
     public func clear(sessionID: SessionID) {
         pages.removeValue(forKey: sessionID)
-        l2.removeValue(forKey: sessionID)
+        recalledPageIDs.removeValue(forKey: sessionID)
     }
 }
 
@@ -439,7 +440,18 @@ public actor ContextCompactor {
         self.derivedStore = derivedStore
         self.ecoreStore = ecoreStore
     }
-    public func restoreDerived() async throws { try await derivedStore.restore() }
+    public func restoreDerived() async throws {
+        try await derivedStore.restore()
+        for page in await derivedStore.allPages() { _ = await importHistoricalPage(page) }
+    }
+
+    /// Imports existing SQLite history without deleting it or creating another page-out store.
+    func importHistoricalPage(_ page: DerivedContextPage) async -> ECoreReference {
+        await ecoreStore.pageOut(sessionID: page.sessionID, content: page.content, origin: .message,
+            contextOccurrenceID: "historical-import:\(page.id)", evictionEpoch: 0,
+            summary: "Historical \(page.sourceKind.rawValue): " + String(page.content.prefix(240)),
+            pageOutReason: "Import persisted historical context")
+    }
     public func restoreResidencies(sessionID: SessionID, values: [ContextUnitDebugSnapshot]) {
         unitResidencies[sessionID] = Dictionary(uniqueKeysWithValues: values.map { ($0.messageID, $0) })
     }
@@ -999,7 +1011,9 @@ public actor ContextCompactor {
         guard entries.isEmpty else { return entries }
         var legacyEntries: [ContextEntry] = []
         for page in await derivedStore.search(sessionID: sessionID, query: query, limit: 4) {
-            let entry = ContextEntry(messageID: MessageID(page.id), role: .system, source: .derivedPage, part: .text("[Session context]\n\(page.content)"))
+            let reference = await importHistoricalPage(page)
+            guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: reference.referenceID) else { continue }
+            let entry = ContextEntry(messageID: MessageID(page.id), role: .system, source: .derivedPage, part: .text("[Session context]\n\(payload)"))
             let cost = estimator.estimate(entries: [entry])
             guard cost <= remaining else { break }
             legacyEntries.append(entry)
@@ -1007,8 +1021,8 @@ public actor ContextCompactor {
         }
         return legacyEntries
     }
-    public func cacheMetrics(sessionID: SessionID) async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) { await derivedStore.metrics(sessionID: sessionID) }
-    public func cacheMetrics() async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int) { await derivedStore.allMetrics() }
+    public func cacheMetrics(sessionID: SessionID) async -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) { await derivedStore.metrics(sessionID: sessionID) }
+    public func cacheMetrics() async -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) { await derivedStore.allMetrics() }
     public func unitStates(sessionID: SessionID) -> [ContextUnitDebugSnapshot] { (unitResidencies[sessionID] ?? [:]).values.sorted { $0.messageID.rawValue < $1.messageID.rawValue } }
     static func content(of part: SessionMessagePart) -> String { switch part { case let .text(text): text; case let .toolCall(call): call.arguments; case let .toolResult(result): result.content + (result.error?.message ?? ""); case let .observation(id): "[Observation: \(id.description)]" } }
 

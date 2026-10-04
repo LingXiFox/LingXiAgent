@@ -170,7 +170,7 @@ struct RealProviderSmokeTests {
                 afterCompact.units.first { $0.messageID == anchor.messageID }?.residency == .derived
             }) else {
                 print("[rehydration-after] active=\(afterCompact.estimatedTokens) project=\(afterCompact.projectTokens) session=\(afterCompact.recentSessionTokens) mandatory=\(afterCompact.mandatoryTokens)")
-                Issue.record("没有 historical ordinary user unit 被换出到 Derived L3")
+                Issue.record("没有 historical ordinary user unit 被换出到 Derived ProjectIndex")
                 await host.shutdown()
                 return
             }
@@ -185,16 +185,16 @@ struct RealProviderSmokeTests {
             #expect(answer.contains(marker.name))
             #expect((try await client.session(sessionID)).messages.count > canonical.messages.count)
             let cache = try await client.projectCache()
-            #expect(cache.derivedL3Hits > cacheBefore.derivedL3Hits)
-            #expect(cache.sessionL2DerivedPromotions > cacheBefore.sessionL2DerivedPromotions || cache.sessionL2DerivedHits > cacheBefore.sessionL2DerivedHits)
+            #expect(cache.historicalDerivedHits > cacheBefore.historicalDerivedHits)
+            #expect(cache.derivedRestorations > cacheBefore.derivedRestorations || cache.recalledDerivedHits > cacheBefore.recalledDerivedHits)
             #expect(cache.derivedPageInCount > cacheBefore.derivedPageInCount)
             let rehydrated = try #require(await client.context(sessionID))
             #expect(rehydrated.derivedPageCount > 0)
             #expect(rehydrated.derivedTokens > 0)
             #expect(rehydrated.materializedDerivedPageIDs.contains(markerPageID))
             let performance = try #require(await client.performance(sessionID))
-            #expect(performance.derivedL3Hits > 0)
-            #expect(performance.sessionL2DerivedPromotions > 0 || performance.sessionL2DerivedHits > 0)
+            #expect(performance.historicalDerivedHits > 0)
+            #expect(performance.derivedRestorations > 0 || performance.recalledDerivedHits > 0)
             #expect(performance.derivedPageIns > 0)
             #expect(afterCompact.compactionGeneration > 0)
             LingXiPlatform.environment.unset("LINGXI_PERF_DEBUG")
@@ -483,7 +483,7 @@ struct RealProviderSmokeTests {
         let sessionID = try await client.createSession()
 
         // 构造一个约 3000 tokens 的稳定长前缀内容
-        let longPrefix = String(repeating: "LingXiAgent 核心前缀缓存测试长文本上下文。包含架构定义、三级缓存L1/L2/L3分层调度、OpenTUI渲染器及工具安全审批流。\n", count: 35)
+        let longPrefix = String(repeating: "LingXiAgent 核心前缀缓存测试长文本上下文。包含架构定义、P/E-Core contextPCore/RecallCache/L3分层调度、OpenTUI渲染器及工具安全审批流。\n", count: 35)
 
         print("[PrefixCacheSmoke] ========== Turn 1 (Cold Start) ==========")
         let stream1 = try await client.sendMessage(sessionID: sessionID, content: "\(longPrefix)\n问题1：请只回答数字 101。")

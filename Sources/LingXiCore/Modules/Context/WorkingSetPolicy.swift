@@ -9,7 +9,7 @@ public struct WorkingSetEntry: Sendable {
     public var explicitPin: Bool
 }
 
-/// L2 的淘汰决策独立于存储；第一版只接收确定性本地信号。
+/// RecallCache 的淘汰决策独立于存储；第一版只接收确定性本地信号。
 public struct WorkingSetPolicy: Sendable {
     public struct Weights: Sendable {
         public let recentUse: Double

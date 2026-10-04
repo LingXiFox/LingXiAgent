@@ -9,7 +9,7 @@ import Testing
 @Suite("P/E Core Snapshot & Convergence Tests (Phase 5)", .serialized)
 struct PECoreSnapshotSemanticsTests {
 
-    @Test("activePCoreTokens strictly respects P-Core usedTokens and never falls back to promptTokens or l1Tokens")
+    @Test("activePCoreTokens strictly respects P-Core usedTokens and never falls back to promptTokens or pCoreTokens")
     func testPCoreStrictDecoupling() {
         let sessionID = SessionID("pcore-strict-decoupling")
 
@@ -18,30 +18,29 @@ struct PECoreSnapshotSemanticsTests {
             sessionID: sessionID,
             revision: 1,
             pCore: PCoreStateSnapshot(usedTokens: 4200, targetTokens: 16000, softLimitTokens: 14000, hardLimitTokens: 18000),
-            l1Tokens: 9999,
-            promptTokens: 8888
+            promptTokens: 8888,
+            pCoreTokens: 9999
         )
         #expect(snap1.activePCoreTokens == 4200)
         #expect(snap1.pCore?.usedTokens == 4200)
         #expect(snap1.pCore?.targetTokens == 16000)
 
-        // Case 2: pCore snapshot has 0 usedTokens - must remain 0, NEVER fallback to promptTokens/l1Tokens
+        // Case 2: pCore snapshot has 0 usedTokens - must remain 0, NEVER fallback to promptTokens/pCoreTokens
         let snap2 = ContextStateSnapshot(
             sessionID: sessionID,
             revision: 2,
             pCore: PCoreStateSnapshot(usedTokens: 0, targetTokens: 16000, softLimitTokens: 14000, hardLimitTokens: 18000),
-            l1Tokens: 6000,
-            promptTokens: 5000
+            promptTokens: 5000,
+            pCoreTokens: 6000
         )
         #expect(snap2.activePCoreTokens == 0)
 
         // Case 3: legacy backward compatibility: no pCore provided, pCoreTokens nil, promptTokens exists
-        // Must NOT fallback to promptTokens or l1Tokens!
+        // Must NOT fallback to promptTokens or pCoreTokens!
         let snap3 = ContextStateSnapshot(
             sessionID: sessionID,
             revision: 3,
             pCore: nil,
-            l1Tokens: 6000,
             promptTokens: 5000,
             pCoreTokens: nil
         )

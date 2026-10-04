@@ -11,7 +11,7 @@
 - `CodeIntelligenceTests/agentUsesBoundedCodeContextBeforeMutation`
   - Runs the Agent loop through `code_intelligence`, then a workspace mutation, proving structured context retrieval reaches an Agent modification flow.
 - Existing `SymbolIndexTests`, `ReferenceIndexTests`, and `ProjectContextTests`
-  - Cover stable indexing, file/module/symbol dependency edges, ranking, deletion, isolation, and L2/L3 budget bounds.
+  - Cover stable indexing, file/module/symbol dependency edges, ranking, deletion, isolation, and RecallCache/ProjectIndex budget bounds.
 
 ## Required Gates
 

@@ -25,6 +25,10 @@ public final class GUIAutomationController {
     private var sequence: UInt64 = 0
     public private(set) var events: [ComposerAutomationEvent] = []
 
+    var canResumePresentedDraft: Bool {
+        pending?.presented == true && pending?.pause == true && boundary != nil
+    }
+
     init(runtime: RuntimeFrontend) {
         self.runtime = runtime
         runtime.composerModel.draftDidChange = { [weak self] in
@@ -43,7 +47,7 @@ public final class GUIAutomationController {
             cancel()
             return GUIAutomationResponse(accepted: true)
         case .resume:
-            guard pending?.presented == true, pending?.pause == true, let boundary else {
+            guard canResumePresentedDraft, let boundary else {
                 return GUIAutomationResponse(accepted: false, reason: "notPaused")
             }
             self.boundary = nil

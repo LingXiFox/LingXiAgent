@@ -66,7 +66,7 @@ struct ContextCompactionTests {
         #expect(await compactor.pageIn(sessionID: SessionID("a"), query: "beta", remainingTokens: 10_000).isEmpty)
     }
 
-    @Test func rehydrationFlowsThroughL1Snapshot() async throws {
+    @Test func rehydrationFlowsThroughPCoreSnapshot() async throws {
         let sessionID = SessionID("rehydration")
         let compactor = ContextCompactor()
         let compacted = try await compactor.compact(sessionID: sessionID, entries: compactableEntries(), budget: compactionBudget)
@@ -280,7 +280,7 @@ struct ContextCompactionTests {
         let context = try #require(await client.context(sessionID))
         #expect(context.sourceCounts["derivedPage", default: 0] > 0)
         // 召回命中 E-Core page-out 引用并 Exact Restore 取回载荷，才会出现这一段；
-        // 旧的 L2/L3 计数器不再承接新写入，因此不能用它们证明召回发生。
+        // 旧的 RecallCache/ProjectIndex 计数器不再承接新写入，因此不能用它们证明召回发生。
         let reloaded = try await client.session(sessionID)
         let recalled = reloaded.messages.flatMap { message in
             message.parts.compactMap { part in if case let .toolResult(result) = part { result.content } else { nil } }

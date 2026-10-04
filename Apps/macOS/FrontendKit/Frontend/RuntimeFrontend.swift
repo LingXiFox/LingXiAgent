@@ -371,7 +371,14 @@ public final class RuntimeFrontend: ObservableObject {
     /// The normal Composer Send action, shared by keyboard, button and GUI automation.
     @discardableResult
     public func submitComposer() -> Task<Void, Never>? {
-        guard !composerModel.automationPending else { return nil }
+        // A user pressing Send may release an already presented automation draft.
+        // The controller owns the presentation boundary and prevents duplicate submissions.
+        if composerModel.automationPending {
+            guard automationController.canResumePresentedDraft else { return nil }
+            return Task { [weak self] in
+                _ = await self?.automationController.handle(GUIAutomationRequest(action: .resume))
+            }
+        }
         if composerModel.isGoalMode {
             let trimmed = composerModel.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }

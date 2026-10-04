@@ -65,13 +65,13 @@ enum ConfigKeys {
     static let maxConcurrentSubagents = ConfigKey("agent.maxConcurrentSubagents", 4)
     static let maxSubagentDepth = ConfigKey("agent.maxSubagentDepth", 3)
     static let maxTotalRuns = ConfigKey("agent.maxTotalRunsPerRootRun", 32)
-    static let maxAgentLoopSteps = ConfigKey("agent.maxAgentLoopSteps", 32)
+    static let maxAgentLoopSteps = ConfigKey("agent.maxAgentLoopSteps", 0)
     /// An override, not a setting with a default. Core reads this as `Int?` and derives the
     /// active-token budget from the model window when the key is absent — so the control that
     /// writes it has to be able to *not* write it, which is why it is not a plain number field.
     static let preferredActiveTokens = ConfigKey("agent.preferredActiveTokens", 0)
-    static let pCoreProjectMaxCharacters = ConfigKey("agent.pCoreProjectMaxCharacters", 32_768, legacy: "agent.l1ProjectMaxCharacters")
-    static let eCoreRecallMaxCharacters = ConfigKey("agent.eCoreRecallMaxCharacters", 262_144, legacy: "agent.l2MaxCharacters")
+    static let pCoreProjectMaxCharacters = ConfigKey("agent.pCoreProjectMaxCharacters", 32_768)
+    static let eCoreRecallMaxCharacters = ConfigKey("agent.eCoreRecallMaxCharacters", 262_144)
 
     static let quickFilesystemSeconds = ConfigKey("runtime.execution.quickFilesystemSeconds", 10.0)
     static let searchSeconds = ConfigKey("runtime.execution.searchSeconds", 30.0)
@@ -98,13 +98,7 @@ enum ConfigKeys {
     static let eCoreRecallBudget = ConfigKey("context.eCore.recallBudget", 350_000)
     static let eCorePressureThreshold = ConfigKey("context.eCore.pressureThreshold", 0.85)
 
-    // Legacy aliases
-    static let l1Target = pCoreTarget
-    static let l1SoftLimit = pCoreSoftLimit
-    static let l1HardLimit = pCoreHardLimit
-    static let l2Max = eCoreRecallBudget
-    /// `context.eCore.useRemainingBudget` — Core reads it, so Settings has to offer it. Named for
-    /// what it does rather than the retired L3 layer it came from.
+    /// Controls whether E-Core storage may use the remaining addressable budget.
     static let eCoreUseRemainingBudget = ConfigKey("context.eCore.useRemainingBudget", true)
 
     static let eCorePersistence = ConfigKey("context.fabric.eCorePersistenceEnabled", true, legacy: "context.fabric.ecoreStorageEnabled")

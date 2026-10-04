@@ -25,4 +25,4 @@ summary 使用 hidden `compaction` agent prompt（`opencode/src/agent/agent.ts:2
 | Tool result cache | NOT FOUND；tool results留在 Session projection/history |
 | Provider prompt cache | FOUND；provider request cache controls/key |
 
-summary prompt、small summary model fallback、token estimator exact algorithm和 compaction failure retry policy应继续以 `core/session/compaction.ts` 和 tests逐行核验；未确认时不得将其描述为固定阈值或 L1/L2/L3 design。
+summary prompt、small summary model fallback、token estimator exact algorithm和 compaction failure retry policy应继续以 `core/session/compaction.ts` 和 tests逐行核验；未确认时不得将其描述为固定阈值或 P/E-Core design。

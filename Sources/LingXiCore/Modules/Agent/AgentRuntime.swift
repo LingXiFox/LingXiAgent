@@ -72,7 +72,7 @@ public actor AgentRuntime {
         behaviorProfile: AgentBehaviorProfile = .build,
         behaviorInstructionsEnabled: Bool = false,
         behaviorSystemContext: @escaping @Sendable (AgentBehaviorProfile, SubagentExecutionProfile?) -> String? = { _, _ in nil },
-        maxAgentLoopSteps: Int = 32,
+        maxAgentLoopSteps: Int = 0,
         deadlinePolicy: ExecutionDeadlinePolicy = ExecutionDeadlinePolicy(),
         restoreScheduler: SessionRestoreScheduler? = nil,
         diagnostics: RuntimeDiagnosticsStore? = nil,
@@ -357,7 +357,7 @@ public actor AgentRuntime {
         guard let assembly = cacheController.runtimeContext.snapshot().assembly else { return }
         for session in try await store.listSessions() {
             let snapshot = await contextEngine.latestSnapshot(for: session.id)
-            let usage = await cacheController.l1UsageTokens(for: session.id)
+            let usage = await cacheController.pCoreResidentTokens(for: session.id)
             guard max(usage, snapshot?.metrics.estimatedTokens ?? 0) > policy.pCoreSoftLimit else { continue }
             let runtime: SessionRuntime
             if let resident = runtimes[session.id] {
@@ -404,34 +404,34 @@ public actor AgentRuntime {
         } else {
             await compactor.cacheMetrics()
         }
-        let sessionL2Pages = if let sessionID {
+        let sessionRecallPages = if let sessionID {
             (await contextEngine.latestSnapshot(for: sessionID))?.metrics.projectPageCount ?? 0
         } else {
-            metrics.l2Pages
+            metrics.recallCachePages
         }
-        let sessionL2Characters = if let sessionID {
+        let sessionRecallCharacters = if let sessionID {
             (await contextEngine.latestSnapshot(for: sessionID))?.metrics.projectCharacterCount ?? 0
         } else {
-            metrics.l2Characters
+            metrics.recallCacheCharacters
         }
         return ProjectCacheDebugSnapshot(
-            l2Pages: sessionL2Pages,
-            l2Characters: sessionL2Characters,
-            l2HitRate: metrics.l2Lookups == 0 ? nil : Double(metrics.l2Hits) / Double(metrics.l2Lookups),
-            l3Pages: metrics.l3Pages,
+            recallCachePages: sessionRecallPages,
+            recallCacheCharacters: sessionRecallCharacters,
+            recallCacheHitRate: metrics.recallCacheLookups == 0 ? nil : Double(metrics.recallCacheHits) / Double(metrics.recallCacheLookups),
+            projectIndexPages: metrics.projectIndexPages,
             staleRebuilds: metrics.staleRebuilds,
             symbolCount: metrics.symbolCount,
             symbolIndexedFiles: metrics.symbolIndexedFiles,
             referenceCount: metrics.referenceCount,
             dependencyCount: metrics.dependencyCount,
-            sessionL2DerivedPages: derived.l2Pages,
-            derivedL3Pages: derived.l3Pages,
+            recalledDerivedPages: derived.recallCachePages,
+            historicalDerivedPages: derived.projectIndexPages,
             derivedPageOutCount: derived.pageOutCount,
             derivedPageInCount: derived.pageInCount,
             historicalToolEvidencePages: derived.historicalToolPages,
-            derivedL3Hits: derived.l3Hits,
-            sessionL2DerivedHits: derived.l2Hits,
-            sessionL2DerivedPromotions: derived.l2Promotions
+            historicalDerivedHits: derived.projectIndexHits,
+            recalledDerivedHits: derived.recallCacheHits,
+            derivedRestorations: derived.recallCachePromotions
         )
     }
 
@@ -443,7 +443,7 @@ public actor AgentRuntime {
         try await runtime(for: sessionID).compactNow()
     }
 
-    public func cacheMetrics(_ sessionID: SessionID) async -> (l2Pages: Int, l3Pages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, l3Hits: Int, l2Hits: Int, l2Promotions: Int)? {
+    public func cacheMetrics(_ sessionID: SessionID) async -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int)? {
         await runtimes[sessionID]?.cacheMetrics()
     }
 

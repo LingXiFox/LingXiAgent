@@ -22,7 +22,7 @@
         <mxCell id="fastbus" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9EAD3;strokeColor=#6AA84F;fontSize=18;fontStyle=1;" value="模型高速总线（Fast Path / 类 PCIe）&#xa;只承载与模型推理、Tool Loop、上下文和 MCP 活跃能力直接相关的低延迟路径" vertex="1">
           <mxGeometry height="60" width="1320" x="140" y="390" as="geometry" />
         </mxCell>
-        <mxCell id="context" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3FAF0;strokeColor=#6AA84F;fontSize=15;" value="上下文引擎&#xa;L1 会话活跃上下文&#xa;L2 项目热区缓存&#xa;L3 项目完整上下文" vertex="1">
+        <mxCell id="context" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3FAF0;strokeColor=#6AA84F;fontSize=15;" value="上下文引擎&#xa;P-Core 活跃请求上下文&#xa;E-Core 引用寻址对象存储&#xa;项目索引 / 查询缓存" vertex="1">
           <mxGeometry height="120" width="270" x="170" y="485" as="geometry" />
         </mxCell>
         <mxCell id="modelgw" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3FAF0;strokeColor=#6AA84F;fontSize=15;" value="模型网关&#xa;Provider Adapter&#xa;原生请求 / Streaming&#xa;Tool 协议转换" vertex="1">
@@ -31,7 +31,7 @@
         <mxCell id="tool" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3FAF0;strokeColor=#6AA84F;fontSize=15;" value="Tool 运行时&#xa;Registry / Executor&#xa;Cancellation / Result" vertex="1">
           <mxGeometry height="120" width="250" x="830" y="485" as="geometry" />
         </mxCell>
-        <mxCell id="mcp" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3FAF0;strokeColor=#6AA84F;fontSize=15;" value="MCP 运行时&#xa;L1 活跃 MCP&#xa;L2 会话常用 MCP&#xa;L3 静态 MCP" vertex="1">
+        <mxCell id="mcp" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3FAF0;strokeColor=#6AA84F;fontSize=15;" value="MCP 运行时&#xa;Tool catalog / schema lease&#xa;Session / project 使用计数&#xa;连接与权限状态" vertex="1">
           <mxGeometry height="120" width="270" x="1140" y="485" as="geometry" />
         </mxCell>
         <mxCell id="providers" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9E6;strokeColor=#D6B656;fontSize=13;dashed=1;" value="Provider 计算单元&#xa;OpenAI / Anthropic / Gemini / …&#xa;（按原生协议接入）" vertex="1">

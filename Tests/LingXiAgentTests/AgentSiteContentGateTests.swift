@@ -39,16 +39,16 @@ struct AgentSiteContentGateTests {
 
     // MARK: - §46 / §47 / §49 旧上下文架构
 
-    @Test("legacy L1/L2/L3 context architecture is not taught as current")
+    @Test("legacy PCore/RecallCache/ProjectIndex context architecture is not taught as current")
     func legacyContextTiersAreGone() throws {
         for page in Self.pages {
             // 数字边界避免命中 SVG 路径里的 "L14" 之类坐标。
             let body = try text(page)
             let lines = body.split(separator: "\n").filter { !$0.contains("<svg") && !$0.contains("path d=") }
             let joined = lines.joined(separator: "\n")
-            assertOnlyDenied(joined, needles: ["三级上下文", "三级流控", "三级缓存", "Hot Working Set", "Warm Cache", "Cold Store"], page: page)
-            #expect(!joined.contains("L1/L2/L3") || joined.contains("已废弃"),
-                    "\(page) 仍把 L1/L2/L3 当作现行架构描述")
+            assertOnlyDenied(joined, needles: ["三级上下文", "三级流控", "P/E-Core context", "Hot Working Set", "Warm Cache", "Cold Store"], page: page)
+            #expect(!joined.contains("PCore/RecallCache/ProjectIndex") || joined.contains("已废弃"),
+                    "\(page) 仍把 PCore/RecallCache/ProjectIndex 当作现行架构描述")
         }
     }
 
@@ -179,7 +179,7 @@ struct AgentSiteContentGateTests {
     /// 链接归一之外，Origin 也必须归一：rewrite 会让 `/docs` 与 `/docs.html`
     /// 各自成为一个 ESA cache key，于是「同一份文档两个真相」又回来了，
     /// 而且每次发版都要人多刷一条 URL。
-    /// README 是第四个真相面：它曾写着 ~10ms/35MB、L1/L2/L3 冷热分级、"反封锁伪装"、
+    /// README 是第四个真相面：它曾写着 ~10ms/35MB、PCore/RecallCache/ProjectIndex 冷热分级、"反封锁伪装"、
     /// 75+ 模型、LCSAL-1.0，还完全没提两个公共 SDK。同一把尺子量它。
     @Test("README carries the same facts as the site and the license matrix")
     func READMEAgreesWithReality() throws {
@@ -187,7 +187,7 @@ struct AgentSiteContentGateTests {
 
         assertOnlyDenied(readme, needles: [
             "~10ms", "35MB", "60FPS", "60 FPS", "85% 以上", "反封锁", "反检测", "JA3", "JA4",
-            "三级上下文", "三级缓存水位", "75+", "Normal / Plan / Boost", "LCSAL-1.0",
+            "三级上下文", "P/E-Core context水位", "75+", "Normal / Plan / Boost", "LCSAL-1.0",
         ], page: "README.md")
         #expect(!readme.contains("ContextCompactor") || readme.contains("已废弃"),
                 "README 不得把 ContextCompactor 冷热分级当作现行架构")

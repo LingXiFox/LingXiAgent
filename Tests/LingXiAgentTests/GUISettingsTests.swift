@@ -27,12 +27,12 @@ struct GUISettingsTests {
         let file = CoreConfigFile(url: url)
         #expect(file.value(at: ["agent", "maxSubagentDepth"]) as? Int == 5)
 
-        try file.set(8, at: ["context", "l1", "target"])
+        try file.set(8, at: ["context", "pCore", "target"])
         try file.set(nil, at: ["agent", "maxSubagentDepth"])
 
         let reread = CoreConfigFile(url: url)
         #expect(reread.value(at: ["custom", "keep"]) as? Int == 1)
-        #expect(reread.value(at: ["context", "l1", "target"]) as? Int == 8)
+        #expect(reread.value(at: ["context", "pCore", "target"]) as? Int == 8)
         #expect(reread.value(at: ["agent"]) == nil)
         #expect(reread.value(at: ["version"]) as? Int == 1)
     }

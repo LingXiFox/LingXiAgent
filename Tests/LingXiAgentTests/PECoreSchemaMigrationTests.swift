@@ -7,7 +7,7 @@ import Testing
 @Suite("P/E Core Schema Migration & Storage Metrics Tests (Round 2 Phase E)", .serialized)
 struct PECoreSchemaMigrationTests {
 
-    @Test("Legacy JSON with l1/pCore/eCore/cache fields is cleanly adapted via decode adapter")
+    @Test("Flat P/E JSON with provider-cache fields is cleanly adapted via decode adapter")
     func testLegacyDecodeAdapter() throws {
         let legacyJSON = """
         {
@@ -15,9 +15,6 @@ struct PECoreSchemaMigrationTests {
             "revision": 42,
             "estimatedTokens": 12000,
             "compactionGeneration": 3,
-            "l1Tokens": 5000,
-            "l2Tokens": 1000,
-            "l3Tokens": 500,
             "pCoreTokens": 5000,
             "eCoreObjectCount": 15,
             "eCoreTotalBytes": 131072,
@@ -58,9 +55,6 @@ struct PECoreSchemaMigrationTests {
         #expect(decoded.providerCache?.cacheDebt == 120)
 
         // 2. Verify legacy computed properties are non-breaking
-        #expect(decoded.l1Tokens == 5000)
-        #expect(decoded.l2Tokens == 0)
-        #expect(decoded.l3Tokens == 0)
         #expect(decoded.pCoreTokens == 5000)
         #expect(decoded.eCoreObjectCount == 15)
         #expect(decoded.eCoreTotalBytes == 131072)
@@ -107,10 +101,6 @@ struct PECoreSchemaMigrationTests {
         #expect(jsonObject["providerCache"] != nil)
 
         // Verify legacy stored keys are completely absent
-        #expect(jsonObject["l1Tokens"] == nil)
-        #expect(jsonObject["l2Tokens"] == nil)
-        #expect(jsonObject["l3Tokens"] == nil)
-        #expect(jsonObject["pCoreTokens"] == nil)
         #expect(jsonObject["eCoreObjectCount"] == nil)
         #expect(jsonObject["eCoreTotalBytes"] == nil)
         #expect(jsonObject["cacheReadTokens"] == nil)

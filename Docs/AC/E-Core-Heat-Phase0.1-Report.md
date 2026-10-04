@@ -9,7 +9,7 @@
 2. **权重策略化（消除 Magic Number）**：
    引入独立的 `ECoreHeatWeightPolicy` 配置，统合 `objectStored`、`objectRecalled`、`recallMiss` 的权重管理；
 3. **彻底解耦 E-Core Hot/Cold 与 P-Core 缓存生命周期**：
-   在代码、注释与设计规范中永久固定架构边界，严禁 E-Core Hot/Cold 侵入 P-Core 或联动 `ContextCacheController` 的 L1/L2。
+   在代码、注释与设计规范中永久固定架构边界，严禁 E-Core Hot/Cold 侵入 P-Core 或联动 `ContextCacheController` 的 P/E-Core。
 
 ---
 
@@ -85,7 +85,7 @@ public struct ECoreHeatWeightPolicy: Codable, Sendable, Equatable {
 
 ## 4. 架构边界彻底解耦（P-Core vs E-Core）
 
-根据主人要求，本阶段明确并固化了 P-Core 与 E-Core 的核心职责边界，**彻底剔除任何与 `ContextCacheController` L1/L2 联动的设想**：
+根据主人要求，本阶段明确并固化了 P-Core 与 E-Core 的核心职责边界，**彻底剔除任何与 `ContextCacheController` P/E-Core 联动的设想**：
 
 ### 4.1 职责边界划分
 
@@ -114,7 +114,7 @@ public struct ECoreHeatWeightPolicy: Codable, Sendable, Equatable {
 1. **禁止 Hot 对象自动进入 P-Core**：无论对象多热，绝不自动注入 P-Core Active Context；模型必须显式使用 `context_recall` 召回；
 2. **禁止 Cold 对象影响 ContextProjection**：即使对象极冷，只要 handle 在 P-Core 存在，其索引格式与召回协议保持 100% 一致；
 3. **禁止 Heat 状态影响 Prefix Cache**：Heat 更新纯属内存旁路，不参与 Provider Request 构建，不改变 Prompt 前缀，对模型 Prefix Cache 命中率 0 干扰；
-4. **禁止 Heat 机制操纵 L1/L2**：`ContextCacheController` 中的 L1（驻留页）、L2（预热页）属于短周期上下文缓存，与 E-Core 存储层解耦；
+4. **禁止 Heat 机制操纵 P/E-Core**：`ContextCacheController` 中的 PCore（驻留页）、RecallCache（预热页）属于短周期上下文缓存，与 E-Core 存储层解耦；
 5. **禁止 E-Core Curator 修改 SessionStore 或 P-Core**：Curator 仅负责 E-Core 本地存储与索引优化。
 
 ---

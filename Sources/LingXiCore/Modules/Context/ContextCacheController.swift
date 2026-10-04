@@ -60,41 +60,11 @@ public struct PCoreResidentPage: Sendable, Equatable {
     }
 }
 
-public struct WarmRecallEntry: Sendable, Equatable {
-    public let id: String
-    public let page: ContextPage?
-    public let derivedPage: DerivedContextPage?
-    public let tokens: Int
-    public var lastUsed: UInt64
-    public var accessCount: Int
-    public var inclusionReason: String
-
-    public init(
-        id: String,
-        page: ContextPage? = nil,
-        derivedPage: DerivedContextPage? = nil,
-        tokens: Int,
-        lastUsed: UInt64,
-        accessCount: Int = 1,
-        inclusionReason: String = "Warm cache"
-    ) {
-        self.id = id
-        self.page = page
-        self.derivedPage = derivedPage
-        self.tokens = tokens
-        self.lastUsed = lastUsed
-        self.accessCount = accessCount
-        self.inclusionReason = inclusionReason
-    }
-}
-
-/// Warm L2 / Derived L3 / E-Core 驻留状态与重复数据量化指标
+/// P-Core resident pages and authoritative E-Core storage metrics.
 public struct ContextResidencyTelemetry: Sendable, Codable, Equatable {
     public let sessionID: String
-    public let l1ResidentCount: Int
-    public let l1ResidentTokens: Int
-    public let warmL2EntryCount: Int
-    public let warmL2Tokens: Int
+    public let pCoreResidentCount: Int
+    public let pCoreResidentTokens: Int
     public let residentDerivedCount: Int
     public let ecoreObjectCount: Int
     public let ecoreTotalBytes: Int
@@ -102,20 +72,16 @@ public struct ContextResidencyTelemetry: Sendable, Codable, Equatable {
 
     public init(
         sessionID: String,
-        l1ResidentCount: Int,
-        l1ResidentTokens: Int,
-        warmL2EntryCount: Int,
-        warmL2Tokens: Int,
+        pCoreResidentCount: Int,
+        pCoreResidentTokens: Int,
         residentDerivedCount: Int,
         ecoreObjectCount: Int,
         ecoreTotalBytes: Int,
         duplicateResidencyBytes: Int
     ) {
         self.sessionID = sessionID
-        self.l1ResidentCount = l1ResidentCount
-        self.l1ResidentTokens = l1ResidentTokens
-        self.warmL2EntryCount = warmL2EntryCount
-        self.warmL2Tokens = warmL2Tokens
+        self.pCoreResidentCount = pCoreResidentCount
+        self.pCoreResidentTokens = pCoreResidentTokens
         self.residentDerivedCount = residentDerivedCount
         self.ecoreObjectCount = ecoreObjectCount
         self.ecoreTotalBytes = ecoreTotalBytes
@@ -123,7 +89,7 @@ public struct ContextResidencyTelemetry: Sendable, Codable, Equatable {
     }
 }
 
-/// Cache Controller 负责三级缓存的加权调度与 L1/L2/L3 Residency 管理。
+/// Schedules P-Core residency and E-Core page-out/recall against one runtime policy.
 /// 模型只负责声明检索意图 (context_search)，调度决策完全由 Cache Controller 驱动。
 public actor ContextCacheController {
     public nonisolated let runtimeContext: ModelRuntimeContextState
@@ -136,17 +102,15 @@ public actor ContextCacheController {
     public nonisolated let compactor: ContextCompactor?
     private var clock: UInt64 = 0
 
-    // Per-session L1 resident dynamic pages
+    // Per-session PCore resident dynamic pages
     private var residentPagesBySession: [SessionID: [String: PCoreResidentPage]] = [:]
-    // Per-session session-level base L1 tokens (messages + system prompt)
-    private var sessionL1BaseTokens: [SessionID: Int] = [:]
-    private var sessionL1BaseCount: [SessionID: Int] = [:]
+    // Per-session session-level base PCore tokens (messages + system prompt)
+    private var sessionPCoreBaseTokens: [SessionID: Int] = [:]
+    private var sessionPCoreBaseCount: [SessionID: Int] = [:]
     // Last Provider input tokens recorded during context build for inference
     private var lastProviderInputTokensBySession: [SessionID: Int] = [:]
     // Last Provider prompt cache hit (cachedTokens, promptTokens)
     private var lastPromptCacheHitBySession: [SessionID: (cachedTokens: Int, promptTokens: Int)] = [:]
-    // Per-session L2 warm cache entries
-    private var warmL2EntriesBySession: [SessionID: [String: WarmRecallEntry]] = [:]
     // Per-session paged-in derived pages
     private var residentDerivedPagesBySession: [SessionID: [String: DerivedContextPage]] = [:]
 
@@ -180,7 +144,7 @@ public actor ContextCacheController {
         contextPager: ContextPager,
         scanner: ProjectScanner,
         compactor: ContextCompactor? = nil,
-        maxL1ResidentCharacters: Int,
+        maxPCoreResidentCharacters: Int,
         weights: CachePriorityWeights = CachePriorityWeights(),
         ecoreStore: ECoreObjectStore? = nil,
         scheduler: CacheAwareContextScheduler? = nil
@@ -193,9 +157,9 @@ public actor ContextCacheController {
             modelWindow: 1_048_576,
             economicThreshold: 272_000,
             reserve: 22_000,
-            pCoreTarget: max(1, maxL1ResidentCharacters / 3),
-            pCoreSoftLimit: max(2, Int(Double(maxL1ResidentCharacters / 3) * 1.07)),
-            pCoreHardLimit: max(3, Int(Double(maxL1ResidentCharacters / 3) * 1.14)),
+            pCoreTarget: max(1, maxPCoreResidentCharacters / 3),
+            pCoreSoftLimit: max(2, Int(Double(maxPCoreResidentCharacters / 3) * 1.07)),
+            pCoreHardLimit: max(3, Int(Double(maxPCoreResidentCharacters / 3) * 1.14)),
             eCoreStorageBudget: 456_576,
             eCoreRecallBudget: 350_000,
             eCorePressureThreshold: 0.85
@@ -218,18 +182,18 @@ public actor ContextCacheController {
 
     /// Reuses the retrieval pressure path without admitting or restoring any pages.
     public func reconcilePolicyPressure() async {
-        let sessions = Set(residentPagesBySession.keys).union(sessionL1BaseTokens.keys)
+        let sessions = Set(residentPagesBySession.keys).union(sessionPCoreBaseTokens.keys)
         for sessionID in sessions {
             let activeFiles = await compactor?.activeFilePaths(sessionID: sessionID) ?? []
-            enforceResidentBudget(sessionID: sessionID, query: "", activeTask: "",
+            await enforceResidentBudget(sessionID: sessionID, query: "", activeTask: "",
                                   activeFiles: activeFiles, currentClock: clock)
         }
     }
 
-    /// 记录指定 Session 的基础 L1 token 数与条目数（当前 resident working set）
-    public func recordSessionL1Tokens(sessionID: SessionID, tokens: Int, count: Int? = nil) {
-        sessionL1BaseTokens[sessionID] = tokens
-        if let count { sessionL1BaseCount[sessionID] = count }
+    /// 记录指定 Session 的基础 PCore token 数与条目数（当前 resident working set）
+    public func recordPCoreBaseTokens(sessionID: SessionID, tokens: Int, count: Int? = nil) {
+        sessionPCoreBaseTokens[sessionID] = tokens
+        if let count { sessionPCoreBaseCount[sessionID] = count }
     }
 
     /// 记录最近一次 Provider 推理实际构建发送的 input token 数（与当前 resident working set 明确分离）
@@ -611,37 +575,23 @@ public actor ContextCacheController {
         return dir.appendingPathComponent("telemetry.json", isDirectory: false)
     }
 
-    /// 获取指定会话的 Warm L2 / Derived L3 / E-Core 驻留状态与重复驻留数据量化统计
+    /// Reports resident P-Core pages and stored E-Core objects.
     public func residencyTelemetry(sessionID: SessionID) async -> ContextResidencyTelemetry {
-        let l1 = residentPagesBySession[sessionID] ?? [:]
-        let l1Tokens = l1.values.reduce(0) { $0 + $1.tokens }
-        let l2 = warmL2EntriesBySession[sessionID] ?? [:]
-        let l2Tokens = l2.values.reduce(0) { $0 + $1.tokens }
+        let pCore = residentPagesBySession[sessionID] ?? [:]
+        let pCoreTokens = pCore.values.reduce(0) { $0 + $1.tokens }
         let derived = residentDerivedPagesBySession[sessionID] ?? [:]
         
         let ecoreObjects = await ecoreStore.listObjects(sessionID: sessionID)
         let ecoreBytes = ecoreObjects.reduce(0) { $0 + $1.totalBytes }
         
-        var dupBytes = 0
-        let ecoreNames = Set(ecoreObjects.map { $0.toolName.lowercased() })
-        for entry in l2.values {
-            if let content = entry.page?.content ?? entry.derivedPage?.content {
-                if ecoreNames.contains(entry.id.lowercased()) {
-                    dupBytes += content.utf8.count
-                }
-            }
-        }
-
         return ContextResidencyTelemetry(
             sessionID: sessionID.rawValue,
-            l1ResidentCount: l1.count,
-            l1ResidentTokens: l1Tokens,
-            warmL2EntryCount: l2.count,
-            warmL2Tokens: l2Tokens,
+            pCoreResidentCount: pCore.count,
+            pCoreResidentTokens: pCoreTokens,
             residentDerivedCount: derived.count,
             ecoreObjectCount: ecoreObjects.count,
             ecoreTotalBytes: ecoreBytes,
-            duplicateResidencyBytes: dupBytes
+            duplicateResidencyBytes: 0
         )
     }
 
@@ -659,11 +609,9 @@ public actor ContextCacheController {
             let model: String?
             let cacheWriteTokens: Int?
             let cacheDebt: Int
-            let warmL2Count: Int?
             let ecoreObjectCount: Int?
             let duplicateResidencyBytes: Int?
         }
-        let l2Count = warmL2EntriesBySession[sessionID]?.count ?? 0
         let dto = DTO(
             cachedTokens: record.cachedTokens,
             promptTokens: record.promptTokens,
@@ -677,7 +625,6 @@ public actor ContextCacheController {
             model: record.model,
             cacheWriteTokens: record.cacheWriteTokens,
             cacheDebt: debt,
-            warmL2Count: l2Count,
             ecoreObjectCount: nil,
             duplicateResidencyBytes: nil
         )
@@ -736,23 +683,23 @@ public actor ContextCacheController {
         lastProviderInputTokensBySession[sessionID]
     }
 
-    /// L1 当前占用 token 数
-    public func l1UsageTokens(for sessionID: SessionID) -> Int {
+    /// PCore 当前占用 token 数
+    public func pCoreResidentTokens(for sessionID: SessionID) -> Int {
         let dynamicTokens = residentPagesBySession[sessionID]?.values.reduce(0) { $0 + $1.tokens } ?? 0
-        let baseTokens = sessionL1BaseTokens[sessionID] ?? 0
+        let baseTokens = sessionPCoreBaseTokens[sessionID] ?? 0
         return dynamicTokens + baseTokens
     }
 
-    /// L1 条目数
-    public func l1Count(for sessionID: SessionID) -> Int {
+    /// PCore 条目数
+    public func pCoreResidentCount(for sessionID: SessionID) -> Int {
         let dynamicCount = residentPagesBySession[sessionID]?.count ?? 0
-        let baseCount = sessionL1BaseCount[sessionID] ?? ((sessionL1BaseTokens[sessionID] ?? 0) > 0 ? 1 : 0)
+        let baseCount = sessionPCoreBaseCount[sessionID] ?? ((sessionPCoreBaseTokens[sessionID] ?? 0) > 0 ? 1 : 0)
         return dynamicCount + baseCount
     }
 
     /// P-Core 活跃上下文 Token 数
     public func pCoreUsageTokens(for sessionID: SessionID) -> Int {
-        lastProviderCacheRecord(for: sessionID)?.promptTokens ?? l1UsageTokens(for: sessionID)
+        lastProviderCacheRecord(for: sessionID)?.promptTokens ?? pCoreResidentTokens(for: sessionID)
     }
 
     /// E-Core 对象总数（O(1) 读取）
@@ -767,26 +714,6 @@ public actor ContextCacheController {
         return metrics.totalBytes
     }
 
-    /// [Legacy Compatibility] 旧 L2 工作集占用数
-    public func l2UsageTokens(for sessionID: SessionID) -> Int {
-        warmL2EntriesBySession[sessionID]?.values.reduce(0) { $0 + $1.tokens } ?? 0
-    }
-
-    /// [Legacy Compatibility] 旧 L2 条目数
-    public func l2Count(for sessionID: SessionID) -> Int {
-        warmL2EntriesBySession[sessionID]?.count ?? 0
-    }
-
-    /// [Legacy Compatibility] 旧 L3 占用数
-    public func l3UsageTokens(for sessionID: SessionID) async -> Int {
-        0
-    }
-
-    /// [Legacy Compatibility] 旧 L3 条目数
-    public func l3Count(for sessionID: SessionID) async -> Int {
-        0
-    }
-
     /// 调度统计指标
     public func pagingStats(for sessionID: SessionID) -> ContextPagingStats {
         ContextPagingStats(
@@ -797,7 +724,7 @@ public actor ContextCacheController {
         )
     }
 
-    /// 执行明确检索并将高权重条目调度到当前 Session 的 L1 Working Set
+    /// 执行明确检索并将高权重条目调度到当前 Session 的 PCore Working Set
     /// `activeFiles` 不再是调用方参数：此前所有调用点都传 `[]`，activeFileAffinity 因此恒为 0。
     /// 现在由 eviction 同一份真实工作集推导（契约 4.9）。
     public func handleSearch(sessionID: SessionID, query: String, activeTask: String = "", limit: Int = 5) async throws -> String {
@@ -805,36 +732,12 @@ public actor ContextCacheController {
         let currentClock = clock
         let activeFiles = await compactor?.activeFilePaths(sessionID: sessionID) ?? []
 
-        // 1. Search L2 Warm Cache
-        var l2Candidates: [(WarmRecallEntry, Double)] = []
-        if let l2Entries = warmL2EntriesBySession[sessionID] {
-            let normalizedQuery = query.lowercased()
-            for entry in l2Entries.values {
-                let content = entry.page?.content ?? entry.derivedPage?.content ?? ""
-                let path = entry.page?.path ?? ""
-                if content.localizedCaseInsensitiveContains(normalizedQuery) || path.localizedCaseInsensitiveContains(normalizedQuery) {
-                    let score = calculatePriority(
-                        content: content,
-                        path: path,
-                        characterCount: content.count,
-                        query: query,
-                        activeTask: activeTask,
-                        activeFiles: activeFiles,
-                        clock: currentClock,
-                        lastUsed: entry.lastUsed,
-                        accessCount: entry.accessCount,
-                        isPinned: false
-                    )
-                    l2Candidates.append((entry, score + 2.0)) // Warm cache bonus
-                }
-            }
-        }
-
-        // 2. Search L3 Cold Cache
-        var l3Candidates: [(DerivedContextPage, Double)] = []
+        // Import matching historical SQLite pages through the E-Core entrance.
+        var historicalCandidates: [(DerivedContextPage, Double)] = []
         if let compactor {
             let derivedMatches = await compactor.derivedStore.search(sessionID: sessionID, query: query, limit: limit)
             for page in derivedMatches {
+                _ = await compactor.importHistoricalPage(page)
                 let score = calculatePriority(
                     content: page.content,
                     path: "",
@@ -847,7 +750,7 @@ public actor ContextCacheController {
                     accessCount: 1,
                     isPinned: false
                 )
-                l3Candidates.append((page, score))
+                historicalCandidates.append((page, score))
             }
         }
 
@@ -882,62 +785,41 @@ public actor ContextCacheController {
             ecoreResults.append((meta, snippet))
         }
 
-        // 4b. Search E-Core page-out references：ContextCompaction 移出的历史对象。
+        // Search reference-backed E-Core objects from history and retrieved pages.
         // 召回按 summary 命中，载荷一律按 referenceID 走 Exact Restore 取，不靠检索内容猜。
         var pagedOutResults: [(ECoreReference, String)] = []
         for reference in await ecoreStore.searchReferences(sessionID: sessionID, query: query, limit: limit) {
             guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: reference.referenceID) else { continue }
             let snippet = payload.count > 500 ? String(payload.prefix(500)) + "..." : payload
             pagedOutResults.append((reference, snippet))
+            pageInsBySession[sessionID, default: 0] += 1
+            if reference.origin == .page { promotionsBySession[sessionID, default: 0] += 1 }
         }
 
         // Check if anything matched across all sources
-        guard !l2Candidates.isEmpty || !l3Candidates.isEmpty || !codebaseCandidates.isEmpty || !ecoreResults.isEmpty || !pagedOutResults.isEmpty else {
+        guard !historicalCandidates.isEmpty || !codebaseCandidates.isEmpty || !ecoreResults.isEmpty || !pagedOutResults.isEmpty else {
             return "No matching context found for query: \"\(query)\"."
         }
 
-        var currentL1 = residentPagesBySession[sessionID] ?? [:]
-        var currentL2 = warmL2EntriesBySession[sessionID] ?? [:]
+        var currentPCore = residentPagesBySession[sessionID] ?? [:]
         var pagedInCodebasePages: [ContextPage] = []
         var pagedInDerivedPages: [DerivedContextPage] = []
 
-        // Promote L2 entries
-        for (l2Entry, _) in l2Candidates.prefix(limit) {
-            currentL2.removeValue(forKey: l2Entry.id)
-            promotionsBySession[sessionID, default: 0] += 1
+        // Admit imported historical pages into the active P-Core.
+        for (historicalEntry, _) in historicalCandidates.prefix(limit) {
             pageInsBySession[sessionID, default: 0] += 1
-
-            if let page = l2Entry.page {
-                currentL1[page.id] = PCoreResidentPage(
-                    page: page,
-                    tokens: l2Entry.tokens,
-                    lastUsed: currentClock,
-                    accessCount: l2Entry.accessCount + 1,
-                    retrievalRelevance: 2.0,
-                    isPinned: false,
-                    inclusionReason: "Promoted from L2 warm cache"
-                )
-                pagedInCodebasePages.append(page)
-            } else if let derived = l2Entry.derivedPage {
-                pagedInDerivedPages.append(derived)
-            }
-        }
-
-        // Admit L3 entries
-        for (l3Entry, _) in l3Candidates.prefix(limit) {
-            pageInsBySession[sessionID, default: 0] += 1
-            pagedInDerivedPages.append(l3Entry)
-            residentDerivedPagesBySession[sessionID, default: [:]][l3Entry.id] = l3Entry
+            pagedInDerivedPages.append(historicalEntry)
+            residentDerivedPagesBySession[sessionID, default: [:]][historicalEntry.id] = historicalEntry
         }
 
         // Admit Codebase entries
         codebaseCandidates.sort { $0.1 > $1.1 }
         for (page, _, reason) in codebaseCandidates.prefix(limit) {
-            currentL1[page.id] = PCoreResidentPage(
+            currentPCore[page.id] = PCoreResidentPage(
                 page: page,
                 tokens: max(1, page.characterCount / 3),
                 lastUsed: currentClock,
-                accessCount: (currentL1[page.id]?.accessCount ?? 0) + 1,
+                accessCount: (currentPCore[page.id]?.accessCount ?? 0) + 1,
                 retrievalRelevance: 1.0,
                 isPinned: false,
                 inclusionReason: reason
@@ -949,9 +831,8 @@ public actor ContextCacheController {
         // Record admission into context pager
         await contextPager.recordInjection(pagedInCodebasePages)
 
-        residentPagesBySession[sessionID] = currentL1
-        warmL2EntriesBySession[sessionID] = currentL2
-        enforceResidentBudget(sessionID: sessionID, query: query, activeTask: activeTask,
+        residentPagesBySession[sessionID] = currentPCore
+        await enforceResidentBudget(sessionID: sessionID, query: query, activeTask: activeTask,
                               activeFiles: activeFiles, currentClock: currentClock)
 
         var outputSections: [String] = []
@@ -973,7 +854,7 @@ public actor ContextCacheController {
             let formatted = pagedInCodebasePages.map { page in
                 "### \(page.path):\(page.startLine)-\(page.endLine)\n```\n\(page.content)\n```"
             }.joined(separator: "\n\n")
-            outputSections.append("## Codebase Context (\(pagedInCodebasePages.count) pages paged into L1)\n" + formatted)
+            outputSections.append("## Codebase Context (\(pagedInCodebasePages.count) pages paged into PCore)\n" + formatted)
         }
 
         if !pagedInDerivedPages.isEmpty {
@@ -988,16 +869,16 @@ public actor ContextCacheController {
     }
 
     private func enforceResidentBudget(sessionID: SessionID, query: String, activeTask: String,
-                                       activeFiles: [String], currentClock: UInt64) {
+                                       activeFiles: [String], currentClock: UInt64) async {
         let policy = self.policy
-        var currentL1 = residentPagesBySession[sessionID] ?? [:]
-        var currentL2 = warmL2EntriesBySession[sessionID] ?? [:]
-        // Evict from L1 to L2 Warm Cache if over soft limit (demote lower priority entries)
-        let baseTokens = sessionL1BaseTokens[sessionID] ?? 0
-        var dynamicTokens = currentL1.values.reduce(0) { $0 + $1.tokens }
+        var currentPCore = residentPagesBySession[sessionID] ?? [:]
+        // Select pages using the existing priority formula; payloads page out only to E-Core.
+        var pageOuts: [PCoreResidentPage] = []
+        let baseTokens = sessionPCoreBaseTokens[sessionID] ?? 0
+        var dynamicTokens = currentPCore.values.reduce(0) { $0 + $1.tokens }
 
-        while (dynamicTokens + baseTokens) > policy.l1SoftLimit && currentL1.count > 1 {
-            let lowest = currentL1.values.filter { !$0.isPinned }.min { lhs, rhs in
+        while (dynamicTokens + baseTokens) > policy.pCoreSoftLimit && currentPCore.count > 1 {
+            let lowest = currentPCore.values.filter { !$0.isPinned }.min { lhs, rhs in
                 let scoreL = calculatePriority(
                     content: lhs.page.content,
                     path: lhs.page.path,
@@ -1025,34 +906,22 @@ public actor ContextCacheController {
                 return scoreL < scoreR
             }
             guard let victim = lowest else { break }
-            currentL1.removeValue(forKey: victim.page.id)
+            currentPCore.removeValue(forKey: victim.page.id)
             dynamicTokens -= victim.tokens
 
-            // Move to L2 warm cache
-            currentL2[victim.page.id] = WarmRecallEntry(
-                id: victim.page.id,
-                page: victim.page,
-                tokens: victim.tokens,
-                lastUsed: victim.lastUsed,
-                accessCount: victim.accessCount,
-                inclusionReason: "Paged-out to warm cache"
-            )
+            pageOuts.append(victim)
             demotionsBySession[sessionID, default: 0] += 1
             pageOutsBySession[sessionID, default: 0] += 1
         }
 
-        // Evict oldest from L2 if over L2 max
-        var l2Tokens = currentL2.values.reduce(0) { $0 + $1.tokens }
-        while l2Tokens > policy.l2Max && !currentL2.isEmpty {
-            let oldest = currentL2.values.min { $0.lastUsed < $1.lastUsed }
-            guard let victim = oldest else { break }
-            currentL2.removeValue(forKey: victim.id)
-            l2Tokens -= victim.tokens
+        residentPagesBySession[sessionID] = currentPCore
+        for victim in pageOuts {
+            _ = await ecoreStore.pageOut(sessionID: sessionID, content: victim.page.content,
+                origin: .page, contextOccurrenceID: "retrieval:\(victim.page.id):\(victim.lastUsed)",
+                evictionEpoch: Int(clamping: currentClock),
+                summary: "\(victim.page.path):\(victim.page.startLine)-\(victim.page.endLine) " + String(victim.page.content.prefix(200)),
+                pageOutReason: "P-Core resident soft limit")
         }
-
-        residentPagesBySession[sessionID] = currentL1
-        warmL2EntriesBySession[sessionID] = currentL2
-
     }
 
     private func calculatePriority(
@@ -1083,19 +952,19 @@ public actor ContextCacheController {
         return recencyScore + frequencyScore + relevanceScore + activeFileMatch + taskMatch + explicitMatch - tokenCost
     }
 
-    /// L1 常驻 Working Set 中的动态页面（由 Cache Controller 严格管理）
+    /// PCore 常驻 Working Set 中的动态页面（由 Cache Controller 严格管理）
     public func residentPages(for sessionID: SessionID) -> [ContextPage] {
         guard let pages = residentPagesBySession[sessionID] else { return [] }
         return Array(pages.values.map(\.page))
     }
 
-    /// L1 常驻 Working Set 中的衍生页面
+    /// PCore 常驻 Working Set 中的衍生页面
     public func residentDerivedPages(for sessionID: SessionID) -> [DerivedContextPage] {
         guard let pages = residentDerivedPagesBySession[sessionID] else { return [] }
         return Array(pages.values)
     }
 
-    /// L1 常驻详细状态
+    /// PCore 常驻详细状态
     public func residentEntries(for sessionID: SessionID) -> [PCoreResidentPage] {
         guard let pages = residentPagesBySession[sessionID] else { return [] }
         return Array(pages.values)
@@ -1119,7 +988,7 @@ public actor ContextCacheController {
         // 2. E-Core 存储裁剪：清理已被撤回的 Tool 所生成的大对象文件
         await ecoreStore.prune(sessionID: sessionID, keepingToolCallIDs: validToolCallIDs)
 
-        // 3. P-Core (L1) 状态重置：撤回导致上一次 Provider 调用的 Cache Record 失效
+        // 3. P-Core (PCore) 状态重置：撤回导致上一次 Provider 调用的 Cache Record 失效
         lastProviderInputTokensBySession.removeValue(forKey: sessionID)
         previousPromptTokensBySession.removeValue(forKey: sessionID)
         currentTurnFingerprintBySession.removeValue(forKey: sessionID)
@@ -1131,7 +1000,7 @@ public actor ContextCacheController {
         sessionEpochs[sessionID] = (sessionEpochs[sessionID] ?? 1) + 1
         sessionEpochReasons[sessionID] = "revert_turn"
 
-        // 4. 重新基于剩余有效消息精确估算 L1 / P-Core 常驻 Tokens
+        // 4. 重新基于剩余有效消息精确估算 PCore / P-Core 常驻 Tokens
         if remainingMessages.isEmpty {
             await clearSessionState(sessionID: sessionID)
             return
@@ -1156,8 +1025,8 @@ public actor ContextCacheController {
                 }
             }
             let tokens = estimator.estimate(entries: entries)
-            sessionL1BaseTokens[sessionID] = tokens
-            sessionL1BaseCount[sessionID] = entries.count
+            sessionPCoreBaseTokens[sessionID] = tokens
+            sessionPCoreBaseCount[sessionID] = entries.count
             previousPromptTokensBySession[sessionID] = tokens
             lastProviderInputTokensBySession[sessionID] = tokens
 
@@ -1188,11 +1057,10 @@ public actor ContextCacheController {
     public func clearSessionState(sessionID: SessionID) async {
         residentPagesBySession.removeValue(forKey: sessionID)
         residentDerivedPagesBySession.removeValue(forKey: sessionID)
-        sessionL1BaseTokens.removeValue(forKey: sessionID)
-        sessionL1BaseCount.removeValue(forKey: sessionID)
+        sessionPCoreBaseTokens.removeValue(forKey: sessionID)
+        sessionPCoreBaseCount.removeValue(forKey: sessionID)
         lastProviderInputTokensBySession.removeValue(forKey: sessionID)
         lastPromptCacheHitBySession.removeValue(forKey: sessionID)
-        warmL2EntriesBySession.removeValue(forKey: sessionID)
         pageInsBySession.removeValue(forKey: sessionID)
         pageOutsBySession.removeValue(forKey: sessionID)
         promotionsBySession.removeValue(forKey: sessionID)
@@ -1224,11 +1092,10 @@ public actor ContextCacheController {
     public func hasResidualSessionState(sessionID: SessionID) -> Bool {
         residentPagesBySession[sessionID] != nil ||
         residentDerivedPagesBySession[sessionID] != nil ||
-        sessionL1BaseTokens[sessionID] != nil ||
-        sessionL1BaseCount[sessionID] != nil ||
+        sessionPCoreBaseTokens[sessionID] != nil ||
+        sessionPCoreBaseCount[sessionID] != nil ||
         lastProviderInputTokensBySession[sessionID] != nil ||
         lastPromptCacheHitBySession[sessionID] != nil ||
-        warmL2EntriesBySession[sessionID] != nil ||
         pageInsBySession[sessionID] != nil ||
         pageOutsBySession[sessionID] != nil ||
         promotionsBySession[sessionID] != nil ||
@@ -1246,7 +1113,7 @@ public actor ContextCacheController {
 
     /// 获取指定会话的 E-Core 热度调试与可观测性快照（只读旁路接口）
     /// 架构边界红线：E-Core Hot/Cold 仅属于 E-Core 内部存储与检索优化，
-    /// 绝对禁止操纵 L1/L2 缓存，绝对禁止与 L1/L2 生命周期联动，绝对不影响 Prefix Cache 与 P-Core。
+    /// 绝对禁止操纵 PCore/RecallCache 缓存，绝对禁止与 PCore/RecallCache 生命周期联动，绝对不影响 Prefix Cache 与 P-Core。
     public func eCoreHeatSnapshot(sessionID: SessionID, topN: Int = 10) async -> ECoreHeatSnapshot? {
         await ecoreStore.heatSnapshot(sessionID: sessionID, topN: topN)
     }

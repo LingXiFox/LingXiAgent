@@ -231,162 +231,25 @@ Tool Result
 
 ## 6. 上下文引擎
 
-上下文引擎是 LingXiAgent 的核心能力之一。
+运行时只有 P-Core 和 E-Core。
 
-三级上下文并不是按照 Message “重要 / 不重要”划分。
-
-它按照：
-
-- 作用域
-- 稳定性
-- 复用范围
-- 访问成本
-- 当前工作热度
-
-进行分层。
-
-核心结构：
+- P-Core：当前模型请求的活跃上下文，分为 stable prefix、growing context 和 E-Core index。
+- E-Core：保存 page-out 的完整 Context Object；引用与载荷分离，按 referenceID 精确取回。
+- 项目索引与查询缓存：帮助定位当前源码事实；不是额外的上下文核心，也不计入模型输入占用。
 
 ```text
-模型当前上下文
-      ↑
-L1 会话活跃上下文
-      ↑ 按需加载
-L2 项目热区缓存
-      ↑ 未命中再回源
-L3 项目完整上下文
+真实 runtime context window
+        ↓
+唯一 EffectiveContextPolicy
+        ↓
+P-Core pressure → E-Core page-out
+        ↑              ↓
+        └── bounded reference restore
 ```
 
-### L1：会话活跃上下文
-
-L1 是当前 Session 真正常驻模型 Context Window 的工作集。
-
-例如：
-
-- 当前任务
-- 当前对话
-- 当前计划
-- 当前正在处理的文件
-- 当前 diff
-- 最近 Tool Result
-- 当前错误 / 测试结果
-- 当前必须遵守的规则
-- 当前 Agent 临时状态
-
-特点：
-
-- 最小
-- 更新最频繁
-- Session-local
-- 真正消耗模型 Context Window
-- 只保留当前任务所需信息
-
-### L2：项目热区缓存
-
-L2 不常驻模型上下文。
-
-它是从 L3 中提取出来的、当前项目近期最可能再次访问的局部缓存。
-
-例如最近持续处理 Sub2API：
-
-```text
-L2 项目热区缓存
-
-Sub2API
-├─ 相关模块结构
-├─ Provider 配置路径
-├─ quota 实现
-├─ auth / token 关系
-├─ 当前修改文件
-├─ 重要类型 / API
-└─ 最近确认过的设计事实
-```
-
-特点：
-
-- Project-local
-- 不直接占用模型 Context Window
-- 比 L3 更热，但仍属于静态缓存
-- 可以被淘汰
-- 可以重新从 L3 构建
-- 应当允许整体删除后自动重建
-
-原则：
-
-> L2 是 Cache，不是新的 Source of Truth。
-
-### L3：项目完整上下文
-
-L3 是项目完整的静态事实来源。
-
-例如：
-
-- 源代码
-- README
-- AGENTS.md
-- docs
-- 配置文件
-- schema
-- API 定义
-- Git 历史
-- 项目结构
-- 正式设计文档
-- 其他项目事实
-
-特点：
-
-- 最大
-- 最稳定
-- 不常驻模型 Context Window
-- 是项目事实源
-- 需要时才检索和读取
-
-### 三级读取逻辑
-
-```text
-Agent 需要信息
-      ↓
-查 L1
- ├─ 命中 → 直接使用
- └─ 未命中
-      ↓
-查 L2
- ├─ 命中 → 加载必要片段进入 L1
- └─ 未命中
-      ↓
-查 L3
-      ↓
-定位原始资料
-      ↓
-生成 / 更新 L2
-      ↓
-加载必要片段进入 L1
-```
-
-因此：
-
-```text
-L1 = 当前 Session 工作集
-L2 = 当前项目热点子集
-L3 = 当前项目完整事实源
-```
-
-上下文引擎负责：
-
-- Context selection
-- token budget
-- paging
-- promote / demote
-- compaction
-- summary
-- retrieval
-- dependency relevance
-- reconstruction
-- L2 热度更新
-- L2 重建与失效
-- L3 检索
-
-最终模型看到什么，由 LingXi 上下文引擎决定。
+预算、请求规划、缓存控制器与前端快照必须来自同一个 runtime generation。
+重复 native discovery 在输入不变时 NO-OP，不修改 cache epoch 和 stable prefix。
+窗口缩小时复用现有 compaction / page-out 路径；增大时不主动展开全部历史。
 
 ---
 
@@ -646,178 +509,10 @@ deny
 
 ## 10. MCP 运行时
 
-MCP 是 Core 的一等能力，并且同样采用三级缓存制度。
-
-总体结构：
-
-```text
-                    Agent
-                      ↑
-                 Tool Registry
-                      ↑
-                 L1 活跃 MCP
-                      ↑
-                  promote
-                      ↑
-                L2 会话常用 MCP
-                      ↑
-                 未命中 / 加载
-                      ↑
-                  L3 静态 MCP
-```
-
-### L1：活跃 MCP
-
-当前 Agent Turn / 当前任务真正需要的 MCP。
-
-可能包含：
-
-- 已建立连接的 MCP Server
-- 当前需要的 MCP Tool
-- 当前 Resource / Prompt
-- 当前 Tool Schema
-- 当前执行状态
-- 当前认证状态
-
-特点：
-
-- 当前正在使用
-- 延迟要求最低
-- 数量应尽量少
-- 真正进入当前 Tool Registry
-- 只有必要 Tool 才暴露给模型
-
-### L2：会话常用 MCP
-
-当前 Session 近期高概率再次使用的 MCP 热缓存。
-
-可以缓存：
-
-- MCP manifest
-- Tool Schema
-- Server capabilities
-- 认证状态
-- 最近连接信息
-- 最近使用 Tool
-- 适合保留的连接状态
-
-特点：
-
-- 不一定暴露给模型
-- 不一定全部维持实时连接
-- 用于降低重新 discovery / auth / schema 解析成本
-- 可以根据 Session 行为动态 promote / demote
-
-### L3：静态 MCP
-
-完整 MCP 配置事实源。
-
-例如：
-
-- 所有已配置 MCP Server
-- command / URL
-- transport
-- auth 配置
-- capability metadata
-- 静态 Tool catalog
-- 用户启用 / 禁用状态
-
-特点：
-
-- 默认不连接
-- 默认不进入 Tool Registry
-- 默认不进入模型 Context
-- 需要时才加载
-- 是 MCP 配置的 Source of Truth
-
-### MCP 三级调度逻辑
-
-```text
-需要某项能力
-      ↓
-查 L1 MCP
- ├─ 命中 → 直接使用
- └─ 未命中
-      ↓
-查 L2 MCP
- ├─ 命中 → promote 到 L1
- └─ 未命中
-      ↓
-查 L3 MCP
-      ↓
-加载 / 认证 / discovery
-      ↓
-进入 L2
-      ↓
-必要能力 promote 到 L1
-```
-
-### MCP Server 激活与 Tool 暴露必须分离
-
-重要原则：
-
-```text
-MCP Server activation
-        ≠
-Tool exposure
-```
-
-一个 MCP Server 即使处于 L1，也不意味着它的全部 Tool 都需要暴露给模型。
-
-例如：
-
-```text
-一个 MCP Server
-拥有 30 个 Tool
-
-当前任务只需要 3 个
-
-→ MCP Server 可以保持活跃
-→ Tool Registry 只暴露这 3 个
-```
-
-这样可以减少：
-
-- Tool Schema Token
-- 模型 Tool selection 噪声
-- MCP 连接数量
-- 内存占用
-- 网络负担
-
-### MCP 与 Tool 运行时关系
-
-```text
-MCP Server
-    ↓
-MCP 运行时
-    ↓
-LingXi Tool Definition
-    ↓
-Tool Registry
-    ↓
-模型网关
-    ↓
-Provider 原生 Tool Schema
-    ↓
-Model
-```
-
-MCP 运行时主要负责：
-
-- MCP Registry
-- Connection Manager
-- Discovery
-- Auth / OAuth
-- Resource
-- Prompt
-- MCP Tool Adapter
-- Status
-- Error
-- Reconnect
-- 三级缓存调度器
-  - L1 活跃 MCP
-  - L2 会话常用 MCP
-  - L3 静态 MCP
+MCP 由 Core 管理 catalog、schema store、连接与工具 lease。
+Session 和 project 的使用计数只是检索排序信号，不构成上下文分层。
+只有当前 lease 所需的工具 schema 才进入模型请求；大载荷与历史工具观测进入 E-Core。
+认证与权限属于正式运行时状态，沿用已有权限路径。
 
 ---
 
@@ -1131,16 +826,16 @@ OpenChamber、OpenCode、Codex、Claude Code 等只用于：
         │ 会话引擎                     │
         │ Agent 编排器                 │
         │ 上下文引擎                   │
-        │   L1 会话活跃上下文          │
-        │   L2 项目热区缓存            │
-        │   L3 项目完整上下文          │
+        │   PCore 会话活跃上下文          │
+        │   RecallCache 项目热区缓存            │
+        │   ProjectIndex 项目完整上下文          │
         │ 模型网关                     │
         │ Tool 运行时                  │
         │ 权限引擎                     │
         │ MCP 运行时                   │
-        │   L1 活跃 MCP                │
-        │   L2 会话常用 MCP            │
-        │   L3 静态 MCP                │
+        │   PCore 活跃 MCP                │
+        │   RecallCache 会话常用 MCP            │
+        │   ProjectIndex 静态 MCP                │
         │ 工作流引擎                   │
         │ Usage 引擎                   │
         │ 事件总线                     │
@@ -1251,7 +946,7 @@ LingXiAgent 初步架构
 1. Core 一级领域边界
 2. 会话领域模型
 3. Agent 生命周期
-4. 上下文三级缓存
+4. 上下文P/E-Core context
 5. Provider 支持矩阵与模型网关
 6. Tool / Permission / MCP
 7. 事件与持久化

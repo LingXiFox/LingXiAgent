@@ -48,7 +48,7 @@
 | 鉴别材料区间 | 对应完整文档页码 | 对应源码文件 | 包含物理源码行区间 | 页内代码行数 |
 | :--- | :---: | :--- | :--- | :---: |
 | **第一页** (Page 1) | Page 1 | `Sources/LingXiCore/Modules/Agent/AgentRuntime.swift` | 第 1 行 ~ 第 27 行 | 63 行 |
-| **第 30 页** (Page 30) | Page 30 | `Sources/LingXiCore/Modules/Context/L1ContextEngine.swift`<br/>`Sources/LingXiCore/Modules/Context/L2WorkingSetPolicy.swift` | `L1ContextEngine.swift` L230 ~ L279 (结束)<br/>`L2WorkingSetPolicy.swift` L1 (开始) | 59 行 |
+| **第 30 页** (Page 30) | Page 30 | `Sources/LingXiCore/Modules/Context/PCoreContextEngine.swift`<br/>`Sources/LingXiCore/Modules/Context/WorkingSetPolicy.swift` | `PCoreContextEngine.swift` L230 ~ L279 (结束)<br/>`WorkingSetPolicy.swift` PCore (开始) | 59 行 |
 | **倒数第 30 页** (Page 31) | Page 276 | `Sources/LingXiCore/Modules/Model/AnthropicMessagesProvider.swift` | 第 28 行 ~ 第 105 行 | 60 行 |
 | **最后一页** (Page 60) | Page 305 | `Sources/LingXiCore/Modules/Model/SSEDecoder.swift` | 第 28 行 ~ 第 48 行 (程序结束闭括号) | 22 行 |
 
@@ -78,6 +78,6 @@
 
 经过全自动化与多维度静态对比，**LingXiAgent 本地自主智能体软件 V1.0** 的全部软件著作权登记材料：
 1. 完全基于 Git Commit `b0c883f22b01c2359f9fb62e103463f3db5bd2d4` 冻结状态，未变动任何业务代码；
-2. 53 个核心源码文件 100% 属于第一方原创自研逻辑，全面覆盖异构双核、三级上下文等核心特色；
+2. 53 个核心源码文件 100% 属于第一方原创自研逻辑，全面覆盖异构双核、P/E-Core 上下文等核心特色；
 3. 全量文档 `LingXiAgent-V1.0-source-full.pdf`（305页）与交存文档 `LingXiAgent-V1.0-source-deposit.pdf`（60页）格式完美符合中国版权保护中心审查要求，排版整齐规范，每页代码行数合规，无敏感信息泄露。
 4. **核验状态：全部通过 (PASSED)**。

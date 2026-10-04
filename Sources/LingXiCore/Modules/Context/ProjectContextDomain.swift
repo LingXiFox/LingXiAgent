@@ -297,15 +297,15 @@ public struct ContextPagingDebugMetrics: Sendable, Equatable {
     public let filesRebuilt: Int
     public let scanMilliseconds: Int
     public let initialIndexedFiles: Int
-    public let l2Lookups: Int
-    public let l2Hits: Int
-    public let l2Misses: Int
-    public let l2Pages: Int
-    public let l2Characters: Int
-    public let l3Pages: Int
-    public let l3Queries: Int
-    public let l3Candidates: Int
-    public let l3Materializations: Int
+    public let recallCacheLookups: Int
+    public let recallCacheHits: Int
+    public let recallCacheMisses: Int
+    public let recallCachePages: Int
+    public let recallCacheCharacters: Int
+    public let projectIndexPages: Int
+    public let projectIndexQueries: Int
+    public let projectIndexCandidates: Int
+    public let projectIndexMaterializations: Int
     public let staleRebuilds: Int
     public let pageFaults: Int
     public let promotions: Int

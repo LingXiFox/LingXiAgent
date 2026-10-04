@@ -48,13 +48,13 @@ Never Projected   = 48   (23.2%  受 FULL_SENDS 保护期屏蔽，模型前台�
 | 检索入口 / 模块 | 数据源 (Source) | 索引方式 (Index) | Query 输入 | 返回结构 | Ranking 算法 | 是否在 Agent Loop | 是否持久化 | 复用性评估 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1. `ContextPager`**<br>[`ContextPager.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextPager.swift) | Codebase 源码文件 (通过 `ProjectScanner`) | 分块页面 (`ContextPage`, 约100-200行) + 符号索引 + 引用索引 | `ContextQuery` (symbolHints, relationHints, terms) | `ContextPagerResult` (`[ContextPage]`) | `ContextPageRankingPolicy` (精确匹配 1200分, 引用关联 800分, 前缀 500分) | 否 (主要在上下文装配与搜索时内部调用) | 是 (持久化到 SQLite `project_files`, `project_pages`, `cached_symbols`) | **极高**。已有成熟的分块、符号与引用打分器，是统一 Retriever 的天然 Codebase 支柱。 |
-| **2. `context_search`**<br>[`ContextCacheController.swift:581`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L581) | L2 Warm Cache + L3 Cold Cache (`DerivedContextStore`) + Codebase Index | 内存字典 + 派生文本扫描 | `query: String`, `limit: Int` | 文本说明字符串 (同时**副作用静默推入 L1 working set**) | `calculatePriority` (词频 + 任务亲和度 + 活跃文件加权) | 是 (作为 `ContextRetrieveTool` 暴露给模型) | 混合 (L2 内存易失，L3 持久化在 SQLite `derived_context`) | **必须重构**。当前会将命中直接强塞进 L1 破坏 Prefix Cache，必须将其解耦为纯查询。 |
+| **2. `context_search`**<br>[`ContextCacheController.swift:581`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L581) | RecallCache Warm Cache + ProjectIndex Cold Cache (`DerivedContextStore`) + Codebase Index | 内存字典 + 派生文本扫描 | `query: String`, `limit: Int` | 文本说明字符串 (同时**副作用静默推入 PCore working set**) | `calculatePriority` (词频 + 任务亲和度 + 活跃文件加权) | 是 (作为 `ContextRetrieveTool` 暴露给模型) | 混合 (RecallCache 内存易失，ProjectIndex 持久化在 SQLite `derived_context`) | **必须重构**。当前会将命中直接强塞进 PCore 破坏 Prefix Cache，必须将其解耦为纯查询。 |
 | **3. `context_recall`**<br>[`ECoreObjectFabric.swift:288`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift#L288) | E-Core 落盘原始对象 (`objects/*.txt`) | 基于 `ContextObjectID` 的直接文件查找 | `id: String`, `offset: Int`, `limit: Int` | `RecallChunk` (首尾行号、字节长度、切片内容、是否 EOF) | 无排序 (按指定 offset/limit 精确字节与行切片) | 是 (作为 `ContextRecallTool` 暴露给模型) | 是 (磁盘原子文件 + `.meta.json`) | **保留为底层原语**。作为 Retriever 发现后的终点读取执行者。 |
 | **4. `read_file`**<br>[`BuiltinTools.swift:580`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Tool/BuiltinTools.swift#L580) | 本地工作区源码与资源文件 | 文件系统原生路径与 inode | `path: String`, `start_line: Int?`, `end_line: Int?` | 带有行号的源码切片文本 | 无排序 (严格文件行切片) | 是 (核心主力 Tool) | 是 (本地文件系统) | **保留为底层原语**。作为 Codebase 类检索结果的精准读取者。 |
 | **5. `grep`**<br>[`BuiltinTools.swift:749`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Tool/BuiltinTools.swift#L749) | 工作区全量 UTF-8 文件 | 无常驻索引，子进程即时遍历 (调用系统 `ripgrep` `rg --json`) | `pattern: String`, `path: String?`, `max_results: Int?` | `[GrepMatch]` (path, line, content) | 按路径与行号字典序排序 | 是 (主力搜索 Tool) | 否 (即时进程搜索) | **适合补充**。作为词法字面量搜索的兜底比对工具。 |
 | **6. `CodebaseGraphEngine`**<br>[`CodebaseGraphEngine.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/CodebaseGraph/CodebaseGraphEngine.swift) | 工作区源码 AST 与拓扑依赖边 | 内存图拓扑结构 (`nodes: [GraphNode]`, `edges: [GraphEdge]`) | 符号名称、ID、调用方向 (`TraceDirection`) | `[GraphNode]`, `CallTraceReport`, `ArchitectureOverview` | 基于名称长度与完全匹配优先；拓扑 BFS 遍历 | 间接 (MCP / TUI 分析) | 是 (磁盘 JSON 缓存) | **极高**。可为检索提供“代码拓扑距离（Graph Proximity）”这一关键重排特征。 |
 | **7. `SessionStore` 历史**<br>[`SessionStore.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Session/SessionStore.swift) / [`SQLitePersistenceStore.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Infrastructure/Persistence/SQLitePersistenceStore.swift) | 历史会话消息与交互批次 | SQLite B-Tree (`messages`, `message_parts`, `tool_exchange_batches`) | `sessionID: SessionID` | `Session`, `[Message]`, `ToolResult` | 无语义排序 (按 `ordinal` 时序排列) | 否 (主要用于断点恢复与回放) | 是 (SQLite `state.sqlite`) | **可接入**。可提取历史用户目标与关键结论，作为会话记忆语料。 |
-| **8. `DerivedContextStore`**<br>[`ContextCompaction.swift:282`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCompaction.swift#L282) | 会话压缩溢出页面 (`DerivedContextPage`) | 内存字典 + SQLite `derived_context` | `sessionID: SessionID`, `query: String`, `limit: Int` | `[DerivedContextPage]` | `lexical * 10 + sourceWeight + l2Bonus + index` | 间接 (通过 Compactor 与 CacheController) | 是 (SQLite `derived_context`) | **可接入**。专用于长会话中早期对话摘要的局部检索。 |
+| **8. `DerivedContextStore`**<br>[`ContextCompaction.swift:282`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCompaction.swift#L282) | 会话压缩溢出页面 (`DerivedContextPage`) | 内存字典 + SQLite `derived_context` | `sessionID: SessionID`, `query: String`, `limit: Int` | `[DerivedContextPage]` | `lexical * 10 + sourceWeight + recallCacheBonus + index` | 间接 (通过 Compactor 与 CacheController) | 是 (SQLite `derived_context`) | **可接入**。专用于长会话中早期对话摘要的局部检索。 |
 | **9. `ProjectIndexTool`**<br>[`BuiltinTools.swift:1899`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Tool/BuiltinTools.swift#L1899) | `ProjectSymbolIndex` + `ProjectReferenceIndex` | 符号倒排哈希表 + 引用关系表 | `symbol: String`, `mode: exact/qualified/prefix` | JSON 格式的符号列表与引用文件行号 | 符号模式过滤无权值排序 | 是 (ToolID: `symbol_lookup`, `find_references`, `dependency_query`) | 是 (SQLite 缓存) | **可复用其底层索引**。提供精准符号定位能力。 |
 | **10. `code_intelligence`**<br>[`BuiltinTools.swift:1907`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Tool/BuiltinTools.swift#L1907) | 外部 LSP (Language Server Protocol) 服务进程 | LSP 语言服务器内存语义索引 | `action: String`, `path: String`, `line: Int`, `character: Int` | LSP 协议对象 (hover, definition, diagnostics) | 由语言服务器决定 | 是 (ToolID: `code_intelligence`) | 否 (依赖外部进程常驻) | **外设辅助**。不适合作为基础检索语料库，仅可作为高精度补充。 |
 
@@ -268,8 +268,8 @@ Found 2 relevant items matching "之前那个 actor isolation 编译错误":
 
 本次审计重点排查了当前 `ContextCacheController.swift:695` 的原有实现：
 ```swift
-// 原有实现的严重缺陷：搜索命中后直接强行注入 L1 resident pages
-currentL1[page.id] = L1ResidentPage(page: page, tokens: max(1, page.characterCount / 3), ...)
+// 原有实现的严重缺陷：搜索命中后直接强行注入 PCore resident pages
+currentPCore[page.id] = PCoreResidentPage(page: page, tokens: max(1, page.characterCount / 3), ...)
 ```
 这种设计导致了极其严重的工程负面后果：
 1. **破坏 Prefix Cache**：大模型厂商（Anthropic / OpenAI / DeepSeek）的 Prefix Caching 依赖于**请求前缀的字节级绝对稳定**。一旦在用户看不到的底层将搜索命中的代码页随机拼入前缀，整个会话的 KV Cache 立即被全量击穿失效（Cache Busting），API 延迟与费用激增！
@@ -444,7 +444,7 @@ Phase R0 ───> Phase R1 ───> Phase R2 ───> Phase R3 ───> 
   - 构建纯 Swift 轻量 Inverted Index / BM25 内存召回器；
   - 融合 `CodebaseGraphEngine` 拓扑跳数计算；
   - 重构 `context_search` 为统一 Handles 返回格式；
-  - **坚决移除原实现中将搜索命中直接塞入 L1 resident pages 的破坏性逻辑**；
+  - **坚决移除原实现中将搜索命中直接塞入 PCore resident pages 的破坏性逻辑**；
 - **验证**：单步检索延迟 < 15ms，Prefix Cache 稳定率 100%，模型可通过自然语言定位历史编译报错。
 
 ### Phase R2：反馈遥测与闭环日志 (Telemetry & Feedback Phase)

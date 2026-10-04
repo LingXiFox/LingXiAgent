@@ -154,7 +154,7 @@ struct TraceEmitterWhiteBoxTests {
             actualUsage: ModelUsage(inputTokens: 480, outputTokens: 120, cacheReadTokens: 1000),
             toolSchemaTokens: 0,
             toolCount: 0,
-            l1Tokens: 0,
+            pCoreTokens: 0,
             systemPinnedTokens: 0,
             currentTurnTokens: 0,
             providerFramingTokens: 0

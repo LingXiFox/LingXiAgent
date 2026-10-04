@@ -41,7 +41,7 @@ struct Round4SystemHardeningTests {
         #expect(summary.codebaseNodes == currentNodes)
     }
 
-    @Test("ContextResidencyTelemetry measures Warm L2 and E-Core duplicate residency")
+    @Test("ContextResidencyTelemetry measures Warm RecallCache and E-Core duplicate residency")
     func testContextResidencyTelemetry() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ecore-telemetry-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

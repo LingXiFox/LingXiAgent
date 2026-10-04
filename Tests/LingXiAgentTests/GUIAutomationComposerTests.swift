@@ -334,6 +334,29 @@ struct GUIAutomationComposerTests {
         await runtime.closeWorkspace()
     }
 
+    @Test("Normal Composer Send resumes a presented draft instead of cancelling or submitting twice")
+    func normalSendResumesPresentedDraft() async throws {
+        let (runtime, backend) = await setup()
+        let submission = Task { await runtime.automationController.handle(GUIAutomationRequest(action: .send,
+            tasks: [GUIAutomationTask(text: "user presses Send")], source: .benchmark, pauseBeforeSend: true)) }
+        try await until { runtime.composerModel.automationPending }
+        #expect(!runtime.conversationModel.isGenerating)
+        #expect(await backend.texts.isEmpty)
+        // Even a manual Send cannot bypass the native presentation boundary.
+        await runtime.submitComposer()?.value
+        #expect(await backend.texts.isEmpty)
+        present(runtime)
+        #expect(runtime.composerModel.text == "user presses Send")
+        await runtime.submitComposer()?.value
+        #expect(await submission.value.accepted)
+        #expect(await backend.texts == ["user presses Send"])
+        #expect(runtime.composerModel.text.isEmpty)
+        #expect(!runtime.composerModel.automationPending)
+        #expect(runtime.automationController.events.map(\.name) == [
+            "automation.command_received", "composer.draft_set", "composer.presented", "composer.send_invoked", "turn.created"])
+        await runtime.closeWorkspace()
+    }
+
     @Test("Await actual turn-created evidence when dispatch returns before the Core event")
     func delayedCreation() async throws {
         let (runtime, backend) = await setup()

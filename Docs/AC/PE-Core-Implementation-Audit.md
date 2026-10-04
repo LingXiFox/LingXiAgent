@@ -42,8 +42,8 @@
 | :--- | :--- | :--- | :--- |
 | 1 | [`Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift) | E-Core 对象织物 | `ContextObjectID` 强类型定义、`ObservationMetadata` 元数据、`ECoreObjectStore` 磁盘持久化与切片召回 |
 | 2 | [`Sources/LingXiCore/Modules/Context/ContextProjection.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextProjection.swift) | P-Core 投影器 | `FULL_SENDS` 判定、1KB 稳定首尾 Placeholder 构造、P-Core 动态投影转换 |
-| 3 | [`Sources/LingXiCore/Modules/Context/ContextCacheController.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift) | 缓存与调度中枢 | L1/L2 页面调度、CacheEpoch 演进、Prefix 指纹跟踪、真实命中率统计与 Revert 协同 |
-| 4 | [`Sources/LingXiCore/Modules/Context/L1ContextEngine.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/L1ContextEngine.swift) | L1 上下文引擎 | 将 Session 消息与常驻页面转换为结构化 `[ContextEntry]` |
+| 3 | [`Sources/LingXiCore/Modules/Context/ContextCacheController.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift) | 缓存与调度中枢 | P/E-Core 页面调度、CacheEpoch 演进、Prefix 指纹跟踪、真实命中率统计与 Revert 协同 |
+| 4 | [`Sources/LingXiCore/Modules/Context/PCoreContextEngine.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/PCoreContextEngine.swift) | PCore 上下文引擎 | 将 Session 消息与常驻页面转换为结构化 `[ContextEntry]` |
 | 5 | [`Sources/LingXiCore/Modules/Context/CacheAwareContextScheduler.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/CacheAwareContextScheduler.swift) | 经济学调度器 | 计算 Cache Debt、评估压缩时机（Skip / Economic / Emergency） |
 | 6 | [`Sources/LingXiCore/Modules/Context/ContextCompaction.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCompaction.swift) | 上下文压缩器 | 淘汰非关键历史、衍生摘要归档至 `DerivedContextStore` |
 | 7 | [`Sources/LingXiCore/Modules/Session/SessionRuntime.swift`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Session/SessionRuntime.swift) | 执行运行时主循环 | Tool 执行与结果落盘、Phase 1A/1B 串联、Context 组装发往 Provider |
@@ -69,9 +69,9 @@ P-Core（Primary Core，主要执行核）并非独立的进程，而是**面向
 2. **Epoch Provider-Visible Tool Manifest（单调冻结工具定义表）**：
    - 包含 15 个 `coreToolIDs` 以及当前会话动态租借的专用工具；
    - 严格遵循**单调追加（Monotonic Append Only）**规则，在同一个 Epoch 内禁止删除、缩水或打乱顺序，杜绝 Client Cache Bust。
-3. **L1 Working Set（受控历史与常驻页面）**：
+3. **PCore Working Set（受控历史与常驻页面）**：
    - 历史消息经 `ContextProjection` 投影后的条目（小工具结果保持内联，超大工具结果转为稳定首尾 Placeholder）；
-   - 通过 `context_search` 显式调入 L1 的代码库文件片段（`[ContextPage]`）；
+   - 通过 `context_search` 显式调入 PCore 的代码库文件片段（`[ContextPage]`）；
    - 衍生上下文摘要（`[DerivedContextPage]`）。
 4. **Current Turn Input（当前轮次输入）**：
    - 当前用户的最新指令输入与可能挂载的后台命令异步通知（`bgNotice`）。
@@ -227,8 +227,8 @@ flowchart TD
 
 ### 2.11 Provider 请求前最终 Prompt / Context 是如何组装的
 在 [`SessionRuntime.swift:420-630`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Session/SessionRuntime.swift#L420-L630) 中，组装步骤极其严密：
-1. **L1 Working Set 获取**：读取当前 Session 常驻的项目文件片段（`residentPages`）；
-2. **全量条目提取**：`L1ContextEngine.entries(...)` 提取 Session 历史，将消息展开为 `[ContextEntry]`；
+1. **PCore Working Set 获取**：读取当前 Session 常驻的项目文件片段（`residentPages`）；
+2. **全量条目提取**：`PCoreContextEngine.entries(...)` 提取 Session 历史，将消息展开为 `[ContextEntry]`；
 3. **注入后台命令通知**：若存在运行中或刚结束的后台任务，追加 `bgNotice`；
 4. **执行 Phase 1B Context Projection**：`ContextProjection.project` 将大 ToolResult 转为 1KB 稳定首尾 Placeholder；
 5. **经济学压缩评估**：`CacheAwareContextScheduler.evaluate` 判断是 `skip`、`economicCompact` 还是 `emergencyWindowProtection`；
@@ -340,15 +340,15 @@ sequenceDiagram
 
 | 概念项 | 当前状态 | 真实存在位置与具体表现 | 结论与复用建议 |
 | :--- | :--- | :--- | :--- |
-| **`access count`** | **在 E-Core 中不存在** | 仅存在于文件缓存 `L1ResidentPage.accessCount` ([`ContextCacheController.swift:39`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L39)) 与 `WarmL2Entry.accessCount`，`ECoreObjectStore` 自身**完全无此字段**。 | 后续需在 `ObservationMetadata` 或外挂计数表中增加。 |
-| **`last access`** | **在 E-Core 中不存在** | 仅存在于文件缓存 `L1ResidentPage.lastUsed: UInt64` ([`ContextCacheController.swift:38`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L38))。`ObservationMetadata` 仅记录了 `createdAt: Date`。 | 后续需在 `ObservationMetadata` 扩展 `lastAccessedAt: Date?`。 |
+| **`access count`** | **在 E-Core 中不存在** | 仅存在于文件缓存 `PCoreResidentPage.accessCount` ([`ContextCacheController.swift:39`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L39)) 与 `ECoreReference.accessCount`，`ECoreObjectStore` 自身**完全无此字段**。 | 后续需在 `ObservationMetadata` 或外挂计数表中增加。 |
+| **`last access`** | **在 E-Core 中不存在** | 仅存在于文件缓存 `PCoreResidentPage.lastUsed: UInt64` ([`ContextCacheController.swift:38`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L38))。`ObservationMetadata` 仅记录了 `createdAt: Date`。 | 后续需在 `ObservationMetadata` 扩展 `lastAccessedAt: Date?`。 |
 | **`object metadata`** | **已存在** | [`ECoreObjectFabric.swift:52-81`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift#L52-L81) 中的 `ObservationMetadata`，包含 `objectID`, `toolCallID`, `toolName`, `contentType`, `totalLines`, `totalBytes`, `createdAt`, `contentHash`。 | **高度可复用**，可以直接在 struct 中扩展可选字段。 |
 | **`relevance / importance`** | **在 E-Core 中不存在** | 仅在 `ContextCacheController.calculatePriority` 中对文件 Page 计算文本匹配分。E-Core 观测对象没有任何相关性/重要性评级。 | 适宜引入 `relevanceScore: Double`。 |
 | **`retrieval score`** | **在 E-Core 中不存在** | 仅在文件检索（ContextPager BM25）中有分数。`context_recall` 是通过精确 `objectID` 主键寻址，当前没有检索评分。 | 适宜在未来自学习语义检索阶段引入。 |
 | **`relation / dependency`** | **在 E-Core 中不存在** | 代码级依赖关系存在于 `CodebaseGraphEngine`，但 E-Core 对象之间目前彼此孤立，没有前后因果调用或派生依赖关系链。 | 适宜引入 `parentObjectID` 或 `derivedFrom` 关系。 |
 | **`embedding`** | **全仓库完全不存在** | 整个 LingXiAgent 仓库当前 100% 采用符号、关键词、倒排索引与哈希匹配，**零 Vector / Embedding 依赖**。 | 若引入必须遵守“依赖从简”原则并取得主人许可。 |
 | **`cache`** | **已存在** | `ECoreObjectStore.metadataCache` 作为元数据内存缓存；`ContextCacheController` 作为上下文缓存控制器。 | **高度可复用**，存储层缓存机制完备。 |
-| **`hot / cold`** | **在 E-Core 中不存在** | `ContextCacheController` 存在 L2 (Warm) 与 L3 (Cold) 的概念，但仅用于代码文件与衍生摘要，**E-Core 对象目前无冷热分区**。 | **本次架构演进的核心切入点**。 |
+| **`hot / cold`** | **在 E-Core 中不存在** | `ContextCacheController` 存在 RecallCache (Warm) 与 ProjectIndex (Cold) 的概念，但仅用于代码文件与衍生摘要，**E-Core 对象目前无冷热分区**。 | **本次架构演进的核心切入点**。 |
 | **`statistics / metrics`** | **已存在** | [`ContextCacheController.swift:533-548`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L533-L548) 中已实现 `eCoreUsageTokens`, `eCoreObjectCount`, `eCoreTotalBytes`。 | **高度可复用**，可直接在其基础上扩充热冷区统计。 |
 
 ---
@@ -357,7 +357,7 @@ sequenceDiagram
 
 | 责任维度 | 核心负责组件 | 辅助/协作者 | 触发时机与具体逻辑 |
 | :--- | :--- | :--- | :--- |
-| **驱逐 (Eviction)** | `ContextCacheController` & `ContextCompactor` | `ECoreObjectStore` | 1. L1 页面超出 `l1SoftLimit` 时 demote 进 L2；<br>2. 会话总 Token 超出经济阈值时触发 `ContextCompactor`；<br>3. 用户 `/undo` 回滚时触发 `ECoreObjectStore.prune` 清理失效对象。 |
+| **驱逐 (Eviction)** | `ContextCacheController` & `ContextCompactor` | `ECoreObjectStore` | 1. PCore 页面超出 `pCoreSoftLimit` 时 demote 进 RecallCache；<br>2. 会话总 Token 超出经济阈值时触发 `ContextCompactor`；<br>3. 用户 `/undo` 回滚时触发 `ECoreObjectStore.prune` 清理失效对象。 |
 | **召回 (Recall)** | 模型主动调用（发起者）<br>`ContextRecallTool`（执行者） | `ECoreObjectStore` | 模型根据 Placeholder 中的提示，调用 `context_recall(id:offset:limit)`，由工具路由到底座 `recall` 切片。 |
 | **索引生成** | `ContextProjection` (P-Core) | `ContextObjectID` | 在组装给模型的 Prompt 前夕，对满足 `FULL_SENDS` 且 `>=10KB` 的工具结果生成 1KB 稳定首尾摘要。 |
 | **生命周期管理** | `SessionRuntime` | `SessionStore` & `ECoreObjectStore` | 伴随 Session 的开启、Turn 执行、Settle、Revert、Reset 而全生命周期流转。 |
@@ -380,7 +380,7 @@ sequenceDiagram
 | **E-Core Total Bytes** | `ContextCacheController.swift:545` | `ContextCacheController` | 当前 Session 在 E-Core 存储的对象总物理字节数 | **是** |
 | **E-Core Usage Tokens** | `ContextCacheController.swift:533` | `ContextCacheController` | 按 4 字节约 1 Token 估算的外部对象等效 Token 量 | **是** |
 | **E-Core Recall 计数** | `ContextRecallTool.swift:492` | **目前无独立计数器** | 目前仅作为常规工具在 `TurnProfiler` 记录执行耗时，**尚未建立专有召回率统计** | **需扩展**（极易在 Tool 执行处埋点） |
-| **P-Core Usage Tokens** | `ContextCacheController.swift:528` | `ContextCacheController` | 上次 Provider 输入或当前 L1 基础占用 Tokens | **是** |
+| **P-Core Usage Tokens** | `ContextCacheController.swift:528` | `ContextCacheController` | 上次 Provider 输入或当前 PCore 基础占用 Tokens | **是** |
 | **Turn Latency** | `TurnProfiler.swift` | `SessionRuntime` | 细分为 Context 组装耗时、Provider 首字耗时、流式耗时、Tool 耗时 | **是** |
 
 ---
@@ -496,7 +496,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- |
 | **ToolResult 存储完整性** | 误以为大对象在 SessionStore 中会被截断或替换 | **SessionStore 永远保存 100% 原始完整数据**。P-Core 仅在向 Provider 发包前进行瞬时动态投影，数据库绝对不缩水。 | [`SessionRuntime.swift:1083`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Session/SessionRuntime.swift#L1083)<br>[`ContextProjection.swift:88`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextProjection.swift#L88) |
 | **首尾 Placeholder 触发时机** | 误以为只要超过 10KB 立即在第一轮就生成 Placeholder | **`FULL_SENDS` 饱和保证**：必须在该 Tool 结果之后已经产生了 `>= 2` 次 Assistant 响应，第 3 次请求起才转为 Placeholder。 | [`ContextProjection.swift:51-57`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextProjection.swift#L51-L57) |
-| **三级缓存体系中的 L3** | 误以为 L3 是存超大文件的对象池 | **L3 占用当前直接硬编码返回 0**。真正的超大对象全部由 `ECoreObjectStore` 接管，L3 仅作为历史总结衍生页面的备用标记。 | [`ContextCacheController.swift:561-568`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L561-L568) |
+| **P/E-Core context体系中的 ProjectIndex** | 误以为 ProjectIndex 是存超大文件的对象池 | **ProjectIndex 占用当前直接硬编码返回 0**。真正的超大对象全部由 `ECoreObjectStore` 接管，ProjectIndex 仅作为历史总结衍生页面的备用标记。 | [`ContextCacheController.swift:561-568`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ContextCacheController.swift#L561-L568) |
 | **Tool 定义的缓存稳定性** | 误以为工具可以按需随时在每轮中自由增删 | **Epoch Tool 绝对冻结与单调追加**：当前 Epoch 内工具列表只能追加不能减少或乱序，否则会触发客户端 Cache Bust 警告。 | [`SessionRuntime.swift:616-624`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Session/SessionRuntime.swift#L616-L624) |
 | **E-Core 物理组织** | 误以为 E-Core 存储在 SQLite 或特定二进制数据库中 | **纯粹的文件系统原子写入**：每个对象直接落为 `<ObjID>.txt` 和 `<ObjID>.meta.json` 两个纯文本文件，完全与 DB 解耦。 | [`ECoreObjectFabric.swift:198-213`](file:///Volumes/Development/Projects/projects/LingXiAgent/Sources/LingXiCore/Modules/Context/ECoreObjectFabric.swift#L198-L213) |
 
