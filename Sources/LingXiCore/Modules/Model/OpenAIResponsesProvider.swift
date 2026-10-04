@@ -153,7 +153,11 @@ public struct OpenAIResponsesProvider: ModelProvider {
     /// for organizations that are not verified.
     private static func makeRequestBody(_ request: ModelRequest, continuation: ProviderContinuation?, previousResponseID: String?, store: Bool, reasoningSummary: String?) throws -> Data {
         try request.validateToolChoice()
-        let messages = previousResponseID == nil ? request.messages : continuationMessages(request)
+        // Remote stored history cannot remove E-Core-only occurrences or admit a
+        // historical recall by sending only the newest tool tail. Rebase onto the
+        // authoritative assembled context when these segments are present.
+        let previousResponseID = request.providerContextMessages.contains { $0.segment != .conversation } ? nil : previousResponseID
+        let messages = previousResponseID == nil ? request.providerContextMessages : continuationMessages(request)
         let input = messages.flatMap { message -> [ResponseRequestBody.Input] in
             let calls = message.parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }
             let results = message.parts.compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
@@ -199,7 +203,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
             }
         }
         let orderedTools: [ToolDefinition]
-        let instructions: String? = request.system
+        let instructions: String? = request.cachePlan?.immutableBase.systemPrompt ?? request.system
         if let plan = request.cachePlan {
             orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
         } else {

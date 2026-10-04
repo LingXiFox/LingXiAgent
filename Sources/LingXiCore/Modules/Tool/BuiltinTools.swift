@@ -549,6 +549,11 @@ public struct ContextRecallTool: ToolExecutor {
     /// so append that list to the original error line (whose wording is pinned by tests and by the
     /// prompts of existing callers) instead of returning an error the caller cannot act on.
     private func unavailable(store: ECoreObjectStore, sessionID: SessionID, headline: String) async -> String {
+        let refs = await store.references(sessionID: sessionID)
+        if !refs.isEmpty {
+            let listing = refs.prefix(12).map { "- \($0.referenceID) · \($0.summary)" }.joined(separator: "\n")
+            return "\(headline) Archived objects available now:\n\(listing)\nCall context_recall with one of these refs."
+        }
         let objects = await store.listObjects(sessionID: sessionID)
         guard !objects.isEmpty else {
             return "\(headline) This session has no archived objects (no ToolResult exceeded the objectization threshold yet)."
@@ -583,14 +588,18 @@ public struct ContextRecallTool: ToolExecutor {
         let sID = candidates.first.map(SessionID.init) ?? SessionID("default")
 
         let objectID: ContextObjectID
-        do {
-            objectID = try ContextObjectID(input.id)
-        } catch {
-            return await unavailable(
-                store: store,
-                sessionID: sID,
-                headline: "Error: Invalid ContextObjectID format '\(input.id)'"
-            )
+        let recallRef = input.id.hasPrefix("obj_") ? nil : await store.requestRecall(sessionID: sID, referenceID: input.id)
+        if let recallRef {
+            objectID = recallRef.objectID
+        } else if input.id.hasPrefix("ref_") {
+            return await unavailable(store: store, sessionID: sID, headline: "Context reference '\(input.id)' not found in session '\(sID.rawValue)'.")
+        } else {
+            do {
+                objectID = try ContextObjectID(input.id)
+            } catch {
+                return await unavailable(store: store, sessionID: sID,
+                    headline: "Error: Invalid ContextObjectID format '\(input.id)'")
+            }
         }
 
         let chunk = try await store.recall(
@@ -602,15 +611,18 @@ public struct ContextRecallTool: ToolExecutor {
         )
 
         guard let chunk else {
+            if recallRef != nil { await store.noteLifecycle(sessionID: sID, phase: .recallRejected, referenceID: input.id, reason: "payloadMissing") }
             return await unavailable(
                 store: store,
                 sessionID: sID,
-                headline: "Context object '\(objectID.rawValue)' not found in session '\(sID.rawValue)'."
+                headline: "Context object '\(input.id)' not found in session '\(sID.rawValue)'."
             )
         }
 
+        if let recallRef { await store.queueRecallAdmission(sessionID: sID, referenceID: recallRef.referenceID) }
+
         return """
-        [Context Object Slice: \(chunk.objectID.rawValue)]
+        [Context Object Slice: \(recallRef?.referenceID ?? input.id)]
         Lines: \(chunk.startLine) - \(chunk.endLine) of \(chunk.totalLines)
         Bytes: \(chunk.offsetBytes) - \(chunk.offsetBytes + chunk.lengthBytes) of \(chunk.totalBytes)
         Has More: \(chunk.hasMore ? "true" : "false")

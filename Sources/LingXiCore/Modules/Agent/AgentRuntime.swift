@@ -39,6 +39,9 @@ public actor AgentRuntime {
     private var results: [AgentRunID: SubagentResult] = [:]
     private var executionProfiles: [AgentRunID: SubagentExecutionProfile] = [:]
     private var activeSessions: Set<SessionID> = []
+    /// Includes idle lanes evicted from the runtime cache; their learning lasts
+    /// until session deletion or this owning AgentRuntime shuts down.
+    private var predictionOwnedSessions: Set<SessionID> = []
     private var runDeadlines: [AgentRunID: ExecutionDeadline] = [:]
     private var resultWaiters: [AgentRunID: [CheckedContinuation<SubagentResult, Error>]] = [:]
     private var runOriginSessions: [AgentRunID: SessionID] = [:]
@@ -238,6 +241,8 @@ public actor AgentRuntime {
     public func shutdown() async {
         shuttingDown = true
         for runtime in runtimes.values { await runtime.shutdown() }
+        for sessionID in predictionOwnedSessions { await BranchPredictionRuntime.shared.clear(sessionID) }
+        predictionOwnedSessions.removeAll()
         await backgroundManager.terminateAll()
     }
 
@@ -381,7 +386,10 @@ public actor AgentRuntime {
     public func ensureContextSnapshot(_ id: SessionID) async throws -> PCoreSnapshot {
         if let snapshot = await contextEngine.latestSnapshot(for: id) { return snapshot }
         let session = try await store.session(id)
-        let entries = await contextEngine.entries(for: session)
+        let canonical = await contextEngine.entries(for: session)
+        let resident = await compactor.activeEntries(sessionID: id, canonicalEntries: canonical)
+        let budget = budgetPlanner.plan(profile: modelBus.gateway.contextProfile, toolSchemaTokens: 0)
+        let entries = await compactor.projectIndex(sessionID: id, entries: resident, hardInputLimit: budget.hardInputLimit, query: session.messages.last(where: { $0.role == .user })?.content ?? "")
         let estimatedTokens = ConservativeTokenEstimator().estimate(entries: entries)
         return await contextEngine.snapshot(for: session, activeEntries: entries, estimatedTokens: estimatedTokens)
     }
@@ -672,7 +680,8 @@ public actor AgentRuntime {
     // MARK: - Private
 
     private func makeRuntime(for sessionID: SessionID, run: AgentRunInfo? = nil, modelBus overrideBus: ModelBus? = nil, rootSessionID: SessionID? = nil) -> SessionRuntime {
-        SessionRuntime(
+        predictionOwnedSessions.insert(sessionID)
+        return SessionRuntime(
             store: store,
             sessionID: sessionID,
             modelBus: overrideBus ?? modelBus,

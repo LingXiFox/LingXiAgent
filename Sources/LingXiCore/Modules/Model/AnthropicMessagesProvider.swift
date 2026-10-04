@@ -138,7 +138,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
         let orderedTools: [ToolDefinition]
         let system: String?
         if let plan = request.cachePlan {
-            system = plan.immutableBase.systemPrompt
+            system = ([plan.immutableBase.systemPrompt].compactMap { $0 } + request.providerContextMessages.filter { $0.role == .system }.map(\.content)).joined(separator: "\n\n")
             orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
         } else {
             let messageSystem = request.messages.filter { $0.role == .system }.map(\.content).filter { !$0.isEmpty }
@@ -149,7 +149,7 @@ public struct AnthropicMessagesProvider: ModelProvider {
             orderedTools = core + dynamic
         }
 
-        let messages = try request.messages.compactMap { message -> RequestBody.Message? in
+        let messages = try request.providerContextMessages.compactMap { message -> RequestBody.Message? in
             switch message.role {
             case .system:
                 return nil

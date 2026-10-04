@@ -422,6 +422,69 @@ public actor ECoreObjectStore {
 
     private var pageOutObjects: [SessionID: [ContextObjectID: ECoreObjectRecord]] = [:]
     private var pageOutReferences: [SessionID: [String: ECoreReference]] = [:]
+    private var lifecycle: [SessionID: ECoreLifecycleSnapshot] = [:]
+    private var pendingRecallReferences: [SessionID: [String]] = [:]
+
+    public func lifecycleSnapshot(sessionID: SessionID) -> ECoreLifecycleSnapshot {
+        lifecycle[sessionID] ?? ECoreLifecycleSnapshot()
+    }
+
+    func noteLifecycle(sessionID: SessionID, phase: ECoreLifecycleEvent.Phase, referenceID: String? = nil, reason: String? = nil) {
+        lifecycle[sessionID, default: ECoreLifecycleSnapshot()].record(.init(phase: phase, referenceID: referenceID, reason: reason))
+        var detail = DebugECoreEvent(referenceID: referenceID)
+        detail.lifecyclePhase = phase.rawValue
+        detail.rejectionReason = reason
+        debugHub?.record(DebugTelemetryEvent(sequence: 0, timestamp: .now,
+            category: phase == .recallRejected ? .eCoreRecallFailed : (phase.rawValue.hasPrefix("pageOut") ? .eCorePageOut : .eCoreExactRestore),
+            sessionID: sessionID, referenceID: referenceID, eCoreEvent: detail))
+    }
+
+    /// The tool resolves a model-facing ref; admission is decided by Context Assembly.
+    func requestRecall(sessionID: SessionID, referenceID: String) async -> ECoreReference? {
+        noteLifecycle(sessionID: sessionID, phase: .recallRequested, referenceID: referenceID)
+        guard let ref = await reference(sessionID: sessionID, referenceID: referenceID) else {
+            noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: referenceID, reason: "referenceNotFound")
+            return nil
+        }
+        noteLifecycle(sessionID: sessionID, phase: .recallResolved, referenceID: referenceID)
+        return ref
+    }
+
+    func queueRecallAdmission(sessionID: SessionID, referenceID: String) {
+        if !(pendingRecallReferences[sessionID] ?? []).contains(referenceID) {
+            pendingRecallReferences[sessionID, default: []].append(referenceID)
+        }
+    }
+
+    func takeRecallAdmissions(sessionID: SessionID) -> [String] {
+        pendingRecallReferences.removeValue(forKey: sessionID) ?? []
+    }
+
+    /// Give an existing tool artifact a model-facing reference without copying its
+    /// payload or changing its heat/ranking identity. Mapping ownership stays here.
+    func referenceForStoredObject(sessionID: SessionID, objectID: ContextObjectID, contextOccurrenceID: String, summary: String, toolCallID: ToolCallID, toolName: String) async -> ECoreReference? {
+        noteLifecycle(sessionID: sessionID, phase: .pageOutAttempt)
+        guard (try? await fetch(sessionID: sessionID, objectID: objectID)) != nil else { return nil }
+        let ref = ECoreReference(objectID: objectID, sessionID: sessionID, origin: .toolCall,
+            contextOccurrenceID: contextOccurrenceID, evictionEpoch: 0, summary: summary,
+            toolCallID: toolCallID, toolName: toolName, pageOutReason: "boundedToolProjection")
+        if let existing = await reference(sessionID: sessionID, referenceID: ref.referenceID) {
+            noteLifecycle(sessionID: sessionID, phase: .pageOutDeduplicated, referenceID: ref.referenceID)
+            return existing
+        }
+        if persistsPayloads {
+            do {
+                try FileManager.default.createDirectory(at: referencesDirectory(sessionID: sessionID), withIntermediateDirectories: true)
+                try JSONEncoder().encode(ref).write(to: referenceURL(sessionID: sessionID, referenceID: ref.referenceID), options: .atomic)
+            } catch {
+                FileHandle.standardError.write(Data("[E-CORE WARNING] tool reference write failed: \(error)\n".utf8))
+            }
+        }
+        pageOutReferences[sessionID, default: [:]][ref.referenceID] = ref
+        noteLifecycle(sessionID: sessionID, phase: .pageOutNew, referenceID: ref.referenceID)
+        notifyMutation()
+        return ref
+    }
 
     private func referencesDirectory(sessionID: SessionID) -> URL {
         let safe = sessionID.rawValue.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
@@ -452,6 +515,7 @@ public actor ECoreObjectStore {
         createdTurn: Int? = nil,
         pageOutReason: String? = nil
     ) async -> ECoreReference {
+        noteLifecycle(sessionID: sessionID, phase: .pageOutAttempt)
         let objectID = ContextObjectID.identify(content: content)
         let reference = ECoreReference(
             objectID: objectID,
@@ -465,6 +529,11 @@ public actor ECoreObjectStore {
             createdTurn: createdTurn,
             pageOutReason: pageOutReason
         )
+
+        if let existing = await self.reference(sessionID: sessionID, referenceID: reference.referenceID) {
+            noteLifecycle(sessionID: sessionID, phase: .pageOutDeduplicated, referenceID: existing.referenceID)
+            return existing
+        }
 
         let bytes = content.utf8.count
         let lines = max(1, content.split(separator: "\n", omittingEmptySubsequences: false).count)
@@ -488,11 +557,14 @@ public actor ECoreObjectStore {
                 try writePageOutPayload(sessionID: sessionID, objectID: objectID, content: content)
             } catch {
                 FileHandle.standardError.write(Data("[E-CORE WARNING] page-out payload write failed: \(error)\n".utf8))
+                memoryPayloads[sessionID, default: [:]][objectID] = content
+                censusRegister(sessionID: sessionID, objectID: objectID, bytes: bytes)
             }
         }
         let isFirstWriteOfThisObject = pageOutObjects[sessionID]?[objectID] == nil
         pageOutObjects[sessionID, default: [:]][objectID] = record
         pageOutReferences[sessionID, default: [:]][reference.referenceID] = reference
+        noteLifecycle(sessionID: sessionID, phase: .pageOutNew, referenceID: reference.referenceID)
         debugHub?.notePageOut(sessionID: sessionID,
                               objectID: objectID.rawValue,
                               bytes: isFirstWriteOfThisObject ? bytes : 0,
@@ -524,13 +596,15 @@ public actor ECoreObjectStore {
 
     /// Exact Restore 的第一跳：referenceID → 引用。不靠词法或语义检索猜对象是什么（契约第九节）。
     public func reference(sessionID: SessionID, referenceID: String) async -> ECoreReference? {
+        guard (try? ContextObjectID(referenceID)) != nil else { return nil }
         if let cached = pageOutReferences[sessionID]?[referenceID] {
             return cached
         }
         guard persistsPayloads else { return nil }
         let url = referenceURL(sessionID: sessionID, referenceID: referenceID)
         guard let data = try? Data(contentsOf: url),
-              let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data) else { return nil }
+              let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data),
+              loaded.referenceID == referenceID, loaded.sessionID == sessionID else { return nil }
         pageOutReferences[sessionID, default: [:]][referenceID] = loaded
         return loaded    }
 
@@ -1025,7 +1099,7 @@ public actor ECoreObjectStore {
 
     /// 语义召回：query → page-out 引用的 summary（与 P-Core Index 同一份 metadata）。
     /// 命中后由调用方按 referenceID 走 Exact Restore 取载荷，这里不返回 payload。
-    public func searchReferences(sessionID: SessionID, query: String, limit: Int) async -> [ECoreReference] {
+    public func searchReferences(sessionID: SessionID, query: String, limit: Int, recordTelemetry: Bool = true) async -> [ECoreReference] {
         let terms = query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
         guard !terms.isEmpty else { return [] }
         let scored = await references(sessionID: sessionID).compactMap { reference -> (ECoreReference, Int)? in
@@ -1039,7 +1113,7 @@ public actor ECoreObjectStore {
         }.prefix(max(0, limit)).map(\.0)
         // 只记有命中的那次：一次无命中的语义检索值得看见，但它归 recall-miss 那条线，
         // 不该同时把 semanticRecalls 这个「找回来了多少次」的数往上抬。
-        if !matched.isEmpty {
+        if recordTelemetry && !matched.isEmpty {
             debugHub?.noteSemanticRecall(sessionID: sessionID)
         }
         return matched
@@ -1108,6 +1182,8 @@ public actor ECoreObjectStore {
         memoryPayloads.removeValue(forKey: sessionID)
         pageOutObjects.removeValue(forKey: sessionID)
         pageOutReferences.removeValue(forKey: sessionID)
+        pendingRecallReferences.removeValue(forKey: sessionID)
+        lifecycle.removeValue(forKey: sessionID)
         physicalObjects.removeValue(forKey: sessionID)
         censusLoaded.remove(sessionID)
         let objectsDir = sessionObjectsDirectory(sessionID: sessionID)

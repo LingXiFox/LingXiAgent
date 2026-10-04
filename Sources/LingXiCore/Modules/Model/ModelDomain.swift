@@ -110,6 +110,7 @@ public struct ModelToolResultProjection: Sendable, Equatable {
                 "exitCode": result.exitCode.map { $0 as Any } ?? NSNull(),
                 "stdoutSummary": summary(result.diagnostics?.stdout ?? ""),
                 "stderrSummary": summary(result.diagnostics?.stderr ?? ""),
+                "failureEvidence": FailureDiagnosticEvidence.render(result, maxCharacters: budget.maxCharacters),
                 "permissionDenied": result.outcome == .denied,
                 "scopeDenied": result.metadata["scopeDenied"] == "true"
             ]
@@ -408,32 +409,42 @@ public struct ModelToolResultProjection: Sendable, Equatable {
     }
 
     public static func projectToolResult(_ result: ToolResult, budget: ToolResultBudget = .default) -> ToolResult {
-        guard result.success else { return result }
         let projected = project(result, budget: budget)
         let outMeta = ToolOutputMetadata(
-            truncated: projected.truncated ?? false,
-            totalCharacters: result.content.count,
-            visibleCharacters: projected.content.count
+            truncated: projected.truncated ?? (!result.success && projected.content != result.content),
+            totalCharacters: max(result.output.totalCharacters, result.content.count),
+            totalBytes: result.output.totalBytes,
+            visibleCharacters: projected.content.count,
+            outputBlobRef: result.output.outputBlobRef
         )
         return result.withContent(projected.content, summary: projected.summary, output: outMeta)
     }
 }
 
+/// Context Assembly semantics survive independently of a provider's role encoding.
+public enum ModelContextSegment: Sendable, Equatable {
+    case conversation
+    case eCoreRetrievalProjection
+    case recalledOccurrence
+}
+
 public struct ModelMessage: Sendable, Equatable {
     public let role: ModelRole
     public let parts: [ModelContentPart]
+    public let segment: ModelContextSegment
 
     public var content: String {
         parts.compactMap { if case let .text(text) = $0 { text } else { nil } }.joined()
     }
 
-    public init(role: ModelRole, content: String) {
-        self.init(role: role, parts: [.text(content)])
+    public init(role: ModelRole, content: String, segment: ModelContextSegment = .conversation) {
+        self.init(role: role, parts: [.text(content)], segment: segment)
     }
 
-    public init(role: ModelRole, parts: [ModelContentPart]) {
+    public init(role: ModelRole, parts: [ModelContentPart], segment: ModelContextSegment = .conversation) {
         self.role = role
         self.parts = parts
+        self.segment = segment
     }
 }
 
@@ -497,6 +508,15 @@ public struct ModelRequest: Sendable, Equatable {
         case let .function(name) where !tools.contains(where: { $0.name == name }):
             throw CoreError(code: .provider, message: "ToolChoice.function references an unavailable tool: \(name)")
         default: break
+        }
+    }
+
+    /// Deduplicate only an identical base prompt. Dynamic segments must never be
+    /// removed merely because their wire role happens to be system/developer.
+    var providerContextMessages: [ModelMessage] {
+        let base = cachePlan?.immutableBase.systemPrompt ?? system
+        return (cachePlan?.appendOnlyContext.messages ?? messages).filter {
+            !($0.segment == .conversation && $0.role == .system && $0.content == base)
         }
     }
 }

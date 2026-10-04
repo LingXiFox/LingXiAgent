@@ -174,24 +174,13 @@ public struct OpenAICompatibleProvider: ModelProvider {
             if let system = plan.immutableBase.systemPrompt, !system.isEmpty {
                 messages.append(Message(role: "system", content: system))
             }
-            let contextMsgs = plan.appendOnlyContext.messages.flatMap { providerMessages($0, continuation: continuation) }
-            if messages.contains(where: { $0.role == "system" }) {
-                // 已有系统提示词，严格剔除后续重复的 system 消息，确保 KV Cache 前缀严格命中
-                messages.append(contentsOf: contextMsgs.filter { $0.role != "system" })
-            } else {
-                messages.append(contentsOf: contextMsgs)
-            }
+            messages.append(contentsOf: request.providerContextMessages.flatMap { providerMessages($0, continuation: continuation) })
             orderedTools = plan.immutableBase.coreTools + plan.appendOnlyContext.dynamicTools
         } else {
             if let system = request.system, !system.isEmpty {
                 messages.append(Message(role: "system", content: system))
             }
-            let contextMsgs = request.messages.flatMap { providerMessages($0, continuation: continuation) }
-            if messages.contains(where: { $0.role == "system" }) {
-                messages.append(contentsOf: contextMsgs.filter { $0.role != "system" })
-            } else {
-                messages.append(contentsOf: contextMsgs)
-            }
+            messages.append(contentsOf: request.providerContextMessages.flatMap { providerMessages($0, continuation: continuation) })
             let coreIDs = ToolRuntime.coreToolIDs
             let core = request.tools.filter { coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
             let dynamic = request.tools.filter { !coreIDs.contains($0.id) }.sorted(by: { $0.id.rawValue < $1.id.rawValue })

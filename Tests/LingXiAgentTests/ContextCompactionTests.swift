@@ -24,6 +24,10 @@ struct ContextCompactionTests {
         ContextBudget(hardInputLimit: 300, preferredActiveTokens: 60, highWaterTokens: 60, lowWaterTokens: 30, reservedOutputTokens: 0, protocolOverheadTokens: 0, toolSchemaTokens: 0, safetyMarginTokens: 0)
     }
 
+    private var indexBudget: ContextBudget {
+        ContextBudget(hardInputLimit: 2000, preferredActiveTokens: 60, highWaterTokens: 60, lowWaterTokens: 30, reservedOutputTokens: 0, protocolOverheadTokens: 0, toolSchemaTokens: 0, safetyMarginTokens: 0)
+    }
+
     @Test func budgetPlannerReservesTheLargestRequestedOutputAndToolSchema() {
         let planner = ContextBudgetPlanner(policy: ContextBudgetPolicy(preferredRatio: 0.5, defaultActiveCeiling: 1_000, safetyMarginTokens: 50, fixedOverheadTokens: 100))
         let profile = ModelContextProfile(contextWindowTokens: 1_000, maxOutputTokens: 200, recommendedOutputReserveTokens: 300)
@@ -69,7 +73,7 @@ struct ContextCompactionTests {
     @Test func rehydrationFlowsThroughPCoreSnapshot() async throws {
         let sessionID = SessionID("rehydration")
         let compactor = ContextCompactor()
-        let compacted = try await compactor.compact(sessionID: sessionID, entries: compactableEntries(), budget: compactionBudget)
+        let compacted = try await compactor.compact(sessionID: sessionID, entries: compactableEntries(), budget: indexBudget)
         let rehydrated = await compactor.pageIn(sessionID: sessionID, query: "alpha", remainingTokens: 10_000)
         let session = Session(id: sessionID, createdAt: Date())
         // 索引投影本身就是一条 derivedPage，因此驻留页数量 = 召回条目 + 1。
@@ -138,7 +142,7 @@ struct ContextCompactionTests {
             entry("current", role: .user, source: .userMessage, content: "current question"),
         ]
 
-        let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: compactionBudget, trigger: .manual)
+        let result = try await compactor.compact(sessionID: sessionID, entries: entries, budget: indexBudget, trigger: .manual)
         let projection = try #require(result.entries.first { $0.messageID == ContextCompactor.eCoreIndexMessageID })
         let text = ContextCompactor.content(of: projection.part)
         let reference = try #require(await compactor.ecoreStore.references(sessionID: sessionID).first)
@@ -149,7 +153,7 @@ struct ContextCompactionTests {
         #expect(!text.contains(payload))
 
         // 连续两轮压缩不会让索引投影累积成两份：投影每轮整体重建。
-        let second = try await compactor.compact(sessionID: sessionID, entries: result.entries, budget: compactionBudget, trigger: .manual, evictionEpoch: 1)
+        let second = try await compactor.compact(sessionID: sessionID, entries: result.entries, budget: indexBudget, trigger: .manual, evictionEpoch: 1)
         #expect(second.entries.count { $0.messageID == ContextCompactor.eCoreIndexMessageID } == 1)
     }
 
@@ -265,10 +269,11 @@ struct ContextCompactionTests {
         }
         let canonical = try await client.session(sessionID)
         let markerMessageID = try #require(canonical.messages.first?.id)
+        let referencesBefore = await host.ecoreStoreRef.references(sessionID: sessionID)
         let result = try await client.compact(sessionID)
         #expect(result.triggerSource == "manual")
-        #expect(result.beforeEstimatedTokens > result.afterEstimatedTokens)
-        #expect(result.derivedPagesCreated > 0)
+        #expect(result.noEligibleReduction)
+        #expect(await host.ecoreStoreRef.references(sessionID: sessionID) == referencesBefore)
         #expect(try await client.session(sessionID) == canonical)
         let compactedContext = try #require(await client.context(sessionID))
         let marker = compactedContext.units.first { $0.messageID == markerMessageID }

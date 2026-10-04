@@ -968,6 +968,8 @@ struct RawTelemetryPane: View {
             pieces.append("debt=\(cache.cacheDebt.value.map(String.init) ?? "n/a")")
         }
         if let ecore = event.eCoreEvent {
+            if let phase = ecore.lifecyclePhase { pieces.append(phase) }
+            if let reason = ecore.rejectionReason { pieces.append(reason) }
             pieces.append(ecore.objectID ?? ecore.referenceID ?? "")
         }
         if let eviction = event.eviction {
@@ -1054,7 +1056,7 @@ struct AgentLoopPane: View {
                     ObservatoryKV(key: "Compaction gen",
                                   value: inspector.live?.context.map { String($0.compactionGeneration) })
                 }
-                ObservatoryCard(title: "分支预测（Core 每轮都算，macOS 此前无任何展示位）") {
+                ObservatoryCard(title: "分支预测 · Observation only") {
                     if let prediction = inspector.live?.context?.prediction {
                         ObservatoryKV(key: "hint", value: prediction.hint)
                         ObservatoryKV(key: "confidence", value: String(format: "%.3f", prediction.confidence))
@@ -1062,7 +1064,7 @@ struct AgentLoopPane: View {
                         ObservatoryKV(key: "matchedOrder", value: "o\(prediction.matchedOrder)")
                         ObservatoryKV(key: "abstained", value: prediction.abstained ? "yes" : "no")
                         ObservatoryKV(key: "steps", value: String(prediction.steps))
-                        ObservatoryKV(key: "hits / misses", value: "\(prediction.hits) / \(prediction.misses)")
+                        ObservatoryKV(key: "hits / misses · hit rate", value: "\(prediction.hits) / \(prediction.misses) · \(prediction.steps > 0 ? String(format: "%.1f%%", Double(prediction.hits) / Double(prediction.steps) * 100) : "—")")
                     } else {
                         ObservatoryKV(key: "prediction", value: nil)
                     }

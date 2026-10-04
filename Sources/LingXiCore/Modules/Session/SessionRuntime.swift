@@ -359,6 +359,7 @@ public actor SessionRuntime {
                 } else if let session = try? await store.session(sessionID) {
                     let residentPages = await cacheController.residentPages(for: sessionID)
                     updatedEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+                    updatedEntries = await compactor.activeEntries(sessionID: sessionID, canonicalEntries: updatedEntries, batches: toolBatches)
                 }
             }
             if !updatedEntries.contains(where: { $0.messageID == userMessage.id }) {
@@ -526,7 +527,8 @@ public actor SessionRuntime {
                 // Prompt Builder ONLY reads: Pinned Context + PCore Working Set + Current Turn.
                 // Dynamic pages enter PCore ONLY via Cache Controller explicit retrieval.
                 let residentPages = await cacheController.residentPages(for: sessionID)
-                var allEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+                let canonicalEntries = await contextEngine.entries(for: session, projectPages: residentPages, systemContext: systemContext, systemContextAtBeginning: systemContextAtBeginning)
+                var allEntries = await compactor.activeEntries(sessionID: sessionID, canonicalEntries: canonicalEntries, batches: toolBatches)
                 // This turn's attachments are not session messages, so nothing above contributes
                 // them: without this the bytes are uploaded, resolved and then dropped before the
                 // request. Each is its own entry so the budget planner can page one out without
@@ -672,7 +674,7 @@ public actor SessionRuntime {
                 let residentDerivedEntries: [ContextEntry] = residentDerived.map { page in
                     ContextEntry(messageID: MessageID(page.id), role: .system, source: .derivedPage, part: .text("[Session context]\n\(page.content)"))
                 }
-                var finalEntries = compacted.entries + residentDerivedEntries
+                var finalEntries = await compactor.projectIndex(sessionID: sessionID, entries: compacted.entries + residentDerivedEntries, hardInputLimit: budget.hardInputLimit, query: activeTaskText.isEmpty ? task : activeTaskText)
                 var finalTokens = ConservativeTokenEstimator().estimate(entries: finalEntries)
                 if finalTokens > budget.hardInputLimit {
                     let emergency = try await compactor.compact(sessionID: sessionID, entries: finalEntries, budget: budget, batches: toolBatches, projectBackedContents: Set(residentPages.map(\.content)), trigger: .emergencyHardLimit, evictionEpoch: compactionGeneration, currentTurn: step + 1, activeTask: activeTaskText)
@@ -682,6 +684,11 @@ public actor SessionRuntime {
                     if emergency.triggered { compactionGeneration += 1 }
                     if emergency.triggered { try await persistCompaction() }
                 }
+                let admissionsBefore = await cacheController.ecoreStore.lifecycleSnapshot(sessionID: sessionID).recallAdmitted
+                finalEntries = await compactor.admitRequestedRecalls(sessionID: sessionID, canonicalEntries: canonicalEntries, activeEntries: finalEntries, hardInputLimit: budget.hardInputLimit)
+                finalEntries = await compactor.projectIndex(sessionID: sessionID, entries: finalEntries, hardInputLimit: budget.hardInputLimit, query: activeTaskText.isEmpty ? task : activeTaskText)
+                finalTokens = ConservativeTokenEstimator().estimate(entries: finalEntries)
+                if await cacheController.ecoreStore.lifecycleSnapshot(sessionID: sessionID).recallAdmitted > admissionsBefore { try await persistCompaction() }
                 await cacheController.recordProviderInputTokens(sessionID: sessionID, tokens: finalTokens)
                 await syncPCoreResidentAccounting(with: finalEntries)
                 let context = await contextEngine.snapshot(for: session, activeEntries: finalEntries, systemContext: systemContext, estimatedTokens: finalTokens, mandatoryTokens: compacted.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
@@ -1942,6 +1949,9 @@ public actor SessionRuntime {
     ) async {
         guard activeExecution?.id == executionID else { return }
         await diagnostics?.record(kind: .error, event: "turn.failed", sessionID: sessionID, runID: runID, rootRunID: rootRunID, parentRunID: parentRunID, executionID: executionID.uuidString, providerRequestID: latestModelRequestID?.rawValue, errorCode: error.code.rawValue)
+        for ref in await cacheController.ecoreStore.takeRecallAdmissions(sessionID: sessionID) {
+            await cacheController.ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: ref, reason: "turnTerminatedBeforeAdmission: \(error.code.rawValue)")
+        }
         let preservesDurableBatch = toolBatches.contains { ($0.state == .pending || $0.state == .recoveryRequired) && $0.resultMessageID == nil }
         if Task.isCancelled && preservesDurableBatch {
             sink.finish()

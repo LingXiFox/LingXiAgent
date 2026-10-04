@@ -429,6 +429,7 @@ public actor ContextCompactor {
     private var evictionTraces: [SessionID: [ContextEvictionTraceEntry]] = [:]
     private var evictionScoringActiveBySession: [SessionID: Bool] = [:]
     private var activeWorksetsBySession: [SessionID: Set<String>] = [:]
+    private var admittedPayloads: [SessionID: [String: ContextEntry]] = [:]
     /// 未注入目录时默认走内存后端：E-Core 依然是必选逻辑核心，page-out 照样返回稳定 referenceID，
     /// 只是载荷不跨进程存活。这样 `ContextCompactor()` 不会往用户 home 里写文件。
     public init(
@@ -452,8 +453,13 @@ public actor ContextCompactor {
             summary: "Historical \(page.sourceKind.rawValue): " + String(page.content.prefix(240)),
             pageOutReason: "Import persisted historical context")
     }
-    public func restoreResidencies(sessionID: SessionID, values: [ContextUnitDebugSnapshot]) {
+    public func restoreResidencies(sessionID: SessionID, values: [ContextUnitDebugSnapshot]) async {
         unitResidencies[sessionID] = Dictionary(uniqueKeysWithValues: values.map { ($0.messageID, $0) })
+        for state in values where state.residency == .active {
+            guard let refID = state.derivedPageID, state.messageID.rawValue == refID,
+                  let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: refID) else { continue }
+            admittedPayloads[sessionID, default: [:]][refID] = ContextEntry(messageID: state.messageID, role: .system, source: .derivedPage, part: .text("[Restored session context]\n\(payload)"))
+        }
     }
     public func reset(sessionID: SessionID) async {
         unitResidencies.removeValue(forKey: sessionID)
@@ -461,6 +467,7 @@ public actor ContextCompactor {
         evictionTraces.removeValue(forKey: sessionID)
         evictionScoringActiveBySession.removeValue(forKey: sessionID)
         activeWorksetsBySession.removeValue(forKey: sessionID)
+        admittedPayloads.removeValue(forKey: sessionID)
         await derivedStore.clear(sessionID: sessionID)
     }
     private struct Unit {
@@ -473,6 +480,7 @@ public actor ContextCompactor {
     }
 
     public func compact(sessionID: SessionID, entries: [ContextEntry], budget: ContextBudget, batches: [ToolExchangeBatch] = [], projectBackedContents: Set<String> = [], trigger: CompactionTrigger = .automaticHighWater, evictionEpoch: Int = 0, currentTurn: Int? = nil, activeTask: String = "") async throws -> CompactionResult {
+        let entries = activeEntries(sessionID: sessionID, canonicalEntries: entries, batches: batches)
         let before = estimator.estimate(entries: entries)
         let units = makeUnits(entries: entries, batches: batches)
         let currentUser = entries.last { $0.source == .userMessage }?.messageID
@@ -516,7 +524,14 @@ public actor ContextCompactor {
                 if backed { projectBacked += 1 }
                 let evidence = batch.toolCalls.enumerated().map { offset, call in
                     let result = batch.toolResults.indices.contains(offset) ? batch.toolResults[offset] : nil
-                    let resultSummary = backed ? "projectPage=available contentHash=\(result.map { ContextPage.fingerprint($0.content.utf8) } ?? "")" : "result=\(result?.content ?? "")"
+                    // Failure diagnostics and structured errors are evidence, even when a
+                    // successful output can be reconstructed from a project page.
+                    let archived = result.flatMap { result -> String? in
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.sortedKeys]
+                        return try? String(decoding: encoder.encode(result), as: UTF8.self)
+                    } ?? "null"
+                    let resultSummary = backed && result?.success == true ? "projectPage=available contentHash=\(result.map { ContextPage.fingerprint($0.content.utf8) } ?? "")" : "result=\(archived)"
                     return "tool=\(call.toolID.rawValue) arguments=\(call.arguments) status=\(result?.success == true ? "ok" : "failed") \(resultSummary)"
                 }.joined(separator: "\n")
                 let reference = await ecoreStore.pageOut(
@@ -559,7 +574,7 @@ public actor ContextCompactor {
             return entry
         }
         var finalOutput = output
-        if let projection = await eCoreIndexProjection(sessionID: sessionID, kept: output, hardInputLimit: budget.hardInputLimit) {
+        if let projection = await eCoreIndexProjection(sessionID: sessionID, kept: output, hardInputLimit: budget.hardInputLimit, query: activeTask.isEmpty ? Self.currentTask(entries) : activeTask) {
             finalOutput.append(projection)
         }
         recordResidencies(sessionID: sessionID, kept: keptUnits, pagedOut: nonDerivedPagedOut, evicted: evictedReferences)
@@ -905,12 +920,16 @@ public actor ContextCompactor {
     private static let eCoreIndexGuide = "以下内容已移出当前上下文，完整载荷在 E-Core；按 reference 精确取回，不要凭摘要重构。"
     private static let eCoreIndexLineLimit = 8
     /// 索引是投影不是正文：最多占输入预算的 1/8，且绝对值不超过 512 tokens。
-    private static func eCoreIndexTokenAllowance(hardInputLimit: Int) -> Int {
-        min(512, max(64, hardInputLimit / 8))
+    public static func eCoreIndexTokenAllowance(hardInputLimit: Int) -> Int {
+        min(512, max(0, hardInputLimit / 8))
     }
 
-    private func eCoreIndexProjection(sessionID: SessionID, kept: [ContextEntry], hardInputLimit: Int) async -> ContextEntry? {
-        let references = Array(await ecoreStore.references(sessionID: sessionID).prefix(Self.eCoreIndexLineLimit))
+    private func eCoreIndexProjection(sessionID: SessionID, kept: [ContextEntry], hardInputLimit: Int, query: String) async -> ContextEntry? {
+        // Reuse the existing retrieval ranking; the projection owns only selection size.
+        let related = await ecoreStore.searchReferences(sessionID: sessionID, query: query, limit: Self.eCoreIndexLineLimit, recordTelemetry: false)
+        let recent = await ecoreStore.references(sessionID: sessionID)
+        var seen = Set<String>()
+        let references = Array((related + recent).filter { seen.insert($0.contextOccurrenceID).inserted }.prefix(Self.eCoreIndexLineLimit))
         guard !references.isEmpty else { return nil }
         let keptTokens = estimator.estimate(entries: kept)
         let allowance = Self.eCoreIndexTokenAllowance(hardInputLimit: hardInputLimit)
@@ -923,14 +942,6 @@ public actor ContextCompactor {
             lines.removeLast()
             break
         }
-        // 预算紧到一行都装不下时，仍然至少保留最近一次移出的索引：Exact Restore 的入口不能整块消失。
-        if lines.isEmpty, let newest = references.first {
-            let single = [Self.indexLine(for: newest)]
-            if let entry = Self.indexEntry(header: Self.eCoreIndexHeader + "\n" + Self.eCoreIndexGuide, lines: single),
-               keptTokens + estimator.estimate(entries: [entry]) <= hardInputLimit {
-                return entry
-            }
-        }
         return Self.indexEntry(header: Self.eCoreIndexHeader + "\n" + Self.eCoreIndexGuide, lines: lines)
     }
 
@@ -940,7 +951,8 @@ public actor ContextCompactor {
             messageID: eCoreIndexMessageID,
             role: .system,
             source: .derivedPage,
-            part: .text(([header] + lines).joined(separator: "\n"))
+            part: .text(([header] + lines).joined(separator: "\n")),
+            segment: .eCoreRetrievalProjection
         )
     }
 
@@ -950,7 +962,7 @@ public actor ContextCompactor {
         var fields = ["reference=\(reference.referenceID)", "origin=\(reference.origin.rawValue)"]
         if let toolCallID = reference.toolCallID { fields.append("toolCall=\(toolCallID.rawValue)") }
         if let createdTurn = reference.createdTurn { fields.append("turn=\(createdTurn)") }
-        fields.append("summary=\(reference.summary)")
+        fields.append("summary=\(reference.summary.prefix(140))")
         return "- " + fields.joined(separator: " ")
     }
 
@@ -1024,6 +1036,76 @@ public actor ContextCompactor {
     public func cacheMetrics(sessionID: SessionID) async -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) { await derivedStore.metrics(sessionID: sessionID) }
     public func cacheMetrics() async -> (recallCachePages: Int, projectIndexPages: Int, pageOutCount: Int, pageInCount: Int, historicalToolPages: Int, projectIndexHits: Int, recallCacheHits: Int, recallCachePromotions: Int) { await derivedStore.allMetrics() }
     public func unitStates(sessionID: SessionID) -> [ContextUnitDebugSnapshot] { (unitResidencies[sessionID] ?? [:]).values.sorted { $0.messageID.rawValue < $1.messageID.rawValue } }
+
+    /// Durable history is not the active working set. Live causal batches and the
+    /// newest user instruction remain eligible regardless of an old snapshot.
+    public func activeEntries(sessionID: SessionID, canonicalEntries: [ContextEntry], batches: [ToolExchangeBatch] = []) -> [ContextEntry] {
+        let liveIDs = Set(batches.filter { $0.state != .consumed }.flatMap { [$0.assistantMessageID, $0.resultMessageID].compactMap { $0 } })
+        let currentUser = canonicalEntries.last { $0.source == .userMessage }?.messageID
+        let states = unitResidencies[sessionID] ?? [:]
+        let active = canonicalEntries.filter { entry in
+            guard let id = entry.messageID, id != Self.eCoreIndexMessageID else { return true }
+            if id == currentUser || liveIDs.contains(id) || entry.source == .system { return true }
+            switch states[id]?.residency {
+            case .derived, .pagedOut, .superseded: return false
+            case .active, nil: return true
+            }
+        }
+        let ids = Set(active.compactMap(\.messageID))
+        return active + (admittedPayloads[sessionID] ?? [:]).sorted { $0.key < $1.key }.map(\.value).filter {
+            guard let id = $0.messageID else { return false }
+            return !ids.contains(id) && (states[id]?.residency == nil || states[id]?.residency == .active)
+        }
+    }
+
+    /// Rebuild the bounded segment on every assembly, including scheduler skip.
+    public func projectIndex(sessionID: SessionID, entries: [ContextEntry], hardInputLimit: Int, query: String) async -> [ContextEntry] {
+        let history = entries.filter { $0.segment != .eCoreRetrievalProjection && $0.messageID != Self.eCoreIndexMessageID }
+        if let index = await eCoreIndexProjection(sessionID: sessionID, kept: history, hardInputLimit: hardInputLimit, query: query) { return history + [index] }
+        return history
+    }
+
+    /// Called after normal pressure convergence. A resolved ref alone is not admission.
+    /// Canonical occurrences are restored as complete causal units; imported payloads
+    /// have an explicit active entry. No SessionStore mutation occurs here.
+    public func admitRequestedRecalls(sessionID: SessionID, canonicalEntries: [ContextEntry], activeEntries: [ContextEntry], hardInputLimit: Int) async -> [ContextEntry] {
+        var active = activeEntries
+        for refID in await ecoreStore.takeRecallAdmissions(sessionID: sessionID) {
+            guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: refID) else {
+                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "payloadMissing")
+                continue
+            }
+            let states = unitResidencies[sessionID] ?? [:]
+            let ids = Set(states.values.filter { $0.derivedPageID == refID }.map(\.messageID))
+            let alreadyActive = Set(active.compactMap(\.messageID))
+            var restored = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) && !alreadyActive.contains($0.messageID ?? MessageID("")) }
+            if ids.isEmpty && !alreadyActive.contains(MessageID(refID)) {
+                restored = [ContextEntry(messageID: MessageID(refID), role: .system, source: .derivedPage, part: .text("[Restored session context]\n\(payload)"))]
+            }
+            let cost = estimator.estimate(entries: active + restored)
+            guard cost <= hardInputLimit else {
+                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "inputBudgetExceeded: required=\(cost), hard=\(hardInputLimit)")
+                continue
+            }
+            restored = restored.map { ContextEntry(messageID: $0.messageID, role: $0.role, source: $0.source, part: $0.part, page: $0.page, segment: .recalledOccurrence) }
+            // Prepend restored historical units so a pending tail stays last.
+            let prefix = active.prefix { $0.source == .system }
+            active = Array(prefix) + restored + active.dropFirst(prefix.count)
+            for entry in restored {
+                guard let id = entry.messageID else { continue }
+                let old = states[id]
+                unitResidencies[sessionID, default: [:]][id] = .init(messageID: id, residency: .active, derivedPageID: refID, contentHash: old?.contentHash)
+                if ids.isEmpty { admittedPayloads[sessionID, default: [:]][refID] = entry }
+            }
+            await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallAdmitted, referenceID: refID)
+        }
+        return active
+    }
+
+    private static func currentTask(_ entries: [ContextEntry]) -> String {
+        guard let last = entries.last(where: { $0.source == .userMessage }), case let .text(text) = last.part else { return "" }
+        return text
+    }
     static func content(of part: SessionMessagePart) -> String { switch part { case let .text(text): text; case let .toolCall(call): call.arguments; case let .toolResult(result): result.content + (result.error?.message ?? ""); case let .observation(id): "[Observation: \(id.description)]" } }
 
     private func makeUnits(entries: [ContextEntry], batches: [ToolExchangeBatch]) -> [Unit] {
@@ -1066,7 +1148,7 @@ public actor ContextCompactor {
         var values = unitResidencies[sessionID] ?? [:]
         for unit in kept {
             for id in unit.entries.compactMap(\.messageID) {
-                values[id] = ContextUnitDebugSnapshot(messageID: id, residency: .active)
+                values[id] = ContextUnitDebugSnapshot(messageID: id, residency: .active, derivedPageID: values[id]?.derivedPageID, contentHash: values[id]?.contentHash)
             }
         }
         for unit in pagedOut {

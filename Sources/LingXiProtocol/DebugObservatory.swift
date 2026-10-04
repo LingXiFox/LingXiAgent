@@ -352,6 +352,8 @@ public struct DebugCacheSample: Codable, Sendable, Equatable {
 
 /// An E-Core lifecycle transition.
 public struct DebugECoreEvent: Codable, Sendable, Equatable {
+    public var lifecyclePhase: String? = nil
+    public var rejectionReason: String? = nil
     public let objectID: String?
     public let referenceID: String?
     public let toolName: String?

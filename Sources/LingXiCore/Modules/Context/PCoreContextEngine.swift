@@ -57,13 +57,15 @@ public struct ContextEntry: Sendable, Equatable {
     public let source: ContextSource
     public let part: SessionMessagePart
     public let page: ContextPage?
+    public let segment: ModelContextSegment
 
-    public init(messageID: MessageID?, role: ContextRole, source: ContextSource, part: SessionMessagePart, page: ContextPage? = nil) {
+    public init(messageID: MessageID?, role: ContextRole, source: ContextSource, part: SessionMessagePart, page: ContextPage? = nil, segment: ModelContextSegment = .conversation) {
         self.messageID = messageID
         self.role = role
         self.source = source
         self.part = part
         self.page = page
+        self.segment = segment
     }
 }
 
@@ -106,6 +108,7 @@ public struct PCoreSnapshot: Sendable, Equatable {
         var currentID: MessageID?
         var currentRole: ModelRole?
         var parts: [ModelContentPart] = []
+        var currentSegment: ModelContextSegment = .conversation
 
         let renderedEntries = entries.flatMap { entry -> [ContextEntry] in
             guard entry.messageID == nil, entry.source == .system, case let .text(content) = entry.part,
@@ -125,15 +128,16 @@ public struct PCoreSnapshot: Sendable, Equatable {
         }
 
         func appendCurrent() {
-            if let currentRole { result.append(ModelMessage(role: currentRole, parts: parts)) }
+            if let currentRole { result.append(ModelMessage(role: currentRole, parts: parts, segment: currentSegment)) }
         }
 
         for entry in renderedEntries {
             let role = Self.modelRole(entry.role)
-            if currentID != entry.messageID || currentRole != role {
+            if currentID != entry.messageID || currentRole != role || currentSegment != entry.segment {
                 appendCurrent()
                 currentID = entry.messageID
                 currentRole = role
+                currentSegment = entry.segment
                 parts = []
             }
             parts.append(Self.modelPart(entry.part))

@@ -441,6 +441,7 @@ public struct ToolResult: Sendable, Equatable, Codable {
             continuation: continuation,
             sessionID: sessionID,
             agentRunID: agentRunID,
+            modelStepID: modelStepID,
             fileMutations: fileMutations
         )
     }
@@ -616,4 +617,3 @@ public final class ToolLifecycleTrace: @unchecked Sendable {
         _ = old
     }
 }
-

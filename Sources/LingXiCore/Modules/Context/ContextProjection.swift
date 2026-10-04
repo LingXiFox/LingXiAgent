@@ -48,6 +48,10 @@ public struct ContextProjection: Sendable {
                 continue
             }
 
+            // Failure evidence is selected at the encoder boundary from diagnostics.
+            // A success-shaped placeholder must not erase the structured failure.
+            guard result.success else { projectedEntries.append(entry); continue }
+
             let assistantCount = assistantCountAfterMessageID[messageID] ?? 0
             let toolName = result.toolName ?? "tool"
             let byteCount = result.content.utf8.count
@@ -86,16 +90,20 @@ public struct ContextProjection: Sendable {
             let objectID = ContextObjectID.generate(toolName: toolName, callID: result.callID, content: result.content)
 
             // 确保该对象已在 E-Core 中安全归档（Fail-Open）
-            await ecoreStore.store(
+            let archived = await ecoreStore.store(
                 sessionID: session.id,
                 toolCallID: result.callID,
                 toolName: toolName,
                 content: result.content,
                 force: true
             )
+            guard let archived, let reference = await ecoreStore.referenceForStoredObject(sessionID: session.id,
+                objectID: archived.objectID, contextOccurrenceID: "projection:\(messageID.rawValue):\(result.callID.rawValue)",
+                summary: "\(toolName): \(result.content.prefix(140))", toolCallID: result.callID, toolName: toolName)
+            else { projectedEntries.append(entry); continue }
 
             let placeholder = buildPlaceholder(
-                objectID: objectID,
+                referenceID: reference.referenceID,
                 toolName: toolName,
                 content: result.content,
                 excerptBytes: configuration.placeholderExcerpt
@@ -139,7 +147,7 @@ public struct ContextProjection: Sendable {
 
     /// 构建符合规范的稳定首尾 Placeholder（总计约 1KB 摘要）
     private func buildPlaceholder(
-        objectID: ContextObjectID,
+        referenceID: String,
         toolName: String,
         content: String,
         excerptBytes: Int
@@ -168,7 +176,7 @@ public struct ContextProjection: Sendable {
         let contentHash = String(format: "%08llx", hash)
 
         return """
-        [Context Object: \(objectID.rawValue)]
+        [Context Object: \(referenceID)]
         Tool: \(toolName)
         Size: \(totalBytes) bytes, \(max(1, lineCount)) lines
         Content Type: text/plain
@@ -178,7 +186,7 @@ public struct ContextProjection: Sendable {
         --- Last \(tailData.count) bytes ---
         \(tailExcerpt)
         ---
-        To retrieve additional lines or full content, use `context_recall(id: "\(objectID.rawValue)", offset: <bytes>, limit: <bytes>)`.
+        To retrieve additional lines or full content, use `context_recall(id: "\(referenceID)", offset: <bytes>, limit_bytes: <bytes>)`.
         """
     }
 }
