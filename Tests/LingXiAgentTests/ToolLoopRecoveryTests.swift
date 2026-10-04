@@ -16,8 +16,8 @@ struct ToolLoopRecoveryTests {
     private typealias Outcome = ToolLoopProgressTracker.CallOutcome
     private static let status69 = "commandFailed:命令以状态 69 退出"
 
-    private func failed(_ command: String, _ error: String = status69) -> [Outcome] {
-        [Outcome(callKey: "shell|{\"command\":\"\(command)\"}", succeeded: false, errorMessage: error)]
+    private func failed(_ command: String, _ error: String = status69, exit: Int? = nil) -> [Outcome] {
+        [Outcome(callKey: "shell|{\"command\":\"\(command)\"}", succeeded: false, errorMessage: error, exitCode: exit)]
     }
 
     @Test func successfulNoOpCannotEraseUnresolvedFailure() {
@@ -84,17 +84,34 @@ struct ToolLoopRecoveryTests {
         }
     }
 
-    // MARK: - 13. Progress resets
+    // MARK: - 13. What actually resets
 
-    @Test("a success, or a different failure, resets the cluster and re-arms the warning")
+    /// Re-written in Phase 6. Its first half used to assert the rule this phase replaced: that a
+    /// successful call resets the cluster. A success that proves nothing about the blocker only spends
+    /// grace, so the assertions now follow the objective signals.
+    @Test("neutral work spends grace, while the objective passing or a proven failure-class change resets")
     func progressResets() {
         var tracker = ToolLoopProgressTracker()
         _ = tracker.record(failed("g++ a.cpp"))
         _ = tracker.record(failed("clang++ a.cpp"))
-        #expect(tracker.record([Outcome(callKey: "write_file|x", succeeded: true, errorMessage: nil)]) == .progress(strategyChanged: true))
-        #expect(tracker.record(failed("gcc a.cpp")) == .failureCluster(distinctStrategies: 1), "成功之后应从零计数")
-        // A new failure class is new information.
-        #expect(tracker.record(failed("cc a.cpp", "commandFailed:命令以状态 1 退出")) == .progress(strategyChanged: true))
+        #expect(tracker.record([Outcome(callKey: "write_file|x", succeeded: true, errorMessage: nil)]) == .neutral(reason: .noObjectiveSignal),
+            "写回相同内容不证明编译阻塞消失了")
+        guard case .softWarning = tracker.record(failed("gcc a.cpp")) else {
+            Issue.record("第三个策略应得到一次性提示，而不是把计数清零")
+            return
+        }
+        // fail → pass on the same objective is the strong signal.
+        let pass = tracker.record([Outcome(callKey: "shell|{\"command\":\"g++ a.cpp\"}", succeeded: true, errorMessage: nil)])
+        #expect(pass == .progress(strategyChanged: true), "\(pass)")
+        #expect(tracker.openBlockerCount == 0)
+        // A failure-class change after a real mutation proves the old blocker moved on.
+        _ = tracker.record(failed("pytest t.py", "commandFailed:NameError: session undefined", exit: 1))
+        _ = tracker.record([Outcome(callKey: "write_file|t.py", succeeded: true, errorMessage: nil, evidence: .mutation)])
+        guard case .progress = tracker.record(failed("pytest t.py", "commandFailed:AssertionError: expected 200", exit: 1)) else {
+            Issue.record("真实修改后失败类别实质变化应记为进展")
+            return
+        }
+        #expect(tracker.openBlockerCount == 1, "只剩新的 blocker")
     }
 
     // MARK: - 14. The warning is issued once and is bounded
@@ -204,10 +221,15 @@ struct ToolLoopRecoveryTests {
         }
     }
 
+    /// 方案 A of the LONG RUN != LOOP pair: more than 32 steps that each carry an objective signal must
+    /// run to completion, and the default configuration must not smuggle a fixed step ceiling back in.
+    /// Its counterpart is `changingFailureObservationsDoNotEvadeNoProgressStop`.
     @Test("Default orchestration completes real mutations beyond 32 model steps")
     func usefulWorkBeyond32StepsCompletes() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
+        #expect(CoreConfiguration().agent.maxAgentLoopSteps == 0,
+            "默认不得存在固定 step 上限，长运行由进展判定负责")
         var script: [[ModelEvent]] = (1...35).map { i in
             let call = ToolCall(callID: ToolCallID("write-\(i)"), toolID: ToolID("write_file"),
                                 arguments: "{\"path\":\"part\(i).txt\",\"content\":\"part \(i)\"}")
@@ -230,10 +252,20 @@ struct ToolLoopRecoveryTests {
         }
         #expect(results.count == 35)
         #expect(results.allSatisfy { $0.success })
+        // Every batch really changed workspace bytes: that is the progress the loop rule asks for.
+        #expect(results.allSatisfy { !$0.fileMutations.isEmpty }, "35 批都必须是可验证的真实 mutation")
+        #expect(results.allSatisfy { !$0.content.contains(ToolLoopProgressTracker.softWarningText) })
+        #expect(snapshot.messages.last?.content.contains("35 个文件") == true, "长运行必须正常完成")
     }
 
-    @Test("Changing failure observations beyond 32 steps can reach the model's report")
-    func recoveryBeyond32StepsReachesReport() async throws {
+    /// Renamed and re-signed in Phase 6 under 方案 B. Its old expectation - "keep changing the
+    /// observation and the run gets to reach step 36" - is the exact hole the frozen progress
+    /// semantics close: command text, an echoed counter and the exit code all moved, while nothing
+    /// objective did: no attempt succeeded, no file changed, no blocker disappeared. The prohibition
+    /// on a fixed low step ceiling is carried by `usefulWorkBeyond32StepsCompletes` instead, which
+    /// runs 35 batches of real mutations to completion.
+    @Test("changing failure observations do not evade the no-progress stop")
+    func changingFailureObservationsDoNotEvadeNoProgressStop() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         var script = (1...35).map { shellStep("recover-\($0)", "echo attempt-\($0); exit \($0 % 2 + 1)") }
@@ -241,10 +273,42 @@ struct ToolLoopRecoveryTests {
         let provider = ScriptedFakeProvider(script: script)
         let client = try await makeClient(root: root, provider: provider)
         let sessionID = try await client.createSession()
-        for try await _ in try await client.sendMessage(sessionID: sessionID, content: "检查环境") {}
-        #expect(provider.recorder.requests.count == 36)
-        let snapshot = try await client.session(sessionID)
-        #expect(snapshot.messages.last?.content.contains("环境问题仍未解决") == true)
+        var reason: CoreError?
+        do {
+            for try await _ in try await client.sendMessage(sessionID: sessionID, content: "检查环境") {}
+            Issue.record("零客观进展的形式变化必须被无进展规则终止")
+        } catch let error as CoreError { reason = error }
+
+        let termination = try #require(reason)
+        let requests = provider.recorder.requests.count
+        #expect(termination.code == .agentStepLimitReached)
+        // 7. the reason is a no-progress / repeated-blocker rule...
+        #expect(termination.message.contains("无进展死循环") && termination.message.contains("同一阻塞"),
+            "终止原因必须是未进展/重复阻塞类规则：\(termination.message)")
+        // 8. ...and specifically not a step ceiling.
+        #expect(!termination.message.contains("超过上限"), "不得由固定 step 上限承担：\(termination.message)")
+        // 9. far short of running the script out.
+        #expect(requests < 36, "不能跑到第 36 次 provider request 才结束：\(requests)")
+
+        let durable = try await client.session(sessionID)
+        let results = durable.messages.flatMap(\.parts).compactMap { part -> ToolResult? in
+            if case let .toolResult(result) = part { return result } else { return nil }
+        }
+        let failures = results.filter { !$0.success }
+        // 1. observations did change, and the stop record says so in strategy terms.
+        #expect(termination.message.contains("个不同策略"), "策略变化应被记录：\(termination.message)")
+        // 2. the two exit codes stayed distinct exact observations...
+        #expect(Set(failures.compactMap(\.exitCode)).count == 2, "exit1/exit2 都是被如实记录的观察：\(failures.compactMap(\.exitCode))")
+        // 3. ...under one message class, i.e. one cluster - every failure carries the same signature
+        // shape, and 4. they accumulated monotonically until the limit.
+        #expect(failures.allSatisfy { $0.error?.code == CoreError.Code.commandFailed.rawValue })
+        #expect(failures.count >= 3, "同一 cluster 的重复必须累计到阈值：\(failures.count)")
+        // 5. the soft warning appeared exactly once, 6. and the stop came after it.
+        #expect(results.filter { $0.content.contains(ToolLoopProgressTracker.softWarningText) }.count == 1)
+        // No workspace mutation happened anywhere in the run.
+        #expect(results.allSatisfy { $0.fileMutations.isEmpty }, "零 mutation 的运行不可能被算作有进展")
+        print("LOOP_REPLAY churn=requests=\(requests) offered=\(script.count) failures=\(failures.count) "
+            + "reason=\(termination.message.prefix(70))")
     }
 
     // MARK: - Explicit budgets still hold

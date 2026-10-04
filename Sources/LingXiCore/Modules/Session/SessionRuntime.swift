@@ -1345,18 +1345,24 @@ public actor SessionRuntime {
                 }
 
                 // No-progress verdict, decided before the results reach the model so a soft
-                // warning can travel with them. Identity is the call (tool + arguments), not the
-                // error text alone: different commands meeting one blocker are exploration.
+                // warning can travel with them. A blocker, not a batch, is the unit of judgment:
+                // successful siblings may neither erase a repeat nor count as progress.
                 let loopVerdict = loopTracker.record(zip(calls, settled).map { call, outcome in
-                    let error = outcome.result.error
+                    let result = outcome.result
+                    let error = result.error
                     // A repeat the runtime already blocked is the original failure again, so it
                     // counts towards the exact-duplicate rule rather than reading as a new failure.
-                    let signature = outcome.result.metadata["repeatBlocked"] == "true"
-                        ? outcome.result.metadata["errorSignature"]
+                    let signature = result.metadata["repeatBlocked"] == "true"
+                        ? result.metadata["errorSignature"]
                         : error.map { "\($0.code):\($0.message)" }
-                    return ToolLoopProgressTracker.CallOutcome(callKey: failureKey(for: call),
-                                                               succeeded: outcome.result.success,
-                                                               errorMessage: outcome.result.success ? nil : signature)
+                    return ToolLoopProgressTracker.CallOutcome(
+                        callKey: failureKey(for: call),
+                        succeeded: result.success,
+                        errorMessage: result.success ? nil : signature,
+                        exitCode: result.exitCode,
+                        evidence: ToolLoopProgressTracker.evidence(toolName: call.toolID.rawValue, success: result.success,
+                                                                  mutatedPaths: result.fileMutations.map(\.path),
+                                                                  exitCode: result.exitCode))
                 })
                 recordLoopVerdict(loopVerdict, step: step + 1)
                 // The persisted results are what the next request is built from, so the warning has
@@ -1569,6 +1575,8 @@ public actor SessionRuntime {
         case .progress(let changed):
             guard changed else { return }
             event = "agent.loop.strategy_changed"
+        case .neutral:
+            return
         case .exactDuplicate(let count):
             event = "agent.loop.exact_duplicate"; metadata["count"] = String(count)
         case .failureCluster(let strategies):

@@ -554,3 +554,145 @@ AFTER（stamp 路径） read 首行 sha256 = 文件真实哈希（经 assembly �
 3. **stamp 进入 read 载荷**：`read_file` 的 artifact payload 现在是"stamp 行 + 文件字节"。ToolOutputPolicy 的 16,384 预览因此少约 110 字符正文；GUI/TUI 的行数统计会 +1（未改 UI 代码）。模型若把 stamp 行当作正文复制回 `write_file`，会产生一行污染 —— 这是本设计的已知取舍；替代方案（JSON 信封 / 会话读台账 / `expected_read` 新字段）都各有更大代价，已在 ARCHITECTURE DECISION 说明。
 4. **`expected_version` 依赖 mtime+size**（沿用 `fileVersion` 既有语义，未改）：同尺寸、同时间戳的原子替换理论上可骗过 version，但骗不过 `expected_hash`；两者都由工具自己给出，Core 不额外担保。
 5. 本 Phase 未触碰 eviction scoring、Recall、Provider privilege、ToolLoop progress、Branch Prediction、benchmark expectation；`readOnlySignature` 结构本身也未改（仍是 `{toolName, canonicalArguments, resource}`），波次是调度层的正交信息。
+
+---
+
+## Phase 6 — Tool Loop Progress Semantics
+
+### STATUS
+
+DONE with one recorded design conflict that needs the master's decision.
+
+- HEAD 的三个基线红测全部转绿：`successfulSiblingCannotHideRepeatedFailure`、`successfulNoOpCannotEraseUnresolvedFailure`、`realNoOpRewriteCannotMaskRepeatedTestFailure`。
+- 新增 `ToolLoopProgressSemanticsTests`（15 门，含两条真实 SessionRuntime replay）全绿。
+- `ToolLoopRecoveryTests` 现在 12/12 绿：既有 10 条（`differentCommandsSameErrorDoNotStop`、`exactDuplicateStillStops`、`warningOnceThenBounded`、`threeStrategiesReachReport`、`identicalCommandStopsEndToEnd`、`usefulWorkBeyond32StepsCompletes`、`blockedRepeatIsDuplicate`、`stepCeilingHolds` 等）+ 改写的 `progressResets` + 重命名的 B 测试。
+- 与冻结原则冲突的旧测试 `recoveryBeyond32StepsReachesReport` 已由主人裁决按 **方案 B** 处理：重命名为 `changingFailureObservationsDoNotEvadeNoProgressStop` 并改为新语义断言（详见文末 RESOLUTION）。
+
+全量套件失败集合 = 既有基线失败（`eightStepToolLoop`，失败签名仍是 `contextBudgetExceeded 5072/4532`，与 Phase 5 时测得一致；`fullCoreStackV1`、`ProviderHTTPTests.responsesStatelessRoundTrip…`）+ 负载抖动（`CancellationRace`、`ProviderRateScheduler`、`PlatformHTTPServer`、`TUIRendering`、`UXAndStreaming`、`StdioConnectionDeadline`、`VNextStdioTransportDeadline`，均已单独复验为绿）。未新增失败。
+
+### ROOT CAUSE
+
+tracker 以 **batch** 为判定单位，且把"本批有任意 succeeded"直接当作 progress：
+
+```swift
+let anySuccess = batch.contains(where: \.succeeded)
+guard !failures.isEmpty, !anySuccess else { reset(...); return .progress(...) }   // 旧代码
+```
+
+于是 `失败 X → 成功 read → 失败 X → 写回相同字节成功 → 失败 X` 每两步就把 blocker 清零一次，永远数不满阈值；同一批里 `[失败 X, 成功 read]` 也因 `anySuccess` 被判为 progress。旧实现只保存一个 `lastFailure` 字符串，且要求"连续批次"才算重复——中间隔一个 neutral 批次就把计数打断。error 文本还直接参与比较，行号/随机路径变化会不断产生"新失败"。
+
+### ARCHITECTURE DECISION
+
+判定单位从 batch 换成 **blocker cluster**，输入信号全部机械化，不引入任何模型判断模型。
+
+`Blocker`（按 fingerprint 保存，跨清除单调累计）：
+
+```
+fingerprint / firstSeenStep / lastSeenStep / repeats / strategies(Set<callKey>)
+shapes(Set<normalized call>) / exactRepeats[callKey] / warned / batchesSinceWarning / open
+```
+
+- **fingerprint** = `tool family : exit code : 归一化消息`。归一化把 `/\S+`→`<path>`、12+ 位 hex→`<id>`、数字串→`#`、空白折叠；exit code 与 error code 保留（不同退出码/不同 error code 不得合成一个 blocker）。
+- **shape**（objective identity）= `tool : 参数去数字`，**保留路径**。这样 `g++ app1.cpp` 与 `g++ app2.cpp` 是同一目标，而 `read a.txt` 永远不是 `read b.txt` 的尝试，也不可能被误认成一次构建通过。
+- **evidence** 由结果事实决定，与工具名无关（`ToolLoopProgressTracker.evidence(toolName:success:mutatedPaths:exitCode:)`）：`read`/`shell` 成功但无文件改动 → `.none`；`write_file` 写回相同字节（`fileMutations` 为空）→ `.none`；`fileMutations` 非空 → `.mutation`；`run_background_command` / `manage_background_command` 成功 → `.attestation`（只证明进程被启动）；失败调用 → `.none`。
+
+允许清除 blocker 的信号只有两个：
+
+1. **fail → pass**：同一 shape 的调用这次成功了。
+2. **失败类别实质变化**：同一 shape 再次尝试且不再复现该 fingerprint，**并且** `lastMutationStep > blocker.lastSeenStep`（真实 workspace 改动作为辅助证据）。没有改动而只是换 exit code / 换参数，视为交替而非进展。
+
+`workspace changed` 单独永远不算进展（Case 3）。neutral 批次不清 blocker、不加重失败，只消耗 grace。
+
+停止条件（顺序）：exact duplicate（同 callKey + 同 fingerprint 第 `exactDuplicateLimit=3` 次出现）→ 提示后 grace（`clusterGraceAfterWarning=2`）内该 blocker **再次复现**→ hardStop。两处都要求"本批复现"，避免把一个不再出现的 blocker 在别的任务上掐死运行（`warnedBlockerWithoutRecurrenceDoesNotStop` 钉住这一点）。策略变化只增加 `strategies`，绝不重置 `repeats`；被清除的 blocker 再出现时带着历史计数回来，所以换参数无法无限延后 hardStop。
+
+阈值沿用 3/3/2：`differentCommandsSameErrorDoNotStop`、`warningOnceThenBounded`（提示一次、第 6 批停止）、`exactDuplicateStillStops`、`threeStrategiesReachReport`、`stepCeilingHolds` 因此都不必改动。高 emergency `maxAgentLoopSteps` 原样保留，未作为主判定。
+
+### FILES CHANGED
+
+生产：
+* `Sources/LingXiCore/Modules/Session/ToolLoopProgressTracker.swift` — 重写为 blocker cluster 语义；新增 `CallOutcome.exitCode/.evidence`、`Verdict.neutral`、`Blocker`、`evidence(toolName:success:mutatedPaths:exitCode:)`、`fingerprint(of:)`、`shape(of:)` 与折叠归一化
+* `Sources/LingXiCore/Modules/Session/SessionRuntime.swift` — 喂给 tracker 的 `CallOutcome` 带上 `result.exitCode` 与由 `result.fileMutations` 推得的 evidence；`recordLoopVerdict` 处理 `.neutral`（不再为无信号批次写 trace）
+
+测试：
+* `Tests/LingXiAgentTests/ToolLoopProgressSemanticsTests.swift`（新增，15 门）
+* `Tests/LingXiAgentTests/ToolLoopRecoveryTests.swift` — `progressResets` 按新语义重写（其前半段正是本 Phase 推翻的旧规则）；`failed(...)` 增加 `exit:` 参数
+* `Tests/LingXiAgentTests/ToolLoopRecoveryTests.swift:252` `recoveryBeyond32StepsReachesReport` — **未改动，现为红**，见下
+
+### REGRESSION TESTS（gate → 测试）
+
+| Gate | 测试 |
+|---|---|
+| HEAD_EXISTING_LOOP_TESTS | 3 条基线红测转绿；`ToolLoopRecoveryTests` 12/12 绿（含按方案 B 重命名的 B 测试） |
+| READ_SUCCESS_DOES_NOT_CLEAR_BLOCKER | a successful read between repeated failures neither clears nor softens the blocker |
+| NOOP_WRITE_DOES_NOT_CLEAR_BLOCKER | a no-op write between repeated failures does not clear the blocker |
+| UNRELATED_MUTATION_DOES_NOT_CLEAR_BLOCKER | an unrelated real mutation does not clear the blocker |
+| SUCCESSFUL_SIBLING_DOES_NOT_CLEAR_BLOCKER | the same failure keeps counting even when other strategies succeed alongside it（+ HEAD 同名测试） |
+| STRATEGY_CHANGE_DOES_NOT_RESET_BLOCKER | different strategies under one blocker warn once, keep accumulating, then stop |
+| SAME_FAILURE_ACCUMULATES_MONOTONICALLY | alternating two failure classes with no mutation is not progress |
+| SOFT_WARNING_ONCE / HARD_STOP_AFTER_GRACE | 同上（warnings == 1）+ a real session that repeats one blocker while doing neutral work stops after one warning |
+| REAL_PROGRESS_CLEARS_BLOCKER | the same objective passing after failing is objective progress；a failure-class change after a real mutation clears the old blocker；a real session that fixes the objective clears the blocker and keeps running |
+| BACKGROUND_SUCCESS_IS_NOT_PROGRESS | a background command that merely launched does not clear the blocker + evidence 分类断言 |
+| NO_FALSE_POSITIVE_ON_NORMAL_RECOVERY | a real session that fixes the objective keeps running；a warned blocker that is never reproduced again does not end a run doing other work；usefulWorkBeyond32StepsCompletes |
+| fingerprint 稳定性 | fingerprints ignore line numbers, paths and ids but keep the failure class apart |
+
+真实 production replay 记录：
+- neutral 穿插型（churn=blocked）：25 批可用 → requests=9、tool calls=9、失败 5 次且全部 `exitCode == 69`、策略 5、软提示 1 次、`agentStepLimitReached / 多策略同一阻塞且提示后无进展`。
+- 形式变化型（churn=requests，方案 B 的新 B 测试）：36 批可用 → requests=6、失败 6 次、两个 exit code 并存、策略 6、软提示 1 次、终止原因不含"超过上限"。
+- 正向型（fix）：5 批工具 + 答案跑满，无提示、无终止，目标由 fail→pass 证明达成。
+
+### BEFORE → AFTER
+
+```
+BEFORE  fail X → read ok → fail X → no-op write ok → fail X     → 每步被判 progress，永不终止
+AFTER   同一 cluster 内 (callKey, fingerprint) 单调累计 → 第 3 次 hardStop(exactDuplicate)，neutral 只花 grace
+BEFORE  [fail X, read ok] 同批 → anySuccess ⇒ progress，X 的证据被抹掉
+AFTER   cluster 逐条更新：sibling 成功只影响自己，X 所属 cluster 仍累计
+BEFORE  g++/clang++/gcc 三种策略同 69 → 旧实现把"不同错误文本"当进展；换参数可无限续期
+AFTER   一个 cluster、三个策略 → 提示一次 → grace 后再次复现 → hardStop；repeats 单调
+BEFORE  35 次 echo attempt-N; exit 1/2 交替、零改动、零通过 → 跑到 step 35（旧 regression contract）
+AFTER   第 6 批停止：一个 cluster（shell:…状态 # 退出）下两个 exact 观察、6 个策略、提示恰一次
+BEFORE  整文件 read/修复回归：模型改完文件重跑同一命令通过 → 旧实现也已放行
+AFTER   仍放行：fail→pass 是唯一强信号，正向路径零误伤（35 次真实写入照常跑完）
+```
+
+### RESOLUTION（主人裁决：方案 B，语义冻结为 LONG RUN != LOOP）
+
+冲突对象 `ToolLoopRecoveryTests.recoveryBeyond32StepsReachesReport` 已改名为
+`changingFailureObservationsDoNotEvadeNoProgressStop` 并按新语义重写。主人裁定：旧期望不是 benchmark
+expectation，而是一个被新架构语义淘汰的旧 regression contract，允许修改；同时不得为了这次修改去调
+hardStop 阈值、grace 阈值、emergency ceiling、benchmark expectation 或 mutation progress 定义（均未改动）。
+
+为兑现"exit1 / exit2 是不同观察但属于同一个未解决 cluster"，身份显式分两层：
+
+```
+ExactFailureFingerprint = tool family + exit code + 归一化消息
+                          shell:exit1:commandFailed:命令以状态 # 退出
+                          shell:exit2:commandFailed:命令以状态 # 退出        ← 两个不同观察
+BlockerClusterIdentity  = tool family + 归一化消息类（exit code 折叠掉）
+                          shell:commandFailed:命令以状态 # 退出              ← 同一个 cluster
+```
+
+`fingerprint(of:)` 与 `cluster(of:)` 分别产出两层；hardStop 原因同时带上 cluster 与其下实际观察到的
+fingerprint（`observations(_:)`），所以"69"这类退出码不会因为归一化而从终止原因里消失。
+cluster 层面：`repeats` 单调累计、`strategies` 跨观察合并、`warned` 每 cluster 一次；
+清除只认 fail→pass，或"错误类真的变成另一个 cluster + 期间有真实 workspace mutation"。
+
+对照测试 A/B（LONG RUN != LOOP 的两侧）：
+
+| | 场景 | 结果 |
+|---|---|---|
+| A `usefulWorkBeyond32StepsCompletes` | 35 批，每批都经 `fileMutations` 证明真实改动 + 无失败 | 跑满 36 次请求正常完成；另断言默认 `maxAgentLoopSteps == 0`（不得夹带固定 step 上限）、全程零软提示 |
+| B `changingFailureObservationsDoNotEvadeNoProgressStop` | 35 批 `echo attempt-N; exit 1/2`，command text / 计数 / 退出码都在变，但零目标成功、零 mutation、零 verification 改善 | 实测 requests=6 / offered=36、failures=6、软提示恰 1 次、终止原因 `无进展死循环…多策略同一阻塞且提示后无进展`（6 个不同策略），并断言原因文本不含"超过上限" |
+
+B 的 9 项断言逐条对应主人要求：策略数增加、两个 exit code 作为不同 exact 观察被保留（`Set(exitCode).count == 2`）、同属一个 cluster、debt 单调累计到阈值（failures ≥ 3）、提示一次、grace 后 hardStop、终止原因为 no-progress/repeated-blocker 类、不是固定 step 上限、没跑到第 36 次请求。
+A/B 两层身份与单调性另在单元层钉住：`exact fingerprint and cluster identity are different layers`、
+`two exit codes on one objective are two observations of one unresolved cluster`。
+
+### REMAINING RISKS
+
+1. 方案 B 已落地，Phase 6 的 12 个门全部 PASS。`repeats` 现在按 **cluster sighting 批次**累计（同一批里两个观察落在同一 cluster 只算一次），单调性由此更明确；阈值 3/3/2 未变。
+2. **verification 语义是间接的**：Core 不认识"这是测试命令"，只用 shape 匹配（同一目标 fail → pass）与 fingerprint 类别变化 + 真实 mutation。若模型用**不同命令**验证同一目标（`npm test` 修好后改跑 `npx jest`），旧 blocker 不会被"证明消失"，只会因不再复现而停在 open 状态（不会被用来 hardStop，因为停止条件要求本批复现）。这是保守方向：可能少清一次 blocker，不会误杀。
+3. `.mutation` 证据按"该结果是否报告了文件改动"判定，只有 write/edit/apply_patch 通过 `FileMutationCapture` 报告。`git checkout`、`format`、`mv` 类真实改动不落 `fileMutations`，因此不会成为 class-change 的辅助证据（同样偏保守）。
+4. `run_background_command` 的 `.attestation` 判定走工具 id，且其成功结果不带 `fileMutations`；后台命令**之后**真正改掉文件时，那一次进展要等真实 verification 或同目标复现才承认——与主人 Phase 5 收尾时记录的风险一致，本 Phase 只保证它天然不算 progress。
+5. fingerprint 折叠了数字与路径，理论上会把"仅路径不同、错误类相同"的两次失败合成一个 blocker（例如 `g++ a.cpp` 与 `g++ b.cpp` 都报同一语法错误）。这正是期望行为（同一环境级阻塞），但若将来需要按文件区分目标，应扩展 objective identity 而不是削弱单调累计。
+6. 本 Phase 未触碰 eviction scoring、context budget、Recall、Provider privilege、Phase 5 读调度、Branch Prediction、benchmark expectation；`exactDuplicateLimit/clusterWarningAt/clusterGraceAfterWarning` 三个阈值数值未变，变的只是"什么才算进展"。
