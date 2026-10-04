@@ -1302,26 +1302,26 @@ public actor SessionRuntime {
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
                 // Phase 1A E-Core Sidecar Storage (Fail-Open):
-                // P-Core and the model keep the bounded excerpt; E-Core objectizes the archived
-                // pre-truncation output, so a large ToolResult stays recallable without paying
-                // context tokens. The excerpt is capped below the objectization threshold, so
-                // measuring only the excerpt would leave this branch unreachable.
+                // The pre-truncation output IS the authoritative payload of this artifact, so it
+                // is stored under the very identity `ToolOutputMetadata.artifactObjectID` names —
+                // one object, one truth. Whether the model still sees only the bounded preview is
+                // decided by projection and residency, never by which bytes E-Core holds.
+                // Measuring the preview would be circular: the preview is truncated by definition,
+                // so a size gate here would leave the authoritative payload unarchived.
                 for outcome in settled {
                     let res = outcome.result
-                    var payload = res.content
-                    if let ref = res.output.outputBlobRef,
-                       let archived = await toolRuntime.archivedOutput(ref),
-                       !archived.isEmpty {
-                        payload = archived
-                    }
-                    if payload.utf8.count >= cacheController.ecoreStore.configuration.objectizationThreshold {
-                        await cacheController.ecoreStore.store(
-                            sessionID: sessionID,
-                            toolCallID: res.callID,
-                            toolName: res.toolName ?? "unknown",
-                            content: payload
-                        )
-                    }
+                    guard let artifactID = res.output.artifactObjectID,
+                          let objectID = try? ContextObjectID(artifactID),
+                          let blobRef = res.continuation ?? res.output.outputBlobRef,
+                          let archived = await toolRuntime.archivedOutput(blobRef), !archived.isEmpty,
+                          ContextObjectID.identify(content: archived) == objectID else { continue }
+                    await cacheController.ecoreStore.store(
+                        sessionID: sessionID,
+                        toolCallID: res.callID,
+                        toolName: res.toolName ?? "unknown",
+                        content: archived,
+                        force: true
+                    )
                 }
                 // Branch Prediction Fabric (observation only): feed the actions the agent really
                 // took, score the outstanding forecast, and predict next. Nothing here is read

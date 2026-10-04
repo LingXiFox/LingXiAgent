@@ -288,14 +288,19 @@ public struct ToolOutputMetadata: Sendable, Equatable, Codable {
     public let visibleCharacters: Int
     public let visibleBytes: Int
     public let outputBlobRef: String?
+    /// Content-addressed identity of the authoritative pre-truncation payload, present exactly
+    /// when `content` is only a preview. `content` is never the payload truth for such a result:
+    /// references, page-out and Exact Restore all resolve to this object.
+    public let artifactObjectID: String?
 
-    public init(truncated: Bool = false, totalCharacters: Int = 0, totalBytes: Int? = nil, visibleCharacters: Int? = nil, visibleBytes: Int? = nil, outputBlobRef: String? = nil) {
+    public init(truncated: Bool = false, totalCharacters: Int = 0, totalBytes: Int? = nil, visibleCharacters: Int? = nil, visibleBytes: Int? = nil, outputBlobRef: String? = nil, artifactObjectID: String? = nil) {
         self.truncated = truncated
         self.totalCharacters = totalCharacters
         self.totalBytes = totalBytes ?? totalCharacters
         self.visibleCharacters = visibleCharacters ?? totalCharacters
         self.visibleBytes = visibleBytes ?? self.visibleCharacters
         self.outputBlobRef = outputBlobRef
+        self.artifactObjectID = artifactObjectID
     }
 }
 

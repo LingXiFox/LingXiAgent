@@ -422,7 +422,8 @@ public struct ModelToolResultProjection: Sendable, Equatable {
             totalCharacters: max(result.output.totalCharacters, result.content.count),
             totalBytes: result.output.totalBytes,
             visibleCharacters: projected.content.count,
-            outputBlobRef: result.output.outputBlobRef
+            outputBlobRef: result.output.outputBlobRef,
+            artifactObjectID: result.output.artifactObjectID
         )
         return result.withContent(projected.content, summary: projected.summary, output: outMeta)
     }

@@ -16,7 +16,8 @@ public actor ToolOutputArchive {
             totalBytes: metadata.totalBytes,
             visibleCharacters: metadata.visibleCharacters,
             visibleBytes: metadata.visibleBytes,
-            outputBlobRef: try await persistence.storeToolOutput(content)
+            outputBlobRef: try await persistence.storeToolOutput(content),
+            artifactObjectID: ContextObjectID.identify(content: content).rawValue
         )
     }
 

@@ -341,8 +341,11 @@ import LingXiProtocol
 
         await store.prune(sessionID: session, keepingToolCallIDs: [kept])
 
-        let keptID = ContextObjectID.generate(toolName: "shell", callID: kept, content: "kept artifact")
-        let foreignID = ContextObjectID.generate(toolName: "shell", callID: foreign, content: "foreign artifact")
+        // Object identity is content-addressed for every new write
+        // (`ECoreObjectID = SHA256(canonicalPayloadBytes)`), so the test resolves the same bytes
+        // the two `store()` calls above wrote rather than re-deriving a legacy tool-scoped id.
+        let keptID = ContextObjectID.identify(content: "kept artifact")
+        let foreignID = ContextObjectID.identify(content: "foreign artifact")
         let messageSurvives = await store.hasObject(sessionID: session, objectID: messageID)
         let foreignSurvives = await store.hasObject(sessionID: session, objectID: foreignID)
         let keptSurvives = await store.hasObject(sessionID: session, objectID: keptID)

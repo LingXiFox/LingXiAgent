@@ -170,7 +170,9 @@ struct ECorePhysicalCensusTests {
         await store.dropReference(sessionID: session, referenceID: gone.referenceID)
 
         let before = await store.storageMetrics(for: session)
-        #expect(before.count == 2, "重启前基线就不对：\(before.count)")
+        // `kept` arrives through both `store()` and `pageOut()`; one content-addressed payload
+        // counts once, and the dropped object is gone, so exactly one object remains.
+        #expect(before.count == 1, "重启前基线就不对：\(before.count)")
 
         let reopened = reopen(dir)
         let after = await reopened.storageMetrics(for: session)
@@ -231,18 +233,18 @@ struct ECorePhysicalCensusTests {
         #expect(final.count == 1, "最后一个引用删完应回到只剩工具产物：\(final.count)")
     }
 
-    // MARK: - The objectID divergence, stated rather than assumed
+    // MARK: - Object identity, unified (Phase 1)
 
-    /// `store()` derives ids with `generate(toolName:callID:content:)` and `pageOut()` with
-    /// content-addressed `identify(content:)`. Identical bytes arriving through both paths
-    /// therefore occupy two files, and the census reports two objects.
+    /// `store()` and `pageOut()` both derive identity as `SHA256(canonicalPayloadBytes)`, so
+    /// identical bytes arriving through both paths occupy ONE file and the census reports one
+    /// object. The legacy tool-scoped form (`generate`) remains readable through
+    /// `ContextObjectID.legacyToolScoped` for objects written before this change; references
+    /// carry their object id, so old files keep resolving, but no new path may write it.
     ///
-    /// That is physically true and is asserted here so nobody "fixes" the census into a content
-    /// hash that would then disagree with what is on disk. Unifying the two id schemes is a
-    /// separate decision with real blast radius (Exact Restore addressing, dedupe, existing
-    /// objects on disk), and is not what this file is for.
-    @Test("identical bytes via both paths are two physical objects, and the census says so")
-    func sameBytesViaBothPathsAreTwoObjects() async {
+    /// Dedupe must still not merge lifecycle: two references to one payload keep their own
+    /// occurrence identity and metadata.
+    @Test("identical bytes via both paths are one payload with two independent references")
+    func sameBytesViaBothPathsShareOneObject() async throws {
         let (store, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
         let session = SessionID("s-census-divergence")
@@ -253,10 +255,14 @@ struct ECorePhysicalCensusTests {
         let paged = await pageOut(store, session, content: content, occurrence: "occ-d")
 
         #expect(stored != nil)
-        #expect(stored?.objectID != paged.objectID,
-                "两套 id 派生若被统一，这条断言就该随之改写而不是删掉")
-        #expect(await store.storageMetrics(for: session).count == 2,
-                "两个文件就是两个对象，普查不得替存储层假装去重")
+        #expect(stored?.objectID == paged.objectID,
+                "一套 payload 只允许一个内容寻址身份；出现两个就说明 id 派生又分叉了")
+        #expect(await store.storageMetrics(for: session).count == 1,
+                "同一个文件不得被普查数成两个对象")
+        // Payload dedupe must not collapse the two references into one lifecycle.
+        #expect(paged.contextOccurrenceID == "occ-d")
+        #expect(try await store.restore(sessionID: session, referenceID: paged.referenceID) == content,
+                "去重后每个引用仍要能各自 Exact Restore 回完整载荷")
     }
 
     // MARK: - prune and cleanSession

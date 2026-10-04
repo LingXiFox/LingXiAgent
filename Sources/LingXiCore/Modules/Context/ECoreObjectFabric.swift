@@ -346,7 +346,13 @@ public actor ECoreObjectStore {
         if !FileManager.default.fileExists(atPath: targetURL.path) {
             try content.write(to: targetURL, atomically: false, encoding: .utf8)
         }
-        try JSONEncoder().encode(metadata).write(to: metadataURL(sessionID: sessionID, objectID: objectID), options: [])
+        // Identity is content-addressed, so two calls that produced identical bytes share this
+        // object. Their metadata is descriptive, never authoritative: per-occurrence toolCallID
+        // and lifecycle live on the reference. First writer wins, so a re-store cannot churn it.
+        let metaURL = metadataURL(sessionID: sessionID, objectID: objectID)
+        if !FileManager.default.fileExists(atPath: metaURL.path) {
+            try JSONEncoder().encode(metadata).write(to: metaURL, options: [])
+        }
         censusRegister(sessionID: sessionID, objectID: objectID, bytes: content.utf8.count)
     }
 
@@ -462,12 +468,16 @@ public actor ECoreObjectStore {
 
     /// Give an existing tool artifact a model-facing reference without copying its
     /// payload or changing its heat/ranking identity. Mapping ownership stays here.
-    func referenceForStoredObject(sessionID: SessionID, objectID: ContextObjectID, contextOccurrenceID: String, summary: String, toolCallID: ToolCallID, toolName: String) async -> ECoreReference? {
+    ///
+    /// The reference binds the occurrence to the object that already holds the authoritative
+    /// bytes; it never takes a second copy of them. `contextOccurrenceID` + `evictionEpoch`
+    /// keep a retried page-out idempotent, exactly as `pageOut` does.
+    func referenceForStoredObject(sessionID: SessionID, objectID: ContextObjectID, contextOccurrenceID: String, summary: String, toolCallID: ToolCallID, toolName: String, evictionEpoch: Int = 0, createdTurn: Int? = nil, pageOutReason: String = "boundedToolProjection") async -> ECoreReference? {
         noteLifecycle(sessionID: sessionID, phase: .pageOutAttempt)
         guard (try? await fetch(sessionID: sessionID, objectID: objectID)) != nil else { return nil }
         let ref = ECoreReference(objectID: objectID, sessionID: sessionID, origin: .toolCall,
-            contextOccurrenceID: contextOccurrenceID, evictionEpoch: 0, summary: summary,
-            toolCallID: toolCallID, toolName: toolName, pageOutReason: "boundedToolProjection")
+            contextOccurrenceID: contextOccurrenceID, evictionEpoch: evictionEpoch, summary: summary,
+            toolCallID: toolCallID, toolName: toolName, createdTurn: createdTurn, pageOutReason: pageOutReason)
         if let existing = await reference(sessionID: sessionID, referenceID: ref.referenceID) {
             noteLifecycle(sessionID: sessionID, phase: .pageOutDeduplicated, referenceID: ref.referenceID)
             return existing
@@ -702,7 +712,7 @@ public actor ECoreObjectStore {
             return nil
         }
 
-        let objectID = ContextObjectID.generate(toolName: toolName, callID: toolCallID, content: content)
+        let objectID = ContextObjectID.identify(content: content)
 
         // 计算行数
         var lineCount = 0
@@ -797,6 +807,39 @@ public actor ECoreObjectStore {
             FileHandle.standardError.write(Data("[E-CORE WARNING] Failed to persist object \(objectID.rawValue): \(error)\n".utf8))
             return nil
         }
+    }
+
+    /// The deterministic durable record of one tool result. Used as the payload exactly when the
+    /// result was never truncated, and it keeps structured failure evidence (code, exit status,
+    /// diagnostics) recallable. Sorted keys make the bytes stable, so the same record always
+    /// addresses the same object.
+    public static func toolArtifactRecord(_ result: ToolResult) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? String(decoding: encoder.encode(result), as: UTF8.self)) ?? result.content
+    }
+
+    /// The single definition of "the authoritative payload of one tool result", shared by P-Core
+    /// projection and by page-out so the two can never disagree about which object an occurrence
+    /// recalls from.
+    ///
+    /// - A truncated result keeps its archived raw payload: `artifactObjectID` names it, and the
+    ///   bounded preview in canonical history is only a preview, never a payload truth.
+    /// - A result that was never truncated is complete in canonical history, so its own durable
+    ///   record is the payload.
+    ///
+    /// Returns nil only when the declared artifact is missing, leaving the caller to fail open.
+    public func authoritativeToolPayload(sessionID: SessionID, toolCallID: ToolCallID, toolName: String,
+                                         content: String, artifactObjectID: String?, outputBlobAvailable: Bool = true) async -> ContextObjectID? {
+        if let declared = artifactObjectID, let objectID = try? ContextObjectID(declared) {
+            guard outputBlobAvailable, (try? await fetch(sessionID: sessionID, objectID: objectID)) != nil else { return nil }
+            return objectID
+        }
+        let objectID = ContextObjectID.identify(content: content)
+        if (try? await fetch(sessionID: sessionID, objectID: objectID)) == nil {
+            await store(sessionID: sessionID, toolCallID: toolCallID, toolName: toolName, content: content, force: true)
+        }
+        return objectID
     }
 
     /// 旁路记录对象投影观测事件（Phase 0.6: 纯观测，零阻塞，零热度权重贡献）

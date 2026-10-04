@@ -5,9 +5,12 @@ import LingXiProtocol
 /// 负责在构建发送给 Provider 的请求时，将超大或已归档的 ToolResult 转换为确定性、高复用率的稳定 Placeholder。
 ///
 /// 核心原则：
-/// 1. Canonical Truth 永不可变：SessionStore 始终保存完整真实的原始 ToolResult，P-Core 仅为向 Provider 暴露的短暂投影。
+/// 1. 真值分层：一个 ToolResult 的完整载荷真值是 `output.artifactObjectID` 指向的 E-Core 对象；
+///    SessionStore 保存的是 durable 逻辑历史（被截断时即 preview）。preview 永不被再次对象化，
+///    否则同一 occurrence 会出现两份 competing 召回真值，且较弱的那份会被引用。
 /// 2. FULL_SENDS 语义保证：每个 ToolResult 保证至少被完整发送 fullSendCount 次（默认 2 次），从第 3 次起转为 1KB 稳定首尾 Placeholder。
-/// 3. Fail-Open 铁律：任何投影、读取或持久化异常均捕获并静默回退至透传原始 ToolResult，绝不阻断主流程。
+/// 3. 只有存在 preview/payload 落差、且 authoritative 对象可解析时才允许投影；否则原样透传。
+/// 4. Fail-Open 铁律：任何投影、读取或持久化异常均捕获并静默回退至透传原始 ToolResult，绝不阻断主流程。
 public struct ContextProjection: Sendable {
     public let configuration: ContextObjectFabricConfiguration
 
@@ -89,19 +92,17 @@ public struct ContextProjection: Sendable {
             }
 
             // 满足条件：构建 1KB 稳定首尾 Placeholder
-            let objectID = ContextObjectID.generate(toolName: toolName, callID: result.callID, content: result.content)
-
-            // 确保该对象已在 E-Core 中安全归档（Fail-Open）
-            let archived = await ecoreStore.store(
-                sessionID: session.id,
-                toolCallID: result.callID,
-                toolName: toolName,
-                content: result.content,
-                force: true
-            )
-            guard let archived, let reference = await ecoreStore.referenceForStoredObject(sessionID: session.id,
-                objectID: archived.objectID, contextOccurrenceID: "projection:\(messageID.rawValue):\(result.callID.rawValue)",
-                summary: "\(toolName): \(result.content.prefix(140))", toolCallID: result.callID, toolName: toolName)
+            //
+            // The reference must point at the complete bytes of this occurrence, so identity comes
+            // from the same authority page-out uses: the archived artifact when the canonical body
+            // is only a preview, otherwise the result's own durable record.
+            guard let objectID = await ecoreStore.authoritativeToolPayload(sessionID: session.id,
+                    toolCallID: result.callID, toolName: toolName,
+                    content: ECoreObjectStore.toolArtifactRecord(result),
+                    artifactObjectID: result.output.artifactObjectID),
+                  let reference = await ecoreStore.referenceForStoredObject(sessionID: session.id,
+                    objectID: objectID, contextOccurrenceID: "projection:\(messageID.rawValue):\(result.callID.rawValue)",
+                    summary: "\(toolName): \(result.content.prefix(140))", toolCallID: result.callID, toolName: toolName)
             else { projectedEntries.append(entry); continue }
 
             let placeholder = buildPlaceholder(

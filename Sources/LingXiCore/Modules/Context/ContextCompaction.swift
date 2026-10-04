@@ -427,6 +427,9 @@ public actor ContextCompactor {
     /// E-Core 唯一权威对象存储。P → E 的完整载荷、referenceID、Exact Restore 都在这里。
     public nonisolated let ecoreStore: ECoreObjectStore
     private var unitResidencies: [SessionID: [MessageID: ContextUnitDebugSnapshot]] = [:]
+    /// Which canonical messages a paged-out reference was built from. One batch can produce
+    /// several references, and `derivedPageID` holds only one, so the reverse mapping lives here.
+    private var occurrenceMessageIDs: [SessionID: [String: Set<MessageID>]] = [:]
     /// recency / frequency / explicitReuse 的真实来源：本 compactor 对每个对象在各 turn 的观察。
     private var usageLedgers: [SessionID: [String: ContextUsageRecord]] = [:]
     /// 契约 4.20 的可观测性：最近一轮 eviction 的特征值与排名。
@@ -496,6 +499,7 @@ public actor ContextCompactor {
 
     public func reset(sessionID: SessionID) async {
         unitResidencies.removeValue(forKey: sessionID)
+        occurrenceMessageIDs.removeValue(forKey: sessionID)
         usageLedgers.removeValue(forKey: sessionID)
         evictionTraces.removeValue(forKey: sessionID)
         evictionScoringActiveBySession.removeValue(forKey: sessionID)
@@ -534,7 +538,7 @@ public actor ContextCompactor {
         }
         let target = trigger == .emergencyHardLimit ? budget.hardInputLimit : budget.lowWaterTokens
         var pagedOut = 0, historicalBatches = 0, projectBacked = 0, derivedCreated = 0, redundant = 0
-        var evictedReferences: [(unit: Unit, reference: ECoreReference)] = []
+        var evictedReferences: [(unit: Unit, references: [ECoreReference])] = []
         var nonDerivedPagedOut: [Unit] = []
         let mandatoryIndices = Set(mandatory.flatMap(\.indices))
         let evictable = units.filter { !Set($0.indices).isSubset(of: mandatoryIndices) }
@@ -555,32 +559,15 @@ public actor ContextCompactor {
                 historicalBatches += 1
                 let backed = batch.toolResults.allSatisfy { projectBackedContents.contains($0.content) }
                 if backed { projectBacked += 1 }
-                let evidence = batch.toolCalls.enumerated().map { offset, call in
-                    let result = batch.toolResults.indices.contains(offset) ? batch.toolResults[offset] : nil
-                    // Failure diagnostics and structured errors are evidence, even when a
-                    // successful output can be reconstructed from a project page.
-                    let archived = result.flatMap { result -> String? in
-                        let encoder = JSONEncoder()
-                        encoder.outputFormatting = [.sortedKeys]
-                        return try? String(decoding: encoder.encode(result), as: UTF8.self)
-                    } ?? "null"
-                    let resultSummary = backed && result?.success == true ? "projectPage=available contentHash=\(result.map { ContextPage.fingerprint($0.content.utf8) } ?? "")" : "result=\(archived)"
-                    return "tool=\(call.toolID.rawValue) arguments=\(call.arguments) status=\(result?.success == true ? "ok" : "failed") \(resultSummary)"
-                }.joined(separator: "\n")
-                let reference = await ecoreStore.pageOut(
-                    sessionID: sessionID,
-                    content: "[Historical tool evidence]\n\(evidence)",
-                    origin: .toolCall,
-                    contextOccurrenceID: batch.batchID,
-                    evictionEpoch: evictionEpoch,
-                    summary: Self.summary(of: evidence, kind: "tool-batch"),
-                    toolCallID: batch.toolCalls.first?.callID,
-                    toolName: batch.toolCalls.first?.toolName,
-                    createdTurn: plan.turn(forKey: Self.occurrenceKey(unit: unit)),
-                    pageOutReason: trigger.rawValue
-                )
-                evictedReferences.append((unit, reference))
-                derivedCreated += 1
+                let references = await pageOutToolBatch(sessionID: sessionID, batch: batch,
+                    evictionEpoch: evictionEpoch, createdTurn: plan.turn(forKey: Self.occurrenceKey(unit: unit)),
+                    trigger: trigger)
+                if references.isEmpty {
+                    nonDerivedPagedOut.append(unit)
+                } else {
+                    evictedReferences.append((unit, references))
+                    derivedCreated += references.count
+                }
             } else if let first = unit.entries.first, first.source != .projectPage, first.source != .derivedPage {
                 let content = unit.entries.map { Self.content(of: $0.part) }.joined(separator: "\n")
                 if !content.isEmpty, !projectBackedContents.contains(content) {
@@ -595,7 +582,7 @@ public actor ContextCompactor {
                         createdTurn: plan.turn(forKey: Self.occurrenceKey(unit: unit)),
                         pageOutReason: trigger.rawValue
                     )
-                    evictedReferences.append((unit, reference))
+                    evictedReferences.append((unit, [reference]))
                     derivedCreated += 1
                 } else { nonDerivedPagedOut.append(unit) }
             } else { redundant += 1; nonDerivedPagedOut.append(unit) }
@@ -615,6 +602,43 @@ public actor ContextCompactor {
         evictionTraces[sessionID] = plan.trace(evictedKeys: evictedKeys, trigger: plan.usesRetentionScoring ? trigger.rawValue : "scorerUnavailable-\(trigger.rawValue)")
         evictionScoringActiveBySession[sessionID] = plan.usesRetentionScoring
         return CompactionResult(entries: finalOutput, beforeTokens: before, afterTokens: estimator.estimate(entries: finalOutput), pagedOut: pagedOut, derivedCreated: derivedCreated, triggered: pagedOut > 0, triggerSource: trigger, mandatoryFloor: mandatoryTokens, unitsKept: keptUnits.count, historicalToolBatchesPagedOut: historicalBatches, projectBackedOffloads: projectBacked, redundantDrops: redundant, emergencyTrims: trigger == .emergencyHardLimit ? pagedOut : 0, noEligibleReduction: pagedOut == 0)
+    }
+
+    /// Page out one causal tool batch as one reference per artifact.
+    ///
+    /// A truncated result already has its complete bytes stored under `artifactObjectID`, so the
+    /// batch page-out only *binds* a reference to that object — it must not write a second copy
+    /// derived from the preview, or Exact Restore would answer with fewer bytes than the payload
+    /// it claims to restore. A result with no preview/payload gap has nothing else to store: the
+    /// serialized record is its complete truth, including structured failure evidence.
+    private func pageOutToolBatch(sessionID: SessionID, batch: ToolExchangeBatch, evictionEpoch: Int,
+                                  createdTurn: Int?, trigger: CompactionTrigger) async -> [ECoreReference] {
+        var references: [ECoreReference] = []
+        for result in batch.toolResults {
+            let toolName = result.toolName ?? "tool"
+            let arguments = batch.toolCalls.first { $0.callID == result.callID }?.arguments ?? ""
+            // A batch holds several artifacts, so the occurrence identity must reach call level.
+            let occurrence = "\(batch.batchID)#\(result.callID.rawValue)"
+            let evidence = "tool=\(toolName) arguments=\(arguments) status=\(result.success ? "ok" : "failed") \(result.error.map { "\($0.code): \($0.message)" } ?? result.content)"
+            let summary = Self.summary(of: evidence, kind: "tool-batch")
+            let record = ECoreObjectStore.toolArtifactRecord(result)
+            if let objectID = await ecoreStore.authoritativeToolPayload(sessionID: sessionID,
+                    toolCallID: result.callID, toolName: toolName, content: record,
+                    artifactObjectID: result.output.artifactObjectID),
+               let reference = await ecoreStore.referenceForStoredObject(sessionID: sessionID, objectID: objectID,
+                    contextOccurrenceID: occurrence, summary: summary, toolCallID: result.callID, toolName: toolName,
+                    evictionEpoch: evictionEpoch, createdTurn: createdTurn, pageOutReason: trigger.rawValue) {
+                references.append(reference)
+                continue
+            }
+            // Fail-Open: the declared artifact could not be read, so page out the durable record.
+            // Tokens still have to leave P-Core, and this stays one object per occurrence.
+            guard !record.isEmpty else { continue }
+            references.append(await ecoreStore.pageOut(sessionID: sessionID, content: record, origin: .toolCall,
+                contextOccurrenceID: occurrence, evictionEpoch: evictionEpoch, summary: summary,
+                toolCallID: result.callID, toolName: toolName, createdTurn: createdTurn, pageOutReason: trigger.rawValue))
+        }
+        return references
     }
 
     /// 一个候选对象在本轮 eviction 中的完整决策依据。契约 4.20：Debug / Inspector 必须能看到全部数值。
@@ -1115,7 +1139,8 @@ public actor ContextCompactor {
                 continue
             }
             let states = unitResidencies[sessionID] ?? [:]
-            let ids = Set(states.values.filter { $0.derivedPageID == refID }.map(\.messageID))
+            let ids = occurrenceMessageIDs[sessionID]?[refID]
+                ?? Set(states.values.filter { $0.derivedPageID == refID }.map(\.messageID))
             let alreadyActive = Set(active.compactMap(\.messageID))
             var restored = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) }
             let retained = active.filter { !ids.contains($0.messageID ?? MessageID("")) }
@@ -1188,8 +1213,9 @@ public actor ContextCompactor {
         return result
     }
 
-    private func recordResidencies(sessionID: SessionID, kept: [Unit], pagedOut: [Unit], evicted: [(unit: Unit, reference: ECoreReference)] = []) {
+    private func recordResidencies(sessionID: SessionID, kept: [Unit], pagedOut: [Unit], evicted: [(unit: Unit, references: [ECoreReference])] = []) {
         var values = unitResidencies[sessionID] ?? [:]
+        var occurrenceOwners = occurrenceMessageIDs[sessionID] ?? [:]
         for unit in kept {
             for id in unit.entries.compactMap(\.messageID) {
                 values[id] = ContextUnitDebugSnapshot(messageID: id, residency: .active, derivedPageID: values[id]?.derivedPageID, contentHash: values[id]?.contentHash)
@@ -1201,10 +1227,18 @@ public actor ContextCompactor {
             }
         }
         for pair in evicted {
-            for id in pair.unit.entries.compactMap(\.messageID) {
-                values[id] = ContextUnitDebugSnapshot(messageID: id, residency: .derived, derivedPageID: pair.reference.referenceID, contentHash: pair.reference.objectID.rawValue)
+            let ids = Set(pair.unit.entries.compactMap(\.messageID))
+            let primary = pair.references.first
+            for id in ids {
+                values[id] = ContextUnitDebugSnapshot(messageID: id, residency: .derived, derivedPageID: primary?.referenceID, contentHash: primary?.objectID.rawValue)
+            }
+            // A batch may page out several artifacts, so every reference must know which causal
+            // unit it came from. `derivedPageID` can only hold one.
+            for reference in pair.references where !ids.isEmpty {
+                occurrenceOwners[reference.referenceID] = ids
             }
         }
         unitResidencies[sessionID] = values
+        occurrenceMessageIDs[sessionID] = occurrenceOwners
     }
 }
