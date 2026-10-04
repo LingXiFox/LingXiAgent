@@ -475,7 +475,8 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         )
         compactor = ContextCompactor(
             derivedStore: DerivedContextStore(persistence: persistent),
-            ecoreStore: ecoreStore
+            ecoreStore: ecoreStore,
+            persistence: persistent
         )
         let cacheController = ContextCacheController(
             contextPager: pager,
@@ -568,6 +569,10 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
                 return try await self.coordinator(for: id)
             }
         )
+        // Recall intents and admission states are durable control-plane state, and the handle is
+        // an actor call: attach it here, where the start path can await, so a Core that restarts
+        // resolves the same pending recalls a live one would.
+        await cacheController.ecoreStore.attachRecallPersistence(persistence)
         // A mode restored from disk has to reach the recording sites the same way a live toggle
         // does; init cannot await, so this is where the two paths converge.
         if let restoredHub = debugHub {
@@ -3844,6 +3849,7 @@ extension CoreHost {
         let persisted = try await persistence?.compaction(sessionID: sessionID)
         if await compactor.unitStates(sessionID: sessionID).isEmpty, let persisted {
             await compactor.restoreResidencies(sessionID: sessionID, values: persisted.residencies)
+            await compactor.restoreRecallState(sessionID: sessionID)
         }
         await compactor.reconcileAfterRevert(sessionID: sessionID, remainingMessages: remainingMessages)
         if let persisted {

@@ -94,7 +94,7 @@ public struct ModelToolResultProjection: Sendable, Equatable {
         // Assembly has already charged the admitted bytes against the input budget.
         // Explicit recall slices have their own byte/line limits; do not slice them again.
         if segment == .admittedToolResult || (result.success && (segment == .recalledOccurrence ||
-            (result.toolName == "context_recall" && result.content.hasPrefix("[Context Object Slice:")))) {
+            (result.toolName == "context_recall" && RecallOutput.isBoundedTransport(result.content)))) {
             return Self(callID: result.callID, toolName: result.toolName, success: result.success,
                         content: result.content, summary: result.summary, truncated: result.output.truncated)
         }

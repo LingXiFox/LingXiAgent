@@ -54,7 +54,7 @@ public struct ContextProjection: Sendable {
             // Failure evidence is selected at the encoder boundary from diagnostics.
             // A success-shaped placeholder must not erase the structured failure.
             guard result.success, entry.segment != .recalledOccurrence,
-                  !(result.toolName == "context_recall" && result.content.hasPrefix("[Context Object Slice:"))
+                  !(result.toolName == "context_recall" && RecallOutput.isBoundedTransport(result.content))
             else { projectedEntries.append(entry); continue }
 
             let assistantCount = assistantCountAfterMessageID[messageID] ?? 0

@@ -439,14 +439,29 @@ public actor ContextCompactor {
     private var admittedPayloads: [SessionID: [String: ContextEntry]] = [:]
     /// 未注入目录时默认走内存后端：E-Core 依然是必选逻辑核心，page-out 照样返回稳定 referenceID，
     /// 只是载荷不跨进程存活。这样 `ContextCompactor()` 不会往用户 home 里写文件。
+    private func persistOccurrenceMapping(sessionID: SessionID) async {
+        guard let persistence = recallPersistence else { return }
+        do { try await persistence.replaceRecallOccurrences(sessionID: sessionID, occurrenceMessageIDs[sessionID] ?? [:]) }
+        catch { FileHandle.standardError.write(Data("[E-CORE WARNING] recall occurrence mapping write failed: \(error)\n".utf8)) }
+    }
+
+    /// Authoritative payloads of granted references, by referenceID. Payloads are content-addressed
+    /// and immutable, so one read per reference serves every later assembly.
+    private var grantedPayloads: [String: String] = [:]
+    /// The durable recall control plane. With none attached, admission stays in process — which is
+    /// what an in-memory E-Core means. The payload itself is never copied here: a grant is
+    /// re-materialised from reference → authoritative object, so SQLite holds state and mapping only.
+    private let recallPersistence: SQLitePersistenceStore?
     public init(
         estimator: any TokenEstimator = ConservativeTokenEstimator(),
         derivedStore: DerivedContextStore = DerivedContextStore(),
-        ecoreStore: ECoreObjectStore = ECoreObjectStore(configuration: ContextObjectFabricConfiguration(eCorePersistenceEnabled: false))
+        ecoreStore: ECoreObjectStore = ECoreObjectStore(configuration: ContextObjectFabricConfiguration(eCorePersistenceEnabled: false)),
+        persistence: SQLitePersistenceStore? = nil
     ) {
         self.estimator = estimator
         self.derivedStore = derivedStore
         self.ecoreStore = ecoreStore
+        self.recallPersistence = persistence
     }
     public func restoreDerived() async throws {
         try await derivedStore.restore()
@@ -460,6 +475,21 @@ public actor ContextCompactor {
             summary: "Historical \(page.sourceKind.rawValue): " + String(page.content.prefix(240)),
             pageOutReason: "Import persisted historical context")
     }
+    /// Rebuild the recall control plane after a restart: the reference → occurrence mapping, and a
+    /// projection for every committed grant from its authoritative E-Core payload. Nothing about the
+    /// content is stored twice; the table only says which reference was granted, and the payload is
+    /// read back from where it already lives.
+    public func restoreRecallState(sessionID: SessionID) async {
+        guard let persistence = recallPersistence else { return }
+        occurrenceMessageIDs[sessionID] = (try? await persistence.recallOccurrences(sessionID: sessionID)) ?? [:]
+        for request in (try? await persistence.recallRequests(sessionID: sessionID)) ?? [] where request.isCommitted {
+            guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: request.referenceID) else { continue }
+            admittedPayloads[sessionID, default: [:]][request.referenceID] = ContextEntry(
+                messageID: MessageID(request.referenceID), role: .system, source: .derivedPage,
+                part: .text("[Restored session context]\n\(payload)"), segment: .recalledOccurrence)
+        }
+    }
+
     public func restoreResidencies(sessionID: SessionID, values: [ContextUnitDebugSnapshot]) async {
         unitResidencies[sessionID] = Dictionary(uniqueKeysWithValues: values.map { ($0.messageID, $0) })
         for state in values where state.residency == .active {
@@ -493,6 +523,8 @@ public actor ContextCompactor {
             remainingMessageIDs.contains($0.key) || ($0.key.rawValue == $0.value.derivedPageID && validRefs.contains($0.key.rawValue))
         }
         admittedPayloads[sessionID] = admittedPayloads[sessionID]?.filter { validRefs.contains($0.key) }
+        occurrenceMessageIDs[sessionID] = (occurrenceMessageIDs[sessionID] ?? [:]).filter { validRefs.contains($0.key) }
+        await persistOccurrenceMapping(sessionID: sessionID)
         evictionTraces.removeValue(forKey: sessionID)
         await derivedStore.reconcileAfterRevert(sessionID: sessionID, remainingMessageIDs: remainingMessageIDs)
     }
@@ -505,6 +537,7 @@ public actor ContextCompactor {
         evictionScoringActiveBySession.removeValue(forKey: sessionID)
         activeWorksetsBySession.removeValue(forKey: sessionID)
         admittedPayloads.removeValue(forKey: sessionID)
+        if let persistence = recallPersistence { try? await persistence.clearRecallState(sessionID: sessionID) }
         await derivedStore.clear(sessionID: sessionID)
     }
     private struct Unit {
@@ -517,7 +550,7 @@ public actor ContextCompactor {
     }
 
     public func compact(sessionID: SessionID, entries: [ContextEntry], budget: ContextBudget, batches: [ToolExchangeBatch] = [], projectBackedContents: Set<String> = [], trigger: CompactionTrigger = .automaticHighWater, evictionEpoch: Int = 0, currentTurn: Int? = nil, activeTask: String = "") async throws -> CompactionResult {
-        let entries = activeEntries(sessionID: sessionID, canonicalEntries: entries, batches: batches)
+        let entries = await activeEntries(sessionID: sessionID, canonicalEntries: entries, batches: batches)
         let before = estimator.estimate(entries: entries)
         let units = makeUnits(entries: entries, batches: batches)
         let currentUser = entries.last { $0.source == .userMessage }?.messageID
@@ -598,6 +631,10 @@ public actor ContextCompactor {
             finalOutput.append(projection)
         }
         recordResidencies(sessionID: sessionID, kept: keptUnits, pagedOut: nonDerivedPagedOut, evicted: evictedReferences)
+        // Which messages a reference belongs to is decided when the reference is created, not when
+        // a later grant commits: a batch of several artifacts must resolve every one of them after
+        // a restart, and only the primary reference can fit in `derivedPageID`.
+        await persistOccurrenceMapping(sessionID: sessionID)
         recordUsage(sessionID: sessionID, units: units, evictedKeys: evictedKeys, turn: plan.currentTurn)
         evictionTraces[sessionID] = plan.trace(evictedKeys: evictedKeys, trigger: plan.usesRetentionScoring ? trigger.rawValue : "scorerUnavailable-\(trigger.rawValue)")
         evictionScoringActiveBySession[sessionID] = plan.usesRetentionScoring
@@ -1096,7 +1133,7 @@ public actor ContextCompactor {
 
     /// Durable history is not the active working set. Live causal batches and the
     /// newest user instruction remain eligible regardless of an old snapshot.
-    public func activeEntries(sessionID: SessionID, canonicalEntries: [ContextEntry], batches: [ToolExchangeBatch] = []) -> [ContextEntry] {
+    public func activeEntries(sessionID: SessionID, canonicalEntries: [ContextEntry], batches: [ToolExchangeBatch] = []) async -> [ContextEntry] {
         let liveIDs = Set(batches.filter { $0.state != .consumed }.flatMap { [$0.assistantMessageID, $0.resultMessageID].compactMap { $0 } })
         let currentUser = canonicalEntries.last { $0.source == .userMessage }?.messageID
         let states = unitResidencies[sessionID] ?? [:]
@@ -1108,17 +1145,41 @@ public actor ContextCompactor {
             case .active, nil: return true
             }
         }
-        let resident = active.map { entry in
-            guard let id = entry.messageID, states[id]?.residency == .active,
-                  states[id]?.derivedPageID != nil else { return entry }
-            return ContextEntry(messageID: id, role: entry.role, source: entry.source,
-                                part: entry.part, page: entry.page, segment: .recalledOccurrence)
+        var resident: [ContextEntry] = []
+        resident.reserveCapacity(active.count)
+        for entry in active {
+            guard let id = entry.messageID, let referenceID = states[id]?.derivedPageID,
+                  states[id]?.residency == .active else { resident.append(entry); continue }
+            // A granted occurrence is projected from the authoritative payload, never from the
+            // bounded preview canonical history keeps. A result that was never truncated has no
+            // gap to close, so its canonical body is already the complete truth.
+            var part = entry.part
+            if case let .toolResult(result) = part, let artifactID = result.output.artifactObjectID,
+               let payload = await grantedPayload(sessionID: sessionID, referenceID: referenceID, artifactObjectID: artifactID),
+               payload.utf8.count > result.content.utf8.count {
+                part = .toolResult(result.withContent(payload))
+            }
+            resident.append(ContextEntry(messageID: id, role: entry.role, source: entry.source,
+                                         part: part, page: entry.page, segment: .recalledOccurrence))
         }
         let ids = Set(resident.compactMap(\.messageID))
         return resident + (admittedPayloads[sessionID] ?? [:]).sorted { $0.key < $1.key }.map(\.value).filter {
             guard let id = $0.messageID else { return false }
             return !ids.contains(id) && (states[id]?.residency == nil || states[id]?.residency == .active)
         }
+    }
+
+    /// The authoritative bytes behind a reference, read once and cached: content-addressed payloads
+    /// never change, so a restart can rebuild the same projection without a second copy anywhere.
+    /// `fetch` is used rather than `restore` so re-reading a grant never inflates Exact Restore
+    /// telemetry, which reports what was read, not what became provider-visible.
+    private func grantedPayload(sessionID: SessionID, referenceID: String, artifactObjectID: String) async -> String? {
+        let key = "\(sessionID.rawValue)\u{1f}\(referenceID)"
+        if let cached = grantedPayloads[key] { return cached }
+        guard let objectID = try? ContextObjectID(artifactObjectID),
+              let payload = try? await ecoreStore.fetch(sessionID: sessionID, objectID: objectID) else { return nil }
+        grantedPayloads[key] = payload
+        return payload
     }
 
     /// Rebuild the bounded segment on every assembly, including scheduler skip.
@@ -1128,47 +1189,147 @@ public actor ContextCompactor {
         return history
     }
 
-    /// Called after normal pressure convergence. A resolved ref alone is not admission.
-    /// Canonical occurrences are restored as complete causal units; imported payloads
-    /// have an explicit active entry. No SessionStore mutation occurs here.
+    /// Called after normal pressure convergence. A resolved reference alone is not admission, and
+    /// only an explicit occurrence request reaches this far: a byte-range read grants its range.
+    ///
+    /// Durability contract. Each request walks `requested → admissionPrepared → admissionCommitted`
+    /// or ends at `rejected(reason)`, and the commit is a single transaction covering residency,
+    /// the reference → messages mapping and the request state together. There is therefore no
+    /// reachable state where SQLite calls a unit active while the mapping needed to rebuild its
+    /// payload is gone, nor one where a request is consumed but nothing was committed: a crash
+    /// before the transaction leaves the request prepared, and prepared work is re-run.
+    /// No SessionStore mutation occurs here.
     public func admitRequestedRecalls(sessionID: SessionID, canonicalEntries: [ContextEntry], activeEntries: [ContextEntry], hardInputLimit: Int) async -> [ContextEntry] {
+        struct Staged {
+            var request: RecallRequest
+            var entries: [ContextEntry]
+            var occurrenceIDs: Set<MessageID>
+            var isSynthetic: Bool
+        }
         var active = activeEntries
-        for refID in await ecoreStore.takeRecallAdmissions(sessionID: sessionID) {
-            guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: refID) else {
-                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "payloadMissing")
+        var staged: [Staged] = []
+
+        for request in await ecoreStore.recallQueue(sessionID: sessionID) where request.isAwaitingAdmission {
+            let refID = request.referenceID
+            guard request.admissionMode != .sliceOnly else {
+                // Defensive: a range read grants only its range and the tool never queues one.
+                // Should a sliceOnly row ever reach here, dropping it keeps it from being mistaken
+                // for a grant rather than upgrading it into one.
+                await ecoreStore.forgetRecallRequest(sessionID: sessionID, referenceID: refID)
                 continue
             }
+            var preparing = request
+            preparing.state = .admissionPrepared
+            preparing.reason = nil
+            await ecoreStore.markRecallRequest(preparing, sessionID: sessionID)
+
+            func reject(_ reason: String) async {
+                var terminated = preparing
+                terminated.state = .rejected
+                terminated.reason = reason
+                await ecoreStore.markRecallRequest(terminated, sessionID: sessionID)
+                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: reason)
+            }
+
+            guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: refID) else {
+                await reject("payloadMissing")
+                continue
+            }
+            let objectID = await ecoreStore.reference(sessionID: sessionID, referenceID: refID)?.objectID
             let states = unitResidencies[sessionID] ?? [:]
             let ids = occurrenceMessageIDs[sessionID]?[refID]
                 ?? Set(states.values.filter { $0.derivedPageID == refID }.map(\.messageID))
             let alreadyActive = Set(active.compactMap(\.messageID))
-            var restored = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) }
             let retained = active.filter { !ids.contains($0.messageID ?? MessageID("")) }
-            if !ids.isEmpty && restored.isEmpty {
-                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "canonicalOccurrenceMissing")
+            var restored: [ContextEntry]
+            var synthetic = false
+            switch request.admissionMode {
+            case .sliceOnly:
                 continue
-            }
-            if ids.isEmpty && !alreadyActive.contains(MessageID(refID)) {
-                restored = [ContextEntry(messageID: MessageID(refID), role: .system, source: .derivedPage, part: .text("[Restored session context]\n\(payload)"))]
+            case .occurrenceProjection:
+                let canonical = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) }
+                if !ids.isEmpty && canonical.isEmpty {
+                    await reject("canonicalOccurrenceMissing")
+                    continue
+                }
+                if ids.isEmpty {
+                    // A payload-only grant stays granted: re-admitting the same reference into an
+                    // entry that is already active would duplicate it.
+                    guard !alreadyActive.contains(MessageID(refID)) else {
+                        await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallAdmitted, referenceID: refID)
+                        continue
+                    }
+                    restored = [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
+                    synthetic = true
+                } else {
+                    // The causal unit comes back with its preview body replaced by the payload it
+                    // stands for, so a restored occurrence never returns fewer bytes than the object.
+                    restored = canonical.map { entry in
+                        guard case let .toolResult(result) = entry.part,
+                              let objectID, result.output.artifactObjectID == objectID.rawValue else { return entry }
+                        return ContextEntry(messageID: entry.messageID, role: entry.role, source: entry.source,
+                            part: .toolResult(result.withContent(payload)), page: entry.page, segment: entry.segment)
+                    }
+                }
+            case .occurrenceInline:
+                restored = [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
+                synthetic = true
             }
             let cost = estimator.estimate(entries: retained + restored)
             guard cost <= hardInputLimit else {
-                await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: refID, reason: "inputBudgetExceeded: required=\(cost), hard=\(hardInputLimit)")
+                await reject("inputBudgetExceeded: required=\(cost), hard=\(hardInputLimit)")
                 continue
             }
-            restored = restored.map { ContextEntry(messageID: $0.messageID, role: $0.role, source: $0.source, part: $0.part, page: $0.page, segment: .recalledOccurrence) }
-            // Prepend restored historical units so a pending tail stays last.
-            let prefix = retained.prefix { $0.source == .system }
-            active = Array(prefix) + restored + retained.dropFirst(prefix.count)
-            for entry in restored {
+            var committedRequest = preparing
+            committedRequest.state = .admissionCommitted
+            committedRequest.reason = nil
+            staged.append(Staged(request: committedRequest,
+                entries: restored.map { ContextEntry(messageID: $0.messageID, role: $0.role, source: $0.source, part: $0.part, page: $0.page, segment: .recalledOccurrence) },
+                occurrenceIDs: ids, isSynthetic: synthetic))
+        }
+
+        guard !staged.isEmpty else { return active }
+
+        // Build the post-commit view first, then make it durable. If the transaction fails nothing
+        // is applied in memory either, so the next assembly retries from `admissionPrepared`
+        // instead of serving a grant that was never written down.
+        var residencies = unitResidencies[sessionID] ?? [:]
+        var occurrences = occurrenceMessageIDs[sessionID] ?? [:]
+        for grant in staged {
+            for entry in grant.entries {
                 guard let id = entry.messageID else { continue }
-                let old = states[id]
-                unitResidencies[sessionID, default: [:]][id] = .init(messageID: id, residency: .active, derivedPageID: refID, contentHash: old?.contentHash)
-                if ids.isEmpty { admittedPayloads[sessionID, default: [:]][refID] = entry }
+                residencies[id] = ContextUnitDebugSnapshot(messageID: id, residency: .active,
+                    derivedPageID: grant.request.referenceID, contentHash: residencies[id]?.contentHash)
             }
-            await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallAdmitted, referenceID: refID)
+            if !grant.occurrenceIDs.isEmpty { occurrences[grant.request.referenceID] = grant.occurrenceIDs }
+        }
+        if let persistence = recallPersistence {
+            let generation = (try? await persistence.compaction(sessionID: sessionID))?.generation ?? 0
+            do {
+                try await persistence.commitRecallAdmissions(sessionID: sessionID, requests: staged.map(\.request),
+                    generation: generation, residencies: Array(residencies.values), occurrences: occurrences)
+            } catch {
+                FileHandle.standardError.write(Data("[E-CORE WARNING] recall admission commit failed, grant not applied: \(error)\n".utf8))
+                return active
+            }
+        }
+        unitResidencies[sessionID] = residencies
+        occurrenceMessageIDs[sessionID] = occurrences
+        for grant in staged {
+            if grant.isSynthetic, let entry = grant.entries.first {
+                admittedPayloads[sessionID, default: [:]][grant.request.referenceID] = entry
+            }
+            let prefix = active.prefix { $0.source == .system }
+            active = Array(prefix) + grant.entries + active.filter { !prefix.contains($0) && !grant.occurrenceIDs.contains($0.messageID ?? MessageID("")) }
+            await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallAdmitted, referenceID: grant.request.referenceID)
         }
         return active
+    }
+
+    /// A granted payload as a standalone active entry, keyed by the reference it came from.
+    private static func payloadEntry(sessionID: SessionID, referenceID: String, payload: String) -> ContextEntry {
+        ContextEntry(messageID: MessageID(referenceID), role: .system, source: .derivedPage,
+                     part: .text("[Restored session context]\n\(payload)"))
     }
 
     private static func currentTask(_ entries: [ContextEntry]) -> String {

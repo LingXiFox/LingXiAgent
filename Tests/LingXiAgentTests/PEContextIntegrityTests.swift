@@ -231,7 +231,7 @@ import LingXiClient
         await next.restoreResidencies(sessionID: sid, values: states)
         #expect(await next.activeEntries(sessionID: sid, canonicalEntries: [old,current]) == [current])
         let ref = try #require(await fabric.references(sessionID: sid).first)
-        _ = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\"}", profile: .workspace)
+        _ = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\",\"admission\":\"occurrence\"}", profile: .workspace)
         let active = await next.admitRequestedRecalls(sessionID: sid, canonicalEntries: [old,current], activeEntries: [current], hardInputLimit: 2000)
         #expect(active.contains { $0.messageID == old.messageID && $0.part == old.part && $0.segment == .recalledOccurrence })
         #expect(await next.activeEntries(sessionID: sid, canonicalEntries: [old,current]).contains { $0.messageID == old.messageID && $0.part == old.part && $0.segment == .recalledOccurrence })
@@ -279,8 +279,8 @@ import LingXiClient
     @Test func recallBudgetRejectionIsExplicitAndDoesNotReadmitHistory() async throws {
         let fabric = store(), sid = SessionID("reject"), compactor = ContextCompactor(ecoreStore: fabric)
         let ref = await fabric.pageOut(sessionID: sid, content: String(repeating: "payload ", count: 1000), origin: .message, contextOccurrenceID: "old", evictionEpoch: 0, summary: "large")
-        let output = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\"}", profile: .workspace)
-        #expect(output.contains("payload"))
+        let output = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\",\"admission\":\"occurrence\"}", profile: .workspace)
+        #expect(output.contains("Admission: occurrenceProjection"))
         let active = await compactor.admitRequestedRecalls(sessionID: sid, canonicalEntries: [], activeEntries: [], hardInputLimit: 100)
         #expect(active.isEmpty)
         let telemetry = await fabric.lifecycleSnapshot(sessionID: sid)
@@ -347,7 +347,7 @@ private final class RecallReplayProvider: ModelProvider {
         if recorder.requests.count == 1 {
             let index = try #require(request.messages.first { $0.segment == .eCoreRetrievalProjection })
             let ref = try #require(index.content.components(separatedBy: "reference=").dropFirst().first?.split(whereSeparator: \.isWhitespace).first)
-            let call = ToolCall(callID: ToolCallID("recall-T011"), toolID: ToolID("context_recall"), arguments: "{\"id\":\"\(ref)\"}")
+            let call = ToolCall(callID: ToolCallID("recall-T011"), toolID: ToolID("context_recall"), arguments: "{\"id\":\"\(ref)\",\"admission\":\"occurrence\"}")
             events = [.toolCallCompleted(call), .completed(.toolCalls)]
         } else { events = [.textDelta("Evidence restored"), .completed(.stop)] }
         return AsyncThrowingStream { continuation in

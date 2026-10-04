@@ -266,6 +266,7 @@ public actor SessionRuntime {
         if let compacted = try await persistence.compaction(sessionID: sessionID) {
             compactionGeneration = compacted.generation
             await compactor.restoreResidencies(sessionID: sessionID, values: compacted.residencies)
+            await compactor.restoreRecallState(sessionID: sessionID)
         }
         for call in toolBatches.flatMap(\.toolCallStates) where call.reply == nil {
             switch call.request {
@@ -1880,8 +1881,14 @@ public actor SessionRuntime {
     ) async {
         guard activeExecution?.id == executionID else { return }
         await diagnostics?.record(kind: .error, event: "turn.failed", sessionID: sessionID, runID: runID, rootRunID: rootRunID, parentRunID: parentRunID, executionID: executionID.uuidString, providerRequestID: latestModelRequestID?.rawValue, errorCode: error.code.rawValue)
-        for ref in await cacheController.ecoreStore.takeRecallAdmissions(sessionID: sessionID) {
-            await cacheController.ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: ref, reason: "turnTerminatedBeforeAdmission: \(error.code.rawValue)")
+        // A turn that ends before assembly must not swallow the intent: the request stays durable
+        // with its reason, so a later turn can still tell granted from lost.
+        for pending in await cacheController.ecoreStore.recallQueue(sessionID: sessionID) where pending.isAwaitingAdmission {
+            var terminated = pending
+            terminated.state = .rejected
+            terminated.reason = "turnTerminatedBeforeAdmission: \(error.code.rawValue)"
+            await cacheController.ecoreStore.markRecallRequest(terminated, sessionID: sessionID)
+            await cacheController.ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallRejected, referenceID: pending.referenceID, reason: terminated.reason)
         }
         let preservesDurableBatch = toolBatches.contains { ($0.state == .pending || $0.state == .recoveryRequired) && $0.resultMessageID == nil }
         if Task.isCancelled && preservesDurableBatch {

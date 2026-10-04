@@ -45,7 +45,7 @@ import LingXiClient
         let canonical = await PCoreContextEngine().entries(for: session)
         _ = try await compactor.compact(sessionID: sid, entries: canonical, budget: PEContextIntegrityTests().budget, batches: [batch], trigger: .manual)
         let ref = try #require(await fabric.references(sessionID: sid).first)
-        _ = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\",\"offset\":15000}", profile: .workspace)
+        _ = try await ContextRecallTool(ecoreStore: fabric, sessionID: sid).execute(arguments: "{\"id\":\"\(ref.referenceID)\",\"admission\":\"occurrence\"}", profile: .workspace)
         let admitted = await compactor.admitRequestedRecalls(sessionID: sid, canonicalEntries: canonical, activeEntries: [], hardInputLimit: 65536)
         #expect(admitted.contains { $0.part == .toolResult(raw) && $0.segment == .recalledOccurrence })
         // Enough later assistants to exercise placeholder eligibility on the next assembly.

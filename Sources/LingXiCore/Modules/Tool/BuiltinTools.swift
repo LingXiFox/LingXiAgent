@@ -530,12 +530,23 @@ public struct ContextRecallTool: ToolExecutor {
                 "offset": ToolInputProperty(type: .integer, description: "Start byte offset"),
                 "limit_bytes": ToolInputProperty(type: .integer, description: "Max bytes (default 16KB)"),
                 "limit_lines": ToolInputProperty(type: .integer, description: "Max lines (default 400)"),
+                "admission": ToolInputProperty(type: .string, description: "sliceOnly (default) | occurrence | inline"),
                 "session_id": ToolInputProperty(type: .string, description: "Target session ID (optional)")
             ],
             required: ["id"]
         ),
         capability: ToolCapability(readOnly: true)
     )
+
+    /// The requested range is this tool's own bound; a fixed generic excerpt would cut the tail
+    /// off a slice the model had already sized, making the reported byte range untrue. The header
+    /// is charged separately so it can never eat payload bytes.
+    public func outputContract(for arguments: String) async -> ToolOutputContract? {
+        guard let store = ecoreStore else { return nil }
+        let configuration = await store.configuration
+        return ToolOutputContract(maximumCharacters: configuration.recallMaxBytes + 2048,
+                                 maximumLines: configuration.recallMaxLines + 32)
+    }
 
     public func resource(for arguments: String, profile: ExecutionProfile) throws -> String {
         ""
@@ -574,6 +585,7 @@ public struct ContextRecallTool: ToolExecutor {
             let offset: Int?
             let limitBytes: Int?
             let limitLines: Int?
+            let admission: String?
             let sessionId: String?
         }
         let input: Input = try decodeArguments(arguments)
@@ -619,10 +631,40 @@ public struct ContextRecallTool: ToolExecutor {
             )
         }
 
-        if let recallRef { await store.queueRecallAdmission(sessionID: sID, referenceID: recallRef.referenceID) }
+        // Reading a range and restoring the whole historical unit are different requests. A range
+        // read grants only that range; restoring a unit must be asked for explicitly, otherwise an
+        // 8 KB read silently becomes a whole-occurrence admission the input budget then refuses.
+        let mode: RecallAdmissionMode
+        switch input.admission?.lowercased() {
+        case "occurrence": mode = .occurrenceProjection
+        case "inline": mode = .occurrenceInline
+        default: mode = .sliceOnly
+        }
 
+        guard let recallRef else {
+            return Self.slice(of: chunk, reference: input.id)
+        }
+        guard mode != .sliceOnly else {
+            return Self.slice(of: chunk, reference: recallRef.referenceID)
+        }
+        await store.queueRecallAdmission(RecallRequest(referenceID: recallRef.referenceID,
+            offsetBytes: chunk.offsetBytes, limitBytes: chunk.lengthBytes, limitLines: input.limitLines,
+            admissionMode: mode), sessionID: sID)
+        // The grant is made once: the payload enters the next request as the restored occurrence,
+        // so this result stays an acknowledgement instead of smuggling a second copy of itself.
         return """
-        [Context Object Slice: \(recallRef?.referenceID ?? input.id)]
+        \(RecallOutput.occurrence) \(recallRef.referenceID)]
+        Object: \(recallRef.objectID.rawValue)
+        Lines: 1 - \(chunk.totalLines) of \(chunk.totalLines)
+        Bytes: 0 - \(chunk.totalBytes) of \(chunk.totalBytes)
+        Admission: \(mode.rawValue)
+        Payload: granted as the restored occurrence on the next step; it is not repeated here.
+        """
+    }
+
+    private static func slice(of chunk: RecallChunk, reference: String) -> String {
+        """
+        [Context Object Slice: \(reference)]
         Lines: \(chunk.startLine) - \(chunk.endLine) of \(chunk.totalLines)
         Bytes: \(chunk.offsetBytes) - \(chunk.offsetBytes + chunk.lengthBytes) of \(chunk.totalBytes)
         Has More: \(chunk.hasMore ? "true" : "false")

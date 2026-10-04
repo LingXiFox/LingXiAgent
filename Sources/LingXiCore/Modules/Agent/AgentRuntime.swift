@@ -389,6 +389,7 @@ public actor AgentRuntime {
         if await compactor.unitStates(sessionID: id).isEmpty,
            let persisted = try await persistence?.compaction(sessionID: id) {
             await compactor.restoreResidencies(sessionID: id, values: persisted.residencies)
+            await compactor.restoreRecallState(sessionID: id)
         }
         let canonical = await contextEngine.entries(for: session)
         let resident = await compactor.activeEntries(sessionID: id, canonicalEntries: canonical)

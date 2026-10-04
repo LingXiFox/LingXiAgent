@@ -16,6 +16,10 @@ public enum PersistenceError: Error, Sendable, Equatable {
 
 public enum PersistenceFailpoint: Sendable, Equatable {
     case beforeCompactionCommit
+    /// A recall admission is the last thing to be made durable. Injecting a failure here proves
+    /// the commit boundary is really one transaction: residency, occurrence mapping and request
+    /// state either all land or none of them do.
+    case beforeRecallCommit
     case beforeSaveAgentRun(SessionKind? = nil)
 }
 
@@ -26,7 +30,7 @@ public struct StructuredPathAuditViolation: Sendable, Equatable {
 
 /// 单 actor 持有两个 SQLite handle；所有写入均经过此序列化事务边界。
 public actor SQLitePersistenceStore {
-    public static let databaseSchemaVersion = 7
+    public static let databaseSchemaVersion = 8
     public static let contextFormatVersion = 1
     public static let indexFormatVersion = 1
 
@@ -57,7 +61,7 @@ public actor SQLitePersistenceStore {
         let stateDB = try Self.open(projectDirectory.appendingPathComponent("state.sqlite"))
         state = stateDB
         try Self.configure(stateDB)
-        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) }, upgradeV7: { try Self.upgradeStateSchemaV7(stateDB) })
+        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) }, upgradeV7: { try Self.upgradeStateSchemaV7(stateDB) }, upgradeV8: { try Self.upgradeStateSchemaV8(stateDB) })
         _ = try? Self.script(stateDB, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
         Self.ensureAllExistingProjectsHaveSessionRevision(dataRoot: dataRoot)
         try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS persistence_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
@@ -494,6 +498,8 @@ public actor SQLitePersistenceStore {
             try Self.execute(state, "DELETE FROM agent_run_results WHERE run_id IN (SELECT run_id FROM agent_runs WHERE session_id = ?)", [id.rawValue])
             try Self.execute(state, "DELETE FROM agent_runs WHERE session_id = ?", [id.rawValue])
             try Self.execute(state, "DELETE FROM compaction_state WHERE session_id = ?", [id.rawValue])
+            try Self.execute(state, "DELETE FROM recall_requests WHERE session_id = ?", [id.rawValue])
+            try Self.execute(state, "DELETE FROM recall_occurrences WHERE session_id = ?", [id.rawValue])
             try Self.execute(state, "DELETE FROM derived_context WHERE session_id = ?", [id.rawValue])
             try Self.execute(state, "DELETE FROM session_recall WHERE session_id = ?", [id.rawValue])
             try Self.execute(state, "DELETE FROM tool_exchange_batches WHERE session_id = ?", [id.rawValue])
@@ -664,6 +670,92 @@ public actor SQLitePersistenceStore {
         return (Int(row[0]) ?? 0, (try? JSONDecoder().decode([ContextUnitDebugSnapshot].self, from: Data(row[1].utf8))) ?? [])
     }
 
+    // MARK: - Recall control plane
+
+    /// Every recall the model asked for that has not reached a terminal state. This table, not an
+    /// in-memory queue, is the authority after a restart.
+    public func recallRequests(sessionID: SessionID) throws -> [RecallRequest] {
+        // `rows` yields empty strings for NULL columns, so optional fields are read through nilIfEmpty.
+        try Self.rows(state, "SELECT reference_id, offset_bytes, limit_bytes, limit_lines, admission_mode, state, reason FROM recall_requests WHERE session_id = ? ORDER BY updated_at", [sessionID.rawValue])
+            .compactMap { row in
+                guard row.count >= 7, !row[0].isEmpty, !row[4].isEmpty, !row[5].isEmpty,
+                      let offset = Int(row[1]), let limit = Int(row[2]),
+                      let modeValue = RecallAdmissionMode(rawValue: row[4]),
+                      let recallState = RecallRequestState(rawValue: row[5]) else { return nil }
+                return RecallRequest(referenceID: row[0], offsetBytes: offset, limitBytes: limit,
+                    limitLines: Int(row[3]), admissionMode: modeValue, state: recallState,
+                    reason: row[6].isEmpty ? nil : row[6])
+            }
+    }
+
+    /// Upsert one request. The state transition itself is what makes progress durable, so a crash
+    /// between two calls cannot lose an intent or silently re-run a finished one.
+    public func recordRecallRequest(_ request: RecallRequest, sessionID: SessionID) throws {
+        // `bind` stringifies its values, so an absent field must be NSNull rather than an Optional.
+        let nullable: (String?) -> Any = { $0.map { $0 as Any } ?? NSNull() }
+        try Self.execute(state, """
+            INSERT OR REPLACE INTO recall_requests(session_id, reference_id, offset_bytes, limit_bytes, limit_lines, admission_mode, state, reason, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [sessionID.rawValue, request.referenceID, String(request.offsetBytes), String(request.limitBytes),
+                  nullable(request.limitLines.map(String.init)), request.admissionMode.rawValue, request.state.rawValue,
+                  nullable(request.reason), Self.now])
+    }
+
+    public func forgetRecallRequest(sessionID: SessionID, referenceID: String) throws {
+        try Self.execute(state, "DELETE FROM recall_requests WHERE session_id = ? AND reference_id = ?", [sessionID.rawValue, referenceID])
+    }
+
+    /// reference → the canonical messages that make up the causal unit it was paged out from.
+    /// A batch can hold several artifacts, so one message set may own several references and each
+    /// reference must resolve on its own after a restart.
+    public func recallOccurrences(sessionID: SessionID) throws -> [String: Set<MessageID>] {
+        var result: [String: Set<MessageID>] = [:]
+        for row in try Self.rows(state, "SELECT reference_id, message_id FROM recall_occurrences WHERE session_id = ?", [sessionID.rawValue])
+        where row.count >= 2 && !row[0].isEmpty && !row[1].isEmpty {
+            result[row[0], default: []].insert(MessageID(row[1]))
+        }
+        return result
+    }
+
+    public func replaceRecallOccurrences(sessionID: SessionID, _ occurrences: [String: Set<MessageID>]) throws {
+        try Self.execute(state, "DELETE FROM recall_occurrences WHERE session_id = ?", [sessionID.rawValue])
+        for (referenceID, ids) in occurrences {
+            for id in ids {
+                try Self.execute(state, "INSERT OR REPLACE INTO recall_occurrences(session_id, reference_id, message_id) VALUES(?, ?, ?)", [sessionID.rawValue, referenceID, id.rawValue])
+            }
+        }
+    }
+
+    /// The admission commit boundary: residency, occurrence mapping and request state become
+    /// visible together, or not at all. There is no state in which SQLite calls a unit active
+    /// while the mapping that lets it rebuild its payload is missing.
+    public func commitRecallAdmissions(sessionID: SessionID, requests: [RecallRequest], generation: Int,
+                                       residencies: [ContextUnitDebugSnapshot],
+                                      occurrences: [String: Set<MessageID>],
+                                      derivedPages: [DerivedContextPage] = []) throws {
+        let fail = failpoint == .beforeRecallCommit
+        failpoint = nil
+        try Self.transaction(state) {
+            for page in derivedPages { try writeDerived(page, database: state) }
+            try Self.execute(state, "INSERT OR REPLACE INTO compaction_state(session_id, generation, residency_json, updated_at) VALUES(?, ?, ?, ?)",
+                [sessionID.rawValue, String(generation), String(decoding: try JSONEncoder().encode(residencies), as: UTF8.self), Self.now])
+            try replaceRecallOccurrences(sessionID: sessionID, occurrences)
+            if fail { throw PersistenceError.sqlite("injected recall commit failure") }
+            for request in requests { try recordRecallRequest(request, sessionID: sessionID) }
+        }
+    }
+
+    public func recallState(sessionID: SessionID) throws -> (requests: [RecallRequest], occurrences: [String: Set<MessageID>]) {
+        (try recallRequests(sessionID: sessionID), try recallOccurrences(sessionID: sessionID))
+    }
+
+    public func clearRecallState(sessionID: SessionID) throws {
+        try Self.transaction(state) {
+            try Self.execute(state, "DELETE FROM recall_requests WHERE session_id = ?", [sessionID.rawValue])
+            try Self.execute(state, "DELETE FROM recall_occurrences WHERE session_id = ?", [sessionID.rawValue])
+        }
+    }
+
     public func saveToolBatch(_ batch: ToolExchangeBatch) throws {
         try Self.writeBatch(state, batch)
     }
@@ -807,9 +899,9 @@ public actor SQLitePersistenceStore {
         sqlite3_busy_timeout(db, 10_000)
         return db
     }
-    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void, upgradeV7: () throws -> Void) throws {
+    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void, upgradeV7: () throws -> Void, upgradeV8: () throws -> Void = {}) throws {
         let version = Int(try scalar(db, "PRAGMA user_version", []) ?? "0") ?? 0
-        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6, applyV6ToV7: upgradeV7) }
+        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6, applyV6ToV7: upgradeV7, applyV7ToV8: upgradeV8) }
     }
     private static func transaction(_ db: OpaquePointer, _ body: () throws -> Void) throws { try execute(db, "BEGIN IMMEDIATE", []); do { try body(); try execute(db, "COMMIT", []) } catch { try? execute(db, "ROLLBACK", []); throw error } }
     private static func nextMessageOrdinal(_ db: OpaquePointer, _ sessionID: SessionID) throws -> Int { try scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0 }
@@ -856,6 +948,33 @@ public actor SQLitePersistenceStore {
     private static func upgradeStateSchemaV4(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE agent_runs ADD COLUMN profile_json TEXT; ALTER TABLE tool_exchange_batches ADD COLUMN continuation_request_id TEXT; PRAGMA user_version = 4") }
     private static func upgradeStateSchemaV5(_ db: OpaquePointer) throws { try script(db, "CREATE TABLE IF NOT EXISTS workflows(workflow_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_session_id TEXT NOT NULL REFERENCES sessions(session_id), root_run_id TEXT NOT NULL REFERENCES agent_runs(run_id), status TEXT NOT NULL, checkpoint_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_tasks(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, status TEXT NOT NULL, definition_json TEXT NOT NULL, provenance_json TEXT, result_json TEXT, error_json TEXT, PRIMARY KEY(workflow_id, task_id)); CREATE TABLE IF NOT EXISTS workflow_dependencies(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, dependency_task_id TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id, dependency_task_id)); CREATE TABLE IF NOT EXISTS workflow_pending_inputs(workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id), task_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id)); CREATE INDEX IF NOT EXISTS workflow_status_idx ON workflows(project_id, status); PRAGMA user_version = 5") }
     private static func upgradeStateSchemaV6(_ db: OpaquePointer) throws { try script(db, "ALTER TABLE tool_exchange_batches ADD COLUMN tool_call_states_json TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 6") }
+    /// Recall control plane. Only state and mappings live here: the payload stays in E-Core and is
+    /// always resolved reference → authoritative object → bytes, so a restart rebuilds a grant
+    /// instead of trusting a second copy of the content.
+    private static func upgradeStateSchemaV8(_ db: OpaquePointer) throws {
+        try script(db, """
+            CREATE TABLE IF NOT EXISTS recall_requests(
+              session_id TEXT NOT NULL,
+              reference_id TEXT NOT NULL,
+              offset_bytes INTEGER NOT NULL,
+              limit_bytes INTEGER NOT NULL,
+              limit_lines INTEGER,
+              admission_mode TEXT NOT NULL,
+              state TEXT NOT NULL,
+              reason TEXT,
+              updated_at REAL NOT NULL,
+              PRIMARY KEY(session_id, reference_id));
+            CREATE INDEX IF NOT EXISTS recall_requests_session_state_idx ON recall_requests(session_id, state);
+            CREATE TABLE IF NOT EXISTS recall_occurrences(
+              session_id TEXT NOT NULL,
+              reference_id TEXT NOT NULL,
+              message_id TEXT NOT NULL,
+              PRIMARY KEY(session_id, reference_id, message_id));
+            CREATE INDEX IF NOT EXISTS recall_occurrences_reference_idx ON recall_occurrences(session_id, message_id);
+            PRAGMA user_version = 8
+            """)
+    }
+
     private static func upgradeStateSchemaV7(_ db: OpaquePointer) throws {
         try script(db, """
         CREATE TABLE IF NOT EXISTS workspaces(

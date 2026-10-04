@@ -219,6 +219,63 @@ public struct RecallChunk: Sendable, Equatable, Codable {
     }
 }
 
+/// How much of a recalled object the caller is asking to make active again. Reading a byte range
+/// and restoring a historical causal unit are different operations and must not be inferred from
+/// each other: the first costs the range, the second costs the unit.
+public enum RecallAdmissionMode: String, Sendable, Equatable, Codable {
+    /// Grant exactly the requested range. Nothing else enters active context.
+    case sliceOnly
+    /// Re-admit the causal unit the reference belongs to, rebuilt from the authoritative payload
+    /// rather than from the bounded preview kept in canonical history.
+    case occurrenceProjection
+    /// Import the payload as a standalone entry, under its own allowance. Explicit only.
+    case occurrenceInline
+}
+
+/// Where a recall request has reached. These are distinct facts and must not be collapsed: a tool
+/// call succeeding is not the same as the next Context Assembly committing a grant, and only the
+/// second one is what a restart has to be able to tell apart.
+public enum RecallRequestState: String, Sendable, Equatable, Codable {
+    /// The tool succeeded and the model asked for this to be made active.
+    case requested
+    /// Assembly is working on it. A crash here is recoverable: nothing was committed.
+    case admissionPrepared
+    /// Residency, occurrence mapping and this state landed in one durable transaction.
+    case admissionCommitted
+    /// Terminal, with the reason kept so a rejection is never silent.
+    case rejected
+}
+
+/// One recall request as the model expressed it. The requested range is part of the request's
+/// identity, not a transient parameter: dropping it is what silently upgraded an 8 KB read into
+/// a whole-occurrence restore that the input budget then refused.
+public struct RecallRequest: Sendable, Equatable, Codable {
+    public let referenceID: String
+    public let offsetBytes: Int
+    public let limitBytes: Int
+    public let limitLines: Int?
+    public let admissionMode: RecallAdmissionMode
+    public var state: RecallRequestState
+    public var reason: String?
+
+    public init(referenceID: String, offsetBytes: Int, limitBytes: Int, limitLines: Int?,
+                admissionMode: RecallAdmissionMode, state: RecallRequestState = .requested, reason: String? = nil) {
+        self.referenceID = referenceID
+        self.offsetBytes = offsetBytes
+        self.limitBytes = limitBytes
+        self.limitLines = limitLines
+        self.admissionMode = admissionMode
+        self.state = state
+        self.reason = reason
+    }
+
+    /// A grant that a restart must be able to re-materialise.
+    public var isCommitted: Bool { state == .admissionCommitted }
+    /// Still owed work by Context Assembly. `admissionPrepared` counts: it means a crash landed
+    /// between "decided" and "committed", and only the transaction makes a grant real.
+    public var isAwaitingAdmission: Bool { state == .requested || state == .admissionPrepared }
+}
+
 /// 会话级外部存储指标（O(1) 维护，避免重复整盘扫描）
 public struct SessionStorageMetrics: Sendable, Equatable {
     public let count: Int
@@ -260,6 +317,17 @@ public actor ECoreObjectStore {
     private var physicalObjects: [SessionID: [ContextObjectID: Int]] = [:]
     /// 冷启动扫描每个会话只做一次；`storageMetrics` 的 O(1) 承诺靠它维持。
     private var censusLoaded: Set<SessionID> = []
+    /// The durable control plane for recall intents and admission states. nil keeps the fabric
+    /// memory-only, which is what an in-memory E-Core configuration means: E-Core still runs, its
+    /// recall bookkeeping just cannot outlive the process.
+    private var recallPersistence: SQLitePersistenceStore?
+
+    /// Injected after assembly, like `attachDebugHub`, so callers that construct the fabric
+    /// directly keep working without a persistence handle.
+    public func attachRecallPersistence(_ persistence: SQLitePersistenceStore?) {
+        recallPersistence = persistence
+    }
+
     /// Developer Debug Mode 旁路。nil 表示未开启，此时下面每一处埋点都只是一次 nil 判断。
     ///
     /// 有意独立于 `configuration.heatTrackingEnabled`：热度统计关掉时，page-out 与 restore 的
@@ -429,7 +497,7 @@ public actor ECoreObjectStore {
     private var pageOutObjects: [SessionID: [ContextObjectID: ECoreObjectRecord]] = [:]
     private var pageOutReferences: [SessionID: [String: ECoreReference]] = [:]
     private var lifecycle: [SessionID: ECoreLifecycleSnapshot] = [:]
-    private var pendingRecallReferences: [SessionID: [String]] = [:]
+    private var pendingRecallRequests: [SessionID: [RecallRequest]] = [:]
 
     public func lifecycleSnapshot(sessionID: SessionID) -> ECoreLifecycleSnapshot {
         lifecycle[sessionID] ?? ECoreLifecycleSnapshot()
@@ -456,14 +524,45 @@ public actor ECoreObjectStore {
         return ref
     }
 
-    func queueRecallAdmission(sessionID: SessionID, referenceID: String) {
-        if !(pendingRecallReferences[sessionID] ?? []).contains(referenceID) {
-            pendingRecallReferences[sessionID, default: []].append(referenceID)
-        }
+    /// Record what the caller asked for, range and mode included. The most recent request for a
+    /// reference wins, so one reference can only ever hold one admission state.
+    ///
+    /// This is a durable write when a control plane is attached: an intent that only lived in a
+    /// dictionary vanished on any crash between the tool returning and the next assembly.
+    func queueRecallAdmission(_ request: RecallRequest, sessionID: SessionID) async {
+        await replaceRecallRequest(request, sessionID: sessionID)
     }
 
-    func takeRecallAdmissions(sessionID: SessionID) -> [String] {
-        pendingRecallReferences.removeValue(forKey: sessionID) ?? []
+    /// Move a request along the state machine. Progress is only real once it is written down.
+    func markRecallRequest(_ request: RecallRequest, sessionID: SessionID) async {
+        await replaceRecallRequest(request, sessionID: sessionID)
+    }
+
+    private func replaceRecallRequest(_ request: RecallRequest, sessionID: SessionID) async {
+        var pending = pendingRecallRequests[sessionID] ?? []
+        pending.removeAll { $0.referenceID == request.referenceID }
+        pending.append(request)
+        pendingRecallRequests[sessionID] = pending
+        guard let persistence = recallPersistence else { return }
+        do { try await persistence.recordRecallRequest(request, sessionID: sessionID) }
+        catch { FileHandle.standardError.write(Data("[E-CORE WARNING] recall intent write failed: \(error)\n".utf8)) }
+    }
+
+    func forgetRecallRequest(sessionID: SessionID, referenceID: String) async {
+        pendingRecallRequests[sessionID] = (pendingRecallRequests[sessionID] ?? []).filter { $0.referenceID != referenceID }
+        guard let persistence = recallPersistence else { return }
+        do { try await persistence.forgetRecallRequest(sessionID: sessionID, referenceID: referenceID) }
+        catch { FileHandle.standardError.write(Data("[E-CORE WARNING] recall intent clear failed: \(error)\n".utf8)) }
+    }
+
+    /// The recall control plane. With a persistence handle attached the table is the authority, so
+    /// a restart sees exactly the requests that were never committed — including ones that stopped
+    /// half-way through assembly, which are re-processed rather than assumed.
+    func recallQueue(sessionID: SessionID) async -> [RecallRequest] {
+        if let persistence = recallPersistence, let rows = try? await persistence.recallRequests(sessionID: sessionID) {
+            return rows
+        }
+        return pendingRecallRequests[sessionID] ?? []
     }
 
     /// Give an existing tool artifact a model-facing reference without copying its
@@ -955,9 +1054,16 @@ public actor ECoreObjectStore {
         }
 
         let utf8Data = Data(content.utf8)
-        let startIdx = offsetBytes
-        let endIdx = min(totalBytes, startIdx + maxBytes)
-        let sliceData = utf8Data.subdata(in: startIdx..<endIdx)
+        // Align inward to code-point boundaries. A range that starts mid-scalar or ends before a
+        // scalar's last byte would otherwise be decoded into replacement characters, and the
+        // header would then report a byte range that is not the payload the model received.
+        var startIdx = offsetBytes
+        while startIdx < utf8Data.count, (utf8Data[startIdx] & 0xC0) == 0x80 { startIdx += 1 }
+        var endIdx = min(totalBytes, startIdx + maxBytes)
+        while endIdx > startIdx, String(data: utf8Data.subdata(in: startIdx..<endIdx), encoding: .utf8) == nil {
+            endIdx -= 1
+        }
+        let sliceData = utf8Data.subdata(in: startIdx..<max(startIdx, endIdx))
 
         let sliceString = String(decoding: sliceData, as: UTF8.self)
 
@@ -1222,7 +1328,7 @@ public actor ECoreObjectStore {
         memoryPayloads.removeValue(forKey: sessionID)
         pageOutObjects.removeValue(forKey: sessionID)
         pageOutReferences.removeValue(forKey: sessionID)
-        pendingRecallReferences.removeValue(forKey: sessionID)
+        pendingRecallRequests.removeValue(forKey: sessionID)
         lifecycle.removeValue(forKey: sessionID)
         physicalObjects.removeValue(forKey: sessionID)
         censusLoaded.remove(sessionID)

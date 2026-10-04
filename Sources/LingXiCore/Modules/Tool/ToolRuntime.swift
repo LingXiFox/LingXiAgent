@@ -9,11 +9,15 @@ public protocol ToolExecutor: Sendable {
     /// 外部目录审批必须引用 canonical path；Shell 的主要权限资源仍是命令文本。
     func externalResource(for arguments: String, profile: ExecutionProfile) throws -> String?
     func execute(arguments: String, profile: ExecutionProfile) async throws -> String
+    /// A bound this tool imposes on its own output, dependent on the call's arguments.
+    func outputContract(for arguments: String) async -> ToolOutputContract?
 }
 
 public extension ToolExecutor {
     func capabilities(for arguments: String, profile: ExecutionProfile) throws -> Set<ToolCapabilityKind> { definition.capability.kinds }
     func externalResource(for arguments: String, profile: ExecutionProfile) throws -> String? { nil }
+    /// Default: no self-declared bound, so the runtime's generic policy applies.
+    func outputContract(for arguments: String) async -> ToolOutputContract? { nil }
 }
 
 public protocol ToolProvider: Sendable {
@@ -825,7 +829,10 @@ public struct ToolRuntime: Sendable {
             if !rawContent.isEmpty {
                 await outputSink?(ToolOutputChunk(toolCallID: call.callID, stream: .stdout, sequence: 0, payload: rawContent))
             }
-            let bounded = outputPolicy.excerpt(rawContent)
+            // A tool that already bounded its output by the caller's own range keeps that range:
+            // re-cutting it here would make the byte range the tool reported untrue.
+            let effectivePolicy = await tool.outputContract(for: call.arguments)?.policy ?? outputPolicy
+            let bounded = effectivePolicy.excerpt(rawContent)
             let metadata = try await outputArchive?.archive(rawContent, metadata: bounded.metadata) ?? bounded.metadata
             execution = executionStart.duration(to: clock.now)
             let coding = Self.codingDetails(toolID: tool.definition.id, content: rawContent)
@@ -842,6 +849,8 @@ public struct ToolRuntime: Sendable {
             if let command = Self.commandResult(from: error.message) {
                 if let executionStartedAt { execution = executionStartedAt.duration(to: clock.now) }
                 let rawContent = command.stdout + (command.stdout.isEmpty || command.stderr.isEmpty ? "" : "\n") + command.stderr
+                // This path is a failed *command*, so the generic bound applies: no self-bounded
+                // transport (context_recall) reaches it, and `tool` is not in scope here.
                 let bounded = outputPolicy.excerpt(rawContent)
                 let metadata = (try? await outputArchive?.archive(rawContent, metadata: bounded.metadata)) ?? bounded.metadata
                 let timedOut = error.code == .commandTimedOut
