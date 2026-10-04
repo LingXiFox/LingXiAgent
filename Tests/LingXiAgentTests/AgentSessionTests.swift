@@ -67,6 +67,12 @@ final class OutcomeRecorder: @unchecked Sendable {
     }
 }
 
+/// A whole-file `read_file` result is one stamp line followed by the file's exact bytes. Tests that
+/// care about content truth use the body, not the stamp.
+func readFileBody(_ content: String) -> String {
+    content.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n")
+}
+
 /// 即时完成、按脚本回放事件的 Provider。
 final class ScriptedFakeProvider: ModelProvider {
     let script: [[ModelEvent]]

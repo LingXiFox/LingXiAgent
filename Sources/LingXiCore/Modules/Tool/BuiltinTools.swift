@@ -508,7 +508,15 @@ public struct ReadFileTool: ToolExecutor {
         if input.startLine != nil || input.endLine != nil || input.maxLines != nil || input.lineNumbers == true {
             return try json(readPage(file, workspace: workspace, input: input))
         }
-        return try readText(file, operation: "read_file")
+        let content = try readText(file, operation: "read_file")
+        // A whole-file read is the read that has seen every byte, so it is the read that can name
+        // those bytes: the model quotes this stamp as write_file/edit_file `expected_hash`, which
+        // makes the stale-content guard expressible instead of merely enforceable. One bracketed
+        // line, and the body below it stays byte-for-byte what the file holds. Paged reads carry the
+        // same `version` and no hash, because a page has not seen the whole file.
+        let stamp = "[read_file stamp · not file content · path=\(relativePath(file, workspace: workspace))"
+            + " · bytes=\(content.utf8.count) · sha256=\(sha256Hex(content)) · version=\(try fileVersion(file))]"
+        return stamp + "\n" + content
     }
 }
 

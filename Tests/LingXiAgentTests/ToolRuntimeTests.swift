@@ -128,7 +128,7 @@ struct ToolRuntimeTests {
         let read = await runtime.execute(call("read_file"), sessionID: SessionID("s")) { _ in }
         #expect(read.callID == ToolCallID("call-1"))
         #expect(read.success)
-        #expect(read.content == "LingXiAgent")
+        #expect(readFileBody(read.content) == "LingXiAgent")
         #expect(read.toolName == "read_file")
         #expect(read.timing.executionMilliseconds > 0)
 
@@ -232,7 +232,7 @@ struct ToolRuntimeTests {
         let result = await runtime.execute(call, sessionID: SessionID("session-1")) { _ in }
         #expect(result.callID == ToolCallID("call-1"))
         #expect(result.success)
-        #expect(result.content == "approved")
+        #expect(readFileBody(result.content) == "approved")
         #expect(result.toolName == "read_file")
         #expect(result.timing.executionMilliseconds > 0)
     }
@@ -308,7 +308,7 @@ struct ToolRuntimeTests {
             permissions: PermissionEngine(configuration: .yolo)
         )
         let allowed = await runtime.execute(call("read_file", external.path), sessionID: SessionID("s")) { _ in }
-        #expect(allowed.content == "external")
+        #expect(readFileBody(allowed.content) == "external")
         try "secret".write(to: root.appendingPathComponent(".env"), atomically: false, encoding: .utf8)
         let sensitive = await runtime.execute(call("read_file", ".env"), sessionID: SessionID("s")) { _ in }
         #expect(sensitive.error?.code == CoreError.Code.workspaceViolation.rawValue)

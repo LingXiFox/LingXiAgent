@@ -127,7 +127,7 @@ struct SensitivePathPolicyTests {
         let readCall = ToolCall(callID: ToolCallID("call-2"), toolID: ToolID("read_file"), arguments: "{\"path\":\"\(configFile.path)\"}")
         let readResult = await runtime.execute(readCall, sessionID: SessionID("s")) { _ in }
         #expect(readResult.success)
-        #expect(readResult.content == "{\"model\":\"opencode-zen\"}")
+        #expect(readFileBody(readResult.content) == "{\"model\":\"opencode-zen\"}")
 
         // Read credentials.vault: should be blocked with sensitive path error
         let readVaultCall = ToolCall(callID: ToolCallID("call-3"), toolID: ToolID("read_file"), arguments: "{\"path\":\"\(vaultFile.path)\"}")

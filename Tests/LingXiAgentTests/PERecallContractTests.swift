@@ -87,7 +87,9 @@ import LingXiClient
         let durable = try await host.sessionStore.session(sid)
         let last = try #require(durable.messages.flatMap(\.parts).compactMap { if case let .toolResult(r) = $0 { r } else { nil } }.last)
         #expect(last.success)
-        #expect(last.content == (mutate ? "NEW" : "OLD"))
+        // A whole-file read carries one stamp line before the file's bytes; the contract under test is
+        // the bytes, so compare those.
+        #expect((last.toolName == "read_file" ? readFileBody(last.content) : last.content) == (mutate ? "NEW" : "OLD"))
         #expect(!last.content.contains("already present"))
         if pageOutRead { #expect(await host.ecoreStoreRef.references(sessionID: sid).count > 0) }
         print("READ_CONTRACT mutation=\(mutate) pageOut=\(pageOutRead) returned=\(last.content)")

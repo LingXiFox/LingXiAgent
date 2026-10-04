@@ -1204,10 +1204,15 @@ public actor SessionRuntime {
 
                 trace("tool.batch.settle.begin", step: step + 1, toolCount: calls.count)
                 let signatures = calls.map { try? toolRuntime.readOnlySignature(for: $0) }
+                // A read is only true until the resource it read changed. Splitting the batch into
+                // waves first is what makes sharing safe: identical reads inside one wave may be
+                // served by one execution, and a read after a mutation must be its own execution in
+                // a later wave.
+                let waves = Self.readSharingWaves(for: calls.map { toolRuntime.batchEffect(for: $0) })
                 var outcomes = Array<ToolRuntime.ExecutionOutcome?>(repeating: nil, count: calls.count)
                 var publishedOutcomes = Set<Int>()
                 var primaryByIndex: [Int: Int] = [:]
-                var primaryBySignature: [ToolRuntime.ReadOnlySignature: Int] = [:]
+                var primaryByEpoch: [ToolRuntime.ReadOnlySignature: [Int: Int]] = [:]
 
                 for (offset, call) in calls.enumerated() {
                     await eventSink(.toolCallCompleted(call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)))
@@ -1217,60 +1222,64 @@ public actor SessionRuntime {
                         outcomes[offset] = outcome
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
                         publishedOutcomes.insert(offset)
-                    } else if let signature = signatures[offset], let primary = primaryBySignature[signature] {
+                    } else if let signature = signatures[offset], let primary = primaryByEpoch[signature]?[waves[offset]] {
                         primaryByIndex[offset] = primary
                     } else {
-                        if let signature = signatures[offset] { primaryBySignature[signature] = offset }
+                        if let signature = signatures[offset] { primaryByEpoch[signature, default: [:]][waves[offset]] = offset }
                         primaryByIndex[offset] = offset
                     }
                 }
 
-                await withTaskGroup(of: (Int, ToolRuntime.ExecutionOutcome).self) { group in
-                    for (offset, call) in calls.enumerated() where outcomes[offset] == nil && primaryByIndex[offset] == offset {
-                        let executionCall = call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)
-                        let observer = ToolExecutionObserver(
-                            permissionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .permission(request)) },
-                            permissionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .permission(request), reply: .permission(reply)) },
-                            executionClaimed: { claim in
-                                await self.executionClaimed(batchID: batchID, callID: call.callID, claim: claim)
-                                await self.eventSink(.toolExecutionClaimed(executionCall))
-                            },
-                            questionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .question(request)) },
-                            questionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .question(request), reply: .question(reply)) }
-                        )
-                        group.addTask { [toolRuntime, sessionID, eventSink, runExecutionContext] in
-                            let outcome = await toolRuntime.executeWithMetrics(
-                                executionCall,
-                                sessionID: sessionID,
-                                projectID: session.projectID ?? ProjectID("ephemeral"),
-                                executionProfile: executionProfile,
-                                permissionConfiguration: runExecutionContext?.permissionConfiguration,
-                                runExecutionContext: runExecutionContext,
-                                onPermissionAsked: { request in
-                                    await eventSink(.permissionAsked(request))
+                for wave in 0...(waves.max() ?? 0) {
+                    await withTaskGroup(of: (Int, ToolRuntime.ExecutionOutcome).self) { group in
+                        for (offset, call) in calls.enumerated()
+                        where outcomes[offset] == nil && primaryByIndex[offset] == offset && waves[offset] == wave {
+                            let executionCall = call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)
+                            let observer = ToolExecutionObserver(
+                                permissionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .permission(request)) },
+                                permissionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .permission(request), reply: .permission(reply)) },
+                                executionClaimed: { claim in
+                                    await self.executionClaimed(batchID: batchID, callID: call.callID, claim: claim)
+                                    await self.eventSink(.toolExecutionClaimed(executionCall))
                                 },
-                                observer: observer
+                                questionAsked: { request in await self.waitingForHuman(batchID: batchID, callID: call.callID, request: .question(request)) },
+                                questionResolved: { request, reply in await self.humanReply(batchID: batchID, callID: call.callID, request: .question(request), reply: .question(reply)) }
                             )
-                            return (offset, outcome)
+                            group.addTask { [toolRuntime, sessionID, eventSink, runExecutionContext] in
+                                let outcome = await toolRuntime.executeWithMetrics(
+                                    executionCall,
+                                    sessionID: sessionID,
+                                    projectID: session.projectID ?? ProjectID("ephemeral"),
+                                    executionProfile: executionProfile,
+                                    permissionConfiguration: runExecutionContext?.permissionConfiguration,
+                                    runExecutionContext: runExecutionContext,
+                                    onPermissionAsked: { request in
+                                        await eventSink(.permissionAsked(request))
+                                    },
+                                    observer: observer
+                                )
+                                return (offset, outcome)
+                            }
                         }
-                    }
-                    for await (offset, outcome) in group {
-                        outcomes[offset] = outcome
-                        guard !Task.isCancelled else { continue }
-                        trace("tool.execute.end", step: step + 1, toolCallID: calls[offset].callID)
-                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
-                        publishedOutcomes.insert(offset)
+                        for await (offset, outcome) in group {
+                            outcomes[offset] = outcome
+                            guard !Task.isCancelled else { continue }
+                            trace("tool.execute.end", step: step + 1, toolCallID: calls[offset].callID)
+                            await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
+                            publishedOutcomes.insert(offset)
 
-                        // 关键：当 primary tool 产出结果时，同批次复用它的 secondary tool 立即发布完成，杜绝幽灵旋转并拦截重复读取
-                        for sec in calls.indices where primaryByIndex[sec] == offset && sec != offset && outcomes[sec] == nil {
-                            let secondaryCall = calls[sec]
-                            let secOutcome = sharedReadOutcome(for: secondaryCall, primary: outcome)
-                            outcomes[sec] = secOutcome
-                            trace("tool.execute.end", step: step + 1, toolCallID: secondaryCall.callID)
-                            await publishCompletedTool(secOutcome, batchID: batchID, modelStepID: currentModelStepID)
-                            publishedOutcomes.insert(sec)
+                            // 关键：当 primary tool 产出结果时，同批次复用它的 secondary tool 立即发布完成，杜绝幽灵旋转并拦截重复读取
+                            for sec in calls.indices where primaryByIndex[sec] == offset && sec != offset && outcomes[sec] == nil {
+                                let secondaryCall = calls[sec]
+                                let secOutcome = sharedReadOutcome(for: secondaryCall, primary: outcome)
+                                outcomes[sec] = secOutcome
+                                trace("tool.execute.end", step: step + 1, toolCallID: secondaryCall.callID)
+                                await publishCompletedTool(secOutcome, batchID: batchID, modelStepID: currentModelStepID)
+                                publishedOutcomes.insert(sec)
+                            }
                         }
                     }
+                    try Task.checkCancellation()
                 }
                 try Task.checkCancellation()
 
@@ -1486,6 +1495,56 @@ public actor SessionRuntime {
         if let session = try? await store.session(sessionID) {
             _ = await contextEngine.snapshot(for: session, activeEntries: entries, systemContext: systemContext, estimatedTokens: tokens, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
         }
+    }
+
+    /// Splits one tool batch into execution waves that preserve the model's own ordering.
+    ///
+    /// Calls in the same wave are provably order-independent, so they may run concurrently; waves run
+    /// in sequence. A read only shares an execution inside its wave: the wave a mutation put it in is
+    /// decided by the resources actually involved, so an edit to `b.txt` cannot invalidate a read of
+    /// `a.txt`, while a shell command — whose footprint Core cannot name — ends the sharing epoch of
+    /// every read in the batch. Losing one dedup is cheap; persisting a stale read is not.
+    nonisolated static func readSharingWaves(for effects: [ToolRuntime.ToolBatchEffect]) -> [Int] {
+        var waves = [Int](repeating: 0, count: effects.count)
+        var reads: [(path: String, wave: Int)] = []
+        var writes: [(path: String, wave: Int)] = []
+        var lastReadWave: [String: Int] = [:]
+        var lastWriteWave: [String: Int] = [:]
+        var opaqueWave: Int?
+        var highest = -1
+        for (index, effect) in effects.enumerated() {
+            var wave = 0
+            switch effect {
+            case let .readOnly(resource):
+                // A directory read is a read of everything under it: a listing, a glob, a grep that
+                // ran before a write must not be handed to the model as if it came after.
+                for write in writes where write.path == resource || write.path.hasPrefix(resource + "/") {
+                    wave = max(wave, write.wave + 1)
+                }
+                if let prior = opaqueWave { wave = max(wave, prior + 1) }
+                lastReadWave[resource] = max(lastReadWave[resource] ?? -1, wave)
+                reads.append((resource, wave))
+            case let .mutation(targets):
+                for target in targets {
+                    // A write of a file this batch already read must not overtake that read either:
+                    // both orders are observable, and the model asked for the read first.
+                    if let prior = lastReadWave[target] { wave = max(wave, prior + 1) }
+                    for read in reads where target.hasPrefix(read.path + "/") { wave = max(wave, read.wave + 1) }
+                    if let prior = lastWriteWave[target] { wave = max(wave, prior + 1) }
+                }
+                if let prior = opaqueWave { wave = max(wave, prior + 1) }
+                for target in targets { lastWriteWave[target] = max(lastWriteWave[target] ?? -1, wave) }
+                writes.append(contentsOf: targets.map { (path: $0, wave: wave) })
+            case .opaqueMutation:
+                wave = highest + 1
+                opaqueWave = wave
+            case .neutral:
+                break
+            }
+            waves[index] = wave
+            highest = max(highest, wave)
+        }
+        return waves
     }
 
     private func sharedReadOutcome(for call: ToolCall, primary: ToolRuntime.ExecutionOutcome) -> ToolRuntime.ExecutionOutcome {

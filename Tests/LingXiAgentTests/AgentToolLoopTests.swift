@@ -244,7 +244,7 @@ struct AgentToolLoopTests {
         }.first)
         #expect(toolResult.callID == call().callID)
         #expect(toolResult.success)
-        #expect(toolResult.content == "LingXiAgent project")
+        #expect(readFileBody(toolResult.content) == "LingXiAgent project")
         #expect(toolResult.toolName == "read_file")
         #expect(toolResult.timing.executionMilliseconds > 0)
 
@@ -268,7 +268,7 @@ struct AgentToolLoopTests {
             return nil
         }.first)
         #expect(completedResult.success)
-        #expect(completedResult.content == "LingXiAgent project")
+        #expect(readFileBody(completedResult.content) == "LingXiAgent project")
         #expect(completedResult.toolName == "read_file")
         #expect(completedResult.sessionID == sessionID)
         #expect(completedResult.agentRunID == completedCall.agentRunID)

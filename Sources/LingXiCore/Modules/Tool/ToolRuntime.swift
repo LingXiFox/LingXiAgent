@@ -448,6 +448,42 @@ public struct ToolRuntime: Sendable {
         )
     }
 
+    /// What one call does to the resources of its batch, used to order the batch and to decide how
+    /// far a read may be shared.
+    public enum ToolBatchEffect: Sendable, Equatable {
+        /// Reads workspace state at `resource`; shareable with an identical read only until something
+        /// changes that resource.
+        case readOnly(resource: String)
+        /// Changes exactly these resources.
+        case mutation(targets: [String])
+        /// Changes something, and Core cannot say what: a shell command may write any file. Every read
+        /// in the batch loses its sharing epoch here rather than risk being served a stale copy.
+        case opaqueMutation
+        /// Nothing a read's truth depends on — a read with no addressable resource (E-Core recall,
+        /// whose payload is content-addressed and immutable), or a call that touches no file at all.
+        case neutral
+    }
+
+    public func batchEffect(for call: ToolCall) -> ToolBatchEffect {
+        guard let tool = registry.tool(for: call.toolID) else { return .neutral }
+        if tool.definition.capability.readOnly {
+            guard let resource = try? tool.resource(for: call.arguments, profile: .workspace), !resource.isEmpty else {
+                return .neutral
+            }
+            return .readOnly(resource: resource)
+        }
+        // Unreadable capabilities mean the call could not even be validated: assume the worst.
+        let mutates = (try? tool.capabilities(for: call.arguments, profile: .workspace))
+            .map { $0.contains(.projectWrite) || $0.contains(.repositoryWrite)
+                || $0.contains(.repositoryRemoteWrite) || $0.contains(.destructive) } ?? true
+        guard mutates else { return .neutral }
+        if let provider = tool as? FileMutationTargetProviding,
+           let targets = try? provider.mutationTargets(for: call.arguments, profile: .workspace), !targets.isEmpty {
+            return .mutation(targets: targets.map(\.path))
+        }
+        return .opaqueMutation
+    }
+
     public func execute(
         _ call: ToolCall,
         sessionID: SessionID,
