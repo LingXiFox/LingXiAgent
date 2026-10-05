@@ -122,17 +122,14 @@ import LingXiProtocol
 
         // 2. 召回不存在的对象 -> 友好提示
         let notFoundArgs = "{\"id\":\"obj_unknown_call999_00000000\"}"
-        let notFoundOut = try await ToolExecutionContext.$sessionID.withValue(sID) {
-            try await recallTool.execute(arguments: notFoundArgs, profile: .workspace)
-        }
-        #expect(notFoundOut.contains("not found"))
+        let runtime = ToolRuntime(registry: ToolRegistry([recallTool]), permissions: PermissionEngine(defaultDecision: .allow))
+        let notFoundOut = await runtime.execute(ToolCall(callID: ToolCallID("missing"), toolID: ToolID("context_recall"), arguments: notFoundArgs), sessionID: sID)
+        #expect(!notFoundOut.success && (notFoundOut.error?.message ?? "").contains("not found"))
 
         // 3. 非法字符 ID -> 错误提示
         let invalidArgs = "{\"id\":\"../evil_path\"}"
-        let invalidOut = try await ToolExecutionContext.$sessionID.withValue(sID) {
-            try await recallTool.execute(arguments: invalidArgs, profile: .workspace)
-        }
-        #expect(invalidOut.contains("Invalid ContextObjectID format"))
+        let invalidOut = await runtime.execute(ToolCall(callID: ToolCallID("invalid"), toolID: ToolID("context_recall"), arguments: invalidArgs), sessionID: sID)
+        #expect(!invalidOut.success && (invalidOut.error?.message ?? "").contains("Invalid ContextObjectID format"))
     }
 
     @Test func observationProjectionFeatureFlagDisabled() async {

@@ -1095,6 +1095,7 @@ public enum SessionReducer {
             return ContextStateSnapshot(
                 sessionID: sessionID,
                 revision: revision,
+                modelWindowTokens: existing?.modelWindowTokens,
                 pCore: PCoreStateSnapshot(usedTokens: 0, targetTokens: existing?.pCore?.targetTokens ?? 0, softLimitTokens: existing?.pCore?.softLimitTokens ?? 0, hardLimitTokens: existing?.pCore?.hardLimitTokens ?? 0),
                 eCore: ECoreStateSnapshot(objectCount: 0, totalBytes: 0, revision: revision),
                 providerCache: ProviderCacheStateSnapshot(promptTokens: 0, previousPromptTokens: 0, cacheReadTokens: 0, cacheDebt: 0)
@@ -1122,6 +1123,7 @@ public enum SessionReducer {
             return ContextStateSnapshot(
                 sessionID: existing.sessionID,
                 revision: max(existing.revision, patch.revision),
+                modelWindowTokens: existing.modelWindowTokens,
                 pCore: mergedPCore,
                 eCore: mergedECore,
                 providerCache: mergedCache,

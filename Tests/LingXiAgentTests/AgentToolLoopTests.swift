@@ -326,14 +326,14 @@ struct AgentToolLoopTests {
         #expect(snapshot.messages.last?.content == "无法读取，权限被拒绝。")
     }
 
-    @Test func stepLimitFailsInsteadOfLoopingForever() async throws {
+    @Test func explicitlyConfiguredStepLimitTerminatesRepeatedCalls() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         try "Loop".write(to: root.appendingPathComponent("README.md"), atomically: false, encoding: .utf8)
         let provider = ScriptedFakeProvider(script: [[
             .toolCallStarted(callID: call().callID, toolID: call().toolID), .toolCallCompleted(call()), .completed(.toolCalls),
         ]])
-        let client = try await makeClient(root: root, provider: provider, permission: .allow)
+        let client = try await makeClient(root: root, provider: provider, permission: .allow, maxAgentLoopSteps: 8)
         let (capture, eventTask) = await collectEvents(client)
         defer { eventTask.cancel() }
 
@@ -352,7 +352,7 @@ struct AgentToolLoopTests {
         }
         #expect(failure.error.code == .agentStepLimitReached)
         #expect(provider.recorder.requests.count == 8)
-        #expect(failure.error.message.contains("检测到无进展死循环"))
+        #expect(failure.error.message.contains("超过上限"))
     }
 
     @Test func maxStepsReachedProvidesDetailedExplanationWithStepLastCallAndObservation() async throws {

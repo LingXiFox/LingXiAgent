@@ -575,6 +575,8 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     // 权威规范运行时存储属性 (Canonical Runtime Storage)
     public let sessionID: SessionID
     public let revision: UInt64
+    /// Active runtime window; catalog maxima are not a runtime budget.
+    public let modelWindowTokens: Int?
     public let pCore: PCoreStateSnapshot?
     public let eCore: ECoreStateSnapshot?
     public let providerCache: ProviderCacheStateSnapshot?
@@ -658,6 +660,7 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     public init(
         sessionID: SessionID,
         revision: UInt64 = 0,
+        modelWindowTokens: Int? = nil,
         pCore: PCoreStateSnapshot? = nil,
         eCore: ECoreStateSnapshot? = nil,
         providerCache: ProviderCacheStateSnapshot? = nil,
@@ -689,6 +692,7 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     ) {
         self.sessionID = sessionID
         self.revision = revision
+        self.modelWindowTokens = modelWindowTokens
 
         // Adapt pCore
         if let pCore {
@@ -751,6 +755,7 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case sessionID
         case revision
+        case modelWindowTokens
         case pCore
         case eCore
         case providerCache
@@ -793,6 +798,7 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
             self.sessionID = try container.decode(SessionID.self, forKey: .sessionID)
         }
         self.revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
+        self.modelWindowTokens = try container.decodeIfPresent(Int.self, forKey: .modelWindowTokens)
         self.estimatedTokens = try container.decodeIfPresent(Int.self, forKey: .estimatedTokens) ?? 0
         self.compactionGeneration = try container.decodeIfPresent(Int.self, forKey: .compactionGeneration) ?? 0
 
@@ -871,6 +877,7 @@ public struct ContextStateSnapshot: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sessionID, forKey: .sessionID)
         try container.encode(revision, forKey: .revision)
+        try container.encodeIfPresent(modelWindowTokens, forKey: .modelWindowTokens)
         try container.encodeIfPresent(pCore, forKey: .pCore)
         try container.encodeIfPresent(eCore, forKey: .eCore)
         try container.encodeIfPresent(providerCache, forKey: .providerCache)

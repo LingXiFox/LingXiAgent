@@ -226,7 +226,7 @@ extension CoreHost {
     /// Two targets, both reached through the controller that owns them, so no other constructor in
     /// the product has to learn that debug mode exists. Passing nil detaches, which is what makes
     /// the disabled path a plain nil check at each recording site rather than a flag test.
-    private func propagateDebugHub(_ hub: DebugTelemetryHub?) async {
+    func propagateDebugHub(_ hub: DebugTelemetryHub?) async {
         await cacheController.attachDebugHub(hub)
         await cacheController.ecoreStore.attachDebugHub(hub)
         // Loop verdicts are already traced by the session; with debug on they also become

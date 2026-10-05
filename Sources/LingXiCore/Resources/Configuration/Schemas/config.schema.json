@@ -110,7 +110,7 @@
           "type": "integer",
           "minimum": 0,
           "default": 0,
-          "description": "0 disables the fixed step ceiling; positive values set an explicit hard budget. Cancellation, deadlines and no-progress protection still apply."
+          "description": "0 disables the fixed step ceiling; positive values set an explicit hard budget. Cancellation, deadlines and execution safety still apply. Repeated failures produce advisory observations, not automatic termination."
         }
       },
       "required": [

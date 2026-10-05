@@ -576,8 +576,7 @@ public actor CoreHost: CoreEndpoint, LingXiProtocolService {
         // A mode restored from disk has to reach the recording sites the same way a live toggle
         // does; init cannot await, so this is where the two paths converge.
         if let restoredHub = debugHub {
-            await cacheController.attachDebugHub(restoredHub)
-            await cacheController.ecoreStore.attachDebugHub(restoredHub)
+            await propagateDebugHub(restoredHub)
         }
         await diagnosticsStore.record(kind: .core, event: "core.start.begin", metadata: ["interactive": String(interactive)])
         // 快照来源必须先接到插件宿主层，再开始发现插件进程：否则第一批插件会在
@@ -2608,6 +2607,7 @@ extension CoreHost {
         return ContextStateSnapshot(
             sessionID: sessionID,
             revision: contextRevision,
+            modelWindowTokens: runtimeContext.snapshot().assembly?.contextProfile.contextWindowTokens ?? policy.modelWindow,
             pCore: pCoreSnapshot,
             eCore: eCoreSnapshot,
             providerCache: providerCacheSnapshot,

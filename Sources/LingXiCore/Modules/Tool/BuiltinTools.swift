@@ -598,7 +598,7 @@ public struct ContextRecallTool: ToolExecutor {
         }
         let input: Input = try decodeArguments(arguments)
         guard let store = ecoreStore else {
-            return "Error: E-Core object store is not configured."
+            throw CoreError(code: .toolExecutionFailed, message: "E-Core object store is not configured.")
         }
         // A model may send `"session_id": ""`, which would otherwise outrank the real session and
         // make every archived object invisible: only a non-blank value may select the bucket.
@@ -612,13 +612,13 @@ public struct ContextRecallTool: ToolExecutor {
         if let recallRef {
             objectID = recallRef.objectID
         } else if input.id.hasPrefix("ref_") {
-            return await unavailable(store: store, sessionID: sID, headline: "Context reference '\(input.id)' not found in session '\(sID.rawValue)'.")
+            throw CoreError(code: .toolExecutionFailed, message: await unavailable(store: store, sessionID: sID, headline: "Context reference '\(input.id)' not found in session '\(sID.rawValue)'."))
         } else {
             do {
                 objectID = try ContextObjectID(input.id)
             } catch {
-                return await unavailable(store: store, sessionID: sID,
-                    headline: "Error: Invalid ContextObjectID format '\(input.id)'")
+                throw CoreError(code: .toolArgumentInvalid, message: await unavailable(store: store, sessionID: sID,
+                    headline: "Error: Invalid ContextObjectID format '\(input.id)'"))
             }
         }
 
@@ -632,11 +632,11 @@ public struct ContextRecallTool: ToolExecutor {
 
         guard let chunk else {
             if recallRef != nil { await store.noteLifecycle(sessionID: sID, phase: .recallRejected, referenceID: input.id, reason: "payloadMissing") }
-            return await unavailable(
+            throw CoreError(code: .toolExecutionFailed, message: await unavailable(
                 store: store,
                 sessionID: sID,
                 headline: "Context object '\(input.id)' not found in session '\(sID.rawValue)'."
-            )
+            ))
         }
 
         // Reading a range and restoring the whole historical unit are different requests. A range
@@ -658,15 +658,14 @@ public struct ContextRecallTool: ToolExecutor {
         await store.queueRecallAdmission(RecallRequest(referenceID: recallRef.referenceID,
             offsetBytes: chunk.offsetBytes, limitBytes: chunk.lengthBytes, limitLines: input.limitLines,
             admissionMode: mode), sessionID: sID)
-        // The grant is made once: the payload enters the next request as the restored occurrence,
-        // so this result stays an acknowledgement instead of smuggling a second copy of itself.
+        // Resolution queues an intent; the next assembly decides admission against the real budget.
         return """
         \(RecallOutput.occurrence) \(recallRef.referenceID)]
         Object: \(recallRef.objectID.rawValue)
         Lines: 1 - \(chunk.totalLines) of \(chunk.totalLines)
         Bytes: 0 - \(chunk.totalBytes) of \(chunk.totalBytes)
         Admission: \(mode.rawValue)
-        Payload: granted as the restored occurrence on the next step; it is not repeated here.
+        Payload: pending admission on the next step; this acknowledgement contains no restored payload.
         """
     }
 

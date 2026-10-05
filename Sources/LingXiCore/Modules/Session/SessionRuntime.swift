@@ -430,7 +430,6 @@ public actor SessionRuntime {
         var finalReason: ModelFinishReason?
         var completionGuard = ActionCompletionGuard(task: task)
         var nextToolChoice: ToolChoice = .auto
-        var deterministicFailures: [String: String] = [:]
         let executionProfile = self.executionProfile
 
         do {
@@ -455,10 +454,7 @@ public actor SessionRuntime {
                     }
                 }
             }
-            var lastCallBatchSignature: String?
-            var consecutiveIdenticalBatches = 0
             var loopTracker = ToolLoopProgressTracker()
-            var consecutiveEmptyBatches = 0
             var lastExecutedCall: ToolCall?
             var lastObservedContent: String?
             var pendingLifecycleTraces: [ToolLifecycleTrace] = []
@@ -469,7 +465,7 @@ public actor SessionRuntime {
                 try Task.checkCancellation()
                 // Only an explicitly configured budget limits useful model work. The single
                 // corrective request does not consume that budget; cancellation, deadlines and
-                // evidence-based no-progress checks remain active without a step ceiling.
+                // execution-safety checks remain active without a step ceiling.
                 if let maximumAgentSteps,
                    step - (completionGuard.retriedRequired ? 1 : 0) >= maximumAgentSteps {
                     let lastCallDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
@@ -686,11 +682,18 @@ public actor SessionRuntime {
                 finalEntries = await compactor.projectIndex(sessionID: sessionID, entries: finalEntries, hardInputLimit: budget.hardInputLimit, query: activeTaskText.isEmpty ? task : activeTaskText)
                 finalTokens = ConservativeTokenEstimator().estimate(entries: finalEntries)
                 if await cacheController.ecoreStore.lifecycleSnapshot(sessionID: sessionID).recallAdmitted > admissionsBefore { try await persistCompaction() }
+                // Use only remaining soft/hard headroom after all normal content has been admitted.
+                // A warning cannot trigger eviction, register residency, or become an E-Core object.
+                let warningHeadroom = min(budget.hardInputLimit, cacheController.policy.pCoreSoftLimit) - finalTokens
+                let orchestratorWarning = loopTracker.projection(availableTokens: warningHeadroom)
+                let warningTokens = orchestratorWarning.map { ConservativeTokenEstimator().estimate(text: $0) + 4 } ?? 0
+                finalTokens += warningTokens
+                if orchestratorWarning != nil { trace("agent.loop.warning_projected", step: step + 1) }
                 await cacheController.recordProviderInputTokens(sessionID: sessionID, tokens: finalTokens)
                 await syncPCoreResidentAccounting(with: finalEntries)
                 let context = await contextEngine.snapshot(for: session, activeEntries: finalEntries, systemContext: systemContext, estimatedTokens: finalTokens, mandatoryTokens: compacted.mandatoryFloor, liveToolBatchCount: toolBatches.filter { $0.state != .consumed }.count, compactionGeneration: compactionGeneration)
 
-                let manifestEntries: [ContextManifestEntry] = finalEntries.compactMap { entry in
+                var manifestEntries: [ContextManifestEntry] = finalEntries.compactMap { entry in
                     let tokenCount = ConservativeTokenEstimator().estimate(text: ContextCompactor.content(of: entry.part))
                     let sourceKind: String
                     let origin: String
@@ -754,6 +757,11 @@ public actor SessionRuntime {
                         cacheProvenance: cacheProvenance
                     )
                 }
+                if orchestratorWarning != nil {
+                    manifestEntries.append(ContextManifestEntry(sourceKind: "Orchestrator Warning", sourceID: "turn-local",
+                        origin: "volatileTail", tokenCount: warningTokens, inclusionReason: "Bounded execution observations",
+                        cacheProvenance: "volatileTail"))
+                }
                 let manifest = ProviderContextManifest(
                     sessionID: sessionID,
                     step: step + 1,
@@ -803,7 +811,7 @@ public actor SessionRuntime {
 
                 let systemPinnedTokens = context.entries.filter { $0.source == .system }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
                 let currentTurnTokens = context.entries.filter { $0.messageID == userTurnID }.reduce(0) { $0 + ConservativeTokenEstimator().estimate(entries: [$1]) }
-                let pCoreTokens = max(0, finalTokens - systemPinnedTokens - currentTurnTokens)
+                let pCoreTokens = max(0, finalTokens - warningTokens - systemPinnedTokens - currentTurnTokens)
 
                 let fingerprint = computePrefixFingerprint(
                     systemContext: systemContext,
@@ -815,7 +823,7 @@ public actor SessionRuntime {
                     userTurnID: userTurnID
                 )
                 let approxPrefixBytes = (systemContext?.utf8.count ?? 0) + coreTools.reduce(0) { $0 + $1.name.utf8.count + $1.description.utf8.count + 120 }
-                let approxVolatileBytes = currentTurnTokens * 4
+                let approxVolatileBytes = currentTurnTokens * 4 + (orchestratorWarning?.utf8.count ?? 0)
                 let historySignatures = historySignatureTexts(context.entries, userTurnID: userTurnID) { $0 == .system }
                 // Built here and reused by `cacheEpoch` below. This string was already assembled
                 // once per turn for the epoch hash; naming it adds no work, and passing it along is
@@ -850,7 +858,7 @@ public actor SessionRuntime {
                     ),
                     volatileTail: CanonicalCachePlan.VolatileTail(
                         currentTurnState: nil,
-                        ephemeralNotes: nil
+                        ephemeralNotes: orchestratorWarning
                     ),
                     structuralHealth: clientHealth
                 )
@@ -859,7 +867,9 @@ public actor SessionRuntime {
                     continuationOf: effectiveContinuationID,
                     model: try modelID(),
                     executionID: runID,
-                    messages: requestMessages,
+                    messages: requestMessages + (orchestratorWarning.map {
+                        [ModelMessage(role: .user, content: $0, segment: .orchestratorWarning)]
+                    } ?? []),
                     tools: effectiveTools,
                     toolChoice: nextToolChoice,
                     reasoning: effectiveReasoning,
@@ -893,7 +903,7 @@ public actor SessionRuntime {
                 let cacheTelemetry = ProviderCacheTelemetry(
                     stablePrefixTokens: systemPinnedTokens + toolSchemaTokens,
                     reusableHistoryTokens: pCoreTokens,
-                    volatileTailTokens: currentTurnTokens + providerFramingTokens,
+                    volatileTailTokens: currentTurnTokens + warningTokens + providerFramingTokens,
                     epoch: epochInfo
                 )
                 let triggerReason = request.toolChoice == .required ? "action_required_retry" : step == 0 ? "initial_turn_prompt" : "tool_result_continuation"
@@ -1219,12 +1229,7 @@ public actor SessionRuntime {
                 for (offset, call) in calls.enumerated() {
                     await eventSink(.toolCallCompleted(call.withProvenance(sessionID: sessionID, agentRunID: runID, modelStepID: currentModelStepID)))
                     trace("tool.execute.begin", step: step + 1, toolCallID: call.callID)
-                    if signatures[offset] == nil, let failureSignature = deterministicFailures[failureKey(for: call)] {
-                        let outcome = repeatedFailureOutcome(for: call, signature: failureSignature)
-                        outcomes[offset] = outcome
-                        await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
-                        publishedOutcomes.insert(offset)
-                    } else if let signature = signatures[offset], let primary = primaryByEpoch[signature]?[waves[offset]] {
+                    if let signature = signatures[offset], let primary = primaryByEpoch[signature]?[waves[offset]] {
                         primaryByIndex[offset] = primary
                     } else {
                         if let signature = signatures[offset] { primaryByEpoch[signature, default: [:]][waves[offset]] = offset }
@@ -1308,9 +1313,6 @@ public actor SessionRuntime {
                         trace("tool.execute.end", step: step + 1, toolCallID: call.callID)
                         await publishCompletedTool(outcome, batchID: batchID, modelStepID: currentModelStepID)
                     }
-                    if let error = result.error, isDeterministicFailure(result) {
-                        deterministicFailures[failureKey(for: call)] = "\(error.code):\(error.message)"
-                    }
                 }
                 trace("session.parts.append.begin", step: step + 1, toolCount: settled.count)
                 // Phase 1A E-Core Sidecar Storage (Fail-Open):
@@ -1346,50 +1348,24 @@ public actor SessionRuntime {
                     )
                 }
 
-                // No-progress verdict, decided before the results reach the model so a soft
-                // warning can travel with them. A blocker, not a batch, is the unit of judgment:
-                // successful siblings may neither erase a repeat nor count as progress.
-                let loopVerdict = loopTracker.record(zip(calls, settled).map { call, outcome in
-                    let result = outcome.result
-                    let error = result.error
-                    // A repeat the runtime already blocked is the original failure again, so it
-                    // counts towards the exact-duplicate rule rather than reading as a new failure.
-                    let signature = result.metadata["repeatBlocked"] == "true"
-                        ? result.metadata["errorSignature"]
-                        : error.map { "\($0.code):\($0.message)" }
-                    return ToolLoopProgressTracker.CallOutcome(
-                        callKey: failureKey(for: call),
-                        succeeded: result.success,
-                        errorMessage: result.success ? nil : signature,
-                        exitCode: result.exitCode,
-                        evidence: ToolLoopProgressTracker.evidence(toolName: call.toolID.rawValue, success: result.success,
-                                                                  mutatedPaths: result.fileMutations.map(\.path),
-                                                                  exitCode: result.exitCode))
-                })
-                recordLoopVerdict(loopVerdict, step: step + 1)
-                // The persisted results are what the next request is built from, so the warning has
-                // to be written here; a note added after persistence never reaches the model.
                 let allEmptyResults = settled.allSatisfy { outcome in
                     let content = outcome.result.content.trimmingCharacters(in: .whitespacesAndNewlines)
                     return content == "[]" || content == "[] (empty list)" || content.contains("0 tools found") || content.contains("No tools found") || (content.isEmpty && outcome.result.error == nil)
                 }
-                if allEmptyResults {
-                    consecutiveEmptyBatches += 1
-                } else {
-                    consecutiveEmptyBatches = 0
-                }
-                let deliveredResults: [ToolResult] = settled.map { outcome in
-                    guard outcome.result.callID == settled.last?.result.callID else { return outcome.result }
-                    var result = outcome.result
-                    if consecutiveEmptyBatches >= 2 {
-                        let note = "\n[System note: The tool or resource query returned empty results. Do NOT repeatedly retry with slight keyword variations. If the capability or tool is unavailable, please skip this step or report directly to the user.]"
-                        result = result.withContent(result.content + note)
-                    }
-                    if case let .softWarning(_, message) = loopVerdict {
-                        result = result.withContent(result.content + "\n[System note: \(message)]")
-                    }
-                    return result
-                }
+                let loopVerdict = loopTracker.record(zip(calls, settled).map { call, outcome in
+                    let result = outcome.result
+                    return ToolLoopProgressTracker.CallOutcome(
+                        callKey: failureKey(for: call),
+                        succeeded: result.success,
+                        errorMessage: result.success ? nil : result.error.map { "\($0.code):\($0.message)" },
+                        exitCode: result.exitCode,
+                        evidence: ToolLoopProgressTracker.evidence(toolName: call.toolID.rawValue, success: result.success,
+                                                                  mutatedPaths: result.fileMutations.map(\.path),
+                                                                  exitCode: result.exitCode))
+                }, emptyResults: allEmptyResults)
+                recordLoopVerdict(loopVerdict, step: step + 1)
+                // Preserve execution truth. Observations live only in the next request's volatile tail.
+                let deliveredResults = settled.map(\.result)
 
                 let resultMessage: Message
                 if persistence != nil { resultMessage = Message(id: MessageID(UUID().uuidString), role: .tool, parts: deliveredResults.map { .toolResult($0) }, createdAt: .now) }
@@ -1418,40 +1394,6 @@ public actor SessionRuntime {
 
                 lastExecutedCall = calls.last
                 lastObservedContent = settled.last?.result.content
-
-                // No-progress detection:
-                let batchSignature = calls.map { "\($0.toolID.rawValue):\($0.arguments)" }.joined(separator: ";")
-                if batchSignature == lastCallBatchSignature {
-                    consecutiveIdenticalBatches += 1
-                } else {
-                    lastCallBatchSignature = batchSignature
-                    consecutiveIdenticalBatches = 1
-                }
-
-                if case let .hardStop(kind, message) = loopVerdict {
-                    let callDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
-                    let label = kind == .exactDuplicate ? "完全重复的失败调用" : "多策略同一阻塞且提示后无进展"
-                    throw CoreError(
-                        code: .agentStepLimitReached,
-                        message: "Agent Tool Loop 检测到无进展死循环（\(label)）：\(message) · 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc)"
-                    )
-                }
-
-                if consecutiveEmptyBatches >= 4 {
-                    let callDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
-                    throw CoreError(
-                        code: .agentStepLimitReached,
-                        message: "Agent 检测到连续 \(consecutiveEmptyBatches) 次工具或搜索返回空结果，已主动停止盲目重试。建议跳过不可用能力或向用户汇报。· 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc)"
-                    )
-                }
-
-                if consecutiveIdenticalBatches >= 8 {
-                    let callDesc = lastExecutedCall.map { "\($0.toolID.rawValue) \($0.arguments.prefix(80))" } ?? "none"
-                    throw CoreError(
-                        code: .agentStepLimitReached,
-                        message: "Agent Tool Loop 检测到无进展死循环：连续 \(consecutiveIdenticalBatches) 次调用完全相同的 ToolCall · 当前 step: \(step + 1) · 最后 ToolCall: \(callDesc) · 最后 observation: \(String((lastObservedContent ?? "").prefix(80)))"
-                    )
-                }
             }
         } catch let error as StaleRunError {
             logDiagnostic("session.stale_run_dropped sessionID=\(error.sessionID.rawValue) expected=\(error.expected) actual=\(error.actual)")
@@ -1585,8 +1527,6 @@ public actor SessionRuntime {
             event = "agent.loop.failure_cluster"; metadata["strategies"] = String(strategies)
         case .softWarning(let strategies, _):
             event = "agent.loop.soft_warning"; metadata["strategies"] = String(strategies)
-        case .hardStop(let kind, _):
-            event = "agent.loop.hard_stop"; metadata["rule"] = kind.rawValue
         }
         let executionID = activeExecution?.id.uuidString
         Task { await diagnostics?.record(kind: .agentRun, event: event, sessionID: sessionID, runID: runID, rootRunID: rootRunID,
@@ -1595,48 +1535,6 @@ public actor SessionRuntime {
 
     private func failureKey(for call: ToolCall) -> String {
         "\(call.toolID.rawValue)|\(call.arguments)"
-    }
-
-    private func isDeterministicFailure(_ result: ToolResult) -> Bool {
-        guard !result.success, let error = result.error else { return false }
-        if result.outcome == .timedOut || result.outcome == .idleTimedOut || result.outcome == .cancelled { return false }
-        return [
-            CoreError.Code.toolNotFound.rawValue,
-            CoreError.Code.toolArgumentInvalid.rawValue,
-            CoreError.Code.toolValidationError.rawValue,
-            CoreError.Code.permissionDenied.rawValue,
-            CoreError.Code.workspaceViolation.rawValue,
-            CoreError.Code.resourceNotFound.rawValue,
-            CoreError.Code.resourceOutsideWorkspace.rawValue,
-            CoreError.Code.symlinkEscape.rawValue,
-            CoreError.Code.binaryFileUnsupported.rawValue,
-            CoreError.Code.contentChanged.rawValue,
-            CoreError.Code.ambiguousEdit.rawValue,
-            CoreError.Code.invalidPatch.rawValue,
-            CoreError.Code.patchConflict.rawValue,
-            CoreError.Code.editTargetNotFound.rawValue
-        ].contains(error.code)
-    }
-
-    private func repeatedFailureOutcome(for call: ToolCall, signature: String) -> ToolRuntime.ExecutionOutcome {
-        let message = "相同 ToolID 和参数已再次产生确定性失败，已阻止原样重试；请更换策略或先修复原因。"
-        return ToolRuntime.ExecutionOutcome(
-            result: ToolResult(
-                callID: call.callID,
-                success: false,
-                content: message,
-                error: ToolError(code: "deterministicFailureRepeated", message: message),
-                toolName: call.toolID.rawValue,
-                outcome: .failure,
-                summary: "repeat blocked",
-                metadata: ["repeatBlocked": "true", "errorSignature": signature, "retryability": Retryability.none.rawValue]
-            ),
-            permissionWait: .zero,
-            permissionAsked: false,
-            execution: .zero,
-            toolName: call.toolID.rawValue,
-            resource: nil
-        )
     }
 
     /// A smaller runtime window changes thresholds, not retention scoring or stored messages.

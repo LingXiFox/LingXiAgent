@@ -47,7 +47,7 @@ func pCoreRegion(of entry: ContextEntry) -> PCoreRegion {
     switch entry.segment {
     case .immutableInstructions: return .stablePrefix
     case .eCoreRetrievalProjection: return .eCoreIndex
-    case .retrievalData, .recalledOccurrence, .admittedToolResult: return .growingContext
+    case .retrievalData, .recalledOccurrence, .admittedToolResult, .orchestratorWarning: return .growingContext
     case .conversation: return entry.source.pCoreRegion
     }
 }
@@ -98,7 +98,7 @@ extension ContextEntry {
     /// question, so its lines change when the query changes even when nothing in the conversation
     /// moved. Counting it as history would report "the index refreshed" as "the past was rewritten".
     func countsAsDurableHistory(userTurnID: MessageID?) -> Bool {
-        guard segment != .eCoreRetrievalProjection else { return false }
+        guard segment != .eCoreRetrievalProjection, segment != .orchestratorWarning else { return false }
         guard let messageID else { return true }
         return messageID != userTurnID
     }

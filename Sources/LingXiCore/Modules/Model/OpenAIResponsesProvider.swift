@@ -156,8 +156,11 @@ public struct OpenAIResponsesProvider: ModelProvider {
         // Remote stored history cannot remove E-Core-only occurrences or admit a
         // historical recall by sending only the newest tool tail. Rebase onto the
         // authoritative assembled context when these segments are present.
-        let previousResponseID = request.providerContextMessages.contains { $0.segment != .conversation } ? nil : previousResponseID
-        let messages = previousResponseID == nil ? request.providerContextMessages : continuationMessages(request)
+        // Stored remote history has no transient-input channel. Keep warnings telemetry-only there;
+        // persisting them or rebasing merely to clear them would violate their cache/lifetime contract.
+        let contextMessages = request.providerContextMessages.filter { !store || $0.segment != .orchestratorWarning }
+        let previousResponseID = contextMessages.contains { $0.segment != .conversation } ? nil : previousResponseID
+        let messages = previousResponseID == nil ? contextMessages : continuationMessages(contextMessages)
         let input = messages.flatMap { message -> [ResponseRequestBody.Input] in
             let calls = message.parts.compactMap { if case let .toolCall(call) = $0 { call } else { nil } }
             let results = message.parts.compactMap { if case let .toolResult(result) = $0 { result } else { nil } }
@@ -172,7 +175,7 @@ public struct OpenAIResponsesProvider: ModelProvider {
                 if !message.content.isEmpty { items.append(.message(role: "assistant", content: message.content)) }
                 let byID = Dictionary(uniqueKeysWithValues: calls.map { ($0.callID, $0) })
                 let ordered = continuation?.orderedItems ?? []
-                if request.reasoning != nil, !ordered.isEmpty, ordered.contains(where: { if case let .toolCall(id) = $0 { byID[id] != nil } else { false } }) {
+                if request.reasoning != "off" && request.reasoning != "none", !ordered.isEmpty, ordered.contains(where: { if case let .toolCall(id) = $0 { byID[id] != nil } else { false } }) {
                     for item in ordered {
                         switch item {
                         case let .opaque(data): items.append(.opaque(data))
@@ -241,15 +244,15 @@ public struct OpenAIResponsesProvider: ModelProvider {
         try decoder.consume(payload)
     }
 
-    private static func continuationMessages(_ request: ModelRequest) -> [ModelMessage] {
-        if let callIndex = request.messages.lastIndex(where: { message in
+    private static func continuationMessages(_ messages: [ModelMessage]) -> [ModelMessage] {
+        if let callIndex = messages.lastIndex(where: { message in
             message.role == .assistant && message.parts.contains { if case .toolCall = $0 { true } else { false } }
         }) {
-            return Array(request.messages.suffix(from: request.messages.index(after: callIndex)))
+            return Array(messages.suffix(from: messages.index(after: callIndex)))
         }
-        let lastUser = request.messages.lastIndex { $0.role == .user }
-        guard let toolIndex = request.messages.lastIndex(where: { $0.role == .tool }), lastUser == nil || toolIndex > lastUser! else { return [] }
-        return [request.messages[toolIndex]]
+        let lastUser = messages.lastIndex { $0.role == .user }
+        guard let toolIndex = messages.lastIndex(where: { $0.role == .tool }), lastUser == nil || toolIndex > lastUser! else { return [] }
+        return [messages[toolIndex]]
     }
 
     private static func logRequest(_ request: URLRequest, step: Int?, localContinuation: Bool, enabled: Bool) {

@@ -31,9 +31,10 @@ import LingXiProtocol
         #expect(meta != nil)
 
         let tool = ContextRecallTool(ecoreStore: store)
-        let output = try await ToolExecutionContext.$sessionID.withValue(session) {
-            try await tool.execute(arguments: #"{"id":"previous-shell-output","session_id":""}"#, profile: .workspace)
-        }
+        let runtime = ToolRuntime(registry: ToolRegistry([tool]), permissions: PermissionEngine(defaultDecision: .allow))
+        let result = await runtime.execute(ToolCall(callID: ToolCallID("missing"), toolID: ToolID("context_recall"), arguments: #"{"id":"previous-shell-output","session_id":""}"#), sessionID: session)
+        #expect(!result.success)
+        let output = result.error?.message ?? result.content
         #expect(output.contains("Archived objects available now"))
         #expect(output.contains(meta?.objectID.rawValue ?? "¤"))
         #expect(!output.contains("no archived objects"))
@@ -44,9 +45,10 @@ import LingXiProtocol
         let (store, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
         let tool = ContextRecallTool(ecoreStore: store)
-        let output = try await ToolExecutionContext.$sessionID.withValue(SessionID("s-recall-empty")) {
-            try await tool.execute(arguments: #"{"id":"previous-shell-output"}"#, profile: .workspace)
-        }
+        let runtime = ToolRuntime(registry: ToolRegistry([tool]), permissions: PermissionEngine(defaultDecision: .allow))
+        let result = await runtime.execute(ToolCall(callID: ToolCallID("missing"), toolID: ToolID("context_recall"), arguments: #"{"id":"previous-shell-output"}"#), sessionID: SessionID("s-recall-empty"))
+        #expect(!result.success)
+        let output = result.error?.message ?? result.content
         #expect(output.contains("no archived objects"))
         #expect(!output.contains("Archived objects available now"))
     }

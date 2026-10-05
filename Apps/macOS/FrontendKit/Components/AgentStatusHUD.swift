@@ -397,21 +397,10 @@ struct AgentStatusHUD: View {
         return Double(used) / Double(budget)
     }
 
-    /// What the active context is measured against: the most a single model request can
-    /// carry — the model's own window, or the P-Core hard limit when Core reports a smaller one.
-    /// `addressableBudget` (which also counts E-Core storage the model never sees in one
-    /// request) is only the last fallback.
-    ///
-    /// The ring that "always read 0%" was not a placeholder: a gpt-5.6-luna window is 1.05M
-    /// tokens, a working session sits at 0.3% of it, and `percent` rounded that to an integer.
+    /// Context is measured against the active runtime, independently of the P-Core scheduler limit.
     private var contextBudget: Int? {
-        let limits = [live?.contextPolicy?.pCoreHardLimit, contextWindow].compactMap { $0 }.filter { $0 > 0 }
-        return limits.min() ?? live?.contextPolicy?.addressableBudget
-    }
-
-    private var contextWindow: Int? {
-        guard let selected = composer.selectedModelID else { return nil }
-        return composer.models.first { $0.matches(selection: selected) }.flatMap { $0.contextWindow > 0 ? $0.contextWindow : nil }
+        guard let window = live?.context?.modelWindowTokens, window > 0 else { return nil }
+        return window
     }
 
     private var pCoreUsage: Double? {

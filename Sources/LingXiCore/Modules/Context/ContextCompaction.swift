@@ -39,7 +39,16 @@ public struct ConservativeTokenEstimator: TokenEstimator {
     public init() {}
     public func estimate(text: String) -> Int { max(1, (text.utf8.count + 2) / 3) }
     public func estimate(entries: [ContextEntry]) -> Int {
-        entries.reduce(0) { $0 + estimate(text: ContextCompactor.content(of: $1.part)) + 4 }
+        entries.reduce(0) { total, entry in
+            let text: String
+            if (entry.segment == .recalledOccurrence || entry.segment == .admittedToolResult),
+               case let .toolResult(result) = entry.part {
+                text = ModelToolResultProjection.project(result, segment: entry.segment).content
+            } else {
+                text = ContextCompactor.content(of: entry.part)
+            }
+            return total + estimate(text: text) + 4
+        }
     }
     public func estimate(tools: [ToolDefinition]) -> Int {
         tools.reduce(0) { total, tool in total + estimate(tool: tool) }
@@ -1020,7 +1029,7 @@ public actor ContextCompactor {
     /// 仍可由 `context_recall` 按 summary 召回 —— 极端压力下先牺牲索引，不牺牲正文。
     public static let eCoreIndexMessageID = MessageID("ecore:index")
     private static let eCoreIndexHeader = "[E-Core index]"
-    private static let eCoreIndexGuide = "以下内容已移出当前上下文，完整载荷在 E-Core；按 reference 精确取回，不要凭摘要重构。"
+    private static let eCoreIndexGuide = "以下 references 指向 E-Core 存档；activeSlice 表示仅部分载荷已恢复，其余仍在 E-Core。按 reference 精确取回，不要凭摘要重构。"
     private static let eCoreIndexLineLimit = 8
     /// 索引是投影不是正文：最多占输入预算的 1/8，且绝对值不超过 512 tokens。
     public static func eCoreIndexTokenAllowance(hardInputLimit: Int) -> Int {
@@ -1033,21 +1042,51 @@ public actor ContextCompactor {
         // Reuse the existing retrieval ranking; the projection owns only selection size.
         let related = await ecoreStore.searchReferences(sessionID: sessionID, query: query, limit: Self.eCoreIndexLineLimit, recordTelemetry: false)
         let recent = await ecoreStore.references(sessionID: sessionID)
+        let requests = await ecoreStore.recallQueue(sessionID: sessionID)
+        let requestByRef = Dictionary(uniqueKeysWithValues: requests.map { ($0.referenceID, $0) })
+        let activeIDs = Set(kept.compactMap(\.messageID))
+        let states = unitResidencies[sessionID] ?? [:]
+        let occurrenceIDs = occurrenceMessageIDs[sessionID] ?? [:]
+        var idsByRef = occurrenceIDs
+        for state in states.values {
+            guard let ref = state.derivedPageID, occurrenceIDs[ref] == nil else { continue }
+            idsByRef[ref, default: []].insert(state.messageID)
+        }
+        // Presence in this assembly, not a past grant, determines what the model already has.
+        func isResident(_ reference: ECoreReference) -> Bool {
+            if activeIDs.contains(MessageID(reference.referenceID)) { return true }
+            let ids = idsByRef[reference.referenceID] ?? []
+            return !ids.isEmpty && ids.isSubset(of: activeIDs)
+        }
         var seen = Set<String>()
-        let references = Array((related + recent).filter { seen.insert($0.contextOccurrenceID).inserted }.prefix(Self.eCoreIndexLineLimit))
-        guard !references.isEmpty else { return nil }
+        let references = Array((related + recent).filter {
+            guard seen.insert($0.contextOccurrenceID).inserted else { return false }
+            return !isResident($0) || requestByRef[$0.referenceID]?.projection?.isComplete == false
+        }.prefix(Self.eCoreIndexLineLimit))
         let keptTokens = estimator.estimate(entries: kept)
         let allowance = Self.eCoreIndexTokenAllowance(hardInputLimit: hardInputLimit)
         let ceiling = min(hardInputLimit, keptTokens + allowance)
         var lines: [String] = []
-        for reference in references {
-            lines.append(Self.indexLine(for: reference))
-            if let entry = Self.indexEntry(header: Self.eCoreIndexHeader + "\n" + Self.eCoreIndexGuide, lines: lines),
+        // Admission failures share the existing fixed projection budget, never SessionStore or E-Core payloads.
+        let rejected = requests.filter { $0.state == .rejected }.suffix(2)
+        let candidates = rejected.map {
+            "- recall reference=\($0.referenceID) admission=rejected reason=\(($0.reason ?? "unknown").prefix(160))"
+        } + references.map { reference in
+            var line = Self.indexLine(for: reference)
+            if isResident(reference), let range = requestByRef[reference.referenceID]?.projection, !range.isComplete {
+                line += " state=activeSlice bytes=\(range.offsetBytes)-\(range.endBytes)/\(range.totalBytes)"
+            }
+            return line
+        }
+        let header = Self.eCoreIndexHeader + "\n" + Self.eCoreIndexGuide
+        for line in candidates {
+            lines.append(line)
+            if let entry = Self.indexEntry(header: header, lines: lines),
                estimator.estimate(entries: [entry]) <= ceiling - keptTokens { continue }
             lines.removeLast()
             break
         }
-        return Self.indexEntry(header: Self.eCoreIndexHeader + "\n" + Self.eCoreIndexGuide, lines: lines)
+        return Self.indexEntry(header: header, lines: lines)
     }
 
     private static func indexEntry(header: String, lines: [String]) -> ContextEntry? {
@@ -1228,8 +1267,8 @@ public actor ContextCompactor {
     ///
     /// `recallAdmitted` says Core granted the bytes; it does not say a later projection, budget cut or
     /// placeholder kept them in front of the model. This compares the *addressed content* of each
-    /// recalled entry with what the final request actually contains - same call identity, same
-    /// artifact identity, same bytes - so the number means "provider visible" rather than "we hoped".
+    /// recalled entry with the request's provider context and shared tool-result encoding. This
+    /// certifies payload preservation through encoding, not remote receipt or model comprehension.
     /// Pure observation: nothing here can change a request, and a failure to observe is silent.
     public func noteProviderVisibleRecalls(sessionID: SessionID, activeEntries: [ContextEntry], request: ModelRequest) async {
         let referenceByMessage = occurrenceMessageIDs[sessionID]?.reduce(into: [MessageID: String]()) { map, pair in
@@ -1237,10 +1276,12 @@ public actor ContextCompactor {
         } ?? [:]
         guard !activeEntries.isEmpty else { return }
         var providerTokens = Set<String>()
-        for message in request.messages {
+        for message in request.providerContextMessages {
             for part in message.parts {
                 switch part {
                 case let .toolResult(result):
+                    let encoded = ModelToolResultProjection.project(result, segment: message.segment)
+                    guard encoded.content.contains(result.content) else { continue }
                     providerTokens.insert(Self.contentToken(callID: result.callID.rawValue, artifact: result.output.artifactObjectID, content: result.content))
                 case let .text(text):
                     providerTokens.insert(Self.contentToken(callID: "", artifact: nil, content: text))
@@ -1350,10 +1391,13 @@ public actor ContextCompactor {
                         return [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
                     }
                     return unitMessages.map { entry in
-                        guard case let .toolResult(result) = entry.part,
-                              let objectID, result.output.artifactObjectID == objectID.rawValue else { return entry }
+                        let part: SessionMessagePart
+                        if case let .toolResult(result) = entry.part,
+                           let objectID, result.output.artifactObjectID == objectID.rawValue {
+                            part = .toolResult(result.withContent(payload))
+                        } else { part = entry.part }
                         return ContextEntry(messageID: entry.messageID, role: entry.role, source: entry.source,
-                            part: .toolResult(result.withContent(payload)), page: entry.page, segment: entry.segment)
+                            part: part, page: entry.page, segment: .recalledOccurrence)
                     }
                 }
             }

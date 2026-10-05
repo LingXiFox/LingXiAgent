@@ -4,15 +4,7 @@ import LingXiProtocol
 @testable import LingXiCore
 import LingXiClient
 
-/// Phase 6 — TOOL SUCCESS != TASK PROGRESS.
-///
-/// The loop rule that shipped before this phase reset its blocker state whenever a batch contained
-/// any successful call. A model stuck on one failure could therefore be kept alive forever by
-/// reading a file, or by rewriting the same bytes: `fail X → read ok → fail X → no-op write ok →
-/// fail X` was reported as progress three times over. These cases pin the mechanical rule set that
-/// replaces it: a blocker is tracked per normalized failure fingerprint, it accumulates monotonically
-/// across interleaved successes and across strategy changes, and only an objective signal - the same
-/// objective succeeding, or a genuine failure-class change after a real workspace mutation - clears it.
+/// Objective progress clears observations; observations do not choose or terminate model actions.
 private typealias Outcome = ToolLoopProgressTracker.CallOutcome
 private typealias Evidence = ToolLoopProgressTracker.CallOutcome.Evidence
 private let blocker69 = "commandFailed:命令以状态 69 退出"
@@ -69,195 +61,65 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
             #expect(progressed == row.progress, "\(row.signal): progress flag disagrees — \(row.progress) expected")
             #expect(tracker.openBlockerCount == row.open,
                 "\(row.signal): open blockers \(tracker.openBlockerCount), expected \(row.open)")
-            // The discriminating test: re-meeting the blocker is never itself progress, and a cluster
-            // that was cleared and came back does not start its debt from zero.
-            let again = tracker.record(blocked)
-            if case .progress = again {
-                Issue.record("\(row.signal): re-meeting the blocker cannot be counted as progress: \(again)")
-            }
-            if row.progress && row.open == 1 {
-                #expect(tracker.monotonicRepeats >= 2,
-                    "\(row.signal): a resolved blocker that recurs keeps counting: \(tracker.monotonicRepeats)")
-            }
+
         }
     }
 
-    // MARK: - Case 1: a read between two identical failures is not progress
-
-    @Test("a successful read between repeated failures neither clears nor softens the blocker")
-    func readSuccessDoesNotClearBlocker() {
-        var tracker = ToolLoopProgressTracker()
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        for _ in 0..<3 {
-            verdicts += [tracker.record(failShell("g++ app.cpp")), tracker.record(readOK)]
-        }
-        #expect(verdicts.allSatisfy { if case .progress = $0 { return false } else { return true } },
-            "a read attests to nothing about a compile blocker: \(verdicts)")
-        #expect(verdicts.contains { if case .hardStop = $0 { return true } else { return false } },
-            "三次同样失败之间穿插读，必须已经硬终止：\(verdicts)")
-    }
-
-    // MARK: - Case 2: rewriting the same bytes is a no-op, not progress
-
-    @Test("a no-op write between repeated failures does not clear the blocker")
-    func noopWriteDoesNotClearBlocker() {
-        var tracker = ToolLoopProgressTracker()
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        for _ in 0..<3 {
-            verdicts += [tracker.record(failShell("npm test")), tracker.record(noopWriteOK)]
-        }
-        #expect(verdicts.allSatisfy { if case .progress = $0 { return false } else { return true } },
-            "相同字节写回是 neutral：\(verdicts)")
-        #expect(verdicts.contains { if case .hardStop = $0 { return true } else { return false } },
-            "no-op 写不能把三次同样失败洗成进展：\(verdicts)")
-    }
-
-    // MARK: - Case 3: a real mutation of something unrelated is still not progress
-
-    @Test("an unrelated real mutation does not clear the blocker")
-    func unrelatedMutationDoesNotClearBlocker() {
-        var tracker = ToolLoopProgressTracker()
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        for _ in 0..<3 {
-            verdicts += [tracker.record(failShell("pytest tests/test_login.py")), tracker.record(realWriteOK)]
-        }
-        #expect(verdicts.allSatisfy { if case .progress = $0 { return false } else { return true } },
-            "文件变了本身不是进展，只有原目标不再复现才是：\(verdicts)")
-        #expect(tracker.openBlockerCount == 1)
-        #expect(verdicts.contains { if case .hardStop = $0 { return true } else { return false } },
-            "无关改动不得把 blocker 洗白：\(verdicts)")
-    }
-
-    // MARK: - Case 4: changing strategy is exploration, and exploration is not resolution
-
-    @Test("different strategies under one blocker warn once, keep accumulating, then stop")
-    func strategyChangeDoesNotResetBlocker() {
+    @Test func repeatsWarnOnceAndNeverAcquireStopAuthority() {
         var tracker = ToolLoopProgressTracker()
         var warnings = 0
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        for command in ["g++ a.cpp", "clang++ a.cpp", "gcc a.cpp", "cc a.cpp", "c++ a.cpp", "zig c++ a.cpp"] {
-            verdicts.append(tracker.record(failShell(command)))
-            if case .softWarning = verdicts.last { warnings += 1 }
+        for _ in 0..<40 {
+            if case .softWarning = tracker.record(failShell("make check")) { warnings += 1 }
+            _ = tracker.record(readOK)
+            _ = tracker.record(noopWriteOK)
+            _ = tracker.record(realWriteOK)
+            _ = tracker.record(backgroundOK)
         }
-        #expect(warnings == 1, "同一 blocker 只提示一次：\(verdicts)")
-        guard case let .hardStop(kind, message) = verdicts.last else {
-            Issue.record("策略变化不得无限续期")
-            return
-        }
-        #expect(kind == .clusterAfterWarning)
-        #expect(tracker.distinctStrategies >= 6, "策略数应如实记录：\(tracker.distinctStrategies)")
-        #expect(message.contains("69"), "终止原因要带上 fingerprint：\(message)")
+        #expect(warnings == 1)
+        #expect(tracker.monotonicRepeats == 40)
+        let text = tracker.projection(availableTokens: 10_000)
+        #expect(text?.contains("exit69") == true)
+        #expect(tracker.projection(availableTokens: 0) == nil)
+        let pass = Outcome(callKey: "shell|{\"command\":\"make check\"}", succeeded: true, errorMessage: nil)
+        _ = tracker.record([pass])
+        #expect(tracker.projection(availableTokens: 10_000) == nil)
     }
 
-    @Test("the same failure keeps counting even when other strategies succeed alongside it")
-    func successfulSiblingDoesNotClearBlocker() {
+    @Test func boundedStateAndProjectionDoNotGrowWithFailureHistory() {
         var tracker = ToolLoopProgressTracker()
-        let batch = failShell("make check") + readOK + noopWriteOK
-        _ = tracker.record(batch)
-        _ = tracker.record(batch)
-        guard case .hardStop = tracker.record(batch) else {
-            Issue.record("同批次的成功 sibling 不能抹掉未解决的失败")
-            return
+        for i in 0..<1_000 {
+            for _ in 0..<3 {
+                _ = tracker.record(failShell("command-\(i)", "errorClass\(UnicodeScalar(65 + i % 26)!)" + String(repeating: "x", count: 10_000)))
+            }
+            #expect(tracker.blockers.count <= ToolLoopProgressTracker.maximumBlockers)
+            #expect(tracker.blockers.values.allSatisfy { $0.fingerprints.count <= 8 && $0.shapes.count <= 8 && $0.strategies.count <= 8 })
+            if let text = tracker.projection(availableTokens: 10_000) {
+                #expect(ConservativeTokenEstimator().estimate(text: text) + 4 <= ToolLoopProgressTracker.maximumProjectionTokens)
+            } else { Issue.record("A repeated failure with headroom must remain observable") }
         }
     }
 
-    // MARK: - Case 5: what really is progress
-
-    @Test("the same objective passing after failing is objective progress")
-    func verificationPassClearsBlocker() {
+    @Test func unchangedFactsKeepTheSameTailAndEmptyFactsClear() {
         var tracker = ToolLoopProgressTracker()
-        _ = tracker.record(failShell("npm test"))
-        _ = tracker.record(readOK)
-        let pass = tracker.record([Outcome(callKey: "shell|{\"command\":\"npm test\"}", succeeded: true, errorMessage: nil, evidence: .none)])
-        guard case .progress = pass else {
-            Issue.record("同一目标 fail → pass 是唯一能证明阻塞消失的强信号：\(pass)")
-            return
-        }
-        #expect(tracker.openBlockerCount == 0)
+        for _ in 0..<3 { _ = tracker.record(failShell("test")) }
+        let warning = tracker.projection(availableTokens: 10_000)
+        _ = tracker.record(failShell("test"))
+        #expect(tracker.projection(availableTokens: 10_000) == warning)
+        var empty = ToolLoopProgressTracker()
+        _ = empty.record(readOK, emptyResults: true)
+        #expect(empty.projection(availableTokens: 10_000) == nil)
+        _ = empty.record(readOK, emptyResults: true)
+        #expect(empty.projection(availableTokens: 10_000)?.contains("empty results") == true)
+        _ = empty.record(realWriteOK)
+        #expect(empty.projection(availableTokens: 10_000) == nil)
+        #expect(ToolLoopProgressTracker().projection(availableTokens: 10_000) == nil)
     }
 
-    @Test("a failure-class change after a real mutation clears the old blocker")
-    func genuineFixChangesFailureClass() {
-        var tracker = ToolLoopProgressTracker()
-        _ = tracker.record(failShell("pytest tests/test_login.py", "commandFailed:NameError: name 'session' is not defined", exit: 1))
-        _ = tracker.record(realWriteOK)
-        let next = tracker.record(failShell("pytest tests/test_login.py", "commandFailed:AssertionError: expected 200 got 500", exit: 1))
-        #expect(tracker.openBlockerCount == 1, "旧 blocker 已被证明消失：\(next)")
-        if case .progress = next {} else { Issue.record("修改后失败类别实质变化应记为进展：\(next)") }
-    }
-
-    @Test("two exit codes on one objective are two observations of one unresolved cluster")
-    func alternationWithoutMutationDoesNotClear() {
-        var tracker = ToolLoopProgressTracker()
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        var warnings = 0
-        for index in 0..<9 {
-            let message = index % 2 == 0
-                ? "commandFailed:命令以状态 1 退出"
-                : "commandFailed:命令以状态 2 退出"
-            verdicts.append(tracker.record(failShell("echo attempt-\(index)", message, exit: index % 2 + 1)))
-            if case .softWarning = verdicts.last { warnings += 1 }
-        }
-        // 1. observations changed, so strategies grew...
-        #expect(tracker.distinctStrategies >= 3, "换命令文本应记为策略变化：\(tracker.distinctStrategies)")
-        // 2. ...and the two exit codes stay distinct exact fingerprints...
-        #expect(tracker.exactFingerprintCount == 2, "exit1 / exit2 必须保留为两个不同 exact fingerprint：\(tracker.exactFingerprintCount)")
-        // 3. ...yet they belong to ONE unresolved cluster.
-        #expect(tracker.openBlockerCount == 1, "两个观察属于同一个未解决 cluster：\(tracker.openBlockerCount)")
-        // 4. progress debt accumulates monotonically.
-        #expect(tracker.monotonicRepeats >= 5, "cluster  sighting 应单调累计：\(tracker.monotonicRepeats)")
-        // 5. one warning only, 6. then a stop once the grace window is spent with the cluster still
-        // reproducing.
-        #expect(warnings == 1, "同一 cluster 只提示一次：\(warnings)")
-        #expect(verdicts.allSatisfy { if case .progress = $0 { return false } else { return true } },
-            "换 exit code 而不改任何东西不是进展：\(verdicts)")
-        #expect(verdicts.contains { if case .hardStop = $0 { return true } else { return false } },
-            "交替失败必须最终停止：\(verdicts)")
-    }
-
-    @Test("exact fingerprint and cluster identity are different layers")
-    func fingerprintAndClusterLayers() {
-        func outcome(_ exit: Int) -> Outcome {
-            Outcome(callKey: "shell|{\"command\":\"npm test\"}", succeeded: false,
-                    errorMessage: "commandFailed:命令以状态 \(exit) 退出", exitCode: exit)
-        }
-        #expect(ToolLoopProgressTracker.fingerprint(of: outcome(1)) != ToolLoopProgressTracker.fingerprint(of: outcome(2)),
-            "exit code 参与 exact 观察身份")
-        #expect(ToolLoopProgressTracker.cluster(of: outcome(1)) == ToolLoopProgressTracker.cluster(of: outcome(2)),
-            "但它们是同一个未解决操作")
-        let differentClass = Outcome(callKey: "shell|{\"command\":\"npm test\"}", succeeded: false,
-                                     errorMessage: "commandFailed:AssertionError: expected 200", exitCode: 1)
-        #expect(ToolLoopProgressTracker.cluster(of: outcome(1)) != ToolLoopProgressTracker.cluster(of: differentClass),
-            "错误类真的变了才算是另一个 cluster")
-    }
-
-    @Test("a warned blocker that is never reproduced again does not end a run doing other work")
-    func warnedBlockerWithoutRecurrenceDoesNotStop() {
-        var tracker = ToolLoopProgressTracker()
-        for command in ["g++ a.cpp", "clang++ a.cpp", "gcc a.cpp"] { _ = tracker.record(failShell(command)) }
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        for index in 0..<6 {
-            verdicts.append(tracker.record([Outcome(callKey: "write_file|p\(index).txt", succeeded: true,
-                                                   errorMessage: nil, evidence: .mutation)]))
-        }
-        #expect(!verdicts.contains { if case .hardStop = $0 { return true } else { return false } },
-            "提示后不再复现的 blocker 不该在别的任务上把运行掐掉：\(verdicts)")
-        #expect(tracker.openBlockerCount == 1, "blocker 仍在记录中，只是没有证据说明它还存在")
-    }
-
-    // MARK: - Background success is a launch receipt, nothing more
-
-    @Test("a background command that merely launched does not clear the blocker")
-    func backgroundSuccessIsNotProgress() {
-        var tracker = ToolLoopProgressTracker()
-        var verdicts: [ToolLoopProgressTracker.Verdict] = []
-        for _ in 0..<3 {
-            verdicts += [tracker.record(failShell("make test")), tracker.record(backgroundOK)]
-        }
-        #expect(verdicts.allSatisfy { if case .progress = $0 { return false } else { return true } },
-            "run_background_command 的成功只证明进程被启动：\(verdicts)")
-        #expect(verdicts.contains { if case .hardStop = $0 { return true } else { return false } },
-            "后台启动不得洗白同一 blocker：\(verdicts)")
+    @Test func fingerprintAndClusterLayersPreserveExitEvidence() {
+        let one = failShell("test", exit: 1)[0]
+        let two = failShell("test", exit: 2)[0]
+        #expect(ToolLoopProgressTracker.fingerprint(of: one) != ToolLoopProgressTracker.fingerprint(of: two))
+        #expect(ToolLoopProgressTracker.cluster(of: one) == ToolLoopProgressTracker.cluster(of: two))
     }
 
     @Test("evidence kinds come from objective facts about the result, not from the tool's name alone")
@@ -296,7 +158,7 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
 
     private func host(_ root: URL, script: [[ModelEvent]]) async throws -> (CoreHost, LingXiClient, ScriptedFakeProvider) {
         let provider = ScriptedFakeProvider(script: script)
-        let host = try CoreHost(providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
+        let host = try CoreHost(startupPolicy: .unitTest, providerAssembly: ModelRuntimeAssembly(provider: provider, modelID: ModelID("fake-model")),
             workspaceRoot: try WorkspaceRoot(path: root.path), permissionDecision: .allow, interactive: false)
         await host.start()
         return (host, LingXiClient.inProcess(endpoint: host), provider)
@@ -307,8 +169,8 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
         return [.toolCallCompleted(ToolCall(callID: ToolCallID(id), toolID: ToolID(tool), arguments: json)), .completed(.toolCalls)]
     }
 
-    @Test("a real session that repeats one blocker while doing neutral work stops after one warning")
-    func productionReplayWarnsOnceThenStops() async throws {
+    @Test("a real session retains failure observations while continuing neutral work")
+    func productionReplayWarnsAndContinues() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("lx-loop6-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -319,7 +181,7 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
         // with reads and no-op rewrites of identical bytes.
         var script: [[ModelEvent]] = []
         for index in 1...12 {
-            script.append(step("x\(index)", "shell", ["command": "g++ app\(index).cpp -o app 2>&1 | tail -3; exit 69"]))
+            script.append(step("x\(index)", "shell", ["command": "echo attempt-\(index); exit 69"]))
             script.append(step("r\(index)", "read_file", ["path": "helper.txt"]))
         }
         script.append([.textDelta("全部失败"), .completed(.stop)])
@@ -333,24 +195,18 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
         } catch let error as CoreError { reason = error }
 
         let termination = try #require(reason)
-        #expect(termination.code == .agentStepLimitReached)
-        #expect(termination.message.contains("同一阻塞") || termination.message.contains("完全重复"),
-            "终止原因必须说明是哪条规则：\(termination.message)")
-        #expect(provider.recorder.requests.count < script.count, "绝不能一路跑到 script 结束：\(provider.recorder.requests.count) requests")
+        #expect(termination.code == .toolExecutionFailed)
+        #expect(provider.recorder.requests.count == script.count)
 
         let durable = try await host.sessionStore.session(sid)
         let results = durable.messages.flatMap(\.parts).compactMap { part -> ToolResult? in
             if case let .toolResult(result) = part { return result } else { return nil }
         }
-        let warnings = results.filter { $0.content.contains(ToolLoopProgressTracker.softWarningText) }
-        #expect(warnings.count == 1, "软提示应恰好出现一次：\(warnings.count)")
-        let failures = results.filter { !$0.success }
-        #expect(failures.count >= 3, "同样失败至少重复了三次：\(failures.count)")
-        #expect(failures.allSatisfy { $0.exitCode == 69 }, "重复的是同一个阻塞")
-        #expect(results.count < script.count, "tool call 总量应远小于可用 script 批次")
-        print("LOOP_REPLAY churn=blocked requests=\(provider.recorder.requests.count) offered=\(script.count) "
-            + "toolCalls=\(results.count) failures=\(failures.count) warnings=\(warnings.count) "
-            + "reason=\(termination.message.prefix(60))")
+        #expect(results.count == 24)
+        #expect(results.filter { !$0.success }.count == 12)
+        #expect(results.allSatisfy { !$0.content.contains(ToolLoopProgressTracker.heading) })
+        #expect(provider.recorder.requests.contains { $0.cachePlan?.volatileTail.ephemeralNotes != nil })
+
     }
 
     @Test("a real session that fixes the objective clears the blocker and keeps running")
@@ -383,7 +239,7 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
             if case let .toolResult(result) = part { return result } else { return nil }
         }
         #expect(results.filter { $0.success }.count >= 3)
-        #expect(results.allSatisfy { !$0.content.contains(ToolLoopProgressTracker.softWarningText) },
+        #expect(results.allSatisfy { !$0.content.contains(ToolLoopProgressTracker.heading) },
             "同一目标已被证明可通过，不应再发出阻塞提示")
         #expect(try String(contentsOf: root.appendingPathComponent("app.cpp"), encoding: .utf8).contains("return 0"))
     }
