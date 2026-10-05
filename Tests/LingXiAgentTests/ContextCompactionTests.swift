@@ -320,7 +320,17 @@ struct ContextCompactionTests {
         // Paging only happens once the accumulated loop overflows the model input window, and that
         // window shrinks with however many tool schemas the host registered, so the per-batch payload
         // has to clear the limit by a wide margin for the premise to hold on any runner.
-        try String(repeating: "evidence ", count: 400).write(to: root.appending(path: "evidence.txt"), atomically: false, encoding: .utf8)
+        //
+        // Phase 8 sizing note (ContextCompactionTests baseline red until here): the window is 12K and
+        // the default registry's schemas now cost ~2.9K of it, so hardInputLimit is 4532 while the
+        // system prompt plus the live user turn cost ~1.5K. The 3-call step of this fixture is a
+        // mandatory unit - a tool batch the model has not consumed yet cannot be evicted - and at
+        // 3.6KB per result it alone came to 5074 tokens. Core was refusing a request that no eviction
+        // could have satisfied, which is the correct answer to an impossible budget, not a P/E bug.
+        // The fixture therefore keeps its shape (7 steps, several calls per step, 11 reads) and
+        // shrinks each result to ~1KB: the accumulated loop still overflows the window and gets
+        // paged, while no single live batch is larger than the window can hold.
+        try String(repeating: "evidence ", count: 120).write(to: root.appending(path: "evidence.txt"), atomically: false, encoding: .utf8)
         let counts = [2, 1, 3, 1, 2, 1, 1]
         var sequence = 0
         let script = counts.map { count -> [ModelEvent] in

@@ -342,6 +342,83 @@ import LingXiClient
         print("PE_REAL_ROUND_TRIP requests=\(requests.count) lifecycle=\(telemetry.events.map { $0.phase.rawValue }) failureEvidence=true durableMessages=\(restoredSession.messages.count)")
         await host.shutdown()
     }
+
+    /// Gate PE_LEGACY_READ_COMPATIBILITY - what an upgraded Core may still be asked to read.
+    ///
+    /// E-Core payloads were addressed by an FNV hash before they were addressed by SHA-256, recall
+    /// rows were written before schema v9 grew its projection columns, and an object that no reference
+    /// points at is still somebody's evidence. A migration may add columns; it may not decide that
+    /// the data a user already has is garbage. So: a legacy id must still resolve, a row without a
+    /// range must still come back whole rather than as a made-up window, and nothing may disappear
+    /// because a process started.
+    @Test("legacy object ids, projection-less rows and orphan payloads still read")
+    func legacyDataStaysReadableAcrossMigration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lx-legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionID = SessionID("legacy")
+        let payload = "legacy payload " + String(repeating: "old", count: 4_000)
+        let legacyID = ContextObjectID.generate(toolName: "shell", callID: ToolCallID("call-old"), content: payload)
+        #expect(legacyID.rawValue.hasPrefix("obj_shell_call-old"), "the legacy shape is still what an old row holds")
+        #expect(try ContextObjectID(legacyID.rawValue) == legacyID, "the id validator must still accept an id it can no longer produce")
+
+        // Write it the way an old E-Core did: the payload file is the truth, no metadata sidecar.
+        let objects = root.appendingPathComponent(sessionID.rawValue).appendingPathComponent("objects")
+        try FileManager.default.createDirectory(at: objects, withIntermediateDirectories: true)
+        let legacyFile = objects.appendingPathComponent("\(legacyID.rawValue).txt")
+        try payload.write(to: legacyFile, atomically: true, encoding: .utf8)
+        let orphan = ContextObjectID.identify(content: "unreferenced but real")
+        let orphanFile = objects.appendingPathComponent("\(orphan.rawValue).txt")
+        try "unreferenced but real".write(to: orphanFile, atomically: true, encoding: .utf8)
+
+        let fabric = store(root)
+        #expect(try await fabric.fetch(sessionID: sessionID, objectID: legacyID) == payload,
+            "a payload written by an older Core must still be readable")
+        let slice = try await ContextRecallTool(ecoreStore: fabric, sessionID: sessionID).execute(
+            arguments: "{\"id\":\"\(legacyID.rawValue)\",\"offset\":0,\"limit_bytes\":128}", profile: .workspace)
+        #expect(slice.contains("legacy payload"), "an id the model copied out of an old transcript is not a dead end")
+        #expect(await fabric.references(sessionID: sessionID).isEmpty, "reading a legacy object must invent no reference")
+
+        // A v8 row is a committed grant with no projection columns at all.
+        let persistence = try SQLitePersistenceStore(dataRoot: root.appendingPathComponent("core"), mainRoot: root)
+        let durable = PersistentSessionStore(persistence: persistence)
+        let session = try await durable.create()
+        let reference = await fabric.pageOut(sessionID: session.id, content: payload, origin: .toolCall,
+            contextOccurrenceID: "occ-legacy", evictionEpoch: 0, summary: "legacy log",
+            toolCallID: ToolCallID("call-legacy"), toolName: "shell")
+        try await persistence.recordRecallRequest(RecallRequest(referenceID: reference.referenceID, offsetBytes: 0,
+            limitBytes: 16_384, limitLines: nil, admissionMode: .occurrenceProjection, state: .admissionCommitted),
+            sessionID: session.id)
+        let reopened = store(root)
+        let oldReader = ContextCompactor(ecoreStore: reopened, persistence: persistence)
+        await oldReader.restoreRecallState(sessionID: session.id)
+        let restored = try #require(await oldReader.activeEntries(sessionID: session.id, canonicalEntries: [])
+            .first { $0.segment == ModelContextSegment.recalledOccurrence })
+        let body = ContextCompactor.content(of: restored.part)
+        #expect(body.contains(payload), "a row written before ranges existed must come back whole: \(body.prefix(120))")
+        #expect(!body.contains("complete=false") && !body.contains("bytes="),
+            "no range may be invented for a grant that never recorded one: \(body.prefix(160))")
+
+        // Startup is not a cleanup pass: opening the store again reads, and deletes nothing.
+        let once = try await persistence.recallRequests(sessionID: session.id)
+        _ = await reopened.references(sessionID: session.id)
+        _ = await reopened.listObjects(sessionID: session.id)
+        _ = await reopened.storageMetrics(for: session.id)
+        let twice = try await persistence.recallRequests(sessionID: session.id)
+        #expect(twice.map(\.referenceID) == once.map(\.referenceID), "reads must not consume recall rows")
+        #expect(FileManager.default.fileExists(atPath: legacyFile.path), "a legacy payload may not be swept away")
+        #expect(FileManager.default.fileExists(atPath: orphanFile.path),
+            "an object with no reference is still data, not garbage: an orphan sweep would delete evidence")
+        #expect(try await reopened.fetch(sessionID: sessionID, objectID: orphan) == "unreferenced but real")
+        // The migration ladder must not re-apply a step to a database that already has it.
+        var applied = 0
+        try MigrationRunner.migrate(from: 8, targetVersion: SQLitePersistenceStore.databaseSchemaVersion,
+                                   migrations: [MigrationRunner.SchemaMigration(from: 8, apply: { applied += 1 })])
+        #expect(applied == 1, "a v8 database gets the v9 columns once")
+        try MigrationRunner.migrate(from: SQLitePersistenceStore.databaseSchemaVersion,
+                                   migrations: [MigrationRunner.SchemaMigration(from: 8, apply: { applied += 1 })])
+        #expect(applied == 1, "a current database must not be migrated again at startup")
+    }
 }
 
 /// Only model decisions are scripted; SessionStore, cache, disk E-Core, public

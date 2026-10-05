@@ -118,6 +118,7 @@ private func openLab(workspace root: URL, counts: ReadCounts, provider: any Reco
             CountingReadFileTool(workspace: workspace, counts: counts),
             WriteFileTool(workspace: workspace),
             EditFileTool(workspace: workspace),
+            ApplyPatchTool(workspace: workspace),
             ListDirectoryTool(workspace: workspace),
             ShellTool(workspace: workspace)
         ]),
@@ -201,6 +202,61 @@ private func openLab(workspace root: URL, counts: ReadCounts, provider: any Reco
         #expect(after.metadata["sharedRead"] == nil)
         #expect(after.content.contains(freshMarker) && !after.content.contains(staleMarker),
             "the read after the shell rewrite must be the disk truth: \(after.content.prefix(200))")
+        #expect(lab.disk(evidenceFile) == freshMarker + "\n")
+    }
+
+    // MARK: - Case 3b/3c: every mutation tool, not just the one that was broken
+
+    /// §7 READ_CONSISTENCY_MATRIX. The rule is about the resource, so a mutation has to end the read
+    /// epoch whichever tool performed it: `write_file` replaces the bytes, `edit_file` patches one
+    /// string in place, `apply_patch` writes through a plan, `shell` rewrites the file behind Core's
+    /// back. Only the first two of those were attributable by name, and the matrix is what keeps the
+    /// other two from regressing into a shared stale read.
+    @Test("a read after edit_file of the same file really re-executes and returns the new bytes")
+    func editFileInvalidatesEarlierRead() async throws {
+        // edit_file guards a mutation with the version the read exposed, so the model has to see the
+        // read before it can edit - which is also the shape where a stale read is easiest to keep.
+        let counts = ReadCounts()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lx-read-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try (staleMarker + "\n").write(to: root.appendingPathComponent(evidenceFile), atomically: true, encoding: .utf8)
+        let lab = try await openLab(workspace: root, counts: counts, provider: EditThenReadProvider())
+        defer { try? FileManager.default.removeItem(at: lab.workspace) }
+        try await lab.send("read, edit one string, read again")
+        let results = try await lab.persisted()
+        let before = try #require(results["r1"]), after = try #require(results["r2"])
+        let edit = try #require(results["e1"])
+
+        #expect(edit.success, "the premise: the edit itself went through: \(edit.content.prefix(200))")
+        #expect(lab.counts.count(lab.evidencePath) == 2,
+            "an in-place edit is still a mutation of that file: \(lab.counts.count(lab.evidencePath)) executions")
+        #expect(after.metadata["sharedRead"] == nil, "a read queued behind the edit may not reuse the read before it")
+        #expect(before.content.contains(staleMarker))
+        #expect(after.content.contains(freshMarker) && !after.content.contains(staleMarker),
+            "the read after the edit must be the disk truth: \(after.content.prefix(200))")
+        #expect(lab.disk(evidenceFile) == freshMarker + "\n")
+    }
+
+    @Test("a read after apply_patch of the same file really re-executes and returns the new bytes")
+    func applyPatchInvalidatesEarlierRead() async throws {
+        let patch = "*** Begin Patch\n*** Update File: \(evidenceFile)\n-\(staleMarker)\n+\(freshMarker)\n*** End Patch"
+        let lab = try await lab(script: [
+            batch([callEvent("r1", "read_file", ["path": evidenceFile]),
+                   callEvent("p1", "apply_patch", ["patch": patch]),
+                   callEvent("r2", "read_file", ["path": evidenceFile])]),
+            answerStep
+        ])
+        defer { try? FileManager.default.removeItem(at: lab.workspace) }
+        try await lab.send("read, apply a patch, read again")
+        let results = try await lab.persisted()
+        let after = try #require(results["r2"]), applied = try #require(results["p1"])
+
+        #expect(applied.success, "the premise: the patch applied: \(applied.content.prefix(200))")
+        #expect(lab.counts.count(lab.evidencePath) == 2,
+            "a patched file is a changed file: \(lab.counts.count(lab.evidencePath)) executions")
+        #expect(after.metadata["sharedRead"] == nil)
+        #expect(after.content.contains(freshMarker) && !after.content.contains(staleMarker),
+            "the read after the patch must be the disk truth: \(after.content.prefix(200))")
         #expect(lab.disk(evidenceFile) == freshMarker + "\n")
     }
 
@@ -453,6 +509,29 @@ private final class VersionGuardProvider: RecordingProvider, @unchecked Sendable
             events = [callEvent("edit-1", "edit_file", [
                 "path": evidenceFile, "old_string": staleMarker, "new_string": freshMarker, "expected_version": version
             ]), .completed(.toolCalls)]
+        } else {
+            events = answerStep
+        }
+        return AsyncThrowingStream { c in events.forEach { c.yield($0) }; c.finish() }
+    }
+}
+
+/// read a.txt, then in one batch edit it and read it again, so the second read is queued behind a
+/// mutation of its own resource and may not be answered from the first read's bytes.
+private final class EditThenReadProvider: RecordingProvider, @unchecked Sendable {
+    let recorder = RequestRecorder()
+    private var edited = false
+
+    func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
+        recorder.record(request)
+        var events: [ModelEvent]
+        if recorder.requests.count == 1 {
+            events = [callEvent("r1", "read_file", ["path": evidenceFile]), .completed(.toolCalls)]
+        } else if let version = readContent(in: request).flatMap(versionToken(of:)), !edited {
+            edited = true
+            events = batch([callEvent("e1", "edit_file", [
+                "path": evidenceFile, "old_string": staleMarker, "new_string": freshMarker, "expected_version": version
+            ]), callEvent("r2", "read_file", ["path": evidenceFile])])
         } else {
             events = answerStep
         }

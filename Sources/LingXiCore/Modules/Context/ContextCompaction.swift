@@ -1158,19 +1158,26 @@ public actor ContextCompactor {
         }
         var resident: [ContextEntry] = []
         resident.reserveCapacity(active.count)
+        // One read of the recall control plane per assembly, not one per entry: the projection range
+        // of every committed grant is needed while walking the resident units.
+        let grants = await committedGrants(sessionID: sessionID)
         for entry in active {
-            guard let id = entry.messageID, let referenceID = states[id]?.derivedPageID,
+            guard let id = entry.messageID, let granted = states[id]?.derivedPageID,
                   states[id]?.residency == .active else { resident.append(entry); continue }
             // A granted occurrence is projected from the authoritative payload, never from the
             // bounded preview canonical history keeps. A result that was never truncated has no
             // gap to close, so its canonical body is already the complete truth.
             var part = entry.part
             if case let .toolResult(result) = part, let artifactID = result.output.artifactObjectID,
+               // A committed range belongs to one object, so this entry's own artifact has to select
+               // the reference it is projected through - see `grantedReference`.
+               let referenceID = await grantedReference(sessionID: sessionID, messageID: id,
+                                                        artifactObjectID: artifactID, granted: granted, grants: grants),
                let payload = await grantedPayload(sessionID: sessionID, referenceID: referenceID, artifactObjectID: artifactID) {
                 // The committed range, not the whole object: an occurrence admitted as a bounded
                 // projection must stay that way through the next turn and the next restart, or the
                 // budget guarantee is only as good as the last assembly that happened to fit.
-                let body = await committedProjection(sessionID: sessionID, referenceID: referenceID)
+                let body = grants[referenceID]?.projection
                     .map { Self.projection(of: payload, $0, referenceID: referenceID) } ?? payload
                 if body.utf8.count > result.content.utf8.count {
                     part = .toolResult(result.withContent(body))
@@ -1512,13 +1519,34 @@ public actor ContextCompactor {
         }
     }
 
-    /// The projection committed for a reference, if it was admitted as a bounded range. The queue is
-    /// the durable control plane, so this answers the same way after a restart.
-    private func committedProjection(sessionID: SessionID, referenceID: String) async -> OccurrenceProjection? {
-        guard let request = await ecoreStore.recallQueue(sessionID: sessionID).first(where: {
-            $0.referenceID == referenceID && $0.state == .admissionCommitted
-        }) else { return nil }
-        return request.projection
+    /// Every grant the control plane currently calls committed, by reference. The queue is durable, so
+    /// this answers the same way after a restart, and one read serves a whole assembly.
+    private func committedGrants(sessionID: SessionID) async -> [String: RecallRequest] {
+        (await ecoreStore.recallQueue(sessionID: sessionID)).reduce(into: [:]) { grants, request in
+            if request.isCommitted { grants[request.referenceID] = request }
+        }
+    }
+
+    /// Which committed grant addresses this entry's own authoritative object.
+    ///
+    /// A batch pages out one reference per artifact, while a unit's `derivedPageID` can only hold the
+    /// primary of them. Projecting a sibling through the primary's range would label another object's
+    /// payload with these bytes and cut it to a range it never asked for, so the entry's artifact
+    /// identity selects the reference; the mapping page-out recorded is what knows all of them.
+    /// A committed grant for nothing that addresses this object is no grant for it at all.
+    private func grantedReference(sessionID: SessionID, messageID: MessageID, artifactObjectID: String,
+                                  granted: String, grants: [String: RecallRequest]) async -> String? {
+        guard let objectID = try? ContextObjectID(artifactObjectID) else { return nil }
+        var candidates = [granted]
+        candidates += (occurrenceMessageIDs[sessionID] ?? [:]).compactMap { referenceID, ids in
+            ids.contains(messageID) && grants[referenceID] != nil ? referenceID : nil
+        }
+        for referenceID in candidates where grants[referenceID] != nil {
+            if await ecoreStore.reference(sessionID: sessionID, referenceID: referenceID)?.objectID == objectID {
+                return referenceID
+            }
+        }
+        return nil
     }
 
     /// A granted payload as a standalone active entry, keyed by the reference it came from.

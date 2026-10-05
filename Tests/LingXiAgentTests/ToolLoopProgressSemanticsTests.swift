@@ -27,6 +27,61 @@ private let blocker69 = "commandFailed:命令以状态 69 退出"
     private let realWriteOK = [Outcome(callKey: "write_file|{\"path\":\"b.txt\"}", succeeded: true, errorMessage: nil, evidence: .mutation)]
     private let backgroundOK = [Outcome(callKey: "run_background_command|{\"command\":\"make test\"}", succeeded: true, errorMessage: nil, evidence: .attestation)]
 
+    // MARK: - §8 TOOL_LOOP_PROGRESS_MATRIX
+
+    /// Every signal the loop can see after a blocker is open, in one table. The columns are the frozen
+    /// rule: TOOL SUCCESS != TASK PROGRESS, so a row may only clear the blocker on an objective fact
+    /// about the world. Adding a signal means adding a row, and a row cannot be neutral by accident.
+    @Test("each progress signal lands in exactly one column of the matrix")
+    func progressSignalMatrix() {
+        struct Row {
+            let signal: String
+            let batches: [[Outcome]]
+            /// Whether the run is entitled to call this progress.
+            let progress: Bool
+            /// How many blockers are still unresolved once the sequence has run.
+            let open: Int
+        }
+        let blocked = failShell("make check")
+        let objectivePass: [Outcome] = [Outcome(callKey: "shell|{\"command\":\"make check\"}", succeeded: true, errorMessage: nil)]
+        let movedFailureClass = failShell("make check", "commandFailed:syntax error near line 3", exit: 1)
+        let otherExitCode = failShell("make check", blocker69, exit: 2)
+        let rows: [Row] = [
+            Row(signal: "a successful read of another file", batches: [blocked, readOK], progress: false, open: 1),
+            Row(signal: "a write of identical bytes", batches: [blocked, noopWriteOK], progress: false, open: 1),
+            Row(signal: "a background command that only launched", batches: [blocked, backgroundOK], progress: false, open: 1),
+            Row(signal: "a real mutation of an unrelated file", batches: [blocked, realWriteOK], progress: false, open: 1),
+            Row(signal: "the blocker reproduced beside successful siblings", batches: [blocked, blocked + readOK + noopWriteOK], progress: false, open: 1),
+            Row(signal: "another strategy, same blocker", batches: [blocked, failShell("make -B check")], progress: false, open: 1),
+            Row(signal: "the same exit code changed, nothing was fixed", batches: [blocked, otherExitCode], progress: false, open: 1),
+            Row(signal: "the failed objective now passes", batches: [blocked, objectivePass], progress: true, open: 0),
+            Row(signal: "a real mutation, then a different failure class",
+                batches: [blocked, realWriteOK, movedFailureClass], progress: true, open: 1),
+            Row(signal: "nothing failed at all", batches: [readOK], progress: false, open: 0),
+        ]
+
+        for row in rows {
+            var tracker = ToolLoopProgressTracker()
+            var progressed = false
+            for batch in row.batches {
+                if case .progress = tracker.record(batch) { progressed = true }
+            }
+            #expect(progressed == row.progress, "\(row.signal): progress flag disagrees — \(row.progress) expected")
+            #expect(tracker.openBlockerCount == row.open,
+                "\(row.signal): open blockers \(tracker.openBlockerCount), expected \(row.open)")
+            // The discriminating test: re-meeting the blocker is never itself progress, and a cluster
+            // that was cleared and came back does not start its debt from zero.
+            let again = tracker.record(blocked)
+            if case .progress = again {
+                Issue.record("\(row.signal): re-meeting the blocker cannot be counted as progress: \(again)")
+            }
+            if row.progress && row.open == 1 {
+                #expect(tracker.monotonicRepeats >= 2,
+                    "\(row.signal): a resolved blocker that recurs keeps counting: \(tracker.monotonicRepeats)")
+            }
+        }
+    }
+
     // MARK: - Case 1: a read between two identical failures is not progress
 
     @Test("a successful read between repeated failures neither clears nor softens the blocker")

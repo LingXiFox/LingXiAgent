@@ -878,9 +878,192 @@ INSUFFICIENT_HEADROOM_REJECTS_CLEANLY = 全部 PASS。
    batch page-out 的映射已由 Phase 3 覆盖；本 Phase 的 9 条里 occurrence 型用的是 residency 回退路径，
    synthetic 型走 payloadEntry。两条路径都尊重 range，但"多条目因果单元里只有一部分被截断"的分布
    情况未单独构造（当前实现对单元内每条 artifact 匹配条目套用同一 range，其余条目原样回来）。
+   → **Phase 8 §4 证伪**：该分布一旦构造即复现 bug（兄弟被按主引用的 range 截断并贴上假标签），
+   已作为 correctness bug 修复，见 Phase 8 的 ROOT CAUSE。本条保留仅作历史记录。
 2. 二分每次评估都重建条目并估算 token，复杂度 O(log bytes × 条目成本)；最坏 17 次左右，
    且只发生在"全量装不下"的少数 admission 上，非常规路径。
 3. continuation 只是给出偏移，不做任何自动续读：模型要显式再读。这是有意的，避免自动把同一
    occurrence 复制进 active context（Case 9 的 no-duplication 断言）。
 4. v9 之前的 committed 行没有 range，重启后按完整 payload 投影——与旧行为一致，但若某条老 occurrence
    体量极大，重启后仍可能超预算被拒；属向前兼容的自然结果，未做回填。
+
+---
+
+## Phase 8 — 把审计变成永久回归（不再设计新架构）
+
+### STATUS
+
+DONE。新增/加固的永久回归共 19 条（§1 探针收编 1 条、§2-§6 生产链路 5 条、§7 读一致性矩阵 +2 条、
+§8 progress 信号矩阵 1 条、§12 老数据兼容 1 条，其余为既有门的再确认），发现并修复 1 个真实
+correctness bug（§4 range 串到兄弟 artifact）。`swift test --filter` 焦点集 207 条全绿；全量套件的
+失败集合与 `4914c1b` 基线一致，NEW REGRESSION = 0。
+
+### ROOT CAUSE（本 Phase 唯一的实现缺陷）
+
+`ContextCompactor.activeEntries` 投影驻留 occurrence 时，用 `unitResidencies[messageID].derivedPageID`
+（一个因果单元只能存一个"主引用"）去取 committed range，但 payload 是按**每条 entry 自己的**
+`artifactObjectID` 取的。一个 batch page-out 多条 artifact 时：
+
+```
+granted = 主引用(大 artifact) → range = 大 artifact 的 0-7562/60015
+entry   = 小 artifact 自己的 payload(4172B)
+body    = projection(of: 小 payload, 大 range) → 小 artifact 被切成"大 range"，
+          并贴上 bytes=0-7562/60015 complete=false 的假标签
+```
+
+即"同一个 range 套到多条匹配 entry"。`admitRequestedRecalls` 一侧本来有 `artifactObjectID == objectID`
+守卫，所以只有下一次 assembly 会串；Phase 7.5 REMAINING RISKS 第 1 条把它记成了"预期行为"，
+Phase 8 §4 证明它是 bug 而不是风险。
+
+### ARCHITECTURE DECISION
+
+不新增实体，只把"range 属于哪个对象"这件事说清楚：committed range 是**一个对象**的事实，
+所以投影必须由 entry 自己的 artifact 身份反查它对应的 reference（`grantedReference`），查不到
+即"这条 entry 没有被 grant 过"，原样返回 canonical body。为此把每条目一次 `recallQueue` SQL 读
+改成每次 assembly 一次 `committedGrants` 快照（顺带去掉 N 次重复查询）。
+
+- 单 artifact 单元行为不变：`granted` 自身对象ID 匹配即命中，等价于旧路径。
+- 多条 grant 的单元行为更好：每条 entry 用自己被 commit 的那条 range，先 grant 小的、后 grant 大的
+  也不会互相覆盖。
+- 不引入 heuristic、不引入新表、不动 schema。
+
+### FILES CHANGED
+
+- `Sources/LingXiCore/Modules/Context/ContextCompaction.swift` — `activeEntries` 逐条反查
+  `grantedReference`；`committedProjection` → `committedGrants`（每次 assembly 一次快照）。
+- `Tests/LingXiAgentTests/ProductionRecallRoundTripTests.swift`（新）— §1 真实 shell 归档链路、
+  §2 端到端 recall round trip、§3 三 provider 对齐、§4 多 artifact range 隔离、§5 >64KB 分页字节精确、
+  §6 崩溃矩阵 4 窗口。
+- `Tests/LingXiAgentTests/PEContextIntegrityTests.swift` — §12 `legacyDataStaysReadableAcrossMigration`。
+- `Tests/LingXiAgentTests/ReadConsistencyTests.swift` — §7 补 read/edit_file/read 与 read/apply_patch/read
+  两行（`EditThenReadProvider`），lab 注册 `ApplyPatchTool`。
+- `Tests/LingXiAgentTests/ToolLoopProgressSemanticsTests.swift` — §8 `progressSignalMatrix`（10 行信号表）。
+- `Tests/LingXiAgentTests/ContextCompactionTests.swift` — `eightStepToolLoop` 夹具体积重新定标（见下）。
+- 删除 `.tmp/audit-probes/`（3 个探针文件，路径已被永久回归覆盖，见 §1 表）。
+
+### §1 探针收编对照
+
+| 探针 | 唯一覆盖点 | 现在的永久门 |
+|---|---|---|
+| probe01 real shell 40KB lifecycle | 真实 `ShellTool` stdout 归档 | `realShellOutputIsArchivedWholeAndRecallable`（本 Phase 新增） |
+| probe02/03 read→write/shell→read | 批次内读过期 | `ReadConsistencyTests` Case 1-3 + 新增两行 |
+| probe04 blocker + 12 次穿插成功 | 混合批次不清零 | `ToolLoopProgressSemanticsTests.successfulSibling*` + `progressSignalMatrix` |
+| probe05 provider role matrix | 段→通道 | `ProviderPrivilegeTests.segmentPrivilegeMatrix` |
+| probe06 region attribution | 区域按语义段计费 | `ECoreBoundedRetrievalTests.indexTelemetryFollowsSegment` |
+| probe07 index scaling | 100/1k/5k/10k | `projectionIsBoundedAcrossCorpusScales` + `warmLookupDoesNotRescan`（含真实磁盘路径） |
+| probe08 pageOut→recall→admission | 真实执行器全链路 | `productionPathRecallRoundTrip` |
+| probe09/11/12 重启与崩溃窗口 | 意图/提交/恢复 | `recallCrashMatrix` 4 窗口 + `BoundedOccurrenceProjectionTests` Case 5 |
+| probe10 切片被二次截断 | wire 不再切 | `realShellOutputIsArchivedWholeAndRecallable` 的 projection 断言 + `PERecallContractTests` |
+| ECoreIngest / ECoreScale 探针 | 只是计时打印 | 结构性计数门已固化；数字保留在 Phase 7 表格里 |
+
+### §13 基线失败再分析
+
+`eightStepToolLoop`（`contextBudgetExceeded: mandatory 5074 / hard 4532`）：
+
+- 该 fixture 一个 step 发 3 次 `read_file`，单次结果 3.6KB（≈1200 token），批次是
+  **mandatory**（未被模型消费的 tool batch 不可 eviction，这是契约而非缺陷）；
+- 12K 窗口下 `hard = 4532`，system + 当前 user ≈ 1.5K，三条 3.6KB 结果 ≈ 3.6K，
+  mandatory 合计 5074 > 4532：**没有任何 eviction 能救它**；
+- 结论：fixture 定标问题，不是 production bug。把单条结果缩到 ~1KB（11 次读、7 个 step 的形状不变、
+  断言一字未改）后，历史批次照样被 page out、`[E-Core index]` 照样出现、测试转绿。
+  没有为了让它过而放宽任何预算或断言。
+
+`FullCoreStackV1`（`CassetteMismatch … difference=$.body.input.count`）与
+`ProviderHTTPTests.responsesStatelessRoundTrip…`（第二个请求缺 `type=="reasoning"` item）：
+签名与 `4914c1b` 基线逐字一致；`967b1ea` 对 `OpenAIResponsesProvider` 只改了 1 行（段→角色通道），
+未触碰 reasoning 回放路径，两者在隔离下也复现同一签名。均维持 PRE_EXISTING_BASELINE。
+
+### §14 全量结果分类
+
+焦点集（18 个 Phase 相关套件）207 条全绿。全量 `swift test`：1750 tests / 234 suites / 14 issues。
+
+- **NEW REGRESSION = 0**
+- PRE_EXISTING_BASELINE（2，签名与 `4914c1b` 基线逐字一致）：
+  `FullCoreStackV1.fullCoreStackV1`（cassette `$.body.input.count`）、
+  `ProviderHTTPTests.responsesStatelessRoundTripRestoresOpaqueReasoningAndExternalCallID`
+  （第二个请求缺 `type=="reasoning"`；间歇，同签名）。
+- LOAD-TIMING FLAKE（隔离重跑全部绿，共 8 个测试 12 条 issue）：
+  `PlatformHTTPServerTests`、`ProviderRateSchedulerTests`、`UXAndStreamingFixesTests`、
+  `CancellationRaceTests`、`TUIRenderingTests`、`StdioConnectionDeadlineTests`×2、
+  `VNextStdioTransportDeadlineTests`、`GUIAutomationComposerTests.nativePresentation`
+  （驱动真实 NSWindow/RunLoop，负载下等不到事件）、
+  `Round15SystemAuditTests.testQueueHandoffAtomicityWhenActiveRun…`（execution lease 时序）。
+  验证方式：`swift test --filter "<suite>"` 单跑 98 tests / 7 suites 全绿；
+  GUI 与 Round15 各自单跑亦绿。
+- `eightStepToolLoop` 由基线红转绿（fixture 定标修正，见 §13），未放宽任何预算或断言。
+
+### GATES（17 行）
+
+```
+1  PROBE_RECONCILIATION                       PASS   10 条探针全部有永久归属，.tmp/audit-probes 删除
+2  PRODUCTION_PATH_RECALL_ROUND_TRIP          PASS   执行器→归档→page-out→slice→occurrence→wire→重启
+3  PRODUCTION_PROVIDER_PARITY                 PASS   同一 occurrence 在 Chat/Responses/Anthropic 一致
+4  MULTI_ARTIFACT_PROJECTION_RANGE_ISOLATION  PASS   发现并修复真实 bug（非 known risk）
+5  RECALL_PAGINATION_BYTE_EXACT               PASS   >64KB 多语载荷逐页重建，recallMaxBytes 未动
+6  RECALL_CRASH_MATRIX                        PASS   4 个窗口 + sliceOnly 不升级
+7  READ_CONSISTENCY_MATRIX                    PASS   补 edit_file / apply_patch 两行
+8  TOOL_LOOP_PROGRESS_MATRIX                  PASS   10 行信号表，Phase 6 阈值一字未改
+9  ECORE_SCALE_CONTRACT                       PASS   100/1k/10k，含真实磁盘路径
+10 PE_TELEMETRY_TRUTH                         PASS   index 段按语义计费
+11 PE_STABLE_PREFIX_INVARIANT                 PASS   单元级 + 真实链路 cachePlan.immutableBase 相等
+12 PE_LEGACY_READ_COMPATIBILITY               PASS   老 objectID / 无 range 的 v8 行 / 孤儿载荷 / 迁移不重放
+13 REAL_EXECUTOR_ARCHIVE                      PASS   真实 shell stdout，E-Core 落盘字节 == 归档字节
+14 RANGE_LEAK_BUGFIX_VERIFIED                 PASS   admission 与 next assembly 两个视图都断言
+15 BASELINE_REANALYSIS                        PASS   eightStepToolLoop = fixture 定标；其余维持基线
+16 FULL_SUITE_CLASSIFICATION                    PASS   焦点 207 绿；全量 1750 tests / 14 issues = 2 基线 + 12 抖动，NEW REGRESSION = 0
+17 SMOKE_20_READINESS                          见 Phase 8 报告（需主人确认后才跑新的 Smoke 20）
+```
+
+### REGRESSION TESTS
+
+- `ProductionRecallRoundTripTests`（5）：`realShellOutputIsArchivedWholeAndRecallable`、
+  `productionPathRecallRoundTrip`、`multiArtifactProjectionRangesStayIsolated`、
+  `recallPaginationIsByteExact`、`recallCrashMatrix`。
+- `PEContextIntegrityTests.legacyDataStaysReadableAcrossMigration`（§12）。
+- `ReadConsistencyTests.editFileInvalidatesEarlierRead` / `applyPatchInvalidatesEarlierRead`（§7）。
+- `ToolLoopProgressSemanticsTests.progressSignalMatrix`（§8，10 行信号表）。
+- §9/§10/§11 未新增：`ECoreBoundedRetrievalTests.projectionIsBoundedAcrossCorpusScales`（100/1k/10k，
+  计数门）、`warmLookupDoesNotRescan`（真实磁盘）、`indexTelemetryFollowsSegment`、
+  `projectionChurnLeavesPrefixIdentityAlone`、`ProviderPrivilegeTests.stablePrefixIsNotContaminatedByRecall`
+  已覆盖；`productionPathRecallRoundTrip` 再把 stable prefix 断言挂到真实链路（cachePlan.immutableBase 跨轮相等）。
+
+### BEFORE → AFTER
+
+```
+BEFORE  一个 batch 三条 artifact，recall 大的那条并落成 bounded range
+AFTER   admission 视图正确，next assembly 视图把大 artifact 的 0-7562/60015 套到两个兄弟身上
+BEFORE  ↑ 兄弟被切成 4172B 并贴上假标签（Phase 7.5 记为"预期行为"）
+AFTER   ↑ 兄弟保持自己的 canonical body，无 complete=false、无外来 bytes=；range 只出现在被 grant 的那条
+BEFORE  每条 entry 一次 recallQueue SQL 读
+AFTER   每次 assembly 一次快照（committedGrants）
+BEFORE  eightStepToolLoop：mandatory 5074 > hard 4532 → 整轮 contextBudgetExceeded
+AFTER   同一断言集在 ~1KB/条的 fixture 下绿，历史批次仍被 page out
+BEFORE  真实 shell 40KB stdout 的归档真相只有 print 探针知道
+AFTER   落盘对象字节 == 归档字节 == fetch 结果，且 slice 不被 wire 二次截断，成为断言
+```
+
+### CONFLICT → RESOLUTION
+
+1. Phase 7.5 REMAINING RISKS 第 1 条 vs Phase 8 §4：主人明确要求"range 串到兄弟是 bug，不是 known
+   risk"。实测确认会串，按 bug 修复；Phase 7.5 那条风险描述已失效，以本节为准。
+2. `restoreResidencies(.active, derivedPageID:)` 但没有 committed 行时，旧实现会把条目升格为完整
+   payload。新实现只在存在 committed grant 时升格 —— 与既有契约
+   `residencySurvivesRestartAndOnlyExplicitRecallReadmits` 一致（该门仍绿），且少一次无谓的全量内联。
+3. §2 的 page-out 一度想用测试钩子强制：改为 4 轮真实超大 read 累计压力，由真实 assembly 决定 page out。
+   唯一保留的"测试可见性"钩子是 provider 自己从请求里读回 `artifactObjectID`/reference —— 那正是
+   真实模型能做到的事。
+
+### REMAINING RISKS
+
+1. §2 依赖"4 轮累计能把上一条 batch 挤出去"。窗口 18K、单条约 5.4K token 是量出来的；若默认 tool
+   registry 再长大 ~2K token，这个夹具可能先撞 mandatory 上限（与 §13 同一机制）。届时应改夹具，
+   不该改预算策略。
+2. `grantedReference` 以 artifact 身份反查 reference：如果同一 message 里两条 artifact 内容完全相同
+   （内容寻址 → 同一 objectID → 两个 reference），选中的是候选表里第一个匹配者，range 取那一条的。
+   两者 payload 相同，所以投影仍自洽；但"同 unit 内同字节的两个引用各自被 grant 过不同 range"这种分布
+   没有测试。真实 batch 里同字节两次的收益是去重，不是两种 range，风险极低。
+3. §6 崩溃矩阵用 failpoint + 真实 SQLite 模拟"进程死亡"，不是真 SIGKILL；Round17 已有 SIGKILL 级
+   durable commit 覆盖，本 Phase 不再重复。
+4. §13 的 `FullCoreStackV1` cassette 需要重新录制才能变绿，那是 VCR 数据维护（要真实 provider 流量），
+   不在"不改语义"的 Phase 8 范围内。
+5. Smoke 20 需要真实 provider；本 Phase 只给 readiness 判定，未擅自开跑。
