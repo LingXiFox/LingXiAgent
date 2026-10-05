@@ -492,9 +492,10 @@ public actor ContextCompactor {
         occurrenceMessageIDs[sessionID] = (try? await persistence.recallOccurrences(sessionID: sessionID)) ?? [:]
         for request in (try? await persistence.recallRequests(sessionID: sessionID)) ?? [] where request.isCommitted {
             guard let payload = try? await ecoreStore.restore(sessionID: sessionID, referenceID: request.referenceID) else { continue }
+            let body = request.projection.map { ContextCompactor.projection(of: payload, $0, referenceID: request.referenceID) } ?? payload
             admittedPayloads[sessionID, default: [:]][request.referenceID] = ContextEntry(
                 messageID: MessageID(request.referenceID), role: .system, source: .derivedPage,
-                part: .text("[Restored session context]\n\(payload)"), segment: .recalledOccurrence)
+                part: .text("[Restored session context]\n\(body)"), segment: .recalledOccurrence)
         }
     }
 
@@ -1165,9 +1166,15 @@ public actor ContextCompactor {
             // gap to close, so its canonical body is already the complete truth.
             var part = entry.part
             if case let .toolResult(result) = part, let artifactID = result.output.artifactObjectID,
-               let payload = await grantedPayload(sessionID: sessionID, referenceID: referenceID, artifactObjectID: artifactID),
-               payload.utf8.count > result.content.utf8.count {
-                part = .toolResult(result.withContent(payload))
+               let payload = await grantedPayload(sessionID: sessionID, referenceID: referenceID, artifactObjectID: artifactID) {
+                // The committed range, not the whole object: an occurrence admitted as a bounded
+                // projection must stay that way through the next turn and the next restart, or the
+                // budget guarantee is only as good as the last assembly that happened to fit.
+                let body = await committedProjection(sessionID: sessionID, referenceID: referenceID)
+                    .map { Self.projection(of: payload, $0, referenceID: referenceID) } ?? payload
+                if body.utf8.count > result.content.utf8.count {
+                    part = .toolResult(result.withContent(body))
+                }
             }
             resident.append(ContextEntry(messageID: id, role: entry.role, source: entry.source,
                                          part: part, page: entry.page, segment: .recalledOccurrence))
@@ -1322,41 +1329,45 @@ public actor ContextCompactor {
                 ?? Set(states.values.filter { $0.derivedPageID == refID }.map(\.messageID))
             let alreadyActive = Set(active.compactMap(\.messageID))
             let retained = active.filter { !ids.contains($0.messageID ?? MessageID("")) }
-            var restored: [ContextEntry]
-            var synthetic = false
-            switch request.admissionMode {
-            case .sliceOnly:
-                continue
-            case .occurrenceProjection:
-                let canonical = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) }
-                if !ids.isEmpty && canonical.isEmpty {
-                    await reject("canonicalOccurrenceMissing")
-                    continue
-                }
-                if ids.isEmpty {
-                    // A payload-only grant stays granted: re-admitting the same reference into an
-                    // entry that is already active would duplicate it.
-                    guard !alreadyActive.contains(MessageID(refID)) else {
-                        await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallAdmitted, referenceID: refID)
-                        continue
+            let unitMessages = canonicalEntries.filter { ids.contains($0.messageID ?? MessageID("")) }
+            /// One shape for both outcomes: the causal unit, with the reference's payload - complete
+            /// or bounded - as its body. Cost is then measured on the entry the model will actually see.
+            func unit(body payload: String) -> [ContextEntry] {
+                switch request.admissionMode {
+                case .sliceOnly:
+                    return []
+                case .occurrenceInline:
+                    return [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
+                case .occurrenceProjection:
+                    guard !ids.isEmpty else {
+                        return [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
                     }
-                    restored = [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
-                    synthetic = true
-                } else {
-                    // The causal unit comes back with its preview body replaced by the payload it
-                    // stands for, so a restored occurrence never returns fewer bytes than the object.
-                    restored = canonical.map { entry in
+                    return unitMessages.map { entry in
                         guard case let .toolResult(result) = entry.part,
                               let objectID, result.output.artifactObjectID == objectID.rawValue else { return entry }
                         return ContextEntry(messageID: entry.messageID, role: entry.role, source: entry.source,
                             part: .toolResult(result.withContent(payload)), page: entry.page, segment: entry.segment)
                     }
                 }
-            case .occurrenceInline:
-                restored = [Self.payloadEntry(sessionID: sessionID, referenceID: refID, payload: payload)]
-                synthetic = true
             }
-            let cost = estimator.estimate(entries: retained + restored)
+            let synthetic = request.admissionMode == .occurrenceInline || (request.admissionMode == .occurrenceProjection && ids.isEmpty)
+            if case .sliceOnly = request.admissionMode { continue }
+            var restored = unit(body: payload)
+            var cost = estimator.estimate(entries: retained + restored)
+            var projection: OccurrenceProjection?
+            if cost > hardInputLimit, request.admissionMode == .occurrenceProjection {
+                // Bounded projection instead of all-or-nothing. The authoritative object stays the
+                // complete payload; only this occurrence's active projection is a range, and it says
+                // so - which bytes, how many there are in total, and where the rest continues.
+                guard let resolved = await resolveOccurrenceProjection(payload: payload, request: request,
+                        retained: retained, hardInputLimit: hardInputLimit, build: unit(body:)) else {
+                    await reject("insufficientProjectionBudget: required=\(cost), hard=\(hardInputLimit), minimum=\(Self.minimumOccurrenceProjectionTokens)")
+                    continue
+                }
+                projection = resolved
+                restored = unit(body: Self.projection(of: payload, resolved, referenceID: refID))
+                cost = estimator.estimate(entries: retained + restored)
+            }
             guard cost <= hardInputLimit else {
                 await reject("inputBudgetExceeded: required=\(cost), hard=\(hardInputLimit)")
                 continue
@@ -1364,6 +1375,7 @@ public actor ContextCompactor {
             var committedRequest = preparing
             committedRequest.state = .admissionCommitted
             committedRequest.reason = nil
+            committedRequest.projection = projection
             staged.append(Staged(request: committedRequest,
                 entries: restored.map { ContextEntry(messageID: $0.messageID, role: $0.role, source: $0.source, part: $0.part, page: $0.page, segment: .recalledOccurrence) },
                 occurrenceIDs: ids, isSynthetic: synthetic))
@@ -1397,6 +1409,11 @@ public actor ContextCompactor {
         unitResidencies[sessionID] = residencies
         occurrenceMessageIDs[sessionID] = occurrences
         for grant in staged {
+            // The fabric's own view must agree with the table: `recallQueue` is what later assemblies
+            // and `restoreRecallState` read, and a memory-only E-Core has no table to catch a stale
+            // `admissionPrepared`. Committing without saying so would leave the resolved projection
+            // range invisible to the next rebuild, which is exactly the re-expansion this must prevent.
+            await ecoreStore.markRecallRequest(grant.request, sessionID: sessionID)
             if grant.isSynthetic, let entry = grant.entries.first {
                 admittedPayloads[sessionID, default: [:]][grant.request.referenceID] = entry
             }
@@ -1405,6 +1422,103 @@ public actor ContextCompactor {
             await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallAdmitted, referenceID: grant.request.referenceID)
         }
         return active
+    }
+
+    /// Below this many tokens of actual content a projection is a fragment that tells the model less
+    /// than the canonical preview already does, so the admission is refused cleanly instead of
+    /// spending budget on noise.
+    public static let minimumOccurrenceProjectionTokens = 256
+
+    /// The range whose bytes a bounded occurrence projection resolved to, found by measuring the real
+    /// entry with the real estimator. No bytes-per-token constant is used anywhere in this decision:
+    /// the budget is a token budget, so the search runs in tokens and only the payload range in bytes.
+    private func resolveOccurrenceProjection(payload: String, request: RecallRequest, retained: [ContextEntry],
+                                             hardInputLimit: Int, build: (String) -> [ContextEntry]) async -> OccurrenceProjection? {
+        let total = payload.utf8.count
+        guard total > 0 else { return nil }
+        // Honour what the caller asked for: an explicit offset anchors the window, and the requested
+        // limit caps how far it may reach. Without an explicit range this starts at the beginning.
+        let start = max(0, min(request.offsetBytes, max(0, total - 1)))
+        let wanted = request.limitBytes > 0 ? min(request.limitBytes, total - start) : total - start
+        guard wanted > 0 else { return nil }
+        func fits(_ length: Int) -> Bool {
+            let range = OccurrenceProjection(offsetBytes: start, lengthBytes: length, totalBytes: total)
+            let body = Self.projection(of: payload, range, referenceID: request.referenceID)
+            return estimator.estimate(entries: retained + build(body)) <= hardInputLimit
+        }
+        var length = wanted
+        if !fits(length) {
+            var low = 1
+            var high = wanted
+            var best = 0
+            while low <= high {
+                let middle = (low + high) / 2
+                if fits(middle) { best = middle; low = middle + 1 } else { high = middle - 1 }
+            }
+            // The label is inside the measured body, so the predicate is monotone up to a few bytes of
+            // header width. Walk back until the chosen range really does fit.
+            while best > 1, !fits(best) { best = max(1, best - 512) }
+            guard best > 1 else { return nil }
+            length = best
+        }
+        // Record the range that was actually emitted, not the one that was searched: a UTF-8-safe
+        // slice can be a few bytes shorter, and the label, the content and the durable row must agree.
+        let emitted = Self.utf8Slice(payload, offset: start, length: length)
+        let chosen = OccurrenceProjection(offsetBytes: emitted.offset, lengthBytes: emitted.length, totalBytes: total)
+        let contentTokens = estimator.estimate(entries: build(Self.projection(of: payload, chosen, referenceID: request.referenceID)))
+            - estimator.estimate(entries: build(""))
+        guard contentTokens >= Self.minimumOccurrenceProjectionTokens else { return nil }
+        return chosen
+    }
+
+    /// The label a partial occurrence carries. A complete projection carries none, so the byte-for-byte
+    /// behaviour of an occurrence that fits is unchanged.
+    static func occurrenceHeader(referenceID: String, projection: OccurrenceProjection) -> String {
+        guard !projection.isComplete else { return "" }
+        let continuation = projection.continuationOffset.map { " continuation_offset=\($0)" } ?? ""
+        return "[Context Object Occurrence: \(referenceID) bytes=\(projection.offsetBytes)-\(projection.endBytes)/\(projection.totalBytes) complete=false\(continuation)]"
+    }
+
+    /// The committed range of a reference's payload, as active-context bytes.
+    static func projection(of payload: String, _ projection: OccurrenceProjection, referenceID: String) -> String {
+        guard !projection.isComplete else { return payload }
+        let slice = utf8Slice(payload, offset: projection.offsetBytes, length: projection.lengthBytes)
+        let header = occurrenceHeader(referenceID: referenceID, projection: projection)
+        return header.isEmpty ? slice.text : header + "\n" + slice.text
+    }
+
+    /// A byte range with both ends moved onto UTF-8 scalar boundaries, so a projection can never cut a
+    /// multi-byte character in half.
+    static func utf8Slice(_ payload: String, offset: Int, length: Int) -> (offset: Int, length: Int, text: String) {
+        let bytes = Array(payload.utf8)
+        var start = max(0, min(offset, bytes.count))
+        while start < bytes.count, (bytes[start] & 0xC0) == 0x80 { start += 1 }
+        var end = min(bytes.count, start + max(0, length))
+        // Walk back over trailing continuation bytes to the lead byte of the last code point, then
+        // drop that code point only when its full sequence does not fit inside the range.
+        var lead = end
+        while lead > start, (bytes[lead - 1] & 0xC0) == 0x80 { lead -= 1 }
+        if lead > start, (lead - 1) + utf8Width(bytes[lead - 1]) > end { end = lead - 1 }
+        let slice = Array(bytes[start..<max(start, end)])
+        return (start, slice.count, String(decoding: slice, as: UTF8.self))
+    }
+
+    private static func utf8Width(_ byte: UInt8) -> Int {
+        switch byte >> 4 {
+        case 0...7: return 1
+        case 0xC, 0xD: return 2
+        case 0xE: return 3
+        default: return 4
+        }
+    }
+
+    /// The projection committed for a reference, if it was admitted as a bounded range. The queue is
+    /// the durable control plane, so this answers the same way after a restart.
+    private func committedProjection(sessionID: SessionID, referenceID: String) async -> OccurrenceProjection? {
+        guard let request = await ecoreStore.recallQueue(sessionID: sessionID).first(where: {
+            $0.referenceID == referenceID && $0.state == .admissionCommitted
+        }) else { return nil }
+        return request.projection
     }
 
     /// A granted payload as a standalone active entry, keyed by the reference it came from.

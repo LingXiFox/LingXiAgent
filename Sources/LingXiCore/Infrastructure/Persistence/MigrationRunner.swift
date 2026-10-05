@@ -52,7 +52,7 @@ public enum MigrationRunner {
     }
 
     @available(*, deprecated, message: "Use migrate(from:targetVersion:migrations:) with SchemaMigration ladder instead")
-    public static func migrate(from version: Int, applyV0ToV1: () throws -> Void, applyV1ToV2: () throws -> Void, applyV2ToV3: () throws -> Void, applyV3ToV4: () throws -> Void, applyV4ToV5: () throws -> Void, applyV5ToV6: () throws -> Void, applyV6ToV7: () throws -> Void = {}, applyV7ToV8: () throws -> Void = {}) throws {
+    public static func migrate(from version: Int, applyV0ToV1: () throws -> Void, applyV1ToV2: () throws -> Void, applyV2ToV3: () throws -> Void, applyV3ToV4: () throws -> Void, applyV4ToV5: () throws -> Void, applyV5ToV6: () throws -> Void, applyV6ToV7: () throws -> Void = {}, applyV7ToV8: () throws -> Void = {}, applyV8ToV9: () throws -> Void = {}) throws {
         guard version <= SQLitePersistenceStore.databaseSchemaVersion else {
             throw PersistenceMigrationError(version: version)
         }
@@ -64,5 +64,6 @@ public enum MigrationRunner {
         if version <= 5 { try applyV5ToV6() }
         if version <= 6 { try applyV6ToV7() }
         if version <= 7 { try applyV7ToV8() }
+        if version <= 8 { try applyV8ToV9() }
     }
 }

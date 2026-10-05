@@ -287,7 +287,12 @@ import LingXiClient
         #expect(telemetry.recallResolved == 1)
         #expect(telemetry.recallAdmitted == 0)
         #expect(telemetry.recallRejected == 1)
-        #expect(telemetry.events.last?.reason?.contains("inputBudgetExceeded") == true)
+        // Phase 7.5 names the reason a projection-specific one when even a bounded range of this
+        // occurrence would be a fragment; the rejection itself is still explicit and still re-admits
+        // nothing. `inputBudgetExceeded` remains the reason for an inline import that cannot fit.
+        #expect(telemetry.events.last?.reason.map {
+            $0.contains("insufficientProjectionBudget") || $0.contains("inputBudgetExceeded")
+        } == true, "\(String(describing: telemetry.events.last?.reason))")
     }
 
     @Test func realPersistentSessionRuntimeReplaysPToERecallActiveFailure() async throws {

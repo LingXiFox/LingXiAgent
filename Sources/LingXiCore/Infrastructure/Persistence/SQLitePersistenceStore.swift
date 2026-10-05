@@ -30,7 +30,7 @@ public struct StructuredPathAuditViolation: Sendable, Equatable {
 
 /// 单 actor 持有两个 SQLite handle；所有写入均经过此序列化事务边界。
 public actor SQLitePersistenceStore {
-    public static let databaseSchemaVersion = 8
+    public static let databaseSchemaVersion = 9
     public static let contextFormatVersion = 1
     public static let indexFormatVersion = 1
 
@@ -61,7 +61,7 @@ public actor SQLitePersistenceStore {
         let stateDB = try Self.open(projectDirectory.appendingPathComponent("state.sqlite"))
         state = stateDB
         try Self.configure(stateDB)
-        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) }, upgradeV7: { try Self.upgradeStateSchemaV7(stateDB) }, upgradeV8: { try Self.upgradeStateSchemaV8(stateDB) })
+        try Self.migrate(stateDB, create: { try Self.createStateSchema(stateDB) }, upgrade: { try Self.upgradeStateSchemaV2(stateDB) }, upgradeV3: { try Self.upgradeStateSchemaV3(stateDB) }, upgradeV4: { try Self.upgradeStateSchemaV4(stateDB) }, upgradeV5: { try Self.upgradeStateSchemaV5(stateDB) }, upgradeV6: { try Self.upgradeStateSchemaV6(stateDB) }, upgradeV7: { try Self.upgradeStateSchemaV7(stateDB) }, upgradeV8: { try Self.upgradeStateSchemaV8(stateDB) }, upgradeV9: { try Self.upgradeStateSchemaV9(stateDB) })
         _ = try? Self.script(stateDB, "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
         Self.ensureAllExistingProjectsHaveSessionRevision(dataRoot: dataRoot)
         try Self.execute(stateDB, "CREATE TABLE IF NOT EXISTS persistence_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
@@ -676,15 +676,18 @@ public actor SQLitePersistenceStore {
     /// in-memory queue, is the authority after a restart.
     public func recallRequests(sessionID: SessionID) throws -> [RecallRequest] {
         // `rows` yields empty strings for NULL columns, so optional fields are read through nilIfEmpty.
-        try Self.rows(state, "SELECT reference_id, offset_bytes, limit_bytes, limit_lines, admission_mode, state, reason FROM recall_requests WHERE session_id = ? ORDER BY updated_at", [sessionID.rawValue])
+        try Self.rows(state, "SELECT reference_id, offset_bytes, limit_bytes, limit_lines, admission_mode, state, reason, projection_offset, projection_length, projection_total FROM recall_requests WHERE session_id = ? ORDER BY updated_at", [sessionID.rawValue])
             .compactMap { row in
                 guard row.count >= 7, !row[0].isEmpty, !row[4].isEmpty, !row[5].isEmpty,
                       let offset = Int(row[1]), let limit = Int(row[2]),
                       let modeValue = RecallAdmissionMode(rawValue: row[4]),
                       let recallState = RecallRequestState(rawValue: row[5]) else { return nil }
+                // A row from before the projection columns existed reads as empty, which means "no
+                // bounded range was resolved" - the full payload, as it always was.
+                let projection = Self.readProjection(row)
                 return RecallRequest(referenceID: row[0], offsetBytes: offset, limitBytes: limit,
                     limitLines: Int(row[3]), admissionMode: modeValue, state: recallState,
-                    reason: row[6].isEmpty ? nil : row[6])
+                    reason: row[6].isEmpty ? nil : row[6], projection: projection)
             }
     }
 
@@ -694,11 +697,20 @@ public actor SQLitePersistenceStore {
         // `bind` stringifies its values, so an absent field must be NSNull rather than an Optional.
         let nullable: (String?) -> Any = { $0.map { $0 as Any } ?? NSNull() }
         try Self.execute(state, """
-            INSERT OR REPLACE INTO recall_requests(session_id, reference_id, offset_bytes, limit_bytes, limit_lines, admission_mode, state, reason, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO recall_requests(session_id, reference_id, offset_bytes, limit_bytes, limit_lines, admission_mode, state, reason, updated_at, projection_offset, projection_length, projection_total)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [sessionID.rawValue, request.referenceID, String(request.offsetBytes), String(request.limitBytes),
                   nullable(request.limitLines.map(String.init)), request.admissionMode.rawValue, request.state.rawValue,
-                  nullable(request.reason), Self.now])
+                  nullable(request.reason), Self.now,
+                  nullable(request.projection.map { String($0.offsetBytes) }),
+                  nullable(request.projection.map { String($0.lengthBytes) }),
+                  nullable(request.projection.map { String($0.totalBytes) })])
+    }
+
+    private static func readProjection(_ row: [String]) -> OccurrenceProjection? {
+        guard row.count > 9,
+              let offset = Int(row[7]), let length = Int(row[8]), let total = Int(row[9]), total > 0 else { return nil }
+        return OccurrenceProjection(offsetBytes: offset, lengthBytes: length, totalBytes: total)
     }
 
     public func forgetRecallRequest(sessionID: SessionID, referenceID: String) throws {
@@ -906,9 +918,9 @@ public actor SQLitePersistenceStore {
         sqlite3_busy_timeout(db, 10_000)
         return db
     }
-    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void, upgradeV7: () throws -> Void, upgradeV8: () throws -> Void = {}) throws {
+    private static func migrate(_ db: OpaquePointer, create: () throws -> Void, upgrade: () throws -> Void, upgradeV3: () throws -> Void, upgradeV4: () throws -> Void, upgradeV5: () throws -> Void, upgradeV6: () throws -> Void, upgradeV7: () throws -> Void, upgradeV8: () throws -> Void = {}, upgradeV9: () throws -> Void = {}) throws {
         let version = Int(try scalar(db, "PRAGMA user_version", []) ?? "0") ?? 0
-        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6, applyV6ToV7: upgradeV7, applyV7ToV8: upgradeV8) }
+        try transaction(db) { try MigrationRunner.migrate(from: version, applyV0ToV1: create, applyV1ToV2: upgrade, applyV2ToV3: upgradeV3, applyV3ToV4: upgradeV4, applyV4ToV5: upgradeV5, applyV5ToV6: upgradeV6, applyV6ToV7: upgradeV7, applyV7ToV8: upgradeV8, applyV8ToV9: upgradeV9) }
     }
     private static func transaction(_ db: OpaquePointer, _ body: () throws -> Void) throws { try execute(db, "BEGIN IMMEDIATE", []); do { try body(); try execute(db, "COMMIT", []) } catch { try? execute(db, "ROLLBACK", []); throw error } }
     private static func nextMessageOrdinal(_ db: OpaquePointer, _ sessionID: SessionID) throws -> Int { try scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE session_id = ?", [sessionID.rawValue]).flatMap(Int.init) ?? 0 }
@@ -958,6 +970,11 @@ public actor SQLitePersistenceStore {
     /// Recall control plane. Only state and mappings live here: the payload stays in E-Core and is
     /// always resolved reference → authoritative object → bytes, so a restart rebuilds a grant
     /// instead of trusting a second copy of the content.
+    /// A committed occurrence projection needs its resolved byte range in the same durable row as
+    /// its admission state, so a restart re-projects the same range instead of re-expanding to full.
+    private static func upgradeStateSchemaV9(_ db: OpaquePointer) throws {
+        try script(db, "ALTER TABLE recall_requests ADD COLUMN projection_offset INTEGER; ALTER TABLE recall_requests ADD COLUMN projection_length INTEGER; ALTER TABLE recall_requests ADD COLUMN projection_total INTEGER; PRAGMA user_version = 9")
+    }
     private static func upgradeStateSchemaV8(_ db: OpaquePointer) throws {
         try script(db, """
             CREATE TABLE IF NOT EXISTS recall_requests(

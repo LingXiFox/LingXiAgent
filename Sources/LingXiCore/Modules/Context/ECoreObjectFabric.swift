@@ -295,6 +295,27 @@ public enum RecallRequestState: String, Sendable, Equatable, Codable {
 /// One recall request as the model expressed it. The requested range is part of the request's
 /// identity, not a transient parameter: dropping it is what silently upgraded an 8 KB read into
 /// a whole-occurrence restore that the input budget then refused.
+/// The byte range a committed occurrence projection resolved to.
+///
+/// The authoritative object is never rewritten: this says which range of it is active in P-Core right
+/// now, and where the rest still lives. `nil` on a request means "the whole payload fit", which is
+/// exactly the pre-Phase-7.5 behaviour.
+public struct OccurrenceProjection: Sendable, Equatable, Codable {
+    public let offsetBytes: Int
+    public let lengthBytes: Int
+    public let totalBytes: Int
+
+    public init(offsetBytes: Int, lengthBytes: Int, totalBytes: Int) {
+        self.offsetBytes = offsetBytes
+        self.lengthBytes = lengthBytes
+        self.totalBytes = totalBytes
+    }
+
+    public var endBytes: Int { offsetBytes + lengthBytes }
+    public var isComplete: Bool { offsetBytes == 0 && lengthBytes >= totalBytes }
+    public var continuationOffset: Int? { isComplete ? nil : endBytes }
+}
+
 public struct RecallRequest: Sendable, Equatable, Codable {
     public let referenceID: String
     public let offsetBytes: Int
@@ -303,9 +324,13 @@ public struct RecallRequest: Sendable, Equatable, Codable {
     public let admissionMode: RecallAdmissionMode
     public var state: RecallRequestState
     public var reason: String?
+    /// Resolved at commit time and durable from then on: every later rebuild of this occurrence -
+    /// next turn, next assembly, next process - must use the same range.
+    public var projection: OccurrenceProjection?
 
     public init(referenceID: String, offsetBytes: Int, limitBytes: Int, limitLines: Int?,
-                admissionMode: RecallAdmissionMode, state: RecallRequestState = .requested, reason: String? = nil) {
+                admissionMode: RecallAdmissionMode, state: RecallRequestState = .requested, reason: String? = nil,
+                projection: OccurrenceProjection? = nil) {
         self.referenceID = referenceID
         self.offsetBytes = offsetBytes
         self.limitBytes = limitBytes
@@ -313,6 +338,7 @@ public struct RecallRequest: Sendable, Equatable, Codable {
         self.admissionMode = admissionMode
         self.state = state
         self.reason = reason
+        self.projection = projection
     }
 
     /// A grant that a restart must be able to re-materialise.

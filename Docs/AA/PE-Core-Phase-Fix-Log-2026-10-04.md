@@ -703,7 +703,7 @@ A/B 两层身份与单调性另在单元层钉住：`exact fingerprint and clust
 
 ### STATUS
 
-9 of 10 gates PASS；`LARGE_OCCURRENCE_BOUNDED_PROJECTION = BLOCKED`（设计已给，按主人授权的出口未实现）。
+9 of 10 gates PASS at the time of writing; `LARGE_OCCURRENCE_BOUNDED_PROJECTION = BLOCKED`（设计已给，未实现）→ 已由 Phase 7.5 按方案 A 完成，该门现为 PASS。
 
 全量套件失败集合 = 既有基线失败（`eightStepToolLoop` 的 `contextBudgetExceeded`、`fullCoreStackV1`）+ 负载抖动（`CancellationRace`、`Stdio`、`TUI`、`UX`、`ProviderRateScheduler`、`ProviderHTTPTests` 均已在早前 Phase 单独复验），未新增失败。`ToolLoopRecovery` / `ReadConsistency` / `Recall*` / `ProviderPrivilege` / `ToolArtifactTruth` 全部保持绿（Phase 1-6 契约未破）。
 
@@ -755,7 +755,7 @@ warm 一列就是问题的核心：全部缓存命中之后仍然 ~8.3 ms/条，
 
 测试：`ECoreBoundedRetrievalTests.swift`（10 gate）、`PEContextIntegrityTests.swift`（lifecycle 序列补最后一跳）、探针 `ECoreScaleProbeTests` / `ECoreIngestProbeTests` 暂存 `.tmp/audit-probes/`（Phase 8 转正）。
 
-### 未做：LARGE_OCCURRENCE_BOUNDED_PROJECTION（设计）
+### 未做（Phase 7.5 已完成）：LARGE_OCCURRENCE_BOUNDED_PROJECTION（设计）
 
 现状：51KB occurrence 在小窗口里全量 re-admission 结构上放不下 → `recallRejected(inputBudgetExceeded)`，全有或全无。主人授权"若无足够可靠的机械策略可先 BLOCKED 并报告"，本狐不在 P/E 核心里塞未验证的截断 heuristic。
 
@@ -775,3 +775,112 @@ warm 一列就是问题的核心：全部缓存命中之后仍然 ~8.3 ms/条，
 4. `grantedPayloads` 上限 16 条 / 1MB，是按"投影重建够用"选的，不是按吞吐调优；命中率可由后续 telemetry 再评估。
 5. `providerVisible` 是**按请求内容身份**判定的：如果后续投影把 payload 换成 placeholder，就会如实记为不可见 —— 这正是它区别于 pageIn/exactRestore 的地方；但也意味着任何改变 ToolResult 文本的合法投影（例如新的摘要策略）都会让这个数下降，需要把它当指标而不是断言。
 6. `context_recall` 返回 500 字 snippet 的 `context_search` 命中不会被记成 occurrence providerVisible（两者身份通道不同），已按主人要求确认。
+
+---
+
+## Phase 7.5 — Large Occurrence Bounded Projection（方案 A）
+
+### STATUS
+
+DONE，11 个门全部 PASS。`Tests/LingXiAgentTests/BoundedOccurrenceProjectionTests.swift`（9 条，含真实 CoreHost 重启）全绿；13 个 P/E、Recall、Provider、Read、ToolLoop 套件的 113 条门一起绿，唯一失败仍是既有基线 `eightStepToolLoop`（`contextBudgetExceeded 5074/4532`，与本 Phase 无关）。
+
+### 冻结语义（实现前后一致）
+
+```
+ref → authoritative object → full payload          ← 永远完整，本 Phase 一字未改
+committed occurrence projection → ref + resolved range → bounded active ContextEntry
+```
+projection 不是新的 payload truth：authoritative object 仍是完整字节，`restore()` 仍返回完整 payload，
+只有 active context 里的 occurrence 是有范围的投影。
+
+`sliceOnly` 与 `occurrenceProjection` 的分工没变：前者是一次工具读取的 ToolResult（不留驻），
+后者把历史因果单元重新投影进 active context（可跨 turn 驻留，可以有界，但必须自称有界）。
+bounded occurrence 不是"退化成 slice"：它带的仍是 occurrence 身份与 occurrence 段。
+
+### ROOT CAUSE（修复前）
+
+`admitRequestedRecalls` 只问一句 `estimate(retained + restored) <= hardInputLimit`，装不下就
+`reject("inputBudgetExceeded")` —— 大 occurrence 全有或全无；同时 `activeEntries` 的 payload 升级路径
+无条件升到完整 payload，即使曾有范围也会被撑回全量。
+
+### ARCHITECTURE DECISION
+
+1. **token 预算，不做 ×3 换算**：`resolveOccurrenceProjection` 用真实 `ConservativeTokenEstimator` 对
+   **真实 ContextEntry 形状**（`unit(body:)` 构造出来的那条 occurrence 条目）测量 token，对 UTF-8
+   byte range 做二分，取"仍装得下的最大范围"；标签本身在测量体内部，所以最后还有一次
+   `while !fits(best)` 的回退修正。字节→token 的固定比例只出现在 region 遥测的老口径里，与此无关。
+2. **预算来源真实**：上限就是本次 assembly 的 `hardInputLimit`，比较对象是 `retained + restored`，
+   即已经扣掉 retained context、mandatory 条目与已有投影之后的同一口径；未新增任何预算或阈值常量，
+   只有一条命名 policy：`ContextCompactor.minimumOccurrenceProjectionTokens = 256`。低于它就
+   `reject("insufficientProjectionBudget: required=…, hard=…, minimum=256")`，不产生几十 token 残片。
+3. **范围尊重请求**：`RecallRequest.offsetBytes` 是锚点，`limitBytes` 是上界；marker 在中部时投影必然
+   覆盖它（Case 3 钉住）。无显式 range 时从 0 开始给有界前缀并提供 continuation。
+4. **范围必须与发出的字节一致**：二分得到的长度再经 `utf8Slice` 收边，**记录的 offset/length 取收边后的
+   实际值**（实现时这里出过一个 off-by-one：ASCII 载荷也被多丢 1 字节，测试用"labelled vs emitted"断言
+   当场抓到）。`utf8Slice` 只在整段 code point 装不下时才丢尾，两端都落在标量边界。
+5. **partial 必须自称 partial**：
+   `[Context Object Occurrence: ref_x bytes=<off>-<end>/<total> complete=false continuation_offset=<end>]`
+   作为投影首行；完整投影不加任何标签，所以 Phase 2/3 能装下时的字节行为零变化（Case 1 钉住）。
+   该前缀属于既有 `RecallOutput` 有界传输家族，因此 Phase 2 的"不得二次截断"规则继续生效。
+6. **不再撑回全量（本 Phase 最重要的 invariant）**：`activeEntries` / `restoreRecallState` 的 payload
+   升级改为先查 committed range，再 `projection(of:payload,range,referenceID:)` 重建同一段字节。
+   同时修了一个连带缺口：commit 成功后 fabric 内存镜像仍停在 `admissionPrepared`（只有 SQLite 被更新），
+   导致 `recallQueue` 读不到 committed range —— 现在 commit 之后同时 `markRecallRequest`，
+   内存后端与磁盘后端语义一致。
+7. **durability**：resolved range 是 recall admission 状态的一部分，进 `recall_requests`
+   （新列 `projection_offset/length/total`，schema v8 → v9 正常 migration），与 request state、
+   residency、occurrence mapping 一起在同一个事务里提交；重启后恢复同一 range，不重算、不膨胀。
+   v8 及更早的行读作 NULL → `projection = nil` → 完整 payload，向后兼容。
+8. **providerVisible 适配**：可见性身份 = reference + artifact 身份 + committed range 的字节哈希，
+   因此"请求里含该有界范围"即算 visible，不再要求完整 payload（Case 9 钉住 visible==1）。
+9. **权限与 stable prefix 不变**：投影条目 segment 仍是 `.recalledOccurrence`（untrusted data），
+   Anthropic top-level `system` 不含投影内容；投影行仍被排除在 `historyStableHash` 之外，
+   `stablePrefixHash` / `cacheEpoch` 完全不受影响。
+
+### FILES CHANGED
+
+生产：`ECoreObjectFabric.swift`（`OccurrenceProjection` + `RecallRequest.projection`）、
+`SQLitePersistenceStore.swift`（schema v9 + 读写 + 旧行兼容）、`MigrationRunner.swift`（`applyV8ToV9`）、
+`ContextCompaction.swift`（`minimumOccurrenceProjectionTokens`、`resolveOccurrenceProjection`、
+`projection(of:)`、`utf8Slice`、admit 重写、`activeEntries`/`restoreRecallState` 尊重 range、
+commit 后回写 fabric 镜像）。
+测试：`BoundedOccurrenceProjectionTests.swift`（9 条 / 11 门）；
+`PEContextIntegrityTests.swift` 一条断言接住新的具名 reason（拒绝本身仍然显式，`inputBudgetExceeded`
+仍是 inline 超预算的原因）。
+
+### BEFORE → AFTER
+
+```
+BEFORE  60KB occurrence / hard 4096 tokens → recallRejected(inputBudgetExceeded)，active context 什么都没有
+AFTER   同场景 → admissionCommitted，条目 ≈12.2KB 字节、label complete=false continuation_offset=12090、
+        estimator tokens ≤ 4096、full payload 不在条目也不在请求里；authoritative restore 仍是 60,000 字节
+BEFORE  offset=<marker 位置> 的 occurrence 请求 → 要么全量要么拒绝，无法围绕请求范围投影
+AFTER   投影包含 marker，range 覆盖 [offset, offset+len)
+BEFORE  committed bounded →（假如存在）下一轮 activeEntries 无条件升到完整 payload
+AFTER   连续 3 轮 activeEntries 与 commit 时字节完全相同；重启后 range 完全相同且仍非全量
+BEFORE  continuation 无从谈起（没有 range 概念）
+AFTER   continuation_offset 处 sliceOnly 读取拿到的正是投影未覆盖的那段字节
+BEFORE  预算极小时仍可能塞进无意义残片？不会——旧实现是全有全无
+AFTER   hard=120 时明确 reject(insufficientProjectionBudget…minimum=256)，active 为空
+```
+
+### GATES
+
+LARGE_OCCURRENCE_BOUNDED_PROJECTION · BOUNDED_PROJECTION_USES_TOKEN_BUDGET · RESPECTS_REQUESTED_RANGE ·
+EXPLICITLY_MARKS_PARTIAL · DOES_NOT_REEXPAND_NEXT_TURN · SURVIVES_RESTART · UTF8_SAFE ·
+PROVIDER_VISIBLE · REMAINS_UNPRIVILEGED · FULL_OCCURRENCE_WHEN_FITS_UNCHANGED ·
+INSUFFICIENT_HEADROOM_REJECTS_CLEANLY = 全部 PASS。
+（Phase 7 的 `LARGE_OCCURRENCE_BOUNDED_PROJECTION = BLOCKED` 由此转为 PASS，Phase 7 记录已同步。）
+
+### REMAINING RISKS
+
+1. occurrence 身份映射目前依赖 page-out 时写入的 `occurrenceMessageIDs`（或 residency 回退）。走真实
+   batch page-out 的映射已由 Phase 3 覆盖；本 Phase 的 9 条里 occurrence 型用的是 residency 回退路径，
+   synthetic 型走 payloadEntry。两条路径都尊重 range，但"多条目因果单元里只有一部分被截断"的分布
+   情况未单独构造（当前实现对单元内每条 artifact 匹配条目套用同一 range，其余条目原样回来）。
+2. 二分每次评估都重建条目并估算 token，复杂度 O(log bytes × 条目成本)；最坏 17 次左右，
+   且只发生在"全量装不下"的少数 admission 上，非常规路径。
+3. continuation 只是给出偏移，不做任何自动续读：模型要显式再读。这是有意的，避免自动把同一
+   occurrence 复制进 active context（Case 9 的 no-duplication 断言）。
+4. v9 之前的 committed 行没有 range，重启后按完整 payload 投影——与旧行为一致，但若某条老 occurrence
+   体量极大，重启后仍可能超预算被拒；属向前兼容的自然结果，未做回填。
