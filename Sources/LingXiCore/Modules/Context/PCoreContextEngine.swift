@@ -30,6 +30,28 @@ extension ContextSource {
     }
 }
 
+/// Which region the bytes actually belong to.
+///
+/// Region used to be inferred from `source` alone, and every restored occurrence is carried as a
+/// derived page - so an 8K recalled payload was added to `eCoreIndexTokens`, a number that is meant
+/// to describe the few-hundred-token index projection. The segment says what the bytes are; the
+/// source only says how they travelled.
+/// The history text a prefix signature is built from, in one place so the hash and the continuity
+/// check can never disagree about what counts as history.
+func historySignatureTexts(_ entries: [ContextEntry], userTurnID: MessageID?, systemSourced: (ContextSource) -> Bool) -> [String] {
+    entries.filter { !systemSourced($0.source) && $0.countsAsDurableHistory(userTurnID: userTurnID) }
+        .map { "\($0.role):\($0.part)" }
+}
+
+func pCoreRegion(of entry: ContextEntry) -> PCoreRegion {
+    switch entry.segment {
+    case .immutableInstructions: return .stablePrefix
+    case .eCoreRetrievalProjection: return .eCoreIndex
+    case .retrievalData, .recalledOccurrence, .admittedToolResult: return .growingContext
+    case .conversation: return entry.source.pCoreRegion
+    }
+}
+
 /// PCore 来源描述的是模型工作集的语义，不是任何 Provider 的角色类型。
 public enum ContextSource: String, Sendable, Equatable, Hashable {
     case system
@@ -66,6 +88,19 @@ public struct ContextEntry: Sendable, Equatable {
         self.part = part
         self.page = page
         self.segment = segment
+    }
+}
+
+extension ContextEntry {
+    /// Durable conversation history, for the signatures that decide prefix continuity.
+    ///
+    /// The E-Core index projection is not history: it is rebuilt every assembly from the current
+    /// question, so its lines change when the query changes even when nothing in the conversation
+    /// moved. Counting it as history would report "the index refreshed" as "the past was rewritten".
+    func countsAsDurableHistory(userTurnID: MessageID?) -> Bool {
+        guard segment != .eCoreRetrievalProjection else { return false }
+        guard let messageID else { return true }
+        return messageID != userTurnID
     }
 }
 
@@ -310,7 +345,7 @@ public actor PCoreContextEngine {
             case let .observation(id): count = id.description.count
             }
             if entry.source == .projectPage { projectCharacters += count } else { sessionCharacters += count }
-            regionCharacters[entry.source.pCoreRegion, default: 0] += count
+            regionCharacters[pCoreRegion(of: entry), default: 0] += count
         }
         let projectTokens = max(0, (projectCharacters + 2) / 3)
         let derivedCharacters = entries.filter { $0.source == .derivedPage }.reduce(0) { $0 + Self.characterCount(of: $1.part) }

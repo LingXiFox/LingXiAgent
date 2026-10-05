@@ -696,3 +696,82 @@ A/B 两层身份与单调性另在单元层钉住：`exact fingerprint and clust
 4. `run_background_command` 的 `.attestation` 判定走工具 id，且其成功结果不带 `fileMutations`；后台命令**之后**真正改掉文件时，那一次进展要等真实 verification 或同目标复现才承认——与主人 Phase 5 收尾时记录的风险一致，本 Phase 只保证它天然不算 progress。
 5. fingerprint 折叠了数字与路径，理论上会把"仅路径不同、错误类相同"的两次失败合成一个 blocker（例如 `g++ a.cpp` 与 `g++ b.cpp` 都报同一语法错误）。这正是期望行为（同一环境级阻塞），但若将来需要按文件区分目标，应扩展 objective identity 而不是削弱单调累计。
 6. 本 Phase 未触碰 eviction scoring、context budget、Recall、Provider privilege、Phase 5 读调度、Branch Prediction、benchmark expectation；`exactDuplicateLimit/clusterWarningAt/clusterGraceAfterWarning` 三个阈值数值未变，变的只是"什么才算进展"。
+
+---
+
+## Phase 7 — Bounded E-Core Retrieval / Projection / Telemetry
+
+### STATUS
+
+9 of 10 gates PASS；`LARGE_OCCURRENCE_BOUNDED_PROJECTION = BLOCKED`（设计已给，按主人授权的出口未实现）。
+
+全量套件失败集合 = 既有基线失败（`eightStepToolLoop` 的 `contextBudgetExceeded`、`fullCoreStackV1`）+ 负载抖动（`CancellationRace`、`Stdio`、`TUI`、`UX`、`ProviderRateScheduler`、`ProviderHTTPTests` 均已在早前 Phase 单独复验），未新增失败。`ToolLoopRecovery` / `ReadConsistency` / `Recall*` / `ProviderPrivilege` / `ToolArtifactTruth` 全部保持绿（Phase 1-6 契约未破）。
+
+### ROOT CAUSE（审计结论复核后仍然成立）
+
+1. `references(sessionID:)` 每次调用都 `contentsOfDirectory` 全量枚举 + 对新文件 decode + 每次都把整个字典排序后返回。一次 Context Assembly 走 4 次（`ContextCompaction.swift:521`、`1023→ECoreObjectFabric:1254`、`1024`、`1105`）。
+2. `searchReferences` 先取全量 refs，再对每条做 substring 打分 —— 候选集 = corpus 本身；且 summary 只有 140 字符，recency 又不参与打分，老对象一旦掉出 Top-K 就永不可见。
+3. page-out 载荷故意不写 `.meta.json`（`ObservationMetadata` 描述工具产物，`toolCallID` 非可选），后果是 `listObjects` / `search()` / BM25 语料全部看不见 page-out —— page-out 与 artifact 确实是两个 searchable universe。探针实测 `listobjects_rows=0`。
+4. region 计量只看 `entry.source`，`derivedPage → .eCoreIndex`，于是被召回的 8K payload 全部记进 `eCoreIndexTokens`。
+5. `historyStableHash` / `historySignatures` 只排除 `source == .system`，每轮重建的 index projection 因此被算进"历史签名"，query 一变就像"历史被改写"。
+6. `grantedPayloads` 是无上限、永不清理的进程内 payload 副本。
+7. `recall_requests` 里 committed 行没有回收路径（`deleteSession` 之外）。
+
+### 实测性能（BEFORE，本机 `swift test` 环境；该环境单次文件操作约 79ms，绝对值只能横向比较，比例与 scaling law 才是结论）
+
+| corpus | cold references() | warm references()（每次调用） | searchReferences() | assembly 选择路径 | selected | listObjects rows |
+|---|---|---|---|---|---|---|
+| 100 | 3,364 ms | 788 ms | 1,312 ms | 2,254 ms | 8 | 0 |
+| 1,000 | 31,932 ms | 7,998 ms | 13,259 ms | 21,851 ms | 8 | 0 |
+| 10,000 | 332,192 ms | 83,135 ms | 131,399 ms | 215,307 ms | 8 | 0 |
+
+warm 一列就是问题的核心：全部缓存命中之后仍然 ~8.3 ms/条，即每 step × 每调用 的线性磁盘枚举 + 全量排序。
+
+### AFTER（同一探针、同一环境）
+
+| corpus | cold references() | warm references() | 目录扫描 / decode / sort（warm 每次） |
+|---|---|---|---|
+| 100 | 6,791 ms（一次性） | 0.35 ms | 0 / 0 / 0 |
+| 1,000 | 109,812 ms（一次性） | 0.47 ms | 0 / 0 / 0 |
+
+- 检索计算不再线性恶化：warm `references()` 与 corpus 无关（gate 直接断言 `counters.scans/decodes/sorts` 零增长，10,000 refs 时 assembly 亦为 0 次磁盘扫描）。
+- 候选集从"N 条全打分"变成"查询词 posting 列表的并集"（`directoryPostings`，insert/remove 增量维护）。常见词天然宽，选择性词（如 `ZELDOX_MIGRATION_CONTRACT`）实测在 1,000 refs 中命中 1 条 —— 且该条既不在 recent Top-8、summary 也与 query 无词面重合。
+- projection 模型可见预算与 corpus 无关：100 / 1,000 / 10,000 refs 下 tokens = 462 / 470 / 478（allowance 512），行数恒定 10（header + guide + Top-8）。assembly 期 payload fetch 次数 = 0（索引只带 metadata）。
+- page-out 进入统一 searchable universe：`searchableObjects` 携带 objectID / referenceID / occurrence / toolName / summary / turn / epoch / bytes / sha256 contentHash / retrievalTerms；`searchObjects` 与 BM25 语料（`ECoreRetrievalProvider`）都覆盖它。`listObjects` 仍只表示工具产物视图（不伪造 `ObservationMetadata`），这一层职责边界没有动。
+- `eCoreIndexTokens` 现在只描述索引：index ≈300 tokens + 8K 召回 → eCoreIndexTokens 仍在索引预算内，召回计入 growing context（gate 断言）。
+- `historyStableHash` / `historySignatures` 排除 `.eCoreRetrievalProjection`；`stablePrefixHash`（system|coreTools|profile）与 `cacheEpoch`（canonical stable prefix）本就与 projection 无关，现在连"历史是否被改写"的判断也不再被它污染。
+- recall proof chain 补上最后一跳：`recallRequested → recallResolved → recallAdmitted → recallProviderVisible`（按 call/artifact/bytes 身份比对最终装配后的 ModelRequest，纯观测、fail-open、每 reference 每进程一次）。`PE_REAL_ROUND_TRIP` 实测链路完整。
+
+### ARCHITECTURE DECISION
+
+- **磁盘是 durable truth，内存只是加速结构**：`directoryLoaded / directorySorted / directoryPostings` 每会话冷启动重建一次（一次扫描 + 仅 decode 未缓存项），之后 created/removed 增量更新并只让有序视图失效。删除单条不再触发整目录重扫。`pageOutReferences` 仍是身份真值来源，视图派生自它。
+- **candidate index 不是第二套 retrieval engine**：它只做候选裁剪，打分规则仍是同一条可解释加权（summary 3 / identity 2 / 内容证据 1，同分时 recency、再 referenceID），并且索引与查询共用同一个 tokenizer（标识符整体入索引，同时按 `_ . -` 拆分子词），因此"能不能命中"完全可预测、可测试。BM25/UnifiedRetrieval 仍是内容级检索引擎，其语料现已包含 page-out。
+- **retrievalTerms 是 page-out 时一次性算出的有界内容证据**（≤24 词，扫描上限 64KB，纯数字/长度<3 丢弃，按词频+字典序），写在 reference 上（optional，旧磁盘 reference 照常 decode）。它不是 payload 副本，也不是摘要替代品。
+- **不放宽任何预算**：Top-K 仍 8 行、allowance 仍 `min(512, hard/8)`，未动 eviction scoring、未动 context budget、未把旧对象塞回 P-Core。
+
+### FILES CHANGED
+
+生产：`ECoreObjectFabric.swift`（warm directory + postings + counters + `retrievalTerms` + `ECoreSearchableObject`/`searchableObjects`/`searchObjects`/`payloadText`/`payloadFileURL` + dropReference 回收 control rows）、`ECoreRetrievalProvider.swift`（ChunkIdentity + page-out 进 BM25 语料）、`ContextCacheController.swift`（`context_search` 走统一 universe）、`PCoreContextEngine.swift`（segment 决定 region；`historySignatureTexts` / `countsAsDurableHistory`）、`SessionRuntime.swift`（providerVisible 观测点；历史签名统一）、`ContextCompaction.swift`（grantedPayloads LRU 上限 + `noteProviderVisibleRecalls`；projection 选择改为内部可测）、`ECoreLifecycleTelemetry.swift`（`recallProviderVisible`）。
+
+测试：`ECoreBoundedRetrievalTests.swift`（10 gate）、`PEContextIntegrityTests.swift`（lifecycle 序列补最后一跳）、探针 `ECoreScaleProbeTests` / `ECoreIngestProbeTests` 暂存 `.tmp/audit-probes/`（Phase 8 转正）。
+
+### 未做：LARGE_OCCURRENCE_BOUNDED_PROJECTION（设计）
+
+现状：51KB occurrence 在小窗口里全量 re-admission 结构上放不下 → `recallRejected(inputBudgetExceeded)`，全有或全无。主人授权"若无足够可靠的机械策略可先 BLOCKED 并报告"，本狐不在 P/E 核心里塞未验证的截断 heuristic。
+
+设计（机械、可验证、保持 Phase 2 语义边界）：
+1. `sliceOnly` 不变（显式 range read）。`occurrenceInline` 不变（显式全量 inline，装不下就拒）。
+2. `occurrenceProjection` 在装不下时改为**有界投影**：可用字节 = `(hardInputLimit - retainedCost - reserve) × 3`，按 occurrence 顺序分配；每个被截断的 entry 必须显式声明 `projected bytes/total`、`truncated`、`continuation = context_recall(id, offset=…)`、authoritative object identity；低于最小可用量（建议 256 tokens）时仍拒，不投半句。
+3. 必须同时引入 per-reference `projectedBytes` cap，并让 `activeEntries` 的 payload 升级路径尊重它 —— 否则下一轮会把有界投影重新撑回全量，预算保证就没了（这是本条最容易做错、也最需要真机回归的地方）。
+4. 兼容 Phase 3：cap 属于可重建投影状态，不进 SQLite 真值；durability 门需扩一条"重启后投影 cap 一致"。
+
+替代方案 B：不改 projection，改为把 `context_recall` 的 slice 当唯一出路（模型自己分片读）—— 语义更保守，但大 occurrence 在 active context 里仍然"全有或全无"，不满足本条目标。建议采用方案 A，并单独立一个小 Phase 做第 3 点。
+
+### REMAINING RISKS
+
+1. 常见词的 posting list 仍可能覆盖全 corpus（例如每个 summary 都含 "output"）：候选裁剪对选择性查询有效，对宽泛查询退化为线性打分（但已无磁盘 I/O）。彻底方案是让 projection 走 BM25 snapshot，而 snapshot 目前只在 `retrieval_search` 被调用后存在，不适合当每轮依赖。
+2. `searchObjects` 的 payload 探测有界（`limit + contentProbeLimit`），因此**全 corpus 级内容发现依赖检索索引**；未进索引时（snapshot 尚未构建）只靠 metadata/summary/retrievalTerms。这是有意的取舍：宁可窄化 on-demand 搜索，也不让每轮 assembly 扫盘。
+3. cold rebuild 仍是一次全目录读 + decode；若 reference 数到达十万级，重启首转会变慢（可再考虑单文件目录清单或分片，属新存储格式，本 Phase 未动）。
+4. `grantedPayloads` 上限 16 条 / 1MB，是按"投影重建够用"选的，不是按吞吐调优；命中率可由后续 telemetry 再评估。
+5. `providerVisible` 是**按请求内容身份**判定的：如果后续投影把 payload 换成 placeholder，就会如实记为不可见 —— 这正是它区别于 pageIn/exactRestore 的地方；但也意味着任何改变 ToolResult 文本的合法投影（例如新的摘要策略）都会让这个数下降，需要把它当指标而不是断言。
+6. `context_recall` 返回 500 字 snippet 的 `context_search` 命中不会被记成 occurrence providerVisible（两者身份通道不同），已按主人要求确认。

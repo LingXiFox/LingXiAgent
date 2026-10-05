@@ -108,6 +108,12 @@ public struct ECoreReference: Sendable, Equatable, Codable {
     public let createdTurn: Int?
     public let pageOutReason: String?
     public let createdAt: Date
+    /// Bounded content evidence, derived once at page-out time. A reference is what the model gets to
+    /// see after its payload left P-Core, and a 140-character summary shares no vocabulary with most
+    /// later queries - without these terms an old object is unreachable except by recency, and recency
+    /// is a fixed-size window over a corpus that grows forever. Optional so references written before
+    /// this field still decode.
+    public let retrievalTerms: [String]?
 
     public init(
         objectID: ContextObjectID,
@@ -120,7 +126,8 @@ public struct ECoreReference: Sendable, Equatable, Codable {
         toolName: String? = nil,
         createdTurn: Int? = nil,
         pageOutReason: String? = nil,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        retrievalTerms: [String]? = nil
     ) {
         self.objectID = objectID
         self.sessionID = sessionID
@@ -133,9 +140,48 @@ public struct ECoreReference: Sendable, Equatable, Codable {
         self.createdTurn = createdTurn
         self.pageOutReason = pageOutReason
         self.createdAt = createdAt
+        self.retrievalTerms = retrievalTerms
         self.referenceID = ECoreReference.makeReferenceID(
             sessionID: sessionID, contextOccurrenceID: contextOccurrenceID, evictionEpoch: evictionEpoch
         )
+    }
+
+    /// One tokenizer for indexing and for queries, so a term can only ever match what it really is.
+    /// Identifier-shaped tokens are indexed whole *and* by their parts: `zeldox_migration_contract`
+    /// answers to "migration" as well as to itself, which is what makes an old object findable by the
+    /// vocabulary of a later question rather than by the wording of its summary.
+    public static func tokenized(_ text: String) -> [String] {
+        var tokens: [String] = []
+        for raw in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "." && $0 != "-" }) {
+            let token = String(raw)
+            guard token.count >= 3, token.contains(where: { $0.isLetter }) else { continue }
+            tokens.append(token)
+            if token.contains("_") || token.contains(".") || token.contains("-") {
+                for part in token.split(whereSeparator: { $0 == "_" || $0 == "." || $0 == "-" }) {
+                    let sub = String(part)
+                    if sub.count >= 3, sub.contains(where: { $0.isLetter }) { tokens.append(sub) }
+                }
+            }
+        }
+        return tokens
+    }
+
+    /// Top-N distinct terms of a payload, computed once when it is paged out. Mechanical and bounded:
+    /// a capped prefix of the bytes, words of at least three characters, no digits-only tokens, and at
+    /// most `limit` terms ordered by frequency then lexicographically, so the same bytes always produce
+    /// the same evidence. It is a search key, never a stand-in for the payload.
+    static func retrievalTerms(from content: String, limit: Int = 24, scanBytes: Int = 65_536) -> [String] {
+        let window = content.utf8.count > scanBytes
+            ? String(decoding: content.utf8.prefix(scanBytes), as: UTF8.self)
+            : content
+        var counts: [String: Int] = [:]
+        counts.reserveCapacity(256)
+        for token in ECoreReference.tokenized(window) {
+            counts[token, default: 0] += 1
+        }
+        return Array(counts.sorted { lhs, rhs in
+            lhs.value != rhs.value ? lhs.value > rhs.value : lhs.key < rhs.key
+        }.prefix(limit).map(\.key))
     }
 
     /// 引用身份由 occurrence 决定，不由 payload 身份决定：
@@ -317,6 +363,19 @@ public actor ECoreObjectStore {
     private var physicalObjects: [SessionID: [ContextObjectID: Int]] = [:]
     /// 冷启动扫描每个会话只做一次；`storageMetrics` 的 O(1) 承诺靠它维持。
     private var censusLoaded: Set<SessionID> = []
+    /// Warm view of the reference directory. The disk stays the durable truth: after a restart the
+    /// first lookup rebuilds it once, every mutation updates it in place, and the sorted order is
+    /// only recomputed when something actually changed. Without this, every Context Assembly walks,
+    /// decodes and sorts the whole reference directory several times over, so cost grows linearly
+    /// with a corpus that is meant to grow forever.
+    private var directorySorted: [SessionID: [ECoreReference]] = [:]
+    /// Candidate index over the same warm directory: term -> referenceIDs. Maintained incrementally by
+    /// the insert and removal paths, so a semantic search looks at the postings for its own terms
+    /// instead of scoring every reference in a catalog that is designed to grow forever. It narrows
+    /// candidates only; the ranking rules stay the weighted, explainable ones below.
+    private var directoryPostings: [SessionID: [String: Set<String>]] = [:]
+    private var directoryLoaded: Set<SessionID> = []
+    private var directoryCounters: [SessionID: ReferenceDirectoryCounters] = [:]
     /// The durable control plane for recall intents and admission states. nil keeps the fabric
     /// memory-only, which is what an in-memory E-Core configuration means: E-Core still runs, its
     /// recall bookkeeping just cannot outlive the process.
@@ -342,6 +401,28 @@ public actor ECoreObjectStore {
     public struct MutationSubscriptionToken: Hashable, Sendable {
         public let id: UUID
         public init(id: UUID = UUID()) { self.id = id }
+    }
+
+    /// What the reference directory actually costs, counted rather than guessed. A warm session must
+    /// show zero scans and zero decodes per lookup; anything else means the disk is being walked again.
+    public struct ReferenceDirectoryCounters: Sendable, Equatable {
+        public var scans: Int = 0
+        public var decodes: Int = 0
+        public var sorts: Int = 0
+    }
+
+    public struct ReferenceDirectoryMetrics: Sendable, Equatable {
+        public let references: Int
+        public let loaded: Bool
+        public let indexedTerms: Int
+        public let counters: ReferenceDirectoryCounters
+    }
+
+    public func referenceDirectoryMetrics(sessionID: SessionID) -> ReferenceDirectoryMetrics {
+        ReferenceDirectoryMetrics(references: (pageOutReferences[sessionID] ?? [:]).count,
+                                  loaded: directoryLoaded.contains(sessionID),
+                                  indexedTerms: (directoryPostings[sessionID] ?? [:]).count,
+                                  counters: directoryCounters[sessionID] ?? ReferenceDirectoryCounters())
     }
     private var mutationHooks: [MutationSubscriptionToken: @Sendable () async -> Void] = [:]
 
@@ -386,6 +467,15 @@ public actor ECoreObjectStore {
             .appendingPathComponent(safeSessionID, isDirectory: true)
             .appendingPathComponent("objects", isDirectory: true)
     }
+
+    /// 检索语料构建方需要的载荷地址：只交出位置，绝不交出副本。
+    public func payloadFileURL(sessionID: SessionID, objectID: ContextObjectID) -> URL {
+        payloadURL(sessionID: sessionID, objectID: objectID)
+    }
+
+    /// Whether payloads live on disk or only in this process, so a corpus builder reads from the right
+    /// place without guessing.
+    public var persistenceEnabled: Bool { persistsPayloads }
 
     /// 载荷后端。开关的权威语义是「是否持久化」，不是「是否允许 E-Core」：
     /// true 走磁盘，false 走 session-scoped 内存。两种情况下 store() 都返回稳定 ECoreObjectID，
@@ -548,6 +638,13 @@ public actor ECoreObjectStore {
         catch { FileHandle.standardError.write(Data("[E-CORE WARNING] recall intent write failed: \(error)\n".utf8)) }
     }
 
+    /// Drop the reference's occurrence mapping, alongside its request row.
+    func forgetRecallOccurrences(sessionID: SessionID, referenceID: String) async {
+        guard let persistence = recallPersistence else { return }
+        do { try await persistence.forgetRecallOccurrences(sessionID: sessionID, referenceID: referenceID) }
+        catch { FileHandle.standardError.write(Data("[E-CORE WARNING] recall occurrence clear failed: \(error)\n".utf8)) }
+    }
+
     func forgetRecallRequest(sessionID: SessionID, referenceID: String) async {
         pendingRecallRequests[sessionID] = (pendingRecallRequests[sessionID] ?? []).filter { $0.referenceID != referenceID }
         guard let persistence = recallPersistence else { return }
@@ -590,6 +687,8 @@ public actor ECoreObjectStore {
             }
         }
         pageOutReferences[sessionID, default: [:]][ref.referenceID] = ref
+        indexReference(sessionID, ref)
+        invalidateReferenceDirectory(sessionID)
         noteLifecycle(sessionID: sessionID, phase: .pageOutNew, referenceID: ref.referenceID)
         notifyMutation()
         return ref
@@ -636,7 +735,8 @@ public actor ECoreObjectStore {
             toolCallID: toolCallID,
             toolName: toolName,
             createdTurn: createdTurn,
-            pageOutReason: pageOutReason
+            pageOutReason: pageOutReason,
+            retrievalTerms: ECoreReference.retrievalTerms(from: content)
         )
 
         if let existing = await self.reference(sessionID: sessionID, referenceID: reference.referenceID) {
@@ -673,6 +773,8 @@ public actor ECoreObjectStore {
         let isFirstWriteOfThisObject = pageOutObjects[sessionID]?[objectID] == nil
         pageOutObjects[sessionID, default: [:]][objectID] = record
         pageOutReferences[sessionID, default: [:]][reference.referenceID] = reference
+        indexReference(sessionID, reference)
+        invalidateReferenceDirectory(sessionID)
         noteLifecycle(sessionID: sessionID, phase: .pageOutNew, referenceID: reference.referenceID)
         debugHub?.notePageOut(sessionID: sessionID,
                               objectID: objectID.rawValue,
@@ -706,15 +808,20 @@ public actor ECoreObjectStore {
     /// Exact Restore 的第一跳：referenceID → 引用。不靠词法或语义检索猜对象是什么（契约第九节）。
     public func reference(sessionID: SessionID, referenceID: String) async -> ECoreReference? {
         guard (try? ContextObjectID(referenceID)) != nil else { return nil }
+        ensureReferenceDirectory(sessionID: sessionID)
         if let cached = pageOutReferences[sessionID]?[referenceID] {
             return cached
         }
+        // A miss on a loaded directory means the file is not there either; the single read below
+        // stays only as the fail-open path for a reference written outside this actor.
         guard persistsPayloads else { return nil }
         let url = referenceURL(sessionID: sessionID, referenceID: referenceID)
         guard let data = try? Data(contentsOf: url),
               let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data),
               loaded.referenceID == referenceID, loaded.sessionID == sessionID else { return nil }
         pageOutReferences[sessionID, default: [:]][referenceID] = loaded
+        indexReference(sessionID, loaded)
+        invalidateReferenceDirectory(sessionID)
         return loaded    }
 
     /// Exact Restore：referenceID → ECoreReference → objectID → 完整不可变 payload。
@@ -741,7 +848,16 @@ public actor ECoreObjectStore {
         // 原先的 `guard ... else { return }` 会让一次冷启动后的删除静默变成无操作，
         // 载荷于是永不回收——那正是「长期存储是否泄漏」这个问题最想发现的东西。
         guard let ref = await reference(sessionID: sessionID, referenceID: referenceID) else { return }
-        pageOutReferences[sessionID]?.removeValue(forKey: referenceID)
+        if let removed = pageOutReferences[sessionID]?[referenceID] {
+            pageOutReferences[sessionID]?.removeValue(forKey: referenceID)
+            unindexOfReference(sessionID, removed)
+        }
+        invalidateReferenceDirectory(sessionID)
+        // The reference is gone for good, so its control-plane rows describe an occurrence that can
+        // never be admitted again. Reclaim them here rather than letting committed rows accumulate
+        // forever: restart durability is about references that still exist, and this is not one.
+        await forgetRecallRequest(sessionID: sessionID, referenceID: referenceID)
+        if let persistence = recallPersistence { try? await persistence.forgetRecallOccurrences(sessionID: sessionID, referenceID: referenceID) }
         if persistsPayloads {
             try? FileManager.default.removeItem(at: referenceURL(sessionID: sessionID, referenceID: referenceID))
         }
@@ -773,26 +889,82 @@ public actor ECoreObjectStore {
 
     /// 该 session 的全部引用。重启后内存表是空的，而 P-Core Index 每轮都要从引用重建，
     /// 所以持久化后端必须能按目录补齐 —— 否则冷启动后 Index 会凭空消失。
+    ///
+    /// 补齐每会话只做一次：热路径不再枚举目录、不再 decode、也不再全量排序，否则检索代价会随
+    /// 一个设计上要无限增长的 corpus 线性上升，而每个 model step 都要付好几遍。
     public func references(sessionID: SessionID) async -> [ECoreReference] {
-        if persistsPayloads {
-            let dir = referencesDirectory(sessionID: sessionID)
-            if let files = try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-            ) {
-                for url in files where url.lastPathComponent.hasSuffix(".json") {
-                    let referenceID = url.deletingPathExtension().lastPathComponent
-                    if pageOutReferences[sessionID]?[referenceID] != nil { continue }
-                    guard let data = try? Data(contentsOf: url),
-                          let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data) else { continue }
-                    pageOutReferences[sessionID, default: [:]][referenceID] = loaded
-                }
+        ensureReferenceDirectory(sessionID: sessionID)
+        if directorySorted[sessionID] == nil {
+            var counters = directoryCounters[sessionID] ?? ReferenceDirectoryCounters()
+            counters.sorts += 1
+            directoryCounters[sessionID] = counters
+            directorySorted[sessionID] = Self.sortedReferences(Array((pageOutReferences[sessionID] ?? [:]).values))
+        }
+        return directorySorted[sessionID] ?? []
+    }
+
+    private func ensureReferenceDirectory(sessionID: SessionID) {
+        guard !directoryLoaded.contains(sessionID) else { return }
+        directoryLoaded.insert(sessionID)
+        var counters = directoryCounters[sessionID] ?? ReferenceDirectoryCounters()
+        counters.scans += 1
+        if persistsPayloads, let files = try? FileManager.default.contentsOfDirectory(
+            at: referencesDirectory(sessionID: sessionID),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            for url in files where url.lastPathComponent.hasSuffix(".json") {
+                let referenceID = url.deletingPathExtension().lastPathComponent
+                if pageOutReferences[sessionID]?[referenceID] != nil { continue }
+                guard let data = try? Data(contentsOf: url),
+                      let loaded = try? JSONDecoder().decode(ECoreReference.self, from: data) else { continue }
+                counters.decodes += 1
+                pageOutReferences[sessionID, default: [:]][referenceID] = loaded
+                indexReference(sessionID, loaded)
             }
         }
-        return Array((pageOutReferences[sessionID] ?? [:]).values.sorted {
+        directoryCounters[sessionID] = counters
+        directorySorted[sessionID] = nil
+    }
+
+    /// A mutation invalidates only the ordered view - the entries are already in memory.
+    private func invalidateReferenceDirectory(_ sessionID: SessionID) {
+        directorySorted[sessionID] = nil
+    }
+
+    /// The tokens a reference can be found by: what it says it is about, the tool and occurrence that
+    /// produced it, its object identity, and the bounded content evidence taken at page-out time.
+    private static func indexableTerms(of reference: ECoreReference) -> Set<String> {
+        var terms = Set<String>()
+        for field in [reference.summary, reference.toolName ?? "", reference.contextOccurrenceID, reference.objectID.rawValue] {
+            for token in ECoreReference.tokenized(field) { terms.insert(token) }
+        }
+        terms.formUnion(reference.retrievalTerms ?? [])
+        return terms
+    }
+
+    private func indexReference(_ sessionID: SessionID, _ reference: ECoreReference) {
+        var postings = directoryPostings[sessionID] ?? [:]
+        for term in Self.indexableTerms(of: reference) { postings[term, default: []].insert(reference.referenceID) }
+        directoryPostings[sessionID] = postings
+    }
+
+    private func unindexOfReference(_ sessionID: SessionID, _ reference: ECoreReference) {
+        guard var postings = directoryPostings[sessionID] else { return }
+        for term in Self.indexableTerms(of: reference) {
+            guard var ids = postings[term] else { continue }
+            ids.remove(reference.referenceID)
+            if ids.isEmpty { postings.removeValue(forKey: term) } else { postings[term] = ids }
+        }
+        directoryPostings[sessionID] = postings
+    }
+
+    private static func sortedReferences(_ references: [ECoreReference]) -> [ECoreReference] {
+        references.sorted {
             if $0.evictionEpoch != $1.evictionEpoch { return $0.evictionEpoch > $1.evictionEpoch }
             if $0.createdTurn != $1.createdTurn { return ($0.createdTurn ?? 0) > ($1.createdTurn ?? 0) }
             return $0.referenceID < $1.referenceID
-        })
+        }
     }
 
     /// 旁路存储对象：超过阈值（或 force）则写入 E-Core 后端。
@@ -1210,6 +1382,123 @@ public actor ECoreObjectStore {
         return results
     }
 
+    /// One entry of the unified E-Core search universe.
+    ///
+    /// A paged-out payload and a tool artifact are the same kind of thing for search: bytes that are
+    /// no longer in P-Core but are still addressable by identity. They used to live in two separate
+    /// universes because `ObservationMetadata` describes tool artifacts and page-outs deliberately do
+    /// not fake one - so `listObjects`, `search()` and the retrieval index could not see any page-out,
+    /// and an old object was reachable only through a reference summary. This view joins them without
+    /// copying a payload or pretending an occurrence is an artifact.
+    public struct ECoreSearchableObject: Sendable, Equatable, Hashable {
+        public enum Kind: String, Sendable, Equatable { case artifact, pageOut }
+
+        public let objectID: ContextObjectID
+        public let kind: Kind
+        public let referenceID: String?
+        public let occurrenceID: String?
+        public let toolName: String
+        public let summary: String
+        public let createdTurn: Int?
+        public let evictionEpoch: Int?
+        public let totalBytes: Int
+        public let totalLines: Int
+        public let contentHash: String
+        public let retrievalTerms: [String]
+        public let toolCallID: ToolCallID?
+    }
+
+    /// Everything currently addressable in this session, derived from metadata the fabric already
+    /// holds. No payload is read, so cost is bounded by the catalog, not by corpus bytes.
+    public func searchableObjects(sessionID: SessionID) async -> [ECoreSearchableObject] {
+        var results: [ECoreSearchableObject] = []
+        for meta in await listObjects(sessionID: sessionID) {
+            results.append(ECoreSearchableObject(
+                objectID: meta.objectID, kind: .artifact, referenceID: nil, occurrenceID: nil,
+                toolName: meta.toolName, summary: "\(meta.toolName) \(meta.contentType)",
+                createdTurn: nil, evictionEpoch: nil, totalBytes: meta.totalBytes, totalLines: meta.totalLines,
+                contentHash: meta.contentHash,
+                retrievalTerms: ECoreReference.retrievalTerms(from: meta.toolName + " " + meta.objectID.rawValue),
+                toolCallID: meta.toolCallID))
+        }
+        // Page-outs: one entry per object, described by its most recent reference.
+        var seen = Set<ContextObjectID>()
+        for reference in await references(sessionID: sessionID) {
+            guard !seen.contains(reference.objectID) else { continue }
+            seen.insert(reference.objectID)
+            let record = pageOutObjects[sessionID]?[reference.objectID]
+                ?? physicalObjects[sessionID]?[reference.objectID].map { ECoreObjectRecord(objectID: reference.objectID, totalBytes: $0, totalLines: 0, contentHash: reference.objectID.rawValue) }
+            results.append(ECoreSearchableObject(
+                objectID: reference.objectID, kind: .pageOut, referenceID: reference.referenceID,
+                occurrenceID: reference.contextOccurrenceID, toolName: reference.toolName ?? "page-out",
+                summary: reference.summary, createdTurn: reference.createdTurn, evictionEpoch: reference.evictionEpoch,
+                totalBytes: record?.totalBytes ?? 0, totalLines: record?.totalLines ?? 0,
+                contentHash: record?.contentHash ?? reference.objectID.rawValue,
+                retrievalTerms: reference.retrievalTerms ?? [], toolCallID: reference.toolCallID))
+        }
+        return results
+    }
+
+    /// Unified ranked search over everything addressable in this session.
+    ///
+    /// `search()` below keeps its historical artifact-only universe and whole-catalog payload scan;
+    /// this is the one the search surface uses. Ranking is metadata-first (declared subject, then
+    /// identity, then the bounded content evidence recorded at page-out) and payload bytes are read
+    /// only for the candidates that could already win - which keeps the cost bounded by `limit`
+    /// instead of by a corpus that grows forever.
+    public func searchObjects(sessionID: SessionID, query: String, limit: Int, contentProbeLimit: Int = 8) async -> [ECoreSearchableObject] {
+        let terms = query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard !terms.isEmpty, limit > 0 else { return [] }
+        let searchable = await searchableObjects(sessionID: sessionID)
+        var scored: [(ECoreSearchableObject, Int)] = []
+        for object in searchable {
+            let summary = object.summary.lowercased()
+            let identity = (object.toolName + " " + object.objectID.rawValue + " " + (object.occurrenceID ?? "")).lowercased()
+            let evidence = Set(object.retrievalTerms)
+            var score = 0
+            for term in terms {
+                if summary.contains(term) { score += 3 }
+                else if identity.contains(term) { score += 2 }
+                else if evidence.contains(term) { score += 1 }
+            }
+            if score > 0 { scored.append((object, score)) }
+        }
+        scored.sort { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            if lhs.0.totalBytes != rhs.0.totalBytes { return lhs.0.totalBytes > rhs.0.totalBytes }
+            return lhs.0.objectID.rawValue < rhs.0.objectID.rawValue
+        }
+        // Content evidence is read for a bounded set, never for the whole catalog: the metadata
+        // winners, plus a deterministic reserve of objects whose metadata said nothing, so a
+        // content-only match still stands a chance. Whole-catalog content discovery belongs to the
+        // retrieval index, whose corpus now covers page-out payloads as well as artifacts.
+        var ranked = scored
+        let scoredIDs = Set(scored.map { $0.0 })
+        for object in searchable where !scoredIDs.contains(object) && ranked.count < limit + max(contentProbeLimit, 1) {
+            ranked.append((object, 0))
+        }
+        let head = Array(ranked.prefix(max(limit + contentProbeLimit, limit)))
+        var withContent: [(ECoreSearchableObject, Int)] = []
+        for (object, score) in head {
+            var result = score
+            if let content = await payloadText(sessionID: sessionID, objectID: object.objectID),
+               terms.contains(where: { content.lowercased().contains($0) }) {
+                result += 4
+            }
+            withContent.append((object, result))
+        }
+        withContent.sort { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            return lhs.0.objectID.rawValue < rhs.0.objectID.rawValue
+        }
+        return Array(withContent.prefix(limit).map(\.0))
+    }
+
+    /// Payload bytes for one object, from whichever backend is authoritative. Read-only.
+    public func payloadText(sessionID: SessionID, objectID: ContextObjectID) async -> String? {
+        try? await fetch(sessionID: sessionID, objectID: objectID)
+    }
+
     /// 在 E-Core 对象织物中按查询关键词检索匹配的上下文对象
     public func search(
         sessionID: SessionID,
@@ -1249,15 +1538,39 @@ public actor ECoreObjectStore {
     /// 语义召回：query → page-out 引用的 summary（与 P-Core Index 同一份 metadata）。
     /// 命中后由调用方按 referenceID 走 Exact Restore 取载荷，这里不返回 payload。
     public func searchReferences(sessionID: SessionID, query: String, limit: Int, recordTelemetry: Bool = true) async -> [ECoreReference] {
-        let terms = query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let terms = ECoreReference.tokenized(query)
         guard !terms.isEmpty else { return [] }
-        let scored = await references(sessionID: sessionID).compactMap { reference -> (ECoreReference, Int)? in
-            let haystack = (reference.summary + " " + (reference.toolName ?? "") + " " + reference.objectID.rawValue).lowercased()
-            let hits = terms.reduce(0) { $0 + (haystack.contains($1) ? 1 : 0) }
-            return hits > 0 ? (reference, hits) : nil
+        // Weighted, explainable and computed entirely in memory over the warm directory: what the
+        // reference declares itself to be about counts most, then the tool and object identity, then
+        // the bounded content evidence. Ties break on recency, then on reference identity, so the same
+        // corpus and query always produce the same order.
+        ensureReferenceDirectory(sessionID: sessionID)
+        // Candidates come from the postings of the query's own terms, so the work of a search is set by
+        // how many references could match at all, not by how many exist.
+        let postings = directoryPostings[sessionID] ?? [:]
+        var candidates: [ECoreReference] = []
+        var considered = Set<String>()
+        for term in terms {
+            for id in postings[term] ?? [] where considered.insert(id).inserted {
+                if let reference = pageOutReferences[sessionID]?[id] { candidates.append(reference) }
+            }
+        }
+        let scored = candidates.compactMap { reference -> (ECoreReference, Int)? in
+            let summary = reference.summary.lowercased()
+            let identity = ((reference.toolName ?? "") + " " + reference.objectID.rawValue + " " + reference.contextOccurrenceID).lowercased()
+            let evidence = Set(reference.retrievalTerms ?? [])
+            var score = 0
+            for term in terms {
+                if summary.contains(term) { score += 3 }
+                else if identity.contains(term) { score += 2 }
+                else if evidence.contains(term) { score += 1 }
+            }
+            return score > 0 ? (reference, score) : nil
         }
         let matched = scored.sorted { lhs, rhs in
             if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            if lhs.0.evictionEpoch != rhs.0.evictionEpoch { return lhs.0.evictionEpoch > rhs.0.evictionEpoch }
+            if (lhs.0.createdTurn ?? 0) != (rhs.0.createdTurn ?? 0) { return (lhs.0.createdTurn ?? 0) > (rhs.0.createdTurn ?? 0) }
             return lhs.0.referenceID < rhs.0.referenceID
         }.prefix(max(0, limit)).map(\.0)
         // 只记有命中的那次：一次无命中的语义检索值得看见，但它归 recall-miss 那条线，
@@ -1328,6 +1641,10 @@ public actor ECoreObjectStore {
         memoryPayloads.removeValue(forKey: sessionID)
         pageOutObjects.removeValue(forKey: sessionID)
         pageOutReferences.removeValue(forKey: sessionID)
+        directorySorted.removeValue(forKey: sessionID)
+        directoryPostings.removeValue(forKey: sessionID)
+        directoryLoaded.remove(sessionID)
+        directoryCounters.removeValue(forKey: sessionID)
         pendingRecallRequests.removeValue(forKey: sessionID)
         lifecycle.removeValue(forKey: sessionID)
         physicalObjects.removeValue(forKey: sessionID)

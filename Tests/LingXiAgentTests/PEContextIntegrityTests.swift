@@ -330,7 +330,9 @@ import LingXiClient
         #expect(telemetry.recallRequested == 1 && telemetry.recallResolved == 1 && telemetry.recallAdmitted == 1 && telemetry.recallRejected == 0)
         let events = try await host.debugEvents(envelope: .init(payload: .init(sessionID: sid)))
         let phases = events.payload.events.compactMap { $0.eCoreEvent?.lifecyclePhase }
-        #expect(phases == ["pageOutAttempt", "pageOutNew", "recallRequested", "recallResolved", "recallAdmitted"])
+        // Phase 7 extends the proof chain by its last hop: an admitted recall is only useful once the
+        // assembled request still carries those bytes.
+        #expect(phases == ["pageOutAttempt", "pageOutNew", "recallRequested", "recallResolved", "recallAdmitted", "recallProviderVisible"])
         try evidence("roundtrip-telemetry.json", data: JSONEncoder().encode(events.payload))
         print("PE_REAL_ROUND_TRIP requests=\(requests.count) lifecycle=\(telemetry.events.map { $0.phase.rawValue }) failureEvidence=true durableMessages=\(restoredSession.messages.count)")
         await host.shutdown()

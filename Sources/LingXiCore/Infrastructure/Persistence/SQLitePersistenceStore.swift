@@ -705,6 +705,13 @@ public actor SQLitePersistenceStore {
         try Self.execute(state, "DELETE FROM recall_requests WHERE session_id = ? AND reference_id = ?", [sessionID.rawValue, referenceID])
     }
 
+    /// Reclaim one reference's occurrence rows. Only a reference that is gone for good may be
+    /// dropped here; a reference that is merely absent from the current projection keeps its rows,
+    /// because those rows are what makes an old occurrence restorable after a restart.
+    public func forgetRecallOccurrences(sessionID: SessionID, referenceID: String) throws {
+        try Self.execute(state, "DELETE FROM recall_occurrences WHERE session_id = ? AND reference_id = ?", [sessionID.rawValue, referenceID])
+    }
+
     /// reference → the canonical messages that make up the causal unit it was paged out from.
     /// A batch can hold several artifacts, so one message set may own several references and each
     /// reference must resolve on its own after a restart.

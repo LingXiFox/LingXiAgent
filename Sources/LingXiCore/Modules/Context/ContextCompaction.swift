@@ -447,7 +447,15 @@ public actor ContextCompactor {
 
     /// Authoritative payloads of granted references, by referenceID. Payloads are content-addressed
     /// and immutable, so one read per reference serves every later assembly.
+    /// A performance cache, nothing more: bounded by entries and by bytes, and every miss goes back
+    /// to the authoritative object, so evicting a payload can never change what a recall resolves to.
     private var grantedPayloads: [String: String] = [:]
+    private var grantedPayloadOrder: [String] = []
+    /// Observation-only: which recalls have already been certified as provider visible this process.
+    /// A later request carrying the same bytes is not a second completed hop in the proof chain.
+    private var providerVisibleRecorded: Set<String> = []
+    private static let grantedPayloadEntryLimit = 16
+    private static let grantedPayloadByteLimit = 1_048_576
     /// The durable recall control plane. With none attached, admission stays in process — which is
     /// what an in-memory E-Core means. The payload itself is never copied here: a grant is
     /// re-materialised from reference → authoritative object, so SQLite holds state and mapping only.
@@ -1018,7 +1026,9 @@ public actor ContextCompactor {
         min(512, max(0, hardInputLimit / 8))
     }
 
-    private func eCoreIndexProjection(sessionID: SessionID, kept: [ContextEntry], hardInputLimit: Int, query: String) async -> ContextEntry? {
+    /// Internal rather than private so the scale gates can drive the real selection instead of a copy
+    /// of its rules. `compact` and `projectIndex` are the production callers.
+    func eCoreIndexProjection(sessionID: SessionID, kept: [ContextEntry], hardInputLimit: Int, query: String) async -> ContextEntry? {
         // Reuse the existing retrieval ranking; the projection owns only selection size.
         let related = await ecoreStore.searchReferences(sessionID: sessionID, query: query, limit: Self.eCoreIndexLineLimit, recordTelemetry: false)
         let recent = await ecoreStore.references(sessionID: sessionID)
@@ -1175,11 +1185,82 @@ public actor ContextCompactor {
     /// telemetry, which reports what was read, not what became provider-visible.
     private func grantedPayload(sessionID: SessionID, referenceID: String, artifactObjectID: String) async -> String? {
         let key = "\(sessionID.rawValue)\u{1f}\(referenceID)"
-        if let cached = grantedPayloads[key] { return cached }
+        if let cached = grantedPayloads[key] {
+            grantCacheTouch(key)
+            return cached
+        }
         guard let objectID = try? ContextObjectID(artifactObjectID),
               let payload = try? await ecoreStore.fetch(sessionID: sessionID, objectID: objectID) else { return nil }
         grantedPayloads[key] = payload
+        grantedPayloadOrder.append(key)
+        while grantedPayloads.count > Self.grantedPayloadEntryLimit ||
+              grantedPayloadOrder.reduce(0, { $0 + (grantedPayloads[$1]?.utf8.count ?? 0) }) > Self.grantedPayloadByteLimit,
+              let oldest = grantedPayloadOrder.first {
+            grantedPayloadOrder.removeFirst()
+            grantedPayloads.removeValue(forKey: oldest)
+        }
         return payload
+    }
+
+    /// Recency for the cache only: a hit moves its key to the back, so eviction takes the payload that
+    /// has not been re-projected for longest, and the next miss simply reads it from E-Core again.
+    private func grantCacheTouch(_ key: String) {
+        guard let index = grantedPayloadOrder.firstIndex(of: key) else { return }
+        grantedPayloadOrder.remove(at: index)
+        grantedPayloadOrder.append(key)
+    }
+
+    /// Which resolved occurrences the assembled request still carries, recorded by identity.
+    ///
+    /// `recallAdmitted` says Core granted the bytes; it does not say a later projection, budget cut or
+    /// placeholder kept them in front of the model. This compares the *addressed content* of each
+    /// recalled entry with what the final request actually contains - same call identity, same
+    /// artifact identity, same bytes - so the number means "provider visible" rather than "we hoped".
+    /// Pure observation: nothing here can change a request, and a failure to observe is silent.
+    public func noteProviderVisibleRecalls(sessionID: SessionID, activeEntries: [ContextEntry], request: ModelRequest) async {
+        let referenceByMessage = occurrenceMessageIDs[sessionID]?.reduce(into: [MessageID: String]()) { map, pair in
+            for id in pair.value { map[id] = pair.key }
+        } ?? [:]
+        guard !activeEntries.isEmpty else { return }
+        var providerTokens = Set<String>()
+        for message in request.messages {
+            for part in message.parts {
+                switch part {
+                case let .toolResult(result):
+                    providerTokens.insert(Self.contentToken(callID: result.callID.rawValue, artifact: result.output.artifactObjectID, content: result.content))
+                case let .text(text):
+                    providerTokens.insert(Self.contentToken(callID: "", artifact: nil, content: text))
+                default:
+                    break
+                }
+            }
+        }
+        for entry in activeEntries where entry.segment == .recalledOccurrence || entry.segment == .admittedToolResult {
+            // Which reference this occurrence projects. A payload-only grant travels as a text entry
+            // keyed by the reference itself; an occurrence entry resolves through the mapping that
+            // page-out recorded. Without an addressable reference there is nothing to certify.
+            let messageID = entry.messageID
+            let referenceID: String?
+            switch entry.part {
+            case let .toolResult(result):
+                let token = Self.contentToken(callID: result.callID.rawValue, artifact: result.output.artifactObjectID, content: result.content)
+                guard providerTokens.contains(token) else { continue }
+                referenceID = messageID.flatMap { referenceByMessage[$0] }
+                    ?? (messageID.map { $0.rawValue }.flatMap { $0.hasPrefix("ref_") ? $0 : nil })
+            case let .text(text):
+                guard let messageID, providerTokens.contains(Self.contentToken(callID: "", artifact: nil, content: text)) else { continue }
+                referenceID = messageID.rawValue
+            default:
+                continue
+            }
+            guard let referenceID, !providerVisibleRecorded.contains("\(sessionID.rawValue)\u{1f}\(referenceID)") else { continue }
+            providerVisibleRecorded.insert("\(sessionID.rawValue)\u{1f}\(referenceID)")
+            await ecoreStore.noteLifecycle(sessionID: sessionID, phase: .recallProviderVisible, referenceID: referenceID)
+        }
+    }
+
+    private static func contentToken(callID: String, artifact: String?, content: String) -> String {
+        "\(callID)\u{1f}\(artifact ?? "")\u{1f}\(PlatformCrypto.sha256Hex(content))"
     }
 
     /// Rebuild the bounded segment on every assembly, including scheduler skip.

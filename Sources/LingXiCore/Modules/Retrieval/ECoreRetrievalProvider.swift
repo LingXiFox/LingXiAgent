@@ -112,15 +112,78 @@ public struct ECoreRetrievalProvider: RetrievalProvider, Sendable {
                     continue
                 }
             }
+
+            // Page-out payloads, in the same corpus as artifacts. They deliberately carry no
+            // ObservationMetadata - they are occurrences, not tool artifacts - so enumerating
+            // `.meta.json` alone left every paged-out object invisible to the index, and an old object
+            // could only be reached through a 140-character summary. Same bytes, same offsets, same
+            // RawSourceHandle: no payload copy, no second universe.
+            let session = SessionID(sDir.lastPathComponent)
+            let alreadyIndexed = Set(chunks.map(\.sourceID))
+            for object in await ecoreStore.searchableObjects(sessionID: session) where object.kind == .pageOut {
+                guard !alreadyIndexed.contains(object.objectID.rawValue) else { continue }
+                let data: Data?
+                if await ecoreStore.persistenceEnabled {
+                    let url = await ecoreStore.payloadFileURL(sessionID: session, objectID: object.objectID)
+                    data = try? Data(contentsOf: url)
+                } else {
+                    data = await ecoreStore.payloadText(sessionID: session, objectID: object.objectID).map { Data($0.utf8) }
+                }
+                guard let data else { continue }
+                chunks.append(contentsOf: makeChunks(
+                    sessionID: session.rawValue,
+                    identity: ChunkIdentity(objectID: object.objectID, toolName: object.toolName,
+                                           totalBytes: object.totalBytes, createdAt: .now,
+                                           referenceID: object.referenceID, occurrenceID: object.occurrenceID),
+                    data: data))
+            }
         }
 
         return chunks
+    }
+
+    /// The fields chunking actually needs, from either half of the E-Core search universe.
+    public struct ChunkIdentity: Sendable, Equatable {
+        public let objectID: ContextObjectID
+        public let toolName: String
+        public let totalBytes: Int
+        public let createdAt: Date
+        public let contentType: String
+        /// Present only when the object really is a tool artifact.
+        public let toolCallID: ToolCallID?
+        /// How the object is addressed now: a reference for a page-out, nil for an artifact.
+        public let referenceID: String?
+        public let occurrenceID: String?
+
+        public init(objectID: ContextObjectID, toolName: String, totalBytes: Int, createdAt: Date,
+                    contentType: String = "text/plain", toolCallID: ToolCallID? = nil,
+                    referenceID: String? = nil, occurrenceID: String? = nil) {
+            self.objectID = objectID
+            self.toolName = toolName
+            self.totalBytes = totalBytes
+            self.createdAt = createdAt
+            self.contentType = contentType
+            self.toolCallID = toolCallID
+            self.referenceID = referenceID
+            self.occurrenceID = occurrenceID
+        }
     }
 
     /// 将单个 E-Core 对象的原始数据流安全切分为多个具有重叠边界的 RetrievalChunk
     public func makeChunks(
         sessionID: String,
         metadata: ObservationMetadata,
+        data: Data
+    ) -> [RetrievalChunk] {
+        makeChunks(sessionID: sessionID, identity: ChunkIdentity(objectID: metadata.objectID, toolName: metadata.toolName,
+                                                                totalBytes: metadata.totalBytes, createdAt: metadata.createdAt,
+                                                                contentType: metadata.contentType, toolCallID: metadata.toolCallID),
+                   data: data)
+    }
+
+    public func makeChunks(
+        sessionID: String,
+        identity: ChunkIdentity,
         data: Data
     ) -> [RetrievalChunk] {
         let totalBytes = data.count
@@ -130,26 +193,28 @@ public struct ECoreRetrievalProvider: RetrievalProvider, Sendable {
         if totalBytes <= softChunkBytes {
             let text = String(decoding: data, as: UTF8.self)
             let handle = RawSourceHandle.ecore(
-                objectID: metadata.objectID,
+                objectID: identity.objectID,
                 offsetBytes: 0,
                 lengthBytes: totalBytes
             )
             return [
                 RetrievalChunk(
-                    chunkID: "ecore:\(metadata.objectID.rawValue)#offset_0_\(totalBytes)",
+                    chunkID: "ecore:\(identity.objectID.rawValue)#offset_0_\(totalBytes)",
                     sourceType: .ecoreToolResult,
-                    sourceID: metadata.objectID.rawValue,
+                    sourceID: identity.objectID.rawValue,
                     rawSourceHandle: handle,
                     indexableText: text,
                     symbolHints: extractHints(from: text),
                     path: nil,
-                    timestamp: metadata.createdAt,
+                    timestamp: identity.createdAt,
                     metadata: [
                         "session_id": sessionID,
-                        "tool_name": metadata.toolName,
-                        "tool_call_id": metadata.toolCallID.rawValue,
-                        "total_bytes": String(metadata.totalBytes),
-                        "content_type": metadata.contentType
+                        "reference_id": identity.referenceID ?? "",
+                        "occurrence_id": identity.occurrenceID ?? "",
+                        "tool_name": identity.toolName,
+                        "tool_call_id": identity.toolCallID?.rawValue ?? identity.occurrenceID ?? identity.objectID.rawValue,
+                        "total_bytes": String(identity.totalBytes),
+                        "content_type": identity.contentType
                     ]
                 )
             ]
@@ -198,27 +263,29 @@ public struct ECoreRetrievalProvider: RetrievalProvider, Sendable {
             let sliceLength = sliceData.count
 
             let handle = RawSourceHandle.ecore(
-                objectID: metadata.objectID,
+                objectID: identity.objectID,
                 offsetBytes: currentOffset,
                 lengthBytes: sliceLength
             )
 
             let chunk = RetrievalChunk(
-                chunkID: "ecore:\(metadata.objectID.rawValue)#offset_\(currentOffset)_\(sliceLength)",
+                chunkID: "ecore:\(identity.objectID.rawValue)#offset_\(currentOffset)_\(sliceLength)",
                 sourceType: .ecoreToolResult,
-                sourceID: metadata.objectID.rawValue,
+                sourceID: identity.objectID.rawValue,
                 rawSourceHandle: handle,
                 indexableText: sliceText,
                 symbolHints: extractHints(from: sliceText),
                 path: nil,
-                timestamp: metadata.createdAt,
+                timestamp: identity.createdAt,
                 metadata: [
                     "session_id": sessionID,
-                    "tool_name": metadata.toolName,
-                    "tool_call_id": metadata.toolCallID.rawValue,
+                    "reference_id": identity.referenceID ?? "",
+                    "occurrence_id": identity.occurrenceID ?? "",
+                    "tool_name": identity.toolName,
+                    "tool_call_id": identity.toolCallID?.rawValue ?? identity.occurrenceID ?? identity.objectID.rawValue,
                     "offset_bytes": String(currentOffset),
                     "length_bytes": String(sliceLength),
-                    "total_bytes": String(metadata.totalBytes)
+                    "total_bytes": String(identity.totalBytes)
                 ]
             )
             result.append(chunk)

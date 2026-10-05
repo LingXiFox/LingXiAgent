@@ -784,12 +784,14 @@ public actor ContextCacheController {
         }
 
         // 4. Search E-Core Object Fabric (权威沉淀观测与大对象织物)
-        let ecoreMatches = await ecoreStore.search(sessionID: sessionID, query: query, limit: limit)
-        var ecoreResults: [(ObservationMetadata, String)] = []
-        for meta in ecoreMatches {
-            let content = (try? await ecoreStore.fetch(sessionID: sessionID, objectID: meta.objectID)) ?? ""
+        // The unified universe, so a paged-out object is found by the same query that finds an
+        // artifact. A snippet here is a preview of a hit, never proof the model saw the occurrence.
+        let ecoreMatches = await ecoreStore.searchObjects(sessionID: sessionID, query: query, limit: limit)
+        var ecoreResults: [(ECoreObjectStore.ECoreSearchableObject, String)] = []
+        for object in ecoreMatches {
+            let content = await ecoreStore.payloadText(sessionID: sessionID, objectID: object.objectID) ?? ""
             let snippet = content.count > 500 ? String(content.prefix(500)) + "..." : content
-            ecoreResults.append((meta, snippet))
+            ecoreResults.append((object, snippet))
         }
 
         // Search reference-backed E-Core objects from history and retrieved pages.
@@ -844,8 +846,9 @@ public actor ContextCacheController {
 
         var outputSections: [String] = []
         if !ecoreResults.isEmpty {
-            let formatted = ecoreResults.map { meta, snippet in
-                "- [\(meta.toolName)] (\(meta.objectID.rawValue), \(meta.totalBytes) bytes):\n```\n\(snippet)\n```"
+            let formatted = ecoreResults.map { object, snippet in
+                "- [\(object.kind.rawValue)] [\(object.toolName)] (\(object.objectID.rawValue), \(object.totalBytes) bytes)"
+                + (object.referenceID.map { ", reference=\($0)" } ?? "") + ":\n```\n\(snippet)\n```"
             }.joined(separator: "\n")
             outputSections.append("## E-Core Fabric Objects (\(ecoreResults.count) objects recalled)\n" + formatted)
         }

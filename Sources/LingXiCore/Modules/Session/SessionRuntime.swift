@@ -143,9 +143,8 @@ public actor SessionRuntime {
         let profileStr = "\(model.rawValue)|\(reasoning ?? "none")"
         let requestProfileHash = fnv1a("profile:" + profileStr)
 
-        let historyTexts = contextEntries.filter { $0.messageID != userTurnID && $0.source != .system }.map {
-            "\($0.role):\($0.part)"
-        }.joined(separator: "||")
+        let historyTexts = historySignatureTexts(contextEntries, userTurnID: userTurnID) { $0 == .system }
+            .joined(separator: "||")
         let historyStableHash = fnv1a("history:" + historyTexts)
 
         let stablePrefixHash = fnv1a("\(systemHash)|\(coreToolsHash)|\(requestProfileHash)")
@@ -817,9 +816,7 @@ public actor SessionRuntime {
                 )
                 let approxPrefixBytes = (systemContext?.utf8.count ?? 0) + coreTools.reduce(0) { $0 + $1.name.utf8.count + $1.description.utf8.count + 120 }
                 let approxVolatileBytes = currentTurnTokens * 4
-                let historySignatures = context.entries
-                    .filter { $0.messageID != userTurnID && $0.source != .system }
-                    .map { "\($0.role):\($0.part)" }
+                let historySignatures = historySignatureTexts(context.entries, userTurnID: userTurnID) { $0 == .system }
                 // Built here and reused by `cacheEpoch` below. This string was already assembled
                 // once per turn for the epoch hash; naming it adds no work, and passing it along is
                 // what lets Debug Mode diff two prefixes without Core having to keep a second,
@@ -884,6 +881,11 @@ public actor SessionRuntime {
                     await TurnLatencyRecorder.shared.noteStep(run: latencyRun)
                 }
                 latestModelRequestID = request.requestID
+
+                // The last hop of the recall proof chain, observed on the request that is about to be
+                // sent: pageIn and exactRestore only ever said the bytes left E-Core. Read-only, and a
+                // failure here cannot affect what the provider receives.
+                await compactor.noteProviderVisibleRecalls(sessionID: sessionID, activeEntries: context.entries, request: request)
 
                 let toolSchemaTokens = ConservativeTokenEstimator().estimate(tools: effectiveTools)
                 let providerFramingTokens = budgetPlanner.policy.fixedOverheadTokens
